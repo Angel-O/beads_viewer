@@ -3566,55 +3566,10 @@ func main() {
 			}
 
 			if *robotNext {
-				// Minimal output: just the top pick
-				envelope := NewRobotEnvelope(dataHash)
-				if len(triage.QuickRef.TopPicks) == 0 {
-					output := struct {
-						RobotEnvelope
-						AsOf       string `json:"as_of,omitempty"`
-						AsOfCommit string `json:"as_of_commit,omitempty"`
-						Message    string `json:"message"`
-					}{
-						RobotEnvelope: envelope,
-						AsOf:          *asOf,
-						AsOfCommit:    asOfResolved,
-						Message:       "No actionable items available",
-					}
-					encoder := newRobotEncoder(os.Stdout)
-					if err := encoder.Encode(output); err != nil {
-						fmt.Fprintf(os.Stderr, "Error encoding robot-next: %v\n", err)
-						os.Exit(1)
-					}
-					os.Exit(0)
-				}
-
-				top := triage.QuickRef.TopPicks[0]
-				output := struct {
-					RobotEnvelope
-					AsOf       string   `json:"as_of,omitempty"`
-					AsOfCommit string   `json:"as_of_commit,omitempty"`
-					ID         string   `json:"id"`
-					Title      string   `json:"title"`
-					Score      float64  `json:"score"`
-					Reasons    []string `json:"reasons"`
-					Unblocks   int      `json:"unblocks"`
-					ClaimCmd   string   `json:"claim_command"`
-					ShowCmd    string   `json:"show_command"`
-				}{
-					RobotEnvelope: envelope,
-					AsOf:          *asOf,
-					AsOfCommit:    asOfResolved,
-					ID:            top.ID,
-					Title:         top.Title,
-					Score:         top.Score,
-					Reasons:       top.Reasons,
-					Unblocks:      top.Unblocks,
-					ClaimCmd:      fmt.Sprintf("br update %s --status=in_progress", top.ID),
-					ShowCmd:       fmt.Sprintf("br show %s", top.ID),
-				}
-
-				encoder := newRobotEncoder(os.Stdout)
-				if err := encoder.Encode(output); err != nil {
+				if err := handleRobotNext(robotDispatchContext, phaseThreeRobotHandlerConfig{
+					RobotNextFlag: robotNext,
+					GraphRoot:     graphRoot,
+				}); err != nil {
 					fmt.Fprintf(os.Stderr, "Error encoding robot-next: %v\n", err)
 					os.Exit(1)
 				}

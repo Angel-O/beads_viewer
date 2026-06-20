@@ -19,6 +19,7 @@ func isClosedLikeStatus(status model.Status) bool {
 // Designed as a single entry point for AI agents to get everything they need
 type TriageResult struct {
 	Meta            TriageMeta       `json:"meta"`
+	Status          MetricStatus     `json:"status,omitempty"`
 	QuickRef        QuickRef         `json:"quick_ref"`
 	Recommendations []Recommendation `json:"recommendations"`
 	QuickWins       []QuickWin       `json:"quick_wins"`
@@ -533,6 +534,7 @@ func ComputeTriageFromAnalyzer(analyzer *Analyzer, stats *GraphStats, issues []m
 			IssueCount:    len(issues),
 			ComputeTimeMs: elapsed.Milliseconds(),
 		},
+		Status: stats.Status(),
 		QuickRef: QuickRef{
 			OpenCount:       counts.Open,
 			ActionableCount: counts.Actionable,
@@ -965,7 +967,10 @@ func buildTopPicks(recommendations []Recommendation, limit int) []TopPick {
 }
 
 func isClaimableRecommendation(rec Recommendation) bool {
-	return rec.Status == string(model.StatusOpen) && rec.Assignee == "" && len(rec.BlockedBy) == 0
+	return rec.Status == string(model.StatusOpen) &&
+		rec.Type != string(model.TypeEpic) &&
+		rec.Assignee == "" &&
+		len(rec.BlockedBy) == 0
 }
 
 // buildGraphHealth constructs graph health metrics from stats

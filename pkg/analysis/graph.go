@@ -157,6 +157,31 @@ func (s *GraphStats) Status() MetricStatus {
 	return s.status
 }
 
+// ClaimUnsafeReasons returns metric-state reasons that make it unsafe for
+// robot-next to emit a direct claim command. Triage scoring depends on PageRank
+// and Betweenness; if either is incomplete, timed out, or disabled, robot
+// output must fail closed even when a diagnostic top pick exists.
+func (s MetricStatus) ClaimUnsafeReasons() []string {
+	var reasons []string
+	for _, metric := range []struct {
+		name  string
+		entry statusEntry
+	}{
+		{name: "PageRank", entry: s.PageRank},
+		{name: "Betweenness", entry: s.Betweenness},
+	} {
+		switch metric.entry.State {
+		case "pending", "timeout", "panic", "error", "skipped":
+			reason := metric.entry.State
+			if metric.entry.Reason != "" {
+				reason += ": " + metric.entry.Reason
+			}
+			reasons = append(reasons, metric.name+" "+reason)
+		}
+	}
+	return reasons
+}
+
 // stateFromTiming converts config flags/timeouts to a user-facing state string.
 func stateFromTiming(enabled bool, timedOut bool) string {
 	switch {

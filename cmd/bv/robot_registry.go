@@ -1688,6 +1688,10 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 }
 
 func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if cfg.RobotNextFlag != nil && *cfg.RobotNextFlag {
+		return handleRobotNext(ctx, cfg)
+	}
+
 	var historyReport *correlation.HistoryReport
 	hasOpenIssues := false
 	for _, issue := range ctx.Issues {
@@ -1753,56 +1757,6 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		}
 	}
 
-	if cfg.RobotNextFlag != nil && *cfg.RobotNextFlag {
-		envelope := NewRobotEnvelope(ctx.DataHash)
-		if len(triage.QuickRef.TopPicks) == 0 {
-			output := struct {
-				RobotEnvelope
-				AsOf       string `json:"as_of,omitempty"`
-				AsOfCommit string `json:"as_of_commit,omitempty"`
-				Message    string `json:"message"`
-			}{
-				RobotEnvelope: envelope,
-				AsOf:          ctx.AsOf,
-				AsOfCommit:    ctx.AsOfCommit,
-				Message:       "No actionable items available",
-			}
-			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
-				return fmt.Errorf("encoding robot-next: %w", err)
-			}
-			return nil
-		}
-
-		top := triage.QuickRef.TopPicks[0]
-		output := struct {
-			RobotEnvelope
-			AsOf       string   `json:"as_of,omitempty"`
-			AsOfCommit string   `json:"as_of_commit,omitempty"`
-			ID         string   `json:"id"`
-			Title      string   `json:"title"`
-			Score      float64  `json:"score"`
-			Reasons    []string `json:"reasons"`
-			Unblocks   int      `json:"unblocks"`
-			ClaimCmd   string   `json:"claim_command"`
-			ShowCmd    string   `json:"show_command"`
-		}{
-			RobotEnvelope: envelope,
-			AsOf:          ctx.AsOf,
-			AsOfCommit:    ctx.AsOfCommit,
-			ID:            top.ID,
-			Title:         top.Title,
-			Score:         top.Score,
-			Reasons:       top.Reasons,
-			Unblocks:      top.Unblocks,
-			ClaimCmd:      fmt.Sprintf("br update %s --status=in_progress", top.ID),
-			ShowCmd:       fmt.Sprintf("br show %s", top.ID),
-		}
-		if err := ctx.EncoderOrDefault().Encode(output); err != nil {
-			return fmt.Errorf("encoding robot-next: %w", err)
-		}
-		return nil
-	}
-
 	output := struct {
 		GeneratedAt string                 `json:"generated_at"`
 		DataHash    string                 `json:"data_hash"`
@@ -1836,6 +1790,211 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding robot-triage: %w", err)
+	}
+	return nil
+}
+
+type robotNextDegradation struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Repair   string `json:"repair,omitempty"`
+}
+
+type robotNextDiagnosticPick struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Score    float64  `json:"score"`
+	Reasons  []string `json:"reasons"`
+	Unblocks int      `json:"unblocks"`
+}
+
+type robotNextOutput struct {
+	RobotEnvelope
+	AsOf              string                   `json:"as_of,omitempty"`
+	AsOfCommit        string                   `json:"as_of_commit,omitempty"`
+	Actionable        bool                     `json:"actionable"`
+	Phase2Ready       bool                     `json:"phase2_ready"`
+	Status            analysis.MetricStatus    `json:"status"`
+	Message           string                   `json:"message,omitempty"`
+	ID                string                   `json:"id,omitempty"`
+	Title             string                   `json:"title,omitempty"`
+	Score             float64                  `json:"score,omitempty"`
+	Reasons           []string                 `json:"reasons,omitempty"`
+	Unblocks          int                      `json:"unblocks,omitempty"`
+	DiagnosticTopPick *robotNextDiagnosticPick `json:"diagnostic_top_pick,omitempty"`
+	ClaimCmd          string                   `json:"claim_command,omitempty"`
+	ShowCmd           string                   `json:"show_command,omitempty"`
+	Degraded          []robotNextDegradation   `json:"degraded,omitempty"`
+	UsageHints        []string                 `json:"usage_hints,omitempty"`
+}
+
+func robotNextIssueIndex(issues []model.Issue) map[string]model.Issue {
+	issueByID := make(map[string]model.Issue, len(issues))
+	for _, issue := range issues {
+		issueByID[issue.ID] = issue
+	}
+	return issueByID
+}
+
+func robotNextClaimabilityReasons(pick analysis.TopPick, issueByID map[string]model.Issue) []string {
+	issue, ok := issueByID[pick.ID]
+	if !ok {
+		return []string{fmt.Sprintf("%s is absent from loaded Beads records", pick.ID)}
+	}
+
+	var reasons []string
+	if !strings.EqualFold(strings.TrimSpace(string(issue.Status)), string(model.StatusOpen)) {
+		reasons = append(reasons, fmt.Sprintf("%s status is %q", pick.ID, issue.Status))
+	}
+	if strings.EqualFold(strings.TrimSpace(string(issue.IssueType)), string(model.TypeEpic)) {
+		reasons = append(reasons, fmt.Sprintf("%s is an epic", pick.ID))
+	}
+	if assignee := strings.TrimSpace(issue.Assignee); assignee != "" {
+		reasons = append(reasons, fmt.Sprintf("%s is already assigned to %s", pick.ID, assignee))
+	}
+
+	var openBlockers []string
+	for _, dep := range issue.Dependencies {
+		if dep == nil || !dep.Type.IsBlocking() {
+			continue
+		}
+		blockerID := strings.TrimSpace(dep.DependsOnID)
+		if blockerID == "" {
+			openBlockers = append(openBlockers, "<missing blocker id>")
+			continue
+		}
+		blocker, ok := issueByID[blockerID]
+		if !ok {
+			openBlockers = append(openBlockers, blockerID+" (missing)")
+			continue
+		}
+		if blocker.Status != model.StatusClosed && blocker.Status != model.StatusTombstone {
+			openBlockers = append(openBlockers, blockerID)
+		}
+	}
+	if len(openBlockers) > 0 {
+		sort.Strings(openBlockers)
+		reasons = append(reasons, fmt.Sprintf("%s is blocked by %s", pick.ID, strings.Join(openBlockers, ", ")))
+	}
+
+	return reasons
+}
+
+func robotNextDiagnosticFromPick(pick analysis.TopPick) robotNextDiagnosticPick {
+	return robotNextDiagnosticPick{
+		ID:       pick.ID,
+		Title:    pick.Title,
+		Score:    pick.Score,
+		Reasons:  pick.Reasons,
+		Unblocks: pick.Unblocks,
+	}
+}
+
+func robotNextClaimablePick(picks []analysis.TopPick, issues []model.Issue) (analysis.TopPick, *robotNextDiagnosticPick, []string, bool) {
+	if len(picks) == 0 {
+		return analysis.TopPick{}, nil, nil, false
+	}
+
+	issueByID := robotNextIssueIndex(issues)
+	firstDiagnostic := robotNextDiagnosticFromPick(picks[0])
+	var firstUnsafeReasons []string
+	for _, pick := range picks {
+		reasons := robotNextClaimabilityReasons(pick, issueByID)
+		if len(reasons) == 0 {
+			return pick, &firstDiagnostic, nil, true
+		}
+		if len(firstUnsafeReasons) == 0 {
+			firstUnsafeReasons = reasons
+		}
+	}
+
+	return analysis.TopPick{}, &firstDiagnostic, firstUnsafeReasons, false
+}
+
+func handleRobotNext(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	var rootIssueID string
+	if cfg.GraphRoot != nil && *cfg.GraphRoot != "" {
+		rootIssueID = *cfg.GraphRoot
+	}
+
+	now := robotNow()
+	triage := analysis.ComputeTriageWithOptionsAndTime(ctx.Issues, analysis.TriageOptions{
+		WaitForPhase2: true,
+		UseFastConfig: true,
+		RootIssueID:   rootIssueID,
+	}, now)
+	stabilizeRobotTriageForPinnedClock(&triage)
+
+	output := robotNextOutput{
+		RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
+		AsOf:          ctx.AsOf,
+		AsOfCommit:    ctx.AsOfCommit,
+		Phase2Ready:   triage.Meta.Phase2Ready,
+		Status:        triage.Status,
+		UsageHints: []string{
+			"Use scripts/br_retry.sh actionable --json plus the claim gate before mutating Beads state in crowded swarms.",
+			"No claim_command is emitted unless the item is open, unblocked, unassigned, and triage metrics are ready.",
+			"Inspect .status for skipped, timeout, or pending graph phases.",
+		},
+	}
+
+	if len(triage.QuickRef.TopPicks) == 0 {
+		output.Message = "No proven actionable item available"
+		output.Degraded = []robotNextDegradation{{
+			Code:     "no_actionable_recommendation",
+			Severity: "info",
+			Message:  "No open, unblocked, unassigned non-epic recommendation passed the robot-next claimability filter.",
+			Repair:   "Use br ready --json or scripts/br_retry.sh actionable --json for authoritative claim candidates.",
+		}}
+		if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			return fmt.Errorf("encoding robot-next: %w", err)
+		}
+		return nil
+	}
+
+	top, diagnostic, unsafePickReasons, ok := robotNextClaimablePick(triage.QuickRef.TopPicks, ctx.Issues)
+	if !ok {
+		output.Message = "No claim command emitted because the top recommendation was not claim-safe"
+		output.DiagnosticTopPick = diagnostic
+		output.Degraded = []robotNextDegradation{{
+			Code:     "robot_next_claim_unsafe",
+			Severity: "warning",
+			Message:  strings.Join(unsafePickReasons, "; "),
+			Repair:   "Use the authoritative Beads actionable queue plus claim gate before claiming work.",
+		}}
+		if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			return fmt.Errorf("encoding robot-next: %w", err)
+		}
+		return nil
+	}
+
+	if unsafeReasons := triage.Status.ClaimUnsafeReasons(); len(unsafeReasons) > 0 {
+		output.Message = "No claim command emitted because triage metrics were incomplete"
+		output.DiagnosticTopPick = diagnostic
+		output.Degraded = []robotNextDegradation{{
+			Code:     "robot_next_metric_incomplete",
+			Severity: "warning",
+			Message:  strings.Join(unsafeReasons, "; "),
+			Repair:   "Retry bv --robot-next after graph metrics are available, or use the authoritative Beads actionable queue plus claim gate.",
+		}}
+		if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			return fmt.Errorf("encoding robot-next: %w", err)
+		}
+		return nil
+	}
+
+	output.Actionable = true
+	output.ID = top.ID
+	output.Title = top.Title
+	output.Score = top.Score
+	output.Reasons = top.Reasons
+	output.Unblocks = top.Unblocks
+	output.ClaimCmd = fmt.Sprintf("br update %s --status=in_progress", top.ID)
+	output.ShowCmd = fmt.Sprintf("br show %s", top.ID)
+
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+		return fmt.Errorf("encoding robot-next: %w", err)
 	}
 	return nil
 }

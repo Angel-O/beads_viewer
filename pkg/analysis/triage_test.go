@@ -1826,8 +1826,16 @@ func TestBuildTopPicks_SkipsBlockedStatusAndAssigned(t *testing.T) {
 			Score:    90.0,
 		},
 		{
+			ID:     "open-epic",
+			Title:  "Open epic wrapper",
+			Type:   string(model.TypeEpic),
+			Status: string(model.StatusOpen),
+			Score:  80.0,
+		},
+		{
 			ID:     "ready-open",
 			Title:  "Ready open",
+			Type:   string(model.TypeTask),
 			Status: string(model.StatusOpen),
 			Score:  10.0,
 		},
