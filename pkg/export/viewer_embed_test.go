@@ -119,6 +119,44 @@ func TestHasEmbeddedAssets(t *testing.T) {
 	}
 }
 
+func TestEmbeddedViewerInitializesAlpineAppOnce(t *testing.T) {
+	content, err := ViewerAssetsFS.ReadFile("viewer_assets/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+
+	html := string(content)
+	if count := strings.Count(html, `x-data="beadsApp()"`); count != 1 {
+		t.Fatalf("expected one beadsApp component, got %d", count)
+	}
+	if strings.Contains(html, `x-init="init()"`) {
+		t.Fatal("beadsApp init must not be called through x-init; Alpine invokes it automatically")
+	}
+}
+
+func TestEmbeddedViewerSupportsDirectGraphPath(t *testing.T) {
+	content, err := ViewerAssetsFS.ReadFile("viewer_assets/viewer.js")
+	if err != nil {
+		t.Fatalf("read embedded viewer.js: %v", err)
+	}
+
+	viewerJS := string(content)
+	for _, marker := range []string{
+		"function routeHashFromPathname(pathname)",
+		"const DIRECT_VIEW_ROUTES = new Set(['issues', 'insights', 'graph'])",
+		"parseRoute(hash || routeHashFromPathname(window.location.pathname))",
+		"// Handle the initial hash route or a host-rewritten clean path after",
+		"routeHashFromPathname,",
+	} {
+		if !strings.Contains(viewerJS, marker) {
+			t.Errorf("viewer.js missing direct-route marker %q", marker)
+		}
+	}
+	if strings.Contains(viewerJS, "if (window.location.hash) {\n          this.handleHashChange();") {
+		t.Error("clean-path routing must run even when the URL has no hash")
+	}
+}
+
 func TestCopyEmbeddedAssets(t *testing.T) {
 	tmpDir := t.TempDir()
 	outputDir := filepath.Join(tmpDir, "output")
