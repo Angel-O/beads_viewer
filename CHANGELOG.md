@@ -22,6 +22,21 @@ All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are
   `not_actionable_count`. This also aligns the triage counts with the bundled viewer's strict
   status tiles.
 
+### Changed
+
+- **Better `.gitignore` handling (#179, revisiting #34/#151).** `bv` no longer unconditionally
+  appends `.bv/` to the repo's committed `.gitignore`. It now prefers **`.git/info/exclude`**
+  (no repo litter, invisible to collaborators, shared across linked worktrees — worktree
+  `.git` pointer files and their `commondir` indirection are resolved), skips writing entirely
+  when the project is not a git repository or when `.bv` is already covered by the repo
+  `.gitignore`, `.git/info/exclude`, or the user's global gitignore (`core.excludesFile` from
+  the global git config, or the `$XDG_CONFIG_HOME/git/ignore` default). A new
+  `BV_NO_GITIGNORE` environment variable (any non-empty value) disables all ignore-file
+  management. Everything remains pure file I/O — no `git` subprocess, no git-binary
+  dependency — and `bv` still never deletes or rewrites existing ignore entries; appending to
+  `.gitignore` survives only as a last-resort fallback when `.git` exists but the exclude file
+  is unusable.
+
 ### Added
 
 - **Reliable light/dark theme selection (bv-128, idea from PR #178).** New `--theme` flag

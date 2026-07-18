@@ -3701,6 +3701,7 @@ bv has a comprehensive built-in help system:
 | `BV_FRESHNESS_WARN_S` | Snapshot staleness warning threshold (seconds). | `30` |
 | `BV_FRESHNESS_STALE_S` | Snapshot staleness critical threshold (seconds). | `120` |
 | `BV_MAX_LINE_SIZE_MB` | Max JSONL line size in MB (lines larger than this are skipped with a warning). | `10` |
+| `BV_NO_GITIGNORE` | Disable automatic ignore-file management for `.bv/` entirely (any non-empty value). See [Automatic `.bv/` ignore handling](#automatic-bv-ignore-handling). | (enabled) |
 | `BV_SKIP_PHASE2` | Skip Phase 2 graph metrics (centrality, cycles, critical path) (`1`/`0`). | (disabled) |
 | `BV_PHASE2_TIMEOUT_S` | Override per-metric Phase 2 timeouts (seconds). | (size-based) |
 | `BV_SEMANTIC_EMBEDDER` | Semantic embedding provider for `bv --search` and TUI semantic mode. | `hash` |
@@ -3720,6 +3721,17 @@ BEADS_DIR=/path/to/shared/beads bv
 # Example: Use in monorepo
 export BEADS_DIR=$(git rev-parse --show-toplevel)/.beads
 ```
+
+### Automatic `.bv/` ignore handling
+
+`bv` keeps its local artifacts (semantic search index, baselines, drift config — all under `.bv/`) out of your git history automatically, without littering committed files:
+
+1. **Opt-out first:** if `BV_NO_GITIGNORE` is set (any non-empty value), `bv` never touches any ignore file.
+2. **Not a git repo?** If there is no `.git` in the project root, nothing is written.
+3. **Already ignored?** If `.bv` is already covered by the repo's `.gitignore`, by `.git/info/exclude`, or by your global gitignore (`core.excludesFile`, or the `$XDG_CONFIG_HOME/git/ignore` default), `bv` leaves everything alone.
+4. **Otherwise:** `bv` appends `.bv/` to **`.git/info/exclude`** — the per-repo exclude file that is invisible to collaborators, shared across linked worktrees (worktree `.git` pointer files are resolved to the common git dir), and never needs a commit. Only if that file is unusable does `bv` fall back to appending to `.gitignore`.
+
+Everything is pure file I/O — no `git` subprocess is spawned, and `git` does not need to be installed. `bv` never deletes or rewrites existing ignore entries; if an earlier version added `.bv/` to your `.gitignore`, that line is respected (and you are free to remove it — `bv` will switch to `.git/info/exclude` on the next run).
 
 ### Experimental: Background Mode (Live Reload)
 
