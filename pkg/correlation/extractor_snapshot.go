@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"hash/maphash"
+	"io"
 	"os/exec"
 	"sort"
 	"strings"
@@ -89,21 +90,26 @@ func (e *Extractor) extractViaSnapshots(opts ExtractOptions) ([]BeadEvent, error
 	perCommitEvents := make([][]BeadEvent, len(commits))
 	fresh := make(map[string]perCommitEventEntry)
 
-	// Collect the unique blob object ids referenced ONLY by the uncached commits.
-	// Adjacent uncached commits in the followed history can still share a boundary
-	// blob, so this dedups too. Cached commits contribute zero blob reads — the
-	// 232MB cat-file is skipped entirely when nothing is new.
-	seen := make(map[string]struct{}, len(commits)+1)
-	unique := make([]string, 0, len(commits)+1)
-	addSHA := func(s string) {
-		if s == "" {
+	// Determine which commits must be computed and, for every blob OID an uncached
+	// commit references, the LAST commit index (in git-log order) that still needs
+	// it. Streaming the blobs in commit order and dropping each record-line set as
+	// soon as its last user is processed bounds simultaneous blob residency to the
+	// handful of blobs live across the current window — instead of holding EVERY
+	// historical blob at once. On a full-rewrite JSONL history (br repos rewrite
+	// the whole file each mutation) this is the difference between an
+	// O(min(commits,500) x file_size) peak (multi-GiB RSS) and O(window x
+	// file_size) (#182). Consecutive commits in the followed chain share their
+	// boundary blob (newSHA[i] == oldSHA[i-1]), so the window is ~2-3 sets in
+	// practice; the last-use map keeps residency correct even if that ever fails.
+	// Cached commits contribute zero blob reads.
+	lastUse := make(map[string]int, len(commits)+1)
+	noteUse := func(sha string, i int) {
+		if sha == "" {
 			return
 		}
-		if _, ok := seen[s]; ok {
-			return
+		if j, ok := lastUse[sha]; !ok || i > j {
+			lastUse[sha] = i
 		}
-		seen[s] = struct{}{}
-		unique = append(unique, s)
 	}
 	for i := range commits {
 		c := commits[i]
@@ -114,31 +120,56 @@ func (e *Extractor) extractViaSnapshots(opts ExtractOptions) ([]BeadEvent, error
 			perCommitEvents[i] = ce.Events
 			continue
 		}
-		addSHA(c.oldSHA)
-		addSHA(c.newSHA)
+		noteUse(c.oldSHA, i)
+		noteUse(c.newSHA, i)
 	}
 
-	blobs, err := e.readBlobs(unique)
+	// Streaming blob reader: a single long-lived `git cat-file --batch` fed one
+	// OID at a time. Each unique uncached blob is read exactly once (guarded by
+	// the live `sets` window plus the last-use eviction below), so total blob
+	// reads equal the deduped uncached count — the incremental cache still reads
+	// only the NEW commits' blobs (~0 when nothing is new), matching the previous
+	// readBlobs behavior for the blobsReadCounter tests.
+	reader, err := e.newBlobReader()
 	if err != nil {
 		return nil, err
 	}
+	defer reader.Close()
 
-	// Hash each (uncached-referenced) unique blob's record lines exactly once.
-	sets := make(map[string]recordLineSet, len(blobs))
-	for sha, content := range blobs {
-		sets[sha] = newRecordLineSet(content)
+	// sets is the live window of record-line multisets, keyed by blob OID. Each
+	// entry aliases the blob bytes it was built from, so deleting a set here frees
+	// the underlying blob for GC — the whole point of the streaming window.
+	sets := make(map[string]recordLineSet)
+	getSet := func(sha string) (recordLineSet, error) {
+		if sha == "" {
+			return nil, nil
+		}
+		if s, ok := sets[sha]; ok {
+			return s, nil
+		}
+		blob, err := reader.read(sha)
+		if err != nil {
+			return nil, err
+		}
+		s := newRecordLineSet(blob)
+		sets[sha] = s
+		return s, nil
 	}
 
-	// Compute the uncached commits' contributions and record them for caching.
+	// Compute the uncached commits' contributions in git-log order, evicting each
+	// blob's set as soon as no later commit references it.
 	for i := range commits {
 		if perCommitEvents[i] != nil {
 			continue // served from cache
 		}
 		c := commits[i]
-		newSet := sets[c.newSHA]
-		var oldSet recordLineSet
-		if c.oldSHA != "" {
-			oldSet = sets[c.oldSHA]
+		newSet, err := getSet(c.newSHA)
+		if err != nil {
+			return nil, err
+		}
+		oldSet, err := getSet(c.oldSHA)
+		if err != nil {
+			return nil, err
 		}
 		var evs []BeadEvent
 		diffText := synthesizeRecordDiff(oldSet, newSet)
@@ -156,6 +187,15 @@ func (e *Extractor) extractViaSnapshots(opts ExtractOptions) ([]BeadEvent, error
 			OldSHA:    c.oldSHA,
 			NewSHA:    c.newSHA,
 			Events:    evs,
+		}
+		// Drop every blob whose last referencing commit is at or before i: it can
+		// never be needed again (lastUse indices are all uncached-commit indices,
+		// so this iteration is the last chance to free them), and its bytes — plus
+		// the record-line set aliasing them — are released now rather than at end.
+		for sha := range sets {
+			if lastUse[sha] <= i {
+				delete(sets, sha)
+			}
 		}
 	}
 
@@ -313,6 +353,12 @@ func parseRawDiffLines(payload []byte, sc *snapshotCommit) bool {
 // `git cat-file --batch` process and returns their contents keyed by object id.
 // Object ids must already be unique. Missing blobs map to nil (treated as empty
 // by the caller).
+//
+// NOTE: extractViaSnapshots no longer uses this — it streams via blobReader to
+// bound peak memory (#182), since holding every historical blob in one map is
+// exactly what made the export path spike to multi-GiB RSS. readBlobs is kept as
+// the batch primitive (identical cat-file framing) for callers that genuinely
+// need all blobs resident at once.
 func (e *Extractor) readBlobs(ids []string) (map[string][]byte, error) {
 	result := make(map[string][]byte, len(ids))
 	atomic.AddInt64(&blobsReadCounter, int64(len(ids)))
@@ -417,6 +463,100 @@ func (e *Extractor) readBlobs(ids []string) (map[string][]byte, error) {
 		return nil, fmt.Errorf("git cat-file failed: %w", waitErr)
 	}
 	return result, nil
+}
+
+// blobReader streams individual git blobs on demand through a single long-lived
+// `git cat-file --batch` process. Unlike readBlobs — which loads every requested
+// blob into one map up front and holds them all — it lets extractViaSnapshots
+// read a blob, hash it into a record-line set, and drop it before reading the
+// next, bounding peak memory to the live window rather than the whole history
+// (#182). Requests and responses are strictly interleaved (one OID written and
+// flushed, its single bounded response drained immediately), so we never queue
+// more than one response's worth of output and the pipe cannot fill — there is
+// no writer/reader deadlock of the kind readBlobs' concurrent-writer path guards
+// against.
+type blobReader struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	w     *bufio.Writer
+	out   *bufio.Reader
+}
+
+// newBlobReader starts the streaming cat-file process for the extractor's repo.
+func (e *Extractor) newBlobReader() (*blobReader, error) {
+	cmd := gitCommand(e.ctx, "cat-file", "--batch")
+	cmd.Dir = e.repoPath
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("git cat-file stdin: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("git cat-file stdout: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting git cat-file: %w", err)
+	}
+	return &blobReader{
+		cmd:   cmd,
+		stdin: stdin,
+		w:     bufio.NewWriter(stdin),
+		out:   bufio.NewReaderSize(stdout, gitLogMaxScanTokenSize),
+	}, nil
+}
+
+// read returns the content of one blob object id (nil if git reports it
+// missing). Each call is counted in blobsReadCounter so the incremental-cache
+// tests can prove only the NEW commits' blobs are read.
+func (b *blobReader) read(sha string) ([]byte, error) {
+	atomic.AddInt64(&blobsReadCounter, 1)
+	if _, err := b.w.WriteString(sha + "\n"); err != nil {
+		return nil, fmt.Errorf("writing cat-file id %q: %w", sha, err)
+	}
+	if err := b.w.Flush(); err != nil {
+		return nil, fmt.Errorf("flushing cat-file id %q: %w", sha, err)
+	}
+	header, err := b.out.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("reading cat-file header for %q: %w", sha, err)
+	}
+	trimmed := strings.TrimRight(header, "\n")
+	parts := strings.Fields(trimmed)
+	if len(parts) == 2 && parts[1] == "missing" {
+		return nil, nil
+	}
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("unexpected cat-file header %q for %q", trimmed, sha)
+	}
+	var size int
+	if _, err := fmt.Sscanf(parts[2], "%d", &size); err != nil {
+		return nil, fmt.Errorf("parsing cat-file size %q: %w", parts[2], err)
+	}
+	content := make([]byte, size)
+	if _, err := readFull(b.out, content); err != nil {
+		return nil, fmt.Errorf("reading cat-file content for %q: %w", sha, err)
+	}
+	// Trailing newline after each object's content.
+	if _, err := b.out.Discard(1); err != nil {
+		return nil, fmt.Errorf("discarding cat-file trailer for %q: %w", sha, err)
+	}
+	return content, nil
+}
+
+// Close flushes and closes stdin (signalling EOF to git) then waits for exit. It
+// first drains any remaining stdout so that a git blocked mid-write on a full
+// pipe (possible only if read errored partway through a large object) is
+// unblocked and can exit cleanly rather than leaving Wait to hang. Safe to defer
+// even after a read error.
+func (b *blobReader) Close() error {
+	_ = b.w.Flush()
+	closeErr := b.stdin.Close()
+	_, _ = io.Copy(io.Discard, b.out)
+	waitErr := b.cmd.Wait()
+	if waitErr != nil {
+		return waitErr
+	}
+	return closeErr
 }
 
 // readFull reads exactly len(buf) bytes from r.

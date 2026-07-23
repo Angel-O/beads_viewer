@@ -5,10 +5,27 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	json "github.com/goccy/go-json"
 )
+
+// diskCacheForced lets a non-robot caller (notably the `--export-pages` /
+// `--watch-export` path) opt the correlation caches in for its own process
+// without setting BV_ROBOT=1 (which also flips unrelated robot-mode output).
+// The history export re-runs the same HEAD-keyed extraction on every re-export;
+// enabling the content-addressed per-commit / HEAD-artifact / report caches for
+// it means a long-lived watcher pays the full git-blob materialization once and
+// then serves incrementally (#182). It is set once at startup and only ever
+// read, so a plain atomic bool is sufficient.
+var diskCacheForced atomic.Bool
+
+// SetDiskCacheEnabled force-enables (or disables) the persistent correlation
+// caches for the current process regardless of BV_ROBOT. BV_NO_CACHE=1 still
+// wins as a hard off switch. Intended for the export path, which needs the
+// caches' incrementality but does not run in robot mode.
+func SetDiskCacheEnabled(on bool) { diskCacheForced.Store(on) }
 
 // Persistent on-disk cache for the correlation HistoryReport consumed by the
 // robot triage/next/history paths. The expensive part of GenerateReport is the
@@ -61,7 +78,10 @@ type correlationDiskCacheEntry struct {
 // active. It mirrors the analysis disk cache: on in robot mode, off when the
 // caller asked to bypass caches.
 func correlationDiskCacheEnabled() bool {
-	return os.Getenv("BV_ROBOT") == "1" && os.Getenv("BV_NO_CACHE") != "1"
+	if os.Getenv("BV_NO_CACHE") == "1" {
+		return false
+	}
+	return os.Getenv("BV_ROBOT") == "1" || diskCacheForced.Load()
 }
 
 // correlationDiskCachePath resolves the cache file location, honoring the same

@@ -8057,9 +8057,19 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 		}
 	}
 
-	// Generate correlation report
+	// Generate correlation report.
+	//
+	// Enable the persistent correlation caches for this process even though the
+	// export path does not run in robot mode (#182). GenerateReportCached is
+	// keyed on HEAD + beads + options, so a long-lived --watch-export watcher
+	// pays the full git-blob extraction once and then serves history.json
+	// incrementally: an unchanged committed history is a pure cache hit (no
+	// blob I/O), and a HEAD advance only re-reads the new commits' blobs via
+	// the per-commit event cache. Without this the watcher re-materialized the
+	// entire blob history on every re-export. BV_NO_CACHE=1 still opts out.
+	correlation.SetDiskCacheEnabled(true)
 	correlator := correlation.NewCorrelator(cwd, beadsPath)
-	report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for time-travel
 	})
 	if err != nil {
