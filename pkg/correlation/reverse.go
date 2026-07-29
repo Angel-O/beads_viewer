@@ -4,8 +4,8 @@ package correlation
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -39,6 +39,17 @@ type ReverseLookup struct {
 	index    CommitIndex                   // SHA -> []BeadID
 	details  map[string][]CorrelatedCommit // SHA -> commits with full details
 	beads    map[string]BeadHistory        // BeadID -> history
+
+	// ctx, when set via WithContext, bounds the git subprocesses spawned by
+	// the lookup (issue #166). nil means context.Background().
+	ctx context.Context
+}
+
+// WithContext binds ctx to the lookup so its git subprocesses are cancelled
+// when ctx is done (issue #166). Returns the receiver for chaining.
+func (rl *ReverseLookup) WithContext(ctx context.Context) *ReverseLookup {
+	rl.ctx = ctx
+	return rl
 }
 
 // NewReverseLookup creates a new reverse lookup from a history report.
@@ -192,7 +203,7 @@ func (rl *ReverseLookup) getCommitInfo(sha string) (*commitInfo, error) {
 		return nil, fmt.Errorf("no repo path configured")
 	}
 
-	cmd := exec.Command("git", "log", "-1", "--format="+gitLogHeaderFormat, sha)
+	cmd := gitCommand(rl.ctx, "log", "-1", "--format="+gitLogHeaderFormat, sha)
 	cmd.Dir = rl.repoPath
 
 	out, err := cmd.Output()
@@ -286,14 +297,14 @@ func (rl *ReverseLookup) getAllCodeCommits(opts ExtractOptions) ([]OrphanCommit,
 	// Exclude beads-only commits
 	args = append(args, "--", ":(exclude).beads/*")
 
-	cmd := exec.Command("git", args...)
+	cmd := gitCommand(rl.ctx, args...)
 	cmd.Dir = rl.repoPath
 
 	out, err := cmd.Output()
 	if err != nil {
 		// Try without exclusion pattern (older git versions)
 		args = args[:len(args)-2]
-		cmd = exec.Command("git", args...)
+		cmd = gitCommand(rl.ctx, args...)
 		cmd.Dir = rl.repoPath
 		out, err = cmd.Output()
 		if err != nil {

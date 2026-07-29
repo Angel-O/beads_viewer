@@ -37,23 +37,28 @@ type RobotCommand struct {
 }
 
 type RobotContext struct {
-	Issues               []model.Issue
-	DataHash             string
-	Encoder              robotEncoder
-	AsOf                 string
-	AsOfCommit           string
-	LabelScope           string
-	LabelContext         *analysis.LabelHealth
-	Stdout               io.Writer
-	Stderr               io.Writer
-	WorkDir              string
-	ProjectDir           string
-	BaselinePath         string
-	EnvRobot             bool
-	SearchOutput         *robotSearchOutput
-	Diff                 *analysis.SnapshotDiff
-	DiffHistoricalIssues []model.Issue
-	DiffResolvedRevision string
+	Issues   []model.Issue
+	DataHash string
+	// DataHashMatchesIssues is true when DataHash is the ComputeDataHash of the
+	// exact Issues slice carried here (i.e. no label-scope or recipe filtering
+	// changed Issues after DataHash was computed). When true, handlers may seed
+	// analyzers with DataHash to avoid recomputing the identical hash.
+	DataHashMatchesIssues bool
+	Encoder               robotEncoder
+	AsOf                  string
+	AsOfCommit            string
+	LabelScope            string
+	LabelContext          *analysis.LabelHealth
+	Stdout                io.Writer
+	Stderr                io.Writer
+	WorkDir               string
+	ProjectDir            string
+	BaselinePath          string
+	EnvRobot              bool
+	SearchOutput          *robotSearchOutput
+	Diff                  *analysis.SnapshotDiff
+	DiffHistoricalIssues  []model.Issue
+	DiffResolvedRevision  string
 }
 
 type RobotRegistry struct {
@@ -160,6 +165,7 @@ type phaseThreeRobotHandlerConfig struct {
 	RobotImpactFlag         *string
 	ForceFullAnalysis       *bool
 	HistoryLimit            *int
+	HistoryTimeoutMs        *int // #166: budget for the triage history prologue (-1 = unset, 0 = unbounded)
 	HistorySince            *string
 	MinConfidence           *float64
 	AttentionLimit          *int
@@ -181,6 +187,10 @@ type phaseThreeRobotHandlerConfig struct {
 	RobotCapacityFlag       *bool
 	CapacityAgents          *int
 	CapacityLabel           *string
+	// NotReadyLabels (issue #173): opt-in label-class excluded from claimable
+	// top picks. Resolved from --robot-not-ready-labels (comma-separated) with a
+	// BV_ROBOT_NOT_READY_LABELS env fallback; nil/empty disables the gate.
+	NotReadyLabels *string
 }
 
 func newRobotRegistry() RobotRegistry {
@@ -620,6 +630,9 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Description: "Output dependency-respecting execution plan",
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			if ctx.DataHashMatchesIssues {
+				analyzer.SeedDataHash(ctx.DataHash)
+			}
 			config := analysis.ConfigForSize(len(ctx.Issues), countEdges(ctx.Issues))
 			if cfg.ForceFullAnalysis != nil && *cfg.ForceFullAnalysis {
 				config = analysis.FullAnalysisConfig()
@@ -686,6 +699,9 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Description: "Output enhanced priority recommendations",
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			if ctx.DataHashMatchesIssues {
+				analyzer.SeedDataHash(ctx.DataHash)
+			}
 			config := analysis.ConfigForSize(len(ctx.Issues), countEdges(ctx.Issues))
 			if cfg.ForceFullAnalysis != nil && *cfg.ForceFullAnalysis {
 				config = analysis.FullAnalysisConfig()
@@ -1531,6 +1547,9 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 
 func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	analyzer := analysis.NewAnalyzer(ctx.Issues)
+	if ctx.DataHashMatchesIssues {
+		analyzer.SeedDataHash(ctx.DataHash)
+	}
 	if cfg.ForceFullAnalysis != nil && *cfg.ForceFullAnalysis {
 		fullConfig := analysis.FullAnalysisConfig()
 		analyzer.SetConfig(&fullConfig)
@@ -1687,12 +1706,105 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	return nil
 }
 
+// defaultRobotHistoryTimeout bounds the git-history correlation prologue of
+// --robot-triage / --robot-next (issue #166). The prologue is best-effort
+// enrichment (staleness metrics); it must never be able to hang the robot
+// surface, which agents rely on as their single bounded entry point.
+const defaultRobotHistoryTimeout = 10 * time.Second
+
+// resolveRobotHistoryTimeout returns the history-prologue budget. Precedence:
+// the --robot-history-timeout-ms flag (when explicitly set, i.e. >= 0), then
+// the BV_ROBOT_HISTORY_TIMEOUT_MS environment variable, then the 10s default.
+// A value of 0 disables the bound entirely (legacy run-to-completion).
+func resolveRobotHistoryTimeout(cfg phaseThreeRobotHandlerConfig) time.Duration {
+	if cfg.HistoryTimeoutMs != nil && *cfg.HistoryTimeoutMs >= 0 {
+		return time.Duration(*cfg.HistoryTimeoutMs) * time.Millisecond
+	}
+	if env := strings.TrimSpace(os.Getenv("BV_ROBOT_HISTORY_TIMEOUT_MS")); env != "" {
+		if ms, err := strconv.Atoi(env); err == nil && ms >= 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return defaultRobotHistoryTimeout
+}
+
+// resolveNotReadyLabels returns the opt-in not-ready label-class (issue #173)
+// used to exclude graph-ready-but-not-work-ready beads from claimable robot top
+// picks. Precedence: the --robot-not-ready-labels flag (comma-separated) when
+// set, else the BV_ROBOT_NOT_READY_LABELS environment variable. Returns nil
+// (gate disabled, zero behavior change) when neither is configured. Labels are
+// trimmed; empty entries are dropped. Matching is case-insensitive (handled in
+// the analysis layer), so labels are returned as written.
+func resolveNotReadyLabels(cfg phaseThreeRobotHandlerConfig) []string {
+	raw := ""
+	if cfg.NotReadyLabels != nil && strings.TrimSpace(*cfg.NotReadyLabels) != "" {
+		raw = *cfg.NotReadyLabels
+	} else if env := strings.TrimSpace(os.Getenv("BV_ROBOT_NOT_READY_LABELS")); env != "" {
+		raw = env
+	}
+	if raw == "" {
+		return nil
+	}
+	var labels []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			labels = append(labels, trimmed)
+		}
+	}
+	return labels
+}
+
+// generateTriageHistoryBounded runs the expensive git-history correlation
+// prologue of --robot-triage under a hard time budget (issue #166).
+//
+// The report generation runs in a goroutine while this function selects on
+// the result vs. the budget. On timeout it returns (nil, "timeout") and
+// triage proceeds without history — the already-supported degradation path.
+// Crucially the goroutine does NOT leak unbounded work: the correlator is
+// bound to the timed-out context, so every git subprocess it spawned (or
+// would spawn next) is killed via exec.CommandContext, and the goroutine
+// unblocks and exits promptly.
+//
+// The returned status is "ok", "error", or "timeout"; it is surfaced as
+// meta.history_status in the triage output.
+func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correlation.BeadInfo, limit int, timeout time.Duration) (*correlation.HistoryReport, string) {
+	histCtx := context.Background()
+	cancel := context.CancelFunc(func() {})
+	if timeout > 0 {
+		histCtx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
+	defer cancel()
+
+	correlator := correlation.NewCorrelator(workDir, beadsPath).WithContext(histCtx)
+
+	type historyResult struct {
+		report *correlation.HistoryReport
+		err    error
+	}
+	resCh := make(chan historyResult, 1)
+	go func() {
+		report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+		resCh <- historyResult{report: report, err: err}
+	}()
+
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			return nil, "error"
+		}
+		return res.report, "ok"
+	case <-histCtx.Done():
+		return nil, "timeout"
+	}
+}
+
 func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	if cfg.RobotNextFlag != nil && *cfg.RobotNextFlag {
 		return handleRobotNext(ctx, cfg)
 	}
 
 	var historyReport *correlation.HistoryReport
+	historyStatus := "" // empty = history generation not attempted (#166)
 	hasOpenIssues := false
 	for _, issue := range ctx.Issues {
 		if issue.Status != model.StatusClosed && issue.Status != model.StatusTombstone {
@@ -1722,10 +1834,8 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 								Status: string(issue.Status),
 							}
 						}
-						correlator := correlation.NewCorrelator(workDir, beadsPath)
-						if report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{Limit: limit}); err == nil {
-							historyReport = report
-						}
+						historyReport, historyStatus = generateTriageHistoryBounded(
+							workDir, beadsPath, beadInfos, limit, resolveRobotHistoryTimeout(cfg))
 					}
 				}
 			}
@@ -1739,15 +1849,22 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}
 
 	now := robotNow()
+	seedHash := ""
+	if ctx.DataHashMatchesIssues {
+		seedHash = ctx.DataHash
+	}
 	triage := analysis.ComputeTriageWithOptionsAndTime(ctx.Issues, analysis.TriageOptions{
-		GroupByTrack:  cfg.RobotTriageByTrackFlag != nil && *cfg.RobotTriageByTrackFlag,
-		GroupByLabel:  cfg.RobotTriageByLabelFlag != nil && *cfg.RobotTriageByLabelFlag,
-		WaitForPhase2: true,
-		UseFastConfig: true,
-		History:       historyReport,
-		RootIssueID:   rootIssueID,
+		GroupByTrack:   cfg.RobotTriageByTrackFlag != nil && *cfg.RobotTriageByTrackFlag,
+		GroupByLabel:   cfg.RobotTriageByLabelFlag != nil && *cfg.RobotTriageByLabelFlag,
+		WaitForPhase2:  true,
+		UseFastConfig:  true,
+		History:        historyReport,
+		RootIssueID:    rootIssueID,
+		SeedDataHash:   seedHash,
+		NotReadyLabels: resolveNotReadyLabels(cfg),
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
+	triage.Meta.HistoryStatus = historyStatus
 
 	var feedbackInfo *analysis.FeedbackJSON
 	if beadsDir, err := loader.GetBeadsDir(""); err == nil {
@@ -1920,9 +2037,10 @@ func handleRobotNext(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 
 	now := robotNow()
 	triage := analysis.ComputeTriageWithOptionsAndTime(ctx.Issues, analysis.TriageOptions{
-		WaitForPhase2: true,
-		UseFastConfig: true,
-		RootIssueID:   rootIssueID,
+		WaitForPhase2:  true,
+		UseFastConfig:  true,
+		RootIssueID:    rootIssueID,
+		NotReadyLabels: resolveNotReadyLabels(cfg),
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 
@@ -2043,7 +2161,7 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		}
 	}
 
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReport(beadInfos, opts)
+	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2109,7 +2227,7 @@ func generateCorrelationReport(workDir string, issues []model.Issue, opts correl
 	if err != nil {
 		return nil, err
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReport(buildCorrelationBeadInfos(issues), opts)
+	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
 	if err != nil {
 		return nil, fmt.Errorf("generating history report: %w", err)
 	}
@@ -2368,7 +2486,7 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReport(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2608,7 +2726,7 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReport(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2720,7 +2838,7 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReport(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2793,7 +2911,7 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReport(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}

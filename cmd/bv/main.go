@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"html"
 	"io"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"slices"
 	"sort"
@@ -66,6 +68,7 @@ var rootHelpSections = []flagHelpSection{
 				"db",
 				"update",
 				"check-update",
+				"update-dry-run",
 				"rollback",
 				"yes",
 				"format",
@@ -74,6 +77,7 @@ var rootHelpSections = []flagHelpSection{
 				"profile-json",
 				"no-cache",
 				"force-full-analysis",
+				"theme",
 				"background-mode",
 				"no-background-mode",
 			)
@@ -265,6 +269,8 @@ func modifierRecoveryExamples(modifier string) []string {
 		return []string{"bv --check-drift --robot-drift --format json"}
 	case "history-since", "history-limit", "min-confidence":
 		return []string{"bv robot-history --history-since \"30 days ago\" --json"}
+	case "robot-history-timeout-ms":
+		return []string{"bv robot-triage --robot-history-timeout-ms 10000 --json"}
 	case "correlation-by", "correlation-reason":
 		return []string{"bv robot-confirm-correlation deadbeef:A --correlation-by agent --json"}
 	case "orphans-min-score":
@@ -626,9 +632,65 @@ func rewriteAgentIntentCommand(args []string) ([]string, bool) {
 		return append([]string{"--robot-capacity"}, rewriteAgentIntentFlagAliases(rest, "capacity")...), true
 	case "burndown":
 		return rewriteRobotValueIntent(rest, "burndown", "", "--robot-burndown", "current"), true
+	case "upgrade", "self-update", "selfupdate":
+		return rewriteUpgradeIntent(rest), true
 	default:
 		return nil, false
 	}
+}
+
+// rewriteUpgradeIntent maps the ergonomic `bv upgrade` subcommand (mirroring
+// `br upgrade` and `cass upgrade`) onto bv's existing self-update flags. The
+// pure translation keeps the network-facing update machinery in pkg/updater
+// while giving agents and humans a discoverable, sibling-consistent verb.
+//
+//	bv upgrade                -> --update
+//	bv upgrade --yes/-y       -> --update --yes
+//	bv upgrade --check        -> --check-update   (is a newer version available?)
+//	bv upgrade --dry-run      -> --update-dry-run (what would be downloaded/verified)
+//	bv upgrade --rollback     -> --rollback       (restore the previous binary)
+//
+// Bare-word aliases (check/dry-run/rollback/yes/force) are accepted too so the
+// command reads naturally either way. Unrecognized tokens are passed through so
+// cobra reports genuine typos instead of silently ignoring them.
+func rewriteUpgradeIntent(rest []string) []string {
+	mode := "update"
+	yes := false
+	passthrough := make([]string, 0, len(rest))
+	for _, arg := range rest {
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "check", "--check", "check-update", "--check-update":
+			if mode == "update" {
+				mode = "check"
+			}
+		case "dry-run", "--dry-run", "dryrun", "--dryrun":
+			if mode == "update" {
+				mode = "dry-run"
+			}
+		case "rollback", "--rollback":
+			mode = "rollback"
+		case "yes", "--yes", "-y", "force", "--force":
+			yes = true
+		default:
+			passthrough = append(passthrough, arg)
+		}
+	}
+
+	var out []string
+	switch mode {
+	case "check":
+		out = []string{"--check-update"}
+	case "dry-run":
+		out = []string{"--update-dry-run"}
+	case "rollback":
+		out = []string{"--rollback"}
+	default:
+		out = []string{"--update"}
+		if yes {
+			out = append(out, "--yes")
+		}
+	}
+	return append(out, passthrough...)
 }
 
 func rewriteCanonicalRobotCommandIntent(command string, rest []string) ([]string, bool) {
@@ -993,6 +1055,9 @@ func agentIntentCommandNames() []string {
 		"forecast",
 		"capacity",
 		"burndown",
+		"upgrade",
+		"self-update",
+		"selfupdate",
 	}
 	for name := range primaryRobotFlagNames() {
 		names = append(names, name)
@@ -1323,6 +1388,28 @@ func printFlagSection(out io.Writer, allFlags *flag.FlagSet, title string, names
 	fmt.Fprintln(out)
 }
 
+// issuesFingerprint returns an order-independent fingerprint of the issue set
+// that changes whenever anything the exported site renders changes. It folds in
+// the canonical per-issue content + dependency hashes — the same signal the
+// analysis cache uses for change detection — so it catches title/body/label/
+// priority/dependency edits, not just an updated_at bump. The --watch-export
+// loop uses it to skip a full re-export when a file change didn't actually
+// change any issue content (#159).
+func issuesFingerprint(issues []model.Issue) string {
+	keys := make([]string, len(issues))
+	for i, iss := range issues {
+		fp := analysis.ComputeIssueFingerprint(iss)
+		keys[i] = fp.ID + "\x1f" + fp.ContentHash + "\x1f" + fp.DependencyHash
+	}
+	sort.Strings(keys)
+	h := fnv.New64a()
+	for _, k := range keys {
+		_, _ = h.Write([]byte(k))
+		_, _ = h.Write([]byte{0})
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
 func main() {
 	flag.CommandLine.SortFlags = false
 
@@ -1333,6 +1420,7 @@ func main() {
 	updateFlag := flag.Bool("update", false, "Update bv to the latest version")
 	checkUpdateFlag := flag.Bool("check-update", false, "Check if a new version is available")
 	rollbackFlag := flag.Bool("rollback", false, "Rollback to the previous version (from backup)")
+	updateDryRunFlag := flag.Bool("update-dry-run", false, "Show what an update would do without installing (use via 'bv upgrade --dry-run')")
 	yesFlag := flag.Bool("yes", false, "Skip confirmation prompts (use with --update)")
 	exportFile := flag.String("export-md", "", "Export issues to a Markdown file (e.g., report.md)")
 	robotHelp := flag.Bool("robot-help", false, "Show AI agent help")
@@ -1347,6 +1435,7 @@ func main() {
 	robotTriageByTrack := flag.Bool("robot-triage-by-track", false, "Group triage recommendations by execution track (bv-87)")
 	robotTriageByLabel := flag.Bool("robot-triage-by-label", false, "Group triage recommendations by label (bv-87)")
 	robotNext := flag.Bool("robot-next", false, "Output only the top pick recommendation as JSON (minimal triage)")
+	robotNotReadyLabels := flag.String("robot-not-ready-labels", "", "Comma-separated labels marking a bead not-ready: excluded from claimable --robot-next/--robot-triage top picks (env: BV_ROBOT_NOT_READY_LABELS; #173)")
 	robotDiff := flag.Bool("robot-diff", false, "Output diff as JSON (use with --diff-since)")
 	robotRecipes := flag.Bool("robot-recipes", false, "Output available recipes as JSON for AI agents")
 	robotLabelHealth := flag.Bool("robot-label-health", false, "Output label health metrics as JSON for AI agents")
@@ -1406,6 +1495,7 @@ func main() {
 	beadHistory := flag.String("bead-history", "", "Show history for specific bead ID")
 	historySince := flag.String("history-since", "", "Limit history to commits after this date/ref (e.g., '30 days ago', '2024-01-01')")
 	historyLimit := flag.Int("history-limit", 500, "Max commits to analyze (0 = unlimited)")
+	robotHistoryTimeoutMs := flag.Int("robot-history-timeout-ms", -1, "Budget in ms for the git-history prologue of robot triage (0 = unbounded; default 10000, env BV_ROBOT_HISTORY_TIMEOUT_MS)")
 	minConfidence := flag.Float64("min-confidence", 0.0, "Filter correlations by minimum confidence (0.0-1.0)")
 	// Correlation audit flags (bv-e1u6)
 	robotExplainCorrelation := flag.String("robot-explain-correlation", "", "Explain why a commit is linked to a bead (format: SHA:beadID)")
@@ -1488,6 +1578,9 @@ func main() {
 	debugRender := flag.String("debug-render", "", "Render a view and output to file (views: insights, board)")
 	debugWidth := flag.Int("debug-width", 180, "Width for debug render")
 	debugHeight := flag.Int("debug-height", 50, "Height for debug render")
+	// Explicit light/dark palette selection for terminals where background
+	// auto-detection fails, e.g. over SSH or inside tmux (bv-128)
+	themeFlag := flag.String("theme", "", "Color theme: light, dark, or auto (default: detect terminal background)")
 	// Experimental background snapshot worker (bv-o11l)
 	backgroundMode := flag.Bool("background-mode", false, "Enable experimental background snapshot loading (TUI only)")
 	noBackgroundMode := flag.Bool("no-background-mode", false, "Disable experimental background snapshot loading (TUI only)")
@@ -1579,6 +1672,7 @@ func main() {
 		RobotCapacityFlag:       robotCapacity,
 		ForceFullAnalysis:       forceFullAnalysis,
 		HistoryLimit:            historyLimit,
+		HistoryTimeoutMs:        robotHistoryTimeoutMs,
 		HistorySince:            historySince,
 		MinConfidence:           minConfidence,
 		AttentionLimit:          attentionLimit,
@@ -1590,8 +1684,15 @@ func main() {
 		NetworkDepth:            networkDepth,
 		CapacityAgents:          capacityAgents,
 		CapacityLabel:           capacityLabel,
+		NotReadyLabels:          robotNotReadyLabels,
 	})
 	rootCmd := newRootCommand(func() error {
+		// Resolve and pin the color theme before anything renders, so every
+		// adaptive color — package-global styles, per-model renderers, and
+		// glamour markdown — agrees on light vs dark. Precedence:
+		// --theme > BV_THEME > ~/.config/bv/config.yaml > auto-detect. (bv-128)
+		ui.SetThemeOverride(effectiveThemePreference(*themeFlag, flag.CommandLine.Changed("theme"), os.Stderr))
+
 		modifierRules := []modifierFlagRule{
 			{modifier: "robot-diff", requires: []string{"diff-since"}},
 			{modifier: "robot-search", requires: []string{"search"}},
@@ -1616,6 +1717,8 @@ func main() {
 			{modifier: "robot-drift", requires: []string{"check-drift"}},
 			{modifier: "history-since", requires: []string{"robot-history", "bead-history"}},
 			{modifier: "history-limit", requires: []string{"robot-history", "bead-history"}},
+			{modifier: "robot-history-timeout-ms", requires: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label", "robot-next"}},
+			{modifier: "robot-not-ready-labels", requires: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label", "robot-next"}},
 			{modifier: "min-confidence", requires: []string{"robot-history", "bead-history"}},
 			{modifier: "correlation-by", requires: []string{"robot-confirm-correlation", "robot-reject-correlation"}},
 			{modifier: "correlation-reason", requires: []string{"robot-confirm-correlation", "robot-reject-correlation"}},
@@ -1842,6 +1945,39 @@ func main() {
 			} else {
 				fmt.Printf("bv is up to date (version %s)\n", version.Version)
 			}
+			os.Exit(0)
+		}
+
+		// Handle --update-dry-run (bv upgrade --dry-run): report exactly what an
+		// update would fetch/verify/install without touching the running binary.
+		if *updateDryRunFlag {
+			release, err := updater.GetLatestRelease()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error fetching release info: %v\n", err)
+				os.Exit(1)
+			}
+
+			newVersion := release.TagName
+			if !updater.IsNewerThanCurrent(newVersion) {
+				fmt.Printf("bv is already up to date (version %s)\n", version.Version)
+				os.Exit(0)
+			}
+
+			fmt.Printf("[dry-run] Would update bv from %s to %s\n", version.Version, newVersion)
+			if asset := release.FindPlatformAsset(); asset != nil {
+				fmt.Printf("[dry-run] Would download %s (%d bytes) for %s/%s\n",
+					asset.Name, asset.Size, runtime.GOOS, runtime.GOARCH)
+				fmt.Printf("[dry-run] From: %s\n", asset.BrowserDownloadURL)
+			} else {
+				fmt.Fprintf(os.Stderr, "[dry-run] No matching release asset found for %s/%s\n",
+					runtime.GOOS, runtime.GOARCH)
+			}
+			if checksum := release.FindChecksumAsset(); checksum != nil {
+				fmt.Printf("[dry-run] Would verify SHA-256 checksum via %s\n", checksum.Name)
+			} else {
+				fmt.Println("[dry-run] Warning: no checksum file found; download integrity could not be verified")
+			}
+			fmt.Println("[dry-run] No changes made. Run 'bv upgrade' to apply.")
 			os.Exit(0)
 		}
 
@@ -2318,10 +2454,11 @@ func main() {
 			// No live reload for workspace mode (multiple files)
 			beadsPath = ""
 
-			// Automatically ensure .bv/ is in .gitignore at workspace root
+			// Automatically ensure .bv/ is git-ignored at the workspace root
+			// (prefers .git/info/exclude; opt out with BV_NO_GITIGNORE=1).
 			// Workspace config is typically at .bv/workspace.yaml, so project root is two levels up
 			workspaceRoot := filepath.Dir(filepath.Dir(*workspaceConfig))
-			_ = loader.EnsureBVInGitignore(workspaceRoot)
+			_ = loader.EnsureBVIgnored(workspaceRoot)
 		} else {
 			// Load from single repo (original behavior)
 			var err error
@@ -2335,11 +2472,13 @@ func main() {
 			beadsDir, _ := loader.GetBeadsDir("")
 			beadsPath, _ = resolveSingleRepoWatchFile("")
 
-			// Automatically ensure .bv/ is in .gitignore to prevent polluting git
+			// Automatically ensure .bv/ is git-ignored to prevent polluting git
 			// with search indexes, baselines, and other bv-specific files.
+			// Prefers .git/info/exclude over the committed .gitignore; skipped
+			// outside git repos and when BV_NO_GITIGNORE=1 is set.
 			// This is done silently and only in single-repo mode.
 			projectDir := filepath.Dir(beadsDir)
-			_ = loader.EnsureBVInGitignore(projectDir)
+			_ = loader.EnsureBVIgnored(projectDir)
 		}
 		loadDuration := time.Since(loadStart)
 
@@ -2352,6 +2491,11 @@ func main() {
 
 		// Stable data hash for robot outputs (after repo filter but before recipes/TUI)
 		dataHash := analysis.ComputeDataHash(issues)
+		// dataHash corresponds to the current `issues` slice. Track whether later
+		// reassignments (label-scope subgraph, recipe filtering) change `issues`
+		// out from under it; when unchanged we can seed analyzers with dataHash to
+		// avoid recomputing the identical SHA256 for their disk-cache key.
+		dataHashMatchesIssues := true
 
 		// Label subgraph scoping (bv-122)
 		// When --label is specified, extract the label's subgraph and use it for all robot analysis.
@@ -2372,6 +2516,7 @@ func main() {
 					}
 				}
 				issues = subgraphIssues
+				dataHashMatchesIssues = false
 				// Compute label health for context
 				cfg := analysis.DefaultLabelHealthConfig()
 				allHealth := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
@@ -2390,9 +2535,11 @@ func main() {
 		if activeRecipe != nil && (*robotTriage || *robotNext || *robotTriageByTrack || *robotTriageByLabel || *robotPriority || *robotInsights || *robotPlan) {
 			issues = applyRecipeFilters(issues, activeRecipe)
 			issues = applyRecipeSort(issues, activeRecipe)
+			dataHashMatchesIssues = false
 		}
 		robotDispatchContext.Issues = issues
 		robotDispatchContext.DataHash = dataHash
+		robotDispatchContext.DataHashMatchesIssues = dataHashMatchesIssues
 		robotDispatchContext.AsOf = *asOf
 		robotDispatchContext.AsOfCommit = asOfResolved
 		robotDispatchContext.LabelScope = *labelScope
@@ -2858,24 +3005,80 @@ func main() {
 				signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 				defer signal.Stop(sigCh)
 
-				// Watch loop
+				// Coalescing watch loop (#159): collapse bursts of file changes
+				// into a single export, rate-limit with adaptive backoff, and skip
+				// re-exporting when issue content is unchanged. Previously every
+				// file write triggered a full site + git-history regeneration,
+				// pinning a CPU under an active author.
+				reload := func() ([]model.Issue, error) {
+					if *workspaceConfig != "" {
+						iss, _, err := workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
+						return iss, err
+					}
+					return datasource.LoadIssues("")
+				}
+
+				const (
+					watchSettleMin = 500 * time.Millisecond
+					watchSettleMax = 30 * time.Second
+				)
+				// Seed the fingerprint from the initial export above so the first
+				// file change doesn't redundantly re-export identical content.
+				settle := watchSettleMin
+				lastHash := issuesFingerprint(issues)
+				var settleTimer *time.Timer
+				var settleC <-chan time.Time
+				armSettle := func() {
+					if settleTimer == nil {
+						settleTimer = time.NewTimer(settle)
+						settleC = settleTimer.C
+						return
+					}
+					if !settleTimer.Stop() {
+						select {
+						case <-settleTimer.C:
+						default:
+						}
+					}
+					settleTimer.Reset(settle)
+					settleC = settleTimer.C
+				}
+
 				for {
 					select {
 					case <-mergedChangeCh:
-						// Reload issues from disk using appropriate method
-						var freshIssues []model.Issue
-						var err error
-						if *workspaceConfig != "" {
-							freshIssues, _, err = workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
-						} else {
-							freshIssues, err = datasource.LoadIssues("")
-						}
+						// (Re)arm the settle timer; further changes within the
+						// quiet window coalesce into the same export.
+						armSettle()
+					case <-settleC:
+						settleC = nil
+						freshIssues, err := reload()
 						if err != nil {
 							fmt.Printf("  → Error reloading issues: %v\n", err)
 							continue
 						}
+						// Skip the (expensive) export when nothing meaningful
+						// changed — a file can be rewritten with identical content.
+						h := issuesFingerprint(freshIssues)
+						if h == lastHash {
+							settle = watchSettleMin
+							continue
+						}
+						start := time.Now()
 						if err := doExport(freshIssues); err != nil {
 							fmt.Printf("  → Export error: %v\n", err)
+							continue
+						}
+						lastHash = h
+						// Adaptive backoff: widen the coalescing window to ~2× the
+						// export cost (capped) so sustained churn can't thrash the
+						// CPU; cheap exports stay near the floor for responsiveness.
+						settle = 2 * time.Since(start)
+						if settle < watchSettleMin {
+							settle = watchSettleMin
+						}
+						if settle > watchSettleMax {
+							settle = watchSettleMax
 						}
 					case <-sigCh:
 						fmt.Println("\nStopping watch mode...")
@@ -3567,8 +3770,9 @@ func main() {
 
 			if *robotNext {
 				if err := handleRobotNext(robotDispatchContext, phaseThreeRobotHandlerConfig{
-					RobotNextFlag: robotNext,
-					GraphRoot:     graphRoot,
+					RobotNextFlag:  robotNext,
+					GraphRoot:      graphRoot,
+					NotReadyLabels: robotNotReadyLabels,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "Error encoding robot-next: %v\n", err)
 					os.Exit(1)
@@ -5394,6 +5598,76 @@ func countEdges(issues []model.Issue) int {
 		}
 	}
 	return count
+}
+
+// canonicalTheme maps user input to one of the recognized theme names
+// ("light", "dark", "auto"), ignoring case and surrounding whitespace.
+// Anything unrecognized (including empty) yields "".
+func canonicalTheme(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "light":
+		return "light"
+	case "dark":
+		return "dark"
+	case "auto":
+		return "auto"
+	}
+	return ""
+}
+
+// effectiveThemePreference resolves the color-theme preference with the
+// precedence: --theme flag > BV_THEME env var > `theme:` key in
+// ~/.config/bv/config.yaml > "" (auto-detect). An explicitly passed but
+// unrecognized --theme value warns on warnTo and resolves to "auto" — the flag
+// level is honored rather than silently falling through to a lower-precedence
+// source the user did not intend. (bv-128)
+func effectiveThemePreference(flagVal string, flagSet bool, warnTo io.Writer) string {
+	if flagSet {
+		if v := canonicalTheme(flagVal); v != "" {
+			return v
+		}
+		if warnTo != nil {
+			fmt.Fprintf(warnTo, "Warning: unknown --theme value %q (expected light, dark, or auto); using auto-detection\n", flagVal)
+		}
+		return "auto"
+	}
+	if v := canonicalTheme(os.Getenv("BV_THEME")); v != "" {
+		return v
+	}
+	if raw, ok := loadThemeFromUserConfig(); ok {
+		if v := canonicalTheme(raw); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// loadThemeFromUserConfig reads the top-level `theme:` key from
+// ~/.config/bv/config.yaml, returning (value, true) when present and
+// non-empty. Value validation is canonicalTheme's job. (bv-128)
+func loadThemeFromUserConfig() (string, bool) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return "", false
+	}
+	configPath := filepath.Join(homeDir, ".config", "bv", "config.yaml")
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", false
+	}
+
+	var cfg struct {
+		Theme string `yaml:"theme"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return "", false
+	}
+	theme := strings.TrimSpace(cfg.Theme)
+	if theme == "" {
+		return "", false
+	}
+	return theme, true
 }
 
 func loadBackgroundModeFromUserConfig() (bool, bool) {
@@ -7783,9 +8057,19 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 		}
 	}
 
-	// Generate correlation report
+	// Generate correlation report.
+	//
+	// Enable the persistent correlation caches for this process even though the
+	// export path does not run in robot mode (#182). GenerateReportCached is
+	// keyed on HEAD + beads + options, so a long-lived --watch-export watcher
+	// pays the full git-blob extraction once and then serves history.json
+	// incrementally: an unchanged committed history is a pure cache hit (no
+	// blob I/O), and a HEAD advance only re-reads the new commits' blobs via
+	// the per-commit event cache. Without this the watcher re-materialized the
+	// entire blob history on every re-export. BV_NO_CACHE=1 still opts out.
+	correlation.SetDiskCacheEnabled(true)
 	correlator := correlation.NewCorrelator(cwd, beadsPath)
-	report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for time-travel
 	})
 	if err != nil {
@@ -8536,16 +8820,20 @@ func resolveSingleRepoWatchFile(projectDir string) (string, error) {
 	// match the source bv reads from. For br repos this is typically the
 	// SQLite beads.db; without this, the watcher fires only on JSONL writes
 	// even though br updates land in SQLite first.
+	//
+	// We only need the selected source's PATH here, not a content validation:
+	// DiscoverSources already returns sources sorted freshest-first (ties broken
+	// by priority), which is exactly what SelectBestSource picks among valid
+	// candidates. Skipping ValidateAfterDiscovery avoids a redundant full parse
+	// of the 1.9MB issues.jsonl on the robot path (it is parsed once by the
+	// loader for the actual data load).
 	sources, discoverErr := datasource.DiscoverSources(datasource.DiscoveryOptions{
 		BeadsDir:               beadsDir,
 		RepoPath:               projectDir,
-		ValidateAfterDiscovery: true,
-		IncludeInvalid:         false,
+		ValidateAfterDiscovery: false,
 	})
-	if discoverErr == nil && len(sources) > 0 {
-		if best, selErr := datasource.SelectBestSource(sources); selErr == nil && best.Path != "" {
-			return best.Path, nil
-		}
+	if discoverErr == nil && len(sources) > 0 && sources[0].Path != "" {
+		return sources[0].Path, nil
 	}
 
 	beadsPath, err := loader.FindJSONLPath(beadsDir)
@@ -8723,15 +9011,22 @@ func generateRobotSchemas() RobotSchemas {
 								"generated_at": map[string]interface{}{"type": "string"},
 								"phase2_ready": map[string]interface{}{"type": "boolean"},
 								"issue_count":  map[string]interface{}{"type": "integer"},
+								"history_status": map[string]interface{}{
+									"type":        "string",
+									"enum":        []string{"ok", "error", "timeout"},
+									"description": "Outcome of the git-history correlation prologue; omitted when history was not attempted (#166)",
+								},
 							},
 						},
 						"quick_ref": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
-								"open_count":        map[string]interface{}{"type": "integer"},
-								"actionable_count":  map[string]interface{}{"type": "integer"},
-								"blocked_count":     map[string]interface{}{"type": "integer"},
-								"in_progress_count": map[string]interface{}{"type": "integer"},
+								"open_count":           map[string]interface{}{"type": "integer", "description": "Strict count of issues with status == open (equals project_health.counts.by_status.open)"},
+								"actionable_count":     map[string]interface{}{"type": "integer", "description": "Non-closed issues ready to work on (no open blocking dependencies)"},
+								"blocked_count":        map[string]interface{}{"type": "integer", "description": "Strict count of issues with status == blocked (equals project_health.counts.by_status.blocked)"},
+								"in_progress_count":    map[string]interface{}{"type": "integer", "description": "Strict count of issues with status == in_progress"},
+								"not_closed_count":     map[string]interface{}{"type": "integer", "description": "All non-closed issues (open+in_progress+blocked+deferred); equals actionable_count + not_actionable_count"},
+								"not_actionable_count": map[string]interface{}{"type": "integer", "description": "Non-closed issues blocked by open dependencies, regardless of status"},
 								"top_picks": map[string]interface{}{
 									"type":  "array",
 									"items": map[string]interface{}{"$ref": "#/$defs/recommendation"},

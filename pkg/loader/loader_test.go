@@ -50,7 +50,7 @@ func TestFindJSONLPath_NoJSONLFiles(t *testing.T) {
 	}
 }
 
-func TestFindJSONLPath_PrefersBeadsJSONL(t *testing.T) {
+func TestFindJSONLPath_PrefersIssuesJSONL(t *testing.T) {
 	dir := t.TempDir()
 	// Create multiple JSONL files
 	os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(`{"id":"1"}`), 0644)
@@ -61,25 +61,24 @@ func TestFindJSONLPath_PrefersBeadsJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// Per bv-96, beads.jsonl is canonical (matches what bd writes in stealth mode)
-	if filepath.Base(path) != "beads.jsonl" {
-		t.Errorf("Expected beads.jsonl to be preferred (matches bd stealth mode), got: %s", path)
+	// Current br workspaces export issues.jsonl; beads.jsonl remains a legacy fallback.
+	if filepath.Base(path) != "issues.jsonl" {
+		t.Errorf("Expected issues.jsonl to be preferred, got: %s", path)
 	}
 }
 
-func TestFindJSONLPath_FallsBackToIssuesJSONL(t *testing.T) {
+func TestFindJSONLPath_FallsBackToBeadsJSONL(t *testing.T) {
 	dir := t.TempDir()
-	// Create issues.jsonl only (no beads.jsonl)
-	os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(`{"id":"1"}`), 0644)
+	// Create beads.jsonl only (no issues.jsonl)
+	os.WriteFile(filepath.Join(dir, "beads.jsonl"), []byte(`{"id":"1"}`), 0644)
 	os.WriteFile(filepath.Join(dir, "other.jsonl"), []byte(`{"id":"2"}`), 0644)
 
 	path, err := loader.FindJSONLPath(dir)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// issues.jsonl is second priority after beads.jsonl (bv-96)
-	if filepath.Base(path) != "issues.jsonl" {
-		t.Errorf("Expected issues.jsonl as fallback, got: %s", path)
+	if filepath.Base(path) != "beads.jsonl" {
+		t.Errorf("Expected beads.jsonl as fallback, got: %s", path)
 	}
 }
 

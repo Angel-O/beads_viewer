@@ -544,6 +544,51 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 			args: []string{"robot-docs", "guide", "--json"},
 			want: []string{"--robot-docs", "guide", "--format", "json"},
 		},
+		{
+			name: "upgrade maps to --update",
+			args: []string{"upgrade"},
+			want: []string{"--update"},
+		},
+		{
+			name: "upgrade --yes skips confirmation",
+			args: []string{"upgrade", "--yes"},
+			want: []string{"--update", "--yes"},
+		},
+		{
+			name: "upgrade -y short flag skips confirmation",
+			args: []string{"upgrade", "-y"},
+			want: []string{"--update", "--yes"},
+		},
+		{
+			name: "upgrade --check maps to --check-update",
+			args: []string{"upgrade", "--check"},
+			want: []string{"--check-update"},
+		},
+		{
+			name: "upgrade check bare word maps to --check-update",
+			args: []string{"upgrade", "check"},
+			want: []string{"--check-update"},
+		},
+		{
+			name: "upgrade --dry-run maps to --update-dry-run",
+			args: []string{"upgrade", "--dry-run"},
+			want: []string{"--update-dry-run"},
+		},
+		{
+			name: "upgrade --rollback maps to --rollback",
+			args: []string{"upgrade", "--rollback"},
+			want: []string{"--rollback"},
+		},
+		{
+			name: "self-update alias maps to --update",
+			args: []string{"self-update"},
+			want: []string{"--update"},
+		},
+		{
+			name: "upgrade passes through unknown flags for cobra to report",
+			args: []string{"upgrade", "--bogus"},
+			want: []string{"--update", "--bogus"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2175,5 +2220,53 @@ func repoRoot(t *testing.T) string {
 			t.Fatalf("could not find go.mod above %s", dir)
 		}
 		dir = parent
+	}
+}
+
+func TestIssuesFingerprintDetectsContentChangesOrderIndependently(t *testing.T) {
+	t1 := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
+	base := []model.Issue{
+		{ID: "A", Status: model.StatusOpen, UpdatedAt: t1},
+		{ID: "B", Status: model.StatusInProgress, UpdatedAt: t1},
+	}
+	// Reordering the same content must not change the fingerprint (#159).
+	reordered := []model.Issue{base[1], base[0]}
+	if issuesFingerprint(base) != issuesFingerprint(reordered) {
+		t.Fatalf("fingerprint must be order-independent")
+	}
+	// A status change must change the fingerprint.
+	statusChanged := []model.Issue{
+		{ID: "A", Status: model.StatusClosed, UpdatedAt: t1},
+		{ID: "B", Status: model.StatusInProgress, UpdatedAt: t1},
+	}
+	if issuesFingerprint(base) == issuesFingerprint(statusChanged) {
+		t.Fatalf("fingerprint must change when an issue's status changes")
+	}
+	// An updated_at change must change the fingerprint.
+	timeChanged := []model.Issue{
+		{ID: "A", Status: model.StatusOpen, UpdatedAt: t2},
+		{ID: "B", Status: model.StatusInProgress, UpdatedAt: t1},
+	}
+	if issuesFingerprint(base) == issuesFingerprint(timeChanged) {
+		t.Fatalf("fingerprint must change when an issue's updated_at changes")
+	}
+	// A title change with NO updated_at bump must still change the fingerprint —
+	// the previous id/status/updated_at-only fingerprint missed this (#159).
+	titleChanged := []model.Issue{
+		{ID: "A", Title: "renamed", Status: model.StatusOpen, UpdatedAt: t1},
+		{ID: "B", Status: model.StatusInProgress, UpdatedAt: t1},
+	}
+	if issuesFingerprint(base) == issuesFingerprint(titleChanged) {
+		t.Fatalf("fingerprint must change when a title changes without an updated_at bump")
+	}
+	// A dependency change with no updated_at bump must also be detected.
+	depChanged := []model.Issue{
+		{ID: "A", Status: model.StatusOpen, UpdatedAt: t1,
+			Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}}},
+		{ID: "B", Status: model.StatusInProgress, UpdatedAt: t1},
+	}
+	if issuesFingerprint(base) == issuesFingerprint(depChanged) {
+		t.Fatalf("fingerprint must change when a dependency changes without an updated_at bump")
 	}
 }

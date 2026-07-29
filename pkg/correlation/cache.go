@@ -2,12 +2,12 @@
 package correlation
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -300,7 +300,13 @@ func BuildCacheKey(repoPath string, beads []BeadInfo, opts CorrelatorOptions) (C
 
 // getGitHead returns the current HEAD SHA
 func getGitHead(repoPath string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	return getGitHeadContext(context.Background(), repoPath)
+}
+
+// getGitHeadContext returns the current HEAD SHA, bounding the git subprocess
+// by ctx (#166). A nil ctx means context.Background().
+func getGitHeadContext(ctx context.Context, repoPath string) (string, error) {
+	cmd := gitCommand(ctx, "rev-parse", "HEAD")
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {
