@@ -143,6 +143,7 @@ type phaseTwoRobotHandlerConfig struct {
 type phaseThreeRobotHandlerConfig struct {
 	RobotInsightsFlag       *bool
 	RobotTriageFlag         *bool
+	RobotTriageBriefFlag    *bool
 	RobotTriageByTrackFlag  *bool
 	RobotTriageByLabelFlag  *bool
 	RobotNextFlag           *bool
@@ -1866,6 +1867,14 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	stabilizeRobotTriageForPinnedClock(&triage)
 	triage.Meta.HistoryStatus = historyStatus
 
+	// --brief (#183): emit only the decision-relevant fields agents actually
+	// consume at session start (id/title/status, blockers/unblocks, claim
+	// state) and skip the per-issue score breakdowns, project health, and
+	// usage hints that dominate the full payload's token cost.
+	if cfg.RobotTriageBriefFlag != nil && *cfg.RobotTriageBriefFlag {
+		return encodeBriefTriage(ctx, triage, now)
+	}
+
 	var feedbackInfo *analysis.FeedbackJSON
 	if beadsDir, err := loader.GetBeadsDir(""); err == nil {
 		if feedbackData, err := analysis.LoadFeedback(beadsDir); err == nil && len(feedbackData.Events) > 0 {
@@ -1897,6 +1906,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 			"jq '.triage.quick_ref.top_picks[] | select(.unblocks > 2)' - High-impact picks",
 			"jq '.triage.quick_wins' - Low-effort, high-impact items",
 			"--robot-next - Get only the single top recommendation",
+			"--brief - Compact output: only id/title/status/assignee/blockers/unblocks (#183)",
 			"--robot-triage-by-track - Group by execution track for multi-agent coordination",
 			"--robot-triage-by-label - Group by label for area-focused agents",
 			"jq '.triage.recommendations_by_track[].top_pick' - Top pick per track",
@@ -1907,6 +1917,65 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding robot-triage: %w", err)
+	}
+	return nil
+}
+
+// briefTriageRecommendation carries only the fields agents use for work
+// selection (#183): identity, claim state, and the dependency edges.
+type briefTriageRecommendation struct {
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Assignee  string   `json:"assignee,omitempty"`
+	Score     float64  `json:"score"`
+	Unblocks  []string `json:"unblocks,omitempty"`
+	BlockedBy []string `json:"blocked_by,omitempty"`
+}
+
+// briefTriageOutput is the compact --robot-triage --brief payload (#183).
+// It keeps quick_ref (counts + top picks — the claimability signal),
+// quick_wins, and blockers_to_clear (already lean), and reduces each
+// recommendation to briefTriageRecommendation. Score breakdowns, project
+// health, commands, feedback, and usage hints are omitted.
+type briefTriageOutput struct {
+	GeneratedAt     string                      `json:"generated_at"`
+	DataHash        string                      `json:"data_hash"`
+	AsOf            string                      `json:"as_of,omitempty"`
+	AsOfCommit      string                      `json:"as_of_commit,omitempty"`
+	Brief           bool                        `json:"brief"`
+	QuickRef        analysis.QuickRef           `json:"quick_ref"`
+	Recommendations []briefTriageRecommendation `json:"recommendations"`
+	QuickWins       []analysis.QuickWin         `json:"quick_wins,omitempty"`
+	BlockersToClear []analysis.BlockerItem      `json:"blockers_to_clear,omitempty"`
+}
+
+func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.Time) error {
+	recs := make([]briefTriageRecommendation, 0, len(triage.Recommendations))
+	for _, rec := range triage.Recommendations {
+		recs = append(recs, briefTriageRecommendation{
+			ID:        rec.ID,
+			Title:     rec.Title,
+			Status:    rec.Status,
+			Assignee:  rec.Assignee,
+			Score:     rec.Score,
+			Unblocks:  rec.UnblocksIDs,
+			BlockedBy: rec.BlockedBy,
+		})
+	}
+	output := briefTriageOutput{
+		GeneratedAt:     now.Format(time.RFC3339),
+		DataHash:        ctx.DataHash,
+		AsOf:            ctx.AsOf,
+		AsOfCommit:      ctx.AsOfCommit,
+		Brief:           true,
+		QuickRef:        triage.QuickRef,
+		Recommendations: recs,
+		QuickWins:       triage.QuickWins,
+		BlockersToClear: triage.BlockersToClear,
+	}
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+		return fmt.Errorf("encoding robot-triage --brief: %w", err)
 	}
 	return nil
 }

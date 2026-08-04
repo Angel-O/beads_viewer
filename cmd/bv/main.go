@@ -108,6 +108,7 @@ var rootHelpSections = []flagHelpSection{
 			return strings.HasPrefix(name, "robot-") ||
 				isOneOf(name,
 					"attention-limit",
+					"brief",
 					"schema-command",
 					"suggest-type",
 					"suggest-confidence",
@@ -271,6 +272,8 @@ func modifierRecoveryExamples(modifier string) []string {
 		return []string{"bv robot-history --history-since \"30 days ago\" --json"}
 	case "robot-history-timeout-ms":
 		return []string{"bv robot-triage --robot-history-timeout-ms 10000 --json"}
+	case "brief":
+		return []string{"bv robot-triage --brief --json"}
 	case "correlation-by", "correlation-reason":
 		return []string{"bv robot-confirm-correlation deadbeef:A --correlation-by agent --json"}
 	case "orphans-min-score":
@@ -1435,6 +1438,7 @@ func main() {
 	robotTriageByTrack := flag.Bool("robot-triage-by-track", false, "Group triage recommendations by execution track (bv-87)")
 	robotTriageByLabel := flag.Bool("robot-triage-by-label", false, "Group triage recommendations by label (bv-87)")
 	robotNext := flag.Bool("robot-next", false, "Output only the top pick recommendation as JSON (minimal triage)")
+	robotTriageBrief := flag.Bool("brief", false, "Compact --robot-triage output: only decision-relevant fields (id, title, status, assignee, blockers, unblocks) (#183)")
 	robotNotReadyLabels := flag.String("robot-not-ready-labels", "", "Comma-separated labels marking a bead not-ready: excluded from claimable --robot-next/--robot-triage top picks (env: BV_ROBOT_NOT_READY_LABELS; #173)")
 	robotDiff := flag.Bool("robot-diff", false, "Output diff as JSON (use with --diff-since)")
 	robotRecipes := flag.Bool("robot-recipes", false, "Output available recipes as JSON for AI agents")
@@ -1646,6 +1650,7 @@ func main() {
 		RobotTriageByTrackFlag:  robotTriageByTrack,
 		RobotTriageByLabelFlag:  robotTriageByLabel,
 		RobotNextFlag:           robotNext,
+		RobotTriageBriefFlag:    robotTriageBrief,
 		RobotHistoryFlag:        robotHistory,
 		GraphRoot:               graphRoot,
 		BeadHistoryFlag:         beadHistory,
@@ -1717,6 +1722,7 @@ func main() {
 			{modifier: "robot-drift", requires: []string{"check-drift"}},
 			{modifier: "history-since", requires: []string{"robot-history", "bead-history"}},
 			{modifier: "history-limit", requires: []string{"robot-history", "bead-history"}},
+			{modifier: "brief", requires: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label"}},
 			{modifier: "robot-history-timeout-ms", requires: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label", "robot-next"}},
 			{modifier: "robot-not-ready-labels", requires: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label", "robot-next"}},
 			{modifier: "min-confidence", requires: []string{"robot-history", "bead-history"}},
@@ -4460,31 +4466,11 @@ func main() {
 				os.Exit(1)
 			}
 
-			// Resolve beads file path
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Convert issues to BeadInfo for correlator
-			beadInfos := make([]correlation.BeadInfo, len(issues))
-			for i, issue := range issues {
-				beadInfos[i] = correlation.BeadInfo{
-					ID:     issue.ID,
-					Title:  issue.Title,
-					Status: string(issue.Status),
-				}
-			}
-
-			// Generate history report first
-			correlator := correlation.NewCorrelator(cwd, beadsPath)
-			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			// Generate history report through the same shared pipeline the
+			// registry handlers for --robot-file-beads / --robot-impact use,
+			// so all three surfaces answer "which beads touch this file?"
+			// from an identical report (#184).
+			report, err := generateCorrelationReport(cwd, issues, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {

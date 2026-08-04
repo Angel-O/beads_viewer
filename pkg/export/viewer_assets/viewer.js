@@ -1049,7 +1049,27 @@ function countIssues(filters = {}) {
  */
 function getIssue(id) {
   const results = execQuery(`SELECT * FROM issue_overview_mv WHERE id = ?`, [id]);
-  return results[0] || null;
+  const issue = results[0] || null;
+  if (issue) {
+    issue.comments = getIssueComments(id);
+  }
+  return issue;
+}
+
+/**
+ * Fetch discussion comments for an issue (bv-52 comments table, issue #187).
+ * Returns [] when the bundle predates the comments table or the query fails,
+ * so older exports keep working.
+ */
+function getIssueComments(id) {
+  try {
+    return execQuery(
+      `SELECT author, text, created_at FROM comments WHERE issue_id = ? ORDER BY created_at ASC, id ASC`,
+      [id]
+    );
+  } catch {
+    return [];
+  }
 }
 
 // ============================================================================

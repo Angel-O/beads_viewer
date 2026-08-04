@@ -202,6 +202,11 @@ bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in c
 bv --robot-triage        # THE MEGA-COMMAND: start here
 bv --robot-next          # Minimal: just the single top pick + claim command
 
+# Compact triage (#183): only decision-relevant fields — id, title, status,
+# assignee, blocked_by, unblocks, score — plus quick_ref/quick_wins/blockers.
+# Cuts payload size by ~80% versus the full output.
+bv --robot-triage --brief
+
 # Token-optimized output (TOON) for lower LLM context usage:
 bv --robot-triage --format toon
 export BV_OUTPUT_FORMAT=toon
@@ -2832,6 +2837,7 @@ Click any node to open a **400px sliding detail pane**:
 - **Full-Text Search**: SQLite FTS5 powers instant search across all issue titles and descriptions. Results appear as you type—no server required.
 - **Interactive Graph**: Visualize dependencies with D3.js force-graph, featuring zoom, pan, and node selection
 - **Detail Pane**: Click any node to see full issue details with dependency info
+- **Comments**: Issue discussion threads render in the detail view with author, timestamp, and markdown (#187)
 - **Triage View**: Same recommendations as `--robot-triage`
 - **Offline Support**: Works without network after initial load
 - **Mobile Responsive**: Adapts to phone/tablet screens with touch-friendly interactions

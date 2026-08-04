@@ -224,3 +224,34 @@ func TestAddGitHubWorkflowToBundle(t *testing.T) {
 		t.Error("Workflow file was not created")
 	}
 }
+
+// TestEmbeddedViewerRendersComments verifies the static-site viewer surfaces
+// issue comments (bv-52 comments table) in the issue detail modal (#187).
+func TestEmbeddedViewerRendersComments(t *testing.T) {
+	js, err := ViewerAssetsFS.ReadFile("viewer_assets/viewer.js")
+	if err != nil {
+		t.Fatalf("read embedded viewer.js: %v", err)
+	}
+	viewerJS := string(js)
+	if !strings.Contains(viewerJS, "function getIssueComments(") {
+		t.Fatal("viewer.js must define getIssueComments for the detail modal (#187)")
+	}
+	if !strings.Contains(viewerJS, "FROM comments WHERE issue_id") {
+		t.Fatal("viewer.js must query the exported comments table (#187)")
+	}
+	if !strings.Contains(viewerJS, "issue.comments = getIssueComments(id)") {
+		t.Fatal("getIssue must attach comments to the selected issue (#187)")
+	}
+
+	htmlBytes, err := ViewerAssetsFS.ReadFile("viewer_assets/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(htmlBytes)
+	if !strings.Contains(html, "selectedIssue.comments") {
+		t.Fatal("index.html must render selectedIssue.comments in the detail modal (#187)")
+	}
+	if !strings.Contains(html, "Comments (<span") {
+		t.Fatal("index.html must show a comment count header (#187)")
+	}
+}
