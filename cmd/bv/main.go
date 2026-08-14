@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"slices"
@@ -1501,6 +1502,7 @@ func main() {
 	historyLimit := flag.Int("history-limit", 500, "Max commits to analyze (0 = unlimited)")
 	robotHistoryTimeoutMs := flag.Int("robot-history-timeout-ms", -1, "Budget in ms for the git-history prologue of robot triage (0 = unbounded; default 10000, env BV_ROBOT_HISTORY_TIMEOUT_MS)")
 	minConfidence := flag.Float64("min-confidence", 0.0, "Filter correlations by minimum confidence (0.0-1.0)")
+	idPatterns := flag.StringArray("id-pattern", nil, "Custom bead ID regex for commit-message matching, e.g. 'bh-[a-z0-9]{5}' (repeatable; capture group 1 is the ID, else the whole match) (#188)")
 	// Correlation audit flags (bv-e1u6)
 	robotExplainCorrelation := flag.String("robot-explain-correlation", "", "Explain why a commit is linked to a bead (format: SHA:beadID)")
 	robotConfirmCorrelation := flag.String("robot-confirm-correlation", "", "Confirm a correlation is correct (format: SHA:beadID)")
@@ -1697,6 +1699,23 @@ func main() {
 		// glamour markdown — agrees on light vs dark. Precedence:
 		// --theme > BV_THEME > ~/.config/bv/config.yaml > auto-detect. (bv-128)
 		ui.SetThemeOverride(effectiveThemePreference(*themeFlag, flag.CommandLine.Changed("theme"), os.Stderr))
+
+		// Register custom bead ID patterns (--id-pattern, #188) before any
+		// correlation work runs, so every message-based ID matcher (explicit
+		// matching, orphan detection) recognizes non-default ID formats like
+		// beadhive's bh-8g6cj.
+		if len(*idPatterns) > 0 {
+			compiled := make([]*regexp.Regexp, 0, len(*idPatterns))
+			for _, p := range *idPatterns {
+				re, err := regexp.Compile(p)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Invalid --id-pattern %q: %v\n", p, err)
+					os.Exit(2)
+				}
+				compiled = append(compiled, re)
+			}
+			correlation.SetCustomIDPatterns(compiled)
+		}
 
 		modifierRules := []modifierFlagRule{
 			{modifier: "robot-diff", requires: []string{"diff-since"}},
