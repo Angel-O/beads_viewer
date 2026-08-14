@@ -268,7 +268,7 @@ func PrepareBeadsDirForRead(beadsDir string, refreshBDExport bool, warnFunc func
 						warnFunc(fmt.Sprintf("bd export failed, using existing issues.jsonl: %v", err))
 					}
 				} else {
-					return "", fmt.Errorf("failed to refresh bd compatibility JSONL: %w", err)
+					return "", fmt.Errorf("failed to refresh bd compatibility JSONL (run 'bd export -o .beads/issues.jsonl'): %w", err)
 				}
 			}
 		}

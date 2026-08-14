@@ -1452,3 +1452,56 @@ func TestGetBeadsDir_RedirectMissingTargetErrors(t *testing.T) {
 		t.Fatal("expected missing-target error, got nil")
 	}
 }
+
+func TestIsBDWorkspace_EmbeddedDoltDir(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "embeddeddolt"), 0o755); err != nil {
+		t.Fatalf("mkdir embeddeddolt: %v", err)
+	}
+
+	if !loader.IsBDWorkspace(beadsDir) {
+		t.Fatal("IsBDWorkspace() = false for .beads/embeddeddolt, want true (#189)")
+	}
+}
+
+func TestFindJSONLPath_BDWorkspaceRejectsStrayJSONL(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "embeddeddolt"), 0o755); err != nil {
+		t.Fatalf("mkdir embeddeddolt: %v", err)
+	}
+	// A stray non-issue JSONL must not be silently selected in a bd
+	// workspace whose compatibility export is missing (#189).
+	if err := os.WriteFile(filepath.Join(beadsDir, "memories.jsonl"), []byte(`{"_type":"memory","id":"m1"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loader.FindJSONLPath(beadsDir)
+	if err == nil {
+		t.Fatal("FindJSONLPath() = nil error for bd workspace without issues.jsonl, want loud error")
+	}
+	if !strings.Contains(err.Error(), "bd export") {
+		t.Errorf("error should suggest bd export, got: %v", err)
+	}
+}
+
+func TestFindJSONLPath_BDWorkspaceAcceptsEmptyIssuesJSONL(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "embeddeddolt"), 0o755); err != nil {
+		t.Fatalf("mkdir embeddeddolt: %v", err)
+	}
+	issuesPath := filepath.Join(beadsDir, "issues.jsonl")
+	if err := os.WriteFile(issuesPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loader.FindJSONLPath(beadsDir)
+	if err != nil {
+		t.Fatalf("FindJSONLPath() error = %v", err)
+	}
+	if got != issuesPath {
+		t.Fatalf("FindJSONLPath() = %q, want %q (empty export = legitimately empty project)", got, issuesPath)
+	}
+}
