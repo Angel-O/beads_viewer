@@ -209,15 +209,19 @@ func looksLikeBeadsDBFile(dbPath string) bool {
 
 // IsBDWorkspace returns true when the given .beads directory belongs to a
 // modern Dolt-native bd workspace. Detection is based on the presence of a
-// .beads/dolt/ subdirectory or a metadata.json declaring backend=dolt.
+// .beads/dolt/ (server mode) or .beads/embeddeddolt/ (embedded mode, bd 1.1+)
+// subdirectory, or a metadata.json declaring backend=dolt.
 func IsBDWorkspace(beadsDir string) bool {
 	if beadsDir == "" {
 		return false
 	}
 
-	// Fast path: modern beads stores Dolt data under .beads/dolt/.
-	if info, err := os.Stat(filepath.Join(beadsDir, "dolt")); err == nil && info.IsDir() {
-		return true
+	// Fast path: bd stores Dolt data under .beads/dolt/ (server mode) or
+	// .beads/embeddeddolt/ (embedded mode, the bd 1.1+ default) (#189).
+	for _, dir := range []string{"dolt", "embeddeddolt"} {
+		if info, err := os.Stat(filepath.Join(beadsDir, dir)); err == nil && info.IsDir() {
+			return true
+		}
 	}
 
 	// Fallback: metadata.json may explicitly record the backend.
@@ -407,7 +411,8 @@ func FindJSONLPathWithWarnings(beadsDir string, warnFunc func(msg string)) (stri
 	// Current br stack: issues.jsonl -> beads.jsonl -> beads.base.jsonl
 	// Legacy bd workspaces remain readable through the beads.jsonl fallback.
 	preferredNames := PreferredJSONLNames
-	if IsBDWorkspace(beadsDir) {
+	isBD := IsBDWorkspace(beadsDir)
+	if isBD {
 		preferredNames = []string{"issues.jsonl", "beads.jsonl", "beads.base.jsonl"}
 	}
 
@@ -421,6 +426,19 @@ func FindJSONLPathWithWarnings(beadsDir string, warnFunc func(msg string)) (stri
 				}
 			}
 		}
+	}
+
+	// In a bd (Dolt-backed) workspace the issue data lives in the Dolt
+	// database; never fall back to a stray non-issue JSONL (memories,
+	// interactions, ...) — that silently reports an empty project (#189).
+	// Accept an existing-but-empty compatibility export (a legitimately empty
+	// project); otherwise require the export.
+	if isBD {
+		issuesPath := filepath.Join(beadsDir, "issues.jsonl")
+		if _, err := os.Stat(issuesPath); err == nil {
+			return issuesPath, nil
+		}
+		return "", fmt.Errorf("no compatibility JSONL found at %s; run 'bd export -o .beads/issues.jsonl'", issuesPath)
 	}
 
 	// Fall back to first non-empty candidate

@@ -30,6 +30,15 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 		return nil, err
 	}
 
+	// bd/Dolt workspaces (#189): the issue data lives in a Dolt database that
+	// bv cannot read directly, so route through the bd bridge added for #141.
+	// It refreshes the compatibility export at .beads/issues.jsonl via
+	// `bd export` when possible and errors loudly when no export exists —
+	// instead of silently reporting an empty project.
+	if loader.IsBDWorkspace(beadsDir) {
+		return loadBDWorkspace(beadsDir)
+	}
+
 	issues, smartErr := loadSmart(beadsDir, repoPath)
 	if smartErr == nil {
 		return issues, nil
@@ -42,6 +51,11 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 // LoadIssuesFromDir performs smart source detection within a known beads directory.
 // This is useful when the caller already knows the .beads path.
 func LoadIssuesFromDir(beadsDir string) ([]model.Issue, error) {
+	// bd/Dolt workspaces (#189): see LoadIssues.
+	if loader.IsBDWorkspace(beadsDir) {
+		return loadBDWorkspace(beadsDir)
+	}
+
 	issues, smartErr := loadSmart(beadsDir, "")
 	if smartErr == nil {
 		return issues, nil
@@ -53,6 +67,28 @@ func LoadIssuesFromDir(beadsDir string) ([]model.Issue, error) {
 		return nil, err
 	}
 	return loader.LoadIssuesFromFile(jsonlPath)
+}
+
+// loadBDWorkspace loads issues from a bd (Dolt-backed) workspace by resolving
+// the compatibility JSONL through loader.PrepareBeadsDirForRead (#141): it
+// refreshes .beads/issues.jsonl via `bd export` when the bd binary is
+// available, falls back to an existing export with a warning when the refresh
+// fails, and returns a hard error when no compatibility JSONL can be produced.
+// This guarantees bd workspaces either load real data or fail loudly — never
+// a silently-empty result from a stray non-issue JSONL (#189).
+func loadBDWorkspace(beadsDir string) ([]model.Issue, error) {
+	warn := func(msg string) {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+	}
+	jsonlPath, err := loader.PrepareBeadsDirForRead(beadsDir, true, warn)
+	if err != nil {
+		return nil, fmt.Errorf("bd/Dolt workspace detected at %s: %w", beadsDir, err)
+	}
+	return loadAndValidateJSONL(DataSource{
+		Type:     SourceTypeJSONLLocal,
+		Path:     jsonlPath,
+		Priority: PriorityJSONLLocal,
+	})
 }
 
 // ExplicitBeadsDBSource returns the direct source named by BEADS_DB when it
