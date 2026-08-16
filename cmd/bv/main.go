@@ -8174,10 +8174,25 @@ const robotContractVersion = "1.0.0"
 // RobotEnvelope is the standard envelope for all robot command outputs.
 // All robot outputs MUST include these fields for consistency.
 type RobotEnvelope struct {
-	GeneratedAt  string `json:"generated_at"`            // RFC3339 timestamp
-	DataHash     string `json:"data_hash"`               // Fingerprint of source data
-	OutputFormat string `json:"output_format,omitempty"` // "json" or "toon"
-	Version      string `json:"version,omitempty"`       // bv version (e.g., "1.0.0")
+	GeneratedAt  string          `json:"generated_at"`            // RFC3339 timestamp
+	DataHash     string          `json:"data_hash"`               // Fingerprint of source data
+	OutputFormat string          `json:"output_format,omitempty"` // "json" or "toon"
+	Version      string          `json:"version,omitempty"`       // bv version (e.g., "1.0.0")
+	LoadStats    *RobotLoadStats `json:"load_stats,omitempty"`    // Present when records were dropped during load (#190)
+}
+
+// RobotLoadStats surfaces per-line parse accounting for the JSONL source that
+// backed this output. It is emitted only when errors > 0 — i.e. when one or
+// more issue records were dropped during load (malformed JSON or failed
+// validation such as updated_at < created_at) — so agents can distinguish
+// "issue absent from data" from "issue silently dropped by the loader" (#190).
+// Robot stderr stays clean; the accounting lives here in the JSON contract.
+type RobotLoadStats struct {
+	SourcePath string   `json:"source_path,omitempty"` // JSONL file the stats describe
+	Valid      int      `json:"valid"`                 // Issue lines that parsed and validated
+	Errors     int      `json:"errors"`                // Issue lines dropped (malformed JSON or failed validation)
+	Skipped    int      `json:"skipped"`               // Recognized non-issue `_type` records
+	Warnings   []string `json:"warnings,omitempty"`    // Per-line skip reasons (capped)
 }
 
 // RobotMeta contains optional timing and computation metadata.
@@ -8190,13 +8205,26 @@ type RobotMeta struct {
 }
 
 // NewRobotEnvelope creates a standard envelope for robot output.
+// When the backing JSONL load dropped records (malformed JSON or failed
+// validation), the envelope carries a load_stats block so the drop is visible
+// in every robot surface instead of the records simply not existing (#190).
 func NewRobotEnvelope(dataHash string) RobotEnvelope {
-	return RobotEnvelope{
+	env := RobotEnvelope{
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		DataHash:     dataHash,
 		OutputFormat: robotOutputFormat,
 		Version:      version.Version,
 	}
+	if rep := datasource.LastLoadReport(); rep != nil && rep.Errors > 0 {
+		env.LoadStats = &RobotLoadStats{
+			SourcePath: rep.Path,
+			Valid:      rep.Valid,
+			Errors:     rep.Errors,
+			Skipped:    rep.Skipped,
+			Warnings:   rep.Warnings,
+		}
+	}
+	return env
 }
 
 type robotEncoder interface {
