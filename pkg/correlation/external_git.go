@@ -10,18 +10,18 @@ import (
 )
 
 func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts CorrelatorOptions) (*historyArtifact, error) {
-	manifest, err := loadExternalHistoryManifest(c.externalManifestPath, beads)
+	hub, err := loadHubConfig(c.hubConfigPath, beads)
 	if err != nil {
 		return nil, err
 	}
 
-	repositoryKeys := make([]string, 0, len(manifest.repositories))
-	for key := range manifest.repositories {
+	repositoryKeys := make([]string, 0, len(hub.repositories))
+	for key := range hub.repositories {
 		repositoryKeys = append(repositoryKeys, key)
 	}
 	sort.Strings(repositoryKeys)
 	for _, key := range repositoryKeys {
-		path := manifest.repositories[key]
+		path := hub.repositories[key]
 		info, statErr := os.Stat(path)
 		if statErr != nil {
 			return nil, fmt.Errorf("external history repository %q at %q is unreadable: %w", key, path, statErr)
@@ -40,17 +40,17 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		commit CorrelatedCommit
 	}
 	loaded := make(map[string]loadedCommit)
-	commits := make([]CorrelatedCommit, 0, len(manifest.correlations))
-	for i, correlation := range manifest.correlations {
+	commits := make([]CorrelatedCommit, 0, len(hub.correlations))
+	for i, correlation := range hub.correlations {
 		if opts.BeadID != "" && correlation.BeadID != opts.BeadID {
 			continue
 		}
 		identity := repositoryCommitIdentity(correlation.Context, strings.ToLower(correlation.Commit))
 		entry, exists := loaded[identity]
 		if !exists {
-			commit, loadErr := c.loadExternalCommit(correlation.Context, manifest.repositories[correlation.Context], correlation.Commit)
+			commit, loadErr := c.loadExternalCommit(correlation.Context, hub.repositories[correlation.Context], correlation.Commit)
 			if loadErr != nil {
-				return nil, fmt.Errorf("correlation ledger %q record %d: %w", manifest.ledger, i+1, loadErr)
+				return nil, fmt.Errorf("correlation ledger %q record %d: %w", hub.ledger, i+1, loadErr)
 			}
 			entry = loadedCommit{commit: commit}
 			loaded[identity] = entry
@@ -85,8 +85,8 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		}
 		commits = filtered
 	}
-	lifecycleBeads := selectLifecycleBeads(beads, manifest.correlations, opts.BeadID)
-	events, err := loadBeadsLifecycle(c.ctx, manifest.store, lifecycleBeads, opts)
+	lifecycleBeads := selectLifecycleBeads(beads, hub.correlations, opts.BeadID)
+	events, err := loadBeadsLifecycle(c.ctx, hub.store, lifecycleBeads, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func (c *Correlator) loadExternalCommit(repository, repoPath, requestedSHA strin
 		Files:       filtered,
 		Method:      MethodExternalLedger,
 		Confidence:  1,
-		Reason:      "Explicit external history manifest correlation",
+		Reason:      "Explicit Beads Hub correlation",
 	}, nil
 }
 

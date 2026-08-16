@@ -1,4 +1,4 @@
-# External Work History
+# External History
 
 `bv` can combine a private global Beads/Dolt store with source history from
 multiple real Git checkouts. The three inputs stay separate:
@@ -8,40 +8,40 @@ multiple real Git checkouts. The three inputs stay separate:
   configured Git checkouts.
 - Bead-to-source-commit associations come from a private JSONL ledger.
 
-Neither the work configuration nor the ledger is written into a source
+Neither the hub configuration nor the ledger is written into a source
 repository.
 
 ## History Modes
 
 Use `--history-mode auto|git|external|off`:
 
-- `auto` is the default. An explicit `--work-config` selects `external`.
-  Otherwise, `~/.config/bv/work-beads.yaml` selects `external` when it exists;
+- `auto` is the default. An explicit `--hub-config` selects `external`.
+  Otherwise, `~/.config/bv/hub.yaml` selects `external` when it exists;
   if it does not exist, `auto` preserves the existing single-repository `git`
   behavior.
 - `git` uses the existing Git reconstruction of committed Beads JSONL history.
-  It uses current/`--db` issue data and does not auto-adopt a work config.
-- `external` requires a work configuration and never runs Git against the
+  It uses current/`--db` issue data and does not auto-adopt a hub config.
+- `external` requires a hub configuration and never runs Git against the
   Beads store or JSONL parent directory. Its configured `store` is also the
   authoritative Viewer issue source.
 - `off` performs no Git or Beads history loading. History reports are empty,
   while issue loading, the board, and graph analysis remain available. An
-  explicit or conventionally discovered work config still supplies the global
+  explicit or conventionally discovered hub config still supplies the global
   issue store; without one, normal current/`--db` loading is preserved.
 
-An explicit `--work-config PATH` takes precedence over conventional discovery.
+An explicit `--hub-config PATH` takes precedence over conventional discovery.
 There is no environment-variable equivalent.
 
-Issue-source precedence when external/off mode has a work config is `--db`,
-then the work config's `store`. The configured store overrides ambient
+Issue-source precedence when external/off mode has a hub config is `--db`,
+then the hub config's `store`. The configured store overrides ambient
 `BEADS_DB` and `BEADS_DIR` so
 running `bv` from an unrelated checkout cannot silently load that checkout's
 issues. The explicit `--db` flag retains its existing highest precedence.
-`--workspace` and `--as-of` are rejected in external or off mode when a work
+`--workspace` and `--as-of` are rejected in external or off mode when a hub
 config supplies the store, because they would replace that authoritative store
 with a different issue source.
 
-## Work Configuration
+## Hub Configuration
 
 The private YAML configuration is versioned. Relative paths are resolved from
 the configuration file's directory. A leading `~/` is expanded using the
@@ -49,8 +49,8 @@ current user's home directory; other shell expansion is not performed.
 
 ```yaml
 version: 1
-store: ~/.local/share/beads/work/.beads
-ledger: ~/.local/share/beads/work/correlations.jsonl
+store: ~/.local/share/beads/hub/.beads
+ledger: ~/.local/share/beads/hub/correlations.jsonl
 repositories:
   ctx:project-a-5365b77092:
     path: ~/workspace/source/project-a
@@ -69,9 +69,9 @@ board and reports empty source history.
 The ledger is append-friendly JSONL with one record per association:
 
 ```json
-{"bead_id":"work-a3f2dd","context":"ctx:project-a-5365b77092","commit":"0123456789abcdef0123456789abcdef01234567"}
-{"bead_id":"work-a3f2dd","context":"ctx:project-b-a81fc92e10","commit":"89abcdef0123456789abcdef0123456789abcdef"}
-{"bead_id":"work-b917ce","context":"ctx:project-a-5365b77092","commit":"0123456789abcdef0123456789abcdef01234567"}
+{"bead_id":"bead-a3f2dd","context":"ctx:project-a-5365b77092","commit":"0123456789abcdef0123456789abcdef01234567"}
+{"bead_id":"bead-a3f2dd","context":"ctx:project-b-a81fc92e10","commit":"89abcdef0123456789abcdef0123456789abcdef"}
+{"bead_id":"bead-b917ce","context":"ctx:project-a-5365b77092","commit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 This supports multiple commits per bead, multiple beads per commit, and
@@ -96,10 +96,10 @@ ledger:
 
 ```bash
 bv correlate add \
-  --bead work-a3f2dd \
+  --bead bead-a3f2dd \
   --repo ctx:project-a-5365b77092 \
   --commit HEAD \
-  --work-config ~/.config/bv/work-beads.yaml
+  --hub-config ~/.config/bv/hub.yaml
 ```
 
 `--repo` also accepts the configured checkout path. The command resolves the
@@ -153,7 +153,7 @@ board loads with history disabled and without Git/Beads history warnings:
 
 ```bash
 /tmp/bv-external-history --history-mode off \
-  --work-config ~/.config/bv/work-beads.yaml --robot-graph
+  --hub-config ~/.config/bv/hub.yaml --robot-graph
 ```
 
 Choose a bead carrying one of the configured `ctx:` labels and correlate its
@@ -162,10 +162,10 @@ then `"added":false` without duplicating the ledger record:
 
 ```bash
 /tmp/bv-external-history correlate add \
-  --bead work-a3f2dd \
+  --bead bead-a3f2dd \
   --repo ctx:project-a-5365b77092 \
   --commit HEAD \
-  --work-config ~/.config/bv/work-beads.yaml
+  --hub-config ~/.config/bv/hub.yaml
 ```
 
 Verify lifecycle events, repository-aware commits, namespaced files, and file
@@ -173,11 +173,11 @@ statistics in robot output:
 
 ```bash
 /tmp/bv-external-history --history-mode external \
-  --work-config ~/.config/bv/work-beads.yaml \
-  --robot-history --bead-history work-a3f2dd
+  --hub-config ~/.config/bv/hub.yaml \
+  --robot-history --bead-history bead-a3f2dd
 
 /tmp/bv-external-history --history-mode external \
-  --work-config ~/.config/bv/work-beads.yaml \
+  --hub-config ~/.config/bv/hub.yaml \
   --robot-file-hotspots
 ```
 
@@ -187,5 +187,5 @@ warning, lifecycle events come from Beads, and commit/file details show the
 configured repository context and real source paths:
 
 ```bash
-/tmp/bv-external-history --work-config ~/.config/bv/work-beads.yaml
+/tmp/bv-external-history --hub-config ~/.config/bv/hub.yaml
 ```

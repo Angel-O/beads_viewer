@@ -1503,7 +1503,7 @@ func main() {
 	robotDriftCheck := flag.Bool("robot-drift", false, "Output drift check as JSON (use with --check-drift)")
 	robotHistory := flag.Bool("robot-history", false, "Output bead-to-commit correlations as JSON")
 	historyMode := flag.String("history-mode", "auto", "History provider: auto, git, external, or off")
-	workConfig := flag.String("work-config", "", "Private work history config (default: ~/.config/bv/work-beads.yaml when present)")
+	hubConfig := flag.String("hub-config", "", "Private external history hub config (default: ~/.config/bv/hub.yaml when present)")
 	correlateAdd := flag.Bool("correlate-add", false, "Add an explicit bead-to-source-commit correlation")
 	correlateBead := flag.String("bead", "", "Bead ID for --correlate-add")
 	correlateCommit := flag.String("commit", "", "Git commit/ref for --correlate-add")
@@ -1704,24 +1704,24 @@ func main() {
 		NotReadyLabels:          robotNotReadyLabels,
 	})
 	rootCmd := newRootCommand(func() error {
-		resolvedMode, resolvedConfig, err := resolveHistoryConfiguration(*historyMode, *workConfig)
+		resolvedMode, resolvedConfig, err := resolveHistoryConfiguration(*historyMode, *hubConfig)
 		if err != nil {
 			return err
 		}
 		historyModeValue = resolvedMode
-		externalHistoryManifestPath = resolvedConfig
-		usesWorkConfigStore := externalHistoryManifestPath != "" && historyModeValue != "git"
-		if usesWorkConfigStore && *workspaceConfig != "" {
-			return fmt.Errorf("--workspace cannot be combined with the configured work store; config.store is authoritative")
+		hubConfigPath = resolvedConfig
+		usesHubConfigStore := hubConfigPath != "" && historyModeValue != "git"
+		if usesHubConfigStore && *workspaceConfig != "" {
+			return fmt.Errorf("--workspace cannot be combined with the configured hub store; config.store is authoritative")
 		}
-		if usesWorkConfigStore && *asOf != "" {
-			return fmt.Errorf("--as-of cannot be combined with the configured work store; config.store is authoritative")
+		if usesHubConfigStore && *asOf != "" {
+			return fmt.Errorf("--as-of cannot be combined with the configured hub store; config.store is authoritative")
 		}
 		if *correlateAdd {
-			if externalHistoryManifestPath == "" {
-				return fmt.Errorf("correlate add requires --work-config or ~/.config/bv/work-beads.yaml")
+			if hubConfigPath == "" {
+				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, added, err := correlation.AddExternalCorrelation(externalHistoryManifestPath, *correlateBead, *repoFilter, *correlateCommit)
+			record, added, err := correlation.AddExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil {
 				return fmt.Errorf("adding correlation: %w", err)
 			}
@@ -1895,8 +1895,8 @@ func main() {
 				os.Exit(1)
 			}
 			os.Setenv(loader.BeadsDBEnvVar, absDB)
-		} else if usesWorkConfigStore {
-			store, err := correlation.WorkConfigStore(externalHistoryManifestPath)
+		} else if usesHubConfigStore {
+			store, err := correlation.HubConfigStore(hubConfigPath)
 			if err != nil {
 				return err
 			}
@@ -5446,7 +5446,7 @@ func main() {
 
 			// Launch TUI with historical issues (already loaded, no live reload)
 			m := ui.NewModel(issues, activeRecipe, "")
-			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), externalHistoryManifestPath)
+			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
@@ -5542,7 +5542,7 @@ func main() {
 
 		// Initial Model with live reload support
 		m := ui.NewModel(issues, activeRecipe, beadsPath)
-		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), externalHistoryManifestPath)
+		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config
@@ -8230,7 +8230,7 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 }
 
 var robotOutputFormat = "json"
-var externalHistoryManifestPath string
+var hubConfigPath string
 var historyModeValue = "git"
 var robotToonEncodeOptions = toon.DefaultEncodeOptions()
 var robotShowToonStats bool
@@ -8252,42 +8252,42 @@ func resolveHistoryConfiguration(mode, configPath string) (string, string, error
 		var err error
 		resolvedConfig, err = expandCLIHomePath(configPath)
 		if err != nil {
-			return "", "", fmt.Errorf("resolving --work-config: %w", err)
+			return "", "", fmt.Errorf("resolving --hub-config: %w", err)
 		}
 		if _, err := os.Stat(resolvedConfig); err != nil {
-			return "", "", fmt.Errorf("reading --work-config %q: %w", resolvedConfig, err)
+			return "", "", fmt.Errorf("reading --hub-config %q: %w", resolvedConfig, err)
 		}
 	}
 	if mode == "auto" {
 		if resolvedConfig != "" {
 			return "external", resolvedConfig, nil
 		}
-		if candidate, ok := defaultWorkConfigPath(); ok {
+		if candidate, ok := defaultHubConfigPath(); ok {
 			return "external", candidate, nil
 		}
 		return "git", "", nil
 	}
 	if mode == "off" && resolvedConfig == "" {
-		if candidate, ok := defaultWorkConfigPath(); ok {
+		if candidate, ok := defaultHubConfigPath(); ok {
 			resolvedConfig = candidate
 		}
 	}
 	if mode == "external" && resolvedConfig == "" {
-		if candidate, ok := defaultWorkConfigPath(); ok {
+		if candidate, ok := defaultHubConfigPath(); ok {
 			resolvedConfig = candidate
 		} else {
-			return "", "", fmt.Errorf("--history-mode external requires --work-config or ~/.config/bv/work-beads.yaml")
+			return "", "", fmt.Errorf("--history-mode external requires --hub-config or ~/.config/bv/hub.yaml")
 		}
 	}
 	return mode, resolvedConfig, nil
 }
 
-func defaultWorkConfigPath() (string, bool) {
+func defaultHubConfigPath() (string, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", false
 	}
-	candidate := filepath.Join(home, ".config", "bv", "work-beads.yaml")
+	candidate := filepath.Join(home, ".config", "bv", "hub.yaml")
 	if _, err := os.Stat(candidate); err != nil {
 		return "", false
 	}

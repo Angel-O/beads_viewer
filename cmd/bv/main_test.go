@@ -2287,7 +2287,16 @@ func TestResolveHistoryConfiguration(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(configDir, "work-beads.yaml")
+	oldConfigPath := filepath.Join(configDir, "work-beads.yaml")
+	if err := os.WriteFile(oldConfigPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mode, config, err = resolveHistoryConfiguration("auto", "")
+	if err != nil || mode != "git" || config != "" {
+		t.Fatalf("auto with only old custom config = (%q, %q, %v), want git", mode, config, err)
+	}
+
+	configPath := filepath.Join(configDir, "hub.yaml")
 	if err := os.WriteFile(configPath, []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

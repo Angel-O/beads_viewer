@@ -13,45 +13,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const workConfigVersion = 1
+const hubConfigVersion = 1
 
 var fullCommitSHARegex = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 
-// WorkConfig keeps the private Beads store, source checkouts, and correlation
+// HubConfig keeps the private Beads store, source checkouts, and correlation
 // ledger outside source repositories.
-type WorkConfig struct {
-	Version      int                             `yaml:"version"`
-	Store        string                          `yaml:"store"`
-	Ledger       string                          `yaml:"ledger"`
-	Repositories map[string]WorkConfigRepository `yaml:"repositories"`
+type HubConfig struct {
+	Version      int                            `yaml:"version"`
+	Store        string                         `yaml:"store"`
+	Ledger       string                         `yaml:"ledger"`
+	Repositories map[string]HubConfigRepository `yaml:"repositories"`
 }
 
-// WorkConfigStore resolves the authoritative Beads store from a work config.
-func WorkConfigStore(configPath string) (string, error) {
+// HubConfigStore resolves the authoritative Beads store from a hub config.
+func HubConfigStore(configPath string) (string, error) {
 	resolvedConfigPath, err := expandConfigPath(configPath)
 	if err != nil {
-		return "", fmt.Errorf("resolving work config: %w", err)
+		return "", fmt.Errorf("resolving hub config: %w", err)
 	}
 	data, err := os.ReadFile(resolvedConfigPath)
 	if err != nil {
-		return "", fmt.Errorf("reading work config %q: %w", resolvedConfigPath, err)
+		return "", fmt.Errorf("reading hub config %q: %w", resolvedConfigPath, err)
 	}
-	var config WorkConfig
-	if err := decodeWorkConfig(data, &config); err != nil {
-		return "", fmt.Errorf("parsing work config %q: %w", resolvedConfigPath, err)
+	var config HubConfig
+	if err := decodeHubConfig(data, &config); err != nil {
+		return "", fmt.Errorf("parsing hub config %q: %w", resolvedConfigPath, err)
 	}
-	if config.Version != workConfigVersion {
-		return "", fmt.Errorf("work config %q has unsupported version %d (supported: %d)", resolvedConfigPath, config.Version, workConfigVersion)
+	if config.Version != hubConfigVersion {
+		return "", fmt.Errorf("hub config %q has unsupported version %d (supported: %d)", resolvedConfigPath, config.Version, hubConfigVersion)
 	}
-	if err := validateWorkConfigRepositories(resolvedConfigPath, config.Repositories); err != nil {
+	if err := validateHubConfigRepositories(resolvedConfigPath, config.Repositories); err != nil {
 		return "", err
 	}
 	store, err := resolvePrivatePath(config.Store, filepath.Dir(resolvedConfigPath))
 	if err != nil {
-		return "", fmt.Errorf("resolving work config store: %w", err)
+		return "", fmt.Errorf("resolving hub config store: %w", err)
 	}
 	if store == "" {
-		return "", fmt.Errorf("work config %q requires a non-empty store path", resolvedConfigPath)
+		return "", fmt.Errorf("hub config %q requires a non-empty store path", resolvedConfigPath)
 	}
 	return store, nil
 }
@@ -61,20 +61,20 @@ func WorkConfigStore(configPath string) (string, error) {
 func AddExternalCorrelation(configPath, beadID, repository, ref string) (ExternalHistoryCorrelation, bool, error) {
 	resolvedConfigPath, err := expandConfigPath(configPath)
 	if err != nil {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving work config: %w", err)
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving hub config: %w", err)
 	}
 	data, err := os.ReadFile(resolvedConfigPath)
 	if err != nil {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("reading work config %q: %w", resolvedConfigPath, err)
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("reading hub config %q: %w", resolvedConfigPath, err)
 	}
-	var config WorkConfig
-	if err := decodeWorkConfig(data, &config); err != nil {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("parsing work config %q: %w", resolvedConfigPath, err)
+	var config HubConfig
+	if err := decodeHubConfig(data, &config); err != nil {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("parsing hub config %q: %w", resolvedConfigPath, err)
 	}
-	if config.Version != workConfigVersion {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("work config %q has unsupported version %d (supported: %d)", resolvedConfigPath, config.Version, workConfigVersion)
+	if config.Version != hubConfigVersion {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("hub config %q has unsupported version %d (supported: %d)", resolvedConfigPath, config.Version, hubConfigVersion)
 	}
-	if err := validateWorkConfigRepositories(resolvedConfigPath, config.Repositories); err != nil {
+	if err := validateHubConfigRepositories(resolvedConfigPath, config.Repositories); err != nil {
 		return ExternalHistoryCorrelation{}, false, err
 	}
 	beadID = strings.TrimSpace(beadID)
@@ -108,7 +108,7 @@ func AddExternalCorrelation(configPath, beadID, repository, ref string) (Externa
 	}
 	store, err := resolvePrivatePath(config.Store, baseDir)
 	if err != nil || store == "" {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving work config store: %w", err)
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving hub config store: %w", err)
 	}
 	if err := validateBeadContext(store, beadID, contextKey); err != nil {
 		return ExternalHistoryCorrelation{}, false, err
@@ -153,12 +153,12 @@ func AddExternalCorrelation(configPath, beadID, repository, ref string) (Externa
 	return record, true, nil
 }
 
-func resolveConfiguredRepository(repositories map[string]WorkConfigRepository, value, baseDir string) (string, string, error) {
+func resolveConfiguredRepository(repositories map[string]HubConfigRepository, value, baseDir string) (string, string, error) {
 	wantedPath := ""
 	if strings.HasPrefix(value, "ctx:") {
 		repository, ok := repositories[value]
 		if !ok {
-			return "", "", fmt.Errorf("repository context %q is not configured in the work config", value)
+			return "", "", fmt.Errorf("repository context %q is not configured in the hub config", value)
 		}
 		path, err := resolvePrivatePath(repository.Path, baseDir)
 		if err != nil {
@@ -182,7 +182,7 @@ func resolveConfiguredRepository(repositories map[string]WorkConfigRepository, v
 			return contextKey, path, nil
 		}
 	}
-	return "", "", fmt.Errorf("repository %q is not configured in the work config", value)
+	return "", "", fmt.Errorf("repository %q is not configured in the hub config", value)
 }
 
 func loadCorrelationLedgerIfExists(path string) ([]ExternalHistoryCorrelation, error) {
@@ -252,8 +252,8 @@ func writeCorrelationLedgerAtomic(path string, records []ExternalHistoryCorrelat
 	return nil
 }
 
-// WorkConfigRepository configures one source checkout. Its map key is the ctx: label.
-type WorkConfigRepository struct {
+// HubConfigRepository configures one source checkout. Its map key is the ctx: label.
+type HubConfigRepository struct {
 	Path string `yaml:"path"`
 }
 
@@ -264,7 +264,7 @@ type ExternalHistoryCorrelation struct {
 	Commit  string `json:"commit"`
 }
 
-type validatedExternalManifest struct {
+type validatedHubConfig struct {
 	configPath   string
 	store        string
 	ledger       string
@@ -272,49 +272,49 @@ type validatedExternalManifest struct {
 	correlations []ExternalHistoryCorrelation
 }
 
-func loadExternalHistoryManifest(path string, beads []BeadInfo) (*validatedExternalManifest, error) {
+func loadHubConfig(path string, beads []BeadInfo) (*validatedHubConfig, error) {
 	configPath, err := expandConfigPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolving work config %q: %w", path, err)
+		return nil, fmt.Errorf("resolving hub config %q: %w", path, err)
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading work config %q: %w", configPath, err)
+		return nil, fmt.Errorf("reading hub config %q: %w", configPath, err)
 	}
 
-	var config WorkConfig
-	if err := decodeWorkConfig(data, &config); err != nil {
-		return nil, fmt.Errorf("parsing work config %q: %w", configPath, err)
+	var config HubConfig
+	if err := decodeHubConfig(data, &config); err != nil {
+		return nil, fmt.Errorf("parsing hub config %q: %w", configPath, err)
 	}
-	if config.Version != workConfigVersion {
-		return nil, fmt.Errorf("work config %q has unsupported version %d (supported: %d)", configPath, config.Version, workConfigVersion)
+	if config.Version != hubConfigVersion {
+		return nil, fmt.Errorf("hub config %q has unsupported version %d (supported: %d)", configPath, config.Version, hubConfigVersion)
 	}
-	if err := validateWorkConfigRepositories(configPath, config.Repositories); err != nil {
+	if err := validateHubConfigRepositories(configPath, config.Repositories); err != nil {
 		return nil, err
 	}
 
-	result := &validatedExternalManifest{
+	result := &validatedHubConfig{
 		configPath:   configPath,
 		repositories: make(map[string]string, len(config.Repositories)),
 	}
 	baseDir := filepath.Dir(configPath)
 	result.store, err = resolvePrivatePath(config.Store, baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("work config %q store: %w", configPath, err)
+		return nil, fmt.Errorf("hub config %q store: %w", configPath, err)
 	}
 	result.ledger, err = resolvePrivatePath(config.Ledger, baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("work config %q ledger: %w", configPath, err)
+		return nil, fmt.Errorf("hub config %q ledger: %w", configPath, err)
 	}
 	if result.store == "" || result.ledger == "" {
-		return nil, fmt.Errorf("work config %q requires non-empty store and ledger paths", configPath)
+		return nil, fmt.Errorf("hub config %q requires non-empty store and ledger paths", configPath)
 	}
 	for _, key := range sortedRepositoryKeys(config.Repositories) {
 		repository := config.Repositories[key]
 		path := strings.TrimSpace(repository.Path)
 		path, err = resolvePrivatePath(path, baseDir)
 		if err != nil {
-			return nil, fmt.Errorf("work config %q repository %q: %w", configPath, key, err)
+			return nil, fmt.Errorf("hub config %q repository %q: %w", configPath, key, err)
 		}
 		result.repositories[key] = filepath.Clean(path)
 	}
@@ -359,7 +359,7 @@ func loadExternalHistoryManifest(path string, beads []BeadInfo) (*validatedExter
 	return result, nil
 }
 
-func sortedRepositoryKeys(repositories map[string]WorkConfigRepository) []string {
+func sortedRepositoryKeys(repositories map[string]HubConfigRepository) []string {
 	keys := make([]string, 0, len(repositories))
 	for key := range repositories {
 		keys = append(keys, key)
@@ -368,19 +368,19 @@ func sortedRepositoryKeys(repositories map[string]WorkConfigRepository) []string
 	return keys
 }
 
-func validateWorkConfigRepositories(configPath string, repositories map[string]WorkConfigRepository) error {
+func validateHubConfigRepositories(configPath string, repositories map[string]HubConfigRepository) error {
 	for _, key := range sortedRepositoryKeys(repositories) {
 		if key != strings.TrimSpace(key) || !strings.HasPrefix(key, "ctx:") || len(key) == len("ctx:") {
-			return fmt.Errorf("work config %q has invalid repository context key %q: expected a ctx:<repo>-<hash> label", configPath, key)
+			return fmt.Errorf("hub config %q has invalid repository context key %q: expected a ctx:<repo>-<hash> label", configPath, key)
 		}
 		if strings.TrimSpace(repositories[key].Path) == "" {
-			return fmt.Errorf("work config %q repository %q has an empty path", configPath, key)
+			return fmt.Errorf("hub config %q repository %q has an empty path", configPath, key)
 		}
 	}
 	return nil
 }
 
-func decodeWorkConfig(data []byte, config *WorkConfig) error {
+func decodeHubConfig(data []byte, config *HubConfig) error {
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	decoder.KnownFields(true)
 	return decoder.Decode(config)

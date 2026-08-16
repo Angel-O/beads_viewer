@@ -11,23 +11,23 @@ func TestExpandConfigPathExpandsHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got, err := expandConfigPath("~/.config/bv/work-beads.yaml")
+	got, err := expandConfigPath("~/.config/bv/hub.yaml")
 	if err != nil {
 		t.Fatalf("expandConfigPath: %v", err)
 	}
-	want := filepath.Join(home, ".config", "bv", "work-beads.yaml")
+	want := filepath.Join(home, ".config", "bv", "hub.yaml")
 	if got != want {
 		t.Fatalf("expandConfigPath = %q, want %q", got, want)
 	}
 }
 
-func TestWorkConfigRepositoriesRequireContextMap(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "work-beads.yaml")
+func TestHubConfigRepositoriesRequireContextMap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.yaml")
 	listConfig := "version: 1\nstore: /tmp/store\nledger: /tmp/ledger\nrepositories:\n  - context: ctx:old\n    path: /tmp/repo\n"
 	if err := os.WriteFile(path, []byte(listConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := WorkConfigStore(path); err == nil {
+	if _, err := HubConfigStore(path); err == nil {
 		t.Fatal("temporary list repository schema should be rejected")
 	}
 
@@ -35,7 +35,7 @@ func TestWorkConfigRepositoriesRequireContextMap(t *testing.T) {
 	if err := os.WriteFile(path, []byte(mapConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := WorkConfigStore(path)
+	_, err := HubConfigStore(path)
 	if err == nil || !strings.Contains(err.Error(), `"a-invalid"`) {
 		t.Fatalf("expected deterministic first context-key diagnostic, got %v", err)
 	}
@@ -73,20 +73,20 @@ func TestLoadCorrelationLedgerRejectsMalformedLine(t *testing.T) {
 	}
 }
 
-func TestLoadExternalHistoryManifestAllowsEmptyRepositoryMap(t *testing.T) {
+func TestLoadHubConfigAllowsEmptyRepositoryMap(t *testing.T) {
 	root := t.TempDir()
-	configPath := filepath.Join(root, "work-beads.yaml")
+	configPath := filepath.Join(root, "hub.yaml")
 	config := "version: 1\nstore: .beads\nledger: correlations.jsonl\nrepositories: {}\n"
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	manifest, err := loadExternalHistoryManifest(configPath, nil)
+	hub, err := loadHubConfig(configPath, nil)
 	if err != nil {
-		t.Fatalf("loadExternalHistoryManifest: %v", err)
+		t.Fatalf("loadHubConfig: %v", err)
 	}
-	if len(manifest.repositories) != 0 || len(manifest.correlations) != 0 {
-		t.Fatalf("expected empty external history, got repositories=%v correlations=%v", manifest.repositories, manifest.correlations)
+	if len(hub.repositories) != 0 || len(hub.correlations) != 0 {
+		t.Fatalf("expected empty external history, got repositories=%v correlations=%v", hub.repositories, hub.correlations)
 	}
 }
 

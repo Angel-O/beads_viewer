@@ -2301,8 +2301,8 @@ func generateCorrelationReport(workDir string, issues []model.Issue, opts correl
 
 func newCorrelationCorrelator(workDir, beadsPath string) *correlation.Correlator {
 	correlator := correlation.NewCorrelator(workDir, beadsPath).WithHistoryMode(correlation.HistoryMode(historyModeValue))
-	if historyModeValue == "external" && externalHistoryManifestPath != "" {
-		correlator.WithExternalHistoryManifest(externalHistoryManifestPath)
+	if historyModeValue == "external" && hubConfigPath != "" {
+		correlator.WithHubConfig(hubConfigPath)
 	}
 	return correlator
 }
