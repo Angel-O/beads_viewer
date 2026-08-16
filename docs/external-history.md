@@ -60,7 +60,9 @@ repositories:
 
 Repository contexts must exactly match the `ctx:` labels carried by correlated
 beads. Duplicate contexts, unreadable checkouts, and non-Git checkout paths are
-errors in external mode.
+errors in external mode. `repositories: {}` is valid before the first source
+repository is registered; with an empty ledger, Viewer still loads the global
+board and reports empty source history.
 
 ## Correlation Ledger
 

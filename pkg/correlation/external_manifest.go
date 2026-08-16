@@ -369,9 +369,6 @@ func sortedRepositoryKeys(repositories map[string]WorkConfigRepository) []string
 }
 
 func validateWorkConfigRepositories(configPath string, repositories map[string]WorkConfigRepository) error {
-	if len(repositories) == 0 {
-		return fmt.Errorf("work config %q must define at least one repository", configPath)
-	}
 	for _, key := range sortedRepositoryKeys(repositories) {
 		if key != strings.TrimSpace(key) || !strings.HasPrefix(key, "ctx:") || len(key) == len("ctx:") {
 			return fmt.Errorf("work config %q has invalid repository context key %q: expected a ctx:<repo>-<hash> label", configPath, key)

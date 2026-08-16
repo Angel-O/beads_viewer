@@ -73,6 +73,23 @@ func TestLoadCorrelationLedgerRejectsMalformedLine(t *testing.T) {
 	}
 }
 
+func TestLoadExternalHistoryManifestAllowsEmptyRepositoryMap(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "work-beads.yaml")
+	config := "version: 1\nstore: .beads\nledger: correlations.jsonl\nrepositories: {}\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := loadExternalHistoryManifest(configPath, nil)
+	if err != nil {
+		t.Fatalf("loadExternalHistoryManifest: %v", err)
+	}
+	if len(manifest.repositories) != 0 || len(manifest.correlations) != 0 {
+		t.Fatalf("expected empty external history, got repositories=%v correlations=%v", manifest.repositories, manifest.correlations)
+	}
+}
+
 func TestLoadCorrelationLedgerRejectsDanglingSymlink(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "correlations.jsonl")
 	if err := os.Symlink(filepath.Join(filepath.Dir(path), "missing-target.jsonl"), path); err != nil {
