@@ -14,11 +14,11 @@ import (
 
 // Correlator orchestrates the extraction and correlation of bead history data
 type Correlator struct {
-	repoPath             string
-	extractor            *Extractor
-	coCommitter          *CoCommitExtractor
-	externalManifestPath string
-	historyMode          HistoryMode
+	repoPath      string
+	extractor     *Extractor
+	coCommitter   *CoCommitExtractor
+	hubConfigPath string
+	historyMode   HistoryMode
 
 	// ctx, when set via WithContext, bounds every git subprocess spawned
 	// during report generation (issue #166). nil means context.Background().
@@ -40,10 +40,10 @@ func (c *Correlator) WithHistoryMode(mode HistoryMode) *Correlator {
 	return c
 }
 
-// WithExternalHistoryManifest switches correlation to explicit,
+// WithHubConfig switches correlation to explicit,
 // repository-aware history. No Git command is run against repoPath in this mode.
-func (c *Correlator) WithExternalHistoryManifest(path string) *Correlator {
-	c.externalManifestPath = path
+func (c *Correlator) WithHubConfig(path string) *Correlator {
+	c.hubConfigPath = path
 	return c
 }
 
@@ -165,9 +165,9 @@ func (c *Correlator) GenerateReport(beads []BeadInfo, opts CorrelatorOptions) (*
 	var err error
 	if c.historyMode == HistoryModeOff {
 		art = &historyArtifact{Events: []BeadEvent{}, Commits: []CorrelatedCommit{}}
-	} else if c.historyMode == HistoryModeExternal || c.externalManifestPath != "" {
-		if c.externalManifestPath == "" {
-			return nil, fmt.Errorf("external history mode requires a work config")
+	} else if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+		if c.hubConfigPath == "" {
+			return nil, fmt.Errorf("external history mode requires a hub config")
 		}
 		art, err = c.extractExternalHistoryArtifact(beads, opts)
 	} else {
@@ -216,7 +216,7 @@ func (c *Correlator) assembleReport(beads []BeadInfo, opts CorrelatorOptions, ar
 
 	// Get latest commit SHA for incremental updates
 	latestEvents := events
-	if c.historyMode == HistoryModeExternal || c.externalManifestPath != "" {
+	if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
 		latestEvents = nil
 	}
 	latestCommitSHA, latestCommitRepository := c.findLatestCommit(latestEvents, commits)
@@ -428,8 +428,8 @@ func (c *Correlator) describeGitRange(opts CorrelatorOptions) string {
 	if c.historyMode == HistoryModeOff {
 		return "history disabled"
 	}
-	if c.historyMode == HistoryModeExternal || c.externalManifestPath != "" {
-		return "external work history"
+	if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+		return "external hub history"
 	}
 	parts := []string{}
 
