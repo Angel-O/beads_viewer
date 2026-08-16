@@ -51,6 +51,7 @@ func TestCorrelationMethod_String(t *testing.T) {
 	}{
 		{MethodCoCommitted, "co_committed"},
 		{MethodExplicitID, "explicit_id"},
+		{MethodExternalLedger, "external_ledger"},
 		{MethodTemporalAuthor, "temporal_author"},
 	}
 	for _, tt := range tests {
@@ -67,6 +68,7 @@ func TestCorrelationMethod_IsValid(t *testing.T) {
 	}{
 		{MethodCoCommitted, true},
 		{MethodExplicitID, true},
+		{MethodExternalLedger, true},
 		{MethodTemporalAuthor, true},
 		{CorrelationMethod("invalid"), false},
 		{CorrelationMethod(""), false},

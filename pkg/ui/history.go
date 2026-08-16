@@ -48,13 +48,14 @@ const (
 
 // CommitListEntry represents a commit in git-centric mode (bv-tl3n)
 type CommitListEntry struct {
-	SHA       string
-	ShortSHA  string
-	Message   string
-	Author    string
-	Timestamp string
-	FileCount int
-	BeadIDs   []string // Beads related to this commit
+	SHA        string
+	ShortSHA   string
+	Repository string
+	Message    string
+	Author     string
+	Timestamp  string
+	FileCount  int
+	BeadIDs    []string // Beads related to this commit
 }
 
 // historySearchMode tracks what type of search is active (bv-nkrj)
@@ -281,8 +282,9 @@ func (h *HistoryModel) rebuildFilteredList() {
 			var filtered []correlation.CorrelatedCommit
 			for _, c := range history.Commits {
 				for _, file := range c.Files {
+					path := historyFileIdentity(file)
 					// Match if file path equals filter or starts with filter (directory match)
-					if file.Path == h.fileFilter || strings.HasPrefix(file.Path, h.fileFilter+"/") {
+					if path == h.fileFilter || strings.HasPrefix(path, h.fileFilter+"/") {
 						filtered = append(filtered, c)
 						break
 					}
@@ -386,7 +388,7 @@ func (h *HistoryModel) buildFileTree() {
 		for _, commit := range hist.Commits {
 			pathsInCommit := make(map[string]struct{})
 			for _, file := range commit.Files {
-				for _, path := range fileTreePathPrefixes(file.Path) {
+				for _, path := range fileTreePathPrefixes(historyFileIdentity(file)) {
 					pathsInCommit[path] = struct{}{}
 				}
 			}
@@ -934,6 +936,9 @@ func (h *HistoryModel) commitMatchesQuery(commit CommitListEntry, query string) 
 		if strings.Contains(strings.ToLower(commit.Author), query) {
 			return true
 		}
+		if strings.Contains(strings.ToLower(commit.Repository), query) {
+			return true
+		}
 		for _, beadID := range commit.BeadIDs {
 			if strings.Contains(strings.ToLower(beadID), query) {
 				return true
@@ -1011,6 +1016,7 @@ func (h *HistoryModel) beadMatchesQuery(beadID string, hist correlation.BeadHist
 		for _, commit := range hist.Commits {
 			if strings.Contains(strings.ToLower(commit.Message), query) ||
 				strings.Contains(strings.ToLower(commit.Author), query) ||
+				strings.Contains(strings.ToLower(commit.Repository), query) ||
 				strings.HasPrefix(strings.ToLower(commit.ShortSHA), query) {
 				return true
 			}
@@ -1088,25 +1094,30 @@ func (h *HistoryModel) buildCommitList() {
 	// Collect all commits from all bead histories
 	for beadID, hist := range h.report.Histories {
 		for _, commit := range hist.Commits {
-			if entryIndex, ok := entryIndexBySHA[commit.SHA]; ok {
-				if _, ok := beadIDsBySHA[commit.SHA][beadID]; !ok {
-					beadIDsBySHA[commit.SHA][beadID] = struct{}{}
+			identity := commit.SHA
+			if commit.Repository != "" {
+				identity = commit.Repository + ":" + commit.SHA
+			}
+			if entryIndex, ok := entryIndexBySHA[identity]; ok {
+				if _, ok := beadIDsBySHA[identity][beadID]; !ok {
+					beadIDsBySHA[identity][beadID] = struct{}{}
 					entries[entryIndex].BeadIDs = append(entries[entryIndex].BeadIDs, beadID)
 				}
 				continue
 			}
 
-			entryIndexBySHA[commit.SHA] = len(entries)
-			beadIDsBySHA[commit.SHA] = map[string]struct{}{beadID: {}}
+			entryIndexBySHA[identity] = len(entries)
+			beadIDsBySHA[identity] = map[string]struct{}{beadID: {}}
 
 			entries = append(entries, CommitListEntry{
-				SHA:       commit.SHA,
-				ShortSHA:  commit.ShortSHA,
-				Message:   commit.Message,
-				Author:    commit.Author,
-				Timestamp: commit.Timestamp.Format("2006-01-02 15:04"),
-				FileCount: len(commit.Files),
-				BeadIDs:   []string{beadID},
+				SHA:        commit.SHA,
+				ShortSHA:   commit.ShortSHA,
+				Repository: commit.Repository,
+				Message:    commit.Message,
+				Author:     commit.Author,
+				Timestamp:  commit.Timestamp.Format("2006-01-02 15:04"),
+				FileCount:  len(commit.Files),
+				BeadIDs:    []string{beadID},
 			})
 		}
 	}
@@ -1127,6 +1138,13 @@ func (h *HistoryModel) buildCommitList() {
 	})
 
 	h.commitList = entries
+}
+
+func historyFileIdentity(file correlation.FileChange) string {
+	if file.Repository == "" {
+		return file.Path
+	}
+	return file.Repository + ":" + file.Path
 }
 
 // MoveUpGit moves selection up in git mode
@@ -2537,6 +2555,9 @@ func (h *HistoryModel) renderCommitDetail(commit correlation.CorrelatedCommit, w
 		relTimeStyle.Render("("+relTime+")"),
 	)
 	lines = append(lines, headerLine)
+	if commit.Repository != "" {
+		lines = append(lines, fmt.Sprintf("    Repository: %s", commit.Repository))
+	}
 
 	// === AUTHOR LINE ===
 	// [Initials] Author Name • absolute date
@@ -3161,9 +3182,16 @@ func (h *HistoryModel) renderGitCommitLine(idx int, commit CommitListEntry, widt
 
 	// Bead count badge
 	beadCount := fmt.Sprintf("[%d]", len(commit.BeadIDs))
+	repository := ""
+	if commit.Repository != "" {
+		repository = "[" + commit.Repository + "]"
+	}
 
 	// Truncate message
 	maxMsgLen := width - len(indicator) - len(commit.ShortSHA) - len(beadCount) - 6
+	if repository != "" {
+		maxMsgLen -= len(repository) + 1
+	}
 	if maxMsgLen < 10 {
 		maxMsgLen = 10
 	}
@@ -3185,6 +3213,15 @@ func (h *HistoryModel) renderGitCommitLine(idx int, commit CommitListEntry, widt
 		msgStyle.Render(msg),
 		countStyle.Render(beadCount),
 	)
+	if repository != "" {
+		line = fmt.Sprintf("%s%s %s %s %s",
+			indicator,
+			shaStyle.Render(commit.ShortSHA),
+			countStyle.Render(repository),
+			msgStyle.Render(msg),
+			countStyle.Render(beadCount),
+		)
+	}
 
 	return line
 }
@@ -3277,6 +3314,9 @@ func (h *HistoryModel) renderGitDetailPanel(width, height int) string {
 		shaLine = shaLine[:width-7] + "…"
 	}
 	lines = append(lines, t.Renderer.NewStyle().Foreground(t.Primary).Render(shaLine))
+	if commit.Repository != "" {
+		lines = append(lines, t.Renderer.NewStyle().Foreground(t.Secondary).Render("Repository: "+commit.Repository))
+	}
 
 	authorLine := truncateRunesHelper(fmt.Sprintf("Author: %s", commit.Author), width-6, "…")
 	lines = append(lines, t.Renderer.NewStyle().Foreground(t.Secondary).Render(authorLine))

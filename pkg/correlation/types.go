@@ -57,6 +57,8 @@ const (
 	MethodExplicitID CorrelationMethod = "explicit_id"
 	// MethodTemporalAuthor means the commit is temporally close and by the assignee
 	MethodTemporalAuthor CorrelationMethod = "temporal_author"
+	// MethodExternalLedger means a private ledger explicitly links the commit and bead.
+	MethodExternalLedger CorrelationMethod = "external_ledger"
 )
 
 // String returns the string representation of CorrelationMethod
@@ -67,7 +69,7 @@ func (c CorrelationMethod) String() string {
 // IsValid returns true if the correlation method is a recognized value
 func (c CorrelationMethod) IsValid() bool {
 	switch c {
-	case MethodCoCommitted, MethodExplicitID, MethodTemporalAuthor:
+	case MethodCoCommitted, MethodExplicitID, MethodTemporalAuthor, MethodExternalLedger:
 		return true
 	}
 	return false
@@ -75,6 +77,7 @@ func (c CorrelationMethod) IsValid() bool {
 
 // FileChange represents a single file modification within a commit
 type FileChange struct {
+	Repository string `json:"repository,omitempty"`
 	Path       string `json:"path"`
 	Action     string `json:"action"` // A=added, M=modified, D=deleted, R=renamed
 	Insertions int    `json:"insertions"`
@@ -84,6 +87,7 @@ type FileChange struct {
 // CorrelatedCommit represents a code commit linked to a bead with confidence metadata
 type CorrelatedCommit struct {
 	BeadID      string            `json:"-"` // Internal use for linking
+	Repository  string            `json:"repository,omitempty"`
 	SHA         string            `json:"sha"`
 	ShortSHA    string            `json:"short_sha"`
 	Message     string            `json:"message"`
@@ -113,14 +117,15 @@ type CycleTime struct {
 
 // BeadHistory is the complete correlation record for a single bead
 type BeadHistory struct {
-	BeadID     string             `json:"bead_id"`
-	Title      string             `json:"title"`
-	Status     string             `json:"status"`
-	Events     []BeadEvent        `json:"events"`      // All lifecycle events, chronological
-	Milestones BeadMilestones     `json:"milestones"`  // Key events for quick access
-	Commits    []CorrelatedCommit `json:"commits"`     // Related code commits
-	CycleTime  *CycleTime         `json:"cycle_time"`  // nil if not yet closed
-	LastAuthor string             `json:"last_author"` // Most recent committer
+	BeadID       string             `json:"bead_id"`
+	Title        string             `json:"title"`
+	Status       string             `json:"status"`
+	Events       []BeadEvent        `json:"events"`      // All lifecycle events, chronological
+	Milestones   BeadMilestones     `json:"milestones"`  // Key events for quick access
+	Commits      []CorrelatedCommit `json:"commits"`     // Related code commits
+	CycleTime    *CycleTime         `json:"cycle_time"`  // nil if not yet closed
+	LastAuthor   string             `json:"last_author"` // Most recent committer
+	Repositories []string           `json:"repositories,omitempty"`
 }
 
 // CommitIndex provides O(1) lookup from commit SHA to bead IDs
@@ -139,13 +144,14 @@ type HistoryStats struct {
 
 // HistoryReport is the top-level output structure for --robot-history
 type HistoryReport struct {
-	GeneratedAt     time.Time              `json:"generated_at"`
-	DataHash        string                 `json:"data_hash"`                   // Hash of source beads.jsonl for consistency checks
-	GitRange        string                 `json:"git_range"`                   // e.g., "HEAD~100..HEAD" or "2024-01-01..2024-12-15"
-	LatestCommitSHA string                 `json:"latest_commit_sha,omitempty"` // Most recent commit SHA for incremental updates
-	Stats           HistoryStats           `json:"stats"`                       // Aggregate statistics
-	Histories       map[string]BeadHistory `json:"histories"`                   // BeadID -> BeadHistory
-	CommitIndex     CommitIndex            `json:"commit_index"`                // SHA -> []BeadID for reverse lookup
+	GeneratedAt            time.Time              `json:"generated_at"`
+	DataHash               string                 `json:"data_hash"`                   // Hash of source beads.jsonl for consistency checks
+	GitRange               string                 `json:"git_range"`                   // e.g., "HEAD~100..HEAD" or "2024-01-01..2024-12-15"
+	LatestCommitSHA        string                 `json:"latest_commit_sha,omitempty"` // Most recent commit SHA for incremental updates
+	LatestCommitRepository string                 `json:"latest_commit_repository,omitempty"`
+	Stats                  HistoryStats           `json:"stats"`        // Aggregate statistics
+	Histories              map[string]BeadHistory `json:"histories"`    // BeadID -> BeadHistory
+	CommitIndex            CommitIndex            `json:"commit_index"` // SHA -> []BeadID for reverse lookup
 }
 
 // FilterOptions controls which beads to include in the history report

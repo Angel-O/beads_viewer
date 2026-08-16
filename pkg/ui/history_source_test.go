@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 // writeFileAt writes content to path and sets its mtime (and atime) to the given
@@ -19,6 +21,25 @@ func writeFileAt(t *testing.T, path string, content []byte, mod time.Time) {
 	}
 	if err := os.Chtimes(path, mod, mod); err != nil {
 		t.Fatalf("chtimes %s: %v", path, err)
+	}
+}
+
+func TestLoadHistoryWithProviderOffFeedsTUIModel(t *testing.T) {
+	cmd := loadHistoryWithProviderCmd(
+		[]model.Issue{{ID: "work-1", Title: "Work", Status: model.StatusOpen}},
+		"",
+		correlation.HistoryModeOff,
+		"",
+	)
+	msg, ok := cmd().(HistoryLoadedMsg)
+	if !ok {
+		t.Fatalf("unexpected message type %T", cmd())
+	}
+	if msg.Error != nil {
+		t.Fatalf("off provider returned error: %v", msg.Error)
+	}
+	if msg.Report == nil || msg.Report.GitRange != "history disabled" || len(msg.Report.Histories) != 1 {
+		t.Fatalf("unexpected off-mode TUI report: %+v", msg.Report)
 	}
 }
 

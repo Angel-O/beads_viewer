@@ -2270,3 +2270,38 @@ func TestIssuesFingerprintDetectsContentChangesOrderIndependently(t *testing.T) 
 		t.Fatalf("fingerprint must change when a dependency changes without an updated_at bump")
 	}
 }
+
+func TestResolveHistoryConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	mode, config, err := resolveHistoryConfiguration("auto", "")
+	if err != nil || mode != "git" || config != "" {
+		t.Fatalf("auto without config = (%q, %q, %v), want git", mode, config, err)
+	}
+	if _, _, err := resolveHistoryConfiguration("external", ""); err == nil {
+		t.Fatal("external without explicit or discovered config should fail")
+	}
+
+	configDir := filepath.Join(home, ".config", "bv")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "work-beads.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mode, config, err = resolveHistoryConfiguration("auto", "")
+	if err != nil || mode != "external" || config != configPath {
+		t.Fatalf("auto with discovered config = (%q, %q, %v), want external %q", mode, config, err, configPath)
+	}
+	mode, config, err = resolveHistoryConfiguration("external", "")
+	if err != nil || mode != "external" || config != configPath {
+		t.Fatalf("explicit external with discovered config = (%q, %q, %v), want external %q", mode, config, err, configPath)
+	}
+
+	mode, config, err = resolveHistoryConfiguration("off", "")
+	if err != nil || mode != "off" || config != configPath {
+		t.Fatalf("off with discovered config = (%q, %q, %v), want %q", mode, config, err, configPath)
+	}
+}

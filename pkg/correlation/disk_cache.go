@@ -293,6 +293,9 @@ func putCorrelationDiskCachedReport(headSHA, beadsHash, optsHash string, report 
 // When the cache is disabled (non-robot mode, BV_NO_CACHE=1) or the HEAD cannot
 // be resolved, it falls straight through to GenerateReport unchanged.
 func (c *Correlator) GenerateReportCached(beads []BeadInfo, opts CorrelatorOptions) (*HistoryReport, error) {
+	if c.externalManifestPath != "" || c.historyMode == HistoryModeOff {
+		return c.GenerateReport(beads, opts)
+	}
 	if !correlationDiskCacheEnabled() {
 		return c.GenerateReport(beads, opts)
 	}

@@ -80,6 +80,8 @@ bv --robot-label-attention     # Attention-ranked labels
 
 ```bash
 bv --robot-history             # Bead-to-commit correlations
+bv --robot-history --history-mode external --work-config ~/.config/bv/work-beads.yaml
+bv correlate add --bead <id> --repo <ctx-or-path> --commit HEAD --work-config <path>
 bv --robot-diff --diff-since <ref>  # Changes since ref
 ```
 

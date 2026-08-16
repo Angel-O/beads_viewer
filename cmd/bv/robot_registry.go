@@ -1776,7 +1776,7 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	}
 	defer cancel()
 
-	correlator := correlation.NewCorrelator(workDir, beadsPath).WithContext(histCtx)
+	correlator := newCorrelationCorrelator(workDir, beadsPath).WithContext(histCtx)
 
 	type historyResult struct {
 		report *correlation.HistoryReport
@@ -1814,31 +1814,25 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		}
 	}
 
-	if hasOpenIssues {
+	if hasOpenIssues && historyModeValue != "off" {
 		workDir, err := ctx.WorkDirOrDefault()
 		if err == nil {
-			if beadsDir, err := loader.GetBeadsDir(""); err == nil {
-				if beadsPath, err := loader.FindJSONLPath(beadsDir); err == nil {
-					limit := 500
-					if cfg.HistoryLimit != nil {
-						limit = *cfg.HistoryLimit
-					}
-					if limit == 500 {
-						limit = 200
-					}
-					if correlation.ValidateRepository(workDir) == nil {
-						beadInfos := make([]correlation.BeadInfo, len(ctx.Issues))
-						for i, issue := range ctx.Issues {
-							beadInfos[i] = correlation.BeadInfo{
-								ID:     issue.ID,
-								Title:  issue.Title,
-								Status: string(issue.Status),
-							}
-						}
-						historyReport, historyStatus = generateTriageHistoryBounded(
-							workDir, beadsPath, beadInfos, limit, resolveRobotHistoryTimeout(cfg))
-					}
+			beadsPath := ""
+			if historyModeValue == "git" {
+				if beadsDir, loadErr := loader.GetBeadsDir(""); loadErr == nil {
+					beadsPath, _ = loader.FindJSONLPath(beadsDir)
 				}
+			}
+			if (historyModeValue != "git" || beadsPath != "") && validateCorrelationRepository(workDir) == nil {
+				limit := 500
+				if cfg.HistoryLimit != nil {
+					limit = *cfg.HistoryLimit
+				}
+				if limit == 500 {
+					limit = 200
+				}
+				historyReport, historyStatus = generateTriageHistoryBounded(
+					workDir, beadsPath, buildCorrelationBeadInfos(ctx.Issues), limit, resolveRobotHistoryTimeout(cfg))
 			}
 		}
 	}
@@ -2191,17 +2185,20 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
+	beadsPath := ""
+	if historyModeValue == "git" {
+		beadsDir, err := loader.GetBeadsDir("")
+		if err != nil {
+			return fmt.Errorf("getting beads directory: %w", err)
+		}
+		beadsPath, err = loader.FindJSONLPath(beadsDir)
+		if err != nil {
+			return fmt.Errorf("finding beads file: %w", err)
+		}
 	}
 
 	opts := correlation.CorrelatorOptions{Limit: 500}
@@ -2221,16 +2218,9 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		}
 	}
 
-	beadInfos := make([]correlation.BeadInfo, len(ctx.Issues))
-	for i, issue := range ctx.Issues {
-		beadInfos[i] = correlation.BeadInfo{
-			ID:     issue.ID,
-			Title:  issue.Title,
-			Status: string(issue.Status),
-		}
-	}
+	beadInfos := buildCorrelationBeadInfos(ctx.Issues)
 
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
+	report, err := newCorrelationCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2241,7 +2231,8 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		report.CommitIndex = make(correlation.CommitIndex)
 		for beadID, history := range report.Histories {
 			for _, commit := range history.Commits {
-				report.CommitIndex[commit.SHA] = append(report.CommitIndex[commit.SHA], beadID)
+				key := correlation.CommitIdentity(commit)
+				report.CommitIndex[key] = append(report.CommitIndex[key], beadID)
 			}
 		}
 		report.Stats.BeadsWithCommits = 0
@@ -2286,21 +2277,41 @@ func buildCorrelationBeadInfos(issues []model.Issue) []correlation.BeadInfo {
 			ID:     issue.ID,
 			Title:  issue.Title,
 			Status: string(issue.Status),
+			Labels: issue.Labels,
 		}
 	}
 	return beadInfos
 }
 
 func generateCorrelationReport(workDir string, issues []model.Issue, opts correlation.CorrelatorOptions) (*correlation.HistoryReport, error) {
-	_, beadsPath, err := resolveCorrelationBeadsPath(workDir)
-	if err != nil {
-		return nil, err
+	beadsPath := ""
+	if historyModeValue == "git" {
+		_, resolvedPath, err := resolveCorrelationBeadsPath(workDir)
+		if err != nil {
+			return nil, err
+		}
+		beadsPath = resolvedPath
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
+	report, err := newCorrelationCorrelator(workDir, beadsPath).GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
 	if err != nil {
 		return nil, fmt.Errorf("generating history report: %w", err)
 	}
 	return report, nil
+}
+
+func newCorrelationCorrelator(workDir, beadsPath string) *correlation.Correlator {
+	correlator := correlation.NewCorrelator(workDir, beadsPath).WithHistoryMode(correlation.HistoryMode(historyModeValue))
+	if historyModeValue == "external" && externalHistoryManifestPath != "" {
+		correlator.WithExternalHistoryManifest(externalHistoryManifestPath)
+	}
+	return correlator
+}
+
+func validateCorrelationRepository(workDir string) error {
+	if historyModeValue != "git" {
+		return nil
+	}
+	return correlation.ValidateRepository(workDir)
 }
 
 func loadCorrelationFeedbackStore(workDir string) (*correlation.FeedbackStore, error) {
@@ -2316,14 +2327,15 @@ func loadCorrelationFeedbackStore(workDir string) (*correlation.FeedbackStore, e
 }
 
 func parseCorrelationArg(arg string) (string, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(arg), ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("expected format: SHA:beadID, got: %q", arg)
+	arg = strings.TrimSpace(arg)
+	separator := strings.LastIndex(arg, ":")
+	if separator < 0 {
+		return "", "", fmt.Errorf("expected format: [context@]SHA:beadID, got: %q", arg)
 	}
-	commitSHA := strings.TrimSpace(parts[0])
-	beadID := strings.TrimSpace(parts[1])
+	commitSHA := strings.TrimSpace(arg[:separator])
+	beadID := strings.TrimSpace(arg[separator+1:])
 	if commitSHA == "" || beadID == "" {
-		return "", "", fmt.Errorf("expected non-empty SHA and bead ID in format SHA:beadID, got: %q", arg)
+		return "", "", fmt.Errorf("expected non-empty commit identity and bead ID in format [context@]SHA:beadID, got: %q", arg)
 	}
 	return commitSHA, beadID, nil
 }
@@ -2333,6 +2345,11 @@ func resolveCorrelatedCommit(commits []correlation.CorrelatedCommit, sha string)
 	if sha == "" {
 		return nil, fmt.Errorf("commit SHA is required")
 	}
+	repository := ""
+	if separator := strings.LastIndex(sha, "@"); separator >= 0 {
+		repository = sha[:separator]
+		sha = sha[separator+1:]
+	}
 
 	type commitMatch struct {
 		index int
@@ -2341,14 +2358,15 @@ func resolveCorrelatedCommit(commits []correlation.CorrelatedCommit, sha string)
 	matches := make([]commitMatch, 0, 1)
 	seen := make(map[string]bool)
 	for i := range commits {
-		commitSHA := strings.ToLower(commits[i].SHA)
-		if commitSHA == sha {
-			return &commits[i], nil
+		if repository != "" && strings.ToLower(commits[i].Repository) != repository {
+			continue
 		}
+		commitSHA := strings.ToLower(commits[i].SHA)
 		shortSHA := strings.ToLower(commits[i].ShortSHA)
-		if (shortSHA == sha || strings.HasPrefix(commitSHA, sha)) && !seen[commitSHA] {
-			matches = append(matches, commitMatch{index: i, sha: commits[i].SHA})
-			seen[commitSHA] = true
+		identity := correlation.CommitIdentity(commits[i])
+		if (commitSHA == sha || shortSHA == sha || strings.HasPrefix(commitSHA, sha)) && !seen[identity] {
+			matches = append(matches, commitMatch{index: i, sha: identity})
+			seen[identity] = true
 		}
 	}
 
@@ -2435,7 +2453,7 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 	}
 
 	explanation := correlation.NewScorer().BuildExplanation(*targetCommit, beadID)
-	if fb, ok := feedbackStore.Get(targetCommit.SHA, beadID); ok {
+	if fb, ok := feedbackStore.Get(correlation.CommitIdentity(*targetCommit), beadID); ok {
 		explanation.Recommendation = fmt.Sprintf("Already has feedback: %s", fb.Type)
 	}
 	if err := ctx.EncoderOrDefault().Encode(explanation); err != nil {
@@ -2489,7 +2507,7 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		return newReportedRobotHandlerExit(1)
 	}
 	originalConf := targetCommit.Confidence
-	commitSHA = targetCommit.SHA
+	commitSHA = correlation.CommitIdentity(*targetCommit)
 
 	feedbackBy := "cli"
 	if cfg.CorrelationFeedbackBy != nil && strings.TrimSpace(*cfg.CorrelationFeedbackBy) != "" {
@@ -2529,33 +2547,15 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
-	}
-
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
 	}
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2590,11 +2590,14 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 }
 
 func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if historyModeValue != "git" {
+		return fmt.Errorf("--robot-orphans requires --history-mode git; repository-wide orphan inference is unavailable in %s mode", historyModeValue)
+	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
@@ -2667,7 +2670,7 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
@@ -2721,7 +2724,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
@@ -2769,33 +2772,17 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
-	}
+	issues := ctx.Issues
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2881,33 +2868,17 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
-	}
+	issues := ctx.Issues
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2954,33 +2925,17 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
-	}
+	issues := ctx.Issues
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}

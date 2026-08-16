@@ -72,6 +72,9 @@ type DiscoveryOptions struct {
 	ValidateAfterDiscovery bool
 	// IncludeInvalid includes sources that failed validation in results
 	IncludeInvalid bool
+	// SkipWorktreeSources restricts discovery to BeadsDir. Use it when an
+	// explicit directory-valued BEADS_DB must remain authoritative.
+	SkipWorktreeSources bool
 	// Verbose enables detailed logging during discovery
 	Verbose bool
 	// Logger receives log messages when Verbose is true
@@ -147,11 +150,13 @@ func DiscoverSources(opts DiscoveryOptions) ([]DataSource, error) {
 	sources = append(sources, localSources...)
 
 	// Discover worktree JSONL files
-	worktreeSources, err := discoverWorktreeSources(opts.RepoPath, opts)
-	if err != nil && opts.Verbose {
-		opts.Logger(fmt.Sprintf("Worktree discovery warning: %v", err))
+	if !opts.SkipWorktreeSources {
+		worktreeSources, err := discoverWorktreeSources(opts.RepoPath, opts)
+		if err != nil && opts.Verbose {
+			opts.Logger(fmt.Sprintf("Worktree discovery warning: %v", err))
+		}
+		sources = append(sources, worktreeSources...)
 	}
-	sources = append(sources, worktreeSources...)
 
 	// Validate sources if requested
 	if opts.ValidateAfterDiscovery {

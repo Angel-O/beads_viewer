@@ -315,6 +315,10 @@ func CheckAgentFileCmd(workDir string) tea.Cmd {
 
 // LoadHistoryCmd returns a command that loads history data in the background
 func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
+	return loadHistoryWithProviderCmd(issues, beadsPath, correlation.HistoryModeGit, "")
+}
+
+func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, mode correlation.HistoryMode, workConfig string) tea.Cmd {
 	return func() tea.Msg {
 		var repoPath string
 		var err error
@@ -361,10 +365,14 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 				ID:     issue.ID,
 				Title:  issue.Title,
 				Status: string(issue.Status),
+				Labels: issue.Labels,
 			}
 		}
 
-		correlator := correlation.NewCorrelator(repoPath, correlationPath)
+		correlator := correlation.NewCorrelator(repoPath, correlationPath).WithHistoryMode(mode)
+		if workConfig != "" {
+			correlator.WithExternalHistoryManifest(workConfig)
+		}
 		opts := correlation.CorrelatorOptions{
 			Limit: 500, // Reasonable limit for TUI performance
 		}
@@ -424,14 +432,16 @@ func cloneIssuesForAsync(issues []model.Issue) []model.Issue {
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues       []model.Issue
-	pooledIssues []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
-	issueMap     map[string]*model.Issue
-	analyzer     *analysis.Analyzer
-	analysis     *analysis.GraphStats
-	beadsPath    string           // Path to beads.jsonl for reloading
-	watcher      *watcher.Watcher // File watcher for live reload
-	instanceLock *instance.Lock   // Multi-instance coordination lock
+	issues                  []model.Issue
+	pooledIssues            []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
+	issueMap                map[string]*model.Issue
+	analyzer                *analysis.Analyzer
+	analysis                *analysis.GraphStats
+	beadsPath               string // Path to beads.jsonl for reloading
+	externalHistoryManifest string
+	historyMode             correlation.HistoryMode
+	watcher                 *watcher.Watcher // File watcher for live reload
+	instanceLock            *instance.Lock   // Multi-instance coordination lock
 
 	// Background Worker (Phase 2 architecture - bv-m7v8)
 	// snapshot is the current immutable data snapshot from BackgroundWorker.
@@ -1239,6 +1249,12 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	return m
 }
 
+// SetHistoryProvider configures the shared TUI history provider.
+func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
+	m.historyMode = mode
+	m.externalHistoryManifest = path
+}
+
 // rebuildInsightsPanel refreshes the underlying insights view model from the
 // current snapshot/analysis while preserving in-panel navigation state.
 func (m *Model) rebuildInsightsPanel() {
@@ -1296,7 +1312,7 @@ func (m Model) Init() tea.Cmd {
 	}
 	// Start loading history in background
 	if len(m.issues) > 0 {
-		cmds = append(cmds, LoadHistoryCmd(m.issuesForAsync(), m.beadsPath))
+		cmds = append(cmds, loadHistoryWithProviderCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.externalHistoryManifest))
 	}
 	// Check for AGENTS.md integration prompt (bv-i8dk)
 	if m.workDir != "" && !m.workspaceMode {
@@ -7753,6 +7769,7 @@ func (m *Model) enterHistoryView() {
 			ID:     issue.ID,
 			Title:  issue.Title,
 			Status: string(issue.Status),
+			Labels: issue.Labels,
 		}
 	}
 
@@ -7762,7 +7779,10 @@ func (m *Model) enterHistoryView() {
 	// this, a beads.db that is a few ms newer than issues.jsonl (the normal state
 	// after `br sync`) silently yields a correlation-free history view.
 	correlationPath := resolveHistoryCorrelationPath(m.beadsPath, cwd)
-	correlator := correlation.NewCorrelator(cwd, correlationPath)
+	correlator := correlation.NewCorrelator(cwd, correlationPath).WithHistoryMode(m.historyMode)
+	if m.externalHistoryManifest != "" {
+		correlator.WithExternalHistoryManifest(m.externalHistoryManifest)
+	}
 	opts := correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for TUI performance
 	}

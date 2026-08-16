@@ -447,7 +447,7 @@ func (c *CoCommitExtractor) getFilesChanged(sha string) ([]FileChange, error) {
 		}
 	}
 
-	gitArgs := append([]string{"show", "--name-status", "--format=", sha}, excludePathspecArgs()...)
+	gitArgs := append([]string{"show", "--find-renames", "--name-status", "--format=", sha}, excludePathspecArgs()...)
 	cmd := gitCommand(c.ctx, gitArgs...)
 	cmd.Dir = c.repoPath
 
@@ -469,7 +469,7 @@ func (c *CoCommitExtractor) getLineStats(sha string) (map[string]lineStats, erro
 		}
 	}
 
-	gitArgs := append([]string{"show", "--numstat", "--format=", sha}, excludePathspecArgs()...)
+	gitArgs := append([]string{"show", "--find-renames", "--numstat", "--format=", sha}, excludePathspecArgs()...)
 	cmd := gitCommand(c.ctx, gitArgs...)
 	cmd.Dir = c.repoPath
 
