@@ -3165,12 +3165,14 @@ func main() {
 			output := struct {
 				GeneratedAt string                     `json:"generated_at"`
 				DataHash    string                     `json:"data_hash"`
+				LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 				Flow        analysis.CrossLabelFlow    `json:"flow"`
 				Config      analysis.LabelHealthConfig `json:"analysis_config"`
 				UsageHints  []string                   `json:"usage_hints"`
 			}{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				DataHash:    dataHash,
+				LoadStats:   robotLoadStatsFromLastLoad(),
 				Flow:        flow,
 				Config:      cfg,
 				UsageHints: []string{
@@ -3203,10 +3205,11 @@ func main() {
 
 			// Build limited output
 			type AttentionOutput struct {
-				GeneratedAt string `json:"generated_at"`
-				DataHash    string `json:"data_hash"`
-				Limit       int    `json:"limit"`
-				TotalLabels int    `json:"total_labels"`
+				GeneratedAt string          `json:"generated_at"`
+				DataHash    string          `json:"data_hash"`
+				LoadStats   *RobotLoadStats `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
+				Limit       int             `json:"limit"`
+				TotalLabels int             `json:"total_labels"`
 				Labels      []struct {
 					Rank            int     `json:"rank"`
 					Label           string  `json:"label"`
@@ -3225,6 +3228,7 @@ func main() {
 			output := AttentionOutput{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				DataHash:    dataHash,
+				LoadStats:   robotLoadStatsFromLastLoad(),
 				Limit:       limit,
 				TotalLabels: result.TotalLabels,
 				UsageHints: []string{
@@ -3669,6 +3673,7 @@ func main() {
 			output := struct {
 				GeneratedAt    string                  `json:"generated_at"`
 				DataHash       string                  `json:"data_hash"`
+				LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"`   // Present when records were dropped during load (#190)
 				AsOf           string                  `json:"as_of,omitempty"`        // Historical snapshot ref
 				AsOfCommit     string                  `json:"as_of_commit,omitempty"` // Resolved commit SHA
 				AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
@@ -3683,6 +3688,7 @@ func main() {
 			}{
 				GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 				DataHash:         dataHash,
+				LoadStats:        robotLoadStatsFromLastLoad(),
 				AsOf:             *asOf,
 				AsOfCommit:       asOfResolved,
 				AnalysisConfig:   stats.Config,
@@ -3809,6 +3815,7 @@ func main() {
 			output := struct {
 				GeneratedAt string                 `json:"generated_at"`
 				DataHash    string                 `json:"data_hash"`
+				LoadStats   *RobotLoadStats        `json:"load_stats,omitempty"`   // Present when records were dropped during load (#190)
 				AsOf        string                 `json:"as_of,omitempty"`        // Historical snapshot ref (e.g., HEAD~30)
 				AsOfCommit  string                 `json:"as_of_commit,omitempty"` // Resolved commit SHA
 				Triage      analysis.TriageResult  `json:"triage"`
@@ -3817,6 +3824,7 @@ func main() {
 			}{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				DataHash:    dataHash,
+				LoadStats:   robotLoadStatsFromLastLoad(),
 				AsOf:        *asOf,
 				AsOfCommit:  asOfResolved,
 				Triage:      triage,
@@ -8215,16 +8223,26 @@ func NewRobotEnvelope(dataHash string) RobotEnvelope {
 		OutputFormat: robotOutputFormat,
 		Version:      version.Version,
 	}
-	if rep := datasource.LastLoadReport(); rep != nil && rep.Errors > 0 {
-		env.LoadStats = &RobotLoadStats{
-			SourcePath: rep.Path,
-			Valid:      rep.Valid,
-			Errors:     rep.Errors,
-			Skipped:    rep.Skipped,
-			Warnings:   rep.Warnings,
-		}
-	}
+	env.LoadStats = robotLoadStatsFromLastLoad()
 	return env
+}
+
+// robotLoadStatsFromLastLoad returns a load_stats block when the most recent
+// JSONL load dropped records (malformed JSON or failed validation), nil
+// otherwise. Hand-rolled robot output structs that do not embed RobotEnvelope
+// use this directly so every robot surface reports drops consistently (#190).
+func robotLoadStatsFromLastLoad() *RobotLoadStats {
+	rep := datasource.LastLoadReport()
+	if rep == nil || rep.Errors == 0 {
+		return nil
+	}
+	return &RobotLoadStats{
+		SourcePath: rep.Path,
+		Valid:      rep.Valid,
+		Errors:     rep.Errors,
+		Skipped:    rep.Skipped,
+		Warnings:   rep.Warnings,
+	}
 }
 
 type robotEncoder interface {

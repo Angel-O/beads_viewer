@@ -264,6 +264,7 @@ bv --robot-triage --robot-triage-by-label    # Group by domain
 - `data_hash` — Fingerprint of the source JSONL issue file (verify consistency across calls)
 - `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
 - `as_of` / `as_of_commit` — Present when using `--as-of`; contains ref and resolved SHA
+- `load_stats` — Present only when issue records were dropped during load (malformed JSON or failed validation, e.g. `updated_at < created_at`): `{source_path, valid, errors, skipped, warnings}`. Check `.load_stats.errors > 0` to distinguish "issue absent from data" from "issue dropped by the loader"; stderr stays clean either way (#190)
 
 **Two-phase analysis:**
 - **Phase 1 (instant):** degree, topo sort, density — always available immediately

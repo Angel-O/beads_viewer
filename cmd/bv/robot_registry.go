@@ -1457,12 +1457,14 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 	output := struct {
 		GeneratedAt string                     `json:"generated_at"`
 		DataHash    string                     `json:"data_hash"`
+		LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		Flow        analysis.CrossLabelFlow    `json:"flow"`
 		Config      analysis.LabelHealthConfig `json:"analysis_config"`
 		UsageHints  []string                   `json:"usage_hints"`
 	}{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
+		LoadStats:   robotLoadStatsFromLastLoad(),
 		Flow:        flow,
 		Config:      cfg,
 		UsageHints: []string{
@@ -1506,6 +1508,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 	type attentionOutput struct {
 		GeneratedAt string           `json:"generated_at"`
 		DataHash    string           `json:"data_hash"`
+		LoadStats   *RobotLoadStats  `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		Limit       int              `json:"limit"`
 		TotalLabels int              `json:"total_labels"`
 		Labels      []attentionLabel `json:"labels"`
@@ -1515,6 +1518,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 	output := attentionOutput{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
+		LoadStats:   robotLoadStatsFromLastLoad(),
 		Limit:       limit,
 		TotalLabels: result.TotalLabels,
 		UsageHints: []string{
@@ -1663,6 +1667,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	output := struct {
 		GeneratedAt    string                  `json:"generated_at"`
 		DataHash       string                  `json:"data_hash"`
+		LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		AsOf           string                  `json:"as_of,omitempty"`
 		AsOfCommit     string                  `json:"as_of_commit,omitempty"`
 		AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
@@ -1677,6 +1682,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	}{
 		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 		DataHash:         ctx.DataHash,
+		LoadStats:        robotLoadStatsFromLastLoad(),
 		AsOf:             ctx.AsOf,
 		AsOfCommit:       ctx.AsOfCommit,
 		AnalysisConfig:   stats.Config,
@@ -1886,6 +1892,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	output := struct {
 		GeneratedAt string                 `json:"generated_at"`
 		DataHash    string                 `json:"data_hash"`
+		LoadStats   *RobotLoadStats        `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		AsOf        string                 `json:"as_of,omitempty"`
 		AsOfCommit  string                 `json:"as_of_commit,omitempty"`
 		Triage      analysis.TriageResult  `json:"triage"`
@@ -1894,6 +1901,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}{
 		GeneratedAt: now.Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
+		LoadStats:   robotLoadStatsFromLastLoad(),
 		AsOf:        ctx.AsOf,
 		AsOfCommit:  ctx.AsOfCommit,
 		Triage:      triage,
@@ -1941,6 +1949,7 @@ type briefTriageRecommendation struct {
 type briefTriageOutput struct {
 	GeneratedAt     string                      `json:"generated_at"`
 	DataHash        string                      `json:"data_hash"`
+	LoadStats       *RobotLoadStats             `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 	AsOf            string                      `json:"as_of,omitempty"`
 	AsOfCommit      string                      `json:"as_of_commit,omitempty"`
 	Brief           bool                        `json:"brief"`
@@ -1966,6 +1975,7 @@ func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.
 	output := briefTriageOutput{
 		GeneratedAt:     now.Format(time.RFC3339),
 		DataHash:        ctx.DataHash,
+		LoadStats:       robotLoadStatsFromLastLoad(),
 		AsOf:            ctx.AsOf,
 		AsOfCommit:      ctx.AsOfCommit,
 		Brief:           true,
