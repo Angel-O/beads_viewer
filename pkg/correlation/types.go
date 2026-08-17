@@ -142,6 +142,18 @@ type HistoryStats struct {
 	MethodDistribution map[string]int `json:"method_distribution"`           // Count per correlation method
 }
 
+// HistoryWarning describes a recoverable source-history omission.
+type HistoryWarning struct {
+	Code                string `json:"code"`
+	Context             string `json:"context"`
+	Reason              string `json:"reason"`
+	SkippedCorrelations int    `json:"skipped_correlations"`
+	Message             string `json:"message"`
+}
+
+// HistoryWarningExternalRepositoryUnavailable identifies a required checkout that could not be used.
+const HistoryWarningExternalRepositoryUnavailable = "external_repository_unavailable"
+
 // HistoryReport is the top-level output structure for --robot-history
 type HistoryReport struct {
 	GeneratedAt            time.Time              `json:"generated_at"`
@@ -152,6 +164,7 @@ type HistoryReport struct {
 	Stats                  HistoryStats           `json:"stats"`        // Aggregate statistics
 	Histories              map[string]BeadHistory `json:"histories"`    // BeadID -> BeadHistory
 	CommitIndex            CommitIndex            `json:"commit_index"` // SHA -> []BeadID for reverse lookup
+	Warnings               []HistoryWarning       `json:"warnings,omitempty"`
 }
 
 // FilterOptions controls which beads to include in the history report

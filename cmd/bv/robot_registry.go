@@ -1766,7 +1766,7 @@ func resolveNotReadyLabels(cfg phaseThreeRobotHandlerConfig) []string {
 // would spawn next) is killed via exec.CommandContext, and the goroutine
 // unblocks and exits promptly.
 //
-// The returned status is "ok", "error", or "timeout"; it is surfaced as
+// The returned status is "ok", "partial", "error", or "timeout"; it is surfaced as
 // meta.history_status in the triage output.
 func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correlation.BeadInfo, limit int, timeout time.Duration) (*correlation.HistoryReport, string) {
 	histCtx := context.Background()
@@ -1792,6 +1792,9 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	case res := <-resCh:
 		if res.err != nil {
 			return nil, "error"
+		}
+		if len(res.report.Warnings) > 0 {
+			return res.report, "partial"
 		}
 		return res.report, "ok"
 	case <-histCtx.Done():
@@ -1860,6 +1863,9 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 	triage.Meta.HistoryStatus = historyStatus
+	if historyReport != nil {
+		triage.Meta.HistoryWarnings = historyReport.Warnings
+	}
 
 	// --brief (#183): emit only the decision-relevant fields agents actually
 	// consume at session start (id/title/status, blockers/unblocks, claim
@@ -1933,15 +1939,17 @@ type briefTriageRecommendation struct {
 // recommendation to briefTriageRecommendation. Score breakdowns, project
 // health, commands, feedback, and usage hints are omitted.
 type briefTriageOutput struct {
-	GeneratedAt     string                      `json:"generated_at"`
-	DataHash        string                      `json:"data_hash"`
-	AsOf            string                      `json:"as_of,omitempty"`
-	AsOfCommit      string                      `json:"as_of_commit,omitempty"`
-	Brief           bool                        `json:"brief"`
-	QuickRef        analysis.QuickRef           `json:"quick_ref"`
-	Recommendations []briefTriageRecommendation `json:"recommendations"`
-	QuickWins       []analysis.QuickWin         `json:"quick_wins,omitempty"`
-	BlockersToClear []analysis.BlockerItem      `json:"blockers_to_clear,omitempty"`
+	GeneratedAt     string                       `json:"generated_at"`
+	DataHash        string                       `json:"data_hash"`
+	AsOf            string                       `json:"as_of,omitempty"`
+	AsOfCommit      string                       `json:"as_of_commit,omitempty"`
+	Brief           bool                         `json:"brief"`
+	HistoryStatus   string                       `json:"history_status,omitempty"`
+	HistoryWarnings []correlation.HistoryWarning `json:"history_warnings,omitempty"`
+	QuickRef        analysis.QuickRef            `json:"quick_ref"`
+	Recommendations []briefTriageRecommendation  `json:"recommendations"`
+	QuickWins       []analysis.QuickWin          `json:"quick_wins,omitempty"`
+	BlockersToClear []analysis.BlockerItem       `json:"blockers_to_clear,omitempty"`
 }
 
 func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.Time) error {
@@ -1963,6 +1971,8 @@ func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.
 		AsOf:            ctx.AsOf,
 		AsOfCommit:      ctx.AsOfCommit,
 		Brief:           true,
+		HistoryStatus:   triage.Meta.HistoryStatus,
+		HistoryWarnings: triage.Meta.HistoryWarnings,
 		QuickRef:        triage.QuickRef,
 		Recommendations: recs,
 		QuickWins:       triage.QuickWins,
@@ -2299,6 +2309,32 @@ func generateCorrelationReport(workDir string, issues []model.Issue, opts correl
 	return report, nil
 }
 
+type robotHistoryDiagnostics struct {
+	HistoryWarnings []correlation.HistoryWarning `json:"history_warnings,omitempty"`
+}
+
+func historyDiagnostics(report *correlation.HistoryReport) robotHistoryDiagnostics {
+	return robotHistoryDiagnostics{HistoryWarnings: report.Warnings}
+}
+
+func reportUnavailableCorrelation(ctx RobotContext, report *correlation.HistoryReport, commit, bead string) error {
+	output := struct {
+		robotHistoryDiagnostics
+		Status string `json:"status"`
+		Commit string `json:"commit"`
+		Bead   string `json:"bead"`
+	}{
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		Status:                  "history_partial",
+		Commit:                  commit,
+		Bead:                    bead,
+	}
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+		return fmt.Errorf("encoding partial history diagnostic: %w", err)
+	}
+	return newReportedRobotHandlerExit(1)
+}
+
 func newCorrelationCorrelator(workDir, beadsPath string) *correlation.Correlator {
 	correlator := correlation.NewCorrelator(workDir, beadsPath).WithHistoryMode(correlation.HistoryMode(historyModeValue))
 	if historyModeValue == "external" && hubConfigPath != "" {
@@ -2448,6 +2484,9 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 		return err
 	}
 	if targetCommit == nil {
+		if len(report.Warnings) > 0 {
+			return reportUnavailableCorrelation(ctx, report, commitSHA, beadID)
+		}
 		fmt.Fprintf(ctx.StderrOrDefault(), "Commit %s not found in bead %s correlations\n", commitSHA, beadID)
 		return newReportedRobotHandlerExit(1)
 	}
@@ -2456,7 +2495,14 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 	if fb, ok := feedbackStore.Get(correlation.CommitIdentity(*targetCommit), beadID); ok {
 		explanation.Recommendation = fmt.Sprintf("Already has feedback: %s", fb.Type)
 	}
-	if err := ctx.EncoderOrDefault().Encode(explanation); err != nil {
+	output := struct {
+		correlation.CorrelationExplanation
+		robotHistoryDiagnostics
+	}{
+		CorrelationExplanation:  explanation,
+		robotHistoryDiagnostics: historyDiagnostics(report),
+	}
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding explanation: %w", err)
 	}
 	return nil
@@ -2503,6 +2549,9 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		return err
 	}
 	if targetCommit == nil {
+		if len(report.Warnings) > 0 {
+			return reportUnavailableCorrelation(ctx, report, commitSHA, beadID)
+		}
 		fmt.Fprintf(ctx.StderrOrDefault(), "Commit %s not found in bead %s correlations\n", commitSHA, beadID)
 		return newReportedRobotHandlerExit(1)
 	}
@@ -2535,6 +2584,9 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		"by":        feedbackBy,
 		"reason":    reason,
 		"orig_conf": originalConf,
+	}
+	if len(report.Warnings) > 0 {
+		result["history_warnings"] = report.Warnings
 	}
 	if err := ctx.EncoderOrDefault().Encode(result); err != nil {
 		return fmt.Errorf("encoding result: %w", err)
@@ -2572,16 +2624,18 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 
 	output := struct {
 		RobotEnvelope
+		robotHistoryDiagnostics
 		FilePath     string                      `json:"file_path"`
 		TotalCommits int                         `json:"total_commits"`
 		Threshold    float64                     `json:"threshold"`
 		RelatedFiles []correlation.CoChangeEntry `json:"related_files"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
-		FilePath:      result.FilePath,
-		TotalCommits:  result.TotalCommits,
-		Threshold:     result.Threshold,
-		RelatedFiles:  result.RelatedFiles,
+		RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		FilePath:                result.FilePath,
+		TotalCommits:            result.TotalCommits,
+		Threshold:               result.Threshold,
+		RelatedFiles:            result.RelatedFiles,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding file relations: %w", err)
@@ -2698,16 +2752,18 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 
 	output := struct {
 		RobotEnvelope
+		robotHistoryDiagnostics
 		FilePath    string                      `json:"file_path"`
 		TotalBeads  int                         `json:"total_beads"`
 		OpenBeads   []correlation.BeadReference `json:"open_beads"`
 		ClosedBeads []correlation.BeadReference `json:"closed_beads"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
-		FilePath:      *cfg.RobotFileBeadsFlag,
-		TotalBeads:    result.TotalBeads,
-		OpenBeads:     result.OpenBeads,
-		ClosedBeads:   result.ClosedBeads,
+		RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		FilePath:                *cfg.RobotFileBeadsFlag,
+		TotalBeads:              result.TotalBeads,
+		OpenBeads:               result.OpenBeads,
+		ClosedBeads:             result.ClosedBeads,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding file beads: %w", err)
@@ -2746,6 +2802,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 
 	output := struct {
 		RobotEnvelope
+		robotHistoryDiagnostics
 		Files         []string                   `json:"files"`
 		RiskLevel     string                     `json:"risk_level"`
 		RiskScore     float64                    `json:"risk_score"`
@@ -2753,13 +2810,14 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		Warnings      []string                   `json:"warnings"`
 		AffectedBeads []correlation.AffectedBead `json:"affected_beads"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
-		Files:         impactResult.Files,
-		RiskLevel:     impactResult.RiskLevel,
-		RiskScore:     impactResult.RiskScore,
-		Summary:       impactResult.Summary,
-		Warnings:      impactResult.Warnings,
-		AffectedBeads: impactResult.AffectedBeads,
+		RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		Files:                   impactResult.Files,
+		RiskLevel:               impactResult.RiskLevel,
+		RiskScore:               impactResult.RiskScore,
+		Summary:                 impactResult.Summary,
+		Warnings:                impactResult.Warnings,
+		AffectedBeads:           impactResult.AffectedBeads,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding impact analysis: %w", err)
@@ -2819,14 +2877,16 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 
 	output := struct {
 		*correlation.RelatedWorkResult
+		robotHistoryDiagnostics
 		DataHash     string `json:"data_hash"`
 		OutputFormat string `json:"output_format,omitempty"`
 		Version      string `json:"version,omitempty"`
 	}{
-		RelatedWorkResult: result,
-		DataHash:          report.DataHash,
-		OutputFormat:      robotOutputFormat,
-		Version:           version.Version,
+		RelatedWorkResult:       result,
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		DataHash:                report.DataHash,
+		OutputFormat:            robotOutputFormat,
+		Version:                 version.Version,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding related work: %w", err)
@@ -2907,12 +2967,14 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 
 	output := struct {
 		*correlation.ImpactNetworkResult
+		robotHistoryDiagnostics
 		OutputFormat string `json:"output_format,omitempty"`
 		Version      string `json:"version,omitempty"`
 	}{
-		ImpactNetworkResult: network.ToResult(beadID, depth),
-		OutputFormat:        robotOutputFormat,
-		Version:             version.Version,
+		ImpactNetworkResult:     network.ToResult(beadID, depth),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		OutputFormat:            robotOutputFormat,
+		Version:                 version.Version,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding impact network: %w", err)
@@ -2955,12 +3017,14 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 
 	output := struct {
 		*correlation.CausalityResult
+		robotHistoryDiagnostics
 		OutputFormat string `json:"output_format,omitempty"`
 		Version      string `json:"version,omitempty"`
 	}{
-		CausalityResult: result,
-		OutputFormat:    robotOutputFormat,
-		Version:         version.Version,
+		CausalityResult:         result,
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		OutputFormat:            robotOutputFormat,
+		Version:                 version.Version,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding causality result: %w", err)

@@ -1890,6 +1890,9 @@ func (h *HistoryModel) renderCompactTimeline(hist correlation.BeadHistory, maxWi
 // renderEmpty renders an empty state message
 func (h *HistoryModel) renderEmpty(msg string) string {
 	t := h.theme
+	if h.report != nil && len(h.report.Warnings) > 0 {
+		msg += fmt.Sprintf("\n\nPARTIAL HISTORY: %d source repositories unavailable", len(h.report.Warnings))
+	}
 	style := t.Renderer.NewStyle().
 		Width(h.width).
 		Height(h.height).
@@ -2033,6 +2036,11 @@ func (h *HistoryModel) renderStatsLine() string {
 	// Unique authors
 	authorsBadge := badgeStyle.Render(valueStyle.Render(fmt.Sprintf("%d", stats.UniqueAuthors)) + " authors")
 	badges = append(badges, authorsBadge)
+
+	if len(h.report.Warnings) > 0 {
+		warningBadge := badgeStyle.Render("PARTIAL: " + valueStyle.Render(fmt.Sprintf("%d", len(h.report.Warnings))) + " repos unavailable")
+		badges = append(badges, warningBadge)
+	}
 
 	// Average cycle time (if available)
 	if stats.AvgCycleTimeDays != nil {

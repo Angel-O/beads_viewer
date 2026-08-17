@@ -44,12 +44,14 @@ type TriageMeta struct {
 	ComputeTimeMs int64     `json:"compute_time_ms"`
 	// HistoryStatus reports the outcome of the optional git-history
 	// correlation prologue used by --robot-triage (issue #166):
-	// "ok" (history report generated), "error" (generation failed),
+	// "ok" (complete history report generated), "partial" (some required
+	// source repositories were unavailable), "error" (generation failed),
 	// "timeout" (generation exceeded the configured budget and was
 	// cancelled; triage proceeded without history), or empty when history
 	// generation was not attempted (no git repo / no open issues / callers
 	// outside the robot-triage path).
-	HistoryStatus string `json:"history_status,omitempty"`
+	HistoryStatus   string                       `json:"history_status,omitempty"`
+	HistoryWarnings []correlation.HistoryWarning `json:"history_warnings,omitempty"`
 }
 
 // QuickRef provides at-a-glance summary for fast decisions.

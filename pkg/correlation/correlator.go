@@ -92,8 +92,9 @@ type CorrelatorOptions struct {
 // plus the batched co-commit git logs), so it is the unit cached by the
 // HEAD-keyed disk cache and reused unchanged across working-tree bead edits.
 type historyArtifact struct {
-	Events  []BeadEvent        `json:"events"`
-	Commits []CorrelatedCommit `json:"commits"`
+	Events   []BeadEvent        `json:"events"`
+	Commits  []CorrelatedCommit `json:"commits"`
+	Warnings []HistoryWarning   `json:"warnings,omitempty"`
 }
 
 // CorrelatedCommit.BeadID carries the json:"-" tag (it is internal linking state,
@@ -107,6 +108,7 @@ type historyArtifactWire struct {
 	Events        []BeadEvent        `json:"events"`
 	Commits       []CorrelatedCommit `json:"commits"`
 	CommitBeadIDs []string           `json:"commit_bead_ids,omitempty"`
+	Warnings      []HistoryWarning   `json:"warnings,omitempty"`
 }
 
 func (a historyArtifact) MarshalJSON() ([]byte, error) {
@@ -114,7 +116,7 @@ func (a historyArtifact) MarshalJSON() ([]byte, error) {
 	for i := range a.Commits {
 		ids[i] = a.Commits[i].BeadID
 	}
-	return json.Marshal(historyArtifactWire{Events: a.Events, Commits: a.Commits, CommitBeadIDs: ids})
+	return json.Marshal(historyArtifactWire{Events: a.Events, Commits: a.Commits, CommitBeadIDs: ids, Warnings: a.Warnings})
 }
 
 func (a *historyArtifact) UnmarshalJSON(b []byte) error {
@@ -124,6 +126,7 @@ func (a *historyArtifact) UnmarshalJSON(b []byte) error {
 	}
 	a.Events = w.Events
 	a.Commits = w.Commits
+	a.Warnings = w.Warnings
 	for i := range a.Commits {
 		if i < len(w.CommitBeadIDs) {
 			a.Commits[i].BeadID = w.CommitBeadIDs[i]
@@ -230,6 +233,7 @@ func (c *Correlator) assembleReport(beads []BeadInfo, opts CorrelatorOptions, ar
 		Stats:                  stats,
 		Histories:              histories,
 		CommitIndex:            commitIndex,
+		Warnings:               art.Warnings,
 	}
 }
 

@@ -26,6 +26,34 @@ type externalHistoryFixture struct {
 	bdLog      string
 }
 
+type externalHistoryPayload struct {
+	Stats struct {
+		TotalCommits int `json:"total_commits"`
+	} `json:"stats"`
+	Histories map[string]struct {
+		Events  []json.RawMessage `json:"events"`
+		Commits []struct {
+			Repository string `json:"repository"`
+		} `json:"commits"`
+	} `json:"histories"`
+	Warnings []struct {
+		Code                string `json:"code"`
+		Context             string `json:"context"`
+		Reason              string `json:"reason"`
+		SkippedCorrelations int    `json:"skipped_correlations"`
+		Message             string `json:"message"`
+	} `json:"warnings"`
+}
+
+func decodeExternalHistoryPayload(t *testing.T, out []byte) externalHistoryPayload {
+	t.Helper()
+	var payload externalHistoryPayload
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("decode external history: %v\n%s", err, out)
+	}
+	return payload
+}
+
 func createExternalHistoryFixture(t *testing.T) externalHistoryFixture {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -279,6 +307,173 @@ func TestExternalHistoryAllowsMissingLedger(t *testing.T) {
 	}
 	if strings.Contains(string(out), "not a git repository") || !strings.Contains(string(out), `"hotspots":[]`) {
 		t.Fatalf("missing ledger did not produce empty file history: %s", out)
+	}
+}
+
+func TestExternalHistoryDoesNotProbeUnusedOrUnselectedRepositories(t *testing.T) {
+	bv := buildBvBinary(t)
+	t.Run("unused configured context", func(t *testing.T) {
+		fixture := createExternalHistoryFixture(t)
+		config, err := os.ReadFile(fixture.configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		missing := filepath.Join(fixture.root, "unused-missing")
+		config = append(config, []byte(fmt.Sprintf("  ctx:unused-333:\n    path: %q\n", missing))...)
+		if err := os.WriteFile(fixture.configPath, config, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
+		if err != nil {
+			t.Fatalf("unused stale context failed history: %v\n%s", err, out)
+		}
+		if payload := decodeExternalHistoryPayload(t, out); len(payload.Warnings) != 0 || payload.Stats.TotalCommits != 5 {
+			t.Fatalf("unused context was probed or changed history: %+v", payload)
+		}
+	})
+
+	t.Run("selected bead excludes another context", func(t *testing.T) {
+		fixture := createExternalHistoryFixture(t)
+		config, err := os.ReadFile(fixture.configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config = []byte(strings.Replace(string(config), fixture.repoB, filepath.Join(fixture.root, "missing-repo-b"), 1))
+		if err := os.WriteFile(fixture.configPath, config, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := fixture.command(t, bv, "--bead-history", "work-2", "--history-mode", "external", "--hub-config", fixture.configPath)
+		if err != nil {
+			t.Fatalf("selected history probed unrelated stale context: %v\n%s", err, out)
+		}
+		payload := decodeExternalHistoryPayload(t, out)
+		if len(payload.Warnings) != 0 || payload.Stats.TotalCommits != 1 || len(payload.Histories["work-2"].Events) != 2 {
+			t.Fatalf("selected history was incomplete or warned: %+v", payload)
+		}
+	})
+}
+
+func TestExternalHistoryReturnsPartialReportsForUnavailableRepositories(t *testing.T) {
+	bv := buildBvBinary(t)
+	t.Run("one unavailable context", func(t *testing.T) {
+		fixture := createExternalHistoryFixture(t)
+		config, err := os.ReadFile(fixture.configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		missing := filepath.Join(fixture.root, "missing-repo-a")
+		config = []byte(strings.Replace(string(config), fixture.repoA, missing, 1))
+		if err := os.WriteFile(fixture.configPath, config, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
+		if err != nil {
+			t.Fatalf("partial external history failed: %v\n%s", err, out)
+		}
+		payload := decodeExternalHistoryPayload(t, out)
+		if payload.Stats.TotalCommits != 2 || len(payload.Warnings) != 1 || len(payload.Histories["work-1"].Events) != 2 {
+			t.Fatalf("unexpected partial report: %+v", payload)
+		}
+		warning := payload.Warnings[0]
+		if warning.Code != "external_repository_unavailable" || warning.Context != "ctx:repo-a-111" || warning.Reason != "not_found" || warning.SkippedCorrelations != 4 {
+			t.Fatalf("unexpected warning: %+v", warning)
+		}
+		if strings.Contains(string(out), missing) || strings.Contains(warning.Message, fixture.root) {
+			t.Fatalf("warning leaked private checkout path: %s", out)
+		}
+
+		triageOut, err := fixture.command(t, bv, "--robot-triage", "--history-mode", "external", "--hub-config", fixture.configPath, "--robot-history-timeout-ms", "0")
+		if err != nil {
+			t.Fatalf("partial robot triage failed: %v\n%s", err, triageOut)
+		}
+		var triage struct {
+			Triage struct {
+				Meta struct {
+					HistoryStatus   string            `json:"history_status"`
+					HistoryWarnings []json.RawMessage `json:"history_warnings"`
+				} `json:"meta"`
+			} `json:"triage"`
+		}
+		if err := json.Unmarshal(triageOut, &triage); err != nil {
+			t.Fatalf("decode triage: %v\n%s", err, triageOut)
+		}
+		if triage.Triage.Meta.HistoryStatus != "partial" || len(triage.Triage.Meta.HistoryWarnings) != 1 {
+			t.Fatalf("triage did not expose partial history: %s", triageOut)
+		}
+
+		hotspotsOut, err := fixture.command(t, bv, "--robot-file-hotspots", "--history-mode", "external", "--hub-config", fixture.configPath)
+		if err != nil {
+			t.Fatalf("partial file hotspots failed: %v\n%s", err, hotspotsOut)
+		}
+		var hotspots struct {
+			HistoryWarnings []json.RawMessage `json:"history_warnings"`
+		}
+		if err := json.Unmarshal(hotspotsOut, &hotspots); err != nil {
+			t.Fatalf("decode hotspots: %v\n%s", err, hotspotsOut)
+		}
+		if len(hotspots.HistoryWarnings) != 1 || strings.Contains(string(hotspotsOut), missing) {
+			t.Fatalf("history-derived output hid warning or leaked path: %s", hotspotsOut)
+		}
+
+		explainOut, err := fixture.command(t, bv, "--robot-explain-correlation", "ctx:repo-a-111@"+fixture.shaA+":work-1", "--history-mode", "external", "--hub-config", fixture.configPath)
+		if err == nil {
+			t.Fatalf("explain should not claim an omitted commit is available: %s", explainOut)
+		}
+		var explanation struct {
+			Status          string            `json:"status"`
+			HistoryWarnings []json.RawMessage `json:"history_warnings"`
+		}
+		if err := json.Unmarshal(explainOut, &explanation); err != nil {
+			t.Fatalf("decode partial explanation: %v\n%s", err, explainOut)
+		}
+		if explanation.Status != "history_partial" || len(explanation.HistoryWarnings) != 1 {
+			t.Fatalf("partial explanation hid repository warning: %s", explainOut)
+		}
+	})
+
+	t.Run("all applicable contexts unavailable", func(t *testing.T) {
+		fixture := createExternalHistoryFixture(t)
+		config, err := os.ReadFile(fixture.configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configText := strings.Replace(string(config), fixture.repoA, filepath.Join(fixture.root, "missing-a"), 1)
+		configText = strings.Replace(configText, fixture.repoB, filepath.Join(fixture.root, "missing-b"), 1)
+		if err := os.WriteFile(fixture.configPath, []byte(configText), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, err := fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
+		if err != nil {
+			t.Fatalf("lifecycle-only partial history failed: %v\n%s", err, out)
+		}
+		payload := decodeExternalHistoryPayload(t, out)
+		if payload.Stats.TotalCommits != 0 || len(payload.Warnings) != 2 || len(payload.Histories["work-1"].Events) != 2 || len(payload.Histories["work-2"].Events) != 2 {
+			t.Fatalf("all-unavailable report lost lifecycle data or warnings: %+v", payload)
+		}
+		if payload.Warnings[0].Context != "ctx:repo-a-111" || payload.Warnings[0].SkippedCorrelations != 4 || payload.Warnings[1].Context != "ctx:repo-b-222" || payload.Warnings[1].SkippedCorrelations != 2 {
+			t.Fatalf("warnings were not deterministic: %+v", payload.Warnings)
+		}
+	})
+}
+
+func TestExternalHistorySelectedQueryStillValidatesEntireLedger(t *testing.T) {
+	bv := buildBvBinary(t)
+	fixture := createExternalHistoryFixture(t)
+	file, err := os.OpenFile(fixture.ledgerPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := fmt.Fprintf(file, "{\"bead_id\":\"unknown-bead\",\"context\":\"ctx:repo-b-222\",\"commit\":%q}\n", fixture.shaB)
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	out, err := fixture.command(t, bv, "--bead-history", "work-2", "--history-mode", "external", "--hub-config", fixture.configPath)
+	if err == nil || !strings.Contains(string(out), "references unknown bead") {
+		t.Fatalf("selected query ignored invalid unrelated ledger record: err=%v output=%s", err, out)
 	}
 }
 
@@ -566,27 +761,12 @@ func TestCorrelateAddValidatesBeadContextBeforeLedgerMutation(t *testing.T) {
 func TestExternalHistoryDiagnosticsDoNotFallback(t *testing.T) {
 	bv := buildBvBinary(t)
 	fixture := createExternalHistoryFixture(t)
-	configData, err := os.ReadFile(fixture.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	missingRepoConfig := strings.Replace(string(configData), fixture.repoA, filepath.Join(fixture.root, "missing-repo"), 1)
-	if err := os.WriteFile(fixture.configPath, []byte(missingRepoConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out, err := fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
-	if err == nil || !strings.Contains(string(out), "is unreadable") || strings.Contains(string(out), "not a git repository") {
-		t.Fatalf("missing repository diagnostic was not actionable: %s", out)
-	}
-	if err := os.WriteFile(fixture.configPath, configData, 0o600); err != nil {
-		t.Fatal(err)
-	}
 
 	badLedger := fmt.Sprintf("{\"bead_id\":\"work-1\",\"context\":\"ctx:missing-999\",\"commit\":%q}\n", fixture.shaA)
 	if err := os.WriteFile(fixture.ledgerPath, []byte(badLedger), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err = fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
+	out, err := fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
 	if err == nil {
 		t.Fatalf("expected invalid context failure: %s", out)
 	}
