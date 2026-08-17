@@ -3,6 +3,7 @@ package hub
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 
 // ConfigVersion is the supported Hub configuration schema version.
 const ConfigVersion = 1
+
+const changeSignalName = "viewer-generation"
 
 // Paths identifies the fixed files and directories used by a Hub.
 type Paths struct {
@@ -67,6 +70,53 @@ func DefaultPaths() (Paths, error) {
 		Config: filepath.Join(home, ".config", "bv", "hub.yaml"),
 		Ledger: filepath.Join(parent, "correlations.jsonl"),
 	}, nil
+}
+
+// ChangeSignalPath returns the application-owned file used to notify Viewer of
+// successful Hub mutations. It lives beside the store, outside repositories.
+func ChangeSignalPath(paths Paths) string {
+	return filepath.Join(filepath.Dir(paths.Store), changeSignalName)
+}
+
+// SignalChange atomically advances the Viewer change signal after a successful
+// Hub mutation. The random generation makes every replacement observable even
+// when mutations occur within the filesystem timestamp resolution.
+func SignalChange(paths Paths) error {
+	path := ChangeSignalPath(paths)
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, "."+changeSignalName+".")
+	if err != nil {
+		return fmt.Errorf("creating Hub change signal: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	keepTemporary := true
+	defer func() {
+		if keepTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("setting Hub change signal permissions: %w", err)
+	}
+	var generation [16]byte
+	if _, err := rand.Read(generation[:]); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("generating Hub change signal: %w", err)
+	}
+	if _, err := fmt.Fprintf(temporary, "%x\n", generation); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("writing Hub change signal: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("closing Hub change signal: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("installing Hub change signal: %w", err)
+	}
+	keepTemporary = false
+	return nil
 }
 
 // Load reads and validates a strict version-1 Hub config. Paths in the returned

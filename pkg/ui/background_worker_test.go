@@ -840,6 +840,279 @@ func TestBackgroundWorker_ForceRefreshReportsBDExportFailure(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_HubSignalRefreshesAndDeduplicates(t *testing.T) {
+	stale := `{"id":"STALE","title":"Stale","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	fresh := `{"id":"FRESH","title":"Fresh","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	root, issuesPath := makeReloadBDWorkspace(t, stale)
+	payloadPath, countPath := installCountingReloadFakeBD(t, root, fresh)
+	signalPath := filepath.Join(root, "viewer-generation")
+	writeTestSignal(t, signalPath, "initial")
+
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:       issuesPath,
+		HubChangeSignal: signalPath,
+		DebounceDelay:   20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	worker.TriggerRefresh()
+	waitForSnapshotVersion(t, worker, 1)
+
+	writeTestSignal(t, signalPath, "changed")
+	waitForSnapshotVersion(t, worker, 2)
+	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.Issues[0].ID != "FRESH" {
+		t.Fatalf("Hub signal did not load fresh data: %#v", snapshot)
+	}
+	waitForFileLength(t, countPath, 1)
+
+	// A real mutation signal still exports once, but unchanged issue data does
+	// not replace the snapshot or trigger repeated analysis.
+	writeTestSignal(t, signalPath, "unchanged")
+	waitForFileLength(t, countPath, 2)
+	waitForWorkerIdle(t, worker, 2)
+	if got := worker.Metrics().SnapshotVersion; got != 2 {
+		t.Fatalf("unchanged Hub data advanced snapshot version to %d", got)
+	}
+	if err := os.WriteFile(payloadPath, []byte(fresh), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := fileLength(t, countPath); got != 2 {
+		t.Fatalf("unchanged data caused repeated exports: %d", got)
+	}
+}
+
+func TestBackgroundWorker_HubSignalBurstCoalesces(t *testing.T) {
+	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	root, issuesPath := makeReloadBDWorkspace(t, content)
+	_, countPath := installCountingReloadFakeBD(t, root, content)
+	signalPath := filepath.Join(root, "viewer-generation")
+	writeTestSignal(t, signalPath, "initial")
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:       issuesPath,
+		HubChangeSignal: signalPath,
+		DebounceDelay:   40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	worker.TriggerRefresh()
+	waitForSnapshotVersion(t, worker, 1)
+	for i := 0; i < 8; i++ {
+		writeTestSignal(t, signalPath, fmt.Sprintf("burst-%d", i))
+	}
+	waitForFileLength(t, countPath, 1)
+	time.Sleep(100 * time.Millisecond)
+	if got := fileLength(t, countPath); got != 1 {
+		t.Fatalf("Hub signal burst produced %d exports, want 1", got)
+	}
+}
+
+func TestBackgroundWorker_HubFailureRetainsSnapshotAndRecovers(t *testing.T) {
+	stale := `{"id":"STALE","title":"Stale","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	fresh := `{"id":"FRESH","title":"Fresh","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	root, issuesPath := makeReloadBDWorkspace(t, stale)
+	payloadPath, _ := installCountingReloadFakeBD(t, root, fresh)
+	installCountingFailingBD(t, payloadPath)
+	signalPath := filepath.Join(root, "viewer-generation")
+	writeTestSignal(t, signalPath, "initial")
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:       issuesPath,
+		HubChangeSignal: signalPath,
+		DebounceDelay:   5 * time.Millisecond,
+		SourceRetryBase: 80 * time.Millisecond,
+		SourceRetryMax:  80 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	worker.TriggerRefresh()
+	waitForSnapshotVersion(t, worker, 1)
+	writeTestSignal(t, signalPath, "changed")
+	waitForBackgroundWorkerMsg(t, worker, time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(SnapshotErrorMsg)
+		return ok
+	})
+	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.Issues[0].ID != "STALE" {
+		t.Fatalf("failed refresh replaced last valid snapshot: %#v", snapshot)
+	}
+	installCountingSuccessBD(t, payloadPath)
+	waitForSnapshotVersion(t, worker, 2)
+	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.Issues[0].ID != "FRESH" {
+		t.Fatalf("retry did not recover fresh data: %#v", snapshot)
+	}
+}
+
+func TestBackgroundWorker_StopCancelsHubExport(t *testing.T) {
+	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	root, issuesPath := makeReloadBDWorkspace(t, content)
+	startedPath := installBlockingReloadFakeBD(t, root)
+	signalPath := filepath.Join(root, "viewer-generation")
+	writeTestSignal(t, signalPath, "initial")
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:       issuesPath,
+		HubChangeSignal: signalPath,
+		DebounceDelay:   5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	worker.TriggerRefresh()
+	waitForSnapshotVersion(t, worker, 1)
+	writeTestSignal(t, signalPath, "changed")
+	waitForFile(t, startedPath)
+
+	stopped := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not cancel the in-flight Hub export")
+	}
+	if worker.State() != WorkerStopped || worker.watcher.IsStarted() || worker.hubChangeWatcher.IsStarted() {
+		t.Fatalf("worker or watcher remained active after Stop")
+	}
+}
+
+func TestNewModel_HubAndLocalWatcherModes(t *testing.T) {
+	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	t.Run("local", func(t *testing.T) {
+		t.Setenv("BV_BACKGROUND_MODE", "0")
+		t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
+		path := filepath.Join(t.TempDir(), "issues.jsonl")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		model := NewModel(nil, nil, path)
+		defer model.Stop()
+		if model.backgroundWorker != nil || model.watcher == nil {
+			t.Fatalf("local mode watcher selection: worker=%v watcher=%v", model.backgroundWorker, model.watcher)
+		}
+	})
+
+	t.Run("hub", func(t *testing.T) {
+		t.Setenv("BV_BACKGROUND_MODE", "0")
+		directory := t.TempDir()
+		path := filepath.Join(directory, "issues.jsonl")
+		signalPath := filepath.Join(directory, "viewer-generation")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
+		model := NewModel(nil, nil, path)
+		defer model.Stop()
+		if model.backgroundWorker == nil || model.watcher != nil || model.backgroundWorker.hubChangeWatcher == nil {
+			t.Fatalf("Hub mode watcher selection: worker=%v watcher=%v", model.backgroundWorker, model.watcher)
+		}
+	})
+}
+
+func installCountingReloadFakeBD(t *testing.T, root, payload string) (string, string) {
+	t.Helper()
+	payloadPath := installReloadFakeBD(t, root, payload)
+	countPath := filepath.Join(filepath.Dir(payloadPath), "export-count")
+	installCountingSuccessBD(t, payloadPath)
+	return payloadPath, countPath
+}
+
+func installCountingSuccessBD(t *testing.T, payloadPath string) {
+	t.Helper()
+	binDir := filepath.Dir(payloadPath)
+	countPath := filepath.Join(binDir, "export-count")
+	script := "#!/bin/sh\nprintf x >> '" + countPath + "'\ncat '" + payloadPath + "' > \"$3\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installCountingFailingBD(t *testing.T, payloadPath string) {
+	t.Helper()
+	binDir := filepath.Dir(payloadPath)
+	countPath := filepath.Join(binDir, "export-count")
+	script := "#!/bin/sh\nprintf x >> '" + countPath + "'\nprintf partial > \"$3\"\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installBlockingReloadFakeBD(t *testing.T, root string) string {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	startedPath := filepath.Join(binDir, "started")
+	script := "#!/bin/sh\nprintf started > '" + startedPath + "'\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return startedPath
+}
+
+func writeTestSignal(t *testing.T, path, generation string) {
+	t.Helper()
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, []byte(generation), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fileLength(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(data)
+}
+
+func waitForFileLength(t *testing.T, path string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && len(data) >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s length %d", path, want)
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
 func TestBackgroundWorker_SetRecipe_RebuildsOnRecipeChangeWithSameName(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")

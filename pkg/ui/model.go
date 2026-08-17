@@ -237,12 +237,16 @@ func loadIssuesForReload(path string, opts loader.ParseOptions) (loader.PooledIs
 }
 
 func preparePathForReload(path string, refreshBDExport bool) (string, error) {
+	return preparePathForReloadContext(context.Background(), path, refreshBDExport)
+}
+
+func preparePathForReloadContext(ctx context.Context, path string, refreshBDExport bool) (string, error) {
 	if !refreshBDExport || !shouldRefreshBDExport(path) {
 		return path, nil
 	}
 
 	var exportWarning string
-	preparedPath, err := loader.PrepareBeadsDirForRead(filepath.Dir(path), true, func(msg string) {
+	preparedPath, err := loader.PrepareBeadsDirForReadContext(ctx, filepath.Dir(path), true, func(msg string) {
 		exportWarning = msg
 	})
 	if err != nil {
@@ -1117,11 +1121,16 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			backgroundModeRequested = false
 		}
 	}
+	hubChangeSignal := strings.TrimSpace(os.Getenv("BV_HUB_CHANGE_SIGNAL"))
+	if !hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
+		hubChangeSignal = ""
+	}
 
-	if beadsPath != "" && backgroundModeRequested {
+	if beadsPath != "" && (backgroundModeRequested || hubChangeSignal != "") {
 		bw, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:     beadsPath,
-			DebounceDelay: 200 * time.Millisecond,
+			BeadsPath:       beadsPath,
+			DebounceDelay:   200 * time.Millisecond,
+			HubChangeSignal: hubChangeSignal,
 		})
 		if err != nil {
 			backgroundModeErr = err
@@ -1275,6 +1284,15 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 
 	m.registerKeyBindings()
 	return m
+}
+
+func hubAutoRefreshEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 // SetHistoryProvider configures the shared TUI history provider.

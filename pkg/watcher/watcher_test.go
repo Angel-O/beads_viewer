@@ -397,6 +397,41 @@ func TestWatcher_PollingDetectsBackwardMtimeChangeSameSize(t *testing.T) {
 	}
 }
 
+func TestWatcher_PollingContentCheckDetectsSameMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "signal")
+	if err := os.WriteFile(path, []byte("generation-one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWatcher(path,
+		WithForcePoll(true),
+		WithPollInterval(5*time.Millisecond),
+		WithDebounceDuration(time.Millisecond),
+		WithContentCheck(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	if err := os.WriteFile(path, []byte("generation-two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, initial.ModTime(), initial.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-w.Changed():
+	case <-time.After(time.Second):
+		t.Fatal("same-size, same-mtime signal change was not detected")
+	}
+}
+
 func TestWatcher_FsnotifyCreateRefreshesRemovedState(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.jsonl")

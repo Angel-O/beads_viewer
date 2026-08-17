@@ -203,6 +203,48 @@ func TestAutoUsesHubWithoutValidLocalStore(t *testing.T) {
 	}
 }
 
+func TestInteractiveHubPassesAutomaticRefreshSignal(t *testing.T) {
+	fixture := newFixture(t, "git", "bd", "bv", "wbd")
+	fixture.makeHubStore(t)
+	code, stderr := fixture.runInteractive("--hub")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	record := fixture.record(t, "bv")
+	want := filepath.Join(fixture.home, ".local/share/beads/hub/viewer-generation")
+	if record.Env["BV_HUB_CHANGE_SIGNAL"] != want {
+		t.Fatalf("BV_HUB_CHANGE_SIGNAL = %q, want %q", record.Env["BV_HUB_CHANGE_SIGNAL"], want)
+	}
+}
+
+func TestHubAutomaticRefreshCanBeDisabledAndNeverLeaksToLocalMode(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		fixture.makeHubStore(t)
+		t.Setenv("BV_HUB_AUTO_REFRESH", "0")
+		if code, stderr := fixture.runInteractive("--hub"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if got := fixture.record(t, "bv").Env["BV_HUB_CHANGE_SIGNAL"]; got != "" {
+			t.Fatalf("disabled Hub signal leaked to bv: %q", got)
+		}
+	})
+
+	t.Run("local", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bv")
+		repository := filepath.Join(fixture.root, "repository")
+		fixture.makeLocalStore(t, repository)
+		t.Setenv("WBV_GIT_ROOT", repository)
+		t.Setenv("BV_HUB_CHANGE_SIGNAL", "hostile-value")
+		if code, stderr := fixture.runInteractive("--local"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if got := fixture.record(t, "bv").Env["BV_HUB_CHANGE_SIGNAL"]; got != "" {
+			t.Fatalf("Hub signal leaked to local mode: %q", got)
+		}
+	})
+}
+
 func TestMalformedLocalStoreFailsInsteadOfSelectingHub(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -563,6 +605,19 @@ func (f fixture) runWithOutput(arguments ...string) (int, string, string) {
 		interactive: func() bool { return false },
 	}
 	return r.run(arguments), stdout.String(), stderr.String()
+}
+
+func (f fixture) runInteractive(arguments ...string) (int, string) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	r := runner{
+		stdin:       strings.NewReader(""),
+		stdout:      &stdout,
+		stderr:      &stderr,
+		directory:   f.root,
+		interactive: func() bool { return true },
+	}
+	return r.run(arguments), stderr.String()
 }
 
 func (f fixture) record(t *testing.T, command string) childRecord {

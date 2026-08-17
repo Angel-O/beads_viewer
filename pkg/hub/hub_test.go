@@ -27,6 +27,34 @@ func TestDefaultPaths(t *testing.T) {
 	}
 }
 
+func TestSignalChangeAtomicallyAdvancesGeneration(t *testing.T) {
+	parent := t.TempDir()
+	paths := Paths{Store: filepath.Join(parent, ".beads")}
+	if got, want := ChangeSignalPath(paths), filepath.Join(parent, changeSignalName); got != want {
+		t.Fatalf("ChangeSignalPath() = %q, want %q", got, want)
+	}
+	if err := SignalChange(paths); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(ChangeSignalPath(paths))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignalChange(paths); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(ChangeSignalPath(paths))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) == 0 || string(first) == string(second) {
+		t.Fatalf("generation did not advance: first=%q second=%q", first, second)
+	}
+	if info, err := os.Stat(ChangeSignalPath(paths)); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("change signal permissions: info=%v err=%v", info, err)
+	}
+}
+
 func TestDefaultPathsRequiresHOME(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows resolves the home directory from USERPROFILE")
