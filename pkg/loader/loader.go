@@ -142,6 +142,12 @@ func followBeadsRedirect(beadsDir string) (string, error) {
 	return current, nil
 }
 
+// ResolveBeadsDir resolves routing redirects for an explicit .beads directory.
+// It does not consult BEADS_DB, BEADS_DIR, the current directory, or Git.
+func ResolveBeadsDir(beadsDir string) (string, error) {
+	return followBeadsRedirect(beadsDir)
+}
+
 // readBeadsRedirect reads the redirect file inside beadsDir. It returns the
 // resolved target directory and true when a non-empty redirect exists. Relative
 // targets resolve against beadsDir itself (so "." stays in place), matching br.

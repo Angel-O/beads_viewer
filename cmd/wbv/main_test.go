@@ -49,10 +49,7 @@ func TestHelperProcess(t *testing.T) {
 func TestLocalModeDelegatesExactArgumentsAndSanitizedEnvironment(t *testing.T) {
 	fixture := newFixture(t, "git", "bv")
 	repository := filepath.Join(fixture.root, "repository")
-	marker := filepath.Join(repository, ".beads")
-	if err := os.MkdirAll(marker, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	fixture.makeLocalStore(t, repository)
 	t.Setenv("WBV_GIT_ROOT", repository)
 	for name := range sanitizedEnvironment {
 		t.Setenv(name, "unsafe")
@@ -92,9 +89,7 @@ func TestLocalModeDelegatesExactArgumentsAndSanitizedEnvironment(t *testing.T) {
 func TestAutoLocalAndExplicitHubAreIsolated(t *testing.T) {
 	fixture := newFixture(t, "git", "bd", "bv", "wbd")
 	repository := filepath.Join(fixture.root, "repository")
-	if err := os.MkdirAll(filepath.Join(repository, ".beads"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	fixture.makeLocalStore(t, repository)
 	t.Setenv("WBV_GIT_ROOT", repository)
 	fixture.makeHubStore(t)
 	configDir := filepath.Join(fixture.home, ".config", "bv")
@@ -113,6 +108,9 @@ func TestAutoLocalAndExplicitHubAreIsolated(t *testing.T) {
 	if local.Env["BEADS_DIR"] != "" || local.Args[1] != "git" {
 		t.Fatalf("auto-local leaked Hub state: args=%#v BEADS_DIR=%q", local.Args, local.Env["BEADS_DIR"])
 	}
+	if err := os.WriteFile(filepath.Join(repository, ".beads", "issues.jsonl"), []byte("malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	code, stderr = fixture.run("--hub", "--robot-forecast", "all", "--forecast-agents", "64", "--forecast-label", "backend")
 	if code != 0 {
@@ -130,6 +128,221 @@ func TestAutoLocalAndExplicitHubAreIsolated(t *testing.T) {
 	wantStore := filepath.Join(fixture.home, ".local/share/beads/hub/.beads")
 	if hubRecord.Env["BEADS_DIR"] != wantStore {
 		t.Fatalf("BEADS_DIR = %q, want %q", hubRecord.Env["BEADS_DIR"], wantStore)
+	}
+}
+
+func TestAutoUsesHubWithoutValidLocalStore(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{name: "no marker"},
+		{
+			name: "irrelevant marker",
+			setup: func(t *testing.T, repository string) {
+				marker := filepath.Join(repository, ".beads")
+				if err := os.MkdirAll(marker, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(marker, "memories.jsonl"), []byte(`{"_type":"memory","id":"m1"}`+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "empty unrelated JSONL",
+			setup: func(t *testing.T, repository string) {
+				marker := filepath.Join(repository, ".beads")
+				if err := os.MkdirAll(marker, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(marker, "memories.jsonl"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "issue-shaped metadata JSONL",
+			setup: func(t *testing.T, repository string) {
+				marker := filepath.Join(repository, ".beads")
+				if err := os.MkdirAll(marker, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				content := `{"_type":"memory","id":"m1","title":"memory","status":"open"}` + "\n"
+				if err := os.WriteFile(filepath.Join(marker, "memories.jsonl"), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, "git", "bd", "bv", "wbd")
+			repository := filepath.Join(fixture.root, "repository")
+			if err := os.MkdirAll(repository, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if test.setup != nil {
+				test.setup(t, repository)
+			}
+			t.Setenv("WBV_GIT_ROOT", repository)
+			fixture.makeHubStore(t)
+
+			code, stderr := fixture.run("--robot-plan")
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			record := fixture.record(t, "bv")
+			if len(record.Args) < 2 || record.Args[1] != "external" {
+				t.Fatalf("auto mode args = %#v, want external history", record.Args)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.records, "wbd.json")); err != nil {
+				t.Fatalf("auto Hub mode did not configure wbd: %v", err)
+			}
+		})
+	}
+}
+
+func TestMalformedLocalStoreFailsInsteadOfSelectingHub(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "malformed JSON", content: "not json\n"},
+		{name: "non-issue record", content: `{"_type":"memory","id":"m1","title":"memory","status":"open"}` + "\n"},
+		{name: "invalid issue", content: `{"id":null,"title":"invalid","status":"open"}` + "\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, "git", "bd", "bv", "wbd")
+			repository := filepath.Join(fixture.root, "repository")
+			marker := filepath.Join(repository, ".beads")
+			if err := os.MkdirAll(marker, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(marker, "issues.jsonl"), []byte(test.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("WBV_GIT_ROOT", repository)
+			fixture.makeHubStore(t)
+
+			code, stderr := fixture.run("--robot-plan")
+			if code != 1 || !strings.Contains(stderr, "has no valid issue source") || !strings.Contains(stderr, "issues.jsonl") {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.records, "wbd.json")); !os.IsNotExist(err) {
+				t.Fatal("malformed local store silently selected Hub")
+			}
+		})
+	}
+}
+
+func TestNoncanonicalIssueSourcePreservesLocalMode(t *testing.T) {
+	fixture := newFixture(t, "git", "bd", "bv", "wbd")
+	repository := filepath.Join(fixture.root, "repository")
+	marker := filepath.Join(repository, ".beads")
+	if err := os.MkdirAll(marker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	issue := `{"id":"CUSTOM-1","title":"Custom source","status":"open","priority":2,"issue_type":"task"}` + "\n"
+	if err := os.WriteFile(filepath.Join(marker, "custom.jsonl"), []byte(issue), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WBV_GIT_ROOT", repository)
+	fixture.makeHubStore(t)
+
+	code, stderr := fixture.run("--robot-plan")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	record := fixture.record(t, "bv")
+	if len(record.Args) < 2 || record.Args[1] != "git" {
+		t.Fatalf("auto mode args = %#v, want local Git history", record.Args)
+	}
+}
+
+func TestLocalStoreRedirectsAreResolvedDeliberately(t *testing.T) {
+	t.Run("valid target", func(t *testing.T) {
+		root := t.TempDir()
+		marker := filepath.Join(root, "repository", ".beads")
+		target := filepath.Join(root, "shared", ".beads")
+		if err := os.MkdirAll(marker, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		makeLocalStore(t, filepath.Dir(target))
+		if err := os.WriteFile(filepath.Join(marker, "redirect"), []byte(target+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		valid, err := validLocalStore(marker)
+		if err != nil || !valid {
+			t.Fatalf("redirected store valid = %t, err = %v", valid, err)
+		}
+	})
+
+	t.Run("missing target", func(t *testing.T) {
+		marker := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(marker, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(marker, "redirect"), []byte("../missing/.beads\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		valid, err := validLocalStore(marker)
+		if err == nil || valid || !strings.Contains(err.Error(), "redirect target not found") {
+			t.Fatalf("broken redirect valid = %t, err = %v", valid, err)
+		}
+	})
+}
+
+func TestLinkedWorktreeUsesOnlyItsOwnLocalStore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	mainRepository := filepath.Join(root, "main")
+	linkedRepository := filepath.Join(root, "linked")
+	if err := os.Mkdir(mainRepository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, mainRepository, "init")
+	runGit(t, mainRepository, "config", "user.email", "wbv@example.invalid")
+	runGit(t, mainRepository, "config", "user.name", "wbv test")
+	runGit(t, mainRepository, "commit", "--allow-empty", "-m", "initial")
+	runGit(t, mainRepository, "worktree", "add", "-b", "linked", linkedRepository)
+	makeLocalStore(t, mainRepository)
+
+	wantRoot, err := filepath.EvalSymlinks(linkedRepository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveGitRoot(linkedRepository); got != wantRoot {
+		t.Fatalf("linked worktree root = %q, want %q", got, wantRoot)
+	}
+	valid, err := validLocalStore(filepath.Join(linkedRepository, ".beads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid {
+		t.Fatal("linked worktree inherited the main worktree's local store")
+	}
+
+	makeLocalStore(t, linkedRepository)
+	valid, err = validLocalStore(filepath.Join(linkedRepository, ".beads"))
+	if err != nil || !valid {
+		t.Fatalf("linked worktree's own store valid = %t, err = %v", valid, err)
+	}
+}
+
+func TestHelpExplainsDefaultModeSelection(t *testing.T) {
+	fixture := newFixture(t)
+	code, stdout, stderr := fixture.runWithOutput("--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"valid Viewer issue source", "Otherwise wbv uses the", "--hub", "linked worktree"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("help does not contain %q:\n%s", want, stdout)
+		}
 	}
 }
 
@@ -191,9 +404,7 @@ func TestLocalMarkerSafetyAndBareTerminalRestriction(t *testing.T) {
 	t.Run("bare non-terminal", func(t *testing.T) {
 		fixture := newFixture(t, "git", "bv")
 		repository := filepath.Join(fixture.root, "repository")
-		if err := os.MkdirAll(filepath.Join(repository, ".beads"), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		fixture.makeLocalStore(t, repository)
 		t.Setenv("WBV_GIT_ROOT", repository)
 		code, stderr := fixture.run("--local")
 		if code != 1 || !strings.Contains(stderr, "bare wbv requires an interactive terminal") {
@@ -207,6 +418,20 @@ func TestMissingHubPreconditionsAndDependencies(t *testing.T) {
 		fixture := newFixture(t, "git", "bd", "bv", "wbd")
 		code, stderr := fixture.run("--hub", "--robot-plan")
 		if code != 1 || !strings.Contains(stderr, "store is missing; run 'wbd bootstrap'") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+	})
+	t.Run("store is not a directory", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		store := filepath.Join(fixture.home, ".local/share/beads/hub/.beads")
+		if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(store, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr := fixture.run("--hub", "--robot-plan")
+		if code != 1 || !strings.Contains(stderr, "Hub store path is not a directory") {
 			t.Fatalf("code = %d, stderr = %q", code, stderr)
 		}
 	})
@@ -297,16 +522,47 @@ func (f fixture) makeHubStore(t *testing.T) {
 	}
 }
 
+func (f fixture) makeLocalStore(t *testing.T, repository string) {
+	t.Helper()
+	makeLocalStore(t, repository)
+}
+
+func makeLocalStore(t *testing.T, repository string) {
+	t.Helper()
+	marker := filepath.Join(repository, ".beads")
+	if err := os.MkdirAll(marker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(marker, "issues.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runGit(t *testing.T, directory string, arguments ...string) {
+	t.Helper()
+	command := exec.Command("git", arguments...)
+	command.Dir = directory
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
+	}
+}
+
 func (f fixture) run(arguments ...string) (int, string) {
+	code, _, stderr := f.runWithOutput(arguments...)
+	return code, stderr
+}
+
+func (f fixture) runWithOutput(arguments ...string) (int, string, string) {
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	r := runner{
 		stdin:       strings.NewReader(""),
-		stdout:      &bytes.Buffer{},
+		stdout:      &stdout,
 		stderr:      &stderr,
 		directory:   f.root,
 		interactive: func() bool { return false },
 	}
-	return r.run(arguments), stderr.String()
+	return r.run(arguments), stdout.String(), stderr.String()
 }
 
 func (f fixture) record(t *testing.T, command string) childRecord {

@@ -8,11 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"golang.org/x/term"
 )
 
@@ -81,47 +84,58 @@ func (r runner) run(arguments []string) int {
 	if err != nil {
 		return r.die(err)
 	}
-
-	paths, err := hub.DefaultPaths()
-	if err != nil {
-		return r.die(err)
+	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
+		r.printHelp()
+		return 0
 	}
+
 	gitRoot := resolveGitRoot(r.directory)
 	localMarker := ""
 	if gitRoot != "" {
 		localMarker = filepath.Join(gitRoot, ".beads")
 	}
+	localStore := false
+	if selectedMode != modeHub && gitRoot != "" {
+		localStore, err = validLocalStore(localMarker)
+		if err != nil {
+			return r.die(err)
+		}
+	}
 	if selectedMode == modeAuto {
 		selectedMode = modeHub
-		if markerExists(localMarker) {
+		if localStore {
 			selectedMode = modeLocal
 		}
 	}
 
+	paths := hub.Paths{}
 	if selectedMode == modeLocal {
 		if gitRoot == "" {
 			return r.die(errors.New("local mode requires a Git worktree"))
 		}
-		if !markerExists(localMarker) {
+		if !localStore && !markerExists(localMarker) {
 			return r.die(fmt.Errorf("local Beads store is missing at %s", localMarker))
 		}
-		info, statErr := os.Lstat(localMarker)
-		if statErr != nil {
-			return r.die(fmt.Errorf("unsupported local Beads marker at %s", localMarker))
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return r.die(fmt.Errorf("local Beads marker must not be a symlink: %s", localMarker))
-		}
-		if !info.IsDir() {
-			return r.die(fmt.Errorf("unsupported local Beads marker at %s", localMarker))
+		if !localStore {
+			return r.die(fmt.Errorf("local Beads store at %s has no valid issue source", localMarker))
 		}
 		if !commandExists("bv") {
 			return r.die(errors.New("required command not found: bv"))
 		}
 	} else {
+		paths, err = hub.DefaultPaths()
+		if err != nil {
+			return r.die(err)
+		}
 		info, statErr := os.Stat(paths.Store)
-		if statErr != nil || !info.IsDir() {
+		if os.IsNotExist(statErr) {
 			return r.die(errors.New("store is missing; run 'wbd bootstrap'"))
+		}
+		if statErr != nil {
+			return r.die(fmt.Errorf("accessing Hub store at %s: %w", paths.Store, statErr))
+		}
+		if !info.IsDir() {
+			return r.die(fmt.Errorf("Hub store path is not a directory: %s", paths.Store))
 		}
 		for _, command := range []string{"bd", "bv", "wbd"} {
 			if !commandExists(command) {
@@ -466,6 +480,95 @@ func resolveGitRoot(directory string) string {
 	return strings.TrimRight(string(output), "\n")
 }
 
+func validLocalStore(marker string) (bool, error) {
+	info, err := os.Lstat(marker)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspecting local Beads marker at %s: %w", marker, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("local Beads marker must not be a symlink: %s", marker)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("unsupported local Beads marker at %s", marker)
+	}
+
+	beadsDir, err := loader.ResolveBeadsDir(marker)
+	if err != nil {
+		return false, fmt.Errorf("invalid local Beads store at %s: %w", marker, err)
+	}
+	if _, err := os.ReadDir(beadsDir); err != nil {
+		return false, fmt.Errorf("reading local Beads store at %s: %w", marker, err)
+	}
+	if loader.IsBDWorkspace(beadsDir) {
+		return true, nil
+	}
+
+	sources, err := datasource.DiscoverSources(datasource.DiscoveryOptions{
+		BeadsDir:            beadsDir,
+		SkipWorktreeSources: true,
+	})
+	if err != nil {
+		return false, fmt.Errorf("inspecting local Beads store at %s: %w", marker, err)
+	}
+	var malformed []string
+	for _, source := range sources {
+		name := filepath.Base(source.Path)
+		canonical := name == "beads.db" || preferredJSONLName(name)
+		if source.Type == datasource.SourceTypeJSONLLocal {
+			valid, validationError := validJSONLIssueSource(source.Path, canonical)
+			if valid {
+				return true, nil
+			}
+			if canonical {
+				malformed = append(malformed, fmt.Sprintf("%s: %s", name, validationError))
+			}
+			continue
+		}
+		if !canonical {
+			continue
+		}
+		if validateErr := datasource.ValidateSource(&source); validateErr == nil {
+			return true, nil
+		}
+		malformed = append(malformed, fmt.Sprintf("%s: %s", name, source.ValidationError))
+	}
+	if len(malformed) > 0 {
+		sort.Strings(malformed)
+		return false, fmt.Errorf("local Beads store at %s has no valid issue source (%s)", marker, strings.Join(malformed, "; "))
+	}
+	return false, nil
+}
+
+func validJSONLIssueSource(path string, allowEmpty bool) (bool, string) {
+	var stats loader.ParseStats
+	if _, err := loader.LoadIssuesFromFileWithOptions(path, loader.ParseOptions{Stats: &stats}); err != nil {
+		return false, err.Error()
+	}
+	maxErrorRate := datasource.DefaultValidationOptions().MaxJSONLErrorRate
+	if rate := stats.ErrorRate(); rate > maxErrorRate {
+		return false, fmt.Sprintf("too many errors: %.1f%% (max %.1f%%)", rate*100, maxErrorRate*100)
+	}
+	if stats.Valid == 0 && stats.Errors+stats.Skipped > 0 {
+		return false, fmt.Sprintf("no issue records (%d non-issue/error lines)", stats.Errors+stats.Skipped)
+	}
+	if !allowEmpty && stats.Valid == 0 {
+		return false, "no issue records"
+	}
+	return true, ""
+}
+
+func preferredJSONLName(name string) bool {
+	for _, preferred := range loader.PreferredJSONLNames {
+		if name == preferred {
+			return true
+		}
+	}
+	return false
+}
+
 func markerExists(path string) bool {
 	if path == "" {
 		return false
@@ -507,4 +610,20 @@ func childExitCode(err error) (int, bool) {
 func (r runner) die(err error) int {
 	fmt.Fprintf(r.stderr, "wbv: %s\n", err)
 	return 1
+}
+
+func (r runner) printHelp() {
+	fmt.Fprint(r.stdout, `Usage: wbv [--local|--hub] [VIEWER ROBOT INVOCATION]
+
+Without a mode selector, wbv uses the current Git worktree's local .beads
+store only when it contains a valid Viewer issue source. Otherwise wbv uses the
+private Hub. A linked worktree does not inherit .beads data from another
+worktree. Unsafe or malformed local stores fail with an error instead of
+silently selecting a mode.
+
+  --local  Require a valid local store and use Git history.
+  --hub    Always use the private Hub and external history.
+  -h, --help
+           Show this help.
+`)
 }
