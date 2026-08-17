@@ -766,80 +766,6 @@ func TestBackgroundWorker_ForceRefreshBypassesDedup(t *testing.T) {
 	}
 }
 
-func TestBackgroundWorker_ForceRefreshRegeneratesBDExport(t *testing.T) {
-	stale := `{"id":"STALE","title":"Stale export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	first := `{"id":"FIRST","title":"First export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	second := `{"id":"SECOND","title":"Second export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	root, issuesPath := makeReloadBDWorkspace(t, stale)
-	payloadPath := installReloadFakeBD(t, root, first)
-
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath})
-	if err != nil {
-		t.Fatalf("NewBackgroundWorker failed: %v", err)
-	}
-	defer worker.Stop()
-
-	worker.ForceSourceRefresh()
-	waitForSnapshotVersion(t, worker, 1)
-	waitForWorkerIdle(t, worker, 1)
-	if snapshot := worker.GetSnapshot(); snapshot == nil || len(snapshot.Issues) != 1 || snapshot.Issues[0].ID != "FIRST" {
-		t.Fatalf("first force refresh did not regenerate export: %#v", snapshot)
-	}
-
-	if err := os.WriteFile(payloadPath, []byte(second), 0o644); err != nil {
-		t.Fatalf("change fake database payload: %v", err)
-	}
-	worker.ForceSourceRefresh()
-	waitForSnapshotVersion(t, worker, 2)
-	waitForWorkerIdle(t, worker, 2)
-	if snapshot := worker.GetSnapshot(); snapshot == nil || len(snapshot.Issues) != 1 || snapshot.Issues[0].ID != "SECOND" {
-		t.Fatalf("second force refresh used stale export: %#v", snapshot)
-	}
-}
-
-func TestBackgroundWorker_ForceRefreshReportsBDExportFailure(t *testing.T) {
-	stale := `{"id":"STALE","title":"Stale export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	root, issuesPath := makeReloadBDWorkspace(t, stale)
-
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath})
-	if err != nil {
-		t.Fatalf("NewBackgroundWorker failed: %v", err)
-	}
-	defer worker.Stop()
-	if err := worker.Start(); err != nil {
-		t.Fatalf("start worker: %v", err)
-	}
-	worker.TriggerRefresh()
-	waitForSnapshotVersion(t, worker, 1)
-	waitForWorkerIdle(t, worker, 1)
-	installFailingReloadFakeBD(t, root, "partial export\n")
-	worker.ForceSourceRefresh()
-	deadline := time.Now().Add(time.Second)
-	for worker.State() != WorkerProcessing && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if worker.State() != WorkerProcessing {
-		t.Fatal("worker did not begin source refresh")
-	}
-	worker.TriggerRefresh()
-
-	msg := waitForBackgroundWorkerMsg(t, worker, time.Second, func(msg tea.Msg) bool {
-		_, ok := msg.(SnapshotErrorMsg)
-		return ok
-	})
-	reloadErr := msg.(SnapshotErrorMsg)
-	if reloadErr.Err == nil || !strings.Contains(reloadErr.Err.Error(), "bd export failed") {
-		t.Fatalf("expected explicit bd export error, got %v", reloadErr.Err)
-	}
-	time.Sleep(300 * time.Millisecond)
-	if snapshot := worker.GetSnapshot(); snapshot == nil || len(snapshot.Issues) != 1 || snapshot.Issues[0].ID != "STALE" {
-		t.Fatalf("failed export should retain previous snapshot: %#v", snapshot)
-	}
-	if got := worker.Metrics().SnapshotVersion; got != 1 {
-		t.Fatalf("failed export triggered a stale watcher reload: snapshot version = %d", got)
-	}
-}
-
 func TestBackgroundWorker_SetRecipe_RebuildsOnRecipeChangeWithSameName(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
@@ -902,32 +828,6 @@ func TestBackgroundWorker_SetRecipe_RebuildsOnRecipeChangeWithSameName(t *testin
 	snap3 := waitForSnapshot(snap2)
 	if snap3.RecipeHash != recipeFingerprint(r2) {
 		t.Fatalf("expected RecipeHash %q, got %q", recipeFingerprint(r2), snap3.RecipeHash)
-	}
-}
-
-func TestBackgroundWorker_SetRecipeDoesNotRefreshBDExport(t *testing.T) {
-	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	root, issuesPath := makeReloadBDWorkspace(t, content)
-	emptyPath := filepath.Join(root, "empty-bin")
-	if err := os.Mkdir(emptyPath, 0o755); err != nil {
-		t.Fatalf("create empty PATH: %v", err)
-	}
-	t.Setenv("PATH", emptyPath)
-
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath})
-	if err != nil {
-		t.Fatalf("NewBackgroundWorker failed: %v", err)
-	}
-	defer worker.Stop()
-	worker.TriggerRefresh()
-	waitForSnapshotVersion(t, worker, 1)
-	waitForWorkerIdle(t, worker, 1)
-
-	worker.SetRecipe(&recipe.Recipe{Name: "open"})
-	waitForSnapshotVersion(t, worker, 2)
-	waitForWorkerIdle(t, worker, 2)
-	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.RecipeName != "open" {
-		t.Fatalf("recipe rebuild unexpectedly depended on bd export: %#v", snapshot)
 	}
 }
 
@@ -1009,7 +909,7 @@ func TestBackgroundWorker_BuildSnapshotDoesNotPublishHashBeforeSwap(t *testing.T
 		worker.forceNext = true
 	})
 
-	unaccepted := worker.buildSnapshot(false, false)
+	unaccepted := worker.buildSnapshot(false)
 	if unaccepted == nil {
 		t.Fatal("expected unaccepted changed snapshot")
 	}

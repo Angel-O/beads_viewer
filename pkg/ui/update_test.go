@@ -4,63 +4,14 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
 	_ "modernc.org/sqlite"
 )
-
-func makeReloadBDWorkspace(t *testing.T, initialExport string) (string, string) {
-	t.Helper()
-	root := t.TempDir()
-	beadsDir := filepath.Join(root, ".beads")
-	if err := os.MkdirAll(filepath.Join(beadsDir, "embeddeddolt"), 0o755); err != nil {
-		t.Fatalf("create fake Dolt workspace: %v", err)
-	}
-	issuesPath := filepath.Join(beadsDir, "issues.jsonl")
-	if err := os.WriteFile(issuesPath, []byte(initialExport), 0o644); err != nil {
-		t.Fatalf("write initial compatibility export: %v", err)
-	}
-	return root, issuesPath
-}
-
-func installReloadFakeBD(t *testing.T, root, payload string) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake bd uses a POSIX shell script")
-	}
-	binDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("create fake bd bin directory: %v", err)
-	}
-	payloadPath := filepath.Join(binDir, "payload.jsonl")
-	if err := os.WriteFile(payloadPath, []byte(payload), 0o644); err != nil {
-		t.Fatalf("write fake bd payload: %v", err)
-	}
-	script := "#!/bin/sh\nif [ \"$1\" != \"export\" ] || [ \"$2\" != \"-o\" ]; then exit 2; fi\ncat '" + payloadPath + "' > \"$3\"\n"
-	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return payloadPath
-}
-
-func installFailingReloadFakeBD(t *testing.T, root, payload string) {
-	t.Helper()
-	payloadPath := installReloadFakeBD(t, root, payload)
-	binDir := filepath.Dir(payloadPath)
-	script := "#!/bin/sh\ncat '" + payloadPath + "' > \"$3\"\nsleep 0.1\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write failing fake bd: %v", err)
-	}
-}
 
 // exercise Phase2Ready and FileChanged branches of Update for coverage.
 func TestModelUpdatePhase2AndFileChanged(t *testing.T) {
@@ -157,103 +108,6 @@ func TestUpdateFileChangedReloadsSelection(t *testing.T) {
 	m2 := updated.(Model)
 	if m2.statusIsError {
 		t.Fatalf("expected successful reload, got error %q", m2.statusMsg)
-	}
-}
-
-func TestUpdateForcedRefreshRegeneratesBDExport(t *testing.T) {
-	stale := `{"id":"STALE","title":"Stale export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	fresh := `{"id":"FRESH","title":"Fresh export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	root, issuesPath := makeReloadBDWorkspace(t, stale)
-	installReloadFakeBD(t, root, fresh)
-
-	m := NewModel([]model.Issue{{ID: "STALE", Title: "Stale export", Status: model.StatusOpen}}, nil, issuesPath)
-	if m.watcher != nil {
-		defer m.watcher.Stop()
-	}
-	updated, _ := m.Update(FileChangedMsg{refreshBDExport: true})
-	m2 := updated.(Model)
-	if m2.statusIsError {
-		t.Fatalf("forced reload failed: %s", m2.statusMsg)
-	}
-	if len(m2.issues) != 1 || m2.issues[0].ID != "FRESH" {
-		t.Fatalf("forced reload used stale export: %#v", m2.issues)
-	}
-}
-
-func TestUpdateForcedRefreshReportsBDExportFailure(t *testing.T) {
-	stale := `{"id":"STALE","title":"Stale export","status":"open","priority":1,"issue_type":"task"}` + "\n"
-	root, issuesPath := makeReloadBDWorkspace(t, stale)
-	installFailingReloadFakeBD(t, root, "partial export\n")
-
-	m := NewModel([]model.Issue{{ID: "STALE", Title: "Stale export", Status: model.StatusOpen}}, nil, issuesPath)
-	if m.watcher == nil {
-		t.Fatal("expected file watcher")
-	}
-	defer m.watcher.Stop()
-	if !m.watcher.IsStarted() {
-		if err := m.watcher.Start(); err != nil {
-			t.Fatalf("start watcher: %v", err)
-		}
-	}
-	queuedAt := time.Now()
-	updated, _ := m.Update(FileChangedMsg{refreshBDExport: true})
-	m2 := updated.(Model)
-	if !m2.statusIsError || !strings.Contains(m2.statusMsg, "bd export failed") {
-		t.Fatalf("expected explicit bd export error, got %q", m2.statusMsg)
-	}
-	if len(m2.issues) != 1 || m2.issues[0].ID != "STALE" {
-		t.Fatalf("failed export should retain current issues: %#v", m2.issues)
-	}
-	select {
-	case <-m2.watcher.Changed():
-		t.Fatal("failed export leaked a compatibility-file watcher event")
-	case <-time.After(300 * time.Millisecond):
-	}
-	updated, _ = m2.Update(FileChangedMsg{observedAt: queuedAt})
-	m3 := updated.(Model)
-	if !m3.statusIsError || len(m3.issues) != 1 || m3.issues[0].ID != "STALE" {
-		t.Fatalf("queued export event replaced the reload error: status=%q issues=%#v", m3.statusMsg, m3.issues)
-	}
-}
-
-func TestForceRefreshKeysRequestBDExport(t *testing.T) {
-	for name, keyType := range map[string]tea.KeyType{"ctrl+r": tea.KeyCtrlR, "f5": tea.KeyF5} {
-		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
-			issuesPath := filepath.Join(root, "issues.jsonl")
-			if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open"}`+"\n"), 0o644); err != nil {
-				t.Fatalf("write issues: %v", err)
-			}
-			m := NewModel(nil, nil, issuesPath)
-			if m.watcher != nil {
-				defer m.watcher.Stop()
-			}
-
-			_, cmd := m.Update(tea.KeyMsg{Type: keyType})
-			if cmd == nil {
-				t.Fatal("force refresh key returned no command")
-			}
-			cmdMsg := cmd()
-			if msg, ok := cmdMsg.(FileChangedMsg); ok {
-				if !msg.refreshBDExport {
-					t.Fatal("force refresh did not request bd export")
-				}
-				return
-			}
-			batch, ok := cmdMsg.(tea.BatchMsg)
-			if !ok {
-				t.Fatalf("force refresh command returned unexpected %T", cmdMsg)
-			}
-			for _, batchCmd := range batch {
-				if msg, ok := batchCmd().(FileChangedMsg); ok {
-					if !msg.refreshBDExport {
-						t.Fatal("force refresh did not request bd export")
-					}
-					return
-				}
-			}
-			t.Fatal("force refresh batch contained no FileChangedMsg")
-		})
 	}
 }
 

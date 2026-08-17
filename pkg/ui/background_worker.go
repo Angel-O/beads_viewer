@@ -175,31 +175,30 @@ type BackgroundWorker struct {
 	maxRecoveries     int
 
 	// State
-	mu                  sync.RWMutex
-	state               WorkerState
-	dirty               bool // True if a change came in while processing
-	processScheduled    bool // True after process() is queued but before it starts processing
-	snapshot            *DataSnapshot
-	started             bool // True if Start() has been called
-	watchdogStarted     bool
-	startTime           time.Time
-	lastHeartbeat       time.Time
-	processingStart     time.Time
-	recoveryCount       int
-	recovering          bool
-	generation          uint64
-	lastHash            string // Content hash of last processed snapshot (for dedup)
-	forceNext           bool   // Force the next snapshot build even if content hash matches
-	refreshBDExportNext bool   // Refresh the bd compatibility export before the next snapshot
-	currentRecipe       *recipe.Recipe
-	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
-	currentRecipeHash   string // Recipe fingerprint for rebuild keys (bv-4ilb)
-	logLevel            WorkerLogLevel
-	logJSON             bool
-	metricsEnabled      bool
-	tracePath           string
-	traceFile           *os.File
-	traceMu             sync.Mutex
+	mu                sync.RWMutex
+	state             WorkerState
+	dirty             bool // True if a change came in while processing
+	processScheduled  bool // True after process() is queued but before it starts processing
+	snapshot          *DataSnapshot
+	started           bool // True if Start() has been called
+	watchdogStarted   bool
+	startTime         time.Time
+	lastHeartbeat     time.Time
+	processingStart   time.Time
+	recoveryCount     int
+	recovering        bool
+	generation        uint64
+	lastHash          string // Content hash of last processed snapshot (for dedup)
+	forceNext         bool   // Force the next snapshot build even if content hash matches
+	currentRecipe     *recipe.Recipe
+	currentRecipeID   string // Recipe identifier for snapshot rebuild keys
+	currentRecipeHash string // Recipe fingerprint for rebuild keys (bv-4ilb)
+	logLevel          WorkerLogLevel
+	logJSON           bool
+	metricsEnabled    bool
+	tracePath         string
+	traceFile         *os.File
+	traceMu           sync.Mutex
 
 	// Idle-time GC management (bv-4yje).
 	idleGCEnabled     bool
@@ -220,10 +219,9 @@ type BackgroundWorker struct {
 	idleGCPrevGCPercent    int
 	idleGCFunc             func()
 
-	pendingChanges            atomic.Int64
-	sourceRefreshChangeCutoff atomic.Int64
-	coalesceCount             atomic.Int64
-	metrics                   workerMetrics
+	pendingChanges atomic.Int64
+	coalesceCount  atomic.Int64
+	metrics        workerMetrics
 
 	// Error tracking
 	lastError  *WorkerError // Most recent error (nil if last operation succeeded)
@@ -882,16 +880,6 @@ func (w *BackgroundWorker) TriggerRefresh() {
 // ForceRefresh triggers immediate processing, bypassing debounce and content-hash
 // dedup so the UI can deterministically refresh even when the data is "fresh".
 func (w *BackgroundWorker) ForceRefresh() {
-	w.forceRefresh(false)
-}
-
-// ForceSourceRefresh bypasses dedup and refreshes external compatibility data.
-// It is reserved for explicit user refreshes; internal rebuilds use ForceRefresh.
-func (w *BackgroundWorker) ForceSourceRefresh() {
-	w.forceRefresh(true)
-}
-
-func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
 	w.mu.Lock()
 	if w.state == WorkerStopped {
 		w.mu.Unlock()
@@ -899,9 +887,6 @@ func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
 	}
 
 	w.forceNext = true
-	if refreshBDExport {
-		w.refreshBDExportNext = true
-	}
 
 	if w.state == WorkerProcessing || w.processScheduled {
 		w.dirty = true
@@ -1041,8 +1026,6 @@ func (w *BackgroundWorker) process() {
 	w.dirty = false
 	forceNext := w.forceNext
 	w.forceNext = false
-	refreshBDExport := w.refreshBDExportNext
-	w.refreshBDExportNext = false
 	now := time.Now()
 	w.processingStart = now
 	w.lastHeartbeat = now
@@ -1062,7 +1045,7 @@ func (w *BackgroundWorker) process() {
 
 	// Load and build snapshot
 	// Returns nil if content unchanged (dedup) or on error
-	snapshot := w.buildSnapshot(forceNext, refreshBDExport)
+	snapshot := w.buildSnapshot(forceNext)
 
 	w.mu.Lock()
 	// If we recovered while processing, ignore this stale result.
@@ -1096,11 +1079,6 @@ func (w *BackgroundWorker) process() {
 		} else {
 			w.metrics.fullListCount.Add(1)
 		}
-	}
-	// Drop file events caused by this export, but preserve queued forced rebuilds.
-	if refreshBDExport && !w.forceNext && !w.refreshBDExportNext &&
-		w.metrics.lastFileChangeUnixNano.Load() <= w.sourceRefreshChangeCutoff.Load() {
-		w.dirty = false
 	}
 	wasDirty := w.dirty
 	coalesced := w.coalesceCount.Load()
@@ -1324,40 +1302,8 @@ func (w *BackgroundWorker) maybeIdleGC(now time.Time) {
 // buildSnapshot loads data and constructs a new DataSnapshot.
 // This is called from the worker goroutine (NOT the UI thread).
 // Returns nil if beadsPath is empty, loading fails, or content is unchanged.
-func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataSnapshot {
+func (w *BackgroundWorker) buildSnapshot(forceNext bool) *DataSnapshot {
 	if w.beadsPath == "" {
-		return nil
-	}
-	refreshBDExport = refreshBDExport && shouldRefreshBDExport(w.beadsPath)
-	watcherPaused := refreshBDExport && w.watcher != nil && w.watcher.IsStarted()
-	if watcherPaused {
-		w.watcher.Stop()
-		select {
-		case <-w.watcher.Changed():
-		default:
-		}
-	}
-	reloadPath, err := preparePathForReload(w.beadsPath, refreshBDExport)
-	if refreshBDExport {
-		w.sourceRefreshChangeCutoff.Store(w.metrics.lastFileChangeUnixNano.Load())
-	}
-	if watcherPaused {
-		if restartErr := w.watcher.Start(); restartErr != nil {
-			if err != nil {
-				err = fmt.Errorf("%v; restarting file watcher: %w", err, restartErr)
-			} else {
-				err = fmt.Errorf("restarting file watcher: %w", restartErr)
-			}
-		}
-	}
-	if err != nil {
-		loadErr := &WorkerError{Phase: "load", Cause: err}
-		w.logEvent(LogLevelError, "snapshot_load_failed", map[string]any{
-			"path":  w.beadsPath,
-			"error": loadErr.Error(),
-		})
-		w.recordError(loadErr)
-		w.send(SnapshotErrorMsg{Err: loadErr, Recoverable: true})
 		return nil
 	}
 
@@ -1398,7 +1344,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 		countStart = time.Now()
 	}
 	countErr := w.safeCompute("count_lines", func() error {
-		n, err := countJSONLLines(reloadPath)
+		n, err := countJSONLLines(w.beadsPath)
 		if err != nil {
 			return err
 		}
@@ -1441,7 +1387,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 				return i.Status != model.StatusClosed && i.Status != model.StatusTombstone
 			}
 		}
-		loaded, err = loadIssuesForReload(reloadPath, opts)
+		loaded, err = loadIssuesForReload(w.beadsPath, opts)
 		if err == nil {
 			issues = loaded.Issues
 			pooledRefs = loaded.PoolRefs
