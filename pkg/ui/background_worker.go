@@ -173,6 +173,8 @@ type BackgroundWorker struct {
 	heartbeatTimeout  time.Duration
 	processingTimeout time.Duration
 	maxRecoveries     int
+	sourceRetryBase   time.Duration
+	sourceRetryMax    time.Duration
 
 	// State
 	mu                  sync.RWMutex
@@ -191,6 +193,7 @@ type BackgroundWorker struct {
 	lastHash            string // Content hash of last processed snapshot (for dedup)
 	forceNext           bool   // Force the next snapshot build even if content hash matches
 	refreshBDExportNext bool   // Refresh the bd compatibility export before the next snapshot
+	sourceRetryTimer    *time.Timer
 	currentRecipe       *recipe.Recipe
 	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
 	currentRecipeHash   string // Recipe fingerprint for rebuild keys (bv-4ilb)
@@ -230,8 +233,9 @@ type BackgroundWorker struct {
 	errorCount int          // Consecutive error count for backoff
 
 	// Components
-	watcher *watcher.Watcher
-	msgCh   chan tea.Msg
+	watcher          *watcher.Watcher
+	hubChangeWatcher *watcher.Watcher
+	msgCh            chan tea.Msg
 
 	// Lifecycle
 	ctx        context.Context
@@ -239,6 +243,7 @@ type BackgroundWorker struct {
 	loopCtx    context.Context
 	loopCancel context.CancelFunc
 	done       chan struct{}
+	workWG     sync.WaitGroup
 }
 
 type IdleGCConfig struct {
@@ -263,6 +268,9 @@ type WorkerConfig struct {
 	HeartbeatTimeout  time.Duration // default: 30s
 	ProcessingTimeout time.Duration // default: 30s
 	MaxRecoveries     int           // default: 3
+	HubChangeSignal   string        // application-owned Hub generation file
+	SourceRetryBase   time.Duration // default: 1s
+	SourceRetryMax    time.Duration // default: 30s
 }
 
 // NewBackgroundWorker creates a new background worker.
@@ -295,6 +303,15 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 	}
 	if cfg.MaxRecoveries == 0 {
 		cfg.MaxRecoveries = 3
+	}
+	if cfg.SourceRetryBase <= 0 {
+		cfg.SourceRetryBase = time.Second
+	}
+	if cfg.SourceRetryMax <= 0 {
+		cfg.SourceRetryMax = 30 * time.Second
+	}
+	if cfg.SourceRetryMax < cfg.SourceRetryBase {
+		cfg.SourceRetryMax = cfg.SourceRetryBase
 	}
 
 	logLevel := parseWorkerLogLevel(os.Getenv("BV_WORKER_LOG_LEVEL"))
@@ -333,6 +350,8 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		heartbeatTimeout:  cfg.HeartbeatTimeout,
 		processingTimeout: cfg.ProcessingTimeout,
 		maxRecoveries:     cfg.MaxRecoveries,
+		sourceRetryBase:   cfg.SourceRetryBase,
+		sourceRetryMax:    cfg.SourceRetryMax,
 		state:             WorkerIdle,
 		msgCh:             make(chan tea.Msg, cfg.MessageBuffer),
 		ctx:               ctx,
@@ -361,6 +380,16 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 			return nil, err
 		}
 		w.watcher = fw
+	}
+	if cfg.HubChangeSignal != "" {
+		hubWatcher, err := watcher.NewWatcher(cfg.HubChangeSignal,
+			watcher.WithDebounceDuration(cfg.DebounceDelay),
+			watcher.WithContentCheck(true),
+		)
+		if err != nil {
+			return nil, err
+		}
+		w.hubChangeWatcher = hubWatcher
 	}
 
 	initialized = true
@@ -553,7 +582,8 @@ func (w *BackgroundWorker) Start() error {
 
 	w.openTraceFile()
 	w.logEvent(LogLevelInfo, "worker_start", map[string]any{
-		"beads_path": w.beadsPath,
+		"beads_path":        w.beadsPath,
+		"hub_change_signal": cfgString(w.hubChangeWatcher),
 	})
 
 	// Avoid mutating global GC percent in tests (it can interfere with parallel test execution).
@@ -561,14 +591,28 @@ func (w *BackgroundWorker) Start() error {
 		idleGCGCPercent = 0
 	}
 
-	if w.watcher != nil {
-		if err := w.watcher.Start(); err != nil {
-			// Reset started flag so caller can retry or Stop() won't block
-			w.mu.Lock()
-			w.started = false
-			w.mu.Unlock()
-			w.closeTraceFile()
-			return err
+	if w.watcher != nil || w.hubChangeWatcher != nil {
+		if w.watcher != nil {
+			if err := w.watcher.Start(); err != nil {
+				// Reset started flag so caller can retry or Stop() won't block
+				w.mu.Lock()
+				w.started = false
+				w.mu.Unlock()
+				w.closeTraceFile()
+				return err
+			}
+		}
+		if w.hubChangeWatcher != nil {
+			if err := w.hubChangeWatcher.Start(); err != nil {
+				if w.watcher != nil {
+					w.watcher.Stop()
+				}
+				w.mu.Lock()
+				w.started = false
+				w.mu.Unlock()
+				w.closeTraceFile()
+				return err
+			}
 		}
 
 		if idleGCEnabled && idleGCGCPercent > 0 {
@@ -618,6 +662,8 @@ func (w *BackgroundWorker) Stop() {
 	wasStarted := w.started
 	loopCancel := w.loopCancel
 	done := w.done
+	retryTimer := w.sourceRetryTimer
+	w.sourceRetryTimer = nil
 	w.loopCancel = nil
 	restoreGCPercent := w.idleGCAppliedGCPercent
 	prevGCPercent := w.idleGCPrevGCPercent
@@ -632,9 +678,15 @@ func (w *BackgroundWorker) Stop() {
 	if loopCancel != nil {
 		loopCancel()
 	}
+	if retryTimer != nil {
+		retryTimer.Stop()
+	}
 
 	if w.watcher != nil {
 		w.watcher.Stop()
+	}
+	if w.hubChangeWatcher != nil {
+		w.hubChangeWatcher.Stop()
 	}
 
 	// Only wait for done if Start() was called
@@ -645,6 +697,7 @@ func (w *BackgroundWorker) Stop() {
 			w.logEvent(LogLevelWarn, "shutdown_timeout", nil)
 		}
 	}
+	w.workWG.Wait()
 
 	var pooledRefs []*model.Issue
 	w.mu.Lock()
@@ -873,10 +926,36 @@ func (w *BackgroundWorker) TriggerRefresh() {
 		return
 	}
 	w.processScheduled = true
+	w.workWG.Add(1)
 	w.mu.Unlock()
 
 	// Trigger processing
-	go w.process()
+	go w.runProcess()
+}
+
+// TriggerSourceRefresh schedules a non-forced refresh of the Hub compatibility
+// export. Content-hash dedup still suppresses unchanged snapshots.
+func (w *BackgroundWorker) TriggerSourceRefresh() {
+	w.mu.Lock()
+	if w.state == WorkerStopped {
+		w.mu.Unlock()
+		return
+	}
+	if w.sourceRetryTimer != nil {
+		w.sourceRetryTimer.Stop()
+		w.sourceRetryTimer = nil
+	}
+	w.refreshBDExportNext = true
+	if w.state == WorkerProcessing || w.processScheduled {
+		w.dirty = true
+		w.coalesceCount.Add(1)
+		w.mu.Unlock()
+		return
+	}
+	w.processScheduled = true
+	w.workWG.Add(1)
+	w.mu.Unlock()
+	go w.runProcess()
 }
 
 // ForceRefresh triggers immediate processing, bypassing debounce and content-hash
@@ -900,6 +979,10 @@ func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
 
 	w.forceNext = true
 	if refreshBDExport {
+		if w.sourceRetryTimer != nil {
+			w.sourceRetryTimer.Stop()
+			w.sourceRetryTimer = nil
+		}
 		w.refreshBDExportNext = true
 	}
 
@@ -913,9 +996,15 @@ func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
 		return
 	}
 	w.processScheduled = true
+	w.workWG.Add(1)
 	w.mu.Unlock()
 
-	go w.process()
+	go w.runProcess()
+}
+
+func (w *BackgroundWorker) runProcess() {
+	defer w.workWG.Done()
+	w.process()
 }
 
 func recipeFingerprint(r *recipe.Recipe) string {
@@ -1000,10 +1089,18 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 	w.mu.RLock()
 	heartbeatInterval := w.heartbeatInterval
 	wch := w.watcher
+	hubWatcher := w.hubChangeWatcher
 	w.mu.RUnlock()
 
-	if wch == nil {
+	if wch == nil && hubWatcher == nil {
 		return
+	}
+	var fileChanges, hubChanges <-chan struct{}
+	if wch != nil {
+		fileChanges = wch.Changed()
+	}
+	if hubWatcher != nil {
+		hubChanges = hubWatcher.Changed()
 	}
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
@@ -1017,9 +1114,13 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 		case <-heartbeatTicker.C:
 			w.recordHeartbeat(time.Now())
 
-		case <-wch.Changed():
+		case <-fileChanges:
 			w.noteFileChange(time.Now())
 			w.TriggerRefresh()
+
+		case <-hubChanges:
+			w.noteFileChange(time.Now())
+			w.TriggerSourceRefresh()
 		}
 	}
 }
@@ -1063,6 +1164,13 @@ func (w *BackgroundWorker) process() {
 	// Load and build snapshot
 	// Returns nil if content unchanged (dedup) or on error
 	snapshot := w.buildSnapshot(forceNext, refreshBDExport)
+	if refreshBDExport {
+		if w.LastError() != nil {
+			w.scheduleSourceRetry()
+		} else {
+			w.cancelSourceRetry()
+		}
+	}
 
 	w.mu.Lock()
 	// If we recovered while processing, ignore this stale result.
@@ -1189,6 +1297,54 @@ func (w *BackgroundWorker) recordError(err *WorkerError) {
 	} else {
 		w.errorCount = 0
 	}
+	w.mu.Unlock()
+}
+
+func (w *BackgroundWorker) cancelSourceRetry() {
+	w.mu.Lock()
+	if w.sourceRetryTimer != nil {
+		w.sourceRetryTimer.Stop()
+		w.sourceRetryTimer = nil
+	}
+	w.mu.Unlock()
+}
+
+func (w *BackgroundWorker) scheduleSourceRetry() {
+	w.mu.Lock()
+	if w.state == WorkerStopped {
+		w.mu.Unlock()
+		return
+	}
+	attempt := w.errorCount
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := w.sourceRetryBase
+	for i := 1; i < attempt && delay < w.sourceRetryMax; i++ {
+		if delay > w.sourceRetryMax/2 {
+			delay = w.sourceRetryMax
+			break
+		}
+		delay *= 2
+	}
+	if delay > w.sourceRetryMax {
+		delay = w.sourceRetryMax
+	}
+	if w.sourceRetryTimer != nil {
+		w.sourceRetryTimer.Stop()
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		w.mu.Lock()
+		if w.sourceRetryTimer != timer || w.state == WorkerStopped {
+			w.mu.Unlock()
+			return
+		}
+		w.sourceRetryTimer = nil
+		w.mu.Unlock()
+		w.TriggerSourceRefresh()
+	})
+	w.sourceRetryTimer = timer
 	w.mu.Unlock()
 }
 
@@ -1337,11 +1493,11 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 		default:
 		}
 	}
-	reloadPath, err := preparePathForReload(w.beadsPath, refreshBDExport)
+	reloadPath, err := preparePathForReloadContext(w.ctx, w.beadsPath, refreshBDExport)
 	if refreshBDExport {
 		w.sourceRefreshChangeCutoff.Store(w.metrics.lastFileChangeUnixNano.Load())
 	}
-	if watcherPaused {
+	if watcherPaused && w.ctx.Err() == nil {
 		if restartErr := w.watcher.Start(); restartErr != nil {
 			if err != nil {
 				err = fmt.Errorf("%v; restarting file watcher: %w", err, restartErr)
@@ -1608,10 +1764,21 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 
 	// Spawn Phase 2 completion watcher if Phase 2 isn't ready yet
 	if snapshot != nil && !snapshot.IsPhase2Ready() {
-		go w.runPhase2Analysis(snapshot.Analysis, hash)
+		w.workWG.Add(1)
+		go func() {
+			defer w.workWG.Done()
+			w.runPhase2Analysis(snapshot.Analysis, hash)
+		}()
 	}
 
 	return snapshot
+}
+
+func cfgString(w *watcher.Watcher) string {
+	if w == nil {
+		return ""
+	}
+	return w.Path()
 }
 
 func recipeIncludesClosedStatuses(r *recipe.Recipe) bool {

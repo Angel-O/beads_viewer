@@ -310,7 +310,7 @@ func TestPrepareWorkspaceForRead_FallsBackToExistingIssuesJSONL(t *testing.T) {
 	}
 
 	bdScript := filepath.Join(binDir, "bd")
-	script := "#!/bin/sh\necho export failed >&2\nexit 1\n"
+	script := "#!/bin/sh\nprintf 'partial export\\n' > \"$3\"\necho export failed >&2\nexit 1\n"
 	if err := os.WriteFile(bdScript, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake bd: %v", err)
 	}
@@ -329,6 +329,13 @@ func TestPrepareWorkspaceForRead_FallsBackToExistingIssuesJSONL(t *testing.T) {
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "bd export failed") {
 		t.Fatalf("expected export failure warning, got %#v", warnings)
+	}
+	data, err := os.ReadFile(issuesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"title":"Stale"`) {
+		t.Fatalf("failed export replaced last valid compatibility data: %q", data)
 	}
 }
 

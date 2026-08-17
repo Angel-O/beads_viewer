@@ -51,6 +51,7 @@ var sanitizedEnvironment = map[string]bool{
 	"BV_ROBOT_NOT_READY_LABELS":   true,
 	"BV_ROBOT_HISTORY_TIMEOUT_MS": true,
 	"BV_INSIGHTS_MAP_LIMIT":       true,
+	"BV_HUB_CHANGE_SIGNAL":        true,
 }
 
 type runner struct {
@@ -170,6 +171,9 @@ func (r runner) run(arguments []string) int {
 			return r.die(fmt.Errorf("running wbd configure: %w", runErr))
 		}
 		environment = append(environment, "BEADS_DIR="+paths.Store)
+		if !robot && hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
+			environment = append(environment, "BV_HUB_CHANGE_SIGNAL="+hub.ChangeSignalPath(paths))
+		}
 		commandArguments = []string{"--history-mode", "external", "--hub-config", paths.Config}
 	}
 	if robot {
@@ -190,6 +194,15 @@ func (r runner) run(arguments []string) int {
 		return r.die(fmt.Errorf("running bv: %w", runErr))
 	}
 	return 0
+}
+
+func hubAutoRefreshEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func parseMode(arguments []string) (mode, []string, error) {
@@ -620,6 +633,10 @@ store only when it contains a valid Viewer issue source. Otherwise wbv uses the
 private Hub. A linked worktree does not inherit .beads data from another
 worktree. Unsafe or malformed local stores fail with an error instead of
 silently selecting a mode.
+
+Interactive Hub mode refreshes automatically after successful wbd mutations.
+Set BV_HUB_AUTO_REFRESH=0 to disable automatic Hub refresh; Ctrl+R/F5 remains
+available for explicit refresh.
 
   --local  Require a valid local store and use Git history.
   --hub    Always use the private Hub and external history.

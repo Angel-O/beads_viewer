@@ -237,6 +237,47 @@ func TestChildExitCodeIsPropagated(t *testing.T) {
 	}
 }
 
+func TestSuccessfulMutationsSignalViewer(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"create", "New issue"},
+		{"update", "bead-1", "--status", "in_progress"},
+		{"dep", "add", "bead-1", "bead-2"},
+		{"close", "bead-1", "--reason", "done"},
+		{"reopen", "bead-1", "--reason", "again"},
+	} {
+		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
+			test := newAppTest(t, true)
+			if code, _, stderr := test.run(arguments...); code != 0 {
+				t.Fatalf("run code = %d, stderr = %q", code, stderr)
+			}
+			if data, err := os.ReadFile(hub.ChangeSignalPath(test.app.paths)); err != nil || len(data) == 0 {
+				t.Fatalf("Viewer signal missing: data=%q err=%v", data, err)
+			}
+		})
+	}
+}
+
+func TestReadsAndFailedMutationsDoNotSignalViewer(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		arguments []string
+		childExit string
+	}{
+		{name: "list", arguments: []string{"list"}},
+		{name: "show", arguments: []string{"show", "bead-1"}},
+		{name: "failed update", arguments: []string{"update", "bead-1", "--status", "open"}, childExit: "9"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			t.Setenv("WBD_CHILD_EXIT", testCase.childExit)
+			test.run(testCase.arguments...)
+			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); !os.IsNotExist(err) {
+				t.Fatalf("unexpected Viewer signal: %v", err)
+			}
+		})
+	}
+}
+
 type appTest struct {
 	t          *testing.T
 	home       string

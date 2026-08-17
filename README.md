@@ -3701,6 +3701,7 @@ bv has a comprehensive built-in help system:
 | `BV_FORCE_POLLING` | Force polling-based live reload (useful on NFS/SMB/SSHFS/FUSE or any setup where filesystem events are unreliable) (`1`/`0`). | (auto) |
 | `BV_FORCE_POLL` | Alias for `BV_FORCE_POLLING`. | (auto) |
 | `BV_DEBOUNCE_MS` | Debounce window (milliseconds) for live reload events in background mode. | `200` |
+| `BV_HUB_AUTO_REFRESH` | Automatically refresh interactive `wbv` Hub sessions after successful `wbd` mutations (`1`/`0`). | `1` |
 | `BV_CHANNEL_BUFFER` | Background worker message buffer size (worker → UI). | `8` |
 | `BV_HEARTBEAT_INTERVAL_S` | Background worker heartbeat interval (seconds). | `5` |
 | `BV_WATCHDOG_INTERVAL_S` | Background worker watchdog interval (seconds). | `10` |
@@ -3713,6 +3714,15 @@ bv has a comprehensive built-in help system:
 | `BV_SEMANTIC_EMBEDDER` | Semantic embedding provider for `bv --search` and TUI semantic mode. | `hash` |
 | `BV_SEMANTIC_DIM` | Embedding dimension for semantic search index. | `384` |
 | `BV_SEMANTIC_MODEL` | Provider-specific model name for semantic search (optional). | (empty) |
+
+Interactive `wbv` Hub sessions watch an application-owned generation signal and
+coalesce successful `wbd` mutations for `BV_DEBOUNCE_MS` (200 ms by default),
+then perform one compatibility export and background snapshot rebuild. Idle Hub
+sessions do not export or poll the database; filesystem polling is used only as
+the watcher's existing fallback. Failed exports retain the last valid snapshot
+and retry with exponential backoff capped at 30 seconds. Set
+`BV_HUB_AUTO_REFRESH=0` to disable this behavior; `Ctrl+R`/`F5` still performs
+an explicit refresh. Local stores retain their existing JSONL file watching.
 
 **Use cases for `BEADS_DIR`:**
 - **Monorepos**: Single beads directory shared across multiple packages

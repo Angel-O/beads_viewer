@@ -3,6 +3,7 @@ package loader
 import (
 	"bufio"
 	"bytes"
+	"context"
 	stdjson "encoding/json"
 	"fmt"
 	"io"
@@ -249,11 +250,17 @@ func IsBDWorkspace(beadsDir string) bool {
 // `bd export -o .beads/issues.jsonl` before reading. For regular br workspaces
 // it falls through to FindJSONLPath.
 func PrepareWorkspaceForRead(repoPath string, refreshBDExport bool, warnFunc func(string)) (string, string, error) {
+	return PrepareWorkspaceForReadContext(context.Background(), repoPath, refreshBDExport, warnFunc)
+}
+
+// PrepareWorkspaceForReadContext is PrepareWorkspaceForRead with cancellation
+// for an in-flight bd compatibility export.
+func PrepareWorkspaceForReadContext(ctx context.Context, repoPath string, refreshBDExport bool, warnFunc func(string)) (string, string, error) {
 	beadsDir, err := GetBeadsDir(repoPath)
 	if err != nil {
 		return "", "", err
 	}
-	jsonlPath, err := PrepareBeadsDirForRead(beadsDir, refreshBDExport, warnFunc)
+	jsonlPath, err := PrepareBeadsDirForReadContext(ctx, beadsDir, refreshBDExport, warnFunc)
 	if err != nil {
 		return "", "", err
 	}
@@ -265,10 +272,16 @@ func PrepareWorkspaceForRead(repoPath string, refreshBDExport bool, warnFunc fun
 // is used (optionally refreshed). In regular br workspaces FindJSONLPath is
 // used as before.
 func PrepareBeadsDirForRead(beadsDir string, refreshBDExport bool, warnFunc func(string)) (string, error) {
+	return PrepareBeadsDirForReadContext(context.Background(), beadsDir, refreshBDExport, warnFunc)
+}
+
+// PrepareBeadsDirForReadContext is PrepareBeadsDirForRead with cancellation
+// for an in-flight bd compatibility export.
+func PrepareBeadsDirForReadContext(ctx context.Context, beadsDir string, refreshBDExport bool, warnFunc func(string)) (string, error) {
 	if IsBDWorkspace(beadsDir) {
 		issuesPath := filepath.Join(beadsDir, "issues.jsonl")
 		if refreshBDExport {
-			if err := exportBDIssuesJSONL(beadsDir, issuesPath); err != nil {
+			if err := exportBDIssuesJSONL(ctx, beadsDir, issuesPath); err != nil {
 				if _, statErr := os.Stat(issuesPath); statErr == nil {
 					if warnFunc != nil {
 						warnFunc(fmt.Sprintf("bd export failed, using existing issues.jsonl: %v", err))
@@ -291,13 +304,24 @@ func PrepareBeadsDirForRead(beadsDir string, refreshBDExport bool, warnFunc func
 
 // exportBDIssuesJSONL runs `bd export -o <issuesPath>` to produce a fresh
 // JSONL compatibility file from the bd workspace's Dolt database.
-func exportBDIssuesJSONL(beadsDir, issuesPath string) error {
+func exportBDIssuesJSONL(ctx context.Context, beadsDir, issuesPath string) error {
 	if _, err := exec.LookPath("bd"); err != nil {
 		return fmt.Errorf("bd binary not found in PATH")
 	}
 
+	temporary, err := os.CreateTemp(beadsDir, ".issues.jsonl.")
+	if err != nil {
+		return fmt.Errorf("creating temporary compatibility JSONL: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return fmt.Errorf("closing temporary compatibility JSONL: %w", err)
+	}
+	defer os.Remove(temporaryPath)
+
 	repoRoot := filepath.Dir(beadsDir)
-	cmd := exec.Command("bd", "export", "-o", issuesPath)
+	cmd := exec.CommandContext(ctx, "bd", "export", "-o", temporaryPath)
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", BeadsDirEnvVar, beadsDir))
 	out, err := cmd.CombinedOutput()
@@ -307,6 +331,9 @@ func exportBDIssuesJSONL(beadsDir, issuesPath string) error {
 			return err
 		}
 		return fmt.Errorf("%w: %s", err, msg)
+	}
+	if err := os.Rename(temporaryPath, issuesPath); err != nil {
+		return fmt.Errorf("installing refreshed compatibility JSONL: %w", err)
 	}
 	return nil
 }

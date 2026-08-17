@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
@@ -63,6 +64,14 @@ func WithForcePoll(force bool) WatcherOption {
 	}
 }
 
+// WithContentCheck detects same-size changes even when a polling filesystem has
+// coarse timestamps. It is intended for small signal files, not issue data.
+func WithContentCheck(enabled bool) WatcherOption {
+	return func(w *Watcher) {
+		w.contentCheck = enabled
+	}
+}
+
 // Watcher monitors a file for changes using fsnotify with polling fallback.
 type Watcher struct {
 	path             string
@@ -72,6 +81,7 @@ type Watcher struct {
 	onError          func(error)
 	forcePoll        bool
 	forcePollEnv     bool
+	contentCheck     bool
 	fsType           FilesystemType
 
 	fsWatcher   *fsnotify.Watcher
@@ -80,6 +90,7 @@ type Watcher struct {
 	lastExists  bool
 	lastMtime   time.Time
 	lastSize    int64
+	lastHash    [sha256.Size]byte
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -155,6 +166,13 @@ func (w *Watcher) Start() error {
 		w.lastExists = true
 		w.lastMtime = info.ModTime()
 		w.lastSize = info.Size()
+		if w.contentCheck {
+			data, readErr := os.ReadFile(w.path)
+			if readErr != nil {
+				return readErr
+			}
+			w.lastHash = sha256.Sum256(data)
+		}
 	}
 
 	w.ctx, w.cancel = newRunContext()
@@ -339,7 +357,10 @@ func (w *Watcher) handleFsnotifyFileEvent(op fsnotify.Op) {
 		return
 	}
 
-	w.recordStat(info.ModTime(), info.Size())
+	if _, err := w.recordFile(info); err != nil {
+		w.onError(err)
+		return
+	}
 	w.debouncer.Trigger(w.notifyChange)
 }
 
@@ -369,7 +390,11 @@ func (w *Watcher) watchPolling(ctx context.Context) {
 				continue
 			}
 
-			changed := w.recordStat(info.ModTime(), info.Size())
+			changed, err := w.recordFile(info)
+			if err != nil {
+				w.onError(err)
+				continue
+			}
 
 			if changed {
 				w.debouncer.Trigger(w.notifyChange)
@@ -386,7 +411,27 @@ func (w *Watcher) recordMissing() bool {
 	w.lastExists = false
 	w.lastMtime = time.Time{}
 	w.lastSize = 0
+	w.lastHash = [sha256.Size]byte{}
 	return hadFile
+}
+
+func (w *Watcher) recordFile(info os.FileInfo) (bool, error) {
+	if !w.contentCheck {
+		return w.recordStat(info.ModTime(), info.Size()), nil
+	}
+	data, err := os.ReadFile(w.path)
+	if err != nil {
+		return false, err
+	}
+	digest := sha256.Sum256(data)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	changed := !w.lastExists || !info.ModTime().Equal(w.lastMtime) || info.Size() != w.lastSize || digest != w.lastHash
+	w.lastExists = true
+	w.lastMtime = info.ModTime()
+	w.lastSize = info.Size()
+	w.lastHash = digest
+	return changed, nil
 }
 
 func (w *Watcher) recordStat(mtime time.Time, size int64) bool {

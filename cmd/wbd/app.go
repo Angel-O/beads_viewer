@@ -94,7 +94,7 @@ func (a *app) run(arguments []string) int {
 		args := appendJSON(nil, request.json)
 		args = append(args, request.command, "--labels", registration.Context, request.positionals[0])
 		args = append(args, request.args...)
-		return a.runBD(a.dir, args...)
+		return a.runBDMutation(a.dir, args...)
 	case "list":
 		args := appendJSON(nil, request.json)
 		args = append(args, "list")
@@ -115,18 +115,18 @@ func (a *app) run(arguments []string) int {
 		args := appendJSON(nil, request.json)
 		args = append(args, "update", request.positionals[0])
 		args = append(args, request.args...)
-		return a.runBD(a.dir, args...)
+		return a.runBDMutation(a.dir, args...)
 	case "dep":
 		args := appendJSON(nil, request.json)
 		args = append(args, "dep", request.subcommand)
 		args = append(args, request.positionals...)
 		args = append(args, request.args...)
-		return a.runBD(a.dir, args...)
+		return a.runBDMutation(a.dir, args...)
 	case "close", "reopen":
 		args := appendJSON(nil, request.json)
 		args = append(args, request.command, request.positionals[0])
 		args = append(args, request.args...)
-		return a.runBD(a.dir, args...)
+		return a.runBDMutation(a.dir, args...)
 	case "link":
 		if err := need("bv"); err != nil {
 			return a.fail(err)
@@ -198,6 +198,17 @@ func (a *app) bootstrap(prefix string) int {
 
 func (a *app) runBD(directory string, arguments ...string) int {
 	return a.runBDAt(directory, false, arguments...)
+}
+
+func (a *app) runBDMutation(directory string, arguments ...string) int {
+	code := a.runBD(directory, arguments...)
+	if code != 0 {
+		return code
+	}
+	if err := hub.SignalChange(a.paths); err != nil {
+		fmt.Fprintf(a.stderr, "wbd: warning: mutation succeeded but Viewer notification failed: %v\n", err)
+	}
+	return 0
 }
 
 func (a *app) runBDAt(directory string, bootstrap bool, arguments ...string) int {
