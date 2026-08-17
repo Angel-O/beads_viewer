@@ -97,6 +97,13 @@ func TestAutoLocalAndExplicitHubAreIsolated(t *testing.T) {
 	}
 	t.Setenv("WBV_GIT_ROOT", repository)
 	fixture.makeHubStore(t)
+	configDir := filepath.Join(fixture.home, ".config", "bv")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "hub.yaml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	code, stderr := fixture.run("--robot-triage", "--brief", "--robot-not-ready-labels", "waiting")
 	if code != 0 {

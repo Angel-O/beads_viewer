@@ -55,11 +55,11 @@ type Registration struct {
 	Root    string
 }
 
-// DefaultPaths returns the Hub paths rooted at HOME.
+// DefaultPaths returns the Hub paths rooted at the current user's home directory.
 func DefaultPaths() (Paths, error) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return Paths{}, errors.New("HOME is not set")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Paths{}, fmt.Errorf("resolving user home directory: %w", err)
 	}
 	parent := filepath.Join(home, ".local", "share", "beads", "hub")
 	return Paths{

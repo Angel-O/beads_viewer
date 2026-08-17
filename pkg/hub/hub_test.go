@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,9 +28,28 @@ func TestDefaultPaths(t *testing.T) {
 }
 
 func TestDefaultPathsRequiresHOME(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows resolves the home directory from USERPROFILE")
+	}
 	t.Setenv("HOME", "")
 	if _, err := DefaultPaths(); err == nil {
 		t.Fatal("DefaultPaths() succeeded without HOME")
+	}
+}
+
+func TestDefaultPathsUsesWindowsUserProfile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific home directory fallback")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", home)
+	paths, err := DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".config", "bv", "hub.yaml"); paths.Config != want {
+		t.Fatalf("DefaultPaths().Config = %q, want %q", paths.Config, want)
 	}
 }
 
