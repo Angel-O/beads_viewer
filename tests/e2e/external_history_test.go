@@ -512,8 +512,17 @@ func TestHistoryOffDiscoversConfigStoreWithoutProviders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	autoEnv := []string{"HOME=" + home, "BV_NO_GITIGNORE=1"}
+	out, err := fixture.commandFromEnv(t, bv, unrelated, autoEnv, "--robot-history")
+	if err != nil {
+		t.Fatalf("auto mode with conventional config failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `"work-1"`) || strings.Contains(string(out), "local-only") {
+		t.Fatalf("auto mode did not retain Hub-first behavior: %s", out)
+	}
+
 	env := []string{"HOME=" + home, "PATH=" + failBin + string(os.PathListSeparator) + os.Getenv("PATH"), "BV_NO_GITIGNORE=1"}
-	out, err := fixture.commandFromEnv(t, bv, unrelated, env, "--robot-history", "--history-mode", "off")
+	out, err = fixture.commandFromEnv(t, bv, unrelated, env, "--robot-history", "--history-mode", "off")
 	if err != nil {
 		t.Fatalf("off mode with conventional config failed: %v\n%s", err, out)
 	}

@@ -1,0 +1,323 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+type childRecord struct {
+	Args []string          `json:"args"`
+	Dir  string            `json:"dir"`
+	Env  map[string]string `json:"env"`
+}
+
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_WBV_HELPER_PROCESS") != "1" {
+		return
+	}
+	separator := 0
+	for index, argument := range os.Args {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	command := os.Args[separator+1]
+	record := childRecord{Args: os.Args[separator+2:], Env: make(map[string]string)}
+	record.Dir, _ = os.Getwd()
+	for _, entry := range os.Environ() {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			record.Env[parts[0]] = parts[1]
+		}
+	}
+	data, _ := json.Marshal(record)
+	_ = os.WriteFile(filepath.Join(os.Getenv("WBV_TEST_RECORDS"), command+".json"), data, 0o600)
+	exitCode, _ := strconv.Atoi(os.Getenv("WBV_" + strings.ToUpper(command) + "_EXIT"))
+	os.Exit(exitCode)
+}
+
+func TestLocalModeDelegatesExactArgumentsAndSanitizedEnvironment(t *testing.T) {
+	fixture := newFixture(t, "git", "bv")
+	repository := filepath.Join(fixture.root, "repository")
+	marker := filepath.Join(repository, ".beads")
+	if err := os.MkdirAll(marker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WBV_GIT_ROOT", repository)
+	for name := range sanitizedEnvironment {
+		t.Setenv(name, "unsafe")
+	}
+	t.Setenv("BV_NO_GITIGNORE", "wrong")
+	t.Setenv("BV_NO_CACHE", "wrong")
+
+	code, stderr := fixture.run("--local", "--robot-priority", "--label", "backend", "--robot-min-confidence", "0.75", "--robot-max-results", "010")
+	if code != 0 {
+		t.Fatalf("run code = %d, stderr = %q", code, stderr)
+	}
+	record := fixture.record(t, "bv")
+	wantArgs := []string{"--history-mode", "git", "--robot-priority", "--label", "backend", "--robot-min-confidence", "0.75", "--robot-max-results", "010", "--format", "json"}
+	if !reflect.DeepEqual(record.Args, wantArgs) {
+		t.Fatalf("bv args = %#v, want %#v", record.Args, wantArgs)
+	}
+	wantDirectory, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Dir != wantDirectory {
+		t.Fatalf("bv directory = %q, want %q", record.Dir, wantDirectory)
+	}
+	for name := range sanitizedEnvironment {
+		if _, exists := record.Env[name]; exists {
+			t.Errorf("sanitized variable %s reached bv", name)
+		}
+	}
+	if record.Env["BV_NO_GITIGNORE"] != "1" || record.Env["BV_NO_CACHE"] != "1" {
+		t.Fatalf("forced environment = BV_NO_GITIGNORE=%q BV_NO_CACHE=%q", record.Env["BV_NO_GITIGNORE"], record.Env["BV_NO_CACHE"])
+	}
+	if _, err := os.Stat(filepath.Join(fixture.records, "wbd.json")); !os.IsNotExist(err) {
+		t.Fatal("local mode invoked wbd")
+	}
+}
+
+func TestAutoLocalAndExplicitHubAreIsolated(t *testing.T) {
+	fixture := newFixture(t, "git", "bd", "bv", "wbd")
+	repository := filepath.Join(fixture.root, "repository")
+	if err := os.MkdirAll(filepath.Join(repository, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WBV_GIT_ROOT", repository)
+	fixture.makeHubStore(t)
+	configDir := filepath.Join(fixture.home, ".config", "bv")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "hub.yaml"), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stderr := fixture.run("--robot-triage", "--brief", "--robot-not-ready-labels", "waiting")
+	if code != 0 {
+		t.Fatalf("auto-local code = %d, stderr = %q", code, stderr)
+	}
+	local := fixture.record(t, "bv")
+	if local.Env["BEADS_DIR"] != "" || local.Args[1] != "git" {
+		t.Fatalf("auto-local leaked Hub state: args=%#v BEADS_DIR=%q", local.Args, local.Env["BEADS_DIR"])
+	}
+
+	code, stderr = fixture.run("--hub", "--robot-forecast", "all", "--forecast-agents", "64", "--forecast-label", "backend")
+	if code != 0 {
+		t.Fatalf("hub code = %d, stderr = %q", code, stderr)
+	}
+	wbd := fixture.record(t, "wbd")
+	if !reflect.DeepEqual(wbd.Args, []string{"configure"}) {
+		t.Fatalf("wbd args = %#v", wbd.Args)
+	}
+	hubRecord := fixture.record(t, "bv")
+	wantPrefix := []string{"--history-mode", "external", "--hub-config", filepath.Join(fixture.home, ".config/bv/hub.yaml")}
+	if !reflect.DeepEqual(hubRecord.Args[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("Hub bv args = %#v", hubRecord.Args)
+	}
+	wantStore := filepath.Join(fixture.home, ".local/share/beads/hub/.beads")
+	if hubRecord.Env["BEADS_DIR"] != wantStore {
+		t.Fatalf("BEADS_DIR = %q, want %q", hubRecord.Env["BEADS_DIR"], wantStore)
+	}
+}
+
+func TestRejectsUnsafeInvocationsBeforeHubConfigure(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"selector position", []string{"--robot-plan", "--hub"}, "mode selector must be the first argument"},
+		{"selector value", []string{"--hub=yes", "--robot-plan"}, "mode selector does not take a value: --hub"},
+		{"unsupported primary", []string{"--hub", "--robot-history"}, "unsupported Viewer invocation"},
+		{"triage requires brief", []string{"--hub", "--robot-triage"}, "--robot-triage requires --brief"},
+		{"unsafe value", []string{"--hub", "--robot-plan", "--label", "-danger"}, "invalid value for --label"},
+		{"control value", []string{"--hub", "--robot-graph", "--graph-root", "bad\tvalue"}, "invalid control character"},
+		{"duplicate", []string{"--hub", "--robot-graph", "--graph-depth", "1", "--graph-depth", "2"}, "duplicate Viewer option"},
+		{"range", []string{"--hub", "--robot-capacity", "--agents", "65"}, "must be between 1 and 64"},
+		{"wrong option", []string{"--hub", "--robot-plan", "--graph-depth", "2"}, "is not supported with --robot-plan"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, "git", "bd", "bv", "wbd")
+			fixture.makeHubStore(t)
+			code, stderr := fixture.run(test.args...)
+			if code != 1 || !strings.Contains(stderr, test.want) {
+				t.Fatalf("code = %d, stderr = %q, want %q", code, stderr, test.want)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.records, "wbd.json")); !os.IsNotExist(err) {
+				t.Fatal("rejected invocation ran wbd configure")
+			}
+			if _, err := os.Stat(filepath.Join(fixture.records, "bv.json")); !os.IsNotExist(err) {
+				t.Fatal("rejected invocation ran bv")
+			}
+		})
+	}
+}
+
+func TestLocalMarkerSafetyAndBareTerminalRestriction(t *testing.T) {
+	t.Run("symlink marker", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bv")
+		repository := filepath.Join(fixture.root, "repository")
+		if err := os.MkdirAll(repository, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(fixture.root, "target")
+		if err := os.Mkdir(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(repository, ".beads")); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WBV_GIT_ROOT", repository)
+		code, stderr := fixture.run("--local", "--robot-plan")
+		if code != 1 || !strings.Contains(stderr, "must not be a symlink") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+	})
+
+	t.Run("bare non-terminal", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bv")
+		repository := filepath.Join(fixture.root, "repository")
+		if err := os.MkdirAll(filepath.Join(repository, ".beads"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WBV_GIT_ROOT", repository)
+		code, stderr := fixture.run("--local")
+		if code != 1 || !strings.Contains(stderr, "bare wbv requires an interactive terminal") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+	})
+}
+
+func TestMissingHubPreconditionsAndDependencies(t *testing.T) {
+	t.Run("store", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		code, stderr := fixture.run("--hub", "--robot-plan")
+		if code != 1 || !strings.Contains(stderr, "store is missing; run 'wbd bootstrap'") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+	})
+	for _, missing := range []string{"bd", "bv", "wbd"} {
+		t.Run(missing, func(t *testing.T) {
+			commands := []string{"git", "bd", "bv", "wbd"}
+			available := make([]string, 0, len(commands)-1)
+			for _, command := range commands {
+				if command != missing {
+					available = append(available, command)
+				}
+			}
+			fixture := newFixture(t, available...)
+			fixture.makeHubStore(t)
+			code, stderr := fixture.run("--hub", "--robot-plan")
+			if code != 1 || !strings.Contains(stderr, "required command not found: "+missing) {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+		})
+	}
+}
+
+func TestChildExitCodesPropagate(t *testing.T) {
+	fixture := newFixture(t, "git", "bd", "bv", "wbd")
+	fixture.makeHubStore(t)
+	t.Setenv("WBV_WBD_EXIT", "23")
+	code, _ := fixture.run("--hub", "--robot-plan")
+	if code != 23 {
+		t.Fatalf("wbd exit code = %d, want 23", code)
+	}
+	t.Setenv("WBV_WBD_EXIT", "0")
+	t.Setenv("WBV_BV_EXIT", "37")
+	code, _ = fixture.run("--hub", "--robot-plan")
+	if code != 37 {
+		t.Fatalf("bv exit code = %d, want 37", code)
+	}
+}
+
+func TestChildSignalExitCodePropagates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signal semantics")
+	}
+	err := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	code, ok := childExitCode(err)
+	if !ok || code != 143 {
+		t.Fatalf("childExitCode() = (%d, %t), want (143, true)", code, ok)
+	}
+}
+
+type fixture struct {
+	t       *testing.T
+	root    string
+	home    string
+	bin     string
+	records string
+}
+
+func newFixture(t *testing.T, commands ...string) fixture {
+	t.Helper()
+	root := t.TempDir()
+	result := fixture{t: t, root: root, home: filepath.Join(root, "home"), bin: filepath.Join(root, "bin"), records: filepath.Join(root, "records")}
+	for _, directory := range []string{result.home, result.bin, result.records} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, command := range commands {
+		script := fmt.Sprintf("#!/bin/sh\nif [ %q = git ]; then printf '%%s\\n' \"$WBV_GIT_ROOT\"; exit 0; fi\nexec \"$WBV_TEST_BINARY\" -test.run=TestHelperProcess -- %q \"$@\"\n", command, command)
+		if err := os.WriteFile(filepath.Join(result.bin, command), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", result.home)
+	t.Setenv("PATH", result.bin)
+	t.Setenv("GO_WANT_WBV_HELPER_PROCESS", "1")
+	t.Setenv("WBV_TEST_BINARY", os.Args[0])
+	t.Setenv("WBV_TEST_RECORDS", result.records)
+	t.Setenv("WBV_GIT_ROOT", "")
+	t.Setenv("WBV_WBD_EXIT", "0")
+	t.Setenv("WBV_BV_EXIT", "0")
+	return result
+}
+
+func (f fixture) makeHubStore(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(f.home, ".local/share/beads/hub/.beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f fixture) run(arguments ...string) (int, string) {
+	var stderr bytes.Buffer
+	r := runner{
+		stdin:       strings.NewReader(""),
+		stdout:      &bytes.Buffer{},
+		stderr:      &stderr,
+		directory:   f.root,
+		interactive: func() bool { return false },
+	}
+	return r.run(arguments), stderr.String()
+}
+
+func (f fixture) record(t *testing.T, command string) childRecord {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(f.records, command+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record childRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	return record
+}

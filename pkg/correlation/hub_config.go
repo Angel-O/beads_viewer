@@ -9,22 +9,17 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	json "github.com/goccy/go-json"
-	"gopkg.in/yaml.v3"
 )
-
-const hubConfigVersion = 1
 
 var fullCommitSHARegex = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 
-// HubConfig keeps the private Beads store, source checkouts, and correlation
-// ledger outside source repositories.
-type HubConfig struct {
-	Version      int                            `yaml:"version"`
-	Store        string                         `yaml:"store"`
-	Ledger       string                         `yaml:"ledger"`
-	Repositories map[string]HubConfigRepository `yaml:"repositories"`
-}
+// HubConfig is the shared version-1 Hub configuration schema.
+type HubConfig = hub.Config
+
+// HubConfigRepository configures one source checkout. Its map key is the ctx: label.
+type HubConfigRepository = hub.Repository
 
 // HubConfigStore resolves the authoritative Beads store from a hub config.
 func HubConfigStore(configPath string) (string, error) {
@@ -32,18 +27,8 @@ func HubConfigStore(configPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving hub config: %w", err)
 	}
-	data, err := os.ReadFile(resolvedConfigPath)
+	config, err := hub.Load(resolvedConfigPath)
 	if err != nil {
-		return "", fmt.Errorf("reading hub config %q: %w", resolvedConfigPath, err)
-	}
-	var config HubConfig
-	if err := decodeHubConfig(data, &config); err != nil {
-		return "", fmt.Errorf("parsing hub config %q: %w", resolvedConfigPath, err)
-	}
-	if config.Version != hubConfigVersion {
-		return "", fmt.Errorf("hub config %q has unsupported version %d (supported: %d)", resolvedConfigPath, config.Version, hubConfigVersion)
-	}
-	if err := validateHubConfigRepositories(resolvedConfigPath, config.Repositories); err != nil {
 		return "", err
 	}
 	store, err := resolvePrivatePath(config.Store, filepath.Dir(resolvedConfigPath))
@@ -63,18 +48,8 @@ func AddExternalCorrelation(configPath, beadID, repository, ref string) (Externa
 	if err != nil {
 		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving hub config: %w", err)
 	}
-	data, err := os.ReadFile(resolvedConfigPath)
+	config, err := hub.Load(resolvedConfigPath)
 	if err != nil {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("reading hub config %q: %w", resolvedConfigPath, err)
-	}
-	var config HubConfig
-	if err := decodeHubConfig(data, &config); err != nil {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("parsing hub config %q: %w", resolvedConfigPath, err)
-	}
-	if config.Version != hubConfigVersion {
-		return ExternalHistoryCorrelation{}, false, fmt.Errorf("hub config %q has unsupported version %d (supported: %d)", resolvedConfigPath, config.Version, hubConfigVersion)
-	}
-	if err := validateHubConfigRepositories(resolvedConfigPath, config.Repositories); err != nil {
 		return ExternalHistoryCorrelation{}, false, err
 	}
 	beadID = strings.TrimSpace(beadID)
@@ -252,11 +227,6 @@ func writeCorrelationLedgerAtomic(path string, records []ExternalHistoryCorrelat
 	return nil
 }
 
-// HubConfigRepository configures one source checkout. Its map key is the ctx: label.
-type HubConfigRepository struct {
-	Path string `yaml:"path"`
-}
-
 // ExternalHistoryCorrelation is one append-friendly private ledger record.
 type ExternalHistoryCorrelation struct {
 	BeadID  string `json:"bead_id"`
@@ -273,50 +243,22 @@ type validatedHubConfig struct {
 }
 
 func loadHubConfig(path string, beads []BeadInfo) (*validatedHubConfig, error) {
-	configPath, err := expandConfigPath(path)
+	config, err := hub.Resolve(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolving hub config %q: %w", path, err)
-	}
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading hub config %q: %w", configPath, err)
-	}
-
-	var config HubConfig
-	if err := decodeHubConfig(data, &config); err != nil {
-		return nil, fmt.Errorf("parsing hub config %q: %w", configPath, err)
-	}
-	if config.Version != hubConfigVersion {
-		return nil, fmt.Errorf("hub config %q has unsupported version %d (supported: %d)", configPath, config.Version, hubConfigVersion)
-	}
-	if err := validateHubConfigRepositories(configPath, config.Repositories); err != nil {
 		return nil, err
 	}
 
 	result := &validatedHubConfig{
-		configPath:   configPath,
+		configPath:   config.Path,
+		store:        config.Store,
+		ledger:       config.Ledger,
 		repositories: make(map[string]string, len(config.Repositories)),
 	}
-	baseDir := filepath.Dir(configPath)
-	result.store, err = resolvePrivatePath(config.Store, baseDir)
-	if err != nil {
-		return nil, fmt.Errorf("hub config %q store: %w", configPath, err)
-	}
-	result.ledger, err = resolvePrivatePath(config.Ledger, baseDir)
-	if err != nil {
-		return nil, fmt.Errorf("hub config %q ledger: %w", configPath, err)
-	}
 	if result.store == "" || result.ledger == "" {
-		return nil, fmt.Errorf("hub config %q requires non-empty store and ledger paths", configPath)
+		return nil, fmt.Errorf("hub config %q requires non-empty store and ledger paths", config.Path)
 	}
 	for _, key := range sortedRepositoryKeys(config.Repositories) {
-		repository := config.Repositories[key]
-		path := strings.TrimSpace(repository.Path)
-		path, err = resolvePrivatePath(path, baseDir)
-		if err != nil {
-			return nil, fmt.Errorf("hub config %q repository %q: %w", configPath, key, err)
-		}
-		result.repositories[key] = filepath.Clean(path)
+		result.repositories[key] = filepath.Clean(config.Repositories[key].Path)
 	}
 	result.correlations, err = loadCorrelationLedgerIfExists(result.ledger)
 	if err != nil {
@@ -368,24 +310,6 @@ func sortedRepositoryKeys(repositories map[string]HubConfigRepository) []string 
 	return keys
 }
 
-func validateHubConfigRepositories(configPath string, repositories map[string]HubConfigRepository) error {
-	for _, key := range sortedRepositoryKeys(repositories) {
-		if key != strings.TrimSpace(key) || !strings.HasPrefix(key, "ctx:") || len(key) == len("ctx:") {
-			return fmt.Errorf("hub config %q has invalid repository context key %q: expected a ctx:<repo>-<hash> label", configPath, key)
-		}
-		if strings.TrimSpace(repositories[key].Path) == "" {
-			return fmt.Errorf("hub config %q repository %q has an empty path", configPath, key)
-		}
-	}
-	return nil
-}
-
-func decodeHubConfig(data []byte, config *HubConfig) error {
-	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
-	decoder.KnownFields(true)
-	return decoder.Decode(config)
-}
-
 func pathWithin(parent, child string) bool {
 	relative, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(child))
 	if err != nil {
@@ -420,35 +344,11 @@ func loadCorrelationLedger(path string) ([]ExternalHistoryCorrelation, error) {
 }
 
 func expandConfigPath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if path == "~" {
-			path = home
-		} else {
-			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
-		}
-	} else if strings.HasPrefix(path, "~") {
-		return "", fmt.Errorf("unsupported home path %q; use ~/...", path)
-	}
-	return filepath.Abs(path)
+	return hub.ResolvePath(path, "")
 }
 
 func resolvePrivatePath(path, baseDir string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", nil
-	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		return expandConfigPath(path)
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(baseDir, path)
-	}
-	return filepath.Abs(path)
+	return hub.ResolvePath(path, baseDir)
 }
 
 func containsString(values []string, target string) bool {

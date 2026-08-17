@@ -129,6 +129,23 @@ func TestHubConfigRepositoriesRequireContextMap(t *testing.T) {
 	}
 }
 
+func TestHubConfigStoreDoesNotResolveUnusedLedger(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "hub.yaml")
+	config := "version: 1\nstore: .beads\nledger: ~other/ledger.jsonl\nrepositories: {}\n"
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := HubConfigStore(path)
+	if err != nil {
+		t.Fatalf("HubConfigStore() resolved unused ledger: %v", err)
+	}
+	if want := filepath.Join(root, ".beads"); store != want {
+		t.Fatalf("HubConfigStore() = %q, want %q", store, want)
+	}
+}
+
 func TestLifecycleEventType(t *testing.T) {
 	tests := []struct {
 		name              string

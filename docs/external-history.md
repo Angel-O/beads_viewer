@@ -41,6 +41,84 @@ issues. The explicit `--db` flag retains its existing highest precedence.
 config supplies the store, because they would replace that authoritative store
 with a different issue source.
 
+## Hub Commands And Local Mode
+
+`wbd` is the Hub-only Beads command boundary. Initialize the private store and
+version-1 Viewer config explicitly, optionally selecting a store-wide prefix:
+
+```bash
+wbd bootstrap
+wbd bootstrap --prefix team
+```
+
+The fixed paths are:
+
+- Store: `~/.local/share/beads/hub/.beads`
+- Correlation ledger: `~/.local/share/beads/hub/correlations.jsonl`
+- Viewer config: `~/.config/bv/hub.yaml`
+
+From an origin-backed source checkout, `wbd context` prints its credential-free
+`ctx:` label. `wbd register` records the durable primary checkout that shares
+the current worktree's Git common directory, with the current non-bare worktree
+as a safe fallback. `wbd configure` reconciles an existing registration.
+Scoped `wbd create`, `wbd new`, and `wbd list` operations register the checkout
+as needed; `wbd link <bead-id> [commit]` adds a source correlation, defaulting
+to `HEAD`. `wbd show`, `update`, `dep`, `close`, and `reopen` operate against
+the same Hub store. Use the supported wrapper commands rather than passing
+arbitrary `bd` options; direct `wbd init` and alternate database/config paths
+are intentionally unavailable.
+
+`wbv` selects local mode when the current Git worktree root contains a real,
+non-symlink `.beads` directory. Otherwise it selects the Hub. Use `wbv --local`
+or `wbv --hub` as the first argument to force a mode. Local mode runs Viewer
+with Git history from the worktree and never calls `wbd`, registers the
+checkout, or migrates local issue data. Hub mode runs `wbd configure`, sets the
+fixed Hub store, and invokes Viewer with external history and the fixed Hub
+config. `wbd` remains Hub-only regardless of the current checkout.
+
+## Repository-Only Migrations
+
+The migration scripts under `scripts/` are manual repository tools. They are
+never run automatically, and they do not import a source repository's local
+`.beads` store into the Hub.
+
+For an existing Hub, run the repeatable prefix-only migration:
+
+```bash
+bash scripts/migrate-beads-hub-prefix.sh
+```
+
+It reads the one persisted prefix, prompts with that prefix as the default, and
+makes no changes or backup when the answer is unchanged. Before a real change,
+it backs up the complete Hub parent and `hub.yaml` under
+`~/.local/share/beads/hub-prefix-backup-<timestamp>`. It then uses `bd
+rename-prefix`, refreshes `issues.jsonl`, and changes only top-level `bead_id`
+in the correlation ledger and top-level `issue_id` in `interactions.jsonl`.
+Nested values are deliberately untouched. A simple matching `last-touched`
+value is updated as well.
+
+For the legacy private store at `~/.local/share/beads/work/.beads`, and only
+when no Hub destination or Hub config exists, run the one-time path migration:
+
+```bash
+bash scripts/migrate-beads-work-to-hub.sh
+```
+
+It requires the legacy prefix to be `work`, defaults the new prefix to `bead`,
+preserves repository registrations in the version-1 config, rewrites its fixed
+store and ledger paths, and creates
+`~/.local/share/beads/work-to-hub-backup-<timestamp>` before mutation. After it
+succeeds, use the repeatable prefix migration for later naming changes rather
+than running the path migration again.
+
+Both commands require `bash`, `bd`, and `jq`. They reject missing, malformed,
+or unsupported configs; unexpected fixed paths; invalid prefixes; conflicting
+destinations; and symlinked stores, configs, ledgers, interactions, exports, or
+`last-touched` files before mutation. Calls to `bd` clear ambient Beads and Dolt
+database/server variables and set only the fixed store. Backups are private
+(`umask 077`) and are preserved if a later migration step fails. Do not point
+these scripts at alternate paths or run them against repository-local stores.
+
 ## Hub Configuration
 
 The private YAML configuration is versioned. Relative paths are resolved from
