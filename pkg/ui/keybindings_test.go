@@ -751,6 +751,33 @@ func TestKeyDispatch_Regression_HistoryFileTreeEscStaysInHistory(t *testing.T) {
 	}
 }
 
+func TestKeyDispatch_Regression_TabKeepsHistoryFocusInSplitView(t *testing.T) {
+	m := setupTestModel(t)
+	m.isSplitView = true
+	m.isHistoryView = true
+	m.focused = focusHistory
+	m.historyView = NewHistoryModel(createTestHistoryReport(), testTheme())
+	m.historyView.SetSize(200, 40)
+
+	updated, _ := m.Update(keyMsg("tab"))
+	m = updated.(Model)
+	if m.focused != focusHistory || m.historyView.focused != historyFocusTimeline {
+		t.Fatalf("first tab left History: outer=%v inner=%v", m.focused, m.historyView.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("tab"))
+	m = updated.(Model)
+	if m.focused != focusHistory || m.historyView.focused != historyFocusMiddle {
+		t.Fatalf("second tab did not focus commits: outer=%v inner=%v", m.focused, m.historyView.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(Model)
+	if m.historyView.selectedCommit != 1 {
+		t.Fatalf("j after tab selected commit %d, want 1", m.historyView.selectedCommit)
+	}
+}
+
 // TestKeyDispatch_ModalConsumesAllKeys verifies that modals consume all keys
 // and don't pass them through to underlying views.
 func TestKeyDispatch_ModalConsumesAllKeys(t *testing.T) {
