@@ -133,8 +133,11 @@ func WaitForPhase2Cmd(stats *analysis.GraphStats) tea.Cmd {
 	}
 }
 
-// FileChangedMsg is sent when the beads file changes on disk
-type FileChangedMsg struct{}
+// FileChangedMsg requests a reload after a file change or a user-forced refresh.
+type FileChangedMsg struct {
+	refreshBDExport bool
+	observedAt      time.Time
+}
 
 // editorExitMsg is sent when a terminal editor process exits after editing an issue (bv-134).
 type editorExitMsg struct {
@@ -204,7 +207,7 @@ func ReadyTimeoutCmd() tea.Cmd {
 func WatchFileCmd(w *watcher.Watcher) tea.Cmd {
 	return func() tea.Msg {
 		<-w.Changed()
-		return FileChangedMsg{}
+		return FileChangedMsg{observedAt: time.Now()}
 	}
 }
 
@@ -231,6 +234,28 @@ func loadIssuesForReload(path string, opts loader.ParseOptions) (loader.PooledIs
 	default:
 		return loader.LoadIssuesFromFileWithOptionsPooled(path, opts)
 	}
+}
+
+func preparePathForReload(path string, refreshBDExport bool) (string, error) {
+	if !refreshBDExport || !shouldRefreshBDExport(path) {
+		return path, nil
+	}
+
+	var exportWarning string
+	preparedPath, err := loader.PrepareBeadsDirForRead(filepath.Dir(path), true, func(msg string) {
+		exportWarning = msg
+	})
+	if err != nil {
+		return "", fmt.Errorf("preparing bd compatibility export: %w", err)
+	}
+	if exportWarning != "" {
+		return "", fmt.Errorf("preparing bd compatibility export: %s", exportWarning)
+	}
+	return preparedPath, nil
+}
+
+func shouldRefreshBDExport(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".jsonl") && loader.IsBDWorkspace(filepath.Dir(path))
 }
 
 // StartBackgroundWorkerCmd starts the background worker and triggers an initial refresh.
@@ -453,9 +478,10 @@ type Model struct {
 	// (or an error), allowing a polished cold-start loading screen (bv-tspo).
 	snapshotInitPending bool
 	// backgroundWorker manages async data loading (nil if background mode disabled)
-	backgroundWorker *BackgroundWorker
-	workerSpinnerIdx int // Spinner frame for background worker activity (bv-9nfy)
-	lastForceRefresh time.Time
+	backgroundWorker  *BackgroundWorker
+	workerSpinnerIdx  int // Spinner frame for background worker activity (bv-9nfy)
+	lastForceRefresh  time.Time
+	lastSourceRefresh time.Time
 
 	// UI Components
 	list               list.Model
@@ -2106,6 +2132,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+		// Ignore an event queued by the compatibility export itself.
+		if !msg.refreshBDExport && !msg.observedAt.IsZero() && !m.lastSourceRefresh.IsZero() && !msg.observedAt.After(m.lastSourceRefresh) {
+			if m.watcher != nil {
+				cmds = append(cmds, WatchFileCmd(m.watcher))
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if m.beadsPath == "" {
 			// Re-start watch for next change
 			if m.watcher != nil {
@@ -2150,7 +2183,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if profileRefresh {
 			loadStart = time.Now()
 		}
-		loadedIssues, err := loadIssuesForReload(m.beadsPath, loader.ParseOptions{
+		refreshingBDExport := msg.refreshBDExport && shouldRefreshBDExport(m.beadsPath)
+		watcherPaused := refreshingBDExport && m.watcher != nil && m.watcher.IsStarted()
+		if watcherPaused {
+			m.watcher.Stop()
+		}
+		reloadPath, err := preparePathForReload(m.beadsPath, msg.refreshBDExport)
+		if watcherPaused {
+			if restartErr := m.watcher.Start(); restartErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%v; restarting file watcher: %w", err, restartErr)
+				} else {
+					err = fmt.Errorf("restarting file watcher: %w", restartErr)
+				}
+			}
+		}
+		if refreshingBDExport {
+			m.lastSourceRefresh = time.Now()
+		}
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Reload error: %v", err)
+			m.statusIsError = true
+			if m.watcher != nil && !msg.refreshBDExport {
+				cmds = append(cmds, WatchFileCmd(m.watcher))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		loadedIssues, err := loadIssuesForReload(reloadPath, loader.ParseOptions{
 			WarningHandler: func(msg string) {
 				reloadWarnings = append(reloadWarnings, msg)
 			},
@@ -2507,7 +2566,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportContent()
 
 		// Re-start watching for next change + wait for Phase 2
-		if m.watcher != nil && !autoEnabled {
+		if m.watcher != nil && !autoEnabled && !msg.refreshBDExport {
 			cmds = append(cmds, WatchFileCmd(m.watcher))
 		}
 		cmds = append(cmds, WaitForPhase2Cmd(m.analysis))
@@ -2831,7 +2890,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = false
 
 			if m.backgroundWorker != nil {
-				m.backgroundWorker.ForceRefresh()
+				m.backgroundWorker.ForceSourceRefresh()
 				cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
 				return m, tea.Batch(cmds...)
 			}
@@ -2842,7 +2901,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{} })
+			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
 			return m, tea.Batch(cmds...)
 		}
 
