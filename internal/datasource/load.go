@@ -123,6 +123,11 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 	if err != nil {
 		return nil, err
 	}
+	if envDB := strings.TrimSpace(os.Getenv(loader.BeadsDBEnvVar)); envDB != "" {
+		if info, statErr := os.Stat(envDB); statErr == nil && info.IsDir() {
+			return LoadIssuesFromDir(beadsDir)
+		}
+	}
 
 	// bd/Dolt workspaces (#189): the issue data lives in a Dolt database that
 	// bv cannot read directly, so route through the bd bridge added for #141.
@@ -170,7 +175,7 @@ func LoadIssuesFromDir(beadsDir string) ([]model.Issue, error) {
 		return loadBDWorkspace(beadsDir)
 	}
 
-	issues, smartErr := loadSmart(beadsDir, "")
+	issues, smartErr := loadSmartAuthoritative(beadsDir)
 	if smartErr == nil {
 		return issues, nil
 	}
@@ -267,10 +272,19 @@ func explicitBeadsDBFileType(dbPath string) (SourceType, int, bool) {
 // stats post-load. A genuinely-corrupt JSONL is still rejected (and we fall
 // through to the next candidate), but the happy path reads the file exactly once.
 func loadSmart(beadsDir, repoPath string) ([]model.Issue, error) {
+	return loadSmartWithOptions(beadsDir, repoPath, false)
+}
+
+func loadSmartAuthoritative(beadsDir string) ([]model.Issue, error) {
+	return loadSmartWithOptions(beadsDir, "", true)
+}
+
+func loadSmartWithOptions(beadsDir, repoPath string, skipWorktrees bool) ([]model.Issue, error) {
 	sources, err := DiscoverSources(DiscoveryOptions{
 		BeadsDir:               beadsDir,
 		RepoPath:               repoPath,
 		ValidateAfterDiscovery: false,
+		SkipWorktreeSources:    skipWorktrees,
 	})
 	if err != nil {
 		return nil, err

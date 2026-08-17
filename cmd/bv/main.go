@@ -40,6 +40,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hooks"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -604,6 +605,11 @@ func rewriteAgentIntentCommand(args []string) ([]string, bool) {
 		return rewriteRobotValueIntent(rest, "diff", "--robot-diff", "--diff-since", ""), true
 	case "history":
 		return rewriteRobotValueIntent(rest, "history", "--robot-history", "--bead-history", ""), true
+	case "correlate":
+		if len(rest) > 0 && strings.EqualFold(rest[0], "add") {
+			return append([]string{"--correlate-add"}, rest[1:]...), true
+		}
+		return append([]string{"--correlate-add"}, rest...), true
 	case "labels", "label-health":
 		return append([]string{"--robot-label-health"}, rewriteAgentIntentFlagAliases(rest, "label-health")...), true
 	case "label-flow":
@@ -1497,6 +1503,11 @@ func main() {
 	checkDrift := flag.Bool("check-drift", false, "Check for drift from baseline (exit codes: 0=OK, 1=critical, 2=warning)")
 	robotDriftCheck := flag.Bool("robot-drift", false, "Output drift check as JSON (use with --check-drift)")
 	robotHistory := flag.Bool("robot-history", false, "Output bead-to-commit correlations as JSON")
+	historyMode := flag.String("history-mode", "auto", "History provider: auto, git, external, or off")
+	hubConfig := flag.String("hub-config", "", "Private external history hub config (default: ~/.config/bv/hub.yaml when present)")
+	correlateAdd := flag.Bool("correlate-add", false, "Add an explicit bead-to-source-commit correlation")
+	correlateBead := flag.String("bead", "", "Bead ID for --correlate-add")
+	correlateCommit := flag.String("commit", "", "Git commit/ref for --correlate-add")
 	beadHistory := flag.String("bead-history", "", "Show history for specific bead ID")
 	historySince := flag.String("history-since", "", "Limit history to commits after this date/ref (e.g., '30 days ago', '2024-01-01')")
 	historyLimit := flag.Int("history-limit", 500, "Max commits to analyze (0 = unlimited)")
@@ -1504,9 +1515,9 @@ func main() {
 	minConfidence := flag.Float64("min-confidence", 0.0, "Filter correlations by minimum confidence (0.0-1.0)")
 	idPatterns := flag.StringArray("id-pattern", nil, "Custom bead ID regex for commit-message matching, e.g. 'bh-[a-z0-9]{5}' (repeatable; capture group 1 is the ID, else the whole match) (#188)")
 	// Correlation audit flags (bv-e1u6)
-	robotExplainCorrelation := flag.String("robot-explain-correlation", "", "Explain why a commit is linked to a bead (format: SHA:beadID)")
-	robotConfirmCorrelation := flag.String("robot-confirm-correlation", "", "Confirm a correlation is correct (format: SHA:beadID)")
-	robotRejectCorrelation := flag.String("robot-reject-correlation", "", "Reject an incorrect correlation (format: SHA:beadID)")
+	robotExplainCorrelation := flag.String("robot-explain-correlation", "", "Explain why a commit is linked to a bead (format: [context@]SHA:beadID)")
+	robotConfirmCorrelation := flag.String("robot-confirm-correlation", "", "Confirm a correlation is correct (format: [context@]SHA:beadID)")
+	robotRejectCorrelation := flag.String("robot-reject-correlation", "", "Reject an incorrect correlation (format: [context@]SHA:beadID)")
 	correlationFeedbackBy := flag.String("correlation-by", "", "Agent/user identifier for correlation feedback")
 	correlationFeedbackReason := flag.String("correlation-reason", "", "Reason for correlation feedback")
 	robotCorrelationStats := flag.Bool("robot-correlation-stats", false, "Output correlation feedback statistics as JSON")
@@ -1694,6 +1705,37 @@ func main() {
 		NotReadyLabels:          robotNotReadyLabels,
 	})
 	rootCmd := newRootCommand(func() error {
+		resolvedMode, resolvedConfig, err := resolveHistoryConfiguration(*historyMode, *hubConfig)
+		if err != nil {
+			return err
+		}
+		historyModeValue = resolvedMode
+		hubConfigPath = resolvedConfig
+		usesHubConfigStore := hubConfigPath != "" && historyModeValue != "git"
+		if usesHubConfigStore && *workspaceConfig != "" {
+			return fmt.Errorf("--workspace cannot be combined with the configured hub store; config.store is authoritative")
+		}
+		if usesHubConfigStore && *asOf != "" {
+			return fmt.Errorf("--as-of cannot be combined with the configured hub store; config.store is authoritative")
+		}
+		if *correlateAdd {
+			if hubConfigPath == "" {
+				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
+			}
+			record, added, err := correlation.AddExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
+			if err != nil {
+				return fmt.Errorf("adding correlation: %w", err)
+			}
+			output := struct {
+				Correlation correlation.ExternalHistoryCorrelation `json:"correlation"`
+				Added       bool                                   `json:"added"`
+			}{Correlation: record, Added: added}
+			if err := newRobotEncoder(os.Stdout).Encode(output); err != nil {
+				return fmt.Errorf("encoding correlation result: %w", err)
+			}
+			return nil
+		}
+
 		// Resolve and pin the color theme before anything renders, so every
 		// adaptive color — package-global styles, per-model renderers, and
 		// glamour markdown — agrees on light vs dark. Precedence:
@@ -1854,6 +1896,14 @@ func main() {
 				os.Exit(1)
 			}
 			os.Setenv(loader.BeadsDBEnvVar, absDB)
+		} else if usesHubConfigStore {
+			store, err := correlation.HubConfigStore(hubConfigPath)
+			if err != nil {
+				return err
+			}
+			if err := os.Setenv(loader.BeadsDBEnvVar, store); err != nil {
+				return fmt.Errorf("setting external Beads store: %w", err)
+			}
 		}
 
 		// Apply --no-cache flag: set BV_NO_CACHE=1 so disk cache is bypassed.
@@ -3751,17 +3801,18 @@ func main() {
 							}
 
 							// Validate repo first
-							if correlation.ValidateRepository(cwd) == nil {
+							if validateCorrelationRepository(cwd) == nil {
 								beadInfos := make([]correlation.BeadInfo, len(issues))
 								for i, issue := range issues {
 									beadInfos[i] = correlation.BeadInfo{
 										ID:     issue.ID,
 										Title:  issue.Title,
 										Status: string(issue.Status),
+										Labels: issue.Labels,
 									}
 								}
 
-								correlator := correlation.NewCorrelator(cwd, beadsPath)
+								correlator := newCorrelationCorrelator(cwd, beadsPath)
 								opts := correlation.CorrelatorOptions{Limit: limit}
 
 								// Swallow errors for triage flow - staleness is optional
@@ -4046,7 +4097,7 @@ func main() {
 			}
 
 			// Validate repository
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4088,11 +4139,12 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
 			// Generate report with explicit beads path
-			correlator := correlation.NewCorrelator(cwd, beadsPath)
+			correlator := newCorrelationCorrelator(cwd, beadsPath)
 			report, err := correlator.GenerateReport(beadInfos, opts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error generating history report: %v\n", err)
@@ -4108,7 +4160,8 @@ func main() {
 				report.CommitIndex = make(correlation.CommitIndex)
 				for beadID, history := range report.Histories {
 					for _, commit := range history.Commits {
-						report.CommitIndex[commit.SHA] = append(report.CommitIndex[commit.SHA], beadID)
+						key := correlation.CommitIdentity(commit)
+						report.CommitIndex[key] = append(report.CommitIndex[key], beadID)
 					}
 				}
 
@@ -4179,7 +4232,7 @@ func main() {
 					fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 					os.Exit(1)
 				}
-				correlator := correlation.NewCorrelator(cwd, beadsPath)
+				correlator := newCorrelationCorrelator(cwd, beadsPath)
 
 				beadInfos := make([]correlation.BeadInfo, len(issues))
 				for i, issue := range issues {
@@ -4187,6 +4240,7 @@ func main() {
 						ID:     issue.ID,
 						Title:  issue.Title,
 						Status: string(issue.Status),
+						Labels: issue.Labels,
 					}
 				}
 
@@ -4255,11 +4309,11 @@ func main() {
 					fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 					os.Exit(1)
 				}
-				correlator := correlation.NewCorrelator(cwd, beadsPath)
+				correlator := newCorrelationCorrelator(cwd, beadsPath)
 
 				beadInfos := make([]correlation.BeadInfo, len(issues))
 				for i, issue := range issues {
-					beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
+					beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status), Labels: issue.Labels}
 				}
 
 				opts := correlation.CorrelatorOptions{BeadID: beadID}
@@ -4331,11 +4385,11 @@ func main() {
 					fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 					os.Exit(1)
 				}
-				correlator := correlation.NewCorrelator(cwd, beadsPath)
+				correlator := newCorrelationCorrelator(cwd, beadsPath)
 
 				beadInfos := make([]correlation.BeadInfo, len(issues))
 				for i, issue := range issues {
-					beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
+					beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status), Labels: issue.Labels}
 				}
 
 				opts := correlation.CorrelatorOptions{BeadID: beadID}
@@ -4395,7 +4449,7 @@ func main() {
 			}
 
 			// Validate repository
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4419,11 +4473,12 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
 			// Generate history report first (to get existing correlations)
-			correlator := correlation.NewCorrelator(cwd, beadsPath)
+			correlator := newCorrelationCorrelator(cwd, beadsPath)
 			correlatorOpts := correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			}
@@ -4480,7 +4535,7 @@ func main() {
 			}
 
 			// Validate repository
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4506,15 +4561,17 @@ func main() {
 				// Output hotspots
 				type HotspotsOutput struct {
 					RobotEnvelope
+					robotHistoryDiagnostics
 					Hotspots []correlation.FileHotspot  `json:"hotspots"`
 					Stats    correlation.FileIndexStats `json:"stats"`
 				}
 
 				hotspots := fileLookup.GetHotspots(*hotspotsLimit)
 				output := HotspotsOutput{
-					RobotEnvelope: NewRobotEnvelope(report.DataHash),
-					Hotspots:      hotspots,
-					Stats:         fileLookup.GetStats(),
+					RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+					robotHistoryDiagnostics: historyDiagnostics(report),
+					Hotspots:                hotspots,
+					Stats:                   fileLookup.GetStats(),
 				}
 
 				if err := encoder.Encode(output); err != nil {
@@ -4532,6 +4589,7 @@ func main() {
 
 				type FileBeadsOutput struct {
 					RobotEnvelope
+					robotHistoryDiagnostics
 					FilePath    string                      `json:"file_path"`
 					TotalBeads  int                         `json:"total_beads"`
 					OpenBeads   []correlation.BeadReference `json:"open_beads"`
@@ -4539,11 +4597,12 @@ func main() {
 				}
 
 				output := FileBeadsOutput{
-					RobotEnvelope: NewRobotEnvelope(report.DataHash),
-					FilePath:      *robotFileBeads,
-					TotalBeads:    result.TotalBeads,
-					OpenBeads:     result.OpenBeads,
-					ClosedBeads:   result.ClosedBeads,
+					RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+					robotHistoryDiagnostics: historyDiagnostics(report),
+					FilePath:                *robotFileBeads,
+					TotalBeads:              result.TotalBeads,
+					OpenBeads:               result.OpenBeads,
+					ClosedBeads:             result.ClosedBeads,
 				}
 
 				if err := encoder.Encode(output); err != nil {
@@ -4564,7 +4623,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4586,10 +4645,11 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
-			correlator := correlation.NewCorrelator(cwd, beadsPath)
+			correlator := newCorrelationCorrelator(cwd, beadsPath)
 			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
@@ -4644,7 +4704,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4672,10 +4732,11 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
-			correlator := correlation.NewCorrelator(cwd, beadsPath)
+			correlator := newCorrelationCorrelator(cwd, beadsPath)
 			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
@@ -4721,7 +4782,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4749,10 +4810,11 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
-			correlatorObj := correlation.NewCorrelator(cwd, beadsPath)
+			correlatorObj := newCorrelationCorrelator(cwd, beadsPath)
 			report, err := correlatorObj.GenerateReport(beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
@@ -4866,7 +4928,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4897,11 +4959,12 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
 			// Generate history report
-			correlator := correlation.NewCorrelator(cwd, beadsPath)
+			correlator := newCorrelationCorrelator(cwd, beadsPath)
 			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
@@ -4967,7 +5030,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := correlation.ValidateRepository(cwd); err != nil {
+			if err := validateCorrelationRepository(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4995,10 +5058,11 @@ func main() {
 					ID:     issue.ID,
 					Title:  issue.Title,
 					Status: string(issue.Status),
+					Labels: issue.Labels,
 				}
 			}
 
-			correlatorObj := correlation.NewCorrelator(cwd, beadsPath)
+			correlatorObj := newCorrelationCorrelator(cwd, beadsPath)
 			report, err := correlatorObj.GenerateReport(beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
@@ -5387,6 +5451,7 @@ func main() {
 
 			// Launch TUI with historical issues (already loaded, no live reload)
 			m := ui.NewModel(issues, activeRecipe, "")
+			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
@@ -5482,6 +5547,7 @@ func main() {
 
 		// Initial Model with live reload support
 		m := ui.NewModel(issues, activeRecipe, beadsPath)
+		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config
@@ -8038,18 +8104,20 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 	}
 
 	// Check if we're in a git repository
-	if err := correlation.ValidateRepository(cwd); err != nil {
+	if err := validateCorrelationRepository(cwd); err != nil {
 		return nil, err
 	}
 
-	// Get beads path
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return nil, err
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return nil, err
+	beadsPath := ""
+	if historyModeValue == "git" {
+		beadsDir, err := loader.GetBeadsDir("")
+		if err != nil {
+			return nil, err
+		}
+		beadsPath, err = loader.FindJSONLPath(beadsDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Build bead info from issues
@@ -8059,6 +8127,7 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 			ID:     issue.ID,
 			Title:  issue.Title,
 			Status: string(issue.Status),
+			Labels: issue.Labels,
 		}
 	}
 
@@ -8073,7 +8142,7 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 	// the per-commit event cache. Without this the watcher re-materialized the
 	// entire blob history on every re-export. BV_NO_CACHE=1 still opts out.
 	correlation.SetDiskCacheEnabled(true)
-	correlator := correlation.NewCorrelator(cwd, beadsPath)
+	correlator := newCorrelationCorrelator(cwd, beadsPath)
 	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for time-travel
 	})
@@ -8166,10 +8235,72 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 }
 
 var robotOutputFormat = "json"
+var hubConfigPath string
+var historyModeValue = "git"
 var robotToonEncodeOptions = toon.DefaultEncodeOptions()
 var robotShowToonStats bool
 
 const robotContractVersion = "1.0.0"
+
+func resolveHistoryConfiguration(mode, configPath string) (string, string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	configPath = strings.TrimSpace(configPath)
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode != "auto" && mode != "git" && mode != "external" && mode != "off" {
+		return "", "", fmt.Errorf("invalid --history-mode %q: expected auto, git, external, or off", mode)
+	}
+
+	resolvedConfig := ""
+	if configPath != "" {
+		var err error
+		resolvedConfig, err = expandCLIHomePath(configPath)
+		if err != nil {
+			return "", "", fmt.Errorf("resolving --hub-config: %w", err)
+		}
+		if _, err := os.Stat(resolvedConfig); err != nil {
+			return "", "", fmt.Errorf("reading --hub-config %q: %w", resolvedConfig, err)
+		}
+	}
+	if mode == "auto" {
+		if resolvedConfig != "" {
+			return "external", resolvedConfig, nil
+		}
+		if candidate, ok := defaultHubConfigPath(); ok {
+			return "external", candidate, nil
+		}
+		return "git", "", nil
+	}
+	if mode == "off" && resolvedConfig == "" {
+		if candidate, ok := defaultHubConfigPath(); ok {
+			resolvedConfig = candidate
+		}
+	}
+	if mode == "external" && resolvedConfig == "" {
+		if candidate, ok := defaultHubConfigPath(); ok {
+			resolvedConfig = candidate
+		} else {
+			return "", "", fmt.Errorf("--history-mode external requires --hub-config or ~/.config/bv/hub.yaml")
+		}
+	}
+	return mode, resolvedConfig, nil
+}
+
+func defaultHubConfigPath() (string, bool) {
+	paths, err := hub.DefaultPaths()
+	if err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(paths.Config); err != nil {
+		return "", false
+	}
+	return paths.Config, true
+}
+
+func expandCLIHomePath(path string) (string, error) {
+	return hub.ResolvePath(path, "")
+}
 
 // RobotEnvelope is the standard envelope for all robot command outputs.
 // All robot outputs MUST include these fields for consistency.
@@ -8860,10 +8991,17 @@ func resolveSingleRepoWatchFile(projectDir string) (string, error) {
 	// candidates. Skipping ValidateAfterDiscovery avoids a redundant full parse
 	// of the 1.9MB issues.jsonl on the robot path (it is parsed once by the
 	// loader for the actual data load).
+	skipWorktrees := false
+	if envDB := strings.TrimSpace(os.Getenv(loader.BeadsDBEnvVar)); envDB != "" {
+		if info, statErr := os.Stat(envDB); statErr == nil && info.IsDir() {
+			skipWorktrees = true
+		}
+	}
 	sources, discoverErr := datasource.DiscoverSources(datasource.DiscoveryOptions{
 		BeadsDir:               beadsDir,
 		RepoPath:               projectDir,
 		ValidateAfterDiscovery: false,
+		SkipWorktreeSources:    skipWorktrees,
 	})
 	if discoverErr == nil && len(sources) > 0 && sources[0].Path != "" {
 		return sources[0].Path, nil
@@ -9034,6 +9172,11 @@ func generateRobotSchemas() RobotSchemas {
 			"properties": map[string]interface{}{
 				"generated_at": map[string]interface{}{"type": "string", "format": "date-time"},
 				"data_hash":    map[string]interface{}{"type": "string"},
+				"history_status": map[string]interface{}{
+					"type": "string",
+					"enum": []string{"ok", "partial", "error", "timeout"},
+				},
+				"history_warnings": historyWarningsSchema(),
 				"triage": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -9046,9 +9189,10 @@ func generateRobotSchemas() RobotSchemas {
 								"issue_count":  map[string]interface{}{"type": "integer"},
 								"history_status": map[string]interface{}{
 									"type":        "string",
-									"enum":        []string{"ok", "error", "timeout"},
+									"enum":        []string{"ok", "partial", "error", "timeout"},
 									"description": "Outcome of the git-history correlation prologue; omitted when history was not attempted (#166)",
 								},
+								"history_warnings": historyWarningsSchema(),
 							},
 						},
 						"quick_ref": map[string]interface{}{
@@ -10380,10 +10524,11 @@ func robotNullableArraySchema(items map[string]interface{}) map[string]interface
 
 func robotFileCommandOutputSchema(title, description string, commandProperties map[string]interface{}, required []string) map[string]interface{} {
 	properties := map[string]interface{}{
-		"generated_at":  map[string]interface{}{"type": "string", "format": "date-time"},
-		"data_hash":     map[string]interface{}{"type": "string"},
-		"output_format": map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
-		"version":       map[string]interface{}{"type": "string"},
+		"generated_at":     map[string]interface{}{"type": "string", "format": "date-time"},
+		"data_hash":        map[string]interface{}{"type": "string"},
+		"output_format":    map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
+		"version":          map[string]interface{}{"type": "string"},
+		"history_warnings": historyWarningsSchema(),
 	}
 	for name, schema := range commandProperties {
 		properties[name] = schema
@@ -10535,17 +10680,36 @@ func robotHistoryOutputSchema() map[string]interface{} {
 		"description": "Bead-to-commit correlation history report with aggregate stats and reverse commit index",
 		"type":        "object",
 		"properties": map[string]interface{}{
-			"generated_at":      map[string]interface{}{"type": "string", "format": "date-time"},
-			"data_hash":         map[string]interface{}{"type": "string"},
-			"output_format":     map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
-			"version":           map[string]interface{}{"type": "string"},
-			"git_range":         map[string]interface{}{"type": "string"},
-			"latest_commit_sha": map[string]interface{}{"type": "string"},
-			"stats":             map[string]interface{}{"type": "object"},
-			"histories":         map[string]interface{}{"type": "object"},
-			"commit_index":      map[string]interface{}{"type": "object"},
+			"generated_at":             map[string]interface{}{"type": "string", "format": "date-time"},
+			"data_hash":                map[string]interface{}{"type": "string"},
+			"output_format":            map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
+			"version":                  map[string]interface{}{"type": "string"},
+			"git_range":                map[string]interface{}{"type": "string"},
+			"latest_commit_sha":        map[string]interface{}{"type": "string"},
+			"latest_commit_repository": map[string]interface{}{"type": "string"},
+			"stats":                    map[string]interface{}{"type": "object"},
+			"histories":                map[string]interface{}{"type": "object"},
+			"commit_index":             map[string]interface{}{"type": "object"},
+			"warnings":                 historyWarningsSchema(),
 		},
 		"required": []string{"generated_at", "data_hash", "output_format", "version", "git_range", "stats", "histories", "commit_index"},
+	}
+}
+
+func historyWarningsSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "array",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"code":                 map[string]interface{}{"type": "string"},
+				"context":              map[string]interface{}{"type": "string"},
+				"reason":               map[string]interface{}{"type": "string"},
+				"skipped_correlations": map[string]interface{}{"type": "integer"},
+				"message":              map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"code", "context", "reason", "skipped_correlations", "message"},
+		},
 	}
 }
 

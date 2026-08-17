@@ -21,6 +21,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/debug"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/instance"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -340,6 +341,10 @@ func CheckAgentFileCmd(workDir string) tea.Cmd {
 
 // LoadHistoryCmd returns a command that loads history data in the background
 func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
+	return loadHistoryWithProviderCmd(issues, beadsPath, correlation.HistoryModeGit, "")
+}
+
+func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, mode correlation.HistoryMode, hubConfig string) tea.Cmd {
 	return func() tea.Msg {
 		var repoPath string
 		var err error
@@ -386,10 +391,14 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 				ID:     issue.ID,
 				Title:  issue.Title,
 				Status: string(issue.Status),
+				Labels: issue.Labels,
 			}
 		}
 
-		correlator := correlation.NewCorrelator(repoPath, correlationPath)
+		correlator := correlation.NewCorrelator(repoPath, correlationPath).WithHistoryMode(mode)
+		if hubConfig != "" {
+			correlator.WithHubConfig(hubConfig)
+		}
 		opts := correlation.CorrelatorOptions{
 			Limit: 500, // Reasonable limit for TUI performance
 		}
@@ -449,14 +458,16 @@ func cloneIssuesForAsync(issues []model.Issue) []model.Issue {
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues       []model.Issue
-	pooledIssues []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
-	issueMap     map[string]*model.Issue
-	analyzer     *analysis.Analyzer
-	analysis     *analysis.GraphStats
-	beadsPath    string           // Path to beads.jsonl for reloading
-	watcher      *watcher.Watcher // File watcher for live reload
-	instanceLock *instance.Lock   // Multi-instance coordination lock
+	issues        []model.Issue
+	pooledIssues  []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
+	issueMap      map[string]*model.Issue
+	analyzer      *analysis.Analyzer
+	analysis      *analysis.GraphStats
+	beadsPath     string // Path to beads.jsonl for reloading
+	hubConfigPath string
+	historyMode   correlation.HistoryMode
+	watcher       *watcher.Watcher // File watcher for live reload
+	instanceLock  *instance.Lock   // Multi-instance coordination lock
 
 	// Background Worker (Phase 2 architecture - bv-m7v8)
 	// snapshot is the current immutable data snapshot from BackgroundWorker.
@@ -621,6 +632,7 @@ type Model struct {
 	showAgentPrompt  bool
 	agentPromptModal AgentPromptModal
 	workDir          string // Working directory for agent file detection
+	browserOpener    func(string) error
 
 	// Tutorial integration (bv-8y31)
 	showTutorial  bool
@@ -1265,6 +1277,12 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	return m
 }
 
+// SetHistoryProvider configures the shared TUI history provider.
+func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
+	m.historyMode = mode
+	m.hubConfigPath = path
+}
+
 // rebuildInsightsPanel refreshes the underlying insights view model from the
 // current snapshot/analysis while preserving in-panel navigation state.
 func (m *Model) rebuildInsightsPanel() {
@@ -1322,7 +1340,7 @@ func (m Model) Init() tea.Cmd {
 	}
 	// Start loading history in background
 	if len(m.issues) > 0 {
-		cmds = append(cmds, LoadHistoryCmd(m.issuesForAsync(), m.beadsPath))
+		cmds = append(cmds, loadHistoryWithProviderCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath))
 	}
 	// Check for AGENTS.md integration prompt (bv-i8dk)
 	if m.workDir != "" && !m.workspaceMode {
@@ -1734,6 +1752,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("History load failed: %v", msg.Error)
 			m.statusIsError = true
 		} else if msg.Report != nil {
+			if m.historyLoadFailed && strings.HasPrefix(m.statusMsg, "History load failed:") {
+				m.statusMsg = ""
+				m.statusIsError = false
+			}
+			m.historyLoadFailed = false
 			m.historyView = NewHistoryModel(msg.Report, m.theme)
 			m.historyView.SetSize(m.width, m.height-1)
 			// Refresh detail pane if visible
@@ -3203,7 +3226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "tab":
-				if m.isSplitView && !m.isBoardView {
+				if m.isSplitView && !m.isBoardView && (m.focused == focusList || m.focused == focusDetail) {
 					if m.focused == focusList {
 						m.focused = focusDetail
 					} else {
@@ -4363,20 +4386,29 @@ func (m Model) handleHistoryKeys(msg tea.KeyMsg) Model {
 		m.statusIsError = false
 	case "o":
 		// Open commit in browser (bv-xf4p)
-		var sha string
+		var repository, sha string
 		if m.historyView.IsGitMode() {
 			if commit := m.historyView.SelectedGitCommit(); commit != nil {
+				repository = commit.Repository
 				sha = commit.SHA
 			}
 		} else {
 			if commit := m.historyView.SelectedCommit(); commit != nil {
+				repository = commit.Repository
 				sha = commit.SHA
 			}
 		}
 		if sha != "" {
-			url := m.getCommitURL(sha)
-			if url != "" {
-				if err := openBrowserURL(url); err != nil {
+			commitURL, err := m.getCommitURL(repository, sha)
+			if err != nil {
+				m.statusMsg = fmt.Sprintf("❌ Could not resolve commit URL: %v", err)
+				m.statusIsError = true
+			} else {
+				opener := m.browserOpener
+				if opener == nil {
+					opener = openBrowserURL
+				}
+				if err := opener(commitURL); err != nil {
 					m.statusMsg = fmt.Sprintf("❌ Could not open browser: %v", err)
 					m.statusIsError = true
 				} else {
@@ -4388,9 +4420,6 @@ func (m Model) handleHistoryKeys(msg tea.KeyMsg) Model {
 					m.statusMsg = fmt.Sprintf("🌐 Opened %s in browser", shortSHA)
 					m.statusIsError = false
 				}
-			} else {
-				m.statusMsg = "❌ No git remote configured"
-				m.statusIsError = true
 			}
 		} else {
 			m.statusMsg = "❌ No commit selected"
@@ -4430,33 +4459,51 @@ func (m Model) handleHistoryKeys(msg tea.KeyMsg) Model {
 	return m
 }
 
-// getCommitURL returns the GitHub/GitLab commit URL for a SHA (bv-xf4p)
-func (m Model) getCommitURL(sha string) string {
+// getCommitURL returns the GitHub/GitLab commit URL for a correlated commit.
+func (m Model) getCommitURL(repository, sha string) (string, error) {
 	sha = strings.TrimSpace(sha)
 	if sha == "" {
-		return ""
+		return "", fmt.Errorf("commit SHA is missing")
 	}
 
-	// Get git remote URL
+	repository = strings.TrimSpace(repository)
+	repositoryDir := strings.TrimSpace(m.workDir)
+	if repository != "" {
+		if strings.TrimSpace(m.hubConfigPath) == "" {
+			return "", fmt.Errorf("repository %q has no Hub configuration", repository)
+		}
+		config, err := hub.Resolve(m.hubConfigPath)
+		if err != nil {
+			return "", fmt.Errorf("resolving Hub repository %q: %w", repository, err)
+		}
+		registered, ok := config.Repositories[repository]
+		if !ok || strings.TrimSpace(registered.Path) == "" {
+			return "", fmt.Errorf("repository %q is not registered in the Hub", repository)
+		}
+		repositoryDir = registered.Path
+	}
+	if repositoryDir == "" {
+		return "", fmt.Errorf("commit repository is unavailable")
+	}
+
 	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = m.workDir
+	cmd.Dir = repositoryDir
 	output, err := cmd.Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("reading origin remote for %q: %w", repositoryDir, err)
 	}
 
 	remoteURL := strings.TrimSpace(string(output))
 	if remoteURL == "" {
-		return ""
+		return "", fmt.Errorf("origin remote for %q is empty", repositoryDir)
 	}
 
-	// Convert to web URL
 	webURL := gitRemoteToWebURL(remoteURL)
 	if webURL == "" {
-		return ""
+		return "", fmt.Errorf("origin remote %q is not a supported GitHub or GitLab URL", remoteURL)
 	}
 
-	return webURL + "/commit/" + sha
+	return webURL + "/commit/" + sha, nil
 }
 
 // gitRemoteToWebURL converts a git remote URL to a web URL (bv-xf4p)
@@ -7812,6 +7859,7 @@ func (m *Model) enterHistoryView() {
 			ID:     issue.ID,
 			Title:  issue.Title,
 			Status: string(issue.Status),
+			Labels: issue.Labels,
 		}
 	}
 
@@ -7821,7 +7869,10 @@ func (m *Model) enterHistoryView() {
 	// this, a beads.db that is a few ms newer than issues.jsonl (the normal state
 	// after `br sync`) silently yields a correlation-free history view.
 	correlationPath := resolveHistoryCorrelationPath(m.beadsPath, cwd)
-	correlator := correlation.NewCorrelator(cwd, correlationPath)
+	correlator := correlation.NewCorrelator(cwd, correlationPath).WithHistoryMode(m.historyMode)
+	if m.hubConfigPath != "" {
+		correlator.WithHubConfig(m.hubConfigPath)
+	}
 	opts := correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for TUI performance
 	}
@@ -7840,6 +7891,9 @@ func (m *Model) enterHistoryView() {
 	m.focused = focusHistory
 
 	m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", report.Stats.BeadsWithCommits)
+	if len(report.Warnings) > 0 {
+		m.statusMsg += fmt.Sprintf(" (partial: %d source repositories unavailable)", len(report.Warnings))
+	}
 	m.statusIsError = false
 }
 

@@ -1766,7 +1766,7 @@ func resolveNotReadyLabels(cfg phaseThreeRobotHandlerConfig) []string {
 // would spawn next) is killed via exec.CommandContext, and the goroutine
 // unblocks and exits promptly.
 //
-// The returned status is "ok", "error", or "timeout"; it is surfaced as
+// The returned status is "ok", "partial", "error", or "timeout"; it is surfaced as
 // meta.history_status in the triage output.
 func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correlation.BeadInfo, limit int, timeout time.Duration) (*correlation.HistoryReport, string) {
 	histCtx := context.Background()
@@ -1776,7 +1776,7 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	}
 	defer cancel()
 
-	correlator := correlation.NewCorrelator(workDir, beadsPath).WithContext(histCtx)
+	correlator := newCorrelationCorrelator(workDir, beadsPath).WithContext(histCtx)
 
 	type historyResult struct {
 		report *correlation.HistoryReport
@@ -1792,6 +1792,9 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	case res := <-resCh:
 		if res.err != nil {
 			return nil, "error"
+		}
+		if len(res.report.Warnings) > 0 {
+			return res.report, "partial"
 		}
 		return res.report, "ok"
 	case <-histCtx.Done():
@@ -1814,31 +1817,25 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		}
 	}
 
-	if hasOpenIssues {
+	if hasOpenIssues && historyModeValue != "off" {
 		workDir, err := ctx.WorkDirOrDefault()
 		if err == nil {
-			if beadsDir, err := loader.GetBeadsDir(""); err == nil {
-				if beadsPath, err := loader.FindJSONLPath(beadsDir); err == nil {
-					limit := 500
-					if cfg.HistoryLimit != nil {
-						limit = *cfg.HistoryLimit
-					}
-					if limit == 500 {
-						limit = 200
-					}
-					if correlation.ValidateRepository(workDir) == nil {
-						beadInfos := make([]correlation.BeadInfo, len(ctx.Issues))
-						for i, issue := range ctx.Issues {
-							beadInfos[i] = correlation.BeadInfo{
-								ID:     issue.ID,
-								Title:  issue.Title,
-								Status: string(issue.Status),
-							}
-						}
-						historyReport, historyStatus = generateTriageHistoryBounded(
-							workDir, beadsPath, beadInfos, limit, resolveRobotHistoryTimeout(cfg))
-					}
+			beadsPath := ""
+			if historyModeValue == "git" {
+				if beadsDir, loadErr := loader.GetBeadsDir(""); loadErr == nil {
+					beadsPath, _ = loader.FindJSONLPath(beadsDir)
 				}
+			}
+			if (historyModeValue != "git" || beadsPath != "") && validateCorrelationRepository(workDir) == nil {
+				limit := 500
+				if cfg.HistoryLimit != nil {
+					limit = *cfg.HistoryLimit
+				}
+				if limit == 500 {
+					limit = 200
+				}
+				historyReport, historyStatus = generateTriageHistoryBounded(
+					workDir, beadsPath, buildCorrelationBeadInfos(ctx.Issues), limit, resolveRobotHistoryTimeout(cfg))
 			}
 		}
 	}
@@ -1866,6 +1863,9 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 	triage.Meta.HistoryStatus = historyStatus
+	if historyReport != nil {
+		triage.Meta.HistoryWarnings = historyReport.Warnings
+	}
 
 	// --brief (#183): emit only the decision-relevant fields agents actually
 	// consume at session start (id/title/status, blockers/unblocks, claim
@@ -1939,15 +1939,17 @@ type briefTriageRecommendation struct {
 // recommendation to briefTriageRecommendation. Score breakdowns, project
 // health, commands, feedback, and usage hints are omitted.
 type briefTriageOutput struct {
-	GeneratedAt     string                      `json:"generated_at"`
-	DataHash        string                      `json:"data_hash"`
-	AsOf            string                      `json:"as_of,omitempty"`
-	AsOfCommit      string                      `json:"as_of_commit,omitempty"`
-	Brief           bool                        `json:"brief"`
-	QuickRef        analysis.QuickRef           `json:"quick_ref"`
-	Recommendations []briefTriageRecommendation `json:"recommendations"`
-	QuickWins       []analysis.QuickWin         `json:"quick_wins,omitempty"`
-	BlockersToClear []analysis.BlockerItem      `json:"blockers_to_clear,omitempty"`
+	GeneratedAt     string                       `json:"generated_at"`
+	DataHash        string                       `json:"data_hash"`
+	AsOf            string                       `json:"as_of,omitempty"`
+	AsOfCommit      string                       `json:"as_of_commit,omitempty"`
+	Brief           bool                         `json:"brief"`
+	HistoryStatus   string                       `json:"history_status,omitempty"`
+	HistoryWarnings []correlation.HistoryWarning `json:"history_warnings,omitempty"`
+	QuickRef        analysis.QuickRef            `json:"quick_ref"`
+	Recommendations []briefTriageRecommendation  `json:"recommendations"`
+	QuickWins       []analysis.QuickWin          `json:"quick_wins,omitempty"`
+	BlockersToClear []analysis.BlockerItem       `json:"blockers_to_clear,omitempty"`
 }
 
 func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.Time) error {
@@ -1969,6 +1971,8 @@ func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.
 		AsOf:            ctx.AsOf,
 		AsOfCommit:      ctx.AsOfCommit,
 		Brief:           true,
+		HistoryStatus:   triage.Meta.HistoryStatus,
+		HistoryWarnings: triage.Meta.HistoryWarnings,
 		QuickRef:        triage.QuickRef,
 		Recommendations: recs,
 		QuickWins:       triage.QuickWins,
@@ -2191,17 +2195,20 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
+	beadsPath := ""
+	if historyModeValue == "git" {
+		beadsDir, err := loader.GetBeadsDir("")
+		if err != nil {
+			return fmt.Errorf("getting beads directory: %w", err)
+		}
+		beadsPath, err = loader.FindJSONLPath(beadsDir)
+		if err != nil {
+			return fmt.Errorf("finding beads file: %w", err)
+		}
 	}
 
 	opts := correlation.CorrelatorOptions{Limit: 500}
@@ -2221,16 +2228,9 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		}
 	}
 
-	beadInfos := make([]correlation.BeadInfo, len(ctx.Issues))
-	for i, issue := range ctx.Issues {
-		beadInfos[i] = correlation.BeadInfo{
-			ID:     issue.ID,
-			Title:  issue.Title,
-			Status: string(issue.Status),
-		}
-	}
+	beadInfos := buildCorrelationBeadInfos(ctx.Issues)
 
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
+	report, err := newCorrelationCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2241,7 +2241,8 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		report.CommitIndex = make(correlation.CommitIndex)
 		for beadID, history := range report.Histories {
 			for _, commit := range history.Commits {
-				report.CommitIndex[commit.SHA] = append(report.CommitIndex[commit.SHA], beadID)
+				key := correlation.CommitIdentity(commit)
+				report.CommitIndex[key] = append(report.CommitIndex[key], beadID)
 			}
 		}
 		report.Stats.BeadsWithCommits = 0
@@ -2286,21 +2287,67 @@ func buildCorrelationBeadInfos(issues []model.Issue) []correlation.BeadInfo {
 			ID:     issue.ID,
 			Title:  issue.Title,
 			Status: string(issue.Status),
+			Labels: issue.Labels,
 		}
 	}
 	return beadInfos
 }
 
 func generateCorrelationReport(workDir string, issues []model.Issue, opts correlation.CorrelatorOptions) (*correlation.HistoryReport, error) {
-	_, beadsPath, err := resolveCorrelationBeadsPath(workDir)
-	if err != nil {
-		return nil, err
+	beadsPath := ""
+	if historyModeValue == "git" {
+		_, resolvedPath, err := resolveCorrelationBeadsPath(workDir)
+		if err != nil {
+			return nil, err
+		}
+		beadsPath = resolvedPath
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
+	report, err := newCorrelationCorrelator(workDir, beadsPath).GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
 	if err != nil {
 		return nil, fmt.Errorf("generating history report: %w", err)
 	}
 	return report, nil
+}
+
+type robotHistoryDiagnostics struct {
+	HistoryWarnings []correlation.HistoryWarning `json:"history_warnings,omitempty"`
+}
+
+func historyDiagnostics(report *correlation.HistoryReport) robotHistoryDiagnostics {
+	return robotHistoryDiagnostics{HistoryWarnings: report.Warnings}
+}
+
+func reportUnavailableCorrelation(ctx RobotContext, report *correlation.HistoryReport, commit, bead string) error {
+	output := struct {
+		robotHistoryDiagnostics
+		Status string `json:"status"`
+		Commit string `json:"commit"`
+		Bead   string `json:"bead"`
+	}{
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		Status:                  "history_partial",
+		Commit:                  commit,
+		Bead:                    bead,
+	}
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+		return fmt.Errorf("encoding partial history diagnostic: %w", err)
+	}
+	return newReportedRobotHandlerExit(1)
+}
+
+func newCorrelationCorrelator(workDir, beadsPath string) *correlation.Correlator {
+	correlator := correlation.NewCorrelator(workDir, beadsPath).WithHistoryMode(correlation.HistoryMode(historyModeValue))
+	if historyModeValue == "external" && hubConfigPath != "" {
+		correlator.WithHubConfig(hubConfigPath)
+	}
+	return correlator
+}
+
+func validateCorrelationRepository(workDir string) error {
+	if historyModeValue != "git" {
+		return nil
+	}
+	return correlation.ValidateRepository(workDir)
 }
 
 func loadCorrelationFeedbackStore(workDir string) (*correlation.FeedbackStore, error) {
@@ -2316,14 +2363,15 @@ func loadCorrelationFeedbackStore(workDir string) (*correlation.FeedbackStore, e
 }
 
 func parseCorrelationArg(arg string) (string, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(arg), ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("expected format: SHA:beadID, got: %q", arg)
+	arg = strings.TrimSpace(arg)
+	separator := strings.LastIndex(arg, ":")
+	if separator < 0 {
+		return "", "", fmt.Errorf("expected format: [context@]SHA:beadID, got: %q", arg)
 	}
-	commitSHA := strings.TrimSpace(parts[0])
-	beadID := strings.TrimSpace(parts[1])
+	commitSHA := strings.TrimSpace(arg[:separator])
+	beadID := strings.TrimSpace(arg[separator+1:])
 	if commitSHA == "" || beadID == "" {
-		return "", "", fmt.Errorf("expected non-empty SHA and bead ID in format SHA:beadID, got: %q", arg)
+		return "", "", fmt.Errorf("expected non-empty commit identity and bead ID in format [context@]SHA:beadID, got: %q", arg)
 	}
 	return commitSHA, beadID, nil
 }
@@ -2333,6 +2381,11 @@ func resolveCorrelatedCommit(commits []correlation.CorrelatedCommit, sha string)
 	if sha == "" {
 		return nil, fmt.Errorf("commit SHA is required")
 	}
+	repository := ""
+	if separator := strings.LastIndex(sha, "@"); separator >= 0 {
+		repository = sha[:separator]
+		sha = sha[separator+1:]
+	}
 
 	type commitMatch struct {
 		index int
@@ -2341,14 +2394,15 @@ func resolveCorrelatedCommit(commits []correlation.CorrelatedCommit, sha string)
 	matches := make([]commitMatch, 0, 1)
 	seen := make(map[string]bool)
 	for i := range commits {
-		commitSHA := strings.ToLower(commits[i].SHA)
-		if commitSHA == sha {
-			return &commits[i], nil
+		if repository != "" && strings.ToLower(commits[i].Repository) != repository {
+			continue
 		}
+		commitSHA := strings.ToLower(commits[i].SHA)
 		shortSHA := strings.ToLower(commits[i].ShortSHA)
-		if (shortSHA == sha || strings.HasPrefix(commitSHA, sha)) && !seen[commitSHA] {
-			matches = append(matches, commitMatch{index: i, sha: commits[i].SHA})
-			seen[commitSHA] = true
+		identity := correlation.CommitIdentity(commits[i])
+		if (commitSHA == sha || shortSHA == sha || strings.HasPrefix(commitSHA, sha)) && !seen[identity] {
+			matches = append(matches, commitMatch{index: i, sha: identity})
+			seen[identity] = true
 		}
 	}
 
@@ -2430,15 +2484,25 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 		return err
 	}
 	if targetCommit == nil {
+		if len(report.Warnings) > 0 {
+			return reportUnavailableCorrelation(ctx, report, commitSHA, beadID)
+		}
 		fmt.Fprintf(ctx.StderrOrDefault(), "Commit %s not found in bead %s correlations\n", commitSHA, beadID)
 		return newReportedRobotHandlerExit(1)
 	}
 
 	explanation := correlation.NewScorer().BuildExplanation(*targetCommit, beadID)
-	if fb, ok := feedbackStore.Get(targetCommit.SHA, beadID); ok {
+	if fb, ok := feedbackStore.Get(correlation.CommitIdentity(*targetCommit), beadID); ok {
 		explanation.Recommendation = fmt.Sprintf("Already has feedback: %s", fb.Type)
 	}
-	if err := ctx.EncoderOrDefault().Encode(explanation); err != nil {
+	output := struct {
+		correlation.CorrelationExplanation
+		robotHistoryDiagnostics
+	}{
+		CorrelationExplanation:  explanation,
+		robotHistoryDiagnostics: historyDiagnostics(report),
+	}
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding explanation: %w", err)
 	}
 	return nil
@@ -2485,11 +2549,14 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		return err
 	}
 	if targetCommit == nil {
+		if len(report.Warnings) > 0 {
+			return reportUnavailableCorrelation(ctx, report, commitSHA, beadID)
+		}
 		fmt.Fprintf(ctx.StderrOrDefault(), "Commit %s not found in bead %s correlations\n", commitSHA, beadID)
 		return newReportedRobotHandlerExit(1)
 	}
 	originalConf := targetCommit.Confidence
-	commitSHA = targetCommit.SHA
+	commitSHA = correlation.CommitIdentity(*targetCommit)
 
 	feedbackBy := "cli"
 	if cfg.CorrelationFeedbackBy != nil && strings.TrimSpace(*cfg.CorrelationFeedbackBy) != "" {
@@ -2518,6 +2585,9 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		"reason":    reason,
 		"orig_conf": originalConf,
 	}
+	if len(report.Warnings) > 0 {
+		result["history_warnings"] = report.Warnings
+	}
 	if err := ctx.EncoderOrDefault().Encode(result); err != nil {
 		return fmt.Errorf("encoding result: %w", err)
 	}
@@ -2529,33 +2599,15 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
-	}
-
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
 	}
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2572,16 +2624,18 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 
 	output := struct {
 		RobotEnvelope
+		robotHistoryDiagnostics
 		FilePath     string                      `json:"file_path"`
 		TotalCommits int                         `json:"total_commits"`
 		Threshold    float64                     `json:"threshold"`
 		RelatedFiles []correlation.CoChangeEntry `json:"related_files"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
-		FilePath:      result.FilePath,
-		TotalCommits:  result.TotalCommits,
-		Threshold:     result.Threshold,
-		RelatedFiles:  result.RelatedFiles,
+		RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		FilePath:                result.FilePath,
+		TotalCommits:            result.TotalCommits,
+		Threshold:               result.Threshold,
+		RelatedFiles:            result.RelatedFiles,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding file relations: %w", err)
@@ -2590,11 +2644,14 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 }
 
 func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if historyModeValue != "git" {
+		return fmt.Errorf("--robot-orphans requires --history-mode git; repository-wide orphan inference is unavailable in %s mode", historyModeValue)
+	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
@@ -2667,7 +2724,7 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
@@ -2695,16 +2752,18 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 
 	output := struct {
 		RobotEnvelope
+		robotHistoryDiagnostics
 		FilePath    string                      `json:"file_path"`
 		TotalBeads  int                         `json:"total_beads"`
 		OpenBeads   []correlation.BeadReference `json:"open_beads"`
 		ClosedBeads []correlation.BeadReference `json:"closed_beads"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
-		FilePath:      *cfg.RobotFileBeadsFlag,
-		TotalBeads:    result.TotalBeads,
-		OpenBeads:     result.OpenBeads,
-		ClosedBeads:   result.ClosedBeads,
+		RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		FilePath:                *cfg.RobotFileBeadsFlag,
+		TotalBeads:              result.TotalBeads,
+		OpenBeads:               result.OpenBeads,
+		ClosedBeads:             result.ClosedBeads,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding file beads: %w", err)
@@ -2721,7 +2780,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
@@ -2743,6 +2802,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 
 	output := struct {
 		RobotEnvelope
+		robotHistoryDiagnostics
 		Files         []string                   `json:"files"`
 		RiskLevel     string                     `json:"risk_level"`
 		RiskScore     float64                    `json:"risk_score"`
@@ -2750,13 +2810,14 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		Warnings      []string                   `json:"warnings"`
 		AffectedBeads []correlation.AffectedBead `json:"affected_beads"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
-		Files:         impactResult.Files,
-		RiskLevel:     impactResult.RiskLevel,
-		RiskScore:     impactResult.RiskScore,
-		Summary:       impactResult.Summary,
-		Warnings:      impactResult.Warnings,
-		AffectedBeads: impactResult.AffectedBeads,
+		RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		Files:                   impactResult.Files,
+		RiskLevel:               impactResult.RiskLevel,
+		RiskScore:               impactResult.RiskScore,
+		Summary:                 impactResult.Summary,
+		Warnings:                impactResult.Warnings,
+		AffectedBeads:           impactResult.AffectedBeads,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding impact analysis: %w", err)
@@ -2769,33 +2830,17 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
-	}
+	issues := ctx.Issues
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2832,14 +2877,16 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 
 	output := struct {
 		*correlation.RelatedWorkResult
+		robotHistoryDiagnostics
 		DataHash     string `json:"data_hash"`
 		OutputFormat string `json:"output_format,omitempty"`
 		Version      string `json:"version,omitempty"`
 	}{
-		RelatedWorkResult: result,
-		DataHash:          report.DataHash,
-		OutputFormat:      robotOutputFormat,
-		Version:           version.Version,
+		RelatedWorkResult:       result,
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		DataHash:                report.DataHash,
+		OutputFormat:            robotOutputFormat,
+		Version:                 version.Version,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding related work: %w", err)
@@ -2881,33 +2928,17 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
-	}
+	issues := ctx.Issues
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2936,12 +2967,14 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 
 	output := struct {
 		*correlation.ImpactNetworkResult
+		robotHistoryDiagnostics
 		OutputFormat string `json:"output_format,omitempty"`
 		Version      string `json:"version,omitempty"`
 	}{
-		ImpactNetworkResult: network.ToResult(beadID, depth),
-		OutputFormat:        robotOutputFormat,
-		Version:             version.Version,
+		ImpactNetworkResult:     network.ToResult(beadID, depth),
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		OutputFormat:            robotOutputFormat,
+		Version:                 version.Version,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding impact network: %w", err)
@@ -2954,33 +2987,17 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
+	if err := validateCorrelationRepository(workDir); err != nil {
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
-	}
-
-	beadInfos := make([]correlation.BeadInfo, len(issues))
-	for i, issue := range issues {
-		beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status)}
-	}
+	issues := ctx.Issues
 
 	limit := 500
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -3000,12 +3017,14 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 
 	output := struct {
 		*correlation.CausalityResult
+		robotHistoryDiagnostics
 		OutputFormat string `json:"output_format,omitempty"`
 		Version      string `json:"version,omitempty"`
 	}{
-		CausalityResult: result,
-		OutputFormat:    robotOutputFormat,
-		Version:         version.Version,
+		CausalityResult:         result,
+		robotHistoryDiagnostics: historyDiagnostics(report),
+		OutputFormat:            robotOutputFormat,
+		Version:                 version.Version,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding causality result: %w", err)

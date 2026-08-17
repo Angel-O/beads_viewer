@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	json "github.com/goccy/go-json"
@@ -13,13 +14,37 @@ import (
 
 // Correlator orchestrates the extraction and correlation of bead history data
 type Correlator struct {
-	repoPath    string
-	extractor   *Extractor
-	coCommitter *CoCommitExtractor
+	repoPath      string
+	extractor     *Extractor
+	coCommitter   *CoCommitExtractor
+	hubConfigPath string
+	historyMode   HistoryMode
 
 	// ctx, when set via WithContext, bounds every git subprocess spawned
 	// during report generation (issue #166). nil means context.Background().
 	ctx context.Context
+}
+
+// HistoryMode selects the history provider independently from issue loading.
+type HistoryMode string
+
+const (
+	HistoryModeGit      HistoryMode = "git"
+	HistoryModeExternal HistoryMode = "external"
+	HistoryModeOff      HistoryMode = "off"
+)
+
+// WithHistoryMode selects git, external, or disabled history loading.
+func (c *Correlator) WithHistoryMode(mode HistoryMode) *Correlator {
+	c.historyMode = mode
+	return c
+}
+
+// WithHubConfig switches correlation to explicit,
+// repository-aware history. No Git command is run against repoPath in this mode.
+func (c *Correlator) WithHubConfig(path string) *Correlator {
+	c.hubConfigPath = path
+	return c
 }
 
 // NewCorrelator creates a new correlator for the given repository.
@@ -67,8 +92,9 @@ type CorrelatorOptions struct {
 // plus the batched co-commit git logs), so it is the unit cached by the
 // HEAD-keyed disk cache and reused unchanged across working-tree bead edits.
 type historyArtifact struct {
-	Events  []BeadEvent        `json:"events"`
-	Commits []CorrelatedCommit `json:"commits"`
+	Events   []BeadEvent        `json:"events"`
+	Commits  []CorrelatedCommit `json:"commits"`
+	Warnings []HistoryWarning   `json:"warnings,omitempty"`
 }
 
 // CorrelatedCommit.BeadID carries the json:"-" tag (it is internal linking state,
@@ -82,6 +108,7 @@ type historyArtifactWire struct {
 	Events        []BeadEvent        `json:"events"`
 	Commits       []CorrelatedCommit `json:"commits"`
 	CommitBeadIDs []string           `json:"commit_bead_ids,omitempty"`
+	Warnings      []HistoryWarning   `json:"warnings,omitempty"`
 }
 
 func (a historyArtifact) MarshalJSON() ([]byte, error) {
@@ -89,7 +116,7 @@ func (a historyArtifact) MarshalJSON() ([]byte, error) {
 	for i := range a.Commits {
 		ids[i] = a.Commits[i].BeadID
 	}
-	return json.Marshal(historyArtifactWire{Events: a.Events, Commits: a.Commits, CommitBeadIDs: ids})
+	return json.Marshal(historyArtifactWire{Events: a.Events, Commits: a.Commits, CommitBeadIDs: ids, Warnings: a.Warnings})
 }
 
 func (a *historyArtifact) UnmarshalJSON(b []byte) error {
@@ -99,6 +126,7 @@ func (a *historyArtifact) UnmarshalJSON(b []byte) error {
 	}
 	a.Events = w.Events
 	a.Commits = w.Commits
+	a.Warnings = w.Warnings
 	for i := range a.Commits {
 		if i < len(w.CommitBeadIDs) {
 			a.Commits[i].BeadID = w.CommitBeadIDs[i]
@@ -136,7 +164,18 @@ func (c *Correlator) extractHistoryArtifact(opts CorrelatorOptions) (*historyArt
 
 // GenerateReport generates a complete history report
 func (c *Correlator) GenerateReport(beads []BeadInfo, opts CorrelatorOptions) (*HistoryReport, error) {
-	art, err := c.extractHistoryArtifact(opts)
+	var art *historyArtifact
+	var err error
+	if c.historyMode == HistoryModeOff {
+		art = &historyArtifact{Events: []BeadEvent{}, Commits: []CorrelatedCommit{}}
+	} else if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+		if c.hubConfigPath == "" {
+			return nil, fmt.Errorf("external history mode requires a hub config")
+		}
+		art, err = c.extractExternalHistoryArtifact(beads, opts)
+	} else {
+		art, err = c.extractHistoryArtifact(opts)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -179,23 +218,30 @@ func (c *Correlator) assembleReport(beads []BeadInfo, opts CorrelatorOptions, ar
 	dataHash := c.calculateDataHash(beads)
 
 	// Get latest commit SHA for incremental updates
-	latestCommitSHA := c.findLatestCommitSHA(events, commits)
+	latestEvents := events
+	if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+		latestEvents = nil
+	}
+	latestCommitSHA, latestCommitRepository := c.findLatestCommit(latestEvents, commits)
 
 	return &HistoryReport{
-		GeneratedAt:     time.Now().UTC(),
-		DataHash:        dataHash,
-		GitRange:        gitRange,
-		LatestCommitSHA: latestCommitSHA,
-		Stats:           stats,
-		Histories:       histories,
-		CommitIndex:     commitIndex,
+		GeneratedAt:            time.Now().UTC(),
+		DataHash:               dataHash,
+		GitRange:               gitRange,
+		LatestCommitSHA:        latestCommitSHA,
+		LatestCommitRepository: latestCommitRepository,
+		Stats:                  stats,
+		Histories:              histories,
+		CommitIndex:            commitIndex,
+		Warnings:               art.Warnings,
 	}
 }
 
-// findLatestCommitSHA finds the most recent commit SHA from events and commits
-func (c *Correlator) findLatestCommitSHA(events []BeadEvent, commits []CorrelatedCommit) string {
+// findLatestCommit finds the most recent commit and its repository identity.
+func (c *Correlator) findLatestCommit(events []BeadEvent, commits []CorrelatedCommit) (string, string) {
 	var latest time.Time
 	var latestSHA string
+	var latestRepository string
 
 	// Check events
 	for _, e := range events {
@@ -210,10 +256,17 @@ func (c *Correlator) findLatestCommitSHA(events []BeadEvent, commits []Correlate
 		if commit.Timestamp.After(latest) {
 			latest = commit.Timestamp
 			latestSHA = commit.SHA
+			latestRepository = commit.Repository
 		}
 	}
 
-	return latestSHA
+	return latestSHA, latestRepository
+}
+
+// findLatestCommitSHA preserves the existing internal helper behavior.
+func (c *Correlator) findLatestCommitSHA(events []BeadEvent, commits []CorrelatedCommit) string {
+	sha, _ := c.findLatestCommit(events, commits)
+	return sha
 }
 
 // BeadInfo is minimal bead information needed for correlation
@@ -221,6 +274,7 @@ type BeadInfo struct {
 	ID     string
 	Title  string
 	Status string
+	Labels []string
 }
 
 // buildHistories constructs BeadHistory for each bead
@@ -259,6 +313,16 @@ func (c *Correlator) buildHistories(beads []BeadInfo, events []BeadEvent, commit
 		}
 		if commits, ok := commitsByBead[beadID]; ok {
 			history.Commits = dedupCommits(commits)
+			repositories := make(map[string]struct{})
+			for _, commit := range history.Commits {
+				if commit.Repository != "" {
+					repositories[commit.Repository] = struct{}{}
+				}
+			}
+			for repository := range repositories {
+				history.Repositories = append(history.Repositories, repository)
+			}
+			sort.Strings(history.Repositories)
 		}
 
 		// Calculate milestones
@@ -285,8 +349,9 @@ func dedupCommits(commits []CorrelatedCommit) []CorrelatedCommit {
 	seen := make(map[string]bool)
 	var result []CorrelatedCommit
 	for _, c := range commits {
-		if !seen[c.SHA] {
-			seen[c.SHA] = true
+		identity := repositoryCommitIdentity(c.Repository, c.SHA)
+		if !seen[identity] {
+			seen[identity] = true
 			result = append(result, c)
 		}
 	}
@@ -299,7 +364,8 @@ func (c *Correlator) buildCommitIndex(histories map[string]BeadHistory) CommitIn
 
 	for beadID, history := range histories {
 		for _, commit := range history.Commits {
-			index[commit.SHA] = append(index[commit.SHA], beadID)
+			identity := repositoryCommitIdentity(commit.Repository, commit.SHA)
+			index[identity] = append(index[identity], beadID)
 		}
 	}
 
@@ -326,7 +392,7 @@ func (c *Correlator) calculateStats(histories map[string]BeadHistory, commits []
 		}
 
 		for _, commit := range history.Commits {
-			uniqueCommits[commit.SHA] = true
+			uniqueCommits[repositoryCommitIdentity(commit.Repository, commit.SHA)] = true
 			authors[commit.Author] = true
 			stats.MethodDistribution[commit.Method.String()]++
 		}
@@ -363,6 +429,12 @@ func (c *Correlator) calculateStats(histories map[string]BeadHistory, commits []
 
 // describeGitRange creates a human-readable description of the git range
 func (c *Correlator) describeGitRange(opts CorrelatorOptions) string {
+	if c.historyMode == HistoryModeOff {
+		return "history disabled"
+	}
+	if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+		return "external hub history"
+	}
 	parts := []string{}
 
 	if opts.Since != nil {

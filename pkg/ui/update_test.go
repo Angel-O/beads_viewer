@@ -2,6 +2,7 @@ package ui
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/bubbles/list"
@@ -59,6 +61,30 @@ func installFailingReloadFakeBD(t *testing.T, root, payload string) {
 	script := "#!/bin/sh\ncat '" + payloadPath + "' > \"$3\"\nsleep 0.1\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write failing fake bd: %v", err)
+	}
+}
+
+func TestModelUpdateHistoryPartialAndFatalState(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
+	m.width, m.height = 120, 40
+
+	updated, _ := m.Update(HistoryLoadedMsg{Error: errors.New("provider failed")})
+	failed := updated.(Model)
+	if !failed.historyLoadFailed || !failed.statusIsError || failed.historyLoading {
+		t.Fatalf("fatal history load did not set failure state: failed=%v error=%v loading=%v", failed.historyLoadFailed, failed.statusIsError, failed.historyLoading)
+	}
+
+	report := &correlation.HistoryReport{
+		Histories:   map[string]correlation.BeadHistory{},
+		CommitIndex: correlation.CommitIndex{},
+		Warnings: []correlation.HistoryWarning{{
+			Code: correlation.HistoryWarningExternalRepositoryUnavailable, Context: "ctx:repo-a-111", Reason: "not_found", SkippedCorrelations: 1, Message: "Source history is unavailable.",
+		}},
+	}
+	updated, _ = failed.Update(HistoryLoadedMsg{Report: report})
+	partial := updated.(Model)
+	if partial.historyLoadFailed || partial.statusIsError || partial.historyView.report != report {
+		t.Fatalf("partial history report was not installed normally: failed=%v error=%v installed=%v", partial.historyLoadFailed, partial.statusIsError, partial.historyView.report == report)
 	}
 }
 

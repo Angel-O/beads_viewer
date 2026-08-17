@@ -92,9 +92,9 @@ func (hr *HistoryReport) FindRelatedWork(targetID string, opts RelatedWorkOption
 	targetFiles := make(map[string]bool)
 	targetCommits := make(map[string]bool)
 	for _, commit := range target.Commits {
-		targetCommits[commit.SHA] = true
+		targetCommits[CommitIdentity(commit)] = true
 		for _, fc := range commit.Files {
-			targetFiles[normalizePath(fc.Path)] = true
+			targetFiles[normalizePath(repositoryFileIdentity(commit.Repository, fc.Path))] = true
 		}
 	}
 
