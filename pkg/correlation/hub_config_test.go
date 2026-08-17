@@ -2,10 +2,98 @@ package correlation
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestProbeExternalRepositoryClassifiesUnavailablePaths(t *testing.T) {
+	root := t.TempDir()
+	regularFile := filepath.Join(root, "regular-file")
+	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notGit := filepath.Join(root, "not-git")
+	if err := os.Mkdir(notGit, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	validGit := filepath.Join(root, "valid-git")
+	if err := os.Mkdir(validGit, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", validGit, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	tests := []struct {
+		name, path, want string
+	}{
+		{name: "missing", path: filepath.Join(root, "missing"), want: "not_found"},
+		{name: "regular file", path: regularFile, want: "not_directory"},
+		{name: "directory without git", path: notGit, want: "not_git"},
+		{name: "valid checkout", path: validGit, want: ""},
+	}
+	if runtime.GOOS != "windows" {
+		loop := filepath.Join(root, "symlink-loop")
+		if err := os.Symlink(loop, loop); err != nil {
+			t.Fatal(err)
+		}
+		tests = append(tests, struct{ name, path, want string }{name: "unreadable metadata", path: loop, want: "unreadable"})
+	}
+
+	correlator := NewCorrelator(root, "")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := correlator.probeExternalRepository(test.path)
+			if err != nil {
+				t.Fatalf("probeExternalRepository: %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("reason = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+}
+
+func TestProbeExternalRepositoryDistinguishesUnreadableAndMalformedMetadata(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-bit behavior is not portable to Windows")
+	}
+
+	repository := filepath.Join(t.TempDir(), "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repository, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	headPath := filepath.Join(repository, ".git", "HEAD")
+	if err := os.Chmod(headPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(headPath, 0o600) })
+	if _, err := os.ReadFile(headPath); !os.IsPermission(err) {
+		t.Skip("filesystem does not enforce permission bits for this process")
+	}
+
+	correlator := NewCorrelator(repository, "")
+	if reason, err := correlator.probeExternalRepository(repository); err != nil || reason != "unreadable" {
+		t.Fatalf("unreadable Git metadata should be recoverable, got reason=%q err=%v", reason, err)
+	}
+
+	if err := os.Chmod(headPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(headPath, []byte("malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if reason, err := correlator.probeExternalRepository(repository); err == nil || reason != "" {
+		t.Fatalf("readable malformed Git metadata should be fatal, got reason=%q err=%v", reason, err)
+	}
+}
 
 func TestExpandConfigPathExpandsHome(t *testing.T) {
 	home := t.TempDir()

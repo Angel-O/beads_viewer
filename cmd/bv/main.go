@@ -4560,15 +4560,17 @@ func main() {
 				// Output hotspots
 				type HotspotsOutput struct {
 					RobotEnvelope
+					robotHistoryDiagnostics
 					Hotspots []correlation.FileHotspot  `json:"hotspots"`
 					Stats    correlation.FileIndexStats `json:"stats"`
 				}
 
 				hotspots := fileLookup.GetHotspots(*hotspotsLimit)
 				output := HotspotsOutput{
-					RobotEnvelope: NewRobotEnvelope(report.DataHash),
-					Hotspots:      hotspots,
-					Stats:         fileLookup.GetStats(),
+					RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+					robotHistoryDiagnostics: historyDiagnostics(report),
+					Hotspots:                hotspots,
+					Stats:                   fileLookup.GetStats(),
 				}
 
 				if err := encoder.Encode(output); err != nil {
@@ -4586,6 +4588,7 @@ func main() {
 
 				type FileBeadsOutput struct {
 					RobotEnvelope
+					robotHistoryDiagnostics
 					FilePath    string                      `json:"file_path"`
 					TotalBeads  int                         `json:"total_beads"`
 					OpenBeads   []correlation.BeadReference `json:"open_beads"`
@@ -4593,11 +4596,12 @@ func main() {
 				}
 
 				output := FileBeadsOutput{
-					RobotEnvelope: NewRobotEnvelope(report.DataHash),
-					FilePath:      *robotFileBeads,
-					TotalBeads:    result.TotalBeads,
-					OpenBeads:     result.OpenBeads,
-					ClosedBeads:   result.ClosedBeads,
+					RobotEnvelope:           NewRobotEnvelope(report.DataHash),
+					robotHistoryDiagnostics: historyDiagnostics(report),
+					FilePath:                *robotFileBeads,
+					TotalBeads:              result.TotalBeads,
+					OpenBeads:               result.OpenBeads,
+					ClosedBeads:             result.ClosedBeads,
 				}
 
 				if err := encoder.Encode(output); err != nil {
@@ -9181,6 +9185,11 @@ func generateRobotSchemas() RobotSchemas {
 			"properties": map[string]interface{}{
 				"generated_at": map[string]interface{}{"type": "string", "format": "date-time"},
 				"data_hash":    map[string]interface{}{"type": "string"},
+				"history_status": map[string]interface{}{
+					"type": "string",
+					"enum": []string{"ok", "partial", "error", "timeout"},
+				},
+				"history_warnings": historyWarningsSchema(),
 				"triage": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -9193,9 +9202,10 @@ func generateRobotSchemas() RobotSchemas {
 								"issue_count":  map[string]interface{}{"type": "integer"},
 								"history_status": map[string]interface{}{
 									"type":        "string",
-									"enum":        []string{"ok", "error", "timeout"},
+									"enum":        []string{"ok", "partial", "error", "timeout"},
 									"description": "Outcome of the git-history correlation prologue; omitted when history was not attempted (#166)",
 								},
+								"history_warnings": historyWarningsSchema(),
 							},
 						},
 						"quick_ref": map[string]interface{}{
@@ -10527,10 +10537,11 @@ func robotNullableArraySchema(items map[string]interface{}) map[string]interface
 
 func robotFileCommandOutputSchema(title, description string, commandProperties map[string]interface{}, required []string) map[string]interface{} {
 	properties := map[string]interface{}{
-		"generated_at":  map[string]interface{}{"type": "string", "format": "date-time"},
-		"data_hash":     map[string]interface{}{"type": "string"},
-		"output_format": map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
-		"version":       map[string]interface{}{"type": "string"},
+		"generated_at":     map[string]interface{}{"type": "string", "format": "date-time"},
+		"data_hash":        map[string]interface{}{"type": "string"},
+		"output_format":    map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
+		"version":          map[string]interface{}{"type": "string"},
+		"history_warnings": historyWarningsSchema(),
 	}
 	for name, schema := range commandProperties {
 		properties[name] = schema
@@ -10682,17 +10693,36 @@ func robotHistoryOutputSchema() map[string]interface{} {
 		"description": "Bead-to-commit correlation history report with aggregate stats and reverse commit index",
 		"type":        "object",
 		"properties": map[string]interface{}{
-			"generated_at":      map[string]interface{}{"type": "string", "format": "date-time"},
-			"data_hash":         map[string]interface{}{"type": "string"},
-			"output_format":     map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
-			"version":           map[string]interface{}{"type": "string"},
-			"git_range":         map[string]interface{}{"type": "string"},
-			"latest_commit_sha": map[string]interface{}{"type": "string"},
-			"stats":             map[string]interface{}{"type": "object"},
-			"histories":         map[string]interface{}{"type": "object"},
-			"commit_index":      map[string]interface{}{"type": "object"},
+			"generated_at":             map[string]interface{}{"type": "string", "format": "date-time"},
+			"data_hash":                map[string]interface{}{"type": "string"},
+			"output_format":            map[string]interface{}{"type": "string", "enum": []string{"json", "toon"}},
+			"version":                  map[string]interface{}{"type": "string"},
+			"git_range":                map[string]interface{}{"type": "string"},
+			"latest_commit_sha":        map[string]interface{}{"type": "string"},
+			"latest_commit_repository": map[string]interface{}{"type": "string"},
+			"stats":                    map[string]interface{}{"type": "object"},
+			"histories":                map[string]interface{}{"type": "object"},
+			"commit_index":             map[string]interface{}{"type": "object"},
+			"warnings":                 historyWarningsSchema(),
 		},
 		"required": []string{"generated_at", "data_hash", "output_format", "version", "git_range", "stats", "histories", "commit_index"},
+	}
+}
+
+func historyWarningsSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "array",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"code":                 map[string]interface{}{"type": "string"},
+				"context":              map[string]interface{}{"type": "string"},
+				"reason":               map[string]interface{}{"type": "string"},
+				"skipped_correlations": map[string]interface{}{"type": "integer"},
+				"message":              map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"code", "context", "reason", "skipped_correlations", "message"},
+		},
 	}
 }
 

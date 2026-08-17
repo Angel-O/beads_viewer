@@ -388,6 +388,30 @@ func TestHistoryModel_ViewEmpty(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_RendersPartialHistoryWarnings(t *testing.T) {
+	report := createTestHistoryReport()
+	report.Warnings = []correlation.HistoryWarning{{
+		Code:                correlation.HistoryWarningExternalRepositoryUnavailable,
+		Context:             "ctx:repo-a-111",
+		Reason:              "not_found",
+		SkippedCorrelations: 2,
+		Message:             "Source history is unavailable.",
+	}}
+	h := NewHistoryModel(report, testTheme())
+	h.SetSize(80, 40)
+	if view := h.View(); !strings.Contains(view, "PARTIAL: 1 repos unavailable") {
+		t.Fatalf("populated partial report did not render warning notice: %q", view)
+	}
+
+	report.Histories = map[string]correlation.BeadHistory{}
+	report.Stats = correlation.HistoryStats{}
+	h = NewHistoryModel(report, testTheme())
+	h.SetSize(120, 40)
+	if view := h.View(); !strings.Contains(view, "No beads with commit correlations found") || !strings.Contains(view, "PARTIAL HISTORY: 1 source repositories unavailable") {
+		t.Fatalf("empty partial report did not render warning notice: %q", view)
+	}
+}
+
 func TestHistoryModel_ViewSmallWidth(t *testing.T) {
 	report := createTestHistoryReport()
 	theme := testTheme()

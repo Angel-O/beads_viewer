@@ -972,10 +972,37 @@ func TestRobotHistorySchemaMatchesHandlerOutput(t *testing.T) {
 	properties := requireRobotSchemaProperties(t, schemas, "robot-history")
 	for _, name := range []string{
 		"generated_at", "data_hash", "output_format", "version",
-		"git_range", "latest_commit_sha", "stats", "histories", "commit_index",
+		"git_range", "latest_commit_sha", "latest_commit_repository", "stats", "histories", "commit_index", "warnings",
 	} {
 		if properties[name] == nil {
 			t.Fatalf("robot-history schema missing top-level property %q", name)
+		}
+	}
+	warnings := properties["warnings"].(map[string]interface{})
+	warningProps := requireNestedSchemaProperties(t, warnings["items"], "robot-history warning")
+	for _, name := range []string{"code", "context", "reason", "skipped_correlations", "message"} {
+		if warningProps[name] == nil {
+			t.Fatalf("robot-history warning schema missing %q", name)
+		}
+	}
+}
+
+func TestRobotTriageSchemaIncludesPartialHistoryMetadata(t *testing.T) {
+	schemas := generateRobotSchemas()
+	properties := requireRobotSchemaProperties(t, schemas, "robot-triage")
+	if properties["history_status"] == nil || properties["history_warnings"] == nil {
+		t.Fatal("robot-triage schema missing brief partial-history metadata")
+	}
+	triageProps := requireNestedSchemaProperties(t, properties["triage"], "robot-triage triage")
+	metaProps := requireNestedSchemaProperties(t, triageProps["meta"], "robot-triage meta")
+	status := metaProps["history_status"].(map[string]interface{})
+	values := status["enum"].([]string)
+	requireContainsString(t, values, "partial")
+	warnings := metaProps["history_warnings"].(map[string]interface{})
+	warningProps := requireNestedSchemaProperties(t, warnings["items"], "robot-triage history warning")
+	for _, name := range []string{"code", "context", "reason", "skipped_correlations", "message"} {
+		if warningProps[name] == nil {
+			t.Fatalf("robot-triage warning schema missing %q", name)
 		}
 	}
 }
@@ -1163,7 +1190,7 @@ func TestRobotFileWorkflowSchemasMatchHandlerOutputs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.command, func(t *testing.T) {
 			properties := requireRobotSchemaProperties(t, schemas, tc.command)
-			for _, name := range []string{"generated_at", "data_hash", "output_format", "version"} {
+			for _, name := range []string{"generated_at", "data_hash", "output_format", "version", "history_warnings"} {
 				if properties[name] == nil {
 					t.Fatalf("%s schema missing envelope property %q", tc.command, name)
 				}
@@ -1221,7 +1248,7 @@ func TestRobotRelationshipWorkflowSchemasMatchHandlerOutputs(t *testing.T) {
 
 	relatedProps := requireRobotSchemaProperties(t, schemas, "robot-related")
 	for _, name := range []string{
-		"generated_at", "data_hash", "output_format", "version",
+		"generated_at", "data_hash", "output_format", "version", "history_warnings",
 		"target_bead_id", "target_title", "file_overlap", "commit_overlap",
 		"dependency_cluster", "concurrent", "total_related",
 	} {
@@ -1265,7 +1292,7 @@ func TestRobotRelationshipWorkflowSchemasMatchHandlerOutputs(t *testing.T) {
 
 	networkProps := requireRobotSchemaProperties(t, schemas, "robot-impact-network")
 	for _, name := range []string{
-		"generated_at", "data_hash", "output_format", "version",
+		"generated_at", "data_hash", "output_format", "version", "history_warnings",
 		"bead_id", "depth", "network", "stats", "top_clusters", "top_connected",
 	} {
 		if networkProps[name] == nil {
@@ -1290,7 +1317,7 @@ func TestRobotRelationshipWorkflowSchemasMatchHandlerOutputs(t *testing.T) {
 	}
 
 	causalityProps := requireRobotSchemaProperties(t, schemas, "robot-causality")
-	for _, name := range []string{"generated_at", "data_hash", "output_format", "version", "chain", "insights"} {
+	for _, name := range []string{"generated_at", "data_hash", "output_format", "version", "history_warnings", "chain", "insights"} {
 		if causalityProps[name] == nil {
 			t.Fatalf("robot-causality schema missing top-level property %q", name)
 		}

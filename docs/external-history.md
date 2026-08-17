@@ -59,10 +59,9 @@ repositories:
 ```
 
 Repository contexts must exactly match the `ctx:` labels carried by correlated
-beads. Duplicate contexts, unreadable checkouts, and non-Git checkout paths are
-errors in external mode. `repositories: {}` is valid before the first source
-repository is registered; with an empty ledger, Viewer still loads the global
-board and reports empty source history.
+beads. `repositories: {}` is valid before the first source repository is
+registered; with an empty ledger, Viewer still loads the global board and
+reports empty source history.
 
 ## Correlation Ledger
 
@@ -82,6 +81,12 @@ unreadable ledgers remain errors.
 Ledger commits must be complete 40-character SHA-1 or 64-character SHA-256
 object IDs; abbreviations are rejected. External loading resolves each ID to a real commit in its configured checkout
 and fails rather than falling back to Git history in the global store.
+
+Viewer always validates the complete config and ledger before applying a
+selected-bead filter. Malformed YAML or JSONL, unsupported versions, unknown
+beads, undefined or mismatched contexts, invalid full SHAs, and duplicate
+correlations are therefore fatal even when the invalid record belongs to a
+different bead than `--bead-history` selected.
 
 Commit identity is `<context>:<full-sha>`. File identity is
 `<context>:<path>`, for example
@@ -136,9 +141,28 @@ reachable from multiple branches, and branch names are mutable and non-unique.
 Callers that need current reachability can query the configured checkout with
 Git at that time instead of treating a branch as commit metadata.
 
-External loading is fail-fast. A malformed config or ledger, unknown context,
-missing commit, unreadable repository, or Beads history failure returns an
-actionable error and does not trigger legacy Git fallback.
+After global validation, Viewer probes only repositories used by applicable
+correlations: every ledger record for an unfiltered report, or the selected
+bead's records for `--bead-history`. Configured repositories with no applicable
+records are not probed and do not produce warnings.
+
+If an applicable checkout is missing, unreadable, not a directory, or not a Git
+worktree, Viewer skips that context and returns a successful partial report.
+Lifecycle events and source commits from available contexts remain present.
+The report's `warnings` array contains one deterministic structured warning per
+skipped context, including its context label, stable reason, and skipped
+correlation count; warning messages do not expose private checkout paths. The
+History TUI marks these reports as partial, and history-derived robot outputs
+carry the same diagnostics as `history_warnings` where needed. If every
+applicable checkout is unavailable, the report still contains lifecycle events
+and warnings with zero source commits.
+
+Data-integrity and provider failures remain fail-fast. A full ledger commit
+missing from an otherwise valid checkout, malformed Git metadata, changed-file
+or line-stat extraction failure, unavailable Git executable, cancellation,
+timeout, or Beads lifecycle-provider failure returns an error and never falls
+back to legacy Git history. Viewer does not prune or rewrite stale registrations
+or ledger records.
 
 ## Target-Machine QA
 

@@ -278,6 +278,13 @@ func TestHistoryReport_JSONRoundtrip(t *testing.T) {
 			"sha123": {"bv-001", "bv-002"},
 			"sha456": {"bv-003"},
 		},
+		Warnings: []HistoryWarning{{
+			Code:                HistoryWarningExternalRepositoryUnavailable,
+			Context:             "ctx:repo-a-111",
+			Reason:              "not_found",
+			SkippedCorrelations: 2,
+			Message:             "Source history for context is unavailable.",
+		}},
 	}
 
 	data, err := json.Marshal(original)
@@ -310,6 +317,9 @@ func TestHistoryReport_JSONRoundtrip(t *testing.T) {
 	}
 	if len(decoded.CommitIndex["sha123"]) != 2 {
 		t.Errorf("CommitIndex['sha123'] length mismatch: got %v, want 2", len(decoded.CommitIndex["sha123"]))
+	}
+	if len(decoded.Warnings) != 1 || decoded.Warnings[0] != original.Warnings[0] {
+		t.Errorf("Warnings mismatch: got %+v, want %+v", decoded.Warnings, original.Warnings)
 	}
 }
 

@@ -1724,6 +1724,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("History load failed: %v", msg.Error)
 			m.statusIsError = true
 		} else if msg.Report != nil {
+			if m.historyLoadFailed && strings.HasPrefix(m.statusMsg, "History load failed:") {
+				m.statusMsg = ""
+				m.statusIsError = false
+			}
+			m.historyLoadFailed = false
 			m.historyView = NewHistoryModel(msg.Report, m.theme)
 			m.historyView.SetSize(m.width, m.height-1)
 			// Refresh detail pane if visible
@@ -7801,6 +7806,9 @@ func (m *Model) enterHistoryView() {
 	m.focused = focusHistory
 
 	m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", report.Stats.BeadsWithCommits)
+	if len(report.Warnings) > 0 {
+		m.statusMsg += fmt.Sprintf(" (partial: %d source repositories unavailable)", len(report.Warnings))
+	}
 	m.statusIsError = false
 }
 

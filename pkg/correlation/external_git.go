@@ -2,8 +2,12 @@ package correlation
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,24 +19,42 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		return nil, err
 	}
 
-	repositoryKeys := make([]string, 0, len(hub.repositories))
-	for key := range hub.repositories {
+	type applicableCorrelation struct {
+		ExternalHistoryCorrelation
+		record int
+	}
+	applicable := make([]applicableCorrelation, 0, len(hub.correlations))
+	skippedByContext := make(map[string]int)
+	for i, correlation := range hub.correlations {
+		if opts.BeadID != "" && correlation.BeadID != opts.BeadID {
+			continue
+		}
+		applicable = append(applicable, applicableCorrelation{ExternalHistoryCorrelation: correlation, record: i + 1})
+		skippedByContext[correlation.Context]++
+	}
+
+	repositoryKeys := make([]string, 0, len(skippedByContext))
+	for key := range skippedByContext {
 		repositoryKeys = append(repositoryKeys, key)
 	}
 	sort.Strings(repositoryKeys)
+	unavailable := make(map[string]struct{})
+	warnings := make([]HistoryWarning, 0)
 	for _, key := range repositoryKeys {
 		path := hub.repositories[key]
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return nil, fmt.Errorf("external history repository %q at %q is unreadable: %w", key, path, statErr)
+		reason, probeErr := c.probeExternalRepository(path)
+		if probeErr != nil {
+			return nil, fmt.Errorf("probing external history repository %q: %w", key, probeErr)
 		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("external history repository %q path %q is not a directory", key, path)
-		}
-		cmd := gitCommand(c.ctx, "-C", path, "rev-parse", "--is-inside-work-tree")
-		out, commandErr := cmd.CombinedOutput()
-		if commandErr != nil || strings.TrimSpace(string(out)) != "true" {
-			return nil, fmt.Errorf("external history repository %q at %q is not a readable Git checkout: %s", key, path, strings.TrimSpace(string(out)))
+		if reason != "" {
+			unavailable[key] = struct{}{}
+			warnings = append(warnings, HistoryWarning{
+				Code:                HistoryWarningExternalRepositoryUnavailable,
+				Context:             key,
+				Reason:              reason,
+				SkippedCorrelations: skippedByContext[key],
+				Message:             fmt.Sprintf("Source history for context %q is unavailable; correlations from that context were skipped.", key),
+			})
 		}
 	}
 
@@ -40,9 +62,9 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		commit CorrelatedCommit
 	}
 	loaded := make(map[string]loadedCommit)
-	commits := make([]CorrelatedCommit, 0, len(hub.correlations))
-	for i, correlation := range hub.correlations {
-		if opts.BeadID != "" && correlation.BeadID != opts.BeadID {
+	commits := make([]CorrelatedCommit, 0, len(applicable))
+	for _, correlation := range applicable {
+		if _, skip := unavailable[correlation.Context]; skip {
 			continue
 		}
 		identity := repositoryCommitIdentity(correlation.Context, strings.ToLower(correlation.Commit))
@@ -50,7 +72,7 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		if !exists {
 			commit, loadErr := c.loadExternalCommit(correlation.Context, hub.repositories[correlation.Context], correlation.Commit)
 			if loadErr != nil {
-				return nil, fmt.Errorf("correlation ledger %q record %d: %w", hub.ledger, i+1, loadErr)
+				return nil, fmt.Errorf("correlation ledger %q record %d: %w", hub.ledger, correlation.record, loadErr)
 			}
 			entry = loadedCommit{commit: commit}
 			loaded[identity] = entry
@@ -90,7 +112,56 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 	if err != nil {
 		return nil, err
 	}
-	return &historyArtifact{Events: events, Commits: commits}, nil
+	return &historyArtifact{Events: events, Commits: commits, Warnings: warnings}, nil
+}
+
+func (c *Correlator) probeExternalRepository(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "not_found", nil
+		}
+		return "unreadable", nil
+	}
+	if !info.IsDir() {
+		return "not_directory", nil
+	}
+
+	cmd := gitCommand(c.ctx, "-C", path, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.CombinedOutput()
+	if c.ctx != nil && c.ctx.Err() != nil {
+		return "", c.ctx.Err()
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", fmt.Errorf("Git executable unavailable: %w", err)
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return "", fmt.Errorf("Git executable unavailable: %w", err)
+	}
+	if err != nil {
+		metadataPath := filepath.Join(path, ".git")
+		metadataInfo, metadataErr := os.Lstat(metadataPath)
+		if !errors.Is(metadataErr, os.ErrNotExist) {
+			if metadataErr != nil || gitMetadataUnreadable(metadataPath, metadataInfo) {
+				return "unreadable", nil
+			}
+			return "", fmt.Errorf("validating Git checkout metadata: %w", err)
+		}
+		return "not_git", nil
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return "not_git", nil
+	}
+	return "", nil
+}
+
+func gitMetadataUnreadable(metadataPath string, info os.FileInfo) bool {
+	if info.IsDir() {
+		metadataPath = filepath.Join(metadataPath, "HEAD")
+	}
+	_, err := os.ReadFile(metadataPath)
+	return errors.Is(err, os.ErrPermission)
 }
 
 func selectLifecycleBeads(beads []BeadInfo, correlations []ExternalHistoryCorrelation, selectedBeadID string) []BeadInfo {
@@ -115,6 +186,12 @@ func (c *Correlator) loadExternalCommit(repository, repoPath, requestedSHA strin
 	resolve := gitCommand(c.ctx, "-C", repoPath, "rev-parse", "--verify", requestedSHA+"^{commit}")
 	resolvedOut, err := resolve.CombinedOutput()
 	if err != nil {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return CorrelatedCommit{}, c.ctx.Err()
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return CorrelatedCommit{}, err
+		}
 		return CorrelatedCommit{}, fmt.Errorf("commit %q is absent from repository %q at %q: %s", requestedSHA, repository, repoPath, strings.TrimSpace(string(resolvedOut)))
 	}
 	resolvedSHA := strings.TrimSpace(string(resolvedOut))
