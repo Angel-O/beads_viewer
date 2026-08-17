@@ -76,6 +76,32 @@ checkout, or migrates local issue data. Hub mode runs `wbd configure`, sets the
 fixed Hub store, and invokes Viewer with external history and the fixed Hub
 config. `wbd` remains Hub-only regardless of the current checkout.
 
+### Testing Unreleased Hub Viewer Changes
+
+Build all three wrapper-chain commands from the source checkout before testing
+an unreleased TUI change:
+
+```bash
+test_bin="$(mktemp -d "${TMPDIR:-/tmp}/wbv-local.XXXXXX")"
+go build -o "$test_bin/bv" ./cmd/bv
+go build -o "$test_bin/wbd" ./cmd/wbd
+go build -o "$test_bin/wbv" ./cmd/wbv
+```
+
+Then change to the repository context where Viewer should run and prepend the
+temporary directory to `PATH`:
+
+```bash
+cd /path/to/source/repository
+PATH="$test_bin:$PATH" "$test_bin/wbv" --hub
+```
+
+The `PATH` override is required because `wbv` delegates to `bv` and `wbd` by
+command name. Running only `go run ./cmd/wbv --hub` can therefore compile the
+new wrapper while still launching old installed `bv` or `wbd` binaries. This
+workflow tests the complete local command chain without installing or releasing
+it.
+
 ## Repository-Only Migrations
 
 The migration scripts under `scripts/` are manual repository tools. They are
