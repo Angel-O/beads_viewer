@@ -40,6 +40,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hooks"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -8287,32 +8288,18 @@ func resolveHistoryConfiguration(mode, configPath string) (string, string, error
 }
 
 func defaultHubConfigPath() (string, bool) {
-	home, err := os.UserHomeDir()
+	paths, err := hub.DefaultPaths()
 	if err != nil {
 		return "", false
 	}
-	candidate := filepath.Join(home, ".config", "bv", "hub.yaml")
-	if _, err := os.Stat(candidate); err != nil {
+	if _, err := os.Stat(paths.Config); err != nil {
 		return "", false
 	}
-	return candidate, true
+	return paths.Config, true
 }
 
 func expandCLIHomePath(path string) (string, error) {
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if path == "~" {
-			path = home
-		} else {
-			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
-		}
-	} else if strings.HasPrefix(path, "~") {
-		return "", fmt.Errorf("unsupported home path %q; use ~/...", path)
-	}
-	return filepath.Abs(path)
+	return hub.ResolvePath(path, "")
 }
 
 // RobotEnvelope is the standard envelope for all robot command outputs.

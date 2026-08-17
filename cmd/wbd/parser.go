@@ -1,0 +1,548 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+const supportedCommands = "supported commands: bootstrap, configure, register, context, create, new, list, show, update, dep, close, reopen, link"
+
+type request struct {
+	command     string
+	subcommand  string
+	args        []string
+	positionals []string
+	json        bool
+	allContexts bool
+	prefix      string
+}
+
+func commandName(arguments []string) (string, error) {
+	if len(arguments) > 0 && arguments[0] == "--json" {
+		arguments = arguments[1:]
+	}
+	if len(arguments) == 0 {
+		return "", errors.New(supportedCommands)
+	}
+	if strings.HasPrefix(arguments[0], "-") {
+		return "", fmt.Errorf("unsupported global option: %s", arguments[0])
+	}
+	return arguments[0], nil
+}
+
+func parse(arguments []string) (request, error) {
+	var result request
+	if len(arguments) > 0 && arguments[0] == "--json" {
+		result.json = true
+		arguments = arguments[1:]
+	}
+	if len(arguments) == 0 {
+		return result, errors.New(supportedCommands)
+	}
+	result.command = arguments[0]
+	if strings.HasPrefix(result.command, "-") {
+		return result, fmt.Errorf("unsupported global option: %s", result.command)
+	}
+	arguments = arguments[1:]
+
+	if result.command == "bootstrap" {
+		if result.json || len(arguments) != 0 && (len(arguments) != 2 || arguments[0] != "--prefix") {
+			return result, errors.New("usage: wbd bootstrap [--prefix <prefix>]")
+		}
+		result.prefix = "bead"
+		if len(arguments) == 2 {
+			result.prefix = arguments[1]
+		}
+		if err := validatePrefix(result.prefix); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+
+	switch result.command {
+	case "context", "configure", "register":
+		if result.json || len(arguments) != 0 {
+			return result, fmt.Errorf("usage: wbd %s", result.command)
+		}
+	case "create", "new":
+		return parseCreate(result, arguments)
+	case "list":
+		return parseList(result, arguments)
+	case "show":
+		return parseShow(result, arguments)
+	case "update":
+		return parseUpdate(result, arguments)
+	case "dep":
+		return parseDep(result, arguments)
+	case "close", "reopen":
+		return parseClose(result, arguments)
+	case "link":
+		if result.json || len(arguments) < 1 || len(arguments) > 2 {
+			return result, errors.New("usage: wbd link <bead-id> [commit]")
+		}
+		if err := safeID("link", arguments[0]); err != nil {
+			return result, err
+		}
+		if len(arguments) == 2 {
+			if err := safeValue("commit", arguments[1]); err != nil {
+				return result, err
+			}
+			if strings.HasPrefix(arguments[1], "-") {
+				return result, fmt.Errorf("invalid commit: %s", arguments[1])
+			}
+		}
+		result.positionals = arguments
+	case "init":
+		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
+	default:
+		return result, errors.New(supportedCommands)
+	}
+	return result, nil
+}
+
+func parseCreate(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--description", "--type", "--priority", "--labels")
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if err := validateCreateOption(flag, value, seen); err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for %s: %s", result.command, argument)
+		}
+		if err := safeValue("title", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 1 {
+		return result, fmt.Errorf("usage: wbd %s <title> [options]", result.command)
+	}
+	return result, nil
+}
+
+func validateCreateOption(flag, value string, seen map[string]bool) error {
+	if flag != "--labels" {
+		if err := markSeen(seen, flag); err != nil {
+			return err
+		}
+	}
+	switch flag {
+	case "--type":
+		return validateType(value)
+	case "--priority":
+		return validatePriority(value)
+	case "--labels":
+		return validateLabels(value, true)
+	}
+	return nil
+}
+
+func parseList(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		switch argument {
+		case "--json":
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		case "--all-contexts":
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.allContexts = true
+			continue
+		case "--ready":
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.args = append(result.args, argument)
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--status", "--type", "--priority", "--label", "--limit")
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if flag != "--label" {
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+			}
+			switch flag {
+			case "--status":
+				err = validateStatuses(value)
+			case "--type":
+				err = validateType(value)
+			case "--priority":
+				err = validatePriority(value)
+			case "--label":
+				err = validateLabels(value, false)
+			case "--limit":
+				err = validateLimit(value)
+			}
+			if err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for list: %s", argument)
+		}
+		return result, fmt.Errorf("list does not accept positional arguments: %s", argument)
+	}
+	return result, nil
+}
+
+func parseShow(result request, arguments []string) (request, error) {
+	for _, argument := range arguments {
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+		} else if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for show: %s", argument)
+		} else if err := safeID("show", argument); err != nil {
+			return result, err
+		} else {
+			result.positionals = append(result.positionals, argument)
+		}
+	}
+	if len(result.positionals) != 1 {
+		return result, errors.New("usage: wbd show <id> [--json]")
+	}
+	return result, nil
+}
+
+func parseUpdate(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	mutations := 0
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--title", "--description", "--type", "--priority", "--status", "--add-label")
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if flag != "--add-label" {
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+			}
+			switch flag {
+			case "--type":
+				err = validateType(value)
+			case "--priority":
+				err = validatePriority(value)
+			case "--status":
+				if !oneOf(value, "open", "in_progress", "blocked", "deferred") {
+					err = fmt.Errorf("invalid update status: %s", value)
+				}
+			case "--add-label":
+				err = validateLabels(value, true)
+			}
+			if err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			mutations++
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for update: %s", argument)
+		}
+		if err := safeID("update", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 1 || mutations == 0 {
+		return result, errors.New("usage: wbd update <id> <mutation> [--json]")
+	}
+	return result, nil
+}
+
+func parseDep(result request, arguments []string) (request, error) {
+	if len(arguments) == 0 || !oneOf(arguments[0], "add", "remove") {
+		return result, errors.New("usage: wbd dep add|remove <issue-id> <depends-on-id> [options]")
+	}
+	result.subcommand = arguments[0]
+	arguments = arguments[1:]
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--type")
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			if result.subcommand != "add" {
+				return result, errors.New("--type is supported only for dep add")
+			}
+			arguments = arguments[consumed:]
+			if err := markSeen(seen, flag); err != nil {
+				return result, err
+			}
+			if !oneOf(value, "blocks", "tracks", "related", "parent-child", "discovered-from", "until", "caused-by", "validates", "relates-to", "supersedes") {
+				return result, fmt.Errorf("invalid dependency type: %s", value)
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for dep %s: %s", result.subcommand, argument)
+		}
+		if err := safeID("dep "+result.subcommand, argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 2 {
+		return result, fmt.Errorf("usage: wbd dep %s <issue-id> <depends-on-id> [options]", result.subcommand)
+	}
+	return result, nil
+}
+
+func parseClose(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--reason")
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if err := markSeen(seen, flag); err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for %s: %s", result.command, argument)
+		}
+		if err := safeID(result.command, argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 1 {
+		return result, fmt.Errorf("usage: wbd %s <id> [--reason <text>] [--json]", result.command)
+	}
+	return result, nil
+}
+
+func optionValue(argument string, remaining []string, names ...string) (string, string, int, bool, error) {
+	for _, name := range names {
+		if argument == name {
+			if len(remaining) == 0 {
+				return "", "", 0, true, fmt.Errorf("missing value for %s", name)
+			}
+			if err := safeValue(name, remaining[0]); err != nil {
+				return "", "", 0, true, err
+			}
+			return name, remaining[0], 1, true, nil
+		}
+		if strings.HasPrefix(argument, name+"=") {
+			value := strings.TrimPrefix(argument, name+"=")
+			if err := safeValue(name, value); err != nil {
+				return "", "", 0, true, err
+			}
+			return name, value, 0, true, nil
+		}
+	}
+	return "", "", 0, false, nil
+}
+
+func safeValue(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("missing value for %s", name)
+	}
+	if strings.ContainsAny(value, "\n\r\t") {
+		return fmt.Errorf("invalid control character in %s", name)
+	}
+	return nil
+}
+
+func safeID(name, value string) error {
+	if err := safeValue(name, value); err != nil {
+		return err
+	}
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("invalid ID for %s: %s", name, value)
+	}
+	return nil
+}
+
+func setJSON(result *request) error {
+	if result.json {
+		return errors.New("duplicate option: --json")
+	}
+	result.json = true
+	return nil
+}
+
+func markSeen(seen map[string]bool, option string) error {
+	if seen[option] {
+		return fmt.Errorf("duplicate option: %s", option)
+	}
+	seen[option] = true
+	return nil
+}
+
+func validatePriority(value string) error {
+	if oneOf(value, "0", "1", "2", "3", "4", "P0", "P1", "P2", "P3", "P4") {
+		return nil
+	}
+	return fmt.Errorf("invalid priority: %s", value)
+}
+
+func validateType(value string) error {
+	if oneOf(value, "bug", "feature", "task", "epic", "chore", "decision") {
+		return nil
+	}
+	return fmt.Errorf("invalid issue type: %s", value)
+}
+
+func validateStatuses(value string) error {
+	values, err := commaValues(value, "status")
+	if err != nil {
+		return err
+	}
+	for _, status := range values {
+		if !oneOf(status, "open", "in_progress", "blocked", "deferred", "closed") {
+			return fmt.Errorf("invalid status: %s", status)
+		}
+	}
+	return nil
+}
+
+func validateLabels(value string, mutation bool) error {
+	values, err := commaValues(value, "label")
+	if err != nil {
+		return err
+	}
+	for _, label := range values {
+		if err := safeValue("label", label); err != nil {
+			return err
+		}
+		if mutation {
+			if strings.Contains(label, `"`) {
+				return errors.New("quoted labels are unsupported")
+			}
+			checked := strings.TrimLeft(label, " ")
+			if checked == "" {
+				return errors.New("label list contains an empty value")
+			}
+			if strings.HasPrefix(checked, "ctx:") {
+				return errors.New("ctx: labels are wrapper-owned")
+			}
+		}
+	}
+	return nil
+}
+
+func commaValues(value, name string) ([]string, error) {
+	if strings.HasPrefix(value, ",") || strings.HasSuffix(value, ",") || strings.Contains(value, ",,") {
+		return nil, fmt.Errorf("%s list contains an empty value", name)
+	}
+	values := strings.Split(value, ",")
+	if len(values) == 0 || value == "" {
+		return nil, fmt.Errorf("%s list must not be empty", name)
+	}
+	return values, nil
+}
+
+func validateLimit(value string) error {
+	if len(value) > 4 || value == "" {
+		return fmt.Errorf("invalid limit: %s", value)
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return fmt.Errorf("invalid limit: %s", value)
+		}
+	}
+	limit, _ := strconv.Atoi(value)
+	if limit < 1 || limit > 1000 {
+		return errors.New("limit must be between 1 and 1000")
+	}
+	return nil
+}
+
+func validatePrefix(prefix string) error {
+	valid := len(prefix) >= 1 && len(prefix) <= 32 && prefix[0] >= 'a' && prefix[0] <= 'z' && !strings.Contains(prefix, "--")
+	for index, character := range prefix {
+		if character < 'a' || character > 'z' {
+			if character < '0' || character > '9' {
+				if character != '-' {
+					valid = false
+				}
+			}
+		}
+		if index == len(prefix)-1 && character == '-' {
+			valid = false
+		}
+	}
+	if !valid {
+		if strings.Contains(prefix, "--") {
+			return errors.New("prefix must not contain consecutive hyphens")
+		}
+		return errors.New("prefix must be 1-32 lowercase ASCII letters, digits, or hyphens, start with a letter, and end with a letter or digit")
+	}
+	return nil
+}
+
+func oneOf(value string, choices ...string) bool {
+	for _, choice := range choices {
+		if value == choice {
+			return true
+		}
+	}
+	return false
+}
