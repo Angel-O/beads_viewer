@@ -68,13 +68,27 @@ the same Hub store. Use the supported wrapper commands rather than passing
 arbitrary `bd` options; direct `wbd init` and alternate database/config paths
 are intentionally unavailable.
 
-`wbv` selects local mode when the current Git worktree root contains a real,
-non-symlink `.beads` directory. Otherwise it selects the Hub. Use `wbv --local`
-or `wbv --hub` as the first argument to force a mode. Local mode runs Viewer
-with Git history from the worktree and never calls `wbd`, registers the
-checkout, or migrates local issue data. Hub mode runs `wbd configure`, sets the
-fixed Hub store, and invokes Viewer with external history and the fixed Hub
-config. `wbd` remains Hub-only regardless of the current checkout.
+Without a mode selector, `wbv` selects local mode only when the current Git
+worktree root has a real, non-symlink `.beads` directory containing a valid
+Viewer issue source (SQLite, supported JSONL, a routed store, or a recognized
+bd/Dolt workspace). Otherwise it selects the Hub. Empty `.beads` directories
+and directories containing only unrelated files do not turn a checkout into a
+local workspace. A linked worktree uses only `.beads` at that worktree's own
+root; it does not inherit local data from another worktree that shares the Git
+common directory.
+
+Use `wbv --local` or `wbv --hub` as the first argument to force a mode.
+`--local` requires a valid local issue source. `--hub` always selects the Hub,
+even when local data exists or is malformed. Unsafe markers, broken redirects,
+and malformed canonical issue sources produce an actionable error in automatic
+or explicit local mode instead of silently selecting another data source. Run
+`wbv --help` for a concise summary of these rules.
+
+Local mode runs Viewer with Git history from the worktree and never calls
+`wbd`, registers the checkout, or migrates local issue data. Hub mode runs
+`wbd configure`, sets the fixed Hub store, and invokes Viewer with external
+history and the fixed Hub config. `wbd` remains Hub-only regardless of the
+current checkout.
 
 ### Testing Unreleased Hub Viewer Changes
 
