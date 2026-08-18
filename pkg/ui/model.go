@@ -481,6 +481,8 @@ type Model struct {
 	// snapshotInitPending is true until we receive the first BackgroundWorker snapshot
 	// (or an error), allowing a polished cold-start loading screen (bv-tspo).
 	snapshotInitPending bool
+	// backgroundSnapshotApplied distinguishes the worker's initial snapshot from reloads.
+	backgroundSnapshotApplied bool
 	// backgroundWorker manages async data loading (nil if background mode disabled)
 	backgroundWorker  *BackgroundWorker
 	workerSpinnerIdx  int // Spinner frame for background worker activity (bv-9nfy)
@@ -1801,7 +1803,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		firstSnapshot := m.snapshotInitPending && m.snapshot == nil
+		firstBackgroundSnapshot := m.backgroundWorker != nil && !m.backgroundSnapshotApplied
+		if m.backgroundWorker != nil {
+			m.backgroundSnapshotApplied = true
+		}
 		m.snapshotInitPending = false
 
 		// Clear ephemeral overlays tied to old data
@@ -2097,12 +2102,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if firstSnapshot {
+		if firstBackgroundSnapshot {
 			// For the initial background snapshot, avoid flashing "Reloaded" at startup.
 			if msg.Snapshot.LoadWarningCount > 0 {
 				m.statusMsg = fmt.Sprintf("Loaded %d issues (%d warnings)", len(m.issues), msg.Snapshot.LoadWarningCount)
 			} else {
-				m.statusMsg = ""
+				m.statusMsg = "Background mode enabled"
 			}
 		} else if msg.Snapshot.LoadWarningCount > 0 {
 			m.statusMsg = fmt.Sprintf("Reloaded %d issues (%d warnings)", len(m.issues), msg.Snapshot.LoadWarningCount)

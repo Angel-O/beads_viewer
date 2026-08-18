@@ -1158,6 +1158,42 @@ func TestModelHubAutoRefreshDisabledShowsLoadedDataImmediately(t *testing.T) {
 	}
 }
 
+func TestModelBackgroundSnapshotCaptions(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	signalPath := filepath.Join(directory, "viewer-generation")
+	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	if err := os.WriteFile(issuesPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSignal(t, signalPath, "initial")
+
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
+	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	issues := []model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, issuesPath)
+	defer m.Stop()
+
+	if got := m.statusMsg; got != "Background mode enabled" {
+		t.Fatalf("initial status = %q, want %q", got, "Background mode enabled")
+	}
+	first, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(issues).Build()})
+	m = first.(Model)
+	if got := m.statusMsg; got != "Background mode enabled" {
+		t.Fatalf("first snapshot status = %q, want %q", got, "Background mode enabled")
+	}
+	if !m.backgroundSnapshotApplied {
+		t.Fatal("first background snapshot was not recorded")
+	}
+
+	second, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(issues).Build()})
+	m = second.(Model)
+	if got := m.statusMsg; got != "Reloaded 1 issues" {
+		t.Fatalf("later snapshot status = %q, want %q", got, "Reloaded 1 issues")
+	}
+}
+
 func installCountingReloadFakeBD(t *testing.T, root, payload string) (string, string) {
 	t.Helper()
 	payloadPath := installReloadFakeBD(t, root, payload)
