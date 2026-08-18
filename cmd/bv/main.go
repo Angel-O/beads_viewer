@@ -2500,7 +2500,7 @@ func main() {
 			asOfResolved, _ = gitLoader.ResolveRevision(*asOf)
 			// No live reload for historical view
 			beadsPath = ""
-			semanticDatasetPath = cwd
+			semanticDatasetPath = semanticAsOfDatasetPath(cwd)
 			if !envRobot {
 				if asOfResolved != "" {
 					fmt.Fprintf(os.Stderr, "Loaded %d issues from %s (%s)\n", len(issues), *asOf, asOfResolved[:min(7, len(asOfResolved))])
@@ -8254,6 +8254,14 @@ var robotToonEncodeOptions = toon.DefaultEncodeOptions()
 var robotShowToonStats bool
 
 const robotContractVersion = "1.0.0"
+
+func semanticAsOfDatasetPath(cwd string) string {
+	root, _, err := hub.RepositoryIdentity(cwd)
+	if err != nil {
+		return cwd
+	}
+	return root
+}
 
 func resolveHistoryConfiguration(mode, configPath string) (string, string, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))

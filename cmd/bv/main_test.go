@@ -2298,6 +2298,25 @@ func TestIssuesFingerprintDetectsContentChangesOrderIndependently(t *testing.T) 
 	}
 }
 
+func TestSemanticAsOfDatasetPathUsesRepositoryRoot(t *testing.T) {
+	repository := t.TempDir()
+	command := exec.Command("git", "init", "-b", "main")
+	command.Dir = repository
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	nested := filepath.Join(repository, "nested", "directory")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fromRoot := semanticAsOfDatasetPath(repository)
+	fromNested := semanticAsOfDatasetPath(nested)
+	if fromNested != fromRoot {
+		t.Fatalf("as-of dataset identity differs by invocation directory: root=%q nested=%q", fromRoot, fromNested)
+	}
+}
+
 func TestResolveHistoryConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
