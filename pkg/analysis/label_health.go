@@ -211,8 +211,12 @@ type LabelAnalysisResult struct {
 // It respects cfg.IncludeClosedInFlow: when false, closed issues are ignored.
 func ComputeCrossLabelFlow(issues []model.Issue, cfg LabelHealthConfig) CrossLabelFlow {
 	labels := ExtractLabels(issues)
-	labelList := make([]string, len(labels.Labels))
-	copy(labelList, labels.Labels)
+	labelList := make([]string, 0, len(labels.Labels))
+	for _, label := range labels.Labels {
+		if !strings.HasPrefix(label, "ctx:") {
+			labelList = append(labelList, label)
+		}
+	}
 	sort.Strings(labelList)
 
 	n := len(labelList)

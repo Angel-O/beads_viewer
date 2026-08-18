@@ -265,6 +265,54 @@ func TestComputeCrossLabelFlow(t *testing.T) {
 	_ = now // suppress unused if future additions use time
 }
 
+func TestComputeCrossLabelFlowExcludesContextLabels(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "mixed-blocker", Labels: []string{"ctx:project-one", "api", "myctx:keep", "Ctx:upper"}, Status: model.StatusOpen},
+		{ID: "mixed-blocked", Labels: []string{"ctx:project-two", "web"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "mixed-blocker", Type: model.DepBlocks}}},
+		{ID: "context-only-blocker", Labels: []string{"ctx:project-three"}, Status: model.StatusOpen},
+		{ID: "context-only-blocked", Labels: []string{"ctx:project-two", "docs"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "context-only-blocker", Type: model.DepBlocks}}},
+		{ID: "unlabeled-blocker", Status: model.StatusOpen},
+		{ID: "blocked-by-unlabeled", Labels: []string{"ops"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "unlabeled-blocker", Type: model.DepBlocks}}},
+	}
+
+	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig())
+	wantLabels := []string{"Ctx:upper", "api", "docs", "myctx:keep", "ops", "web"}
+	if fmt.Sprint(flow.Labels) != fmt.Sprint(wantLabels) {
+		t.Fatalf("labels = %v, want %v", flow.Labels, wantLabels)
+	}
+	if flow.TotalCrossLabelDeps != 3 {
+		t.Fatalf("total cross-label dependencies = %d, want 3", flow.TotalCrossLabelDeps)
+	}
+	if len(flow.Dependencies) != 3 {
+		t.Fatalf("dependencies = %v, want three regular-label flows", flow.Dependencies)
+	}
+	for _, dep := range flow.Dependencies {
+		if strings.HasPrefix(dep.FromLabel, "ctx:") || strings.HasPrefix(dep.ToLabel, "ctx:") {
+			t.Fatalf("context label leaked into dependency: %+v", dep)
+		}
+		if dep.ToLabel != "web" || dep.IssueCount != 1 {
+			t.Errorf("dependency = %+v, want one flow to web", dep)
+		}
+	}
+	wantBottlenecks := []string{"Ctx:upper", "api", "myctx:keep"}
+	if fmt.Sprint(flow.BottleneckLabels) != fmt.Sprint(wantBottlenecks) {
+		t.Fatalf("bottlenecks = %v, want %v", flow.BottleneckLabels, wantBottlenecks)
+	}
+}
+
+func TestComputeCrossLabelFlowWithOnlyContextLabels(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Labels: []string{"ctx:project-one"}, Status: model.StatusOpen},
+		{ID: "two", Labels: []string{"ctx:project-two"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "one", Type: model.DepBlocks}}},
+		{ID: "unlabeled", Status: model.StatusOpen},
+	}
+
+	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig())
+	if len(flow.Labels) != 0 || len(flow.FlowMatrix) != 0 || len(flow.Dependencies) != 0 || len(flow.BottleneckLabels) != 0 || flow.TotalCrossLabelDeps != 0 {
+		t.Fatalf("context-only flow should be empty: %+v", flow)
+	}
+}
+
 func TestLabelPath(t *testing.T) {
 	path := LabelPath{
 		Labels:      []string{"core", "api", "ui"},

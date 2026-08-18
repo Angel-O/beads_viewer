@@ -432,15 +432,19 @@ func TestRobotLabelHealthContract(t *testing.T) {
 func TestRobotLabelFlowContract(t *testing.T) {
 	bv := buildBvBinary(t)
 	env := t.TempDir()
-	// Cross-label dependency: WEB depends on API => flow from api -> web.
-	writeBeads(t, env, `{"id":"API-1","title":"API root","status":"open","priority":1,"issue_type":"task","labels":["api"]}
-{"id":"WEB-1","title":"WEB blocked by API","status":"open","priority":2,"issue_type":"task","labels":["web"],"dependencies":[{"issue_id":"WEB-1","depends_on_id":"API-1","type":"blocks"}]}`)
+	writeBeads(t, env, `{"id":"API-1","title":"API root","status":"open","priority":1,"issue_type":"task","labels":["ctx:project-one","api","myctx:keep"]}
+{"id":"WEB-1","title":"WEB blocked by API","status":"open","priority":2,"issue_type":"task","labels":["ctx:project-two","web"],"dependencies":[{"issue_id":"WEB-1","depends_on_id":"API-1","type":"blocks"}]}
+{"id":"CTX-1","title":"Context only root","status":"open","priority":2,"issue_type":"task","labels":["ctx:project-three"]}
+{"id":"CTX-2","title":"Context only blocked","status":"open","priority":2,"issue_type":"task","labels":["ctx:project-two"],"dependencies":[{"issue_id":"CTX-2","depends_on_id":"CTX-1","type":"blocks"}]}`)
 
 	var payload struct {
 		DataHash string `json:"data_hash"`
 		Flow     struct {
-			Labels        []string `json:"labels"`
-			Dependencies  []any    `json:"dependencies"`
+			Labels       []string `json:"labels"`
+			Dependencies []struct {
+				FromLabel string `json:"from_label"`
+				ToLabel   string `json:"to_label"`
+			} `json:"dependencies"`
 			Bottlenecks   []string `json:"bottleneck_labels"`
 			TotalCrossDep int      `json:"total_cross_label_deps"`
 		} `json:"flow"`
@@ -450,14 +454,32 @@ func TestRobotLabelFlowContract(t *testing.T) {
 	if payload.DataHash == "" {
 		t.Fatalf("label-flow missing data_hash")
 	}
-	if len(payload.Flow.Labels) < 2 {
-		t.Fatalf("label-flow expected >=2 labels, got %d", len(payload.Flow.Labels))
+	wantLabels := []string{"api", "myctx:keep", "web"}
+	if len(payload.Flow.Labels) != len(wantLabels) {
+		t.Fatalf("label-flow labels = %v, want %v", payload.Flow.Labels, wantLabels)
 	}
-	if len(payload.Flow.Dependencies) == 0 && payload.Flow.TotalCrossDep == 0 {
-		t.Fatalf("label-flow expected at least one cross-label dependency")
+	for i, want := range wantLabels {
+		if payload.Flow.Labels[i] != want {
+			t.Fatalf("label-flow labels = %v, want %v", payload.Flow.Labels, wantLabels)
+		}
 	}
-	// Bottlenecks can be empty on small graphs; just ensure field exists by reaching here.
-	_ = payload.Flow.Bottlenecks
+	if len(payload.Flow.Dependencies) != 2 || payload.Flow.TotalCrossDep != 2 {
+		t.Fatalf("label-flow dependencies = %v, total = %d; want two regular-label flows", payload.Flow.Dependencies, payload.Flow.TotalCrossDep)
+	}
+	for _, dep := range payload.Flow.Dependencies {
+		if dep.FromLabel == "ctx:project-one" || dep.ToLabel == "ctx:project-two" {
+			t.Fatalf("context label leaked into robot dependency: %+v", dep)
+		}
+	}
+	wantBottlenecks := []string{"api", "myctx:keep"}
+	if len(payload.Flow.Bottlenecks) != len(wantBottlenecks) {
+		t.Fatalf("label-flow bottlenecks = %v, want %v", payload.Flow.Bottlenecks, wantBottlenecks)
+	}
+	for i, want := range wantBottlenecks {
+		if payload.Flow.Bottlenecks[i] != want {
+			t.Fatalf("label-flow bottlenecks = %v, want %v", payload.Flow.Bottlenecks, wantBottlenecks)
+		}
+	}
 }
 
 func TestRobotLabelAttentionContract(t *testing.T) {
