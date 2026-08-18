@@ -1212,7 +1212,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		analysis:               graphStats,
 		beadsPath:              beadsPath,
 		watcher:                fileWatcher,
-		snapshotInitPending:    backgroundWorker != nil,
+		snapshotInitPending:    backgroundWorker != nil && len(issues) == 0,
 		backgroundWorker:       backgroundWorker,
 		instanceLock:           instLock,
 		list:                   l,
