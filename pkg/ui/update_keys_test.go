@@ -1,12 +1,66 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func TestUpdateInsightsHeatmapKey(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	if m.focused != focusInsights {
+		t.Fatalf("expected Insights focus, got %v", m.focused)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = updated.(Model)
+	if !m.insightsPanel.showHeatmap {
+		t.Fatal("expected m to enable the Insights heatmap")
+	}
+	if m.insightsPanel.focusedPanel != PanelPriority {
+		t.Fatalf("expected heatmap panel focus, got %v", m.insightsPanel.focusedPanel)
+	}
+	if !strings.Contains(m.View(), "Priority Heatmap") {
+		t.Fatal("expected rendered Insights view to contain the priority heatmap")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = updated.(Model)
+	if m.insightsPanel.showHeatmap {
+		t.Fatal("expected second m to disable the Insights heatmap")
+	}
+}
+
+func TestUpdateInsightsHeatmapKeyFromHelp(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m = updated.(Model)
+	if !m.showHelp || m.focusBeforeHelp != focusInsights {
+		t.Fatal("expected help overlay opened from Insights")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = updated.(Model)
+	if m.showHelp || m.focused != focusInsights {
+		t.Fatal("expected m to close help and restore Insights focus")
+	}
+	if !m.insightsPanel.showHeatmap {
+		t.Fatal("expected m in Insights help to enable the heatmap")
+	}
+}
 
 // Cover additional branches in Model.Update for quit/help/tab handling and update notices.
 func TestUpdateHelpQuitAndTabFocus(t *testing.T) {
