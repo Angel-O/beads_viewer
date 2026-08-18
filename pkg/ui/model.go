@@ -4750,21 +4750,22 @@ func (m Model) handleLabelPickerKeys(msg tea.KeyMsg) Model {
 
 // handleInsightsKeys handles keyboard input when insights panel is focused
 func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
+	heatmapFocused := m.insightsPanel.showHeatmap && m.insightsPanel.focusedPanel == PanelPriority
 	switch msg.String() {
 	case "esc":
-		if m.insightsPanel.showHeatmap && m.insightsPanel.IsHeatmapDrillDown() {
+		if heatmapFocused && m.insightsPanel.IsHeatmapDrillDown() {
 			m.insightsPanel.HeatmapBack()
 			return m
 		}
 		m.focused = focusList
 	case "j", "down":
-		if m.insightsPanel.showHeatmap {
+		if heatmapFocused {
 			m.insightsPanel.HeatmapMoveDown()
 		} else {
 			m.insightsPanel.MoveDown()
 		}
 	case "k", "up":
-		if m.insightsPanel.showHeatmap {
+		if heatmapFocused {
 			m.insightsPanel.HeatmapMoveUp()
 		} else {
 			m.insightsPanel.MoveUp()
@@ -4776,13 +4777,13 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 		// Scroll detail panel up
 		m.insightsPanel.ScrollDetailUp()
 	case "h", "left":
-		if m.insightsPanel.showHeatmap {
+		if heatmapFocused {
 			m.insightsPanel.HeatmapMoveLeft()
 		} else {
 			m.insightsPanel.PrevPanel()
 		}
 	case "l", "right", "tab":
-		if m.insightsPanel.showHeatmap && msg.String() != "tab" {
+		if heatmapFocused && msg.String() != "tab" {
 			m.insightsPanel.HeatmapMoveRight()
 		} else {
 			m.insightsPanel.NextPanel()
@@ -4793,6 +4794,16 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 	case "x":
 		// Toggle calculation details
 		m.insightsPanel.ToggleCalculation()
+		if m.insightsPanel.showCalculation {
+			if m.width > 120 {
+				m.statusMsg = "Insights calculation proof shown"
+			} else {
+				m.statusMsg = "Calculation proof enabled; widen terminal beyond 120 columns to view"
+			}
+		} else {
+			m.statusMsg = "Insights calculation proof hidden"
+		}
+		m.statusIsError = false
 	case "m":
 		// Toggle heatmap view (bv-95) - "m" for heatMap
 		m.insightsPanel.ToggleHeatmap()
@@ -4803,13 +4814,13 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 		}
 		m.statusIsError = false
 	case "enter":
-		if m.insightsPanel.showHeatmap && !m.insightsPanel.IsHeatmapDrillDown() {
+		if heatmapFocused && !m.insightsPanel.IsHeatmapDrillDown() {
 			m.insightsPanel.HeatmapEnter()
 			return m
 		}
 		// Jump to selected issue in list view
 		selectedID := m.insightsPanel.SelectedIssueID()
-		if m.insightsPanel.showHeatmap {
+		if heatmapFocused {
 			selectedID = m.insightsPanel.HeatmapSelectedIssueID()
 		}
 		if selectedID != "" {
@@ -5048,8 +5059,8 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 		m.showTutorial = true
 		m.tutorialModel.SetSize(m.width, m.height)
 		m.focused = focusTutorial
-	case "m":
-		// Let the Insights shortcut shown in this overlay take effect immediately.
+	case "e", "x", "m":
+		// Let Insights shortcuts shown in this overlay take effect immediately.
 		if m.focusBeforeHelp == focusInsights {
 			m.showHelp = false
 			m.helpScroll = 0

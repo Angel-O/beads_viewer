@@ -389,6 +389,10 @@ func (m *InsightsModel) ToggleExplanations() {
 
 func (m *InsightsModel) ToggleCalculation() {
 	m.showCalculation = !m.showCalculation
+	m.updateDetailContent()
+	if m.showCalculation {
+		m.detailVP.GotoBottom()
+	}
 }
 
 // ToggleHeatmap toggles between priority list and heatmap view (bv-95)

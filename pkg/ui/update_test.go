@@ -167,6 +167,58 @@ func TestInsightsCurrentPanelItemCount(t *testing.T) {
 	}
 }
 
+func TestInsightsToggleCalculationRefreshesCachedDetail(t *testing.T) {
+	stats := analysis.NewGraphStatsForTest(nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, nil)
+	ins := analysis.Insights{
+		Bottlenecks: []analysis.InsightItem{{ID: "B"}},
+		Stats:       stats,
+	}
+	m := NewInsightsModel(ins, map[string]*model.Issue{
+		"B": {ID: "B", Title: "Bottleneck", Status: model.StatusOpen},
+	}, DefaultTheme(nil))
+	m.SetSize(180, 50)
+	m.updateDetailContent()
+	withCalculation := m.detailContent
+	if withCalculation == "" {
+		t.Fatal("expected initial cached detail")
+	}
+
+	m.ToggleCalculation()
+	withoutCalculation := m.detailContent
+	if withoutCalculation == withCalculation {
+		t.Fatal("expected calculation toggle to refresh cached detail")
+	}
+
+	m.ToggleCalculation()
+	if m.detailContent != withCalculation {
+		t.Fatal("expected enabling calculation proof to restore cached detail")
+	}
+}
+
+func TestInsightsItemNavigationWhileHeatmapEnabled(t *testing.T) {
+	ins := analysis.Insights{
+		Cores: []analysis.InsightItem{{ID: "C1"}, {ID: "C2"}},
+	}
+	m := NewModel(nil, nil, "")
+	m.focused = focusInsights
+	m.insightsPanel = NewInsightsModel(ins, map[string]*model.Issue{
+		"C1": {ID: "C1", Title: "Core one"},
+		"C2": {ID: "C2", Title: "Core two"},
+	}, DefaultTheme(nil))
+	m.insightsPanel.focusedPanel = PanelCores
+	m.insightsPanel.showHeatmap = true
+
+	m = m.handleInsightsKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if selected := m.insightsPanel.SelectedIssueID(); selected != "C2" {
+		t.Fatalf("selected issue = %q, want C2", selected)
+	}
+
+	m = m.handleInsightsKeys(tea.KeyMsg{Type: tea.KeyUp})
+	if selected := m.insightsPanel.SelectedIssueID(); selected != "C1" {
+		t.Fatalf("selected issue = %q, want C1", selected)
+	}
+}
+
 func TestUpdateFileChangedReloadsSelection(t *testing.T) {
 	data := `{"id":"ONE","title":"One","status":"open"}`
 	tmp := t.TempDir()
