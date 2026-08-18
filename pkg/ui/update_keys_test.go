@@ -62,6 +62,35 @@ func TestUpdateInsightsHeatmapKeyFromHelp(t *testing.T) {
 	}
 }
 
+func TestUpdateInsightsCalculationKeyReportsNarrowLayout(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = updated.(Model)
+	if m.insightsPanel.showCalculation {
+		t.Fatal("expected x to hide calculation proof")
+	}
+	if !strings.Contains(m.statusMsg, "hidden") {
+		t.Fatalf("expected hidden status, got %q", m.statusMsg)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = updated.(Model)
+	if !m.insightsPanel.showCalculation {
+		t.Fatal("expected x from Insights help to enable calculation proof")
+	}
+	if !strings.Contains(m.statusMsg, "widen terminal") {
+		t.Fatalf("expected narrow-layout guidance, got %q", m.statusMsg)
+	}
+}
+
 // Cover additional branches in Model.Update for quit/help/tab handling and update notices.
 func TestUpdateHelpQuitAndTabFocus(t *testing.T) {
 	issues := []model.Issue{
