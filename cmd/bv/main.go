@@ -2475,6 +2475,7 @@ func main() {
 		loadStart := time.Now()
 		var issues []model.Issue
 		var beadsPath string
+		var semanticDatasetPath string
 		var workspaceInfo *workspace.LoadSummary
 		var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
 
@@ -2499,6 +2500,7 @@ func main() {
 			asOfResolved, _ = gitLoader.ResolveRevision(*asOf)
 			// No live reload for historical view
 			beadsPath = ""
+			semanticDatasetPath = semanticAsOfDatasetPath(cwd)
 			if !envRobot {
 				if asOfResolved != "" {
 					fmt.Fprintf(os.Stderr, "Loaded %d issues from %s (%s)\n", len(issues), *asOf, asOfResolved[:min(7, len(asOfResolved))])
@@ -2528,6 +2530,7 @@ func main() {
 			}
 			// No live reload for workspace mode (multiple files)
 			beadsPath = ""
+			semanticDatasetPath = *workspaceConfig
 
 			// Automatically ensure .bv/ is git-ignored at the workspace root
 			// (prefers .git/info/exclude; opt out with BV_NO_GITIGNORE=1).
@@ -2546,6 +2549,7 @@ func main() {
 			// Get the selected source file for live reload.
 			beadsDir, _ := loader.GetBeadsDir("")
 			beadsPath, _ = resolveSingleRepoWatchFile("")
+			semanticDatasetPath = beadsPath
 
 			// Automatically ensure .bv/ is git-ignored to prevent polluting git
 			// with search indexes, baselines, and other bv-specific files.
@@ -2640,12 +2644,19 @@ func main() {
 				os.Exit(1)
 			}
 
-			projectDir, err := os.Getwd()
+			hubStore := ""
+			if usesHubConfigStore {
+				hubStore, err = correlation.HubConfigStore(hubConfigPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			indexPath, err := search.SemanticIndexPath(semanticDatasetPath, hubStore, embedCfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			indexPath := search.DefaultIndexPath(projectDir, embedCfg)
 			idx, loaded, err := search.LoadOrNewVectorIndex(indexPath, embedder.Dim())
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -5451,6 +5462,7 @@ func main() {
 
 			// Launch TUI with historical issues (already loaded, no live reload)
 			m := ui.NewModel(issues, activeRecipe, "")
+			m.SetSemanticDatasetPath(semanticDatasetPath)
 			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
@@ -5547,6 +5559,7 @@ func main() {
 
 		// Initial Model with live reload support
 		m := ui.NewModel(issues, activeRecipe, beadsPath)
+		m.SetSemanticDatasetPath(semanticDatasetPath)
 		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 		defer m.Stop() // Clean up file watcher
 
@@ -8241,6 +8254,14 @@ var robotToonEncodeOptions = toon.DefaultEncodeOptions()
 var robotShowToonStats bool
 
 const robotContractVersion = "1.0.0"
+
+func semanticAsOfDatasetPath(cwd string) string {
+	root, _, err := hub.RepositoryIdentity(cwd)
+	if err != nil {
+		return cwd
+	}
+	return root
+}
 
 func resolveHistoryConfiguration(mode, configPath string) (string, string, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))

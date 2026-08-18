@@ -468,6 +468,7 @@ type Model struct {
 	analyzer      *analysis.Analyzer
 	analysis      *analysis.GraphStats
 	beadsPath     string // Path to beads.jsonl for reloading
+	semanticPath  string // Stable repository or dataset identity for semantic caching
 	hubConfigPath string
 	historyMode   correlation.HistoryMode
 	watcher       *watcher.Watcher // File watcher for live reload
@@ -1213,6 +1214,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		analyzer:               analyzer,
 		analysis:               graphStats,
 		beadsPath:              beadsPath,
+		semanticPath:           beadsPath,
 		watcher:                fileWatcher,
 		snapshotInitPending:    backgroundWorker != nil && len(issues) == 0,
 		backgroundWorker:       backgroundWorker,
@@ -1301,6 +1303,12 @@ func hubAutoRefreshEnabled(value string) bool {
 func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 	m.historyMode = mode
 	m.hubConfigPath = path
+}
+
+// SetSemanticDatasetPath sets the stable repository or dataset identity used
+// to select application-owned semantic cache storage.
+func (m *Model) SetSemanticDatasetPath(path string) {
+	m.semanticPath = path
 }
 
 // rebuildInsightsPanel refreshes the underlying insights view model from the
@@ -2075,7 +2083,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep semantic index current when enabled.
 		if m.semanticSearchEnabled && !m.semanticIndexBuilding {
 			m.semanticIndexBuilding = true
-			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync()))
+			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.hubConfigPath, m.historyMode))
 		}
 
 		// Reload sprints (bv-161)
@@ -2510,7 +2518,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep semantic index current when enabled.
 		if m.semanticSearchEnabled && !m.semanticIndexBuilding {
 			m.semanticIndexBuilding = true
-			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync()))
+			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.hubConfigPath, m.historyMode))
 		}
 
 		if cacheHit {
@@ -3024,7 +3032,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !m.semanticSearch.Snapshot().Ready && !m.semanticIndexBuilding {
 						m.semanticIndexBuilding = true
 						m.statusMsg = "Semantic search: building index…"
-						cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync()))
+						cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.hubConfigPath, m.historyMode))
 					} else if !m.semanticSearch.Snapshot().Ready && m.semanticIndexBuilding {
 						m.statusMsg = "Semantic search: indexing…"
 					} else {
