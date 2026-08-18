@@ -395,7 +395,10 @@ func (m *InsightsModel) ToggleCalculation() {
 func (m *InsightsModel) ToggleHeatmap() {
 	m.showHeatmap = !m.showHeatmap
 	if m.showHeatmap {
+		m.focusedPanel = PanelPriority
 		m.rebuildHeatmapGrid() // Refresh grid data when entering heatmap view
+	} else {
+		m.HeatmapBack()
 	}
 }
 
@@ -1371,7 +1374,7 @@ func (m *InsightsModel) renderHeatmapPanel(width, height int, t Theme) string {
 	sb.WriteString(strings.TrimRight(titleStyle.Render("📊 Priority Heatmap"), "\n\r"))
 	sb.WriteString("  ")
 	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext).Italic(true)
-	sb.WriteString(strings.TrimRight(subtitleStyle.Render("j/k/h/l=navigate Enter=drill H=toggle"), "\n\r"))
+	sb.WriteString(strings.TrimRight(subtitleStyle.Render("j/k/h/l=navigate Enter=drill m=toggle"), "\n\r"))
 	sb.WriteString("\n")
 
 	if m.insights.Stats == nil || len(m.topPicks) == 0 {

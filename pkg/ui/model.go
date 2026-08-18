@@ -4752,11 +4752,23 @@ func (m Model) handleLabelPickerKeys(msg tea.KeyMsg) Model {
 func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 	switch msg.String() {
 	case "esc":
+		if m.insightsPanel.showHeatmap && m.insightsPanel.IsHeatmapDrillDown() {
+			m.insightsPanel.HeatmapBack()
+			return m
+		}
 		m.focused = focusList
 	case "j", "down":
-		m.insightsPanel.MoveDown()
+		if m.insightsPanel.showHeatmap {
+			m.insightsPanel.HeatmapMoveDown()
+		} else {
+			m.insightsPanel.MoveDown()
+		}
 	case "k", "up":
-		m.insightsPanel.MoveUp()
+		if m.insightsPanel.showHeatmap {
+			m.insightsPanel.HeatmapMoveUp()
+		} else {
+			m.insightsPanel.MoveUp()
+		}
 	case "ctrl+j":
 		// Scroll detail panel down
 		m.insightsPanel.ScrollDetailDown()
@@ -4764,9 +4776,17 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 		// Scroll detail panel up
 		m.insightsPanel.ScrollDetailUp()
 	case "h", "left":
-		m.insightsPanel.PrevPanel()
+		if m.insightsPanel.showHeatmap {
+			m.insightsPanel.HeatmapMoveLeft()
+		} else {
+			m.insightsPanel.PrevPanel()
+		}
 	case "l", "right", "tab":
-		m.insightsPanel.NextPanel()
+		if m.insightsPanel.showHeatmap && msg.String() != "tab" {
+			m.insightsPanel.HeatmapMoveRight()
+		} else {
+			m.insightsPanel.NextPanel()
+		}
 	case "e":
 		// Toggle explanations
 		m.insightsPanel.ToggleExplanations()
@@ -4776,9 +4796,22 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 	case "m":
 		// Toggle heatmap view (bv-95) - "m" for heatMap
 		m.insightsPanel.ToggleHeatmap()
+		if m.insightsPanel.showHeatmap {
+			m.statusMsg = "Insights heatmap enabled: use h/j/k/l to select a cell"
+		} else {
+			m.statusMsg = "Insights priority list enabled"
+		}
+		m.statusIsError = false
 	case "enter":
+		if m.insightsPanel.showHeatmap && !m.insightsPanel.IsHeatmapDrillDown() {
+			m.insightsPanel.HeatmapEnter()
+			return m
+		}
 		// Jump to selected issue in list view
 		selectedID := m.insightsPanel.SelectedIssueID()
+		if m.insightsPanel.showHeatmap {
+			selectedID = m.insightsPanel.HeatmapSelectedIssueID()
+		}
 		if selectedID != "" {
 			for i, item := range m.list.Items() {
 				if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selectedID {
@@ -5015,6 +5048,17 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 		m.showTutorial = true
 		m.tutorialModel.SetSize(m.width, m.height)
 		m.focused = focusTutorial
+	case "m":
+		// Let the Insights shortcut shown in this overlay take effect immediately.
+		if m.focusBeforeHelp == focusInsights {
+			m.showHelp = false
+			m.helpScroll = 0
+			m.focused = focusInsights
+			return m.handleInsightsKeys(msg)
+		}
+		m.showHelp = false
+		m.helpScroll = 0
+		m.focused = m.restoreFocusFromHelp()
 	default:
 		// Any other key dismisses help and restores previous focus
 		m.showHelp = false
