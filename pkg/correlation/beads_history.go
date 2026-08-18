@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -12,16 +13,10 @@ import (
 )
 
 type beadsHistorySnapshot struct {
-	CommitHash string `json:"CommitHash"`
-	Committer  string `json:"Committer"`
-	CommitDate string `json:"CommitDate"`
-	Issue      struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Status    string `json:"status"`
-		CreatedAt string `json:"created_at"`
-		CreatedBy string `json:"created_by"`
-	} `json:"Issue"`
+	CommitHash string          `json:"CommitHash"`
+	Committer  string          `json:"Committer"`
+	CommitDate string          `json:"CommitDate"`
+	Issue      json.RawMessage `json:"Issue"`
 }
 
 type beadsIssue struct {
@@ -74,31 +69,55 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 		if err := json.Unmarshal(out, &snapshots); err != nil {
 			return nil, fmt.Errorf("parsing Beads lifecycle for %q from %q: %w", bead.ID, store, err)
 		}
-		sort.SliceStable(snapshots, func(i, j int) bool {
-			return snapshots[i].CommitDate < snapshots[j].CommitDate
-		})
-		previousStatus := ""
-		for i, snapshot := range snapshots {
-			timestamp, err := time.Parse(time.RFC3339, snapshot.CommitDate)
-			if err != nil {
-				return nil, fmt.Errorf("parsing Beads lifecycle timestamp %q for %q: %w", snapshot.CommitDate, bead.ID, err)
-			}
-			eventType := lifecycleEventType(previousStatus, snapshot.Issue.Status, i == 0)
-			previousStatus = snapshot.Issue.Status
-			if eventType == "" || !withinHistoryRange(timestamp, opts) {
-				continue
-			}
-			events = append(events, BeadEvent{
-				BeadID:    bead.ID,
-				EventType: eventType,
-				Timestamp: timestamp,
-				CommitSHA: snapshot.CommitHash,
-				CommitMsg: fmt.Sprintf("Beads status: %s", snapshot.Issue.Status),
-				Author:    snapshot.Committer,
-			})
+		beadEvents, err := lifecycleEventsFromSnapshots(bead.ID, snapshots, opts)
+		if err != nil {
+			return nil, err
 		}
+		events = append(events, beadEvents...)
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Timestamp.Before(events[j].Timestamp) })
+	return events, nil
+}
+
+func lifecycleEventsFromSnapshots(beadID string, snapshots []beadsHistorySnapshot, opts CorrelatorOptions) ([]BeadEvent, error) {
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		return snapshots[i].CommitDate < snapshots[j].CommitDate
+	})
+
+	var events []BeadEvent
+	var previousIssue any
+	previousStatus := ""
+	for _, snapshot := range snapshots {
+		timestamp, err := time.Parse(time.RFC3339, snapshot.CommitDate)
+		if err != nil {
+			return nil, fmt.Errorf("parsing Beads lifecycle timestamp %q for %q: %w", snapshot.CommitDate, beadID, err)
+		}
+
+		var issue map[string]any
+		if err := json.Unmarshal(snapshot.Issue, &issue); err != nil {
+			return nil, fmt.Errorf("parsing Beads lifecycle issue snapshot for %q: %w", beadID, err)
+		}
+		status, _ := issue["status"].(string)
+		first := previousIssue == nil
+		if !first && reflect.DeepEqual(previousIssue, issue) {
+			continue
+		}
+
+		eventType := lifecycleEventType(previousStatus, status, first)
+		previousIssue = issue
+		previousStatus = status
+		if eventType == "" || !withinHistoryRange(timestamp, opts) {
+			continue
+		}
+		events = append(events, BeadEvent{
+			BeadID:    beadID,
+			EventType: eventType,
+			Timestamp: timestamp,
+			CommitSHA: snapshot.CommitHash,
+			CommitMsg: fmt.Sprintf("Beads status: %s", status),
+			Author:    snapshot.Committer,
+		})
+	}
 	return events, nil
 }
 

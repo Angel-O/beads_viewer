@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	json "github.com/goccy/go-json"
 )
 
 func TestProbeExternalRepositoryClassifiesUnavailablePaths(t *testing.T) {
@@ -165,6 +167,65 @@ func TestLifecycleEventType(t *testing.T) {
 				t.Fatalf("lifecycleEventType() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestLifecycleEventsFromSnapshotsSkipsUnchangedRows(t *testing.T) {
+	snapshots := []beadsHistorySnapshot{
+		{
+			CommitHash: "unrelated-later",
+			Committer:  "root",
+			CommitDate: "2026-08-18T00:02:00Z",
+			Issue:      json.RawMessage(`{"id":"global-1","title":"Updated","status":"open","priority":1,"updated_at":"2026-08-18T00:01:00Z"}`),
+		},
+		{
+			CommitHash: "created",
+			Committer:  "root",
+			CommitDate: "2026-08-18T00:00:00Z",
+			Issue:      json.RawMessage(`{"id":"global-1","title":"Original","status":"open","priority":2,"updated_at":"2026-08-18T00:00:00Z"}`),
+		},
+		{
+			CommitHash: "modified",
+			Committer:  "root",
+			CommitDate: "2026-08-18T00:01:00Z",
+			Issue:      json.RawMessage(`{"id":"global-1","title":"Updated","status":"open","priority":1,"updated_at":"2026-08-18T00:01:00Z"}`),
+		},
+	}
+
+	events, err := lifecycleEventsFromSnapshots("global-1", snapshots, CorrelatorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2: %#v", len(events), events)
+	}
+	if events[0].EventType != EventCreated || events[0].CommitSHA != "created" {
+		t.Fatalf("first event = %#v, want created snapshot", events[0])
+	}
+	if events[1].EventType != EventModified || events[1].CommitSHA != "modified" {
+		t.Fatalf("second event = %#v, want genuine modification", events[1])
+	}
+}
+
+func TestLifecycleEventsFromSnapshotsPreservesStatusTransitions(t *testing.T) {
+	snapshots := []beadsHistorySnapshot{
+		{CommitHash: "created", CommitDate: "2026-08-18T00:00:00Z", Issue: json.RawMessage(`{"id":"global-1","status":"open"}`)},
+		{CommitHash: "claimed", CommitDate: "2026-08-18T00:01:00Z", Issue: json.RawMessage(`{"id":"global-1","status":"in_progress"}`)},
+		{CommitHash: "closed", CommitDate: "2026-08-18T00:02:00Z", Issue: json.RawMessage(`{"id":"global-1","status":"closed"}`)},
+	}
+
+	events, err := lifecycleEventsFromSnapshots("global-1", snapshots, CorrelatorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []EventType{EventCreated, EventClaimed, EventClosed}
+	if len(events) != len(want) {
+		t.Fatalf("events = %d, want %d", len(events), len(want))
+	}
+	for i, eventType := range want {
+		if events[i].EventType != eventType {
+			t.Fatalf("event %d type = %q, want %q", i, events[i].EventType, eventType)
+		}
 	}
 }
 
