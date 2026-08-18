@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1024,6 +1025,137 @@ func TestNewModel_HubAndLocalWatcherModes(t *testing.T) {
 			t.Fatalf("Hub mode watcher selection: worker=%v watcher=%v", model.backgroundWorker, model.watcher)
 		}
 	})
+}
+
+type startupSnapshotProbe struct {
+	Model
+	ready chan struct{}
+}
+
+func (m startupSnapshotProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.Model.Update(msg)
+	m.Model = updated.(Model)
+	if !m.snapshotInitPending && m.snapshot != nil {
+		select {
+		case <-m.ready:
+		default:
+			close(m.ready)
+		}
+		return m, tea.Quit
+	}
+	return m, cmd
+}
+
+func TestModelInitialHubSnapshotDoesNotRequireInput(t *testing.T) {
+	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	signalPath := filepath.Join(directory, "viewer-generation")
+	if err := os.WriteFile(issuesPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSignal(t, signalPath, "initial")
+
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
+	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	probe := startupSnapshotProbe{
+		Model: NewModel([]model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath),
+		ready: make(chan struct{}),
+	}
+	defer probe.Model.Stop()
+	if probe.snapshotInitPending || strings.Contains(probe.View(), "Loading beads") {
+		t.Fatal("Hub auto-refresh hid already-loaded data behind the initial snapshot")
+	}
+
+	var output bytes.Buffer
+	program := tea.NewProgram(probe, tea.WithInput(nil), tea.WithOutput(&output), tea.WithoutSignalHandler())
+	done := make(chan error, 1)
+	go func() {
+		_, err := program.Run()
+		done <- err
+	}()
+
+	select {
+	case <-probe.ready:
+	case <-time.After(2 * time.Second):
+		program.Kill()
+		<-done
+		t.Fatal("initial Hub snapshot did not reach Update without user input")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Bubble Tea program failed: %v", err)
+	}
+	if !strings.Contains(output.String(), "One") {
+		t.Fatal("initial Hub board was not rendered without user input")
+	}
+}
+
+func TestModelEmptyInitialHubSnapshotLeavesLoadingWithoutInput(t *testing.T) {
+	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	signalPath := filepath.Join(directory, "viewer-generation")
+	if err := os.WriteFile(issuesPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSignal(t, signalPath, "initial")
+
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
+	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	probe := startupSnapshotProbe{
+		Model: NewModel(nil, nil, issuesPath),
+		ready: make(chan struct{}),
+	}
+	defer probe.Model.Stop()
+	if !probe.snapshotInitPending || !strings.Contains(probe.View(), "Loading beads") {
+		t.Fatal("empty background startup did not enter the loading state")
+	}
+
+	var output bytes.Buffer
+	program := tea.NewProgram(probe, tea.WithInput(nil), tea.WithOutput(&output), tea.WithoutSignalHandler())
+	done := make(chan error, 1)
+	go func() {
+		_, err := program.Run()
+		done <- err
+	}()
+
+	select {
+	case <-probe.ready:
+	case <-time.After(2 * time.Second):
+		program.Kill()
+		<-done
+		t.Fatal("empty Hub startup remained loading without user input")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Bubble Tea program failed: %v", err)
+	}
+	if !strings.Contains(output.String(), "One") {
+		t.Fatal("empty Hub startup did not render its first board without user input")
+	}
+}
+
+func TestModelHubAutoRefreshDisabledShowsLoadedDataImmediately(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	signalPath := filepath.Join(directory, "viewer-generation")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
+	t.Setenv("BV_HUB_AUTO_REFRESH", "0")
+	m := NewModel([]model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath)
+	defer m.Stop()
+
+	if m.backgroundWorker != nil || m.snapshotInitPending {
+		t.Fatalf("disabled Hub auto-refresh entered background loading: worker=%v pending=%v", m.backgroundWorker, m.snapshotInitPending)
+	}
+	if view := m.View(); strings.Contains(view, "Loading beads") {
+		t.Fatal("disabled Hub auto-refresh hid already-loaded data behind loading screen")
+	}
 }
 
 func installCountingReloadFakeBD(t *testing.T, root, payload string) (string, string) {
