@@ -2,9 +2,17 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // =============================================================================
@@ -620,6 +628,179 @@ func TestSemanticIndexReadyMsgWithError(t *testing.T) {
 	if msg.Error != testErr {
 		t.Errorf("Error = %v, want %v", msg.Error, testErr)
 	}
+}
+
+func TestBuildSemanticIndexCmdUsesHubPrivateStorage(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	dataset := writeUISemanticDataset(t, source)
+	hubParent := filepath.Join(root, "hub")
+	store := filepath.Join(hubParent, ".beads")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "hub.yaml")
+	config, err := json.Marshal(map[string]any{
+		"version":      1,
+		"store":        store,
+		"ledger":       filepath.Join(hubParent, "correlations.jsonl"),
+		"repositories": map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	message := BuildSemanticIndexCmd([]model.Issue{{ID: "hub-1", Title: "Hub issue", Status: model.StatusOpen}}, dataset, configPath, correlation.HistoryModeExternal)()
+	ready, ok := message.(SemanticIndexReadyMsg)
+	if !ok {
+		t.Fatalf("BuildSemanticIndexCmd() returned %T", message)
+	}
+	if ready.Error != nil {
+		t.Fatal(ready.Error)
+	}
+	want := filepath.Join(hubParent, "semantic", "index-hash-384.bvvi")
+	if ready.IndexPath != want {
+		t.Fatalf("IndexPath = %q, want %q", ready.IndexPath, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("Hub semantic index was not saved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source, ".bv")); !os.IsNotExist(err) {
+		t.Fatalf("semantic build touched source repository: %v", err)
+	}
+}
+
+func TestBuildSemanticIndexCmdGitModeDoesNotUseHubStorage(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	dataset := writeUISemanticDataset(t, source)
+	hubParent := filepath.Join(root, "hub")
+	store := filepath.Join(hubParent, ".beads")
+	configPath := filepath.Join(root, "hub.yaml")
+	config, err := json.Marshal(map[string]any{
+		"version":      1,
+		"store":        store,
+		"ledger":       filepath.Join(hubParent, "correlations.jsonl"),
+		"repositories": map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(root, "cache")
+	t.Setenv("BV_CACHE_DIR", cache)
+
+	message := BuildSemanticIndexCmd([]model.Issue{{ID: "git-1", Title: "Git issue", Status: model.StatusOpen}}, dataset, configPath, correlation.HistoryModeGit)()
+	ready, ok := message.(SemanticIndexReadyMsg)
+	if !ok {
+		t.Fatalf("BuildSemanticIndexCmd() returned %T", message)
+	}
+	if ready.Error != nil {
+		t.Fatal(ready.Error)
+	}
+	if !strings.HasPrefix(ready.IndexPath, filepath.Join(cache, "semantic")+string(filepath.Separator)) {
+		t.Fatalf("Git-mode index path %q is outside local cache %q", ready.IndexPath, cache)
+	}
+	if _, err := os.Stat(filepath.Join(hubParent, "semantic")); !os.IsNotExist(err) {
+		t.Fatalf("Git mode wrote to Hub semantic storage: %v", err)
+	}
+}
+
+func TestCtrlSSemanticIndexLeavesLocalRepositoryUntouched(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runUISemanticGit(t, repository, "init", "-b", "main")
+	dataset := writeUISemanticDataset(t, repository)
+	cache := filepath.Join(root, "cache")
+	t.Setenv("BV_CACHE_DIR", cache)
+	t.Setenv(search.EnvSemanticEmbedder, "hash")
+	t.Setenv(search.EnvSemanticDim, "384")
+
+	m := NewModel([]model.Issue{{ID: "local-1", Title: "Local issue", Status: model.StatusOpen}}, nil, dataset)
+	before := uiSemanticGitStatus(t, repository)
+	_, command := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if command == nil {
+		t.Fatal("Ctrl+S did not schedule a semantic index build")
+	}
+	messages := runUISemanticCommands(command)
+	var ready *SemanticIndexReadyMsg
+	for _, message := range messages {
+		if value, ok := message.(SemanticIndexReadyMsg); ok {
+			value := value
+			ready = &value
+		}
+	}
+	if ready == nil {
+		t.Fatalf("Ctrl+S command returned messages %T, want SemanticIndexReadyMsg", messages)
+	}
+	if ready.Error != nil {
+		t.Fatal(ready.Error)
+	}
+	if !strings.HasPrefix(ready.IndexPath, filepath.Join(cache, "semantic")+string(filepath.Separator)) {
+		t.Fatalf("Ctrl+S index path %q is outside cache %q", ready.IndexPath, cache)
+	}
+	if _, err := os.Stat(ready.IndexPath); err != nil {
+		t.Fatalf("Ctrl+S semantic index was not saved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repository, ".bv")); !os.IsNotExist(err) {
+		t.Fatalf("Ctrl+S created repository .bv artifacts: %v", err)
+	}
+	if after := uiSemanticGitStatus(t, repository); after != before {
+		t.Fatalf("Ctrl+S changed repository status:\nbefore: %q\nafter:  %q", before, after)
+	}
+}
+
+func writeUISemanticDataset(t *testing.T, root string) string {
+	t.Helper()
+	directory := filepath.Join(root, ".beads")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "issues.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func runUISemanticGit(t *testing.T, directory string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func uiSemanticGitStatus(t *testing.T, repository string) string {
+	t.Helper()
+	return runUISemanticGit(t, repository, "status", "--porcelain", "--untracked-files=all")
+}
+
+func runUISemanticCommands(command tea.Cmd) []tea.Msg {
+	if command == nil {
+		return nil
+	}
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{message}
+	}
+	messages := make([]tea.Msg, 0, len(batch))
+	for _, child := range batch {
+		messages = append(messages, runUISemanticCommands(child)...)
+	}
+	return messages
 }
 
 // =============================================================================

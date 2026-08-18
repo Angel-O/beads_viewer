@@ -55,6 +55,14 @@ func TestSignalChangeAtomicallyAdvancesGeneration(t *testing.T) {
 	}
 }
 
+func TestSemanticCacheDirLivesBesideStore(t *testing.T) {
+	parent := t.TempDir()
+	paths := Paths{Store: filepath.Join(parent, ".beads")}
+	if got, want := SemanticCacheDir(paths), filepath.Join(parent, semanticCacheDirName); got != want {
+		t.Fatalf("SemanticCacheDir() = %q, want %q", got, want)
+	}
+}
+
 func TestDefaultPathsRequiresHOME(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows resolves the home directory from USERPROFILE")

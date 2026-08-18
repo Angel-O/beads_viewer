@@ -24,6 +24,8 @@ const ConfigVersion = 1
 
 const changeSignalName = "viewer-generation"
 
+const semanticCacheDirName = "semantic"
+
 // Paths identifies the fixed files and directories used by a Hub.
 type Paths struct {
 	Store  string
@@ -76,6 +78,12 @@ func DefaultPaths() (Paths, error) {
 // successful Hub mutations. It lives beside the store, outside repositories.
 func ChangeSignalPath(paths Paths) string {
 	return filepath.Join(filepath.Dir(paths.Store), changeSignalName)
+}
+
+// SemanticCacheDir returns the application-owned directory for the Hub's
+// generated semantic search indexes. It lives beside the private Hub store.
+func SemanticCacheDir(paths Paths) string {
+	return filepath.Join(filepath.Dir(paths.Store), semanticCacheDirName)
 }
 
 // SignalChange atomically advances the Viewer change signal after a successful
@@ -319,6 +327,24 @@ func DurableRepositoryRoot(dir string) (string, error) {
 		}
 	}
 	return currentRoot, nil
+}
+
+// RepositoryIdentity returns the canonical worktree root and Git common
+// directory for the repository containing dir.
+func RepositoryIdentity(dir string) (string, string, error) {
+	root, err := gitOutput(dir, "rev-parse", "--show-toplevel")
+	if err != nil || root == "" {
+		return "", "", errors.New("cannot resolve the current Git repository root")
+	}
+	root, err = canonicalDirectory(root)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot canonicalize the current Git repository root: %w", err)
+	}
+	common, err := gitCommonDirectory(root)
+	if err != nil {
+		return "", "", err
+	}
+	return root, common, nil
 }
 
 // Register ensures the Hub config and registers the repository at dir.

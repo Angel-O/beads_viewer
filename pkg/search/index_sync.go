@@ -2,24 +2,103 @@ package search
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 )
 
 // DefaultIndexPath returns the default semantic index path under the given project directory.
 // The filename is keyed by provider+dim to avoid mixing incompatible embeddings.
 func DefaultIndexPath(projectDir string, cfg EmbeddingConfig) string {
+	return indexPath(filepath.Join(projectDir, ".bv", "semantic"), cfg)
+}
+
+func indexPath(directory string, cfg EmbeddingConfig) string {
 	cfg = cfg.Normalized()
 	provider := cfg.Provider
 	if provider == "" {
 		provider = ProviderHash
 	}
 	safeProvider := strings.NewReplacer("/", "_", "\\", "_", " ", "_").Replace(string(provider))
-	return filepath.Join(projectDir, ".bv", "semantic", fmt.Sprintf("index-%s-%d.bvvi", safeProvider, cfg.Dim))
+	return filepath.Join(directory, fmt.Sprintf("index-%s-%d.bvvi", safeProvider, cfg.Dim))
+}
+
+// SemanticIndexPath returns an application-owned semantic index path for a
+// loaded dataset. Hub indexes live beside the Hub store. Local indexes live in
+// the user cache under a key derived from the canonical repository or dataset.
+func SemanticIndexPath(datasetPath, hubStore string, cfg EmbeddingConfig) (string, error) {
+	if hubStore != "" {
+		store, err := hub.ResolvePath(hubStore, "")
+		if err != nil {
+			return "", fmt.Errorf("resolving Hub store for semantic index: %w", err)
+		}
+		return indexPath(hub.SemanticCacheDir(hub.Paths{Store: store}), cfg), nil
+	}
+
+	key, err := semanticDatasetKey(datasetPath)
+	if err != nil {
+		return "", err
+	}
+	base := os.Getenv("BV_CACHE_DIR")
+	if base == "" {
+		base, err = os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("resolving user cache directory: %w", err)
+		}
+		base = filepath.Join(base, "bv")
+	}
+	return indexPath(filepath.Join(base, "semantic", key), cfg), nil
+}
+
+func semanticDatasetKey(datasetPath string) (string, error) {
+	if strings.TrimSpace(datasetPath) == "" {
+		var err error
+		datasetPath, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolving semantic dataset working directory: %w", err)
+		}
+	}
+	absolute, err := filepath.Abs(datasetPath)
+	if err != nil {
+		return "", fmt.Errorf("resolving semantic dataset path: %w", err)
+	}
+
+	identity := ""
+	repositoryDirectory := filepath.Dir(absolute)
+	if info, statErr := os.Stat(absolute); statErr == nil && info.IsDir() {
+		repositoryDirectory = absolute
+	}
+	if root, repository, repositoryErr := hub.RepositoryIdentity(repositoryDirectory); repositoryErr == nil {
+		canonical := absolute
+		if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
+			canonical = resolved
+		}
+		relative, relativeErr := filepath.Rel(root, canonical)
+		if relativeErr != nil {
+			return "", fmt.Errorf("resolving semantic dataset within repository: %w", relativeErr)
+		}
+		identity = "repository\x00" + repository + "\x00" + filepath.ToSlash(relative)
+	} else {
+		canonical, canonicalErr := filepath.EvalSymlinks(absolute)
+		if canonicalErr != nil {
+			return "", fmt.Errorf("canonicalizing semantic dataset path: %w", canonicalErr)
+		}
+		canonical, err = filepath.Abs(canonical)
+		if err != nil {
+			return "", fmt.Errorf("resolving canonical semantic dataset path: %w", err)
+		}
+		identity = "dataset\x00" + canonical
+	}
+
+	digest := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(digest[:]), nil
 }
 
 type IndexSyncStats struct {
