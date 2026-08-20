@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -58,6 +59,115 @@ type ResolvedConfig struct {
 type Registration struct {
 	Context string
 	Root    string
+	Changed bool
+}
+
+// LoadRepositoryCatalog loads only Hub configuration and builds repository
+// metadata from the complete issue set. It never opens the correlation ledger.
+func LoadRepositoryCatalog(path string, issues []model.Issue) (model.RepositoryCatalog, error) {
+	config, err := Resolve(path)
+	if err != nil {
+		return nil, err
+	}
+
+	counts := make(map[string]int, len(config.Repositories))
+	for _, issue := range issues {
+		seen := make(map[string]bool)
+		for _, label := range issue.Labels {
+			if _, registered := config.Repositories[label]; registered && !seen[label] {
+				counts[label]++
+				seen[label] = true
+			}
+		}
+	}
+
+	names := shortestUniqueRepositoryNames(config.Repositories)
+	catalog := make(model.RepositoryCatalog, 0, len(config.Repositories))
+	for _, context := range sortedRepositoryKeys(config.Repositories) {
+		path := config.Repositories[context].Path
+		catalog = append(catalog, model.RepositoryCatalogEntry{
+			ID:        context,
+			Name:      names[context],
+			Path:      path,
+			Detail:    path,
+			BeadCount: counts[context],
+			Kind:      model.RepositoryIdentityHubContext,
+		})
+	}
+	model.SortRepositoryCatalog(catalog)
+	return catalog, nil
+}
+
+func shortestUniqueRepositoryNames(repositories map[string]Repository) map[string]string {
+	components := make(map[string][]string, len(repositories))
+	groups := make(map[string][]string)
+	for context, repository := range repositories {
+		cleaned := filepath.Clean(repository.Path)
+		volume := filepath.VolumeName(cleaned)
+		trimmed := strings.TrimPrefix(cleaned, volume)
+		trimmed = strings.Trim(trimmed, string(filepath.Separator))
+		parts := strings.FieldsFunc(trimmed, func(r rune) bool { return r == '/' || r == '\\' })
+		if volume != "" {
+			volumeParts := strings.FieldsFunc(volume, func(r rune) bool { return r == '/' || r == '\\' })
+			parts = append(volumeParts, parts...)
+		}
+		if len(parts) == 0 {
+			parts = []string{cleaned}
+		}
+		components[context] = parts
+		base := parts[len(parts)-1]
+		groups[base] = append(groups[base], context)
+	}
+
+	names := make(map[string]string, len(repositories))
+	for base, contexts := range groups {
+		sort.Strings(contexts)
+		if len(contexts) == 1 {
+			names[contexts[0]] = base
+			continue
+		}
+		for _, context := range contexts {
+			parts := components[context]
+			name := strings.Join(parts, "/")
+			for depth := 2; depth <= len(parts); depth++ {
+				candidate := strings.Join(parts[len(parts)-depth:], "/")
+				unique := true
+				for _, other := range contexts {
+					if other == context {
+						continue
+					}
+					otherParts := components[other]
+					otherDepth := depth
+					if otherDepth > len(otherParts) {
+						otherDepth = len(otherParts)
+					}
+					if candidate == strings.Join(otherParts[len(otherParts)-otherDepth:], "/") {
+						unique = false
+						break
+					}
+				}
+				if unique {
+					name = candidate
+					break
+				}
+			}
+			if duplicateRepositoryPath(context, contexts, repositories) {
+				name += " (" + context + ")"
+			}
+			names[context] = name
+		}
+	}
+	return names
+}
+
+func duplicateRepositoryPath(context string, contexts []string, repositories map[string]Repository) bool {
+	path := filepath.Clean(repositories[context].Path)
+	for _, other := range contexts {
+		if other != context && filepath.Clean(repositories[other].Path) == path {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultPaths returns the Hub paths rooted at the current user's home directory.
@@ -361,11 +471,13 @@ func Register(paths Paths, dir string) (Registration, error) {
 	if err != nil {
 		return Registration{}, err
 	}
+	previous, exists := config.Repositories[context]
+	changed := !exists || previous.Path != root
 	config.Repositories[context] = Repository{Path: root}
 	if err := writeConfig(paths.Config, config); err != nil {
 		return Registration{}, err
 	}
-	return Registration{Context: context, Root: root}, nil
+	return Registration{Context: context, Root: root, Changed: changed}, nil
 }
 
 // Configure registers the current repository when eligible and otherwise only

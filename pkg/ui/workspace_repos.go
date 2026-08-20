@@ -42,6 +42,27 @@ func normalizeRepoPrefixes(prefixes []string) []string {
 	return out
 }
 
+func workspaceRepositoryCatalog(prefixes []string, issues []model.Issue) model.RepositoryCatalog {
+	counts := make(map[string]int, len(prefixes))
+	for _, issue := range issues {
+		if key := issueRepoKey(issue); key != "" {
+			counts[key]++
+		}
+	}
+	catalog := make(model.RepositoryCatalog, 0, len(prefixes))
+	for _, key := range normalizeRepoPrefixes(prefixes) {
+		catalog = append(catalog, model.RepositoryCatalogEntry{
+			ID:        key,
+			Name:      key,
+			Detail:    key,
+			BeadCount: counts[key],
+			Kind:      model.RepositoryIdentityWorkspacePrefix,
+		})
+	}
+	model.SortRepositoryCatalog(catalog)
+	return catalog
+}
+
 func issueRepoKey(issue model.Issue) string {
 	if key := normalizeRepoKey(issue.SourceRepo); key != "" {
 		return key

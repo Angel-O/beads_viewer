@@ -5463,6 +5463,7 @@ func main() {
 			// Launch TUI with historical issues (already loaded, no live reload)
 			m := ui.NewModel(issues, activeRecipe, "")
 			m.SetSemanticDatasetPath(semanticDatasetPath)
+			m.SetRepositoryCatalogIssues(issues)
 			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
@@ -5530,6 +5531,7 @@ func main() {
 			os.Exit(0)
 		}
 
+		catalogIssues := issues
 		// Apply recipe filters and sorting if specified
 		if activeRecipe != nil {
 			issues = applyRecipeFilters(issues, activeRecipe)
@@ -5560,6 +5562,7 @@ func main() {
 		// Initial Model with live reload support
 		m := ui.NewModel(issues, activeRecipe, beadsPath)
 		m.SetSemanticDatasetPath(semanticDatasetPath)
+		m.SetRepositoryCatalogIssues(catalogIssues)
 		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 		defer m.Stop() // Clean up file watcher
 

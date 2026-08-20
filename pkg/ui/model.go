@@ -462,17 +462,20 @@ func cloneIssuesForAsync(issues []model.Issue) []model.Issue {
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues        []model.Issue
-	pooledIssues  []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
-	issueMap      map[string]*model.Issue
-	analyzer      *analysis.Analyzer
-	analysis      *analysis.GraphStats
-	beadsPath     string // Path to beads.jsonl for reloading
-	semanticPath  string // Stable repository or dataset identity for semantic caching
-	hubConfigPath string
-	historyMode   correlation.HistoryMode
-	watcher       *watcher.Watcher // File watcher for live reload
-	instanceLock  *instance.Lock   // Multi-instance coordination lock
+	issues                  []model.Issue
+	pooledIssues            []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
+	issueMap                map[string]*model.Issue
+	analyzer                *analysis.Analyzer
+	analysis                *analysis.GraphStats
+	beadsPath               string // Path to beads.jsonl for reloading
+	semanticPath            string // Stable repository or dataset identity for semantic caching
+	hubConfigPath           string
+	historyMode             correlation.HistoryMode
+	repositoryCatalog       model.RepositoryCatalog
+	repositoryCatalogIssues []model.Issue
+	catalogGeneration       uint64
+	watcher                 *watcher.Watcher // File watcher for live reload
+	instanceLock            *instance.Lock   // Multi-instance coordination lock
 
 	// Background Worker (Phase 2 architecture - bv-m7v8)
 	// snapshot is the current immutable data snapshot from BackgroundWorker.
@@ -1304,6 +1307,47 @@ func hubAutoRefreshEnabled(value string) bool {
 func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 	m.historyMode = mode
 	m.hubConfigPath = path
+	if path == "" {
+		return
+	}
+	if err := m.reloadRepositoryCatalog(); err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog load failed: %v", err)
+		m.statusIsError = true
+	}
+	if m.backgroundWorker != nil {
+		if err := m.backgroundWorker.SetHubConfigPath(path, hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))); err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
+			m.statusIsError = true
+		}
+	}
+}
+
+// SetRepositoryCatalogIssues provides the unfiltered issue universe used for
+// stable total counts when the initial TUI view is recipe-filtered.
+func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
+	m.repositoryCatalogIssues = cloneIssuesForAsync(issues)
+}
+
+func (m *Model) reloadRepositoryCatalog() error {
+	if m.workspaceMode {
+		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.issues)
+		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		return nil
+	}
+	if strings.TrimSpace(m.hubConfigPath) == "" {
+		return nil
+	}
+	issues := m.issues
+	if m.repositoryCatalogIssues != nil {
+		issues = m.repositoryCatalogIssues
+	}
+	catalog, err := hub.LoadRepositoryCatalog(m.hubConfigPath, issues)
+	if err != nil {
+		return err
+	}
+	m.repositoryCatalog = catalog
+	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
+	return nil
 }
 
 // SetSemanticDatasetPath sets the stable repository or dataset identity used
@@ -1801,6 +1845,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focused = focusAgentPrompt
 		}
 
+	case RepositoryCatalogReadyMsg:
+		if m.workspaceMode {
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
+		if msg.Generation < m.catalogGeneration {
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
+		m.catalogGeneration = msg.Generation
+		m.repositoryCatalog = append(model.RepositoryCatalog(nil), msg.Catalog...)
+		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		if m.backgroundWorker != nil {
+			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+		}
+		return m, nil
+
+	case RepositoryCatalogErrorMsg:
+		if m.workspaceMode {
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
+		if msg.Generation >= m.catalogGeneration && msg.Err != nil {
+			m.catalogGeneration = msg.Generation
+			m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", msg.Err)
+			m.statusIsError = true
+		}
+		if m.backgroundWorker != nil {
+			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+		}
+		return m, nil
+
 	case SnapshotReadyMsg:
 		// Background worker has a new snapshot ready (bv-m7v8)
 		// This is the atomic pointer swap - O(1), sub-microsecond
@@ -1866,6 +1948,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update legacy fields for backwards compatibility during migration
 		// Eventually these will be removed when all code reads from snapshot
 		m.issues = msg.Snapshot.Issues
+		if m.workspaceMode {
+			_ = m.reloadRepositoryCatalog()
+		}
 		m.issueMap = msg.Snapshot.IssueMap
 		m.analyzer = msg.Snapshot.Analyzer
 		m.analysis = msg.Snapshot.Analysis
@@ -2294,6 +2379,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Recompute analysis (async Phase 1/Phase 2) with caching
 		m.issues = newIssues
+		m.repositoryCatalogIssues = cloneIssuesForAsync(newIssues)
+		if err := m.reloadRepositoryCatalog(); err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog reload failed: %v", err)
+			m.statusIsError = true
+		}
 		var analysisStart time.Time
 		if profileRefresh {
 			analysisStart = time.Now()
@@ -2568,6 +2658,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					BeadsPath:     m.beadsPath,
 					DebounceDelay: 200 * time.Millisecond,
 				})
+				if err == nil {
+					if m.hubConfigPath != "" {
+						err = bw.SetHubConfigPath(m.hubConfigPath, hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")))
+					}
+				}
 				if err == nil {
 					if m.watcher != nil {
 						m.watcher.Stop()
@@ -7922,6 +8017,7 @@ func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 	m.workspaceMode = info.Enabled
 	m.availableRepos = normalizeRepoPrefixes(info.RepoPrefixes)
 	m.activeRepos = nil // nil means all repos are active
+	m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.issues)
 
 	if info.RepoCount > 0 {
 		if info.FailedCount > 0 {

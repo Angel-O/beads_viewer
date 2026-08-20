@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	dbg "github.com/Dicklesworthstone/beads_viewer/pkg/debug"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -167,6 +170,7 @@ type workerMetrics struct {
 type BackgroundWorker struct {
 	// Configuration
 	beadsPath         string
+	hubConfigPath     string
 	debounceDelay     time.Duration
 	heartbeatInterval time.Duration
 	watchdogInterval  time.Duration
@@ -194,6 +198,10 @@ type BackgroundWorker struct {
 	forceNext           bool   // Force the next snapshot build even if content hash matches
 	refreshBDExportNext bool   // Refresh the bd compatibility export before the next snapshot
 	sourceRetryTimer    *time.Timer
+	catalogRetryTimer   *time.Timer
+	catalogGeneration   uint64
+	catalog             model.RepositoryCatalog
+	catalogLoader       func(string, []model.Issue) (model.RepositoryCatalog, error)
 	currentRecipe       *recipe.Recipe
 	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
 	currentRecipeHash   string // Recipe fingerprint for rebuild keys (bv-4ilb)
@@ -235,6 +243,7 @@ type BackgroundWorker struct {
 	// Components
 	watcher          *watcher.Watcher
 	hubChangeWatcher *watcher.Watcher
+	hubConfigWatcher *watcher.Watcher
 	msgCh            chan tea.Msg
 
 	// Lifecycle
@@ -269,6 +278,7 @@ type WorkerConfig struct {
 	ProcessingTimeout time.Duration // default: 30s
 	MaxRecoveries     int           // default: 3
 	HubChangeSignal   string        // application-owned Hub generation file
+	HubConfigPath     string        // Hub config containing the repository registry
 	SourceRetryBase   time.Duration // default: 1s
 	SourceRetryMax    time.Duration // default: 30s
 }
@@ -344,6 +354,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 
 	w := &BackgroundWorker{
 		beadsPath:         cfg.BeadsPath,
+		hubConfigPath:     cfg.HubConfigPath,
 		debounceDelay:     cfg.DebounceDelay,
 		heartbeatInterval: cfg.HeartbeatInterval,
 		watchdogInterval:  cfg.WatchdogInterval,
@@ -361,6 +372,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		logJSON:           logJSON,
 		metricsEnabled:    metricsEnabled,
 		tracePath:         tracePath,
+		catalogLoader:     hub.LoadRepositoryCatalog,
 
 		idleGCEnabled:     idleGCConfig.Enabled,
 		idleGCThreshold:   idleGCConfig.Threshold,
@@ -390,6 +402,16 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 			return nil, err
 		}
 		w.hubChangeWatcher = hubWatcher
+	}
+	if cfg.HubConfigPath != "" {
+		configWatcher, err := watcher.NewWatcher(cfg.HubConfigPath,
+			watcher.WithDebounceDuration(cfg.DebounceDelay),
+			watcher.WithContentCheck(true),
+		)
+		if err != nil {
+			return nil, err
+		}
+		w.hubConfigWatcher = configWatcher
 	}
 
 	initialized = true
@@ -591,7 +613,7 @@ func (w *BackgroundWorker) Start() error {
 		idleGCGCPercent = 0
 	}
 
-	if w.watcher != nil || w.hubChangeWatcher != nil {
+	if w.watcher != nil || w.hubChangeWatcher != nil || w.hubConfigWatcher != nil {
 		if w.watcher != nil {
 			if err := w.watcher.Start(); err != nil {
 				// Reset started flag so caller can retry or Stop() won't block
@@ -606,6 +628,21 @@ func (w *BackgroundWorker) Start() error {
 			if err := w.hubChangeWatcher.Start(); err != nil {
 				if w.watcher != nil {
 					w.watcher.Stop()
+				}
+				w.mu.Lock()
+				w.started = false
+				w.mu.Unlock()
+				w.closeTraceFile()
+				return err
+			}
+		}
+		if w.hubConfigWatcher != nil {
+			if err := w.hubConfigWatcher.Start(); err != nil {
+				if w.watcher != nil {
+					w.watcher.Stop()
+				}
+				if w.hubChangeWatcher != nil {
+					w.hubChangeWatcher.Stop()
 				}
 				w.mu.Lock()
 				w.started = false
@@ -664,6 +701,8 @@ func (w *BackgroundWorker) Stop() {
 	done := w.done
 	retryTimer := w.sourceRetryTimer
 	w.sourceRetryTimer = nil
+	catalogRetryTimer := w.catalogRetryTimer
+	w.catalogRetryTimer = nil
 	w.loopCancel = nil
 	restoreGCPercent := w.idleGCAppliedGCPercent
 	prevGCPercent := w.idleGCPrevGCPercent
@@ -681,12 +720,18 @@ func (w *BackgroundWorker) Stop() {
 	if retryTimer != nil {
 		retryTimer.Stop()
 	}
+	if catalogRetryTimer != nil {
+		catalogRetryTimer.Stop()
+	}
 
 	if w.watcher != nil {
 		w.watcher.Stop()
 	}
 	if w.hubChangeWatcher != nil {
 		w.hubChangeWatcher.Stop()
+	}
+	if w.hubConfigWatcher != nil {
+		w.hubConfigWatcher.Stop()
 	}
 
 	// Only wait for done if Start() was called
@@ -902,6 +947,22 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 			return
 		}
 	}
+	if w.hubChangeWatcher != nil {
+		w.hubChangeWatcher.Stop()
+		if err := w.hubChangeWatcher.Start(); err != nil {
+			w.send(SnapshotErrorMsg{Err: fmt.Errorf("background worker recovery failed (Hub signal watcher start): %w", err), Recoverable: false})
+			w.Stop()
+			return
+		}
+	}
+	if w.hubConfigWatcher != nil {
+		w.hubConfigWatcher.Stop()
+		if err := w.hubConfigWatcher.Start(); err != nil {
+			w.send(SnapshotErrorMsg{Err: fmt.Errorf("background worker recovery failed (Hub config watcher start): %w", err), Recoverable: false})
+			w.Stop()
+			return
+		}
+	}
 
 	w.startLoop()
 	w.ForceRefresh()
@@ -936,6 +997,7 @@ func (w *BackgroundWorker) TriggerRefresh() {
 // TriggerSourceRefresh schedules a non-forced refresh of the Hub compatibility
 // export. Content-hash dedup still suppresses unchanged snapshots.
 func (w *BackgroundWorker) TriggerSourceRefresh() {
+	w.markCatalogDirty()
 	w.mu.Lock()
 	if w.state == WorkerStopped {
 		w.mu.Unlock()
@@ -967,7 +1029,40 @@ func (w *BackgroundWorker) ForceRefresh() {
 // ForceSourceRefresh bypasses dedup and refreshes external compatibility data.
 // It is reserved for explicit user refreshes; internal rebuilds use ForceRefresh.
 func (w *BackgroundWorker) ForceSourceRefresh() {
+	w.markCatalogDirty()
 	w.forceRefresh(true)
+}
+
+func (w *BackgroundWorker) markCatalogDirty() {
+	w.mu.Lock()
+	w.catalogGeneration++
+	w.mu.Unlock()
+}
+
+// SetHubConfigPath configures repository catalog loading before the worker starts.
+// watch controls live config replacement observation; manual refresh still loads
+// the catalog when watching is disabled.
+func (w *BackgroundWorker) SetHubConfigPath(path string, watch bool) error {
+	if w == nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started {
+		return errors.New("cannot configure Hub catalog after worker start")
+	}
+	w.hubConfigPath = path
+	if watch {
+		configWatcher, err := watcher.NewWatcher(path,
+			watcher.WithDebounceDuration(w.debounceDelay),
+			watcher.WithContentCheck(true),
+		)
+		if err != nil {
+			return err
+		}
+		w.hubConfigWatcher = configWatcher
+	}
+	return nil
 }
 
 func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
@@ -1090,17 +1185,21 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 	heartbeatInterval := w.heartbeatInterval
 	wch := w.watcher
 	hubWatcher := w.hubChangeWatcher
+	configWatcher := w.hubConfigWatcher
 	w.mu.RUnlock()
 
-	if wch == nil && hubWatcher == nil {
+	if wch == nil && hubWatcher == nil && configWatcher == nil {
 		return
 	}
-	var fileChanges, hubChanges <-chan struct{}
+	var fileChanges, hubChanges, configChanges <-chan struct{}
 	if wch != nil {
 		fileChanges = wch.Changed()
 	}
 	if hubWatcher != nil {
 		hubChanges = hubWatcher.Changed()
+	}
+	if configWatcher != nil {
+		configChanges = configWatcher.Changed()
 	}
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
@@ -1116,11 +1215,17 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 
 		case <-fileChanges:
 			w.noteFileChange(time.Now())
+			w.markCatalogDirty()
 			w.TriggerRefresh()
 
 		case <-hubChanges:
 			w.noteFileChange(time.Now())
 			w.TriggerSourceRefresh()
+
+		case <-configChanges:
+			w.noteFileChange(time.Now())
+			w.markCatalogDirty()
+			w.TriggerRefresh()
 		}
 	}
 }
@@ -1148,6 +1253,7 @@ func (w *BackgroundWorker) process() {
 	w.processingStart = now
 	w.lastHeartbeat = now
 	gen := w.generation
+	catalogGeneration := w.catalogGeneration
 	w.logEvent(LogLevelDebug, "state_change", map[string]any{
 		"state": "processing",
 	})
@@ -1164,6 +1270,7 @@ func (w *BackgroundWorker) process() {
 	// Load and build snapshot
 	// Returns nil if content unchanged (dedup) or on error
 	snapshot := w.buildSnapshot(forceNext, refreshBDExport)
+	catalog, catalogErr := w.buildRepositoryCatalog(snapshot)
 	if refreshBDExport {
 		if w.LastError() != nil {
 			w.scheduleSourceRetry()
@@ -1181,6 +1288,7 @@ func (w *BackgroundWorker) process() {
 		}
 		return
 	}
+	catalogStale := w.catalogGeneration != catalogGeneration
 	// Check if stopped while we were processing - don't overwrite stopped state
 	if w.state == WorkerStopped {
 		w.mu.Unlock()
@@ -1204,6 +1312,11 @@ func (w *BackgroundWorker) process() {
 		} else {
 			w.metrics.fullListCount.Add(1)
 		}
+	}
+	catalogChanged := false
+	if !catalogStale && catalogErr == nil && w.hubConfigPath != "" && !slices.Equal(w.catalog, catalog) {
+		w.catalog = catalog
+		catalogChanged = true
 	}
 	// Drop file events caused by this export, but preserve queued forced rebuilds.
 	if refreshBDExport && !w.forceNext && !w.refreshBDExportNext &&
@@ -1254,6 +1367,17 @@ func (w *BackgroundWorker) process() {
 			QueueDepth:    queueDepth,
 			CoalesceCount: coalesced,
 		})
+	}
+	if !catalogStale {
+		if catalogErr != nil {
+			w.scheduleCatalogRetry()
+			w.send(RepositoryCatalogErrorMsg{Err: catalogErr, Generation: catalogGeneration})
+		} else {
+			w.cancelCatalogRetry()
+			if catalogChanged {
+				w.send(RepositoryCatalogReadyMsg{Catalog: catalog, Generation: catalogGeneration})
+			}
+		}
 	}
 
 	// If dirty, process again immediately
@@ -1345,6 +1469,70 @@ func (w *BackgroundWorker) scheduleSourceRetry() {
 		w.TriggerSourceRefresh()
 	})
 	w.sourceRetryTimer = timer
+	w.mu.Unlock()
+}
+
+func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (model.RepositoryCatalog, error) {
+	w.mu.RLock()
+	path := w.hubConfigPath
+	current := w.snapshot
+	w.mu.RUnlock()
+	if path == "" {
+		return nil, nil
+	}
+	var issues []model.Issue
+	if snapshot != nil {
+		issues = snapshot.Issues
+	} else if current != nil {
+		issues = current.Issues
+	}
+	if snapshot != nil && snapshot.LoadedOpenOnly {
+		loaded, err := loadIssuesForReload(w.beadsPath, loader.ParseOptions{BufferSize: envMaxLineSizeBytes()})
+		if err != nil {
+			return nil, &WorkerError{Phase: "catalog", Cause: fmt.Errorf("loading complete issue set: %w", err), Time: time.Now()}
+		}
+		issues = loaded.Issues
+		defer loader.ReturnIssuePtrsToPool(loaded.PoolRefs)
+	}
+	catalog, err := w.catalogLoader(path, issues)
+	if err != nil {
+		return nil, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
+	}
+	return catalog, nil
+}
+
+func (w *BackgroundWorker) cancelCatalogRetry() {
+	w.mu.Lock()
+	if w.catalogRetryTimer != nil {
+		w.catalogRetryTimer.Stop()
+		w.catalogRetryTimer = nil
+	}
+	w.mu.Unlock()
+}
+
+func (w *BackgroundWorker) scheduleCatalogRetry() {
+	w.mu.Lock()
+	if w.state == WorkerStopped {
+		w.mu.Unlock()
+		return
+	}
+	if w.catalogRetryTimer != nil {
+		w.catalogRetryTimer.Stop()
+	}
+	delay := w.sourceRetryBase
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		w.mu.Lock()
+		if w.catalogRetryTimer != timer || w.state == WorkerStopped {
+			w.mu.Unlock()
+			return
+		}
+		w.catalogRetryTimer = nil
+		w.mu.Unlock()
+		w.markCatalogDirty()
+		w.TriggerRefresh()
+	})
+	w.catalogRetryTimer = timer
 	w.mu.Unlock()
 }
 
@@ -1967,6 +2155,19 @@ type SnapshotReadyMsg struct {
 type SnapshotErrorMsg struct {
 	Err         error
 	Recoverable bool // True if we expect to recover on next file change
+}
+
+// RepositoryCatalogReadyMsg carries independently refreshed Hub metadata.
+type RepositoryCatalogReadyMsg struct {
+	Catalog    model.RepositoryCatalog
+	Generation uint64
+}
+
+// RepositoryCatalogErrorMsg reports a transient catalog load failure. The UI
+// retains its last valid catalog while the worker retries.
+type RepositoryCatalogErrorMsg struct {
+	Err        error
+	Generation uint64
 }
 
 // Phase2UpdateMsg is sent when Phase 2 analysis completes.

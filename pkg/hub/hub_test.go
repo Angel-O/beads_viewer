@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 func TestDefaultPaths(t *testing.T) {
@@ -228,6 +230,46 @@ func TestLoadAndResolveYAMLConfigPaths(t *testing.T) {
 	}
 	if got := resolved.Repositories["ctx:repo-123"].Path; got != filepath.Clean(filepath.Join(configDir, "../repository")) {
 		t.Fatalf("resolved repository = %q", got)
+	}
+}
+
+func TestLoadRepositoryCatalogIncludesRegisteredRepositoriesAndCountsContexts(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "hub.yaml")
+	data := "version: 1\n" +
+		"store: store\n" +
+		"ledger: missing/correlations.jsonl\n" +
+		"repositories:\n" +
+		"  ctx:alpha:\n    path: teams/alpha/service\n" +
+		"  ctx:beta:\n    path: teams/beta/service\n" +
+		"  ctx:zero:\n    path: tools/empty\n"
+	if err := os.WriteFile(configPath, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	issues := []model.Issue{
+		{ID: "one", Labels: []string{"ctx:alpha", "ctx:beta"}},
+		{ID: "two", Labels: []string{"ctx:alpha", "ctx:alpha"}},
+		{ID: "ignored", Labels: []string{"ctx:unknown"}},
+	}
+	catalog, err := LoadRepositoryCatalog(configPath, issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]model.RepositoryCatalogEntry, len(catalog))
+	for _, entry := range catalog {
+		byID[entry.ID] = entry
+	}
+	if len(byID) != 3 || byID["ctx:zero"].BeadCount != 0 {
+		t.Fatalf("zero-bead repository missing: %#v", byID)
+	}
+	if byID["ctx:alpha"].BeadCount != 2 || byID["ctx:beta"].BeadCount != 1 {
+		t.Fatalf("context counts = alpha:%d beta:%d", byID["ctx:alpha"].BeadCount, byID["ctx:beta"].BeadCount)
+	}
+	if byID["ctx:alpha"].Name != "alpha/service" || byID["ctx:beta"].Name != "beta/service" {
+		t.Fatalf("collision names = %q, %q", byID["ctx:alpha"].Name, byID["ctx:beta"].Name)
+	}
+	if byID["ctx:alpha"].Path != filepath.Join(root, "teams/alpha/service") || byID["ctx:alpha"].Detail != byID["ctx:alpha"].Path {
+		t.Fatalf("resolved path/detail = %#v", byID["ctx:alpha"])
 	}
 }
 

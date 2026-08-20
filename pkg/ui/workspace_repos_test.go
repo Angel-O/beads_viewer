@@ -114,6 +114,28 @@ func TestNormalizeRepoPrefixes(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRepositoryCatalogUsesDistinctIdentityKind(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "api-1", SourceRepo: "api"},
+		{ID: "api-2"},
+		{ID: "web-1", SourceRepo: "web"},
+	}
+	catalog := workspaceRepositoryCatalog([]string{"web-", "api-", "empty-"}, issues)
+	if len(catalog) != 3 {
+		t.Fatalf("catalog length = %d, want 3", len(catalog))
+	}
+	byID := make(map[string]model.RepositoryCatalogEntry, len(catalog))
+	for _, entry := range catalog {
+		byID[entry.ID] = entry
+		if entry.Kind != model.RepositoryIdentityWorkspacePrefix {
+			t.Fatalf("entry %q kind = %q", entry.ID, entry.Kind)
+		}
+	}
+	if byID["api"].BeadCount != 2 || byID["web"].BeadCount != 1 || byID["empty"].BeadCount != 0 {
+		t.Fatalf("workspace counts = %#v", byID)
+	}
+}
+
 // =============================================================================
 // sortedRepoKeys Tests
 // =============================================================================

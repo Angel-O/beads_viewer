@@ -3,9 +3,66 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
+
+// RepositoryIdentityKind distinguishes stable Hub context identities from
+// legacy workspace prefixes. Callers must not compare identities across kinds.
+type RepositoryIdentityKind string
+
+const (
+	RepositoryIdentityHubContext      RepositoryIdentityKind = "hub_context"
+	RepositoryIdentityWorkspacePrefix RepositoryIdentityKind = "workspace_prefix"
+)
+
+// RepositoryCatalogEntry describes one repository available to the TUI.
+// ID is the exact identity used for matching; Name is presentation metadata.
+type RepositoryCatalogEntry struct {
+	ID        string
+	Name      string
+	Path      string
+	Detail    string
+	BeadCount int
+	Kind      RepositoryIdentityKind
+}
+
+// RepositoryCatalog is sorted deterministically by friendly name, then ID.
+type RepositoryCatalog []RepositoryCatalogEntry
+
+// ReconcileRepositorySelection intersects an explicit selection with the
+// current catalog. Nil means all repositories, including future additions.
+// If removals empty an explicit selection, the result normalizes to all.
+func ReconcileRepositorySelection(selected map[string]bool, catalog RepositoryCatalog) map[string]bool {
+	if selected == nil {
+		return nil
+	}
+	available := make(map[string]bool, len(catalog))
+	for _, repository := range catalog {
+		available[repository.ID] = true
+	}
+	reconciled := make(map[string]bool, len(selected))
+	for id, enabled := range selected {
+		if enabled && available[id] {
+			reconciled[id] = true
+		}
+	}
+	if len(reconciled) == 0 {
+		return nil
+	}
+	return reconciled
+}
+
+// SortRepositoryCatalog applies the catalog's stable display order in place.
+func SortRepositoryCatalog(catalog RepositoryCatalog) {
+	sort.Slice(catalog, func(i, j int) bool {
+		if catalog[i].Name != catalog[j].Name {
+			return catalog[i].Name < catalog[j].Name
+		}
+		return catalog[i].ID < catalog[j].ID
+	})
+}
 
 // Issue represents a trackable work item
 type Issue struct {
