@@ -207,13 +207,17 @@ type LabelAnalysisResult struct {
 	AttentionNeeded []string        `json:"attention_needed"`           // Labels requiring attention
 }
 
+func isContextLabel(label string) bool {
+	return strings.HasPrefix(label, "ctx:")
+}
+
 // ComputeCrossLabelFlow analyzes blocking dependencies between labels and returns counts.
 // It respects cfg.IncludeClosedInFlow: when false, closed issues are ignored.
 func ComputeCrossLabelFlow(issues []model.Issue, cfg LabelHealthConfig) CrossLabelFlow {
 	labels := ExtractLabels(issues)
 	labelList := make([]string, 0, len(labels.Labels))
 	for _, label := range labels.Labels {
-		if !strings.HasPrefix(label, "ctx:") {
+		if !isContextLabel(label) {
 			labelList = append(labelList, label)
 		}
 	}
@@ -1939,8 +1943,14 @@ func ComputeLabelAttentionScores(issues []model.Issue, cfg LabelHealthConfig, no
 	// Compute attention for each label
 	var scores []LabelAttentionScore
 	for _, label := range labels.Labels {
+		if isContextLabel(label) {
+			continue
+		}
 		score := computeLabelAttention(label, issues, issueMap, cfg, now)
 		scores = append(scores, score)
+	}
+	if len(scores) == 0 {
+		return result
 	}
 
 	// Find min/max for normalization

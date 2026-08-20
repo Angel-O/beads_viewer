@@ -1692,6 +1692,83 @@ func TestComputeLabelAttentionScoresEmpty(t *testing.T) {
 	}
 }
 
+func TestComputeLabelAttentionScoresExcludesContextLabels(t *testing.T) {
+	now := time.Now()
+	issues := []model.Issue{
+		{ID: "mixed", Labels: []string{"ctx:project-one", "api", "Ctx:upper", "myctx:keep"}, Status: model.StatusOpen, UpdatedAt: now},
+	}
+
+	result := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now)
+	wantLabels := []string{"Ctx:upper", "api", "myctx:keep"}
+	if result.TotalLabels != len(wantLabels) {
+		t.Fatalf("TotalLabels = %d, want %d", result.TotalLabels, len(wantLabels))
+	}
+	for i, want := range wantLabels {
+		if result.Labels[i].Label != want {
+			t.Fatalf("labels = %v, want %v", result.Labels, wantLabels)
+		}
+	}
+	if result.GetLabelAttention("ctx:project-one") != nil {
+		t.Fatal("lowercase context label was included in attention scores")
+	}
+}
+
+func TestComputeLabelAttentionScoresWithOnlyContextLabels(t *testing.T) {
+	now := time.Now()
+	issues := []model.Issue{
+		{ID: "one", Labels: []string{"ctx:project-one"}, Status: model.StatusOpen, UpdatedAt: now},
+		{ID: "two", Labels: []string{"ctx:project-two"}, Status: model.StatusOpen, UpdatedAt: now},
+	}
+
+	result := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now)
+	if result.TotalLabels != 0 || len(result.Labels) != 0 || len(result.TopAttention) != 0 || len(result.LowAttention) != 0 {
+		t.Fatalf("context-only attention result should have empty label lists: %+v", result)
+	}
+	if result.MaxScore != 0 || result.MinScore != 0 {
+		t.Fatalf("context-only score bounds = (%f, %f), want (0, 0)", result.MinScore, result.MaxScore)
+	}
+}
+
+func TestComputeLabelAttentionScoresDerivesRankingFromRetainedLabels(t *testing.T) {
+	now := time.Now()
+	ordinaryIssues := []model.Issue{
+		{ID: "high", Labels: []string{"high"}, Status: model.StatusOpen, UpdatedAt: now},
+		{ID: "high-dependent", Status: model.StatusOpen, UpdatedAt: now, Dependencies: []*model.Dependency{{DependsOnID: "high", Type: model.DepBlocks}}},
+		{ID: "alpha", Labels: []string{"alpha"}, Status: model.StatusOpen, UpdatedAt: now},
+		{ID: "beta", Labels: []string{"beta"}, Status: model.StatusOpen, UpdatedAt: now},
+		{ID: "low", Labels: []string{"low"}, Status: model.StatusOpen, UpdatedAt: now},
+	}
+	issues := append([]model.Issue{}, ordinaryIssues...)
+	issues = append(issues,
+		model.Issue{ID: "context", Labels: []string{"ctx:routing"}, Status: model.StatusOpen, UpdatedAt: now},
+		model.Issue{ID: "context-dependent-1", Status: model.StatusOpen, UpdatedAt: now, Dependencies: []*model.Dependency{{DependsOnID: "context", Type: model.DepBlocks}}},
+		model.Issue{ID: "context-dependent-2", Status: model.StatusOpen, UpdatedAt: now, Dependencies: []*model.Dependency{{DependsOnID: "context", Type: model.DepBlocks}}},
+	)
+
+	want := ComputeLabelAttentionScores(ordinaryIssues, DefaultLabelHealthConfig(), now)
+	got := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now)
+	if got.TotalLabels != want.TotalLabels || got.MaxScore != want.MaxScore || got.MinScore != want.MinScore {
+		t.Fatalf("attention totals/bounds changed by context label: got %+v, want %+v", got, want)
+	}
+	if fmt.Sprint(got.TopAttention) != fmt.Sprint(want.TopAttention) || fmt.Sprint(got.LowAttention) != fmt.Sprint(want.LowAttention) {
+		t.Fatalf("attention lists changed by context label: got top=%v low=%v, want top=%v low=%v", got.TopAttention, got.LowAttention, want.TopAttention, want.LowAttention)
+	}
+	if len(got.Labels) != len(want.Labels) {
+		t.Fatalf("labels = %v, want %v", got.Labels, want.Labels)
+	}
+	for i := range got.Labels {
+		if got.Labels[i] != want.Labels[i] {
+			t.Fatalf("label score %d = %+v, want %+v", i, got.Labels[i], want.Labels[i])
+		}
+		if got.Labels[i].Rank != i+1 {
+			t.Fatalf("label %q rank = %d, want %d", got.Labels[i].Label, got.Labels[i].Rank, i+1)
+		}
+	}
+	if got.Labels[0].NormalizedScore != 1 || got.Labels[len(got.Labels)-1].NormalizedScore != 0 {
+		t.Fatalf("normalized endpoints = (%f, %f), want (1, 0)", got.Labels[0].NormalizedScore, got.Labels[len(got.Labels)-1].NormalizedScore)
+	}
+}
+
 func TestComputeLabelAttentionScoresSingleLabel(t *testing.T) {
 	cfg := DefaultLabelHealthConfig()
 	now := time.Now()
