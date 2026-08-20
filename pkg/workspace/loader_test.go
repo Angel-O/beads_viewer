@@ -454,8 +454,8 @@ func TestAggregateLoaderContextCancellation(t *testing.T) {
 
 func TestSummarize(t *testing.T) {
 	results := []workspace.LoadResult{
-		{RepoName: "api", Issues: make([]model.Issue, 5)},
-		{RepoName: "web", Issues: make([]model.Issue, 3)},
+		{RepoName: "API Service", RepoPath: "services/api", Prefix: "api-", Issues: make([]model.Issue, 5)},
+		{RepoName: "web", RepoPath: "apps/web", Prefix: "web-", Issues: make([]model.Issue, 3)},
 		{RepoName: "broken", Error: os.ErrNotExist},
 	}
 
@@ -475,6 +475,9 @@ func TestSummarize(t *testing.T) {
 	}
 	if len(summary.FailedRepoNames) != 1 || summary.FailedRepoNames[0] != "broken" {
 		t.Errorf("FailedRepoNames = %v, want [broken]", summary.FailedRepoNames)
+	}
+	if len(summary.Repositories) != 2 || summary.Repositories[0].Name != "API Service" || summary.Repositories[0].Path != "services/api" || summary.Repositories[0].Prefix != "api-" {
+		t.Errorf("Repositories = %#v, want workspace picker metadata", summary.Repositories)
 	}
 }
 

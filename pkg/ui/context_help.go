@@ -19,6 +19,7 @@ var ContextHelpContent = map[Context]string{
 	ContextSplit:          contextHelpSplit,
 	ContextFilter:         contextHelpFilter,
 	ContextLabelPicker:    contextHelpLabelPicker,
+	ContextRepoPicker:     contextHelpRepoPicker,
 	ContextRecipePicker:   contextHelpRecipePicker,
 	ContextHelp:           contextHelpHelp,
 	ContextTimeTravel:     contextHelpTimeTravel,
@@ -284,6 +285,22 @@ const contextHelpLabelPicker = `## Label Picker
   n         Create new label
   d         Delete label
   e         Edit label`
+
+const contextHelpRepoPicker = `## Repository Scope
+
+**Navigation**
+  j/k       Move selection
+  ↑/↓       Move selection
+  Space     Toggle repository
+  Enter     Apply scope
+  Esc       Cancel
+
+**Actions**
+  a         Select all repositories
+  n         Clear draft (apply means all)
+  /         Search name, path, or exact ID
+
+While searching, Esc clears search first.`
 
 const contextHelpRecipePicker = `## Recipe Picker
 

@@ -932,7 +932,7 @@ func defaultTutorialPages() []TutorialPage {
 		},
 		{
 			ID:      "advanced-workspace",
-			Title:   "Workspace Mode",
+			Title:   "Repository Scope",
 			Section: "Advanced",
 			Content: advancedWorkspaceContent,
 		},
@@ -2011,10 +2011,10 @@ The output is **self-contained HTML** that works offline:
 
 > Press **→** to continue.`
 
-// advancedWorkspaceContent is the Workspace Mode tutorial page.
-const advancedWorkspaceContent = `## Workspace Mode
+// advancedWorkspaceContent covers repository scope in Hub and workspace modes.
+const advancedWorkspaceContent = `## Repository Scope
 
-Manage multiple repositories as a single unified project.
+Manage Hub or legacy workspace repositories as a single unified project.
 
 ### When to Use Workspaces
 
@@ -2022,18 +2022,19 @@ Manage multiple repositories as a single unified project.
 - **Microservices**: Track issues across services
 - **Frontend + Backend**: Separate repos, unified view
 
-### Setting Up a Workspace
+### Opening a Multi-Repository Board
 
-Create a ` + "`.beads/workspace.json`" + `:
+Use the Hub board for registered repositories:
 
-` + "```json\n{\n  \"name\": \"My Product\",\n  \"repos\": [\n    { \"path\": \"../frontend\", \"prefix\": \"fe\" },\n    { \"path\": \"../backend\", \"prefix\": \"be\" },\n    { \"path\": \"../shared\", \"prefix\": \"sh\" }\n  ]\n}\n```" + `
+` + "```bash\nwbv --hub\n```" + `
+
+Legacy workspace mode reads ` + "`.bv/workspace.yaml`" + `.
 
 ### Workspace Navigation
 
 | Key | Action |
 |-----|--------|
-| **w** | Toggle workspace picker |
-| **W** | Workspace-wide search |
+| **w** | Open repository scope picker |
 
 ### Aggregated Views
 
@@ -2064,15 +2065,19 @@ Press **w** to open the repo picker, then:
 | Key | Effect |
 |-----|--------|
 | **j/k** | Navigate repos |
+| **↑/↓** | Navigate repos |
 | **Space** | Toggle repo selection |
 | **Enter** | Apply filter |
 | **a** | Select all repos |
+| **n** | Clear draft selection |
+| **/** | Search friendly name, path, or exact ID |
+| **Esc** | Clear search first, then cancel |
 
-### Robot Mode
+Applying an empty draft means all repositories. Scope lasts only for the current session and starts at all repositories on launch.
 
-` + "```bash\nbv --robot-triage              # Workspace-wide triage\nbv --robot-plan               # Cross-repo execution plan\n```" + `
+Repository picker scope applies only to the interactive board. It does not change robot or export output.
 
-> **Note:** Workspace mode requires all repos to be accessible locally.
+> **Note:** Local ` + "`wbv`" + ` boards do not have repository scope. Use ` + "`wbv --hub`" + `.
 
 > Press **→** to continue.`
 

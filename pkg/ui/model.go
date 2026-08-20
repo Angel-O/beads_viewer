@@ -37,6 +37,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // View width thresholds for adaptive layout
@@ -477,6 +478,7 @@ type Model struct {
 	semanticPath            string // Stable repository or dataset identity for semantic caching
 	hubConfigPath           string
 	historyMode             correlation.HistoryMode
+	hubRepositoryMode       bool
 	repositoryCatalog       model.RepositoryCatalog
 	repositoryCatalogIssues []model.Issue
 	repositoryIssues        []model.Issue
@@ -609,7 +611,7 @@ type Model struct {
 	showLabelPicker bool
 	labelPicker     LabelPickerModel
 
-	// Repo picker (workspace mode)
+	// Repository scope picker (Hub or workspace mode)
 	showRepoPicker bool
 	repoPicker     RepoPickerModel
 
@@ -630,8 +632,9 @@ type Model struct {
 	statusIsError bool
 
 	// Workspace mode state
-	workspaceMode    bool            // True when viewing multiple repos
-	availableRepos   []string        // List of repo prefixes available
+	workspaceMode    bool     // True when viewing multiple repos
+	availableRepos   []string // List of repo prefixes available
+	workspaceRepos   []WorkspaceRepositoryInfo
 	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
 	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
 
@@ -763,6 +766,15 @@ type WorkspaceInfo struct {
 	FailedCount  int
 	TotalIssues  int
 	RepoPrefixes []string
+	Repositories []WorkspaceRepositoryInfo
+}
+
+// WorkspaceRepositoryInfo preserves display metadata while the normalized
+// prefix remains the exact legacy workspace scope identity.
+type WorkspaceRepositoryInfo struct {
+	Name   string
+	Path   string
+	Prefix string
 }
 
 func (m *Model) updateSemanticIDs(items []list.Item) {
@@ -1319,6 +1331,7 @@ func hubAutoRefreshEnabled(value string) bool {
 func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 	m.historyMode = mode
 	m.hubConfigPath = path
+	m.hubRepositoryMode = path != "" && mode != correlation.HistoryModeGit
 	if path == "" {
 		return
 	}
@@ -1356,8 +1369,11 @@ func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
 
 func (m *Model) reloadRepositoryCatalog() error {
 	if m.workspaceMode {
-		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.issues)
+		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
 		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+		}
 		return nil
 	}
 	if strings.TrimSpace(m.hubConfigPath) == "" {
@@ -1373,6 +1389,9 @@ func (m *Model) reloadRepositoryCatalog() error {
 	}
 	m.repositoryCatalog = catalog
 	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
+	if m.showRepoPicker {
+		m.repoPicker.SetCatalog(m.repositoryCatalog)
+	}
 	return nil
 }
 
@@ -1390,6 +1409,9 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		before := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
 		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+		}
 		if !slices.Equal(before, sortedRepoKeys(m.activeRepos)) {
 			m.refreshRepositoryCandidates()
 		}
@@ -3023,7 +3045,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Handle repo picker overlay (workspace mode) before global keys (esc/q/etc.)
+		// Handle repository picker overlay before global keys (esc/q/etc.).
 		if m.showRepoPicker {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -3884,6 +3906,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "w":
 				// Toggle the repository scope picker in Hub or workspace mode.
+				if !m.workspaceMode && !m.hubRepositoryMode {
+					m.statusMsg = "Repository filtering requires the Hub board; run wbv --hub"
+					m.statusIsError = false
+					return m, nil
+				}
 				if len(m.repositoryCatalog) == 0 {
 					m.statusMsg = "No repositories available"
 					m.statusIsError = false
@@ -3891,7 +3918,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.showRepoPicker = !m.showRepoPicker
 				if m.showRepoPicker {
-					m.repoPicker = NewRepoPickerModel(repositoryCatalogIDs(m.repositoryCatalog), m.theme)
+					m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 					m.repoPicker.SetActiveRepos(m.activeRepos)
 					m.repoPicker.SetSize(m.width, m.height-1)
 					m.focused = focusRepoPicker
@@ -4845,6 +4872,21 @@ func (m Model) handleRecipePickerKeys(msg tea.KeyMsg) Model {
 
 // handleRepoPickerKeys handles keyboard input when the repository picker is focused.
 func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
+	if m.repoPicker.IsSearching() {
+		switch msg.String() {
+		case "esc":
+			m.repoPicker.ClearSearch()
+		case "enter":
+			return m.applyRepositoryPickerSelection()
+		case "down":
+			m.repoPicker.MoveDown()
+		case "up":
+			m.repoPicker.MoveUp()
+		default:
+			m.repoPicker.UpdateSearch(msg)
+		}
+		return m
+	}
 	switch msg.String() {
 	case "j", "down":
 		m.repoPicker.MoveDown()
@@ -4854,25 +4896,30 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 		m.repoPicker.ToggleSelected()
 	case "a":
 		m.repoPicker.SelectAll()
+	case "n":
+		m.repoPicker.ClearSelection()
+	case "/":
+		m.repoPicker.BeginSearch()
 	case "esc", "q":
 		m.showRepoPicker = false
 		m.focused = focusList
 	case "enter":
-		selected := m.repoPicker.SelectedRepos()
-
-		// Normalize: nil means "all repos" (no filter). Also treat empty as "all" to avoid hiding everything.
-		if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
-			m.statusMsg = "Repo filter: all repos"
-		} else {
-			m.statusMsg = fmt.Sprintf("Repo filter: %s", formatRepoList(sortedRepoKeys(selected), 3))
-		}
-		m.statusIsError = false
-
-		m.SetRepositoryScope(selected)
-
-		m.showRepoPicker = false
-		m.focused = focusList
+		return m.applyRepositoryPickerSelection()
 	}
+	return m
+}
+
+func (m Model) applyRepositoryPickerSelection() Model {
+	selected := m.repoPicker.SelectedRepos()
+	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
+		m.statusMsg = "Repository scope: all"
+	} else {
+		m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+	}
+	m.statusIsError = false
+	m.SetRepositoryScope(selected)
+	m.showRepoPicker = false
+	m.focused = focusList
 	return m
 }
 
@@ -6264,6 +6311,44 @@ func (m Model) renderLabelGraphAnalysis() string {
 	)
 }
 
+func (m Model) repositoryScopeNames(selected map[string]bool) []string {
+	names := make([]string, 0, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if selected == nil || selected[repository.ID] {
+			name := repository.Name
+			if name == "" {
+				name = repository.ID
+			}
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
+	if !m.workspaceMode && !m.hubRepositoryMode {
+		return ""
+	}
+	selectedCount := len(m.activeRepos)
+	if m.activeRepos == nil {
+		selectedCount = len(m.repositoryCatalog)
+	}
+	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
+	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
+	if len(m.repositoryCatalog) == 0 && m.workspaceSummary != "" {
+		label = m.workspaceSummary
+	}
+	if label == "" || lipgloss.Width(label) > 28 || availableWidth < 24 || availableWidth < lipgloss.Width(label)+6 {
+		label = compact
+	}
+	return lipgloss.NewStyle().
+		Background(ThemeBg("#45B7D1")).
+		Foreground(ColorBg).
+		Bold(true).
+		Padding(0, 1).
+		Render("📦 " + label)
+}
+
 func (m *Model) renderFooter() string {
 	// ══════════════════════════════════════════════════════════════════════════
 	// POLISHED FOOTER - Stripe-level status bar with visual hierarchy
@@ -6271,6 +6356,11 @@ func (m *Model) renderFooter() string {
 
 	// If there's a status message, show it prominently with polished styling
 	if m.statusMsg != "" {
+		repoScope := m.renderRepositoryScopeBadge(m.width / 3)
+		repoWidth := lipgloss.Width(repoScope)
+		if repoWidth >= m.width {
+			return ansi.Truncate(repoScope, m.width, "")
+		}
 		var msgStyle lipgloss.Style
 		if m.statusIsError {
 			msgStyle = lipgloss.NewStyle().
@@ -6289,13 +6379,24 @@ func (m *Model) renderFooter() string {
 		if m.statusIsError {
 			prefix = "✗ "
 		}
-		msgSection := msgStyle.Render(prefix + m.statusMsg)
-		remaining := m.width - lipgloss.Width(msgSection)
+		messageWidth := m.width - repoWidth - 4
+		if repoScope != "" {
+			messageWidth--
+		}
+		if messageWidth < 0 {
+			messageWidth = 0
+		}
+		message := truncateRunesHelper(prefix+m.statusMsg, messageWidth, "...")
+		msgSection := msgStyle.Render(message)
+		remaining := m.width - lipgloss.Width(msgSection) - repoWidth
+		if repoScope != "" {
+			remaining--
+		}
 		if remaining < 0 {
 			remaining = 0
 		}
 		filler := lipgloss.NewStyle().Width(remaining).Render("")
-		return lipgloss.JoinHorizontal(lipgloss.Bottom, msgSection, filler)
+		return ansi.Truncate(lipgloss.JoinHorizontal(lipgloss.Bottom, repoScope, filler, msgSection), m.width, "")
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -6708,32 +6809,9 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// WORKSPACE BADGE - Multi-repo mode indicator
+	// REPOSITORY SCOPE BADGE - Persistent Hub/workspace session scope
 	// ─────────────────────────────────────────────────────────────────────────
-	workspaceSection := ""
-	if m.workspaceMode && m.workspaceSummary != "" {
-		workspaceStyle := lipgloss.NewStyle().
-			Background(ThemeBg("#45B7D1")).
-			Foreground(ColorBg).
-			Bold(true).
-			Padding(0, 1)
-		workspaceSection = workspaceStyle.Render(fmt.Sprintf("📦 %s", m.workspaceSummary))
-	}
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// REPO FILTER BADGE - Active repo selection (workspace mode)
-	// ─────────────────────────────────────────────────────────────────────────
-	repoFilterSection := ""
-	if m.activeRepos != nil && len(m.activeRepos) > 0 {
-		active := sortedRepoKeys(m.activeRepos)
-		label := formatRepoList(active, 3)
-		repoStyle := lipgloss.NewStyle().
-			Background(ColorBgHighlight).
-			Foreground(ColorInfo).
-			Bold(true).
-			Padding(0, 1)
-		repoFilterSection = repoStyle.Render(fmt.Sprintf("🗂 %s", label))
-	}
+	repoScopeSection := m.renderRepositoryScopeBadge(m.width / 3)
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// KEYBOARD HINTS - Context-aware navigation help
@@ -6751,7 +6829,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showRecipePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a/n")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
@@ -6794,7 +6872,7 @@ func (m *Model) renderFooter() string {
 			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
-			if m.workspaceMode {
+			if m.workspaceMode || m.hubRepositoryMode {
 				keyHints = append(keyHints, keyStyle.Render("w")+" repos")
 			}
 		}
@@ -6841,11 +6919,8 @@ func (m *Model) renderFooter() string {
 	if sessionSection != "" {
 		leftWidth += lipgloss.Width(sessionSection) + 1
 	}
-	if workspaceSection != "" {
-		leftWidth += lipgloss.Width(workspaceSection) + 1
-	}
-	if repoFilterSection != "" {
-		leftWidth += lipgloss.Width(repoFilterSection) + 1
+	if repoScopeSection != "" {
+		leftWidth += lipgloss.Width(repoScopeSection) + 1
 	}
 	if updateSection != "" {
 		leftWidth += lipgloss.Width(updateSection) + 1
@@ -6863,6 +6938,9 @@ func (m *Model) renderFooter() string {
 
 	// Build the footer
 	var parts []string
+	if repoScopeSection != "" {
+		parts = append(parts, repoScopeSection)
+	}
 	parts = append(parts, filterBadge)
 	if searchBadge != "" {
 		parts = append(parts, searchBadge)
@@ -6879,12 +6957,6 @@ func (m *Model) renderFooter() string {
 	}
 	if sessionSection != "" {
 		parts = append(parts, sessionSection)
-	}
-	if workspaceSection != "" {
-		parts = append(parts, workspaceSection)
-	}
-	if repoFilterSection != "" {
-		parts = append(parts, repoFilterSection)
 	}
 	if updateSection != "" {
 		parts = append(parts, updateSection)
@@ -6904,7 +6976,7 @@ func (m *Model) renderFooter() string {
 	}
 	parts = append(parts, filler, countBadge, keysSection)
 
-	return lipgloss.JoinHorizontal(lipgloss.Bottom, parts...)
+	return ansi.Truncate(lipgloss.JoinHorizontal(lipgloss.Bottom, parts...), m.width, "")
 }
 
 func nextHybridPreset(current search.PresetName) search.PresetName {
@@ -7568,6 +7640,9 @@ func (m *Model) applyContentSizing() {
 	// them), so they keep using m.width rather than the reserved content width.
 	m.labelDashboard.SetSize(m.width, bodyHeight)
 	m.insightsPanel.SetSize(m.width, bodyHeight)
+	if m.showRepoPicker {
+		m.repoPicker.SetSize(m.width, bodyHeight)
+	}
 	m.updateViewportContent()
 }
 
@@ -8050,8 +8125,9 @@ func (m Model) FilteredIssues() []model.Issue {
 func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 	m.workspaceMode = info.Enabled
 	m.availableRepos = normalizeRepoPrefixes(info.RepoPrefixes)
+	m.workspaceRepos = append([]WorkspaceRepositoryInfo(nil), info.Repositories...)
 	m.activeRepos = nil // nil means all repos are active
-	m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.issues)
+	m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
 	m.refreshRepositoryCandidates()
 
 	if info.RepoCount > 0 {
