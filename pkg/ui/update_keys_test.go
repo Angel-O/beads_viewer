@@ -298,6 +298,35 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	}
 }
 
+func TestFlowMatrixFooterStaysOnBottomRow(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "backend", Title: "Backend", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "frontend", Title: "Frontend", Status: model.StatusOpen, Labels: []string{"frontend"}, Dependencies: []*model.Dependency{{DependsOnID: "backend", Type: model.DepBlocks}}},
+	}
+	m := NewModel(issues, nil, "")
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m = updated.(Model)
+
+	if m.focused != focusFlowMatrix {
+		t.Fatalf("expected Flow focus, got %v", m.focused)
+	}
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 40 {
+		t.Fatalf("Flow view lines = %d, want terminal height 40", len(lines))
+	}
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "tab panel") || !strings.Contains(footer, "f close") {
+		t.Fatalf("bottom row missing Flow hints: %q", footer)
+	}
+	if strings.Contains(footer, "L:labels") || strings.Contains(footer, "h:detail") || strings.Contains(footer, "tab focus") {
+		t.Fatalf("underlying list/split hints leaked into Flow footer: %q", footer)
+	}
+}
+
 func TestLabelDashboardToggleCloseFromSplitView(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "bv-1", Title: "Visible split issue", Status: model.StatusOpen, Labels: []string{"backend"}},
