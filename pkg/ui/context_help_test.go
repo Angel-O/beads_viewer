@@ -215,6 +215,20 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 	}
 }
 
+func TestContextHelpAttentionMatchesRuntime(t *testing.T) {
+	content := GetContextHelp(ContextAttention)
+	for _, expected := range []string{"Ranked Labels", "Dependency centrality", "PageRank contribution", "Stale-to-open issue ratio", "Downstream block impact", "Recent closure velocity", "lower increases attention", "1-9", "Filter List by ranked label", "filter persists across views", "] / F4", "Esc / q"} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("Attention context help missing %q", expected)
+		}
+	}
+	for _, misleading := range []string{"j/k", "Enter", "Change status", "Press 1 to return"} {
+		if strings.Contains(content, misleading) {
+			t.Errorf("Attention context help still contains misleading text %q", misleading)
+		}
+	}
+}
+
 // =============================================================================
 // ADDITIONAL TESTS FOR BV-WE18: Context Help Content Coverage
 // =============================================================================

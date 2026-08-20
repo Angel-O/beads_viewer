@@ -36,8 +36,8 @@ func ComputeAttentionView(issues []model.Issue, width int) (string, error) {
 
 	row(headers, true)
 	limit := len(result.Labels)
-	if limit > 10 {
-		limit = 10
+	if limit > 9 {
+		limit = 9
 	}
 	for i := 0; i < limit; i++ {
 		s := result.Labels[i]

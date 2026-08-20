@@ -66,11 +66,11 @@ func TestComputeAttentionView_SingleLabelFormatting(t *testing.T) {
 	}
 }
 
-func TestComputeAttentionView_LimitsToTop10AndIsDeterministic(t *testing.T) {
+func TestComputeAttentionView_LimitsToNineInteractiveRowsAndIsDeterministic(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Create 11 distinct labels; with identical issue shape they tie on score and
-	// should sort by label name (then truncated to top 10).
+	// should sort by label name (then truncated to the nine numeric choices).
 	var issues []model.Issue
 	for i := 1; i <= 11; i++ {
 		label := "l" + pad2(i) // l01..l11 for lexicographic stability
@@ -92,15 +92,15 @@ func TestComputeAttentionView_LimitsToTop10AndIsDeterministic(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 1+10 {
-		t.Fatalf("expected %d lines (header + 10 rows), got %d:\n%s", 11, len(lines), out)
+	if len(lines) != 1+9 {
+		t.Fatalf("expected %d lines (header + 9 rows), got %d:\n%s", 10, len(lines), out)
 	}
 
-	if !strings.Contains(out, "l01") || !strings.Contains(out, "l10") {
-		t.Fatalf("expected output to include l01..l10 labels, got:\n%s", out)
+	if !strings.Contains(out, "l01") || !strings.Contains(out, "l09") {
+		t.Fatalf("expected output to include l01..l09 labels, got:\n%s", out)
 	}
-	if strings.Contains(out, "l11") {
-		t.Fatalf("expected l11 to be excluded by top-10 limit, got:\n%s", out)
+	if strings.Contains(out, "l10") || strings.Contains(out, "l11") {
+		t.Fatalf("expected labels after l09 to be excluded, got:\n%s", out)
 	}
 }
 

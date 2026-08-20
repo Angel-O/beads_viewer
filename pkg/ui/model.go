@@ -2761,7 +2761,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Handle attention view quick jumps (bv-117)
+		// Handle attention view ranked-label filters (bv-117)
 		if m.showAttentionView {
 			s := msg.String()
 			switch {
@@ -2777,6 +2777,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					label := m.attentionCache.Labels[idx].Label
 					m.currentFilter = "label:" + label
 					m.applyFilter()
+					m.clearAttentionOverlay()
+					m.focused = focusList
 					m.statusMsg = fmt.Sprintf("Filtered to label %s (attention #%d)", label, idx+1)
 					m.statusIsError = false
 				}
@@ -6605,7 +6607,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
-		keyHints = append(keyHints, keyStyle.Render("1-9")+" filter", keyStyle.Render("]/F4")+" close", keyStyle.Render("esc/q")+" back")
+		keyHints = append(keyHints, keyStyle.Render("1-9")+" filter list by ranked label", keyStyle.Render("]/F4")+" close", keyStyle.Render("esc/q")+" back")
 	} else if m.focused == focusLabelDashboard {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+" close")
 	} else if m.focused == focusInsights {

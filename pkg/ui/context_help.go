@@ -350,20 +350,19 @@ Shows all labels with:
 
 const contextHelpAttention = `## Attention View
 
-**Issues Needing Attention**
+**Ranked Labels**
 
-Sorted by attention score based on:
-• Age (older = more attention)
-• Priority mismatches
-• Blocking factor
-• Stale status
+Labels are sorted by attention score based on:
+• Dependency centrality (PageRank contribution)
+• Stale-to-open issue ratio
+• Downstream block impact
+• Recent closure velocity (lower increases attention)
 
-**Navigation**
-  j/k       Move selection
-  Enter     View issue
-  s         Change status
-
-Press 1 to return to List view`
+**Actions**
+  1-9       Filter List by ranked label
+            (filter persists across views)
+  ] / F4    Toggle Attention closed
+  Esc / q   Back to the previous view`
 
 const contextHelpAgentPrompt = `## AI Agent Prompt
 

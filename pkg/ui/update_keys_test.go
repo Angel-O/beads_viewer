@@ -486,6 +486,77 @@ func TestAttentionViewEscapeAndQRestoreOrigin(t *testing.T) {
 	}
 }
 
+func TestAttentionViewNumericKeyFiltersAndTransitionsToList(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Title: "Backend one", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "bv-2", Title: "Backend two", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "bv-3", Title: "Frontend only", Status: model.StatusOpen, Labels: []string{"frontend"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.focused = focusBoard
+	m.isBoardView = true
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	m = updated.(Model)
+	selectedLabel := m.attentionCache.Labels[1].Label
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	m = updated.(Model)
+	if m.currentFilter != "label:"+selectedLabel {
+		t.Fatalf("filter=%q, want label:%s", m.currentFilter, selectedLabel)
+	}
+	if m.showAttentionView || m.focused != focusList || m.isBoardView {
+		t.Fatalf("expected filtered List, shown=%v focus=%v board=%v", m.showAttentionView, m.focused, m.isBoardView)
+	}
+	if m.insightsPanel.extraText != "" || m.attentionOrigin != focusList {
+		t.Fatal("expected Attention overlay state to be cleared")
+	}
+
+	wantCount := 0
+	for _, issue := range issues {
+		if slices.Contains(issue.Labels, selectedLabel) {
+			wantCount++
+		}
+	}
+	if len(m.list.Items()) != wantCount || m.board.TotalCount() != wantCount || m.graphView.TotalCount() != wantCount {
+		t.Fatalf("filter propagation counts: list=%d board=%d graph=%d, want %d", len(m.list.Items()), m.board.TotalCount(), m.graphView.TotalCount(), wantCount)
+	}
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok || !strings.Contains(m.viewport.View(), selected.Issue.ID) {
+		t.Fatalf("detail content did not follow filtered List selection: %q", m.viewport.View())
+	}
+}
+
+func TestAttentionViewInvalidNumericKeyDoesNothing(t *testing.T) {
+	tests := []struct {
+		name   string
+		issues []model.Issue
+		key    string
+	}{
+		{name: "empty", key: "1"},
+		{name: "out of range", issues: []model.Issue{{ID: "bv-1", Title: "One", Status: model.StatusOpen, Labels: []string{"backend"}}}, key: "2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(tt.issues, nil, "")
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+			m = updated.(Model)
+			beforeFilter := m.currentFilter
+			beforeItems := len(m.list.Items())
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)})
+			m = updated.(Model)
+			if !m.showAttentionView || m.focused != focusInsights {
+				t.Fatalf("invalid numeric key closed Attention: shown=%v focus=%v", m.showAttentionView, m.focused)
+			}
+			if m.currentFilter != beforeFilter || len(m.list.Items()) != beforeItems {
+				t.Fatalf("invalid numeric key mutated filter state: filter=%q items=%d", m.currentFilter, len(m.list.Items()))
+			}
+		})
+	}
+}
+
 func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	issues := []model.Issue{{
 		ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"},
@@ -499,7 +570,7 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(Model)
 	view := m.View()
-	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "1-9 filter") ||
+	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "1-9 filter list by ranked label") ||
 		!strings.Contains(view, "]/F4 close") || !strings.Contains(view, "esc/q back") {
 		t.Fatalf("expected Attention identity and controls, got %q", view)
 	}
