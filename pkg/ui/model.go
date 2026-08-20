@@ -536,6 +536,7 @@ type Model struct {
 	showLabelGraphAnalysis   bool
 	labelGraphAnalysisResult *LabelGraphAnalysisResult
 	showAttentionView        bool
+	attentionOrigin          focus
 	showShortcutsSidebar     bool // bv-3qi5 toggleable shortcuts sidebar
 
 	// Key combo state (bv-6fm0)
@@ -2764,9 +2765,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showAttentionView {
 			s := msg.String()
 			switch {
-			case s == "esc" || s == "q" || s == "d":
-				m.showAttentionView = false
-				m.insightsPanel.extraText = ""
+			case s == "esc" || s == "q" || s == "d" || s == "]" || s == "f4":
+				m.closeAttentionView()
 				return m, nil
 			case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
 				if len(m.attentionCache.Labels) == 0 {
@@ -3653,6 +3653,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "]", "f4":
 				// Attention view: compute attention scores (cached) and render as text
+				m.attentionOrigin = m.focused
 				if !m.attentionCached {
 					cfg := analysis.DefaultLabelHealthConfig()
 					m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
@@ -3663,6 +3664,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isBoardView = false
 				m.isActionableView = false
 				m.isHistoryView = false
+				m.isSprintView = false
 				m.focused = focusInsights
 				m.showAttentionView = true
 				m.rebuildInsightsPanel()
@@ -6151,7 +6153,10 @@ func (m *Model) renderFooter() string {
 	// ─────────────────────────────────────────────────────────────────────────
 	var filterTxt string
 	var filterIcon string
-	if m.focused == focusLabelDashboard {
+	if m.showAttentionView {
+		filterTxt = "ATTENTION"
+		filterIcon = "⚡"
+	} else if m.focused == focusLabelDashboard {
 		filterTxt = "LABELS"
 		filterIcon = "🏷️"
 	} else if m.showLabelGraphAnalysis && m.labelGraphAnalysisResult != nil {
@@ -6226,7 +6231,7 @@ func (m *Model) renderFooter() string {
 	}
 
 	labelHint := ""
-	if m.focused != focusLabelDashboard {
+	if m.focused != focusLabelDashboard && !m.showAttentionView {
 		labelHint = lipgloss.NewStyle().
 			Foreground(ColorFooterHint).
 			Padding(0, 1).
@@ -6258,11 +6263,6 @@ func (m *Model) renderFooter() string {
 				Padding(0, 1).
 				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • L:labels • /:search • ?:help", filterInfo))
 		}
-	} else if m.showAttentionView {
-		labelHint = lipgloss.NewStyle().
-			Foreground(ColorFooterHint).
-			Padding(0, 1).
-			Render("A:attention • 1-9 filter • esc close")
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -6604,6 +6604,8 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
+	} else if m.showAttentionView {
+		keyHints = append(keyHints, keyStyle.Render("1-9")+" filter", keyStyle.Render("]/F4")+" close", keyStyle.Render("esc/q")+" back")
 	} else if m.focused == focusLabelDashboard {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+" close")
 	} else if m.focused == focusInsights {
@@ -9024,7 +9026,21 @@ func (m *Model) clearAttentionOverlay() {
 	if m.showAttentionView {
 		m.showAttentionView = false
 		m.insightsPanel.extraText = ""
+		m.attentionOrigin = focusList
 	}
+}
+
+func (m *Model) closeAttentionView() {
+	origin := m.attentionOrigin
+	m.showAttentionView = false
+	m.insightsPanel.extraText = ""
+	m.focused = origin
+	m.isGraphView = origin == focusGraph
+	m.isBoardView = origin == focusBoard
+	m.isActionableView = origin == focusActionable
+	m.isHistoryView = origin == focusHistory
+	m.isSprintView = origin == focusSprint
+	m.attentionOrigin = focusList
 }
 
 // ════════════════════════════════════════════════════════════════════════════

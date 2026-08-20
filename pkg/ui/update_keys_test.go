@@ -383,3 +383,131 @@ func TestLabelDashboardDrilldownUsesVisibleSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestAttentionViewToggleCloseFromSplitView(t *testing.T) {
+	issues := []model.Issue{{
+		ID: "bv-1", Title: "Visible split issue", Status: model.StatusOpen, Labels: []string{"backend"},
+	}}
+	tests := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "right bracket", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")}},
+		{name: "F4", key: tea.KeyMsg{Type: tea.KeyF4}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+			m = updated.(Model)
+			m.isSplitView = true
+			m.focused = focusList
+
+			updated, _ = m.Update(tt.key)
+			m = updated.(Model)
+			if !m.showAttentionView || m.focused != focusInsights {
+				t.Fatalf("expected Attention to open with %s, shown=%v focus=%v", tt.name, m.showAttentionView, m.focused)
+			}
+
+			updated, _ = m.Update(tt.key)
+			m = updated.(Model)
+			if m.showAttentionView || m.focused != focusList || !m.isSplitView {
+				t.Fatalf("expected %s to restore split list, shown=%v focus=%v split=%v", tt.name, m.showAttentionView, m.focused, m.isSplitView)
+			}
+			if m.insightsPanel.extraText != "" {
+				t.Fatalf("expected %s to clear Attention content", tt.name)
+			}
+			if view := m.View(); !strings.Contains(view, "Visible split issue") {
+				t.Fatalf("expected split view after closing with %s, got %q", tt.name, view)
+			}
+		})
+	}
+}
+
+func TestAttentionViewEscapeAndQRestoreOrigin(t *testing.T) {
+	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}
+	origins := []struct {
+		name       string
+		focus      focus
+		graph      bool
+		board      bool
+		actionable bool
+		history    bool
+		sprint     bool
+		split      bool
+	}{
+		{name: "split list", focus: focusList, split: true},
+		{name: "Insights", focus: focusInsights},
+		{name: "Graph", focus: focusGraph, graph: true},
+		{name: "Board", focus: focusBoard, board: true},
+		{name: "Tree", focus: focusTree},
+		{name: "Actionable", focus: focusActionable, actionable: true},
+		{name: "History", focus: focusHistory, history: true},
+		{name: "Sprint", focus: focusSprint, sprint: true},
+		{name: "Flow Matrix", focus: focusFlowMatrix},
+	}
+	closeKeys := []tea.KeyMsg{
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyRunes, Runes: []rune("q")},
+	}
+
+	for _, origin := range origins {
+		for _, closeKey := range closeKeys {
+			name := origin.name + "/" + closeKey.String()
+			t.Run(name, func(t *testing.T) {
+				m := NewModel(issues, nil, "")
+				m.focused = origin.focus
+				m.isGraphView = origin.graph
+				m.isBoardView = origin.board
+				m.isActionableView = origin.actionable
+				m.isHistoryView = origin.history
+				m.isSprintView = origin.sprint
+				m.isSplitView = origin.split
+
+				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+				m = updated.(Model)
+				if !m.showAttentionView || m.attentionOrigin != origin.focus {
+					t.Fatalf("expected Attention origin %v, shown=%v origin=%v", origin.focus, m.showAttentionView, m.attentionOrigin)
+				}
+
+				updated, _ = m.Update(closeKey)
+				m = updated.(Model)
+				if m.showAttentionView || m.focused != origin.focus {
+					t.Fatalf("expected return to %v, shown=%v focus=%v", origin.focus, m.showAttentionView, m.focused)
+				}
+				if m.isGraphView != origin.graph || m.isBoardView != origin.board ||
+					m.isActionableView != origin.actionable || m.isHistoryView != origin.history ||
+					m.isSprintView != origin.sprint || m.isSplitView != origin.split {
+					t.Fatalf("origin flags not restored for %s", origin.name)
+				}
+			})
+		}
+	}
+}
+
+func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
+	issues := []model.Issue{{
+		ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"},
+	}}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = updated.(Model)
+	m.isSplitView = true
+	m.focused = focusList
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "1-9 filter") ||
+		!strings.Contains(view, "]/F4 close") || !strings.Contains(view, "esc/q back") {
+		t.Fatalf("expected Attention identity and controls, got %q", view)
+	}
+	if strings.Contains(view, "h/l panels") || strings.Contains(view, "tab focus") {
+		t.Fatalf("underlying view hints leaked into Attention: %q", view)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "]/F4 close") {
+		t.Fatalf("expected Attention footer on terminal bottom row, lines=%d last=%q", len(lines), lines[len(lines)-1])
+	}
+}
