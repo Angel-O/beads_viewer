@@ -1692,7 +1692,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.issues, cfg, time.Now().UTC(), m.analysis)
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
-			m.statusMsg = fmt.Sprintf("Labels: %d total • critical %d • warning %d", m.labelHealthCache.TotalLabels, m.labelHealthCache.CriticalCount, m.labelHealthCache.WarningCount)
+			m.statusMsg = ""
 		}
 
 		// Re-sort issues if sorting by Phase 2 metrics (impact/pagerank)
@@ -3636,6 +3636,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isBoardView = false
 				m.isActionableView = false
 				m.isHistoryView = false
+				m.isSprintView = false
 				m.focused = focusLabelDashboard
 				// Compute label health (fast; phase1 metrics only needed) with caching
 				if !m.labelHealthCached {
@@ -3645,7 +3646,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
 				m.labelDashboard.SetSize(m.width, m.height-1)
-				m.statusMsg = fmt.Sprintf("Labels: %d total • critical %d • warning %d", m.labelHealthCache.TotalLabels, m.labelHealthCache.CriticalCount, m.labelHealthCache.WarningCount)
+				m.statusMsg = ""
 				m.statusIsError = false
 				return m, nil
 
@@ -5166,11 +5167,11 @@ func (m Model) View() string {
 		body = m.historyView.View()
 	} else if m.isSprintView {
 		body = m.sprintViewText
-	} else if m.isSplitView {
-		body = m.renderSplitView()
 	} else if m.focused == focusLabelDashboard {
 		m.labelDashboard.SetSize(m.width, m.height-1)
 		body = m.labelDashboard.View()
+	} else if m.isSplitView {
+		body = m.renderSplitView()
 	} else {
 		// Mobile view
 		if m.showDetails {

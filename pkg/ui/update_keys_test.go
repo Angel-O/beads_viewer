@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -245,5 +246,80 @@ func TestHistoryViewKeys(t *testing.T) {
 
 	if m.historyView.GetMinConfidence() == initialConf {
 		t.Fatalf("expected confidence to change after 'c' key")
+	}
+}
+
+func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Title: "Visible split issue", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "bv-2", Title: "Another issue", Status: model.StatusOpen, Labels: []string{"frontend"}},
+	}
+	m := NewModel(issues, nil, "")
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = updated.(Model)
+	m.isSplitView = true
+	m.focused = focusList
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	m = updated.(Model)
+
+	if m.focused != focusLabelDashboard {
+		t.Fatalf("expected label dashboard focus, got %v", m.focused)
+	}
+	view := m.View()
+	if !strings.Contains(view, "backend") || !strings.Contains(view, "frontend") {
+		t.Fatalf("expected label dashboard after one keypress, got %q", view)
+	}
+	if strings.Contains(view, "Visible split issue") {
+		t.Fatalf("split panes remained visible over label dashboard: %q", view)
+	}
+	if !strings.Contains(view, "j/k nav") || !strings.Contains(view, "d drilldown") || !strings.Contains(view, "enter filter") {
+		t.Fatalf("expected label dashboard controls immediately, got %q", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.focused != focusList || !m.isSplitView {
+		t.Fatalf("expected escape to restore split list, focus=%v split=%v", m.focused, m.isSplitView)
+	}
+	if view := m.View(); !strings.Contains(view, "Visible split issue") {
+		t.Fatalf("expected split view after exiting label dashboard, got %q", view)
+	}
+}
+
+func TestLabelDashboardDrilldownUsesVisibleSelection(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Title: "Backend issue", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "bv-2", Title: "Frontend issue", Status: model.StatusOpen, Labels: []string{"frontend"}},
+	}
+	m := NewModel(issues, nil, "")
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 3})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+
+	selected := m.labelDashboard.labels[m.labelDashboard.cursor].Label
+	other := m.labelDashboard.labels[1-m.labelDashboard.cursor].Label
+	view := m.View()
+	if !strings.Contains(view, selected) || strings.Contains(view, other) {
+		t.Fatalf("dashboard view does not show only selected label %q: %q", selected, view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
+	if !m.showLabelDrilldown {
+		t.Fatal("expected drilldown overlay")
+	}
+	if m.labelDrilldownLabel != selected {
+		t.Fatalf("drilldown label=%q, want visible selection %q", m.labelDrilldownLabel, selected)
+	}
+	for _, issue := range m.labelDrilldownIssues {
+		if !slices.Contains(issue.Labels, selected) {
+			t.Fatalf("drilldown included issue %q without selected label %q", issue.ID, selected)
+		}
 	}
 }
