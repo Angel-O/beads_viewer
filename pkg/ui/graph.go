@@ -115,6 +115,12 @@ func (g *GraphModel) SetSnapshot(snapshot *DataSnapshot) {
 
 // SetIssues updates the graph data preserving the selected issue if possible
 func (g *GraphModel) SetIssues(issues []model.Issue, insights *analysis.Insights) {
+	g.SetProjectedIssues(issues, nil, insights)
+}
+
+// SetProjectedIssues updates visible graph rows while retaining the canonical
+// issue map so hidden cross-repository dependencies still resolve in details.
+func (g *GraphModel) SetProjectedIssues(issues []model.Issue, issueMap map[string]*model.Issue, insights *analysis.Insights) {
 	// Capture current selection
 	var selectedID string
 	if len(g.sortedIDs) > 0 && g.selectedIdx >= 0 && g.selectedIdx < len(g.sortedIDs) {
@@ -124,6 +130,9 @@ func (g *GraphModel) SetIssues(issues []model.Issue, insights *analysis.Insights
 	g.issues = issues
 	g.insights = insights
 	g.rebuildGraph()
+	if issueMap != nil {
+		g.issueMap = issueMap
+	}
 
 	// Restore selection
 	if selectedID != "" {

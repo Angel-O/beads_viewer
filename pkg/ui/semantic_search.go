@@ -3,6 +3,8 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -17,11 +19,12 @@ import (
 )
 
 type semanticSearchSnapshot struct {
-	Ready    bool
-	Index    *search.VectorIndex
-	Embedder search.Embedder
-	IDs      []string
-	Docs     map[string]string
+	Ready      bool
+	Index      *search.VectorIndex
+	Embedder   search.Embedder
+	IDs        []string
+	Docs       map[string]string
+	Generation uint64
 }
 
 // semanticResultCache holds cached filter results and pending state
@@ -231,17 +234,27 @@ func (s *SemanticSearch) SetIndex(idx *search.VectorIndex, embedder search.Embed
 
 func (s *SemanticSearch) SetIDs(ids []string) {
 	snap := s.Snapshot()
+	if slices.Equal(snap.IDs, ids) {
+		return
+	}
 	cp := make([]string, len(ids))
 	copy(cp, ids)
 	snap.IDs = cp
+	snap.Generation++
 	s.snapshot.Store(snap)
+	s.ResetCache()
 }
 
 func (s *SemanticSearch) SetDocs(docs map[string]string) {
 	snap := s.Snapshot()
+	if maps.Equal(snap.Docs, docs) {
+		return
+	}
 	if docs == nil {
 		snap.Docs = nil
+		snap.Generation++
 		s.snapshot.Store(snap)
+		s.ResetCache()
 		return
 	}
 	cp := make(map[string]string, len(docs))
@@ -249,7 +262,9 @@ func (s *SemanticSearch) SetDocs(docs map[string]string) {
 		cp[id] = doc
 	}
 	snap.Docs = cp
+	snap.Generation++
 	s.snapshot.Store(snap)
+	s.ResetCache()
 }
 
 // Filter implements list.FilterFunc, returning ranks sorted by semantic similarity.
@@ -293,6 +308,10 @@ func (s *SemanticSearch) Filter(term string, targets []string) []list.Rank {
 // This should be called from an async tea.Cmd, not from Filter.
 func (s *SemanticSearch) ComputeSemanticResults(term string) []list.Rank {
 	snap := s.Snapshot()
+	return s.computeSemanticResults(term, snap)
+}
+
+func (s *SemanticSearch) computeSemanticResults(term string, snap semanticSearchSnapshot) []list.Rank {
 	if !snap.Ready || snap.Index == nil || snap.Embedder == nil {
 		return nil
 	}
@@ -415,7 +434,9 @@ func (s *SemanticSearch) ComputeSemanticResults(term string) []list.Rank {
 	for _, it := range scoredItems {
 		out = append(out, list.Rank{Index: it.index})
 	}
-	s.SetScores(term, scoreMap)
+	if s.Snapshot().Generation == snap.Generation {
+		s.SetScores(term, scoreMap)
+	}
 	return out
 }
 
@@ -431,8 +452,9 @@ type SemanticIndexReadyMsg struct {
 
 // SemanticFilterResultMsg is emitted when async semantic filter results are ready.
 type SemanticFilterResultMsg struct {
-	Term    string
-	Results []list.Rank
+	Term       string
+	Results    []list.Rank
+	Generation uint64
 }
 
 // HybridMetricsReadyMsg is emitted when hybrid metrics are ready for scoring.
@@ -443,11 +465,13 @@ type HybridMetricsReadyMsg struct {
 
 // ComputeSemanticFilterCmd computes semantic filter results asynchronously.
 func ComputeSemanticFilterCmd(s *SemanticSearch, term string) tea.Cmd {
+	snapshot := s.Snapshot()
 	return func() tea.Msg {
-		results := s.ComputeSemanticResults(term)
+		results := s.computeSemanticResults(term, snapshot)
 		return SemanticFilterResultMsg{
-			Term:    term,
-			Results: results,
+			Term:       term,
+			Results:    results,
+			Generation: snapshot.Generation,
 		}
 	}
 }

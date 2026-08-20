@@ -5560,7 +5560,7 @@ func main() {
 		}
 
 		// Initial Model with live reload support
-		m := ui.NewModel(issues, activeRecipe, beadsPath)
+		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath)
 		m.SetSemanticDatasetPath(semanticDatasetPath)
 		m.SetRepositoryCatalogIssues(catalogIssues)
 		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
