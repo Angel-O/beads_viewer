@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"hash/fnv"
 	"math"
 	"strings"
 
@@ -165,13 +167,45 @@ func RenderRepoBadge(prefix string) string {
 	if prefix == "" {
 		return ""
 	}
-	// Uppercase and limit to 4 runes for compactness
 	display := strings.ToUpper(prefix)
 	if runes := []rune(display); len(runes) > 4 {
 		display = string(runes[:4])
 	}
+	return lipgloss.NewStyle().
+		Foreground(GetRepoColor(prefix)).
+		Bold(true).
+		Render("[" + display + "]")
+}
 
-	color := GetRepoColor(prefix)
+// RenderRepositoryBadge renders a friendly name with a color keyed by the
+// repository's exact identity.
+func RenderRepositoryBadge(identity, name string) string {
+	return RenderRepositoryBadgeCompact(identity, name, 8)
+}
+
+// RenderRepositoryBadgeCompact keeps badges within a caller-provided name
+// budget. Truncated names include an exact-identity suffix to preserve useful
+// visual differentiation when shortest unique paths share a long prefix.
+func RenderRepositoryBadgeCompact(identity, name string, maxNameWidth int) string {
+	if identity == "" || name == "" {
+		return ""
+	}
+	if maxNameWidth < 1 {
+		maxNameWidth = 1
+	}
+	display := name
+	if runes := []rune(display); len(runes) > maxNameWidth {
+		if maxNameWidth < 5 {
+			display = string(runes[:maxNameWidth])
+		} else {
+			hash := fnv.New32a()
+			_, _ = hash.Write([]byte(identity))
+			suffix := fmt.Sprintf("%03x", hash.Sum32()&0xfff)
+			display = string(runes[:maxNameWidth-4]) + "…" + suffix
+		}
+	}
+
+	color := GetRepoColor(identity)
 	return lipgloss.NewStyle().
 		Foreground(color).
 		Bold(true).

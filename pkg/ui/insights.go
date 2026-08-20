@@ -134,12 +134,14 @@ var metricDescriptions = map[MetricPanel]MetricInfo{
 
 // InsightsModel is an interactive insights dashboard
 type InsightsModel struct {
-	insights       analysis.Insights
-	issueMap       map[string]*model.Issue
-	theme          Theme
-	extraText      string
-	labelAttention []analysis.LabelAttentionScore
-	labelFlow      *analysis.CrossLabelFlow
+	insights          analysis.Insights
+	issueMap          map[string]*model.Issue
+	theme             Theme
+	extraText         string
+	labelAttention    []analysis.LabelAttentionScore
+	labelFlow         *analysis.CrossLabelFlow
+	repositoryCatalog model.RepositoryCatalog
+	hubPresentation   bool
 
 	// Priority triage data (bv-91)
 	topPicks []analysis.TopPick
@@ -178,6 +180,14 @@ type InsightsModel struct {
 	width  int
 	height int
 	ready  bool
+}
+
+// SetRepositoryPresentation updates Hub-only detail metadata and rebuilds the
+// cached detail content for the current selection.
+func (m *InsightsModel) SetRepositoryPresentation(catalog model.RepositoryCatalog, enabled bool) {
+	m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+	m.hubPresentation = enabled
+	m.updateDetailContent()
 }
 
 // NewInsightsModel creates a new interactive insights model
@@ -1729,6 +1739,7 @@ func (m *InsightsModel) buildDetailMarkdown(selectedID string) string {
 	}
 
 	var sb strings.Builder
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubPresentation)
 
 	// === HEADER: Title with Type Icon ===
 	sb.WriteString(fmt.Sprintf("# %s %s\n\n", GetTypeIconMD(string(issue.IssueType)), issue.Title))
@@ -1750,9 +1761,13 @@ func (m *InsightsModel) buildDetailMarkdown(selectedID string) string {
 	}
 	sb.WriteString("\n")
 
+	if len(presentation.Names) > 0 {
+		sb.WriteString(fmt.Sprintf("**Repositories:** `%s`\n\n", strings.Join(presentation.Names, "` `")))
+	}
+
 	// === Labels ===
-	if len(issue.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("**Labels:** `%s`\n\n", strings.Join(issue.Labels, "` `")))
+	if len(presentation.Labels) > 0 {
+		sb.WriteString(fmt.Sprintf("**Labels:** `%s`\n\n", strings.Join(presentation.Labels, "` `")))
 	}
 
 	// === Graph Metrics Section ===

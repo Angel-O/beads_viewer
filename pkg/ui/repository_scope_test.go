@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,8 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func hubScopeCatalog(ids ...string) model.RepositoryCatalog {
@@ -179,6 +183,253 @@ func containsAll(value string, needles ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
+	issue := model.Issue{
+		ID:     "multi",
+		Title:  "Multi repository",
+		Status: model.StatusOpen,
+		Labels: []string{"ctx:zeta", "work", "Ctx:upper", "ctx:Mixed", "ctx:alpha", "myctx:keep"},
+	}
+	catalog := model.RepositoryCatalog{
+		{ID: "ctx:zeta", Name: "teams/zeta/service", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: model.RepositoryIdentityHubContext},
+	}
+
+	presentation := repositoryPresentationForIssue(issue, catalog, true)
+	if presentation.ID != "ctx:alpha" || presentation.Name != "teams/alpha/service" || presentation.Extra != 1 {
+		t.Fatalf("presentation = %+v", presentation)
+	}
+	if got := strings.Join(presentation.Names, ","); got != "teams/alpha/service,teams/zeta/service" {
+		t.Fatalf("repository names = %q", got)
+	}
+	if got := strings.Join(presentation.Labels, ","); got != "work,Ctx:upper,myctx:keep" {
+		t.Fatalf("visible labels = %q", got)
+	}
+	if got := strings.Join(issue.Labels, ","); got != "ctx:zeta,work,Ctx:upper,ctx:Mixed,ctx:alpha,myctx:keep" {
+		t.Fatalf("source labels mutated: %q", got)
+	}
+	encoded, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAll(string(encoded), `"ctx:alpha"`, `"ctx:Mixed"`, `"Ctx:upper"`, `"myctx:keep"`) {
+		t.Fatalf("raw JSON/robot label contract changed: %s", encoded)
+	}
+
+	item := IssueItem{Issue: issue}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = catalog
+	m.decorateIssueItem(&item)
+	filterValue := item.FilterValue()
+	if !containsAll(filterValue, "teams/alpha/service", "teams/zeta/service", "Ctx:upper", "myctx:keep") || strings.Contains(filterValue, "ctx:alpha") {
+		t.Fatalf("fuzzy display tokens = %q", filterValue)
+	}
+}
+
+func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {
+	issue := model.Issue{ID: "one", Title: "One", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "backend"}}
+	catalog := model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = catalog
+	m.refreshRepositoryPresentation()
+
+	listDetail := m.viewport.View()
+	if !containsAll(listDetail, "Repositories:", "alpha/service", "Labels:", "backend") || strings.Contains(listDetail, "ctx:alpha") {
+		t.Fatalf("list detail presentation:\n%s", listDetail)
+	}
+
+	card := m.board.renderCard(issue, 42, false, 0, 0)
+	if !strings.Contains(card, "[alph…") || strings.Contains(card, "ctx:") {
+		t.Fatalf("board card presentation:\n%s", card)
+	}
+	for _, line := range strings.Split(card, "\n") {
+		if width := lipgloss.Width(line); width > 46 {
+			t.Fatalf("board card line width = %d: %q", width, line)
+		}
+	}
+
+	m.insightsPanel.issueMap = m.issueMap
+	insightsDetail := m.insightsPanel.buildDetailMarkdown("one")
+	if !containsAll(insightsDetail, "Repositories:", "alpha/service", "Labels:", "backend") || strings.Contains(insightsDetail, "ctx:alpha") {
+		t.Fatalf("insights detail presentation:\n%s", insightsDetail)
+	}
+}
+
+func TestHubCatalogChangeInvalidatesBoardAndInsightsPresentationCaches(t *testing.T) {
+	issue := model.Issue{ID: "one", Title: "One", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
+	oldCatalog := model.RepositoryCatalog{{ID: "ctx:alpha", Name: "old/name", Kind: model.RepositoryIdentityHubContext}}
+	newCatalog := model.RepositoryCatalog{{ID: "ctx:alpha", Name: "new/name", Kind: model.RepositoryIdentityHubContext}}
+
+	theme := DefaultTheme(lipgloss.NewRenderer(io.Discard))
+	board := NewBoardModel([]model.Issue{issue}, theme)
+	board.SetRepositoryPresentation(oldCatalog, true)
+	board.ShowDetail()
+	_ = board.renderDetailPanel(80, 30)
+	if !strings.Contains(board.detailVP.View(), "old/name") {
+		t.Fatalf("initial board detail missing old name: %s", board.detailVP.View())
+	}
+	board.SetRepositoryPresentation(newCatalog, true)
+	_ = board.renderDetailPanel(80, 30)
+	if !strings.Contains(board.detailVP.View(), "new/name") || strings.Contains(board.detailVP.View(), "old/name") {
+		t.Fatalf("board detail cache stale: %s", board.detailVP.View())
+	}
+
+	issueMap := map[string]*model.Issue{"one": &issue}
+	insights := NewInsightsModel(analysis.Insights{Bottlenecks: []analysis.InsightItem{{ID: "one"}}}, issueMap, theme)
+	insights.SetRepositoryPresentation(oldCatalog, true)
+	insights.updateDetailContent()
+	insights.SetRepositoryPresentation(newCatalog, true)
+	if !strings.Contains(insights.detailContent, "new/name") || strings.Contains(insights.detailContent, "old/name") {
+		t.Fatalf("insights detail cache stale: %s", insights.detailContent)
+	}
+}
+
+func TestHubContextCleanupIsTUIOnlyAndExact(t *testing.T) {
+	issues := []model.Issue{{
+		ID:     "one",
+		Title:  "One",
+		Status: model.StatusOpen,
+		Labels: []string{"ctx:alpha", "Ctx:upper", "myctx:keep", "backend"},
+	}}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", Kind: model.RepositoryIdentityHubContext}}
+	m.refreshRepositoryPresentation()
+
+	extraction := analysis.ExtractLabels(m.repositoryIssues)
+	labels := filterHubContextLabels(extraction.Labels)
+	if got := strings.Join(labels, ","); got != "Ctx:upper,backend,myctx:keep" {
+		t.Fatalf("picker labels = %q", got)
+	}
+	health := analysis.ComputeAllLabelHealth(issues, analysis.DefaultLabelHealthConfig(), time.Now().UTC(), m.analysis)
+	health = projectHubLabelHealth(health, true)
+	if health.TotalLabels != 3 || len(health.Labels) != 3 {
+		t.Fatalf("projected health metadata = %+v", health)
+	}
+	for _, label := range health.Labels {
+		if label.Label == "ctx:alpha" {
+			t.Fatalf("context label remained in health: %+v", health.Labels)
+		}
+	}
+	if got := strings.Join(m.issues[0].Labels, ","); got != "ctx:alpha,Ctx:upper,myctx:keep,backend" {
+		t.Fatalf("canonical labels changed: %q", got)
+	}
+}
+
+func TestRenderAttentionViewUsesProvidedResult(t *testing.T) {
+	result := analysis.LabelAttentionResult{Labels: []analysis.LabelAttentionScore{
+		{Label: "second", AttentionScore: 9},
+		{Label: "first", AttentionScore: 1},
+	}}
+	view := RenderAttentionView(result, 80)
+	if strings.Index(view, "second") > strings.Index(view, "first") {
+		t.Fatalf("attention display reordered cached result:\n%s", view)
+	}
+}
+
+func TestHubCatalogRefreshPreservesActiveFuzzyResults(t *testing.T) {
+	issue := model.Issue{ID: "one", Title: "Stable title", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "old/name", Kind: model.RepositoryIdentityHubContext}}
+	m.refreshRepositoryPresentation()
+	m.list.SetFilterText("Stable")
+	if len(m.list.VisibleItems()) != 1 {
+		t.Fatalf("initial fuzzy matches = %d", len(m.list.VisibleItems()))
+	}
+
+	m.applyRepositoryCatalogUpdate(model.RepositoryCatalog{{ID: "ctx:alpha", Name: "new/name", Kind: model.RepositoryIdentityHubContext}}, 1, true, false, nil)
+	if len(m.list.VisibleItems()) != 1 || m.list.SelectedItem().(IssueItem).Issue.ID != "one" {
+		t.Fatalf("catalog refresh lost fuzzy result: %+v", m.list.VisibleItems())
+	}
+	if !strings.Contains(m.list.VisibleItems()[0].FilterValue(), "new/name") {
+		t.Fatalf("catalog refresh left stale fuzzy tokens: %q", m.list.VisibleItems()[0].FilterValue())
+	}
+
+	reloaded := model.Issue{ID: "two", Title: "Stable title", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder([]model.Issue{reloaded}).Build(), SnapshotVer: 1})
+	m = updated.(Model)
+	if len(m.list.VisibleItems()) != 1 || m.list.SelectedItem().(IssueItem).Issue.ID != "two" {
+		t.Fatalf("snapshot reload lost fuzzy result: %+v", m.list.VisibleItems())
+	}
+}
+
+func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
+	issues := []model.Issue{{
+		ID: "one", Title: "One", Status: model.StatusOpen,
+		Labels: []string{"ctx:alpha", "Ctx:upper", "myctx:keep", "backend"},
+	}}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", Kind: model.RepositoryIdentityHubContext}}
+	m.refreshRepositoryPresentation()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	m = updated.(Model)
+	if got := strings.Join(m.labelPicker.allLabels, ","); got != "Ctx:upper,backend,myctx:keep" {
+		t.Fatalf("Hub label picker labels = %q", got)
+	}
+	m.showLabelPicker = false
+	m.focused = focusList
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	m = updated.(Model)
+	for _, health := range m.labelDashboard.labels {
+		if strings.HasPrefix(health.Label, "ctx:") {
+			t.Fatalf("label dashboard contains context metadata: %+v", m.labelDashboard.labels)
+		}
+	}
+	m.focused = focusList
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	m = updated.(Model)
+	for _, score := range m.attentionCache.Labels {
+		if strings.HasPrefix(score.Label, "ctx:") {
+			t.Fatalf("attention cache contains context metadata: %+v", m.attentionCache.Labels)
+		}
+	}
+	if len(m.attentionCache.Labels) > 0 {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+		m = updated.(Model)
+		if strings.HasPrefix(m.currentFilter, "label:ctx:") {
+			t.Fatalf("attention action selected context metadata: %q", m.currentFilter)
+		}
+	}
+}
+
+func TestRepositoryBadgeKeepsLocalFormatAndKeysHubColorByIdentity(t *testing.T) {
+	if got := RenderRepoBadge("backend-service"); !strings.Contains(got, "[BACK]") {
+		t.Fatalf("local repository badge changed: %q", got)
+	}
+	if GetRepoColor("ctx:alpha") == GetRepoColor("ctx:gamma") {
+		t.Fatal("test identities unexpectedly share a color")
+	}
+	if got := RenderRepositoryBadge("ctx:alpha", "friendly"); !strings.Contains(got, "[friendly]") {
+		t.Fatalf("Hub badge did not use friendly name: %q", got)
+	}
+	first := RenderRepositoryBadge("ctx:first", "abcdefgh-one/service")
+	second := RenderRepositoryBadge("ctx:second", "abcdefgh-two/service")
+	if first == second {
+		t.Fatalf("colliding friendly names produced identical badges: %q", first)
+	}
+}
+
+func TestHubRepositoryBadgeFitsNarrowBoardCard(t *testing.T) {
+	issue := model.Issue{ID: "very-long-issue-id", Title: "Title", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "backend"}}
+	board := NewBoardModel([]model.Issue{issue}, DefaultTheme(lipgloss.NewRenderer(io.Discard)))
+	board.SetRepositoryPresentation(model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext}}, true)
+	card := board.renderCard(issue, 20, false, 0, 0)
+	if !strings.Contains(card, "ver…") {
+		t.Fatalf("narrow repository badge displaced issue ID: %q", card)
+	}
+	for _, line := range strings.Split(card, "\n") {
+		if width := lipgloss.Width(line); width > 24 {
+			t.Fatalf("narrow board card line width = %d: %q", width, line)
+		}
+	}
 }
 
 func TestRepositoryScopeSurvivesPhase2AndSnapshotReload(t *testing.T) {

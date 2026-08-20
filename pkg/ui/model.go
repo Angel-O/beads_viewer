@@ -801,8 +801,41 @@ func (m *Model) updateListDelegate() {
 		ShowPriorityHints: m.showPriorityHints,
 		PriorityHints:     m.priorityHints,
 		WorkspaceMode:     m.workspaceMode,
+		ShowRepositories:  m.hubRepositoryPresentation(),
 		ShowSearchScores:  m.shouldShowSearchScores(),
 	})
+}
+
+func (m *Model) setListItemsPreservingFilter(items []list.Item) {
+	filterState := m.list.FilterState()
+	filterText := m.list.FilterInput.Value()
+	selectedID := ""
+	if selected, ok := m.list.SelectedItem().(IssueItem); ok {
+		selectedID = selected.Issue.ID
+	}
+	for i := range items {
+		item, ok := items[i].(IssueItem)
+		if !ok {
+			continue
+		}
+		m.decorateIssueItem(&item)
+		items[i] = item
+	}
+	m.list.SetItems(items)
+	if filterState == list.Unfiltered {
+		return
+	}
+	m.list.SetFilterText(filterText)
+	if filterState == list.Filtering {
+		m.list.SetFilterState(list.Filtering)
+	}
+	for i, visible := range m.list.VisibleItems() {
+		item, ok := visible.(IssueItem)
+		if ok && item.Issue.ID == selectedID {
+			m.list.Select(i)
+			return
+		}
+	}
 }
 
 func (m *Model) applySemanticScores(term string) {
@@ -1326,6 +1359,7 @@ func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 		m.statusMsg = fmt.Sprintf("Repository catalog load failed: %v", err)
 		m.statusIsError = true
 	}
+	m.refreshRepositoryPresentation()
 	autoRefresh := hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
 	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
 		worker, err := NewBackgroundWorker(WorkerConfig{
@@ -1358,6 +1392,8 @@ func (m *Model) reloadRepositoryCatalog() error {
 	if m.workspaceMode {
 		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.issues)
 		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		m.board.SetRepositoryPresentation(m.repositoryCatalog, false)
+		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false)
 		return nil
 	}
 	if strings.TrimSpace(m.hubConfigPath) == "" {
@@ -1373,6 +1409,8 @@ func (m *Model) reloadRepositoryCatalog() error {
 	}
 	m.repositoryCatalog = catalog
 	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
+	m.board.SetRepositoryPresentation(catalog, true)
+	m.insightsPanel.SetRepositoryPresentation(catalog, true)
 	return nil
 }
 
@@ -1390,6 +1428,7 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		before := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
 		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		m.refreshRepositoryPresentation()
 		if !slices.Equal(before, sortedRepoKeys(m.activeRepos)) {
 			m.refreshRepositoryCandidates()
 		}
@@ -1420,6 +1459,7 @@ func (m *Model) rebuildInsightsPanel() {
 
 	prev := m.insightsPanel
 	panel := NewInsightsModel(ins, m.issueMap, m.theme)
+	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
 	panel.focusedPanel = prev.focusedPanel
 	panel.selectedIndex = prev.selectedIndex
 	panel.scrollOffset = prev.scrollOffset
@@ -1782,6 +1822,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focused == focusLabelDashboard {
 			cfg := analysis.DefaultLabelHealthConfig()
 			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
 		}
@@ -2073,7 +2114,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					filteredIssues = append(filteredIssues, issue)
 				}
 
-				m.list.SetItems(filteredItems)
+				m.setListItemsPreservingFilter(filteredItems)
 				m.updateSemanticIDs(filteredItems)
 				m.board.SetIssues(filteredIssues)
 
@@ -2154,7 +2195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.sortFilteredItems(filteredItems, filteredIssues)
-			m.list.SetItems(filteredItems)
+			m.setListItemsPreservingFilter(filteredItems)
 			m.updateSemanticIDs(filteredItems)
 			if m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
 				m.board.SetSnapshot(m.snapshot)
@@ -2541,6 +2582,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Impact:     m.analysis.GetCriticalPathScore(m.issues[i].ID),
 				RepoPrefix: issueRepoKey(m.issues[i]),
 			}
+			m.decorateIssueItem(&item)
 			item.TriageScore = m.triageScores[m.issues[i].ID]
 			if reasons, exists := m.triageReasons[m.issues[i].ID]; exists {
 				item.TriageReason = reasons.Primary
@@ -2566,7 +2608,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.semanticHybridBuilding = true
 			cmds = append(cmds, BuildHybridMetricsCmd(m.issuesForAsync()))
 		}
-		m.list.SetItems(items)
+		m.setListItemsPreservingFilter(items)
 
 		// Restore selection position
 		if selectedID != "" {
@@ -2600,6 +2642,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			oldHash := m.insightsPanel.triageDataHash
 
 			m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
+			m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
 			m.insightsPanel.topPicks = oldTopPicks
 			m.insightsPanel.recommendations = oldRecs
 			m.insightsPanel.recommendationMap = oldRecMap
@@ -2616,9 +2659,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				attentionStart = time.Now()
 			}
 			cfg := analysis.DefaultLabelHealthConfig()
-			m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
+			m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
 			m.attentionCached = true
-			attText, _ := ComputeAttentionView(m.issues, max(40, m.width-4))
+			attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 			m.rebuildInsightsPanel()
 			m.insightsPanel.labelAttention = m.attentionCache.Labels
 			m.insightsPanel.extraText = attText
@@ -3810,6 +3853,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.labelHealthCached {
 					cfg := analysis.DefaultLabelHealthConfig()
 					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 					m.labelHealthCached = true
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -3824,7 +3868,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
 					m.attentionCached = true
 				}
-				attText, _ := ComputeAttentionView(m.repositoryIssues, max(40, m.width-4))
+				attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
@@ -3913,7 +3957,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Update labels in case they changed
 				labelExtraction := analysis.ExtractLabels(m.repositoryIssues)
 				labelCounts := extractLabelCounts(labelExtraction.Stats)
-				m.labelPicker.SetLabels(labelExtraction.Labels, labelCounts)
+				labels := labelExtraction.Labels
+				if m.hubRepositoryPresentation() {
+					labels = filterHubContextLabels(labels)
+				}
+				m.labelPicker.SetLabels(labels, labelCounts)
 				m.labelPicker.Reset()
 				m.labelPicker.SetSize(m.width, m.height-1)
 				m.showLabelPicker = true
@@ -7081,6 +7129,7 @@ func (m *Model) applyFilter() {
 				DiffStatus: m.getDiffStatus(issue.ID),
 				RepoPrefix: issueRepoKey(issue),
 			}
+			m.decorateIssueItem(&item)
 			// Add triage data (bv-151)
 			item.TriageScore = m.triageScores[issue.ID]
 			if reasons, exists := m.triageReasons[issue.ID]; exists {
@@ -7098,7 +7147,7 @@ func (m *Model) applyFilter() {
 	// Apply sort mode (bv-3ita)
 	m.sortFilteredItems(filteredItems, filteredIssues)
 
-	m.list.SetItems(filteredItems)
+	m.setListItemsPreservingFilter(filteredItems)
 	m.updateSemanticIDs(filteredItems)
 	if m.snapshot != nil && m.snapshot.BoardState != nil && m.currentFilter == "all" && m.activeRepos == nil && len(filteredIssues) == len(m.snapshot.Issues) {
 		m.board.SetSnapshot(m.snapshot)
@@ -7153,7 +7202,7 @@ func (m *Model) refreshListItemsPhase2() {
 		items[i] = item
 	}
 
-	m.list.SetItems(items)
+	m.setListItemsPreservingFilter(items)
 	if selectedIdx >= 0 && selectedIdx < len(items) {
 		m.list.Select(selectedIdx)
 	}
@@ -7328,6 +7377,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 				DiffStatus: m.getDiffStatus(issue.ID),
 				RepoPrefix: issueRepoKey(issue),
 			}
+			m.decorateIssueItem(&item)
 			// Add triage data (bv-151)
 			item.TriageScore = m.triageScores[issue.ID]
 			if reasons, exists := m.triageReasons[issue.ID]; exists {
@@ -7459,7 +7509,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 		})
 	}
 
-	m.list.SetItems(filteredItems)
+	m.setListItemsPreservingFilter(filteredItems)
 	m.updateSemanticIDs(filteredItems)
 	m.board.SetIssues(filteredIssues)
 	// Generate insights for graph view (for metric rankings and sorting)
@@ -7778,9 +7828,14 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation())
+	if len(presentation.Names) > 0 {
+		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
+	}
+
 	// Labels (bv-f103 fix: display labels in detail view)
-	if len(item.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(item.Labels, ", ")))
+	if len(presentation.Labels) > 0 {
+		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(presentation.Labels, ", ")))
 	}
 
 	// Triage Insights (bv-151)
