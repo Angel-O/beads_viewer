@@ -14,6 +14,9 @@ import (
 func ComputeAttentionView(issues []model.Issue, width int) (string, error) {
 	cfg := analysis.DefaultLabelHealthConfig()
 	result := analysis.ComputeLabelAttentionScores(issues, cfg, time.Now().UTC())
+	if len(result.Labels) == 0 {
+		return "No labels available for Attention analysis", nil
+	}
 
 	headers := []string{"Rank", "Label", "Attention", "Reason"}
 	sepWidth := len(" | ") * (len(headers) - 1)
@@ -36,8 +39,8 @@ func ComputeAttentionView(issues []model.Issue, width int) (string, error) {
 
 	row(headers, true)
 	limit := len(result.Labels)
-	if limit > 10 {
-		limit = 10
+	if limit > 9 {
+		limit = 9
 	}
 	for i := 0; i < limit; i++ {
 		s := result.Labels[i]

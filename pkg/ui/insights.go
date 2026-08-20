@@ -645,7 +645,11 @@ func (m *InsightsModel) View() string {
 	}
 
 	if m.extraText != "" {
-		return m.theme.Base.Render(m.extraText)
+		return m.theme.Base.
+			Width(m.width).
+			Height(m.height).
+			MaxHeight(m.height).
+			Render(m.extraText)
 	}
 
 	t := m.theme
