@@ -6226,7 +6226,7 @@ func (m *Model) renderFooter() string {
 	}
 
 	labelHint := ""
-	if m.focused != focusLabelDashboard {
+	if m.focused != focusLabelDashboard && m.focused != focusFlowMatrix {
 		labelHint = lipgloss.NewStyle().
 			Foreground(ColorFooterHint).
 			Padding(0, 1).

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // =============================================================================
@@ -319,6 +320,24 @@ func TestFlowMatrixModelSetDataEmpty(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "No cross-label dependencies found") {
 		t.Error("View() should show 'no dependencies' for nil flow data")
+	}
+	if got := lipgloss.Height(view); got != 24 {
+		t.Fatalf("empty flow height = %d, want 24", got)
+	}
+}
+
+func TestFlowMatrixModelSparseReservesConfiguredHeight(t *testing.T) {
+	theme := testFlowTheme()
+	m := ui.NewFlowMatrixModel(theme)
+	m.SetData(&analysis.CrossLabelFlow{
+		Labels:              []string{"backend", "frontend"},
+		FlowMatrix:          [][]int{{0, 1}, {0, 0}},
+		TotalCrossLabelDeps: 1,
+	}, nil)
+	m.SetSize(100, 39)
+
+	if got := lipgloss.Height(m.View()); got != 39 {
+		t.Fatalf("sparse flow height = %d, want 39", got)
 	}
 }
 

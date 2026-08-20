@@ -290,11 +290,11 @@ func (m *FlowMatrixModel) SelectedLabel() string {
 // View renders the flow matrix dashboard
 func (m FlowMatrixModel) View() string {
 	if !m.ready {
-		return m.theme.Base.Render("No cross-label dependencies found")
+		return m.renderFullHeight(m.theme.Base.Render("No cross-label dependencies found"))
 	}
 
 	if m.showDrilldown {
-		return m.renderDrilldown()
+		return m.renderFullHeight(m.renderDrilldown())
 	}
 
 	// Calculate panel widths with safety bounds
@@ -371,7 +371,15 @@ func (m FlowMatrixModel) View() string {
 	// Footer
 	footer := m.renderFooter()
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body.String(), footer)
+	return m.renderFullHeight(lipgloss.JoinVertical(lipgloss.Left, header, body.String(), footer))
+}
+
+func (m FlowMatrixModel) renderFullHeight(content string) string {
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		MaxHeight(m.height).
+		Render(content)
 }
 
 func (m FlowMatrixModel) renderHeader() string {
