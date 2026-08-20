@@ -15,24 +15,37 @@ func TestComputeAttentionView_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeAttentionView error: %v", err)
 	}
-	if !strings.Contains(out, "Rank") || !strings.Contains(out, "Label") || !strings.Contains(out, "Attention") || !strings.Contains(out, "Reason") {
-		t.Fatalf("expected header columns, got:\n%s", out)
+	if out != "No labels available for Attention analysis" {
+		t.Fatalf("unexpected empty state: %q", out)
 	}
+}
 
-	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 line (header only), got %d:\n%s", len(lines), out)
+func TestComputeAttentionView_ContextOnlyUsesEmptyState(t *testing.T) {
+	out, err := ComputeAttentionView([]model.Issue{{
+		ID:     "context",
+		Status: model.StatusOpen,
+		Labels: []string{"ctx:project"},
+	}}, 80)
+	if err != nil {
+		t.Fatalf("ComputeAttentionView error: %v", err)
+	}
+	if out != "No labels available for Attention analysis" {
+		t.Fatalf("unexpected context-only empty state: %q", out)
 	}
 }
 
 func TestComputeAttentionView_RespectsWidthWhenWideEnough(t *testing.T) {
 	const width = 80
-	out, err := ComputeAttentionView(nil, width)
+	out, err := ComputeAttentionView([]model.Issue{{
+		ID:     "A",
+		Status: model.StatusOpen,
+		Labels: []string{"backend"},
+	}}, width)
 	if err != nil {
 		t.Fatalf("ComputeAttentionView error: %v", err)
 	}
 
-	line := strings.TrimSuffix(out, "\n")
+	line := strings.SplitN(out, "\n", 2)[0]
 	if got := runewidth.StringWidth(line); got != width {
 		t.Fatalf("expected header width %d, got %d:\n%q", width, got, line)
 	}
