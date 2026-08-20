@@ -5526,7 +5526,7 @@ func main() {
 			os.Exit(0)
 		}
 
-		if len(issues) == 0 {
+		if shouldExitEmptyInteractive(len(issues), usesHubConfigStore) {
 			fmt.Println("No issues found. Create some with 'br create'!")
 			os.Exit(0)
 		}
@@ -5603,6 +5603,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, enrichCommandParseError(err, originalArgs))
 		os.Exit(1)
 	}
+}
+
+func shouldExitEmptyInteractive(issueCount int, hubMode bool) bool {
+	return issueCount == 0 && !hubMode
 }
 
 func runTUIProgram(m ui.Model) error {

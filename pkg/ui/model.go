@@ -269,7 +269,7 @@ func StartBackgroundWorkerCmd(w *BackgroundWorker) tea.Cmd {
 			return nil
 		}
 		if err := w.Start(); err != nil {
-			return SnapshotErrorMsg{Err: fmt.Errorf("starting background worker: %w", err), Recoverable: false}
+			return SnapshotErrorMsg{Err: fmt.Errorf("starting background worker: %w", err), Recoverable: false, StartFailure: true}
 		}
 		w.TriggerRefresh()
 		return nil
@@ -487,6 +487,7 @@ type Model struct {
 	snapshotInitPending bool
 	// backgroundSnapshotApplied distinguishes the worker's initial snapshot from reloads.
 	backgroundSnapshotApplied bool
+	lastSnapshotVersion       uint64
 	// backgroundWorker manages async data loading (nil if background mode disabled)
 	backgroundWorker  *BackgroundWorker
 	workerSpinnerIdx  int // Spinner frame for background worker activity (bv-9nfy)
@@ -1314,8 +1315,22 @@ func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 		m.statusMsg = fmt.Sprintf("Repository catalog load failed: %v", err)
 		m.statusIsError = true
 	}
-	if m.backgroundWorker != nil {
-		if err := m.backgroundWorker.SetHubConfigPath(path, hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))); err != nil {
+	autoRefresh := hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
+	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
+		worker, err := NewBackgroundWorker(WorkerConfig{
+			BeadsPath:     m.beadsPath,
+			DebounceDelay: 200 * time.Millisecond,
+			HubConfigPath: path,
+		})
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
+			m.statusIsError = true
+		} else {
+			m.backgroundWorker = worker
+			m.snapshotInitPending = len(m.issues) == 0
+		}
+	} else if m.backgroundWorker != nil {
+		if err := m.backgroundWorker.SetHubConfigPath(path, autoRefresh); err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
 			m.statusIsError = true
 		}
@@ -1348,6 +1363,26 @@ func (m *Model) reloadRepositoryCatalog() error {
 	m.repositoryCatalog = catalog
 	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
 	return nil
+}
+
+func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, generation uint64, changed, recovered bool, err error) {
+	if m.workspaceMode || generation < m.catalogGeneration {
+		return
+	}
+	m.catalogGeneration = generation
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", err)
+		m.statusIsError = true
+		return
+	}
+	if changed {
+		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+	}
+	if recovered && (strings.HasPrefix(m.statusMsg, "Repository catalog load failed:") || strings.HasPrefix(m.statusMsg, "Repository catalog reload failed")) {
+		m.statusMsg = ""
+		m.statusIsError = false
+	}
 }
 
 // SetSemanticDatasetPath sets the stable repository or dataset identity used
@@ -1846,38 +1881,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case RepositoryCatalogReadyMsg:
-		if m.workspaceMode {
-			if m.backgroundWorker != nil {
-				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
-			}
-			return m, nil
-		}
-		if msg.Generation < m.catalogGeneration {
-			if m.backgroundWorker != nil {
-				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
-			}
-			return m, nil
-		}
-		m.catalogGeneration = msg.Generation
-		m.repositoryCatalog = append(model.RepositoryCatalog(nil), msg.Catalog...)
-		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.Generation, true, msg.Recovered, nil)
 		if m.backgroundWorker != nil {
 			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
 		}
 		return m, nil
 
 	case RepositoryCatalogErrorMsg:
-		if m.workspaceMode {
-			if m.backgroundWorker != nil {
-				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
-			}
-			return m, nil
-		}
-		if msg.Generation >= m.catalogGeneration && msg.Err != nil {
-			m.catalogGeneration = msg.Generation
-			m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", msg.Err)
-			m.statusIsError = true
-		}
+		m.applyRepositoryCatalogUpdate(nil, msg.Generation, false, false, msg.Err)
 		if m.backgroundWorker != nil {
 			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
 		}
@@ -1891,6 +1902,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
 			}
 			return m, nil
+		}
+		if msg.SnapshotVer > 0 && msg.SnapshotVer <= m.lastSnapshotVersion {
+			if m.backgroundWorker == nil || m.backgroundWorker.GetSnapshot() != msg.Snapshot {
+				pooled := msg.Snapshot.pooledIssues
+				msg.Snapshot.pooledIssues = nil
+				loader.ReturnIssuePtrsToPool(pooled)
+			}
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
+		if msg.SnapshotVer > 0 {
+			m.lastSnapshotVersion = msg.SnapshotVer
+		}
+		if m.watcher != nil {
+			m.watcher.Stop()
+			m.watcher = nil
 		}
 
 		firstBackgroundSnapshot := m.backgroundWorker != nil && !m.backgroundSnapshotApplied
@@ -2208,6 +2237,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Reloaded %d issues", len(m.issues))
 		}
 		m.statusIsError = false
+		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.CatalogGeneration, msg.CatalogChanged, msg.CatalogRecovered, msg.CatalogError)
 
 		// Wait for Phase 2 if not ready
 		if msg.Snapshot.Analysis != nil {
@@ -2233,6 +2263,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("Background reload error: %v", msg.Err)
 			}
 			m.statusIsError = true
+		}
+		if msg.StartFailure {
+			if m.backgroundWorker != nil {
+				m.backgroundWorker.Stop()
+				m.backgroundWorker = nil
+			}
+			if m.watcher != nil {
+				cmds = append(cmds, WatchFileCmd(m.watcher))
+			}
 		}
 		if m.backgroundWorker != nil {
 			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))

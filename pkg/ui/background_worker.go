@@ -43,6 +43,8 @@ const (
 	WorkerStopped
 )
 
+const minWorkerMessageBuffer = 2
+
 // WorkerLogLevel controls background worker log verbosity.
 type WorkerLogLevel int
 
@@ -202,6 +204,7 @@ type BackgroundWorker struct {
 	catalogGeneration   uint64
 	catalog             model.RepositoryCatalog
 	catalogLoader       func(string, []model.Issue) (model.RepositoryCatalog, error)
+	catalogFailed       bool
 	currentRecipe       *recipe.Recipe
 	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
 	currentRecipeHash   string // Recipe fingerprint for rebuild keys (bv-4ilb)
@@ -211,6 +214,7 @@ type BackgroundWorker struct {
 	tracePath           string
 	traceFile           *os.File
 	traceMu             sync.Mutex
+	sendMu              sync.Mutex
 
 	// Idle-time GC management (bv-4yje).
 	idleGCEnabled     bool
@@ -298,6 +302,9 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 	}
 	if cfg.MessageBuffer <= 0 {
 		cfg.MessageBuffer = envPositiveIntOr("BV_CHANNEL_BUFFER", 8)
+	}
+	if cfg.MessageBuffer < minWorkerMessageBuffer {
+		cfg.MessageBuffer = minWorkerMessageBuffer
 	}
 	if cfg.HeartbeatInterval == 0 {
 		cfg.HeartbeatInterval = envDurationSeconds("BV_HEARTBEAT_INTERVAL_S", 5*time.Second)
@@ -743,6 +750,27 @@ func (w *BackgroundWorker) Stop() {
 		}
 	}
 	w.workWG.Wait()
+	retainedMessages := make([]tea.Msg, 0, cap(w.msgCh))
+	for {
+		select {
+		case msg := <-w.msgCh:
+			if _, isSnapshot := msg.(SnapshotReadyMsg); isSnapshot {
+				w.releaseDroppedWorkerMessage(msg)
+			} else {
+				retainedMessages = append(retainedMessages, msg)
+			}
+		default:
+			goto drainedMessages
+		}
+	}
+
+drainedMessages:
+	for _, msg := range retainedMessages {
+		select {
+		case w.msgCh <- msg:
+		default:
+		}
+	}
 
 	var pooledRefs []*model.Issue
 	w.mu.Lock()
@@ -1314,9 +1342,18 @@ func (w *BackgroundWorker) process() {
 		}
 	}
 	catalogChanged := false
-	if !catalogStale && catalogErr == nil && w.hubConfigPath != "" && !slices.Equal(w.catalog, catalog) {
-		w.catalog = catalog
-		catalogChanged = true
+	catalogRecovered := false
+	if !catalogStale && w.hubConfigPath != "" {
+		if catalogErr != nil {
+			w.catalogFailed = true
+		} else {
+			catalogRecovered = w.catalogFailed
+			w.catalogFailed = false
+			if !slices.Equal(w.catalog, catalog) {
+				w.catalog = catalog
+				catalogChanged = true
+			}
+		}
 	}
 	// Drop file events caused by this export, but preserve queued forced rebuilds.
 	if refreshBDExport && !w.forceNext && !w.refreshBDExportNext &&
@@ -1341,6 +1378,10 @@ func (w *BackgroundWorker) process() {
 	w.metrics.lastCoalesceCount.Store(coalesced)
 
 	w.recordActivity()
+	deliveredCatalogErr := catalogErr
+	if catalogStale {
+		deliveredCatalogErr = nil
+	}
 
 	// Notify UI only if we have a new snapshot
 	if snapshot != nil {
@@ -1360,22 +1401,30 @@ func (w *BackgroundWorker) process() {
 			"queue_depth": queueDepth,
 		})
 		w.send(SnapshotReadyMsg{
-			Snapshot:      snapshot,
-			FileChangeAt:  fileChangeAt,
-			SentAt:        readyAt,
-			SnapshotVer:   version,
-			QueueDepth:    queueDepth,
-			CoalesceCount: coalesced,
+			Snapshot:          snapshot,
+			FileChangeAt:      fileChangeAt,
+			SentAt:            readyAt,
+			SnapshotVer:       version,
+			QueueDepth:        queueDepth,
+			CoalesceCount:     coalesced,
+			Catalog:           catalog,
+			CatalogGeneration: catalogGeneration,
+			CatalogChanged:    !catalogStale && catalogChanged,
+			CatalogRecovered:  !catalogStale && catalogRecovered,
+			CatalogError:      deliveredCatalogErr,
 		})
 	}
 	if !catalogStale {
 		if catalogErr != nil {
 			w.scheduleCatalogRetry()
-			w.send(RepositoryCatalogErrorMsg{Err: catalogErr, Generation: catalogGeneration})
 		} else {
 			w.cancelCatalogRetry()
-			if catalogChanged {
-				w.send(RepositoryCatalogReadyMsg{Catalog: catalog, Generation: catalogGeneration})
+		}
+		if snapshot == nil {
+			if catalogErr != nil {
+				w.send(RepositoryCatalogErrorMsg{Err: catalogErr, Generation: catalogGeneration})
+			} else if catalogChanged || catalogRecovered {
+				w.send(RepositoryCatalogReadyMsg{Catalog: catalog, Generation: catalogGeneration, Recovered: catalogRecovered})
 			}
 		}
 	}
@@ -2143,24 +2192,31 @@ func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHas
 
 // SnapshotReadyMsg is sent to the UI when a new snapshot is ready.
 type SnapshotReadyMsg struct {
-	Snapshot      *DataSnapshot
-	FileChangeAt  time.Time
-	SentAt        time.Time
-	SnapshotVer   uint64
-	QueueDepth    int64
-	CoalesceCount int64
+	Snapshot          *DataSnapshot
+	FileChangeAt      time.Time
+	SentAt            time.Time
+	SnapshotVer       uint64
+	QueueDepth        int64
+	CoalesceCount     int64
+	Catalog           model.RepositoryCatalog
+	CatalogGeneration uint64
+	CatalogChanged    bool
+	CatalogRecovered  bool
+	CatalogError      error
 }
 
 // SnapshotErrorMsg is sent to the UI when snapshot building fails.
 type SnapshotErrorMsg struct {
-	Err         error
-	Recoverable bool // True if we expect to recover on next file change
+	Err          error
+	Recoverable  bool // True if we expect to recover on next file change
+	StartFailure bool
 }
 
 // RepositoryCatalogReadyMsg carries independently refreshed Hub metadata.
 type RepositoryCatalogReadyMsg struct {
 	Catalog    model.RepositoryCatalog
 	Generation uint64
+	Recovered  bool
 }
 
 // RepositoryCatalogErrorMsg reports a transient catalog load failure. The UI
@@ -2181,21 +2237,77 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 	if w == nil || msg == nil {
 		return
 	}
-	for {
-		select {
-		case w.msgCh <- msg:
-			return
-		case <-w.ctx.Done():
-			return
-		default:
-		}
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	select {
+	case w.msgCh <- msg:
+		return
+	case <-w.ctx.Done():
+		return
+	default:
+	}
 
-		// Channel is full; drop an older message so the newest wins.
+	pending := make([]tea.Msg, 0, cap(w.msgCh)+1)
+	draining := true
+	for draining {
 		select {
-		case <-w.msgCh:
+		case queued := <-w.msgCh:
+			pending = append(pending, queued)
 		default:
+			draining = false
 		}
 	}
+	pending = append(pending, msg)
+	for len(pending) > cap(w.msgCh) {
+		drop := 0
+		for i := 1; i < len(pending); i++ {
+			if w.workerMessagePriority(pending[i]) < w.workerMessagePriority(pending[drop]) {
+				drop = i
+			}
+		}
+		w.releaseDroppedWorkerMessage(pending[drop])
+		pending = append(pending[:drop], pending[drop+1:]...)
+	}
+	for _, queued := range pending {
+		select {
+		case w.msgCh <- queued:
+		case <-w.ctx.Done():
+			return
+		}
+	}
+}
+
+func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
+	switch message := msg.(type) {
+	case SnapshotReadyMsg:
+		w.mu.RLock()
+		current := w.snapshot
+		w.mu.RUnlock()
+		if message.Snapshot != nil && message.Snapshot == current {
+			return 4
+		}
+		return 3
+	case SnapshotErrorMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
+		return 3
+	default:
+		return 1
+	}
+}
+
+func (w *BackgroundWorker) releaseDroppedWorkerMessage(msg tea.Msg) {
+	ready, ok := msg.(SnapshotReadyMsg)
+	if !ok || ready.Snapshot == nil || len(ready.Snapshot.pooledIssues) == 0 {
+		return
+	}
+	w.mu.RLock()
+	current := w.snapshot
+	w.mu.RUnlock()
+	if ready.Snapshot == current {
+		return
+	}
+	pooled := ready.Snapshot.pooledIssues
+	ready.Snapshot.pooledIssues = nil
+	loader.ReturnIssuePtrsToPool(pooled)
 }
 
 // WatcherChanged returns the watcher's change notification channel.

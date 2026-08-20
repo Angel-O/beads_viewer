@@ -2360,3 +2360,24 @@ func TestResolveHistoryConfiguration(t *testing.T) {
 		t.Fatalf("off with discovered config = (%q, %q, %v), want %q", mode, config, err, configPath)
 	}
 }
+
+func TestShouldExitEmptyInteractiveKeepsHubUsable(t *testing.T) {
+	tests := []struct {
+		name       string
+		issueCount int
+		hubMode    bool
+		want       bool
+	}{
+		{name: "ordinary local empty", issueCount: 0, want: true},
+		{name: "Hub empty", issueCount: 0, hubMode: true, want: false},
+		{name: "local populated", issueCount: 1, want: false},
+		{name: "Hub populated", issueCount: 1, hubMode: true, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldExitEmptyInteractive(test.issueCount, test.hubMode); got != test.want {
+				t.Fatalf("shouldExitEmptyInteractive(%d, %v) = %v, want %v", test.issueCount, test.hubMode, got, test.want)
+			}
+		})
+	}
+}
