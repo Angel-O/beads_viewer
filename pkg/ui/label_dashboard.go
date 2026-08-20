@@ -20,6 +20,8 @@ type LabelDashboardModel struct {
 	theme        Theme
 }
 
+const labelDashboardHeaderRows = 2
+
 func NewLabelDashboardModel(theme Theme) LabelDashboardModel {
 	return LabelDashboardModel{theme: theme}
 }
@@ -64,12 +66,17 @@ func (m *LabelDashboardModel) SetData(labels []analysis.LabelHealth) {
 	}
 }
 
+func (m LabelDashboardModel) visibleRows() int {
+	visibleRows := m.height - labelDashboardHeaderRows
+	if visibleRows < 1 {
+		return 1
+	}
+	return visibleRows
+}
+
 // Update handles navigation keys; returns selected label on enter
 func (m *LabelDashboardModel) Update(msg tea.KeyMsg) (string, tea.Cmd) {
-	visibleRows := m.height - 1
-	if visibleRows < 1 {
-		visibleRows = 1
-	}
+	visibleRows := m.visibleRows()
 
 	switch msg.String() {
 	case "j", "down":
@@ -110,24 +117,34 @@ func (m *LabelDashboardModel) Update(msg tea.KeyMsg) (string, tea.Cmd) {
 }
 
 func (m LabelDashboardModel) View() string {
+	criticalCount := 0
+	warningCount := 0
+	for _, label := range m.labels {
+		switch label.HealthLevel {
+		case analysis.HealthLevelCritical:
+			criticalCount++
+		case analysis.HealthLevelWarning:
+			warningCount++
+		}
+	}
+
+	var b strings.Builder
+	metadata := fmt.Sprintf("LABEL HEALTH │ %d labels │ critical %d │ warning %d", len(m.labels), criticalCount, warningCount)
+	b.WriteString(m.theme.Base.Bold(true).Foreground(m.theme.Primary).Render(metadata))
+	b.WriteString("\n")
+
 	if len(m.labels) == 0 {
-		return "No labels found"
+		b.WriteString("No labels found")
+		return lipgloss.NewStyle().Width(m.width).Height(m.height).MaxHeight(m.height).Render(b.String())
 	}
 
 	headers := []string{"Label", "Health", "Blocked", "Velocity 7d/30d", "Stale"}
 	widths := m.computeColumnWidths(headers)
-
-	var b strings.Builder
-	// Header
 	headerLine := m.renderRow(headers, widths, true, false)
 	b.WriteString(headerLine)
 	b.WriteString("\n")
 
-	visibleRows := m.height - 1
-	if visibleRows < 1 {
-		visibleRows = 1
-	}
-
+	visibleRows := m.visibleRows()
 	start := m.scrollOffset
 	end := start + visibleRows
 	if end > len(m.labels) {
@@ -144,7 +161,7 @@ func (m LabelDashboardModel) View() string {
 		}
 	}
 
-	return b.String()
+	return lipgloss.NewStyle().Width(m.width).Height(m.height).MaxHeight(m.height).Render(b.String())
 }
 
 // getRowCells returns the fully rendered (colored) cells for a label row

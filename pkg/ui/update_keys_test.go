@@ -274,8 +274,15 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	if strings.Contains(view, "Visible split issue") {
 		t.Fatalf("split panes remained visible over label dashboard: %q", view)
 	}
-	if !strings.Contains(view, "j/k nav") || !strings.Contains(view, "d drilldown") || !strings.Contains(view, "enter filter") {
+	if !strings.Contains(view, "j/k nav") || !strings.Contains(view, "d drilldown") || !strings.Contains(view, "filter") {
 		t.Fatalf("expected label dashboard controls immediately, got %q", view)
+	}
+	if strings.Contains(view, "tab focus") {
+		t.Fatalf("split-view hints leaked into label dashboard: %q", view)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "j/k nav") {
+		t.Fatalf("expected dashboard footer on terminal bottom row, lines=%d last=%q", len(lines), lines[len(lines)-1])
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -295,7 +302,7 @@ func TestLabelDashboardDrilldownUsesVisibleSelection(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 3})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 4})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
 	m = updated.(Model)

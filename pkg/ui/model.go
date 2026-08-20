@@ -1692,7 +1692,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.issues, cfg, time.Now().UTC(), m.analysis)
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
-			m.statusMsg = ""
 		}
 
 		// Re-sort issues if sorting by Phase 2 metrics (impact/pagerank)
@@ -3646,8 +3645,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
 				m.labelDashboard.SetSize(m.width, m.height-1)
-				m.statusMsg = ""
-				m.statusIsError = false
 				return m, nil
 
 			case "]", "f4":
@@ -6146,12 +6143,12 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// FILTER BADGE - Current view/filter state + quick hint for label dashboard
+	// FILTER BADGE - Current view/filter state
 	// ─────────────────────────────────────────────────────────────────────────
 	var filterTxt string
 	var filterIcon string
 	if m.focused == focusLabelDashboard {
-		filterTxt = "LABELS: j/k nav • h detail • d drilldown • enter filter"
+		filterTxt = "LABELS"
 		filterIcon = "🏷️"
 	} else if m.showLabelGraphAnalysis && m.labelGraphAnalysisResult != nil {
 		filterTxt = fmt.Sprintf("GRAPH %s: esc/q/g close", m.labelGraphAnalysisResult.Label)
@@ -6224,10 +6221,13 @@ func (m *Model) renderFooter() string {
 			Render(fmt.Sprintf("↕ %s", m.sortMode.String()))
 	}
 
-	labelHint := lipgloss.NewStyle().
-		Foreground(ColorFooterHint).
-		Padding(0, 1).
-		Render("L:labels • h:detail")
+	labelHint := ""
+	if m.focused != focusLabelDashboard {
+		labelHint = lipgloss.NewStyle().
+			Foreground(ColorFooterHint).
+			Padding(0, 1).
+			Render("L:labels • h:detail")
+	}
 
 	// Board-specific hints (bv-yg39, bv-naov)
 	if m.isBoardView {
@@ -6600,6 +6600,8 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
+	} else if m.focused == focusLabelDashboard {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("esc")+" back")
 	} else if m.focused == focusInsights {
 		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
 		keyHints = append(keyHints, keyStyle.Render("A")+" attention", keyStyle.Render("F")+" flow")

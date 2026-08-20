@@ -16,8 +16,8 @@ func createTheme() Theme {
 
 func TestLabelDashboardModel_ScrollAndHomeEnd(t *testing.T) {
 	m := NewLabelDashboardModel(Theme{})
-	// height=3 -> visibleRows=2 (header + 2 rows)
-	m.SetSize(80, 3)
+	// height=4 -> metadata + table header + 2 visible rows
+	m.SetSize(80, 4)
 	m.SetData([]analysis.LabelHealth{
 		{Label: "a", HealthLevel: analysis.HealthLevelHealthy, Blocked: 0, Health: 90},
 		{Label: "b", HealthLevel: analysis.HealthLevelHealthy, Blocked: 0, Health: 80},
@@ -89,9 +89,8 @@ func TestLabelDashboardModel_ViewEmptyLabels(t *testing.T) {
 	m.SetData([]analysis.LabelHealth{})
 
 	view := m.View()
-	expected := "No labels found"
-	if view != expected {
-		t.Errorf("View() with empty labels = %q, want %q", view, expected)
+	if !contains(view, "LABEL HEALTH │ 0 labels │ critical 0 │ warning 0") || !contains(view, "No labels found") {
+		t.Errorf("View() with empty labels missing metadata or empty state: %q", view)
 	}
 }
 
@@ -101,9 +100,8 @@ func TestLabelDashboardModel_ViewNilLabels(t *testing.T) {
 	// Don't call SetData, labels is nil
 
 	view := m.View()
-	expected := "No labels found"
-	if view != expected {
-		t.Errorf("View() with nil labels = %q, want %q", view, expected)
+	if !contains(view, "LABEL HEALTH │ 0 labels │ critical 0 │ warning 0") || !contains(view, "No labels found") {
+		t.Errorf("View() with nil labels missing metadata or empty state: %q", view)
 	}
 }
 
@@ -164,6 +162,22 @@ func TestLabelDashboardModel_ViewMultipleLabels(t *testing.T) {
 	if !contains(view, "critical") {
 		t.Error("View should contain 'critical'")
 	}
+	if !contains(view, "LABEL HEALTH │ 3 labels │ critical 1 │ warning 1") {
+		t.Fatalf("View should contain label health metadata: %q", view)
+	}
+}
+
+func TestLabelDashboardModel_ViewSparseReservesConfiguredHeight(t *testing.T) {
+	m := NewLabelDashboardModel(createTheme())
+	m.SetSize(80, 12)
+	m.SetData([]analysis.LabelHealth{
+		{Label: "backend", HealthLevel: analysis.HealthLevelHealthy, Health: 90},
+		{Label: "frontend", HealthLevel: analysis.HealthLevelWarning, Health: 55},
+	})
+
+	if got := lipgloss.Height(m.View()); got != 12 {
+		t.Fatalf("sparse dashboard height=%d, want 12", got)
+	}
 }
 
 func TestLabelDashboardModel_ViewHealthBar(t *testing.T) {
@@ -216,7 +230,7 @@ func TestLabelDashboardModel_ViewCriticalIndicator(t *testing.T) {
 
 func TestLabelDashboardModel_ViewScrolling(t *testing.T) {
 	m := NewLabelDashboardModel(createTheme())
-	// height=4 means visibleRows=3 (header row takes 1)
+	// height=4 means two rows after metadata and table headers.
 	m.SetSize(80, 4)
 
 	// All same health level and health score to maintain insertion order after sort
@@ -343,8 +357,8 @@ func TestLabelDashboardModel_SetDataEmptyAfterPopulated(t *testing.T) {
 	m.SetData([]analysis.LabelHealth{}) // Set to empty
 
 	view := m.View()
-	if view != "No labels found" {
-		t.Errorf("View after empty SetData = %q, want 'No labels found'", view)
+	if !contains(view, "No labels found") {
+		t.Errorf("View after empty SetData missing empty state: %q", view)
 	}
 }
 
