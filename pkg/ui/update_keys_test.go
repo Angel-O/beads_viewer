@@ -277,6 +277,9 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	if !strings.Contains(view, "j/k nav") || !strings.Contains(view, "d drilldown") || !strings.Contains(view, "filter") {
 		t.Fatalf("expected label dashboard controls immediately, got %q", view)
 	}
+	if !strings.Contains(view, "[/F3 close") {
+		t.Fatalf("expected label dashboard toggle-close hint, got %q", view)
+	}
 	if strings.Contains(view, "tab focus") {
 		t.Fatalf("split-view hints leaked into label dashboard: %q", view)
 	}
@@ -292,6 +295,56 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "Visible split issue") {
 		t.Fatalf("expected split view after exiting label dashboard, got %q", view)
+	}
+}
+
+func TestLabelDashboardToggleCloseFromSplitView(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bv-1", Title: "Visible split issue", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "bv-2", Title: "Another issue", Status: model.StatusOpen, Labels: []string{"frontend"}},
+	}
+
+	tests := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "left bracket", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")}},
+		{name: "F3", key: tea.KeyMsg{Type: tea.KeyF3}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+			m = updated.(Model)
+			m.isSplitView = true
+			m.focused = focusList
+			originalFilter := m.currentFilter
+
+			updated, _ = m.Update(tt.key)
+			m = updated.(Model)
+			if m.focused != focusLabelDashboard {
+				t.Fatalf("expected label dashboard focus after opening with %s, got %v", tt.name, m.focused)
+			}
+
+			updated, _ = m.Update(tt.key)
+			m = updated.(Model)
+			if m.focused != focusList || !m.isSplitView {
+				t.Fatalf("expected %s to restore split list, focus=%v split=%v", tt.name, m.focused, m.isSplitView)
+			}
+			if m.currentFilter != originalFilter {
+				t.Fatalf("%s changed filter from %q to %q", tt.name, originalFilter, m.currentFilter)
+			}
+			if m.showLabelDrilldown || m.labelDrilldownLabel != "" || len(m.labelDrilldownIssues) != 0 {
+				t.Fatalf("%s opened drilldown while closing dashboard", tt.name)
+			}
+			if m.showLabelHealthDetail || m.labelHealthDetail != nil {
+				t.Fatalf("%s opened label detail while closing dashboard", tt.name)
+			}
+			if view := m.View(); !strings.Contains(view, "Visible split issue") {
+				t.Fatalf("expected restored split view after %s, got %q", tt.name, view)
+			}
+		})
 	}
 }
 
