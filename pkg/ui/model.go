@@ -2237,7 +2237,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Reloaded %d issues", len(m.issues))
 		}
 		m.statusIsError = false
-		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.CatalogGeneration, msg.CatalogChanged, msg.CatalogRecovered, msg.CatalogError)
+		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.CatalogGeneration, msg.CatalogChanged || msg.CatalogAvailable, msg.CatalogRecovered, msg.CatalogError)
 
 		// Wait for Phase 2 if not ready
 		if msg.Snapshot.Analysis != nil {

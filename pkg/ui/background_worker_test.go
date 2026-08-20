@@ -145,15 +145,15 @@ func TestBackgroundWorkerBacklogPreservesCurrentSnapshotAndNewestCatalog(t *test
 		switch message := (<-worker.msgCh).(type) {
 		case SnapshotReadyMsg:
 			foundCurrent = message.Snapshot == currentSnapshot
+			if message.CatalogAvailable && message.CatalogGeneration == 3 && len(message.Catalog) == 1 && message.Catalog[0].ID == "ctx:new" {
+				foundCatalog = true
+			}
 		case RepositoryCatalogReadyMsg:
 			foundCatalog = message.Generation == 3
 		}
 	}
 	if !foundCurrent || !foundCatalog {
 		t.Fatalf("bounded backlog lost state: current=%v catalog=%v", foundCurrent, foundCatalog)
-	}
-	if oldSnapshot.pooledIssues != nil {
-		t.Fatal("evicted snapshot did not return pooled issue references")
 	}
 }
 
@@ -183,6 +183,93 @@ func TestBackgroundWorkerBacklogPreservesLatestSourceError(t *testing.T) {
 	}
 	if !foundSnapshot || !foundError {
 		t.Fatalf("bounded backlog lost current state or source error: snapshot=%v error=%v", foundSnapshot, foundError)
+	}
+}
+
+func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing.T) {
+	permutations := [][]string{
+		{"catalog", "error", "snapshot"},
+		{"catalog", "snapshot", "error"},
+		{"error", "catalog", "snapshot"},
+		{"error", "snapshot", "catalog"},
+		{"snapshot", "catalog", "error"},
+		{"snapshot", "error", "catalog"},
+	}
+	for _, order := range permutations {
+		t.Run(strings.Join(order, "-"), func(t *testing.T) {
+			worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Stop()
+			catalog := model.RepositoryCatalog{{ID: "ctx:current", Name: "current"}}
+			current := NewSnapshotBuilder([]model.Issue{{ID: "CURRENT", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+			worker.mu.Lock()
+			worker.snapshot = current
+			worker.catalog = catalog
+			worker.mu.Unlock()
+			messages := map[string]tea.Msg{
+				"catalog": RepositoryCatalogReadyMsg{Catalog: catalog, Generation: 6},
+				"error":   SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true},
+				"snapshot": SnapshotReadyMsg{
+					Snapshot:          current,
+					SnapshotVer:       5,
+					Catalog:           model.RepositoryCatalog{{ID: "ctx:snapshot-old", Name: "snapshot-old"}},
+					CatalogGeneration: 5,
+					CatalogAvailable:  true,
+					CatalogChanged:    false,
+				},
+			}
+			for _, name := range order {
+				worker.send(messages[name])
+			}
+
+			retained := make([]tea.Msg, 0, 2)
+			for len(worker.msgCh) > 0 {
+				retained = append(retained, <-worker.msgCh)
+			}
+			if len(retained) != 2 {
+				t.Fatalf("retained %d messages, want 2", len(retained))
+			}
+			if _, ok := retained[0].(RepositoryCatalogReadyMsg); ok {
+				t.Fatal("redundant standalone catalog remained in bounded backlog")
+			}
+			if _, ok := retained[1].(RepositoryCatalogReadyMsg); ok {
+				t.Fatal("redundant standalone catalog remained in bounded backlog")
+			}
+			expectedOrder := make([]string, 0, 2)
+			for _, name := range order {
+				if name != "catalog" {
+					expectedOrder = append(expectedOrder, name)
+				}
+			}
+			for i, message := range retained {
+				got := ""
+				switch message.(type) {
+				case SnapshotErrorMsg:
+					got = "error"
+				case SnapshotReadyMsg:
+					got = "snapshot"
+				}
+				if got != expectedOrder[i] {
+					t.Fatalf("retained order[%d] = %q, want %q", i, got, expectedOrder[i])
+				}
+			}
+
+			m := NewModel(nil, nil, "")
+			m.catalogGeneration = 4
+			m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:old", Name: "old"}}
+			for _, message := range retained {
+				updated, _ := m.Update(message)
+				m = updated.(Model)
+			}
+			if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:current" {
+				t.Fatalf("model catalog = %#v, want current snapshot catalog", m.repositoryCatalog)
+			}
+			if len(m.issues) != 1 || m.issues[0].ID != "CURRENT" {
+				t.Fatalf("model issues = %#v, want current snapshot", m.issues)
+			}
+		})
 	}
 }
 

@@ -1409,6 +1409,7 @@ func (w *BackgroundWorker) process() {
 			CoalesceCount:     coalesced,
 			Catalog:           catalog,
 			CatalogGeneration: catalogGeneration,
+			CatalogAvailable:  !catalogStale && catalogErr == nil && w.hubConfigPath != "",
 			CatalogChanged:    !catalogStale && catalogChanged,
 			CatalogRecovered:  !catalogStale && catalogRecovered,
 			CatalogError:      deliveredCatalogErr,
@@ -2200,6 +2201,7 @@ type SnapshotReadyMsg struct {
 	CoalesceCount     int64
 	Catalog           model.RepositoryCatalog
 	CatalogGeneration uint64
+	CatalogAvailable  bool
 	CatalogChanged    bool
 	CatalogRecovered  bool
 	CatalogError      error
@@ -2259,10 +2261,13 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 	}
 	pending = append(pending, msg)
 	for len(pending) > cap(w.msgCh) {
-		drop := 0
-		for i := 1; i < len(pending); i++ {
-			if w.workerMessagePriority(pending[i]) < w.workerMessagePriority(pending[drop]) {
-				drop = i
+		drop := w.mergeCatalogReadyIntoSnapshot(pending)
+		if drop < 0 {
+			drop = 0
+			for i := 1; i < len(pending); i++ {
+				if w.workerMessagePriority(pending[i]) < w.workerMessagePriority(pending[drop]) {
+					drop = i
+				}
 			}
 		}
 		w.releaseDroppedWorkerMessage(pending[drop])
@@ -2275,6 +2280,44 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 			return
 		}
 	}
+}
+
+func (w *BackgroundWorker) mergeCatalogReadyIntoSnapshot(messages []tea.Msg) int {
+	w.mu.RLock()
+	current := w.snapshot
+	w.mu.RUnlock()
+	for i, message := range messages {
+		catalog, ok := message.(RepositoryCatalogReadyMsg)
+		if !ok {
+			continue
+		}
+		best := -1
+		for j, candidate := range messages {
+			snapshot, ok := candidate.(SnapshotReadyMsg)
+			if ok {
+				if best < 0 {
+					best = j
+					continue
+				}
+				bestSnapshot := messages[best].(SnapshotReadyMsg)
+				if snapshot.Snapshot == current || (bestSnapshot.Snapshot != current && snapshot.SnapshotVer > bestSnapshot.SnapshotVer) {
+					best = j
+				}
+			}
+		}
+		if best >= 0 {
+			snapshot := messages[best].(SnapshotReadyMsg)
+			snapshot.Catalog = catalog.Catalog
+			snapshot.CatalogGeneration = catalog.Generation
+			snapshot.CatalogAvailable = true
+			snapshot.CatalogChanged = true
+			snapshot.CatalogRecovered = catalog.Recovered
+			snapshot.CatalogError = nil
+			messages[best] = snapshot
+			return i
+		}
+	}
+	return -1
 }
 
 func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
