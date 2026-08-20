@@ -77,6 +77,39 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 	}
 }
 
+func TestOpenRepositoryPickerTracksLiveCatalogByExactID(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:a", Name: "alpha"},
+		{ID: "ctx:b", Name: "beta"},
+	}
+	m.activeRepos = map[string]bool{"ctx:b": true}
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetActiveRepos(m.activeRepos)
+	m.repoPicker.MoveDown()
+	m.showRepoPicker = true
+
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{
+		Generation: 1,
+		Catalog: model.RepositoryCatalog{
+			{ID: "ctx:b", Name: "aardvark", BeadCount: 4},
+			{ID: "ctx:new", Name: "new", BeadCount: 1},
+		},
+	})
+	m = updated.(Model)
+	selected := m.repoPicker.SelectedRepos()
+	if m.repoPicker.currentRepositoryID() != "ctx:b" {
+		t.Fatalf("live refresh cursor = %q, want ctx:b", m.repoPicker.currentRepositoryID())
+	}
+	if len(selected) != 1 || !selected["ctx:b"] || selected["ctx:new"] {
+		t.Fatalf("live refresh draft = %#v", selected)
+	}
+	if view := m.repoPicker.View(); !strings.Contains(view, "aardvark") || !strings.Contains(view, "(4)") {
+		t.Fatalf("open picker did not refresh metadata:\n%s", view)
+	}
+}
+
 func TestBackgroundWorkerMessageBufferHasSafeMinimum(t *testing.T) {
 	t.Run("explicit", func(t *testing.T) {
 		worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})

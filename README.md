@@ -3684,7 +3684,7 @@ bv has a comprehensive built-in help system:
 | **Global** | `;` | Toggle Shortcuts Sidebar |
 | | `!` | Toggle **Alerts Panel** (proactive warnings) |
 | | `'` | Recipe Picker |
-| | `w` | Repo Picker (workspace mode) |
+| | `w` | Repository Scope Picker (Hub/workspace mode) |
 
 ---
 

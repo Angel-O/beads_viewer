@@ -5568,12 +5568,19 @@ func main() {
 
 		// Enable workspace mode if loading from workspace config
 		if workspaceInfo != nil {
+			workspaceRepositories := make([]ui.WorkspaceRepositoryInfo, 0, len(workspaceInfo.Repositories))
+			for _, repository := range workspaceInfo.Repositories {
+				workspaceRepositories = append(workspaceRepositories, ui.WorkspaceRepositoryInfo{
+					Name: repository.Name, Path: repository.Path, Prefix: repository.Prefix,
+				})
+			}
 			m.EnableWorkspaceMode(ui.WorkspaceInfo{
 				Enabled:      true,
 				RepoCount:    workspaceInfo.TotalRepos,
 				FailedCount:  workspaceInfo.FailedRepos,
 				TotalIssues:  workspaceInfo.TotalIssues,
 				RepoPrefixes: workspaceInfo.RepoPrefixes,
+				Repositories: workspaceRepositories,
 			})
 		}
 
