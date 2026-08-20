@@ -2307,12 +2307,27 @@ func (w *BackgroundWorker) mergeCatalogReadyIntoSnapshot(messages []tea.Msg) int
 		}
 		if best >= 0 {
 			snapshot := messages[best].(SnapshotReadyMsg)
-			snapshot.Catalog = catalog.Catalog
-			snapshot.CatalogGeneration = catalog.Generation
-			snapshot.CatalogAvailable = true
-			snapshot.CatalogChanged = true
-			snapshot.CatalogRecovered = catalog.Recovered
-			snapshot.CatalogError = nil
+			switch {
+			case catalog.Generation > snapshot.CatalogGeneration:
+				snapshot.Catalog = catalog.Catalog
+				snapshot.CatalogGeneration = catalog.Generation
+				snapshot.CatalogAvailable = true
+				snapshot.CatalogChanged = true
+				snapshot.CatalogRecovered = catalog.Recovered
+				snapshot.CatalogError = nil
+			case catalog.Generation == snapshot.CatalogGeneration && !snapshot.CatalogAvailable:
+				snapshot.Catalog = catalog.Catalog
+				snapshot.CatalogAvailable = true
+				snapshot.CatalogChanged = true
+				snapshot.CatalogRecovered = catalog.Recovered
+				snapshot.CatalogError = nil
+			case catalog.Generation == snapshot.CatalogGeneration:
+				// Equal generations describe the same catalog state. Keep the
+				// snapshot payload while preserving standalone delivery/recovery.
+				snapshot.CatalogChanged = true
+				snapshot.CatalogRecovered = snapshot.CatalogRecovered || catalog.Recovered
+				snapshot.CatalogError = nil
+			}
 			messages[best] = snapshot
 			return i
 		}

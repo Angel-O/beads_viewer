@@ -273,6 +273,165 @@ func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing
 	}
 }
 
+func TestBackgroundWorkerBacklogDoesNotDowngradeNewerSnapshotCatalog(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	newerCatalog := model.RepositoryCatalog{{ID: "ctx:newer", Name: "newer"}}
+	current := NewSnapshotBuilder([]model.Issue{{ID: "CURRENT", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.catalog = newerCatalog
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{Catalog: model.RepositoryCatalog{{ID: "ctx:older", Name: "older"}}, Generation: 5})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		Catalog:           newerCatalog,
+		CatalogGeneration: 6,
+		CatalogAvailable:  true,
+	})
+
+	retained := drainWorkerMessages(worker)
+	if len(retained) != 2 {
+		t.Fatalf("retained %d messages, want 2", len(retained))
+	}
+	if _, ok := retained[0].(SnapshotErrorMsg); !ok {
+		t.Fatalf("first retained message = %T, want source error", retained[0])
+	}
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if snapshot.CatalogGeneration != 6 || len(snapshot.Catalog) != 1 || snapshot.Catalog[0].ID != "ctx:newer" {
+		t.Fatalf("snapshot catalog was downgraded: generation=%d catalog=%#v", snapshot.CatalogGeneration, snapshot.Catalog)
+	}
+
+	m := NewModel(nil, nil, "")
+	for _, message := range retained {
+		updated, _ := m.Update(message)
+		m = updated.(Model)
+	}
+	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:newer" || m.catalogGeneration != 6 {
+		t.Fatalf("model catalog = %#v generation=%d", m.repositoryCatalog, m.catalogGeneration)
+	}
+}
+
+func TestBackgroundWorkerBacklogDoesNotClearNewerSnapshotCatalogError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	current := &DataSnapshot{DataHash: "current"}
+	newerError := errors.New("newer catalog unavailable")
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{Catalog: model.RepositoryCatalog{{ID: "ctx:older"}}, Generation: 5})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		CatalogGeneration: 6,
+		CatalogAvailable:  false,
+		CatalogError:      newerError,
+	})
+
+	retained := drainWorkerMessages(worker)
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if snapshot.CatalogGeneration != 6 || snapshot.CatalogAvailable || !errors.Is(snapshot.CatalogError, newerError) {
+		t.Fatalf("newer unavailable state was downgraded: generation=%d available=%v error=%v", snapshot.CatalogGeneration, snapshot.CatalogAvailable, snapshot.CatalogError)
+	}
+}
+
+func TestBackgroundWorkerBacklogEqualGenerationMergesDeliveryState(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	snapshotCatalog := model.RepositoryCatalog{{ID: "ctx:snapshot", Name: "snapshot"}}
+	current := &DataSnapshot{DataHash: "current"}
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{
+		Catalog:    model.RepositoryCatalog{{ID: "ctx:standalone", Name: "standalone"}},
+		Generation: 6,
+		Recovered:  true,
+	})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		Catalog:           snapshotCatalog,
+		CatalogGeneration: 6,
+		CatalogAvailable:  true,
+		CatalogChanged:    false,
+		CatalogRecovered:  false,
+		CatalogError:      errors.New("stale catalog error"),
+	})
+
+	retained := drainWorkerMessages(worker)
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if len(snapshot.Catalog) != 1 || snapshot.Catalog[0].ID != "ctx:snapshot" {
+		t.Fatalf("equal generation replaced snapshot payload: %#v", snapshot.Catalog)
+	}
+	if !snapshot.CatalogChanged || !snapshot.CatalogRecovered || snapshot.CatalogError != nil {
+		t.Fatalf("equal generation state not merged: changed=%v recovered=%v error=%v", snapshot.CatalogChanged, snapshot.CatalogRecovered, snapshot.CatalogError)
+	}
+}
+
+func TestBackgroundWorkerBacklogEqualGenerationCompletesUnavailableSnapshot(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	catalog := model.RepositoryCatalog{{ID: "ctx:recovered"}}
+	current := &DataSnapshot{DataHash: "current"}
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{Catalog: catalog, Generation: 6, Recovered: true})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		CatalogGeneration: 6,
+		CatalogAvailable:  false,
+		CatalogError:      errors.New("transient catalog error"),
+	})
+
+	retained := drainWorkerMessages(worker)
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if !snapshot.CatalogAvailable || !snapshot.CatalogChanged || !snapshot.CatalogRecovered || snapshot.CatalogError != nil ||
+		len(snapshot.Catalog) != 1 || snapshot.Catalog[0].ID != "ctx:recovered" {
+		t.Fatalf("equal recovery did not complete snapshot: %#v", snapshot)
+	}
+}
+
+func drainWorkerMessages(worker *BackgroundWorker) []tea.Msg {
+	messages := make([]tea.Msg, 0, len(worker.msgCh))
+	for len(worker.msgCh) > 0 {
+		messages = append(messages, <-worker.msgCh)
+	}
+	return messages
+}
+
 func TestBackgroundWorkerStopReleasesQueuedSnapshots(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
 	if err != nil {
