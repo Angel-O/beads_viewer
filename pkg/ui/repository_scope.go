@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -9,6 +10,143 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
+
+type issueRepositoryPresentation struct {
+	ID     string
+	Name   string
+	Extra  int
+	Names  []string
+	Labels []string
+}
+
+func isHubContextLabel(label string) bool {
+	return strings.HasPrefix(label, "ctx:")
+}
+
+func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool) issueRepositoryPresentation {
+	presentation := issueRepositoryPresentation{Labels: issue.Labels}
+	if !hubMode {
+		return presentation
+	}
+
+	presentation.Labels = make([]string, 0, len(issue.Labels))
+	contexts := make(map[string]bool)
+	for _, label := range issue.Labels {
+		if isHubContextLabel(label) {
+			contexts[label] = true
+			continue
+		}
+		presentation.Labels = append(presentation.Labels, label)
+	}
+
+	matches := make([]model.RepositoryCatalogEntry, 0, len(contexts))
+	for _, repository := range catalog {
+		if repository.Kind == model.RepositoryIdentityHubContext && contexts[repository.ID] {
+			matches = append(matches, repository)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+	if len(matches) == 0 {
+		return presentation
+	}
+	presentation.ID = matches[0].ID
+	presentation.Name = matches[0].Name
+	presentation.Extra = len(matches) - 1
+	presentation.Names = make([]string, 0, len(matches))
+	for _, repository := range matches {
+		presentation.Names = append(presentation.Names, repository.Name)
+	}
+	return presentation
+}
+
+func (m *Model) hubRepositoryPresentation() bool {
+	return !m.workspaceMode && strings.TrimSpace(m.hubConfigPath) != ""
+}
+
+func (m *Model) decorateIssueItem(item *IssueItem) {
+	if item == nil {
+		return
+	}
+	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation())
+	item.HubPresentation = m.hubRepositoryPresentation()
+	item.RepositoryID = presentation.ID
+	item.RepositoryName = presentation.Name
+	item.RepositoryExtra = presentation.Extra
+	item.RepositoryNames = presentation.Names
+	item.PresentationLabels = presentation.Labels
+}
+
+func projectHubLabelHealth(result analysis.LabelAnalysisResult, hubMode bool) analysis.LabelAnalysisResult {
+	if !hubMode {
+		return result
+	}
+	result.TotalLabels, result.HealthyCount, result.WarningCount, result.CriticalCount = 0, 0, 0, 0
+	result.Labels = slicesDeleteContextHealth(result.Labels)
+	result.Summaries = slicesDeleteContextSummaries(result.Summaries)
+	result.AttentionNeeded = filterHubContextLabels(result.AttentionNeeded)
+	result.TotalLabels = len(result.Labels)
+	for _, health := range result.Labels {
+		switch health.HealthLevel {
+		case analysis.HealthLevelHealthy:
+			result.HealthyCount++
+		case analysis.HealthLevelWarning:
+			result.WarningCount++
+		case analysis.HealthLevelCritical:
+			result.CriticalCount++
+		}
+	}
+	return result
+}
+
+func slicesDeleteContextHealth(values []analysis.LabelHealth) []analysis.LabelHealth {
+	filtered := make([]analysis.LabelHealth, 0, len(values))
+	for _, value := range values {
+		if !isHubContextLabel(value.Label) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func slicesDeleteContextSummaries(values []analysis.LabelSummary) []analysis.LabelSummary {
+	filtered := make([]analysis.LabelSummary, 0, len(values))
+	for _, value := range values {
+		if !isHubContextLabel(value.Label) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func filterHubContextLabels(values []string) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		if !isHubContextLabel(value) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func (m *Model) refreshRepositoryPresentation() {
+	hubMode := m.hubRepositoryPresentation()
+	if m.list.Width() > 0 {
+		items := m.list.Items()
+		for i := range items {
+			item, ok := items[i].(IssueItem)
+			if !ok {
+				continue
+			}
+			m.decorateIssueItem(&item)
+			items[i] = item
+		}
+		m.setListItemsPreservingFilter(items)
+		m.updateListDelegate()
+		m.updateViewportContent()
+	}
+	m.board.SetRepositoryPresentation(m.repositoryCatalog, hubMode)
+	m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, hubMode)
+}
 
 func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
 	if m.activeRepos == nil {
@@ -427,6 +565,7 @@ func (m *Model) refreshRepositoryDerivedViews() {
 	if m.focused == focusLabelDashboard {
 		cfg := analysis.DefaultLabelHealthConfig()
 		m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+		m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 		m.labelHealthCached = true
 		m.labelDashboard.SetData(m.labelHealthCache.Labels)
 	}
@@ -473,7 +612,7 @@ func (m *Model) refreshAttentionView() {
 	cfg := analysis.DefaultLabelHealthConfig()
 	m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
 	m.attentionCached = true
-	attText, _ := ComputeAttentionView(m.repositoryIssues, max(40, m.width-4))
+	attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 	m.rebuildInsightsPanel()
 	m.insightsPanel.labelAttention = m.attentionCache.Labels
 	m.insightsPanel.extraText = attText

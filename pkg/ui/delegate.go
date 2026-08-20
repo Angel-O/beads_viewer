@@ -18,6 +18,7 @@ type IssueDelegate struct {
 	ShowPriorityHints bool
 	PriorityHints     map[string]*analysis.PriorityRecommendation
 	WorkspaceMode     bool // When true, shows repo prefix badges
+	ShowRepositories  bool // When true, shows Hub repository badges
 	ShowSearchScores  bool // Show semantic/hybrid score badge when search is active
 }
 
@@ -102,8 +103,12 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	}
 
 	// Labels (if present and we have room) - render as mini tags
-	if width > 140 && len(i.Issue.Labels) > 0 {
-		labelStr := truncateRunesHelper(strings.Join(i.Issue.Labels, ","), 20, "…")
+	labels := i.Issue.Labels
+	if i.HubPresentation {
+		labels = i.PresentationLabels
+	}
+	if width > 140 && len(labels) > 0 {
+		labelStr := truncateRunesHelper(strings.Join(labels, ","), 20, "…")
 		labelStyle := t.Renderer.NewStyle().
 			Foreground(ColorPrimary).
 			Background(ColorBgSubtle).
@@ -119,7 +124,13 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Repo badge width (workspace mode)
 	var repoBadge string
-	if d.WorkspaceMode && i.RepoPrefix != "" {
+	if d.ShowRepositories && i.RepositoryID != "" && width > 45 {
+		repoBadge = RenderRepositoryBadge(i.RepositoryID, i.RepositoryName)
+		if i.RepositoryExtra > 0 {
+			repoBadge += fmt.Sprintf("+%d", i.RepositoryExtra)
+		}
+		leftFixedWidth += lipgloss.Width(repoBadge) + 1
+	} else if d.WorkspaceMode && i.RepoPrefix != "" {
 		// Create a compact repo badge like [API] or [WEB]
 		repoBadge = RenderRepoBadge(i.RepoPrefix)
 		leftFixedWidth += lipgloss.Width(repoBadge) + 1
