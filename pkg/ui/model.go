@@ -168,6 +168,8 @@ var workerSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "�
 
 const (
 	freshnessErrorRetries = 3
+	workerActivePoll      = 120 * time.Millisecond
+	workerIdlePoll        = 5 * time.Second
 )
 
 func freshnessWarnThreshold() time.Duration {
@@ -178,8 +180,15 @@ func freshnessStaleThreshold() time.Duration {
 	return envDurationSeconds("BV_FRESHNESS_STALE_S", 2*time.Minute)
 }
 
-func workerPollTickCmd() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+func workerPollInterval(state WorkerState) time.Duration {
+	if state == WorkerProcessing {
+		return workerActivePoll
+	}
+	return workerIdlePoll
+}
+
+func workerPollTickCmd(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return workerPollTickMsg{}
 	})
 }
@@ -1564,7 +1573,7 @@ func (m Model) Init() tea.Cmd {
 	if m.backgroundWorker != nil {
 		cmds = append(cmds, StartBackgroundWorkerCmd(m.backgroundWorker))
 		cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
-		cmds = append(cmds, workerPollTickCmd())
+		cmds = append(cmds, workerPollTickCmd(workerActivePoll))
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
@@ -1833,7 +1842,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.workerSpinnerIdx = 0
 			}
 			if state != WorkerStopped {
-				cmds = append(cmds, workerPollTickCmd())
+				cmds = append(cmds, workerPollTickCmd(workerPollInterval(state)))
 			}
 		}
 
