@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,57 @@ func createTestHistoryReport() *correlation.HistoryReport {
 	}
 }
 
+func createOverflowHistoryReport(count int) *correlation.HistoryReport {
+	now := time.Now()
+	report := &correlation.HistoryReport{
+		Histories:   make(map[string]correlation.BeadHistory, count),
+		CommitIndex: make(correlation.CommitIndex, count),
+	}
+	for i := 0; i < count; i++ {
+		beadID := fmt.Sprintf("bv-scroll-%02d", i)
+		sha := fmt.Sprintf("%040d", i+1)
+		commit := correlation.CorrelatedCommit{
+			SHA:       sha,
+			ShortSHA:  sha[:7],
+			Message:   fmt.Sprintf("commit %02d", i),
+			Author:    "Scroll Tester",
+			Timestamp: now.Add(-time.Duration(i) * time.Minute),
+		}
+		report.Histories[beadID] = correlation.BeadHistory{
+			BeadID:  beadID,
+			Title:   fmt.Sprintf("History item %02d", i),
+			Status:  "open",
+			Commits: []correlation.CorrelatedCommit{commit},
+		}
+		report.CommitIndex[sha] = []string{beadID}
+	}
+	return report
+}
+
+func assertHistoryPanelKeepsCursor(t *testing.T, panel string, maxHeight int) {
+	t.Helper()
+	if height := lipgloss.Height(panel); height > maxHeight {
+		t.Fatalf("panel height = %d, want at most %d", height, maxHeight)
+	}
+	if !strings.Contains(panel, "▸") {
+		t.Fatal("selected-row cursor is not visible in rendered panel")
+	}
+}
+
+func historyTestListPanelWidth(h *HistoryModel) int {
+	switch h.determineLayout() {
+	case layoutWide:
+		if h.viewMode == historyModeGit {
+			return int(float64(h.width) * 0.25)
+		}
+		return int(float64(h.width) * 0.20)
+	case layoutStandard:
+		return int(float64(h.width) * 0.30)
+	default:
+		return int(float64(h.width) * 0.45)
+	}
+}
+
 func testTheme() Theme {
 	return DefaultTheme(lipgloss.NewRenderer(nil))
 }
@@ -189,6 +241,121 @@ func TestHistoryModel_Navigation(t *testing.T) {
 	h.MoveUp()
 	if h.selectedBead != 0 {
 		t.Errorf("selectedBead should stay at 0, got %d", h.selectedBead)
+	}
+}
+
+func TestHistoryModel_BeadListScrollsPastInitialViewport(t *testing.T) {
+	h := NewHistoryModel(createOverflowHistoryReport(10), testTheme())
+	h.SetSize(100, 10)
+
+	for range 5 {
+		h.MoveDown()
+		assertHistoryPanelKeepsCursor(t, h.renderListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+	}
+
+	if h.selectedBead != 5 {
+		t.Fatalf("selectedBead = %d, want 5", h.selectedBead)
+	}
+	if h.scrollOffset == 0 {
+		t.Fatal("scrollOffset did not advance after moving past initial viewport")
+	}
+}
+
+func TestHistoryModel_GitListScrollsPastInitialViewport(t *testing.T) {
+	h := NewHistoryModel(createOverflowHistoryReport(10), testTheme())
+	h.ToggleViewMode()
+	h.SetSize(100, 10)
+
+	for range 5 {
+		h.MoveDownGit()
+		assertHistoryPanelKeepsCursor(t, h.renderGitCommitListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+	}
+
+	if h.selectedGitCommit != 5 {
+		t.Fatalf("selectedGitCommit = %d, want 5", h.selectedGitCommit)
+	}
+	if h.gitScrollOffset == 0 {
+		t.Fatal("gitScrollOffset did not advance after moving past initial viewport")
+	}
+}
+
+func TestHistoryModel_WideLayoutScrollsWrappedBeadRows(t *testing.T) {
+	h := NewHistoryModel(createOverflowHistoryReport(30), testTheme())
+	h.SetSize(200, 40)
+	panelWidth := historyTestListPanelWidth(&h)
+	panelHeight := h.height - 2
+
+	line := h.renderBeadLine(0, h.histories[0], panelWidth-4)
+	wrappedLine := h.theme.Renderer.NewStyle().Width(panelWidth - 2).Render(line)
+	if rowHeight := lipgloss.Height(wrappedLine); rowHeight < 2 {
+		t.Fatalf("test setup requires a wrapped bead row, got height %d", rowHeight)
+	}
+
+	for range 20 {
+		h.MoveDown()
+		assertHistoryPanelKeepsCursor(t, h.renderListPanel(panelWidth, panelHeight), panelHeight)
+	}
+	if h.scrollOffset == 0 {
+		t.Fatal("wide four-pane list did not roll after wrapped rows filled the viewport")
+	}
+}
+
+func TestHistoryModel_ResizeAndRenderKeepSelectionVisible(t *testing.T) {
+	tests := []struct {
+		name       string
+		gitMode    bool
+		selectLast func(*HistoryModel)
+		offset     func(*HistoryModel) int
+		selected   func(*HistoryModel) int
+	}{
+		{
+			name: "bead mode",
+			selectLast: func(h *HistoryModel) {
+				h.selectedBead = len(h.histories) - 1
+			},
+			offset:   func(h *HistoryModel) int { return h.scrollOffset },
+			selected: func(h *HistoryModel) int { return h.selectedBead },
+		},
+		{
+			name:    "git mode",
+			gitMode: true,
+			selectLast: func(h *HistoryModel) {
+				h.selectedGitCommit = len(h.GetFilteredCommitList()) - 1
+			},
+			offset:   func(h *HistoryModel) int { return h.gitScrollOffset },
+			selected: func(h *HistoryModel) int { return h.selectedGitCommit },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHistoryModel(createOverflowHistoryReport(10), testTheme())
+			if tt.gitMode {
+				h.ToggleViewMode()
+			}
+			h.SetSize(100, 20)
+			tt.selectLast(&h)
+
+			h.SetSize(100, 10)
+			if tt.offset(&h) > tt.selected(&h) {
+				t.Fatalf("resize scrolled past selection: offset %d, selection %d", tt.offset(&h), tt.selected(&h))
+			}
+			if tt.gitMode {
+				assertHistoryPanelKeepsCursor(t, h.renderGitCommitListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+			} else {
+				assertHistoryPanelKeepsCursor(t, h.renderListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+			}
+
+			if tt.gitMode {
+				h.gitScrollOffset = 0
+			} else {
+				h.scrollOffset = 0
+			}
+			_ = h.View()
+			if tt.offset(&h) > tt.selected(&h) {
+				t.Fatalf("render scrolled past selection: offset %d, selection %d", tt.offset(&h), tt.selected(&h))
+			}
+		})
 	}
 }
 
@@ -1045,7 +1212,7 @@ func TestHistoryModel_ListHeight(t *testing.T) {
 	h := NewHistoryModel(report, theme)
 
 	h.SetSize(100, 40)
-	expected := 40 - 3 // height - header reserve
+	expected := 40 - 7 // outer header plus panel header, separator, and borders
 	if intsDiffer(h.listHeight(), expected) {
 		t.Errorf("listHeight() = %d, want %d", h.listHeight(), expected)
 	}
