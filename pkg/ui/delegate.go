@@ -125,10 +125,40 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	// Repo badge width (workspace mode)
 	var repoBadge string
 	if d.ShowRepositories && i.RepositoryID != "" && width > 45 {
-		repoBadge = RenderRepositoryBadge(i.RepositoryID, i.RepositoryName)
+		extra := ""
 		if i.RepositoryExtra > 0 {
-			repoBadge += fmt.Sprintf("+%d", i.RepositoryExtra)
+			extra = fmt.Sprintf("+%d", i.RepositoryExtra)
 		}
+		idReserve := min(lipgloss.Width(idStr), 35)
+		reservedWidth := 2 + iconDisplayWidth + 1 +
+			lipgloss.Width(RenderPriorityBadge(i.Issue.Priority)) + 1 +
+			lipgloss.Width(RenderStatusBadge(string(i.Issue.Status))) + 1 +
+			idReserve + 1 + 5 + rightWidth + 2 + lipgloss.Width(extra) + 3
+		if d.ShowPriorityHints {
+			reservedWidth += 2
+		}
+		if i.IsQuickWin {
+			reservedWidth += lipgloss.Width("⭐") + 1
+		} else if i.UnblocksCount > 0 {
+			indicator := fmt.Sprintf("↪%d", i.UnblocksCount)
+			if i.IsBlocker {
+				indicator = fmt.Sprintf("🔓%d", i.UnblocksCount)
+			}
+			reservedWidth += lipgloss.Width(indicator) + 1
+		}
+		if d.ShowSearchScores && i.SearchScoreSet {
+			reservedWidth += lipgloss.Width(fmt.Sprintf("[%.2f]", i.SearchScore)) + 1
+		}
+		if badge := i.DiffStatus.Badge(); badge != "" {
+			reservedWidth += lipgloss.Width(badge) + 1
+		}
+		nameWidth := max(width-reservedWidth, 1)
+		if lipgloss.Width(i.RepositoryName) <= nameWidth {
+			repoBadge = RenderRepositoryBadge(i.RepositoryID, i.RepositoryName)
+		} else {
+			repoBadge = RenderRepositoryBadgeCompact(i.RepositoryID, i.RepositoryName, nameWidth)
+		}
+		repoBadge += extra
 		leftFixedWidth += lipgloss.Width(repoBadge) + 1
 	} else if d.WorkspaceMode && i.RepoPrefix != "" {
 		// Create a compact repo badge like [API] or [WEB]

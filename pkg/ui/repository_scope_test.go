@@ -243,7 +243,7 @@ func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {
 	}
 
 	card := m.board.renderCard(issue, 42, false, 0, 0)
-	if !strings.Contains(card, "[alph…") || strings.Contains(card, "ctx:") {
+	if !strings.Contains(card, "[alpha/s…]") || strings.Contains(card, "ctx:") {
 		t.Fatalf("board card presentation:\n%s", card)
 	}
 	for _, line := range strings.Split(card, "\n") {
@@ -407,23 +407,60 @@ func TestRepositoryBadgeKeepsLocalFormatAndKeysHubColorByIdentity(t *testing.T) 
 	if GetRepoColor("ctx:alpha") == GetRepoColor("ctx:gamma") {
 		t.Fatal("test identities unexpectedly share a color")
 	}
-	if got := RenderRepositoryBadge("ctx:alpha", "friendly"); !strings.Contains(got, "[friendly]") {
-		t.Fatalf("Hub badge did not use friendly name: %q", got)
+	if got := RenderRepositoryBadge("ctx:beads-viewer-c67191f28f", "beads_viewer"); !strings.Contains(got, "[beads_viewer]") {
+		t.Fatalf("Hub badge did not show full friendly name: %q", got)
 	}
-	first := RenderRepositoryBadge("ctx:first", "abcdefgh-one/service")
-	second := RenderRepositoryBadge("ctx:second", "abcdefgh-two/service")
-	if first == second {
-		t.Fatalf("colliding friendly names produced identical badges: %q", first)
+	if got := RenderRepositoryBadge("ctx:mcp-discovery-e7538468e4", "mcp-discovery"); !strings.Contains(got, "[mcp-discovery]") {
+		t.Fatalf("Hub badge did not show full mcp-discovery name: %q", got)
+	}
+	if got := RenderRepositoryBadgeCompact("ctx:long", "readable-repository-name", 10); got != "[readable-…]" {
+		t.Fatalf("constrained Hub badge was not readably truncated: %q", got)
+	}
+	if got := RenderRepositoryBadgeCompact("ctx:wide", "仓库名称", 5); lipgloss.Width(got) != 7 || !strings.Contains(got, "…") {
+		t.Fatalf("wide constrained Hub badge width = %d, badge %q", lipgloss.Width(got), got)
+	}
+}
+
+func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
+	issue := model.Issue{ID: "global-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:beads-viewer-c67191f28f"}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{{
+		ID: "ctx:beads-viewer-c67191f28f", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext,
+	}}
+	m.refreshRepositoryPresentation()
+	row := m.list.View()
+	if !strings.Contains(row, "[beads_viewer]") || strings.Contains(row, "bead…") {
+		t.Fatalf("normal list row did not show full repository name: %q", row)
+	}
+}
+
+func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
+	issue := model.Issue{ID: "global-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:alpha", Name: "exceptionally-long-repository-name", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:beta", Name: "beta", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.list.SetSize(50, 10)
+	m.refreshRepositoryPresentation()
+	row := m.list.View()
+	if !containsAll(row, "…", "+1", "global-7td") {
+		t.Fatalf("narrow list row lost constrained badge metadata or ID: %q", row)
 	}
 }
 
 func TestHubRepositoryBadgeFitsNarrowBoardCard(t *testing.T) {
-	issue := model.Issue{ID: "very-long-issue-id", Title: "Title", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "backend"}}
+	issue := model.Issue{ID: "very-long-issue-id", Title: "Title", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta", "backend"}}
 	board := NewBoardModel([]model.Issue{issue}, DefaultTheme(lipgloss.NewRenderer(io.Discard)))
-	board.SetRepositoryPresentation(model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext}}, true)
+	board.SetRepositoryPresentation(model.RepositoryCatalog{
+		{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:beta", Name: "beta/service", Kind: model.RepositoryIdentityHubContext},
+	}, true)
 	card := board.renderCard(issue, 20, false, 0, 0)
-	if !strings.Contains(card, "ver…") {
-		t.Fatalf("narrow repository badge displaced issue ID: %q", card)
+	if !containsAll(card, "ver…", "+1") {
+		t.Fatalf("narrow repository badge displaced issue ID or multi-context count: %q", card)
 	}
 	for _, line := range strings.Split(card, "\n") {
 		if width := lipgloss.Width(line); width > 24 {
