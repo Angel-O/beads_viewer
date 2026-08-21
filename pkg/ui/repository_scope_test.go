@@ -451,6 +451,102 @@ func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
 	}
 }
 
+func TestHubListRowsAlignSharedRepositoryColumn(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "beads-id", Title: "Beads", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:beads"}},
+		{ID: "dotfiles-id", Title: "Dotfiles", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:dotfiles"}},
+		{ID: "long-id", Title: "Long", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:long"}},
+		{ID: "mcp-id", Title: "MCP", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:mcp"}},
+		{ID: "multi-id", Title: "Multi", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:dotfiles", "ctx:mcp"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:beads", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:long", Name: "an-extraordinarily-long-repository-name", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.refreshRepositoryPresentation()
+	nameWidth, extraWidth := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
+	if nameWidth != 16 || extraWidth != 2 {
+		t.Fatalf("repository columns = name:%d extra:%d, want 16 and 2", nameWidth, extraWidth)
+	}
+
+	view := m.list.View()
+	if !containsAll(view, "[dotfiles]", "[beads_viewer]", "[mcp-discovery]", "[an-extraordinar…]", "+1") {
+		t.Fatalf("repository rows missing expected badges:\n%s", view)
+	}
+	wantPrefixWidth := -1
+	for _, id := range []string{"beads-id", "dotfiles-id", "long-id", "mcp-id", "multi-id"} {
+		var row string
+		for _, line := range strings.Split(view, "\n") {
+			if strings.Contains(line, id) {
+				row = line
+				break
+			}
+		}
+		if row == "" {
+			t.Fatalf("missing rendered row for %s:\n%s", id, view)
+		}
+		priorityIndex := strings.Index(row, "P0")
+		if priorityIndex < 0 {
+			t.Fatalf("missing priority column for %s: %q", id, row)
+		}
+		prefixWidth := lipgloss.Width(row[:priorityIndex])
+		if wantPrefixWidth < 0 {
+			wantPrefixWidth = prefixWidth
+		} else if prefixWidth != wantPrefixWidth {
+			t.Fatalf("post-badge priority column drift for %s: got %d, want %d; row %q", id, prefixWidth, wantPrefixWidth, row)
+		}
+	}
+}
+
+func TestHubListColumnSuppressesWhenMetadataConsumesWidth(t *testing.T) {
+	issue := model.Issue{
+		ID: "an-extremely-long-visible-issue-identifier-that-is-truncated", Title: "Title",
+		Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:dotfiles", "ctx:mcp"},
+	}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.list.SetSize(60, 10)
+	m.refreshRepositoryPresentation()
+	delegate := IssueDelegate{Theme: m.theme}
+	nameWidth, extraWidth := m.repositoryListColumnWidths(delegate)
+	if nameWidth != 0 || extraWidth != 0 {
+		t.Fatalf("overfull row repository columns = name:%d extra:%d, want suppressed", nameWidth, extraWidth)
+	}
+	view := m.list.View()
+	if strings.Contains(view, "[dotfiles]") || !strings.Contains(view, "an-extremely-long-visible-issue-id…") {
+		t.Fatalf("overfull row did not suppress badge while preserving ID: %q", view)
+	}
+}
+
+func TestHubListColumnRefreshesAfterSplitPaneResize(t *testing.T) {
+	issue := model.Issue{ID: "resize-id", Title: "Resize", Status: model.StatusOpen, Labels: []string{"ctx:long"}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{{
+		ID: "ctx:long", Name: "an-extraordinarily-long-repository-name", Kind: model.RepositoryIdentityHubContext,
+	}}
+	m.refreshRepositoryPresentation()
+	m.width, m.height, m.isSplitView = 160, 40, true
+	m.splitPaneRatio = 0.7
+	m.recalculateSplitPaneSizes()
+	if !strings.Contains(m.list.View(), "[an-extraordinar…]") {
+		t.Fatalf("wide split pane did not render capped repository badge: %q", m.list.View())
+	}
+	m.splitPaneRatio = 0.2
+	m.recalculateSplitPaneSizes()
+	if strings.Contains(m.list.View(), "[an-") {
+		t.Fatalf("narrow split pane retained stale repository column: %q", m.list.View())
+	}
+}
+
 func TestHubRepositoryBadgeFitsNarrowBoardCard(t *testing.T) {
 	issue := model.Issue{ID: "very-long-issue-id", Title: "Title", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta", "backend"}}
 	board := NewBoardModel([]model.Issue{issue}, DefaultTheme(lipgloss.NewRenderer(io.Discard)))

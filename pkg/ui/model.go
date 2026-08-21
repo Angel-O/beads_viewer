@@ -808,17 +808,55 @@ func (m *Model) shouldShowSearchScores() bool {
 }
 
 func (m *Model) updateListDelegate() {
-	m.list.SetDelegate(IssueDelegate{
+	delegate := IssueDelegate{
 		Theme:             m.theme,
 		ShowPriorityHints: m.showPriorityHints,
 		PriorityHints:     m.priorityHints,
 		WorkspaceMode:     m.workspaceMode,
 		ShowRepositories:  m.hubRepositoryPresentation(),
 		ShowSearchScores:  m.shouldShowSearchScores(),
-	})
+	}
+	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidths(delegate)
+	m.list.SetDelegate(delegate)
+}
+
+func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
+	if !m.hubRepositoryPresentation() || m.list.Width() <= 45 {
+		return 0, 0
+	}
+	const nameWidthCap = 16
+	nameWidth := 0
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind != model.RepositoryIdentityHubContext {
+			continue
+		}
+		nameWidth = max(nameWidth, lipgloss.Width(repository.Name))
+	}
+	nameWidth = min(nameWidth, nameWidthCap)
+
+	extraWidth := 0
+	rowReserve := 0
+	rowWidth := m.list.Width() - 1
+	for _, listItem := range m.list.VisibleItems() {
+		item, ok := listItem.(IssueItem)
+		if !ok {
+			continue
+		}
+		rowReserve = max(rowReserve, delegate.rowWidthWithoutRepository(item, rowWidth))
+		if item.RepositoryExtra > 0 {
+			extraWidth = max(extraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
+		}
+	}
+	availableNameWidth := rowWidth - rowReserve - extraWidth - 3
+	if availableNameWidth < 1 {
+		return 0, 0
+	}
+	nameWidth = min(nameWidth, availableNameWidth)
+	return nameWidth, extraWidth
 }
 
 func (m *Model) setListItemsPreservingFilter(items []list.Item) {
+	defer m.updateListDelegate()
 	filterState := m.list.FilterState()
 	filterText := m.list.FilterInput.Value()
 	selectedID := ""
@@ -7726,6 +7764,7 @@ func (m *Model) recalculateSplitPaneSizes() {
 	m.list.SetSize(listInnerWidth, listHeight)
 	m.viewport = viewport.New(detailInnerWidth, bodyHeight-2)
 	m.renderer.SetWidthWithTheme(detailInnerWidth, m.theme)
+	m.updateListDelegate()
 	m.updateViewportContent()
 }
 
