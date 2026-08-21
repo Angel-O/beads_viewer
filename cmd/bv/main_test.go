@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -2314,6 +2315,34 @@ func TestSemanticAsOfDatasetPathUsesRepositoryRoot(t *testing.T) {
 	fromNested := semanticAsOfDatasetPath(nested)
 	if fromNested != fromRoot {
 		t.Fatalf("as-of dataset identity differs by invocation directory: root=%q nested=%q", fromRoot, fromNested)
+	}
+}
+
+func TestCurrentHubRepositoryContext(t *testing.T) {
+	repository := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "main"}, {"remote", "add", "origin", "git@github.com:owner/repository.git"}} {
+		command := exec.Command("git", args...)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	expected, err := hub.Context(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(repository, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := currentHubRepositoryContext(nested, true); got != expected {
+		t.Fatalf("Hub context = %q, want %q", got, expected)
+	}
+	if got := currentHubRepositoryContext(nested, false); got != "" {
+		t.Fatalf("non-Hub context = %q, want empty", got)
+	}
+	if got := currentHubRepositoryContext(t.TempDir(), true); got != "" {
+		t.Fatalf("ineligible cwd context = %q, want empty", got)
 	}
 }
 

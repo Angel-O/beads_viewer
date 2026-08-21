@@ -211,6 +211,33 @@ func repositoryCatalogIDs(catalog model.RepositoryCatalog) []string {
 	return ids
 }
 
+// SetDefaultRepositoryScope applies an exact Hub context once the initial
+// repository catalog is available. A single-entry catalog remains an explicit
+// selection so repositories registered later do not silently join the scope.
+func (m *Model) SetDefaultRepositoryScope(repositoryID string) bool {
+	if repositoryID == "" || m.workspaceMode || !m.hubRepositoryMode || m.defaultRepositorySet {
+		return false
+	}
+	m.defaultRepositoryID = repositoryID
+	return m.applyDefaultRepositoryScope()
+}
+
+func (m *Model) applyDefaultRepositoryScope() bool {
+	if m.defaultRepositorySet || m.defaultRepositoryID == "" || !m.repositoryCatalogReady {
+		return false
+	}
+	m.defaultRepositorySet = true
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind != model.RepositoryIdentityHubContext || repository.ID != m.defaultRepositoryID {
+			continue
+		}
+		m.activeRepos = map[string]bool{repository.ID: true}
+		m.refreshRepositoryCandidates()
+		return true
+	}
+	return false
+}
+
 // SetRepositoryScope applies exact catalog IDs. Nil, an empty selection, and a
 // selection containing every catalog entry all mean the complete universe.
 func (m *Model) SetRepositoryScope(selected map[string]bool) {

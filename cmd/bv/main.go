@@ -5564,6 +5564,9 @@ func main() {
 		m.SetSemanticDatasetPath(semanticDatasetPath)
 		m.SetRepositoryCatalogIssues(catalogIssues)
 		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
+		if cwd, err := os.Getwd(); err == nil {
+			m.SetDefaultRepositoryScope(currentHubRepositoryContext(cwd, usesHubConfigStore))
+		}
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config
@@ -5614,6 +5617,17 @@ func main() {
 
 func shouldExitEmptyInteractive(issueCount int, hubMode bool) bool {
 	return issueCount == 0 && !hubMode
+}
+
+func currentHubRepositoryContext(cwd string, hubMode bool) string {
+	if !hubMode {
+		return ""
+	}
+	context, err := hub.Context(cwd)
+	if err != nil {
+		return ""
+	}
+	return context
 }
 
 func runTUIProgram(m ui.Model) error {

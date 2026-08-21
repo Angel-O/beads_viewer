@@ -483,6 +483,9 @@ type Model struct {
 	repositoryCatalogIssues []model.Issue
 	repositoryIssues        []model.Issue
 	repositoryIssueIDs      map[string]bool
+	repositoryCatalogReady  bool
+	defaultRepositoryID     string
+	defaultRepositorySet    bool
 	catalogGeneration       uint64
 	watcher                 *watcher.Watcher // File watcher for live reload
 	instanceLock            *instance.Lock   // Multi-instance coordination lock
@@ -1463,6 +1466,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	}
 	m.repositoryCatalog = catalog
 	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
+	m.repositoryCatalogReady = true
 	if m.showRepoPicker {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
 	}
@@ -1485,11 +1489,13 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		before := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
 		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		m.repositoryCatalogReady = true
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
 		}
 		m.refreshRepositoryPresentation()
-		if !slices.Equal(before, sortedRepoKeys(m.activeRepos)) {
+		defaultApplied := m.applyDefaultRepositoryScope()
+		if !defaultApplied && !slices.Equal(before, sortedRepoKeys(m.activeRepos)) {
 			m.refreshRepositoryCandidates()
 		}
 	}
