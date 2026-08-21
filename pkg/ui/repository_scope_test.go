@@ -111,6 +111,58 @@ func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
 }
 
+func TestPendingDefaultDoesNotOverridePickerChoiceOnCatalogRecovery(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "gamma", Title: "Gamma", Status: model.StatusOpen, Labels: []string{"ctx:gamma"}},
+	}
+
+	t.Run("all", func(t *testing.T) {
+		m := NewModel(issues, nil, "")
+		m.hubRepositoryMode = true
+		if m.SetDefaultRepositoryScope("ctx:alpha") {
+			t.Fatal("default applied before the initial catalog arrived")
+		}
+		m.repoPicker = NewRepoPickerModel(nil, m.theme)
+		m = m.applyRepositoryPickerSelection()
+
+		updated, _ := m.Update(RepositoryCatalogReadyMsg{
+			Generation: 1,
+			Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma"),
+		})
+		m = updated.(Model)
+		if m.RepositoryScope() != nil {
+			t.Fatalf("recovery replaced explicit all scope: %#v", m.RepositoryScope())
+		}
+		requireIssueIDs(t, visibleIssueIDs(m), "alpha", "beta", "gamma")
+	})
+
+	t.Run("subset", func(t *testing.T) {
+		m := NewModel(issues, nil, "")
+		m.hubRepositoryMode = true
+		if m.SetDefaultRepositoryScope("ctx:alpha") {
+			t.Fatal("default applied before the initial catalog arrived")
+		}
+		m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+		m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+		m.repoPicker.ClearSelection()
+		m.repoPicker.MoveDown()
+		m.repoPicker.ToggleSelected()
+		m = m.applyRepositoryPickerSelection()
+
+		updated, _ := m.Update(RepositoryCatalogReadyMsg{
+			Generation: 1,
+			Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma"),
+		})
+		m = updated.(Model)
+		if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:beta"] {
+			t.Fatalf("recovery replaced explicit subset scope: %#v", scope)
+		}
+		requireIssueIDs(t, visibleIssueIDs(m), "beta")
+	})
+}
+
 func TestDefaultRepositoryScopeFallbacksLeaveAll(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},

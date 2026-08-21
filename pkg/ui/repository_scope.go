@@ -241,6 +241,8 @@ func (m *Model) applyDefaultRepositoryScope() bool {
 // SetRepositoryScope applies exact catalog IDs. Nil, an empty selection, and a
 // selection containing every catalog entry all mean the complete universe.
 func (m *Model) SetRepositoryScope(selected map[string]bool) {
+	m.defaultRepositorySet = true
+	m.defaultRepositoryID = ""
 	reconciled := model.ReconcileRepositorySelection(selected, m.repositoryCatalog)
 	if len(selected) == 0 || len(reconciled) == len(m.repositoryCatalog) {
 		m.activeRepos = nil
