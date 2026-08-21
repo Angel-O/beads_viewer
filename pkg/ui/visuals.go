@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-	"hash/fnv"
 	"math"
 	"strings"
 
@@ -180,12 +178,17 @@ func RenderRepoBadge(prefix string) string {
 // RenderRepositoryBadge renders a friendly name with a color keyed by the
 // repository's exact identity.
 func RenderRepositoryBadge(identity, name string) string {
-	return RenderRepositoryBadgeCompact(identity, name, 8)
+	if identity == "" || name == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Foreground(GetRepoColor(identity)).
+		Bold(true).
+		Render("[" + name + "]")
 }
 
 // RenderRepositoryBadgeCompact keeps badges within a caller-provided name
-// budget. Truncated names include an exact-identity suffix to preserve useful
-// visual differentiation when shortest unique paths share a long prefix.
+// budget using a conventional trailing ellipsis.
 func RenderRepositoryBadgeCompact(identity, name string, maxNameWidth int) string {
 	if identity == "" || name == "" {
 		return ""
@@ -193,17 +196,7 @@ func RenderRepositoryBadgeCompact(identity, name string, maxNameWidth int) strin
 	if maxNameWidth < 1 {
 		maxNameWidth = 1
 	}
-	display := name
-	if runes := []rune(display); len(runes) > maxNameWidth {
-		if maxNameWidth < 5 {
-			display = string(runes[:maxNameWidth])
-		} else {
-			hash := fnv.New32a()
-			_, _ = hash.Write([]byte(identity))
-			suffix := fmt.Sprintf("%03x", hash.Sum32()&0xfff)
-			display = string(runes[:maxNameWidth-4]) + "…" + suffix
-		}
-	}
+	display := truncateRunesHelper(name, maxNameWidth, "…")
 
 	color := GetRepoColor(identity)
 	return lipgloss.NewStyle().
