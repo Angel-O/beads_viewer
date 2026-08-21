@@ -75,6 +75,154 @@ func TestRepositoryScopeHubExactMultiContextAndAllSemantics(t *testing.T) {
 	}
 }
 
+func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:alpha": "/alpha", "ctx:beta": "/beta"})
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.SetHistoryProvider(correlation.HistoryModeExternal, configPath)
+	if !m.SetDefaultRepositoryScope("ctx:alpha") {
+		t.Fatal("synchronous catalog did not apply the current repository")
+	}
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
+		t.Fatalf("scope = %#v, want ctx:alpha", scope)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+}
+
+func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}, nil, "")
+	m.hubRepositoryMode = true
+	if m.SetDefaultRepositoryScope("ctx:alpha") {
+		t.Fatal("default applied before the initial catalog arrived")
+	}
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
+	m = updated.(Model)
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
+		t.Fatalf("async scope = %#v, want ctx:alpha", scope)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+}
+
+func TestPendingDefaultDoesNotOverridePickerChoiceOnCatalogRecovery(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "gamma", Title: "Gamma", Status: model.StatusOpen, Labels: []string{"ctx:gamma"}},
+	}
+
+	t.Run("all", func(t *testing.T) {
+		m := NewModel(issues, nil, "")
+		m.hubRepositoryMode = true
+		if m.SetDefaultRepositoryScope("ctx:alpha") {
+			t.Fatal("default applied before the initial catalog arrived")
+		}
+		m.repoPicker = NewRepoPickerModel(nil, m.theme)
+		m = m.applyRepositoryPickerSelection()
+
+		updated, _ := m.Update(RepositoryCatalogReadyMsg{
+			Generation: 1,
+			Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma"),
+		})
+		m = updated.(Model)
+		if m.RepositoryScope() != nil {
+			t.Fatalf("recovery replaced explicit all scope: %#v", m.RepositoryScope())
+		}
+		requireIssueIDs(t, visibleIssueIDs(m), "alpha", "beta", "gamma")
+	})
+
+	t.Run("subset", func(t *testing.T) {
+		m := NewModel(issues, nil, "")
+		m.hubRepositoryMode = true
+		if m.SetDefaultRepositoryScope("ctx:alpha") {
+			t.Fatal("default applied before the initial catalog arrived")
+		}
+		m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+		m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+		m.repoPicker.ClearSelection()
+		m.repoPicker.MoveDown()
+		m.repoPicker.ToggleSelected()
+		m = m.applyRepositoryPickerSelection()
+
+		updated, _ := m.Update(RepositoryCatalogReadyMsg{
+			Generation: 1,
+			Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma"),
+		})
+		m = updated.(Model)
+		if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:beta"] {
+			t.Fatalf("recovery replaced explicit subset scope: %#v", scope)
+		}
+		requireIssueIDs(t, visibleIssueIDs(m), "beta")
+	})
+}
+
+func TestDefaultRepositoryScopeFallbacksLeaveAll(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
+	m = updated.(Model)
+	if m.SetDefaultRepositoryScope("ctx:unregistered") || m.RepositoryScope() != nil {
+		t.Fatalf("unregistered context changed scope: %#v", m.RepositoryScope())
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "beta")
+}
+
+func TestDefaultRepositoryScopeSingleCatalogStaysExplicitOnGrowth(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}, nil, "")
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha")})
+	m = updated.(Model)
+	if !m.SetDefaultRepositoryScope("ctx:alpha") {
+		t.Fatal("single-entry default was not applied")
+	}
+	updated, _ = m.Update(RepositoryCatalogReadyMsg{Generation: 2, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
+	m = updated.(Model)
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
+		t.Fatalf("scope after catalog growth = %#v, want explicit ctx:alpha", scope)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+}
+
+func TestRepositoryPickerChoiceOverridesDefaultAcrossRefresh(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "gamma", Title: "Gamma", Status: model.StatusOpen, Labels: []string{"ctx:gamma"}},
+	}, nil, "")
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
+	m = updated.(Model)
+	m.SetDefaultRepositoryScope("ctx:alpha")
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetActiveRepos(m.activeRepos)
+	m.repoPicker.ClearSelection()
+	m = m.applyRepositoryPickerSelection()
+	if m.RepositoryScope() != nil {
+		t.Fatalf("empty picker choice = %#v, want all", m.RepositoryScope())
+	}
+
+	updated, _ = m.Update(RepositoryCatalogReadyMsg{Generation: 2, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma")})
+	m = updated.(Model)
+	if m.RepositoryScope() != nil {
+		t.Fatalf("refresh reapplied default over user choice: %#v", m.RepositoryScope())
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "beta", "gamma")
+}
+
 func TestRepositoryScopeComposesAfterScopeAndKeepsHiddenBlockerTruth(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "visible", Title: "Visible", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "work"}, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},

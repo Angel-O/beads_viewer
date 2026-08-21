@@ -46,7 +46,7 @@ func TestRepositoryScopeTutorialCopy(t *testing.T) {
 		if page.Title != "Repository Scope" {
 			t.Fatalf("repository tutorial title = %q", page.Title)
 		}
-		for _, want := range []string{"wbv --hub", "empty draft means all", "does not change robot or export output"} {
+		for _, want := range []string{"wbv --hub", "empty draft means all", "matching the launch checkout or worktree", "does not change robot or export output"} {
 			if !strings.Contains(page.Content, want) {
 				t.Fatalf("repository tutorial missing %q", want)
 			}

@@ -328,6 +328,35 @@ func TestContextEquivalentOrigins(t *testing.T) {
 	}
 }
 
+func TestContextLinkedWorktreeMatchesPrimary(t *testing.T) {
+	primary := newRepository(t)
+	gitRun(t, primary, "remote", "add", "origin", "git@github.com:owner/repository.git")
+	linked := filepath.Join(t.TempDir(), "linked")
+	gitRun(t, primary, "worktree", "add", "-b", "context-linked", linked)
+
+	primaryContext, err := Context(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkedContext, err := Context(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkedContext != primaryContext {
+		t.Fatalf("linked context = %q, want %q", linkedContext, primaryContext)
+	}
+}
+
+func TestContextRejectsIneligibleDirectories(t *testing.T) {
+	if _, err := Context(t.TempDir()); err == nil {
+		t.Fatal("Context accepted a directory outside Git")
+	}
+	repository := newRepository(t)
+	if _, err := Context(repository); err == nil {
+		t.Fatal("Context accepted a repository without origin")
+	}
+}
+
 func TestContextRejectsUnsupportedOrigins(t *testing.T) {
 	repository := newRepository(t)
 	for _, origin := range []string{"/local/repository", "ssh://example.com"} {

@@ -2073,7 +2073,7 @@ Press **w** to open the repo picker, then:
 | **/** | Search friendly name, path, or exact ID |
 | **Esc** | Clear search first, then cancel |
 
-Applying an empty draft means all repositories. Scope lasts only for the current session and starts at all repositories on launch.
+Applying an empty draft means all repositories. Scope lasts only for the current session. Hub boards start at the registered repository matching the launch checkout or worktree; unsupported or unregistered launch directories, and legacy workspaces, start at all repositories.
 
 Repository picker scope applies only to the interactive board. It does not change robot or export output.
 
