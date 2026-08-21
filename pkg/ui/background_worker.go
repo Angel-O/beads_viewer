@@ -1286,6 +1286,7 @@ func (w *BackgroundWorker) process() {
 		"state": "processing",
 	})
 	w.mu.Unlock()
+	w.send(WorkerProcessingMsg{Worker: w})
 
 	processStart := time.Now()
 	queueDepth := w.pendingChanges.Swap(0)
@@ -2207,6 +2208,11 @@ type SnapshotReadyMsg struct {
 	CatalogError      error
 }
 
+// WorkerProcessingMsg notifies the UI that active refresh feedback should start.
+type WorkerProcessingMsg struct {
+	Worker *BackgroundWorker
+}
+
 // SnapshotErrorMsg is sent to the UI when snapshot building fails.
 type SnapshotErrorMsg struct {
 	Err          error
@@ -2347,6 +2353,8 @@ func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
 		return 3
 	case SnapshotErrorMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
 		return 3
+	case WorkerProcessingMsg:
+		return 2
 	default:
 		return 1
 	}
