@@ -14,12 +14,14 @@ import (
 
 // IssueDelegate renders issue items in the list
 type IssueDelegate struct {
-	Theme             Theme
-	ShowPriorityHints bool
-	PriorityHints     map[string]*analysis.PriorityRecommendation
-	WorkspaceMode     bool // When true, shows repo prefix badges
-	ShowRepositories  bool // When true, shows Hub repository badges
-	ShowSearchScores  bool // Show semantic/hybrid score badge when search is active
+	Theme                Theme
+	ShowPriorityHints    bool
+	PriorityHints        map[string]*analysis.PriorityRecommendation
+	WorkspaceMode        bool // When true, shows repo prefix badges
+	ShowRepositories     bool // When true, shows Hub repository badges
+	RepositoryNameWidth  int  // Shared Hub repository name column width in cells
+	RepositoryExtraWidth int  // Shared Hub +N sub-column width in cells
+	ShowSearchScores     bool // Show semantic/hybrid score badge when search is active
 }
 
 func (d IssueDelegate) Height() int {
@@ -32,6 +34,56 @@ func (d IssueDelegate) Spacing() int {
 
 func (d IssueDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
 	return nil
+}
+
+func (d IssueDelegate) rowWidthWithoutRepository(i IssueItem, width int) int {
+	icon, _ := d.Theme.GetTypeIcon(string(i.Issue.IssueType))
+	leftWidth := 2 + lipgloss.Width(icon) + 1
+	leftWidth += lipgloss.Width(RenderPriorityBadge(i.Issue.Priority)) + 1
+	if d.ShowPriorityHints {
+		leftWidth += 2
+	}
+	if i.IsQuickWin {
+		leftWidth += lipgloss.Width("⭐") + 1
+	} else if i.IsBlocker && i.UnblocksCount > 0 {
+		leftWidth += lipgloss.Width(fmt.Sprintf("🔓%d", i.UnblocksCount)) + 1
+	} else if i.UnblocksCount > 0 {
+		leftWidth += lipgloss.Width(fmt.Sprintf("↪%d", i.UnblocksCount)) + 1
+	}
+	leftWidth += lipgloss.Width(RenderStatusBadge(string(i.Issue.Status))) + 1
+	if d.ShowSearchScores && i.SearchScoreSet {
+		leftWidth += lipgloss.Width(fmt.Sprintf("[%.2f]", i.SearchScore)) + 1
+	}
+	leftWidth += min(lipgloss.Width(i.Issue.ID), 35) + 1
+	if badge := i.DiffStatus.Badge(); badge != "" {
+		leftWidth += lipgloss.Width(badge) + 1
+	}
+
+	rightWidth := 0
+	if width > 60 {
+		rightWidth += 9
+		if len(i.Issue.Comments) > 0 {
+			rightWidth += lipgloss.Width(fmt.Sprintf("💬%d", len(i.Issue.Comments))) + 1
+		} else {
+			rightWidth += 3
+		}
+	}
+	if width > 120 {
+		rightWidth += 6
+	}
+	if width > 100 && i.Issue.Assignee != "" {
+		rightWidth += 14
+	}
+	labels := i.Issue.Labels
+	if i.HubPresentation {
+		labels = i.PresentationLabels
+	}
+	if width > 140 && len(labels) > 0 {
+		labelStr := truncateRunesHelper(strings.Join(labels, ","), 20, "…")
+		labelStyle := d.Theme.Renderer.NewStyle().Padding(0, 1)
+		rightWidth += lipgloss.Width(labelStyle.Render(labelStr)) + 1
+	}
+	return leftWidth + rightWidth + 2 + 5
 }
 
 func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
@@ -98,7 +150,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	// Assignee (if present and we have room)
 	if width > 100 && i.Issue.Assignee != "" {
 		assignee := truncateRunesHelper(i.Issue.Assignee, 12, "…")
-		rightParts = append(rightParts, t.SecondaryText.Render(fmt.Sprintf("@%-12s", assignee)))
+		rightParts = append(rightParts, t.SecondaryText.Render("@"+padRight(assignee, 12)))
 		rightWidth += 14
 	}
 
@@ -124,41 +176,20 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Repo badge width (workspace mode)
 	var repoBadge string
-	if d.ShowRepositories && i.RepositoryID != "" && width > 45 {
+	if d.ShowRepositories && d.RepositoryNameWidth > 0 && width > 45 {
 		extra := ""
 		if i.RepositoryExtra > 0 {
 			extra = fmt.Sprintf("+%d", i.RepositoryExtra)
 		}
-		idReserve := min(lipgloss.Width(idStr), 35)
-		reservedWidth := 2 + iconDisplayWidth + 1 +
-			lipgloss.Width(RenderPriorityBadge(i.Issue.Priority)) + 1 +
-			lipgloss.Width(RenderStatusBadge(string(i.Issue.Status))) + 1 +
-			idReserve + 1 + 5 + rightWidth + 2 + lipgloss.Width(extra) + 3
-		if d.ShowPriorityHints {
-			reservedWidth += 2
-		}
-		if i.IsQuickWin {
-			reservedWidth += lipgloss.Width("⭐") + 1
-		} else if i.UnblocksCount > 0 {
-			indicator := fmt.Sprintf("↪%d", i.UnblocksCount)
-			if i.IsBlocker {
-				indicator = fmt.Sprintf("🔓%d", i.UnblocksCount)
-			}
-			reservedWidth += lipgloss.Width(indicator) + 1
-		}
-		if d.ShowSearchScores && i.SearchScoreSet {
-			reservedWidth += lipgloss.Width(fmt.Sprintf("[%.2f]", i.SearchScore)) + 1
-		}
-		if badge := i.DiffStatus.Badge(); badge != "" {
-			reservedWidth += lipgloss.Width(badge) + 1
-		}
-		nameWidth := max(width-reservedWidth, 1)
-		if lipgloss.Width(i.RepositoryName) <= nameWidth {
+		if i.RepositoryID == "" {
+			repoBadge = strings.Repeat(" ", d.RepositoryNameWidth+2)
+		} else if lipgloss.Width(i.RepositoryName) <= d.RepositoryNameWidth {
 			repoBadge = RenderRepositoryBadge(i.RepositoryID, i.RepositoryName)
 		} else {
-			repoBadge = RenderRepositoryBadgeCompact(i.RepositoryID, i.RepositoryName, nameWidth)
+			repoBadge = RenderRepositoryBadgeCompact(i.RepositoryID, i.RepositoryName, d.RepositoryNameWidth)
 		}
-		repoBadge += extra
+		repoBadge += strings.Repeat(" ", max(d.RepositoryNameWidth+2-lipgloss.Width(repoBadge), 0))
+		repoBadge += padRight(extra, d.RepositoryExtraWidth)
 		leftFixedWidth += lipgloss.Width(repoBadge) + 1
 	} else if d.WorkspaceMode && i.RepoPrefix != "" {
 		// Create a compact repo badge like [API] or [WEB]
