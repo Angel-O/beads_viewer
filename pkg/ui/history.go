@@ -347,6 +347,8 @@ func (h *HistoryModel) rebuildFilteredList() {
 func (h *HistoryModel) SetSize(width, height int) {
 	h.width = width
 	h.height = height
+	h.ensureBeadVisible()
+	h.ensureGitCommitVisible()
 
 	// Adjust focus if pane is lost due to resize
 	panes := h.paneCount()
@@ -1235,29 +1237,67 @@ func (h *HistoryModel) SelectedRelatedBeadID() string {
 
 // ensureGitCommitVisible adjusts scroll offset to keep selected commit visible
 func (h *HistoryModel) ensureGitCommitVisible() {
-	visibleItems := h.listHeight()
-	if visibleItems < 1 {
-		visibleItems = 1
-	}
-
-	if h.selectedGitCommit < h.gitScrollOffset {
-		h.gitScrollOffset = h.selectedGitCommit
-	} else if h.selectedGitCommit >= h.gitScrollOffset+visibleItems {
-		h.gitScrollOffset = h.selectedGitCommit - visibleItems + 1
-	}
+	panelWidth := h.historyListPanelWidth()
+	commits := h.GetFilteredCommitList()
+	ensureHistorySelectionVisibleByHeight(
+		h.selectedGitCommit,
+		len(commits),
+		h.listHeight(),
+		&h.gitScrollOffset,
+		func(index int) int {
+			line := h.renderGitCommitLine(index, commits[index], panelWidth-4)
+			return h.historyListLineHeight(line, panelWidth)
+		},
+	)
 }
 
 // ensureBeadVisible adjusts scroll offset to keep selected bead visible
 func (h *HistoryModel) ensureBeadVisible() {
-	visibleItems := h.listHeight()
-	if visibleItems < 1 {
-		visibleItems = 1
+	panelWidth := h.historyListPanelWidth()
+	ensureHistorySelectionVisibleByHeight(
+		h.selectedBead,
+		len(h.histories),
+		h.listHeight(),
+		&h.scrollOffset,
+		func(index int) int {
+			line := h.renderBeadLine(index, h.histories[index], panelWidth-4)
+			return h.historyListLineHeight(line, panelWidth)
+		},
+	)
+}
+
+func ensureHistorySelectionVisibleByHeight(selected, itemCount, visibleHeight int, scrollOffset *int, itemHeight func(int) int) {
+	if itemCount <= 0 {
+		*scrollOffset = 0
+		return
+	}
+	if visibleHeight < 1 {
+		visibleHeight = 1
 	}
 
-	if h.selectedBead < h.scrollOffset {
-		h.scrollOffset = h.selectedBead
-	} else if h.selectedBead >= h.scrollOffset+visibleItems {
-		h.scrollOffset = h.selectedBead - visibleItems + 1
+	if selected < 0 {
+		selected = 0
+	} else if selected >= itemCount {
+		selected = itemCount - 1
+	}
+
+	if *scrollOffset < 0 {
+		*scrollOffset = 0
+	} else if *scrollOffset >= itemCount {
+		*scrollOffset = itemCount - 1
+	}
+
+	if selected < *scrollOffset {
+		*scrollOffset = selected
+	}
+
+	usedHeight := 0
+	for index := *scrollOffset; index <= selected; index++ {
+		usedHeight += max(itemHeight(index), 1)
+	}
+	for *scrollOffset < selected && usedHeight > visibleHeight {
+		usedHeight -= max(itemHeight(*scrollOffset), 1)
+		*scrollOffset++
 	}
 }
 
@@ -1287,8 +1327,38 @@ func (h *HistoryModel) ensureMiddleScrollVisible(selectedIdx, itemCount int) {
 
 // listHeight returns the number of visible items in the list
 func (h *HistoryModel) listHeight() int {
-	// Reserve 3 lines for header/filter bar
-	return h.height - 3
+	return historyListVisibleItems(h.height - 2)
+}
+
+func (h *HistoryModel) historyListPanelWidth() int {
+	switch h.determineLayout() {
+	case layoutWide:
+		if h.viewMode == historyModeGit {
+			return int(float64(h.width) * 0.25)
+		}
+		return int(float64(h.width) * 0.20)
+	case layoutStandard:
+		return int(float64(h.width) * 0.30)
+	default:
+		return int(float64(h.width) * 0.45)
+	}
+}
+
+func historyListVisibleItems(panelHeight int) int {
+	visibleItems := panelHeight - 5 // Panel header, separator, and borders.
+	if visibleItems < 1 {
+		return 1
+	}
+	return visibleItems
+}
+
+func (h *HistoryModel) historyListLineHeight(line string, panelWidth int) int {
+	contentWidth := panelWidth - 2 // Match the width applied by the bordered panel style.
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	wrapped := h.theme.Renderer.NewStyle().Width(contentWidth).Render(line)
+	return lipgloss.Height(wrapped)
 }
 
 // SelectedBeadID returns the currently selected bead ID
@@ -1389,7 +1459,7 @@ func (h *HistoryModel) View() string {
 // renderTwoPaneView renders the narrow two-pane layout (bv-xrfh)
 func (h *HistoryModel) renderTwoPaneView() string {
 	// Calculate panel widths (45% list, 55% detail for narrow)
-	listWidth := int(float64(h.width) * 0.45)
+	listWidth := h.historyListPanelWidth()
 	detailWidth := h.width - listWidth
 
 	// Render header
@@ -1423,7 +1493,7 @@ func (h *HistoryModel) renderThreePaneView() string {
 	// Wide layout: 4 panes with timeline (bv-1x6o)
 	if layout == layoutWide && h.viewMode != historyModeGit {
 		// Wide bead mode: 20% beads | 22% timeline | 25% commits | 33% details
-		listWidth := int(float64(h.width) * 0.20)
+		listWidth := h.historyListPanelWidth()
 		timelineWidth := int(float64(h.width) * 0.22)
 		middleWidth := int(float64(h.width) * 0.25)
 		detailWidth := h.width - listWidth - timelineWidth - middleWidth
@@ -1441,12 +1511,12 @@ func (h *HistoryModel) renderThreePaneView() string {
 	var listWidth, middleWidth, detailWidth int
 	if layout == layoutWide {
 		// Wide git mode: 25% | 30% | 45%
-		listWidth = int(float64(h.width) * 0.25)
+		listWidth = h.historyListPanelWidth()
 		middleWidth = int(float64(h.width) * 0.30)
 		detailWidth = h.width - listWidth - middleWidth
 	} else {
 		// Standard: 30% | 35% | 35%
-		listWidth = int(float64(h.width) * 0.30)
+		listWidth = h.historyListPanelWidth()
 		middleWidth = int(float64(h.width) * 0.35)
 		detailWidth = h.width - listWidth - middleWidth
 	}
@@ -2164,20 +2234,23 @@ func (h *HistoryModel) renderListPanel(width, height int) string {
 	}
 	lines = append(lines, strings.Repeat("─", sepWidth))
 
-	visibleItems := height - 5 // Account for header, separator, border
-	if visibleItems < 1 {
-		visibleItems = 1
+	visibleHeight := historyListVisibleItems(height)
+	itemHeight := func(index int) int {
+		line := h.renderBeadLine(index, h.histories[index], width-4)
+		return h.historyListLineHeight(line, width)
 	}
+	ensureHistorySelectionVisibleByHeight(h.selectedBead, len(h.histories), visibleHeight, &h.scrollOffset, itemHeight)
 
-	for i := h.scrollOffset; i < len(h.histories) && i < h.scrollOffset+visibleItems; i++ {
+	usedHeight := 0
+	for i := h.scrollOffset; i < len(h.histories); i++ {
 		hist := h.histories[i]
 		line := h.renderBeadLine(i, hist, width-4)
+		lineHeight := max(h.historyListLineHeight(line, width), 1)
+		if usedHeight > 0 && usedHeight+lineHeight > visibleHeight {
+			break
+		}
 		lines = append(lines, line)
-	}
-
-	// Pad with empty lines if needed
-	for len(lines) < height-2 {
-		lines = append(lines, "")
+		usedHeight += lineHeight
 	}
 
 	content := strings.Join(lines, "\n")
@@ -3154,22 +3227,25 @@ func (h *HistoryModel) renderGitCommitListPanel(width, height int) string {
 	}
 	lines = append(lines, strings.Repeat("─", sepWidth))
 
-	visibleItems := height - 5
-	if visibleItems < 1 {
-		visibleItems = 1
-	}
-
 	// Use filtered list if search is active (bv-nkrj)
 	commits := h.GetFilteredCommitList()
-	for i := h.gitScrollOffset; i < len(commits) && i < h.gitScrollOffset+visibleItems; i++ {
+	visibleHeight := historyListVisibleItems(height)
+	itemHeight := func(index int) int {
+		line := h.renderGitCommitLine(index, commits[index], width-4)
+		return h.historyListLineHeight(line, width)
+	}
+	ensureHistorySelectionVisibleByHeight(h.selectedGitCommit, len(commits), visibleHeight, &h.gitScrollOffset, itemHeight)
+
+	usedHeight := 0
+	for i := h.gitScrollOffset; i < len(commits); i++ {
 		commit := commits[i]
 		line := h.renderGitCommitLine(i, commit, width-4)
+		lineHeight := max(h.historyListLineHeight(line, width), 1)
+		if usedHeight > 0 && usedHeight+lineHeight > visibleHeight {
+			break
+		}
 		lines = append(lines, line)
-	}
-
-	// Pad with empty lines if needed
-	for len(lines) < height-2 {
-		lines = append(lines, "")
+		usedHeight += lineHeight
 	}
 
 	content := strings.Join(lines, "\n")
