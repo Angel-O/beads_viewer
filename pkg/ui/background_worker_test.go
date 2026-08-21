@@ -2123,7 +2123,7 @@ func TestModelWorkerPollKeepsAnimationActiveOnlyWhileProcessing(t *testing.T) {
 	m.backgroundWorker = worker
 	m.workerSpinnerIdx = len(workerSpinnerFrames) - 1
 
-	updated, activeCmd := m.Update(workerPollTickMsg{})
+	updated, activeCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
 	m = updated.(Model)
 	if activeCmd == nil {
 		t.Fatal("processing worker did not schedule the next animation tick")
@@ -2133,13 +2133,78 @@ func TestModelWorkerPollKeepsAnimationActiveOnlyWhileProcessing(t *testing.T) {
 	}
 
 	worker.state = WorkerIdle
-	updated, idleCmd := m.Update(workerPollTickMsg{})
+	updated, idleCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
 	m = updated.(Model)
 	if idleCmd == nil {
 		t.Fatal("idle worker did not schedule the next health and freshness check")
 	}
 	if m.workerSpinnerIdx != 0 {
 		t.Fatalf("idle spinner index = %d, want 0", m.workerSpinnerIdx)
+	}
+}
+
+func TestModelProcessingStartPreemptsIdlePoll(t *testing.T) {
+	worker := &BackgroundWorker{state: WorkerIdle}
+	m := NewModel(nil, nil, "")
+	m.backgroundWorker = worker
+
+	updated, idleCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
+	m = updated.(Model)
+	if idleCmd == nil {
+		t.Fatal("idle worker did not schedule its status poll")
+	}
+	idleGeneration := m.workerPollGeneration
+
+	worker.state = WorkerProcessing
+	updated, activeCmd := m.Update(WorkerProcessingMsg{Worker: worker})
+	m = updated.(Model)
+	if activeCmd == nil {
+		t.Fatal("processing start did not schedule active feedback")
+	}
+	if m.workerPollGeneration == idleGeneration {
+		t.Fatal("processing start did not invalidate the pending idle poll")
+	}
+
+	m.workerSpinnerIdx = 0
+	updated, staleCmd := m.Update(workerPollTickMsg{generation: idleGeneration})
+	m = updated.(Model)
+	if staleCmd != nil {
+		t.Fatal("stale idle poll scheduled another polling chain")
+	}
+	if m.workerSpinnerIdx != 0 {
+		t.Fatal("stale idle poll advanced the active spinner")
+	}
+
+	updated, nextActiveCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
+	m = updated.(Model)
+	if nextActiveCmd == nil {
+		t.Fatal("current active poll did not continue the animation cadence")
+	}
+	if m.workerSpinnerIdx != 1 {
+		t.Fatalf("active spinner index = %d, want 1", m.workerSpinnerIdx)
+	}
+}
+
+func TestBackgroundWorkerEmitsProcessingStartBeforeCompletion(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	worker.process()
+	msg := <-worker.Messages()
+	started, ok := msg.(WorkerProcessingMsg)
+	if !ok {
+		t.Fatalf("first worker message = %T, want WorkerProcessingMsg", msg)
+	}
+	if started.Worker != worker {
+		t.Fatal("processing-start message identified the wrong worker")
 	}
 }
 
@@ -2164,7 +2229,7 @@ func BenchmarkModelIdleWorkerRedraw(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		updated, _ := m.Update(workerPollTickMsg{})
+		updated, _ := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
 		m = updated.(Model)
 		_ = m.View()
 	}

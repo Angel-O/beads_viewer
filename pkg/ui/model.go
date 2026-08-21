@@ -153,7 +153,9 @@ type editorExitMsg struct {
 type semanticDebounceTickMsg struct{}
 
 // workerPollTickMsg drives a small background-mode status refresh (spinner + freshness) (bv-9nfy).
-type workerPollTickMsg struct{}
+type workerPollTickMsg struct {
+	generation uint64
+}
 
 // comboTickMsg fires after the combo timeout expires (bv-6fm0).
 // If a combo key is pending and this fires, the pending key is dispatched as a single press.
@@ -187,9 +189,9 @@ func workerPollInterval(state WorkerState) time.Duration {
 	return workerIdlePoll
 }
 
-func workerPollTickCmd(interval time.Duration) tea.Cmd {
+func workerPollTickCmd(interval time.Duration, generation uint64) tea.Cmd {
 	return tea.Tick(interval, func(time.Time) tea.Msg {
-		return workerPollTickMsg{}
+		return workerPollTickMsg{generation: generation}
 	})
 }
 
@@ -511,10 +513,11 @@ type Model struct {
 	backgroundSnapshotApplied bool
 	lastSnapshotVersion       uint64
 	// backgroundWorker manages async data loading (nil if background mode disabled)
-	backgroundWorker  *BackgroundWorker
-	workerSpinnerIdx  int // Spinner frame for background worker activity (bv-9nfy)
-	lastForceRefresh  time.Time
-	lastSourceRefresh time.Time
+	backgroundWorker     *BackgroundWorker
+	workerSpinnerIdx     int // Spinner frame for background worker activity (bv-9nfy)
+	workerPollGeneration uint64
+	lastForceRefresh     time.Time
+	lastSourceRefresh    time.Time
 
 	// UI Components
 	list               list.Model
@@ -1573,7 +1576,7 @@ func (m Model) Init() tea.Cmd {
 	if m.backgroundWorker != nil {
 		cmds = append(cmds, StartBackgroundWorkerCmd(m.backgroundWorker))
 		cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
-		cmds = append(cmds, workerPollTickCmd(workerActivePoll))
+		cmds = append(cmds, workerPollTickCmd(workerActivePoll, m.workerPollGeneration))
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
@@ -1833,7 +1836,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingComboTime = time.Time{}
 		}
 
+	case WorkerProcessingMsg:
+		if msg.Worker == m.backgroundWorker && m.backgroundWorker != nil {
+			m.workerPollGeneration++
+			cmds = append(cmds,
+				workerPollTickCmd(workerActivePoll, m.workerPollGeneration),
+				WaitForBackgroundWorkerMsgCmd(m.backgroundWorker),
+			)
+		}
+
 	case workerPollTickMsg:
+		if msg.generation != m.workerPollGeneration {
+			break
+		}
 		if m.backgroundWorker != nil {
 			state := m.backgroundWorker.State()
 			if state == WorkerProcessing {
@@ -1842,7 +1857,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.workerSpinnerIdx = 0
 			}
 			if state != WorkerStopped {
-				cmds = append(cmds, workerPollTickCmd(workerPollInterval(state)))
+				cmds = append(cmds, workerPollTickCmd(workerPollInterval(state), msg.generation))
 			}
 		}
 
