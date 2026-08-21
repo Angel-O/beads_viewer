@@ -14,8 +14,14 @@ import (
 func ComputeAttentionView(issues []model.Issue, width int) (string, error) {
 	cfg := analysis.DefaultLabelHealthConfig()
 	result := analysis.ComputeLabelAttentionScores(issues, cfg, time.Now().UTC())
+	return RenderAttentionView(result, width), nil
+}
+
+// RenderAttentionView renders one previously computed result so display and
+// numeric actions always use the same ordering.
+func RenderAttentionView(result analysis.LabelAttentionResult, width int) string {
 	if len(result.Labels) == 0 {
-		return "No labels available for Attention analysis", nil
+		return "No labels available for Attention analysis"
 	}
 
 	headers := []string{"Rank", "Label", "Attention", "Reason"}
@@ -54,5 +60,5 @@ func ComputeAttentionView(issues []model.Issue, width int) (string, error) {
 		}, false)
 	}
 
-	return b.String(), nil
+	return b.String()
 }

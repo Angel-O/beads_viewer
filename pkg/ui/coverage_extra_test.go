@@ -512,10 +512,76 @@ func TestRenderFooterStatusAndBadges(t *testing.T) {
 	m.updateTag = "v9.9.9"
 	m.workspaceMode = true
 	m.workspaceSummary = "2 repos"
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "api", Name: "api"},
+		{ID: "web", Name: "web"},
+	}
 	footer = m.renderFooter()
-	for _, expect := range []string{"READY", "◉", "⭐", "📦"} {
+	for _, expect := range []string{"READY", "◉", "⭐", "📦", "api, web"} {
 		if !strings.Contains(footer, expect) {
 			t.Fatalf("footer missing %s: %s", expect, footer)
+		}
+	}
+}
+
+func TestRepositoryScopeBadgeIsResponsiveAndPersistsWithStatus(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:api", Name: "api"},
+		{ID: "ctx:web", Name: "web"},
+		{ID: "ctx:worker", Name: "worker"},
+	}
+	m.activeRepos = map[string]bool{"ctx:api": true, "ctx:web": true}
+
+	m.width = 100
+	wide := m.renderFooter()
+	if !strings.Contains(wide, "api, web") {
+		t.Fatalf("wide footer missing friendly scope names: %s", wide)
+	}
+
+	m.width = 46
+	m.statusMsg = "Repository scope updated successfully"
+	narrow := m.renderFooter()
+	if !strings.Contains(narrow, "REPOS 2/3") || !strings.Contains(narrow, "Repository") {
+		t.Fatalf("narrow status footer missing scope or status: %s", narrow)
+	}
+	if width := lipgloss.Width(narrow); width > m.width {
+		t.Fatalf("narrow footer width = %d, terminal width = %d", width, m.width)
+	}
+}
+
+func TestRepositoryScopeBadgeSurvivesLongNormalFooterContent(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.width = 48
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:api", Name: "api"}, {ID: "ctx:web", Name: "web"}}
+	m.activeRepos = map[string]bool{"ctx:api": true}
+	m.currentFilter = "recipe:" + strings.Repeat("very-long-filter-", 5)
+
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "REPOS 1/2") {
+		t.Fatalf("normal footer truncated repository scope: %s", footer)
+	}
+	if width := lipgloss.Width(footer); width > m.width {
+		t.Fatalf("footer width = %d, want <= %d", width, m.width)
+	}
+}
+
+func TestRepositoryScopeBadgeTakesPriorityOverNarrowStatus(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:api", Name: "api"}, {ID: "ctx:web", Name: "web"}}
+	m.activeRepos = map[string]bool{"ctx:api": true}
+	m.statusMsg = strings.Repeat("status ", 10)
+	for _, width := range []int{24, 12} {
+		m.width = width
+		footer := m.renderFooter()
+		if !strings.Contains(footer, "📦") {
+			t.Fatalf("width %d status footer lost scope badge: %s", width, footer)
+		}
+		if lipgloss.Width(footer) > width {
+			t.Fatalf("width %d status footer overflowed: %d", width, lipgloss.Width(footer))
 		}
 	}
 }

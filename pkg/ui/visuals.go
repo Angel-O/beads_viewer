@@ -165,13 +165,40 @@ func RenderRepoBadge(prefix string) string {
 	if prefix == "" {
 		return ""
 	}
-	// Uppercase and limit to 4 runes for compactness
 	display := strings.ToUpper(prefix)
 	if runes := []rune(display); len(runes) > 4 {
 		display = string(runes[:4])
 	}
+	return lipgloss.NewStyle().
+		Foreground(GetRepoColor(prefix)).
+		Bold(true).
+		Render("[" + display + "]")
+}
 
-	color := GetRepoColor(prefix)
+// RenderRepositoryBadge renders a friendly name with a color keyed by the
+// repository's exact identity.
+func RenderRepositoryBadge(identity, name string) string {
+	if identity == "" || name == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Foreground(GetRepoColor(identity)).
+		Bold(true).
+		Render("[" + name + "]")
+}
+
+// RenderRepositoryBadgeCompact keeps badges within a caller-provided name
+// budget using a conventional trailing ellipsis.
+func RenderRepositoryBadgeCompact(identity, name string, maxNameWidth int) string {
+	if identity == "" || name == "" {
+		return ""
+	}
+	if maxNameWidth < 1 {
+		maxNameWidth = 1
+	}
+	display := truncateRunesHelper(name, maxNameWidth, "…")
+
+	color := GetRepoColor(identity)
 	return lipgloss.NewStyle().
 		Foreground(color).
 		Bold(true).

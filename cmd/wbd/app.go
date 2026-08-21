@@ -74,20 +74,22 @@ func (a *app) run(arguments []string) int {
 		fmt.Fprintln(a.stdout, context)
 		return 0
 	case "configure":
-		if _, configureErr := hub.Configure(a.paths, a.dir); configureErr != nil {
+		registration, configureErr := hub.Configure(a.paths, a.dir)
+		if configureErr != nil {
 			return a.fail(configureErr)
 		}
+		a.signalRegistration(registration)
 		fmt.Fprintln(a.stdout, a.paths.Config)
 		return 0
 	case "register":
-		registration, registerErr := hub.Register(a.paths, a.dir)
+		registration, registerErr := a.register()
 		if registerErr != nil {
 			return a.fail(registerErr)
 		}
 		fmt.Fprintf(a.stdout, "%s\t%s\n", registration.Context, registration.Root)
 		return 0
 	case "create", "new":
-		registration, registerErr := hub.Register(a.paths, a.dir)
+		registration, registerErr := a.register()
 		if registerErr != nil {
 			return a.fail(registerErr)
 		}
@@ -99,7 +101,7 @@ func (a *app) run(arguments []string) int {
 		args := appendJSON(nil, request.json)
 		args = append(args, "list")
 		if !request.allContexts {
-			registration, registerErr := hub.Register(a.paths, a.dir)
+			registration, registerErr := a.register()
 			if registerErr != nil {
 				return a.fail(registerErr)
 			}
@@ -131,7 +133,7 @@ func (a *app) run(arguments []string) int {
 		if err := need("bv"); err != nil {
 			return a.fail(err)
 		}
-		registration, registerErr := hub.Register(a.paths, a.dir)
+		registration, registerErr := a.register()
 		if registerErr != nil {
 			return a.fail(registerErr)
 		}
@@ -142,6 +144,23 @@ func (a *app) run(arguments []string) int {
 		return a.runBV("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
 	default:
 		return a.fail(errors.New("internal unsupported command"))
+	}
+}
+
+func (a *app) register() (hub.Registration, error) {
+	registration, err := hub.Register(a.paths, a.dir)
+	if err == nil {
+		a.signalRegistration(&registration)
+	}
+	return registration, err
+}
+
+func (a *app) signalRegistration(registration *hub.Registration) {
+	if registration == nil || !registration.Changed {
+		return
+	}
+	if err := hub.SignalChange(a.paths); err != nil {
+		fmt.Fprintf(a.stderr, "wbd: warning: registry mutation succeeded but Viewer notification failed: %v\n", err)
 	}
 }
 

@@ -432,6 +432,34 @@ func TestWatcher_PollingContentCheckDetectsSameMetadata(t *testing.T) {
 	}
 }
 
+func TestWatcher_DetectsAtomicReplacement(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWatcher(path, WithDebounceDuration(5*time.Millisecond), WithContentCheck(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	temporary := filepath.Join(directory, "hub.yaml.next")
+	if err := os.WriteFile(temporary, []byte("version: 1\nrepositories: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-w.Changed():
+	case <-time.After(time.Second):
+		t.Fatal("atomic replacement was not detected")
+	}
+}
+
 func TestWatcher_FsnotifyCreateRefreshesRemovedState(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.jsonl")

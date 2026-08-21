@@ -3,11 +3,13 @@ package ui
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +41,951 @@ func TestBackgroundWorker_NewWithoutPath(t *testing.T) {
 	if worker.GetSnapshot() != nil {
 		t.Error("Expected nil snapshot initially")
 	}
+}
+
+func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testing.T) {
+	m := Model{
+		activeRepos:       map[string]bool{"ctx:a": true, "ctx:removed": true},
+		catalogGeneration: 1,
+	}
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{
+		Generation: 2,
+		Catalog: model.RepositoryCatalog{
+			{ID: "ctx:a", Name: "a"},
+			{ID: "ctx:new", Name: "new"},
+		},
+	})
+	m = updated.(Model)
+	if len(m.activeRepos) != 1 || !m.activeRepos["ctx:a"] || m.activeRepos["ctx:new"] {
+		t.Fatalf("subset after addition/removal = %#v", m.activeRepos)
+	}
+	updated, _ = m.Update(RepositoryCatalogReadyMsg{
+		Generation: 1,
+		Catalog:    model.RepositoryCatalog{{ID: "ctx:stale", Name: "stale"}},
+	})
+	m = updated.(Model)
+	if len(m.repositoryCatalog) != 2 || m.catalogGeneration != 2 {
+		t.Fatalf("stale catalog was applied: generation=%d catalog=%#v", m.catalogGeneration, m.repositoryCatalog)
+	}
+	updated, _ = m.Update(RepositoryCatalogReadyMsg{
+		Generation: 3,
+		Catalog:    model.RepositoryCatalog{{ID: "ctx:new", Name: "new"}},
+	})
+	m = updated.(Model)
+	if m.activeRepos != nil {
+		t.Fatalf("emptied subset = %#v, want all", m.activeRepos)
+	}
+}
+
+func TestOpenRepositoryPickerTracksLiveCatalogByExactID(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:a", Name: "alpha"},
+		{ID: "ctx:b", Name: "beta"},
+	}
+	m.activeRepos = map[string]bool{"ctx:b": true}
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetActiveRepos(m.activeRepos)
+	m.repoPicker.MoveDown()
+	m.showRepoPicker = true
+
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{
+		Generation: 1,
+		Catalog: model.RepositoryCatalog{
+			{ID: "ctx:b", Name: "aardvark", BeadCount: 4},
+			{ID: "ctx:new", Name: "new", BeadCount: 1},
+		},
+	})
+	m = updated.(Model)
+	selected := m.repoPicker.SelectedRepos()
+	if m.repoPicker.currentRepositoryID() != "ctx:b" {
+		t.Fatalf("live refresh cursor = %q, want ctx:b", m.repoPicker.currentRepositoryID())
+	}
+	if len(selected) != 1 || !selected["ctx:b"] || selected["ctx:new"] {
+		t.Fatalf("live refresh draft = %#v", selected)
+	}
+	if view := m.repoPicker.View(); !strings.Contains(view, "aardvark") || !strings.Contains(view, "(4)") {
+		t.Fatalf("open picker did not refresh metadata:\n%s", view)
+	}
+}
+
+func TestBackgroundWorkerMessageBufferHasSafeMinimum(t *testing.T) {
+	t.Run("explicit", func(t *testing.T) {
+		worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Stop()
+		if got := cap(worker.msgCh); got != minWorkerMessageBuffer {
+			t.Fatalf("message buffer = %d, want minimum %d", got, minWorkerMessageBuffer)
+		}
+	})
+	t.Run("environment", func(t *testing.T) {
+		t.Setenv("BV_CHANNEL_BUFFER", "1")
+		worker, err := NewBackgroundWorker(WorkerConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer worker.Stop()
+		if got := cap(worker.msgCh); got != minWorkerMessageBuffer {
+			t.Fatalf("message buffer = %d, want minimum %d", got, minWorkerMessageBuffer)
+		}
+	})
+}
+
+func TestBackgroundWorkerBacklogPreservesSnapshot(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	worker.send(Phase2UpdateMsg{DataHash: "old-1"})
+	worker.send(Phase2UpdateMsg{DataHash: "old-2"})
+	snapshot := &DataSnapshot{DataHash: "snapshot"}
+	worker.send(SnapshotReadyMsg{Snapshot: snapshot})
+	worker.send(RepositoryCatalogReadyMsg{Generation: 1, Catalog: model.RepositoryCatalog{{ID: "ctx:a"}}})
+
+	foundSnapshot := false
+	for len(worker.msgCh) > 0 {
+		if message, ok := (<-worker.msgCh).(SnapshotReadyMsg); ok && message.Snapshot == snapshot {
+			foundSnapshot = true
+		}
+	}
+	if !foundSnapshot {
+		t.Fatal("high-priority snapshot was evicted from the bounded backlog")
+	}
+}
+
+func TestBackgroundWorkerBacklogPreservesCurrentSnapshotAndNewestCatalog(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	oldSnapshot := &DataSnapshot{DataHash: "old", pooledIssues: []*model.Issue{{ID: "old"}}}
+	currentSnapshot := &DataSnapshot{DataHash: "current"}
+	worker.mu.Lock()
+	worker.snapshot = currentSnapshot
+	worker.mu.Unlock()
+	worker.send(SnapshotReadyMsg{Snapshot: oldSnapshot, SnapshotVer: 1})
+	worker.send(SnapshotReadyMsg{Snapshot: currentSnapshot, SnapshotVer: 2})
+	worker.send(RepositoryCatalogReadyMsg{Generation: 3, Catalog: model.RepositoryCatalog{{ID: "ctx:new"}}})
+
+	foundCurrent := false
+	foundCatalog := false
+	for len(worker.msgCh) > 0 {
+		switch message := (<-worker.msgCh).(type) {
+		case SnapshotReadyMsg:
+			foundCurrent = message.Snapshot == currentSnapshot
+			if message.CatalogAvailable && message.CatalogGeneration == 3 && len(message.Catalog) == 1 && message.Catalog[0].ID == "ctx:new" {
+				foundCatalog = true
+			}
+		case RepositoryCatalogReadyMsg:
+			foundCatalog = message.Generation == 3
+		}
+	}
+	if !foundCurrent || !foundCatalog {
+		t.Fatalf("bounded backlog lost state: current=%v catalog=%v", foundCurrent, foundCatalog)
+	}
+}
+
+func TestBackgroundWorkerBacklogPreservesLatestSourceError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	currentSnapshot := &DataSnapshot{DataHash: "current"}
+	worker.mu.Lock()
+	worker.snapshot = currentSnapshot
+	worker.mu.Unlock()
+	worker.send(SnapshotReadyMsg{Snapshot: currentSnapshot, SnapshotVer: 2})
+	worker.send(RepositoryCatalogReadyMsg{Generation: 2, Catalog: model.RepositoryCatalog{{ID: "ctx:a"}}})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+
+	foundSnapshot := false
+	foundError := false
+	for len(worker.msgCh) > 0 {
+		switch message := (<-worker.msgCh).(type) {
+		case SnapshotReadyMsg:
+			foundSnapshot = message.Snapshot == currentSnapshot
+		case SnapshotErrorMsg:
+			foundError = message.Err != nil
+		}
+	}
+	if !foundSnapshot || !foundError {
+		t.Fatalf("bounded backlog lost current state or source error: snapshot=%v error=%v", foundSnapshot, foundError)
+	}
+}
+
+func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing.T) {
+	permutations := [][]string{
+		{"catalog", "error", "snapshot"},
+		{"catalog", "snapshot", "error"},
+		{"error", "catalog", "snapshot"},
+		{"error", "snapshot", "catalog"},
+		{"snapshot", "catalog", "error"},
+		{"snapshot", "error", "catalog"},
+	}
+	for _, order := range permutations {
+		t.Run(strings.Join(order, "-"), func(t *testing.T) {
+			worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Stop()
+			catalog := model.RepositoryCatalog{{ID: "ctx:current", Name: "current"}}
+			current := NewSnapshotBuilder([]model.Issue{{ID: "CURRENT", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+			worker.mu.Lock()
+			worker.snapshot = current
+			worker.catalog = catalog
+			worker.mu.Unlock()
+			messages := map[string]tea.Msg{
+				"catalog": RepositoryCatalogReadyMsg{Catalog: catalog, Generation: 6},
+				"error":   SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true},
+				"snapshot": SnapshotReadyMsg{
+					Snapshot:          current,
+					SnapshotVer:       5,
+					Catalog:           model.RepositoryCatalog{{ID: "ctx:snapshot-old", Name: "snapshot-old"}},
+					CatalogGeneration: 5,
+					CatalogAvailable:  true,
+					CatalogChanged:    false,
+				},
+			}
+			for _, name := range order {
+				worker.send(messages[name])
+			}
+
+			retained := make([]tea.Msg, 0, 2)
+			for len(worker.msgCh) > 0 {
+				retained = append(retained, <-worker.msgCh)
+			}
+			if len(retained) != 2 {
+				t.Fatalf("retained %d messages, want 2", len(retained))
+			}
+			if _, ok := retained[0].(RepositoryCatalogReadyMsg); ok {
+				t.Fatal("redundant standalone catalog remained in bounded backlog")
+			}
+			if _, ok := retained[1].(RepositoryCatalogReadyMsg); ok {
+				t.Fatal("redundant standalone catalog remained in bounded backlog")
+			}
+			expectedOrder := make([]string, 0, 2)
+			for _, name := range order {
+				if name != "catalog" {
+					expectedOrder = append(expectedOrder, name)
+				}
+			}
+			for i, message := range retained {
+				got := ""
+				switch message.(type) {
+				case SnapshotErrorMsg:
+					got = "error"
+				case SnapshotReadyMsg:
+					got = "snapshot"
+				}
+				if got != expectedOrder[i] {
+					t.Fatalf("retained order[%d] = %q, want %q", i, got, expectedOrder[i])
+				}
+			}
+
+			m := NewModel(nil, nil, "")
+			m.catalogGeneration = 4
+			m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:old", Name: "old"}}
+			for _, message := range retained {
+				updated, _ := m.Update(message)
+				m = updated.(Model)
+			}
+			if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:current" {
+				t.Fatalf("model catalog = %#v, want current snapshot catalog", m.repositoryCatalog)
+			}
+			if len(m.issues) != 1 || m.issues[0].ID != "CURRENT" {
+				t.Fatalf("model issues = %#v, want current snapshot", m.issues)
+			}
+		})
+	}
+}
+
+func TestBackgroundWorkerBacklogDoesNotDowngradeNewerSnapshotCatalog(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	newerCatalog := model.RepositoryCatalog{{ID: "ctx:newer", Name: "newer"}}
+	current := NewSnapshotBuilder([]model.Issue{{ID: "CURRENT", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.catalog = newerCatalog
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{Catalog: model.RepositoryCatalog{{ID: "ctx:older", Name: "older"}}, Generation: 5})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		Catalog:           newerCatalog,
+		CatalogGeneration: 6,
+		CatalogAvailable:  true,
+	})
+
+	retained := drainWorkerMessages(worker)
+	if len(retained) != 2 {
+		t.Fatalf("retained %d messages, want 2", len(retained))
+	}
+	if _, ok := retained[0].(SnapshotErrorMsg); !ok {
+		t.Fatalf("first retained message = %T, want source error", retained[0])
+	}
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if snapshot.CatalogGeneration != 6 || len(snapshot.Catalog) != 1 || snapshot.Catalog[0].ID != "ctx:newer" {
+		t.Fatalf("snapshot catalog was downgraded: generation=%d catalog=%#v", snapshot.CatalogGeneration, snapshot.Catalog)
+	}
+
+	m := NewModel(nil, nil, "")
+	for _, message := range retained {
+		updated, _ := m.Update(message)
+		m = updated.(Model)
+	}
+	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:newer" || m.catalogGeneration != 6 {
+		t.Fatalf("model catalog = %#v generation=%d", m.repositoryCatalog, m.catalogGeneration)
+	}
+}
+
+func TestBackgroundWorkerBacklogDoesNotClearNewerSnapshotCatalogError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	current := &DataSnapshot{DataHash: "current"}
+	newerError := errors.New("newer catalog unavailable")
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{Catalog: model.RepositoryCatalog{{ID: "ctx:older"}}, Generation: 5})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		CatalogGeneration: 6,
+		CatalogAvailable:  false,
+		CatalogError:      newerError,
+	})
+
+	retained := drainWorkerMessages(worker)
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if snapshot.CatalogGeneration != 6 || snapshot.CatalogAvailable || !errors.Is(snapshot.CatalogError, newerError) {
+		t.Fatalf("newer unavailable state was downgraded: generation=%d available=%v error=%v", snapshot.CatalogGeneration, snapshot.CatalogAvailable, snapshot.CatalogError)
+	}
+}
+
+func TestBackgroundWorkerBacklogEqualGenerationMergesDeliveryState(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	snapshotCatalog := model.RepositoryCatalog{{ID: "ctx:snapshot", Name: "snapshot"}}
+	current := &DataSnapshot{DataHash: "current"}
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{
+		Catalog:    model.RepositoryCatalog{{ID: "ctx:standalone", Name: "standalone"}},
+		Generation: 6,
+		Recovered:  true,
+	})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		Catalog:           snapshotCatalog,
+		CatalogGeneration: 6,
+		CatalogAvailable:  true,
+		CatalogChanged:    false,
+		CatalogRecovered:  false,
+		CatalogError:      errors.New("stale catalog error"),
+	})
+
+	retained := drainWorkerMessages(worker)
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if len(snapshot.Catalog) != 1 || snapshot.Catalog[0].ID != "ctx:snapshot" {
+		t.Fatalf("equal generation replaced snapshot payload: %#v", snapshot.Catalog)
+	}
+	if !snapshot.CatalogChanged || !snapshot.CatalogRecovered || snapshot.CatalogError != nil {
+		t.Fatalf("equal generation state not merged: changed=%v recovered=%v error=%v", snapshot.CatalogChanged, snapshot.CatalogRecovered, snapshot.CatalogError)
+	}
+}
+
+func TestBackgroundWorkerBacklogEqualGenerationCompletesUnavailableSnapshot(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	catalog := model.RepositoryCatalog{{ID: "ctx:recovered"}}
+	current := &DataSnapshot{DataHash: "current"}
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(RepositoryCatalogReadyMsg{Catalog: catalog, Generation: 6, Recovered: true})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		CatalogGeneration: 6,
+		CatalogAvailable:  false,
+		CatalogError:      errors.New("transient catalog error"),
+	})
+
+	retained := drainWorkerMessages(worker)
+	snapshot, ok := retained[1].(SnapshotReadyMsg)
+	if !ok {
+		t.Fatalf("second retained message = %T, want snapshot", retained[1])
+	}
+	if !snapshot.CatalogAvailable || !snapshot.CatalogChanged || !snapshot.CatalogRecovered || snapshot.CatalogError != nil ||
+		len(snapshot.Catalog) != 1 || snapshot.Catalog[0].ID != "ctx:recovered" {
+		t.Fatalf("equal recovery did not complete snapshot: %#v", snapshot)
+	}
+}
+
+func drainWorkerMessages(worker *BackgroundWorker) []tea.Msg {
+	messages := make([]tea.Msg, 0, len(worker.msgCh))
+	for len(worker.msgCh) > 0 {
+		messages = append(messages, <-worker.msgCh)
+	}
+	return messages
+}
+
+func TestBackgroundWorkerStopReleasesQueuedSnapshots(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := &DataSnapshot{pooledIssues: []*model.Issue{{ID: "queued"}}}
+	worker.send(SnapshotReadyMsg{Snapshot: queued, SnapshotVer: 1})
+	worker.Stop()
+	if queued.pooledIssues != nil {
+		t.Fatal("shutdown retained pooled references from a queued snapshot")
+	}
+}
+
+func TestModelIgnoresOutOfOrderBackgroundSnapshot(t *testing.T) {
+	newer := NewSnapshotBuilder([]model.Issue{{ID: "NEW", Title: "New", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	older := NewSnapshotBuilder([]model.Issue{{ID: "OLD", Title: "Old", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	m := NewModel(nil, nil, "")
+	updated, _ := m.Update(SnapshotReadyMsg{
+		Snapshot:          newer,
+		SnapshotVer:       2,
+		Catalog:           model.RepositoryCatalog{{ID: "ctx:new"}},
+		CatalogGeneration: 2,
+		CatalogChanged:    true,
+	})
+	m = updated.(Model)
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:          older,
+		SnapshotVer:       1,
+		Catalog:           model.RepositoryCatalog{{ID: "ctx:old"}},
+		CatalogGeneration: 1,
+		CatalogChanged:    true,
+	})
+	m = updated.(Model)
+	if len(m.issues) != 1 || m.issues[0].ID != "NEW" || m.lastSnapshotVersion != 2 {
+		t.Fatalf("out-of-order snapshot applied: issues=%#v version=%d", m.issues, m.lastSnapshotVersion)
+	}
+	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:new" {
+		t.Fatalf("out-of-order catalog applied: %#v", m.repositoryCatalog)
+	}
+}
+
+func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	t.Setenv("BV_BACKGROUND_MODE", "1")
+	t.Setenv("BV_HUB_AUTO_REFRESH", "0")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", filepath.Join(directory, "viewer-generation"))
+	m := NewModel(nil, nil, issuesPath)
+	defer m.Stop()
+	m.SetHistoryProvider("external", configPath)
+	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigPath != configPath {
+		t.Fatal("manual catalog refresh was not configured")
+	}
+	if m.backgroundWorker.hubConfigWatcher != nil || m.backgroundWorker.hubChangeWatcher != nil {
+		t.Fatal("Hub auto-refresh opt-out left a Hub watcher enabled")
+	}
+}
+
+func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	t.Setenv("BV_BACKGROUND_MODE", "")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
+	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	m := NewModel(nil, nil, issuesPath)
+	defer m.Stop()
+	if m.backgroundWorker != nil || m.watcher == nil {
+		t.Fatal("direct mode did not start with the ordinary file watcher")
+	}
+	m.SetHistoryProvider("external", configPath)
+	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigWatcher == nil || m.watcher == nil {
+		t.Fatal("Hub provider did not retain the file watcher during worker transition")
+	}
+	if err := m.backgroundWorker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	m.backgroundWorker.TriggerRefresh()
+	initial := waitForSnapshotReady(t, m.backgroundWorker.Messages())
+	updated, _ := m.Update(initial)
+	m = updated.(Model)
+	if m.watcher != nil {
+		t.Fatal("fallback file watcher remained after the Hub worker produced a snapshot")
+	}
+	temporary := filepath.Join(directory, "hub.yaml.next")
+	writeWorkerHubConfig(t, temporary, map[string]string{"ctx:b": "/b"})
+	if err := os.Rename(temporary, configPath); err != nil {
+		t.Fatal(err)
+	}
+	ready := waitForCatalogReady(t, m.backgroundWorker.Messages())
+	if len(ready.Catalog) != 1 || ready.Catalog[0].ID != "ctx:b" {
+		t.Fatalf("atomic replacement catalog = %#v", ready.Catalog)
+	}
+}
+
+func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	t.Setenv("BV_BACKGROUND_MODE", "")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
+	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	m := NewModel(nil, nil, issuesPath)
+	defer m.Stop()
+	m.SetHistoryProvider("external", configPath)
+	if m.backgroundWorker == nil || m.watcher == nil || !m.watcher.IsStarted() {
+		t.Fatal("Hub transition did not retain a live fallback watcher")
+	}
+	updated, cmd := m.Update(SnapshotErrorMsg{Err: errors.New("start failed"), StartFailure: true})
+	m = updated.(Model)
+	if m.backgroundWorker != nil || m.watcher == nil || !m.watcher.IsStarted() || cmd == nil {
+		t.Fatalf("worker start failure did not restore file watching: worker=%v watcher=%v cmd=%v", m.backgroundWorker, m.watcher, cmd)
+	}
+}
+
+func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:empty": "/empty"})
+	t.Setenv("BV_BACKGROUND_MODE", "")
+	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
+	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	m := NewModel(nil, nil, issuesPath)
+	defer m.Stop()
+	m.SetRepositoryCatalogIssues(nil)
+	m.SetHistoryProvider("external", configPath)
+	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:empty" || m.repositoryCatalog[0].BeadCount != 0 {
+		t.Fatalf("empty Hub catalog = %#v", m.repositoryCatalog)
+	}
+	if m.backgroundWorker == nil || !m.snapshotInitPending {
+		t.Fatal("empty Hub did not remain active for background startup")
+	}
+}
+
+func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	filtered := []model.Issue{{ID: "OPEN", Labels: []string{"ctx:a"}}}
+	all := []model.Issue{
+		{ID: "OPEN", Labels: []string{"ctx:a"}},
+		{ID: "CLOSED", Labels: []string{"ctx:a"}},
+	}
+	m := NewModel(filtered, nil, "")
+	m.SetRepositoryCatalogIssues(all)
+	m.SetHistoryProvider("external", configPath)
+	if got := catalogEntry(m.repositoryCatalog, "ctx:a").BeadCount; got != 2 {
+		t.Fatalf("unfiltered startup count = %d, want 2", got)
+	}
+}
+
+func TestModelWorkspaceCatalogIgnoresHubCatalogMessages(t *testing.T) {
+	m := Model{
+		workspaceMode: true,
+		repositoryCatalog: model.RepositoryCatalog{
+			{ID: "api", Name: "api", Kind: model.RepositoryIdentityWorkspacePrefix},
+		},
+	}
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{
+		Generation: 3,
+		Catalog: model.RepositoryCatalog{
+			{ID: "ctx:api", Name: "api", Kind: model.RepositoryIdentityHubContext},
+		},
+	})
+	m = updated.(Model)
+	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "api" || m.catalogGeneration != 0 {
+		t.Fatalf("Hub catalog replaced workspace catalog: %#v", m.repositoryCatalog)
+	}
+	updated, _ = m.Update(RepositoryCatalogErrorMsg{Generation: 4, Err: errors.New("Hub config unavailable")})
+	m = updated.(Model)
+	if m.statusMsg != "" || m.catalogGeneration != 0 {
+		t.Fatalf("Hub catalog error leaked into workspace mode: status=%q generation=%d", m.statusMsg, m.catalogGeneration)
+	}
+}
+
+func TestModelWorkspaceCatalogCountsRefreshWithBackgroundSnapshot(t *testing.T) {
+	issues := []model.Issue{{ID: "api-1", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 1, RepoPrefixes: []string{"api"}})
+	snapshot := NewSnapshotBuilder([]model.Issue{
+		{ID: "api-1", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "api-2", Title: "Two", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+	m = updated.(Model)
+	if got := catalogEntry(m.repositoryCatalog, "api").BeadCount; got != 2 {
+		t.Fatalf("workspace background count = %d, want 2", got)
+	}
+}
+
+func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task","labels":["ctx:a"]}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/team/a/repo", "ctx:zero": "/team/zero"})
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:       issuesPath,
+		HubConfigPath:   configPath,
+		SourceRetryBase: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	worker.process()
+	first := waitForCatalogReady(t, worker.Messages())
+	if len(first.Catalog) != 2 || catalogEntry(first.Catalog, "ctx:a").BeadCount != 1 || catalogEntry(first.Catalog, "ctx:zero").BeadCount != 0 {
+		t.Fatalf("initial catalog = %#v", first.Catalog)
+	}
+	initialHash := worker.LastHash()
+
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/renamed/a/repo", "ctx:new": "/team/new"})
+	worker.markCatalogDirty()
+	worker.process()
+	changed := waitForCatalogReady(t, worker.Messages())
+	if worker.LastHash() != initialHash {
+		t.Fatal("catalog-only refresh changed issue snapshot hash")
+	}
+	if len(changed.Catalog) != 2 || catalogEntry(changed.Catalog, "ctx:a").Path != "/renamed/a/repo" || catalogEntry(changed.Catalog, "ctx:new").BeadCount != 0 {
+		t.Fatalf("changed catalog = %#v", changed.Catalog)
+	}
+	if err := os.WriteFile(issuesPath, []byte(
+		`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task","labels":["ctx:a"]}`+"\n"+
+			`{"id":"TWO","title":"Two","status":"open","priority":1,"issue_type":"task","labels":["ctx:new"]}`+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker.process()
+	counted := waitForCatalogReady(t, worker.Messages())
+	if catalogEntry(counted.Catalog, "ctx:new").BeadCount != 1 {
+		t.Fatalf("issue-count refresh catalog = %#v", counted.Catalog)
+	}
+
+	if err := os.WriteFile(configPath, []byte("version: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker.markCatalogDirty()
+	worker.process()
+	waitForCatalogError(t, worker.Messages())
+	if got := catalogEntry(worker.catalog, "ctx:a").Path; got != "/renamed/a/repo" {
+		t.Fatalf("transient failure replaced last valid catalog: %q", got)
+	}
+
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:recovered": "/team/recovered"})
+	worker.markCatalogDirty()
+	worker.process()
+	recovered := waitForCatalogReady(t, worker.Messages())
+	if len(recovered.Catalog) != 1 || recovered.Catalog[0].ID != "ctx:recovered" {
+		t.Fatalf("recovered catalog = %#v", recovered.Catalog)
+	}
+}
+
+func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repositories := map[string]string{"ctx:a": "/a"}
+	writeWorkerHubConfig(t, configPath, repositories)
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath, SourceRetryBase: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	worker.process()
+	initial := waitForCatalogReady(t, worker.Messages())
+
+	if err := os.WriteFile(configPath, []byte("version: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker.markCatalogDirty()
+	worker.process()
+	loadError := waitForCatalogError(t, worker.Messages())
+	m := Model{}
+	updated, _ := m.Update(initial)
+	m = updated.(Model)
+	updated, _ = m.Update(loadError)
+	m = updated.(Model)
+	if !m.statusIsError {
+		t.Fatal("catalog failure did not set model error state")
+	}
+
+	writeWorkerHubConfig(t, configPath, repositories)
+	worker.markCatalogDirty()
+	worker.process()
+	recovered := waitForCatalogReady(t, worker.Messages())
+	if !recovered.Recovered {
+		t.Fatal("identical catalog recovery was not emitted explicitly")
+	}
+	updated, _ = m.Update(recovered)
+	m = updated.(Model)
+	if m.statusIsError || m.statusMsg != "" {
+		t.Fatalf("identical recovery left stale error: status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestBackgroundWorkerPairsSnapshotAndCatalogInOneMessage(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task","labels":["ctx:a"]}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath, MessageBuffer: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	worker.process()
+
+	message := waitForSnapshotReady(t, worker.Messages())
+	if !message.CatalogChanged || len(message.Catalog) != 1 || message.Catalog[0].ID != "ctx:a" {
+		t.Fatalf("snapshot did not carry its catalog update: %#v", message)
+	}
+	select {
+	case extra := <-worker.Messages():
+		if _, ok := extra.(RepositoryCatalogReadyMsg); ok {
+			t.Fatal("paired catalog was emitted as an evicting second message")
+		}
+	default:
+	}
+}
+
+func TestBackgroundWorkerCatalogGenerationSuppressesStaleResult(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	worker.catalogLoader = func(_ string, issues []model.Issue) (model.RepositoryCatalog, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+			return model.RepositoryCatalog{{ID: "ctx:stale", Name: "stale"}}, nil
+		}
+		return model.RepositoryCatalog{{ID: "ctx:fresh", Name: "fresh"}}, nil
+	}
+	go worker.process()
+	<-started
+	worker.markCatalogDirty()
+	worker.TriggerRefresh()
+	close(release)
+	ready := waitForCatalogReady(t, worker.Messages())
+	if ready.Generation != 1 || len(ready.Catalog) != 1 || ready.Catalog[0].ID != "ctx:fresh" {
+		t.Fatalf("catalog result = %#v", ready)
+	}
+}
+
+func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	content := `{"id":"OPEN","title":"Open","status":"open","priority":1,"issue_type":"task"}` + "\n" +
+		`{"id":"CLOSED","title":"Closed","status":"closed","priority":1,"issue_type":"task"}` + "\n"
+	if err := os.WriteFile(issuesPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	loadedCount := 0
+	worker.catalogLoader = func(_ string, issues []model.Issue) (model.RepositoryCatalog, error) {
+		loadedCount = len(issues)
+		return nil, nil
+	}
+	_, err = worker.buildRepositoryCatalog(&DataSnapshot{
+		Issues:         []model.Issue{{ID: "OPEN"}},
+		LoadedOpenOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedCount != 2 {
+		t.Fatalf("catalog issue count = %d, want complete set of 2", loadedCount)
+	}
+}
+
+func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
+	directory := t.TempDir()
+	issuesPath := filepath.Join(directory, "issues.jsonl")
+	configPath := filepath.Join(directory, "hub.yaml")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath, DebounceDelay: 5 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	worker.TriggerRefresh()
+	waitForCatalogReady(t, worker.Messages())
+
+	temporary := filepath.Join(directory, "hub.yaml.next")
+	writeWorkerHubConfig(t, temporary, map[string]string{"ctx:b": "/b"})
+	if err := os.Rename(temporary, configPath); err != nil {
+		t.Fatal(err)
+	}
+	ready := waitForCatalogReady(t, worker.Messages())
+	if len(ready.Catalog) != 1 || ready.Catalog[0].ID != "ctx:b" {
+		t.Fatalf("atomic replacement catalog = %#v", ready.Catalog)
+	}
+}
+
+func writeWorkerHubConfig(t *testing.T, path string, repositories map[string]string) {
+	t.Helper()
+	var builder strings.Builder
+	builder.WriteString("version: 1\nstore: store\nledger: ledger\nrepositories:\n")
+	keys := make([]string, 0, len(repositories))
+	for key := range repositories {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Fprintf(&builder, "  %s:\n    path: %s\n", key, repositories[key])
+	}
+	if err := os.WriteFile(path, []byte(builder.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForCatalogReady(t *testing.T, messages <-chan tea.Msg) RepositoryCatalogReadyMsg {
+	t.Helper()
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case message := <-messages:
+			if ready, ok := message.(RepositoryCatalogReadyMsg); ok {
+				return ready
+			}
+			if ready, ok := message.(SnapshotReadyMsg); ok && (ready.CatalogChanged || ready.CatalogRecovered) {
+				return RepositoryCatalogReadyMsg{Catalog: ready.Catalog, Generation: ready.CatalogGeneration, Recovered: ready.CatalogRecovered}
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for repository catalog")
+		}
+	}
+}
+
+func waitForCatalogError(t *testing.T, messages <-chan tea.Msg) RepositoryCatalogErrorMsg {
+	t.Helper()
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case message := <-messages:
+			if loadError, ok := message.(RepositoryCatalogErrorMsg); ok {
+				return loadError
+			}
+			if update, ok := message.(SnapshotReadyMsg); ok && update.CatalogError != nil {
+				return RepositoryCatalogErrorMsg{Err: update.CatalogError, Generation: update.CatalogGeneration}
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for repository catalog error")
+		}
+	}
+}
+
+func waitForSnapshotReady(t *testing.T, messages <-chan tea.Msg) SnapshotReadyMsg {
+	t.Helper()
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case message := <-messages:
+			if ready, ok := message.(SnapshotReadyMsg); ok {
+				return ready
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for snapshot")
+		}
+	}
+}
+
+func catalogEntry(catalog model.RepositoryCatalog, id string) model.RepositoryCatalogEntry {
+	for _, entry := range catalog {
+		if entry.ID == id {
+			return entry
+		}
+	}
+	return model.RepositoryCatalogEntry{}
 }
 
 func TestBackgroundWorker_NewWithoutPath_EnvDefaults(t *testing.T) {

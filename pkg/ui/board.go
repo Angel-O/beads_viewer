@@ -30,7 +30,9 @@ type BoardModel struct {
 	blocksIndex map[string][]string
 
 	// Issue lookup map: ID -> *Issue for getting blocker titles (bv-kklp)
-	issueMap map[string]*model.Issue
+	issueMap          map[string]*model.Issue
+	repositoryCatalog model.RepositoryCatalog
+	hubPresentation   bool
 
 	// Detail panel (bv-r6kh)
 	showDetail   bool
@@ -57,6 +59,18 @@ type BoardModel struct {
 	// expandedCardID tracks which card is currently expanded inline
 	// Empty string means no card is expanded
 	expandedCardID string
+}
+
+// SetRepositoryPresentation updates Hub-only display metadata and invalidates
+// rendered details even when the selected issue and repository IDs are stable.
+func (b *BoardModel) SetRepositoryPresentation(catalog model.RepositoryCatalog, enabled bool) {
+	b.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+	b.hubPresentation = enabled
+	b.lastDetailID = ""
+}
+
+func (b BoardModel) issuePresentation(issue model.Issue) issueRepositoryPresentation {
+	return repositoryPresentationForIssue(issue, b.repositoryCatalog, b.hubPresentation)
 }
 
 // searchMatch holds info about a matching card (bv-yg39)
@@ -1276,6 +1290,7 @@ func formatPriority(p int) string {
 // renderCard creates a visually rich card for an issue (bv-1daf: 4-line format)
 func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colIdx, rowIdx int) string {
 	t := b.theme
+	presentation := b.issuePresentation(issue)
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (bv-kklp)
@@ -1358,26 +1373,49 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	}
 
 	// Truncate ID for narrow cards - reserve space for age indicator
-	maxIDLen := width - 14 // Icon(2) + space + P#(2) + space + age(6) + spacing
-	if maxIDLen < 6 {
-		maxIDLen = 6
+	repositoryBadge := ""
+	if presentation.ID != "" {
+		extraWidth := 0
+		if presentation.Extra > 0 {
+			extraWidth = lipgloss.Width(fmt.Sprintf("+%d", presentation.Extra))
+		}
+		maxNameWidth := min(8, max(width-lipgloss.Width(icon)-11-extraWidth, 1))
+		repositoryBadge = RenderRepositoryBadgeCompact(presentation.ID, presentation.Name, maxNameWidth)
+		if presentation.Extra > 0 {
+			repositoryBadge += fmt.Sprintf("+%d", presentation.Extra)
+		}
 	}
-	displayID := truncateRunesHelper(issue.ID, maxIDLen, "…")
-
 	// Age indicator with color coding: green(<7d), yellow(7-30d), red(>30d)
 	ageText := FormatTimeRel(issue.UpdatedAt)
 	if len(ageText) > 6 {
 		ageText = truncateRunesHelper(ageText, 6, "")
 	}
+	showAge := width >= 32
+	fixedWidth := lipgloss.Width(icon) + lipgloss.Width(prioText) + 2
+	if repositoryBadge != "" {
+		fixedWidth += lipgloss.Width(repositoryBadge) + 1
+	}
+	if showAge {
+		fixedWidth += lipgloss.Width(ageText) + 1
+	}
+	maxIDLen := max(width-fixedWidth, 1)
+	displayID := truncateRunesHelper(issue.ID, maxIDLen, "…")
+
 	ageColor := getAgeColor(issue.UpdatedAt)
 	ageStyled := t.Renderer.NewStyle().Foreground(ageColor).Render(ageText)
 
-	line1 := fmt.Sprintf("%s %s %s %s",
+	line1Parts := []string{
 		t.Renderer.NewStyle().Foreground(iconColor).Render(icon),
 		prioStyle.Render(prioText),
-		t.Renderer.NewStyle().Bold(true).Foreground(t.Secondary).Render(displayID),
-		ageStyled,
-	)
+	}
+	if repositoryBadge != "" {
+		line1Parts = append(line1Parts, repositoryBadge)
+	}
+	line1Parts = append(line1Parts, t.Renderer.NewStyle().Bold(true).Foreground(t.Secondary).Render(displayID))
+	if showAge {
+		line1Parts = append(line1Parts, ageStyled)
+	}
+	line1 := t.Renderer.NewStyle().MaxWidth(width).Render(strings.Join(line1Parts, " "))
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// LINE 2: Title with full available width (bv-1daf)
@@ -1425,14 +1463,14 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	}
 
 	// Labels: show 2-3 label names (no "+N" count per spec)
-	if len(issue.Labels) > 0 {
+	if len(presentation.Labels) > 0 {
 		maxLabels := 3
-		if len(issue.Labels) < maxLabels {
-			maxLabels = len(issue.Labels)
+		if len(presentation.Labels) < maxLabels {
+			maxLabels = len(presentation.Labels)
 		}
 		var labelParts []string
 		for i := 0; i < maxLabels; i++ {
-			labelParts = append(labelParts, truncateRunesHelper(issue.Labels[i], 8, ""))
+			labelParts = append(labelParts, truncateRunesHelper(presentation.Labels[i], 8, ""))
 		}
 		labelText := strings.Join(labelParts, ",")
 		labelStyle := t.Renderer.NewStyle().Foreground(t.InProgress)
@@ -1454,6 +1492,7 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 // expanded card is always the selected card (no separate search highlighting needed)
 func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) string {
 	t := b.theme
+	presentation := b.issuePresentation(issue)
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (same as renderCard)
@@ -1583,9 +1622,13 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 	// LABELS: Full label list
 	// ══════════════════════════════════════════════════════════════════════════
 	var labelLine string
-	if len(issue.Labels) > 0 {
+	if len(presentation.Labels) > 0 {
 		labelStyle := t.Renderer.NewStyle().Foreground(t.InProgress)
-		labelLine = labelStyle.Render("🏷 " + strings.Join(issue.Labels, ", "))
+		labelLine = labelStyle.Render("🏷 " + strings.Join(presentation.Labels, ", "))
+	}
+	repositoryLine := ""
+	if len(presentation.Names) > 0 {
+		repositoryLine = t.Renderer.NewStyle().Foreground(t.Secondary).Render("Repositories: " + strings.Join(presentation.Names, ", "))
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1604,6 +1647,9 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 	if len(depLines) > 0 {
 		parts = append(parts, "") // blank line
 		parts = append(parts, depLines...)
+	}
+	if repositoryLine != "" {
+		parts = append(parts, "", repositoryLine)
 	}
 	if labelLine != "" {
 		parts = append(parts, "") // blank line
@@ -1649,6 +1695,7 @@ func (b *BoardModel) renderDetailPanel(width, height int) string {
 			b.detailVP.GotoTop()
 		}
 	} else {
+		presentation := b.issuePresentation(*issue)
 		// Issue selected - only update content if the issue changed
 		if b.lastDetailID != issue.ID {
 			b.lastDetailID = issue.ID
@@ -1673,8 +1720,12 @@ func (b *BoardModel) renderDetailPanel(width, height int) string {
 				content.WriteString(fmt.Sprintf("**Assignee:** @%s\n\n", issue.Assignee))
 			}
 
-			if len(issue.Labels) > 0 {
-				content.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(issue.Labels, ", ")))
+			if len(presentation.Names) > 0 {
+				content.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
+			}
+
+			if len(presentation.Labels) > 0 {
+				content.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(presentation.Labels, ", ")))
 			}
 
 			// Dependencies - show with titles and status (bv-kklp)

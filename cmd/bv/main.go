@@ -5463,6 +5463,7 @@ func main() {
 			// Launch TUI with historical issues (already loaded, no live reload)
 			m := ui.NewModel(issues, activeRecipe, "")
 			m.SetSemanticDatasetPath(semanticDatasetPath)
+			m.SetRepositoryCatalogIssues(issues)
 			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
@@ -5525,11 +5526,12 @@ func main() {
 			os.Exit(0)
 		}
 
-		if len(issues) == 0 {
+		if shouldExitEmptyInteractive(len(issues), usesHubConfigStore) {
 			fmt.Println("No issues found. Create some with 'br create'!")
 			os.Exit(0)
 		}
 
+		catalogIssues := issues
 		// Apply recipe filters and sorting if specified
 		if activeRecipe != nil {
 			issues = applyRecipeFilters(issues, activeRecipe)
@@ -5558,19 +5560,27 @@ func main() {
 		}
 
 		// Initial Model with live reload support
-		m := ui.NewModel(issues, activeRecipe, beadsPath)
+		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath)
 		m.SetSemanticDatasetPath(semanticDatasetPath)
+		m.SetRepositoryCatalogIssues(catalogIssues)
 		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config
 		if workspaceInfo != nil {
+			workspaceRepositories := make([]ui.WorkspaceRepositoryInfo, 0, len(workspaceInfo.Repositories))
+			for _, repository := range workspaceInfo.Repositories {
+				workspaceRepositories = append(workspaceRepositories, ui.WorkspaceRepositoryInfo{
+					Name: repository.Name, Path: repository.Path, Prefix: repository.Prefix,
+				})
+			}
 			m.EnableWorkspaceMode(ui.WorkspaceInfo{
 				Enabled:      true,
 				RepoCount:    workspaceInfo.TotalRepos,
 				FailedCount:  workspaceInfo.FailedRepos,
 				TotalIssues:  workspaceInfo.TotalIssues,
 				RepoPrefixes: workspaceInfo.RepoPrefixes,
+				Repositories: workspaceRepositories,
 			})
 		}
 
@@ -5600,6 +5610,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, enrichCommandParseError(err, originalArgs))
 		os.Exit(1)
 	}
+}
+
+func shouldExitEmptyInteractive(issueCount int, hubMode bool) bool {
+	return issueCount == 0 && !hubMode
 }
 
 func runTUIProgram(m ui.Model) error {

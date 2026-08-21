@@ -239,6 +239,9 @@ func TestChildExitCodeIsPropagated(t *testing.T) {
 
 func TestSuccessfulMutationsSignalViewer(t *testing.T) {
 	for _, arguments := range [][]string{
+		{"register"},
+		{"configure"},
+		{"list"},
 		{"create", "New issue"},
 		{"update", "bead-1", "--status", "in_progress"},
 		{"dep", "add", "bead-1", "bead-2"},
@@ -257,13 +260,34 @@ func TestSuccessfulMutationsSignalViewer(t *testing.T) {
 	}
 }
 
+func TestUnchangedRegistrationDoesNotAdvanceViewerSignal(t *testing.T) {
+	test := newAppTest(t, true)
+	if code, _, stderr := test.run("register"); code != 0 {
+		t.Fatalf("first register code = %d, stderr = %q", code, stderr)
+	}
+	path := hub.ChangeSignalPath(test.app.paths)
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := test.run("register"); code != 0 {
+		t.Fatalf("second register code = %d, stderr = %q", code, stderr)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("unchanged registration advanced signal: first=%q second=%q", first, second)
+	}
+}
+
 func TestReadsAndFailedMutationsDoNotSignalViewer(t *testing.T) {
 	for _, testCase := range []struct {
 		name      string
 		arguments []string
 		childExit string
 	}{
-		{name: "list", arguments: []string{"list"}},
 		{name: "show", arguments: []string{"show", "bead-1"}},
 		{name: "failed update", arguments: []string{"update", "bead-1", "--status", "open"}, childExit: "9"},
 	} {

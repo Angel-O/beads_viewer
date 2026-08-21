@@ -39,6 +39,14 @@ type IssueItem struct {
 	DiffStatus DiffStatus // Diff state for time-travel mode
 	RepoPrefix string     // Repository prefix for workspace mode (e.g., "api", "web")
 
+	// Hub repository presentation is derived without changing Issue.Labels.
+	RepositoryID       string
+	RepositoryName     string
+	RepositoryExtra    int
+	RepositoryNames    []string
+	PresentationLabels []string
+	HubPresentation    bool
+
 	// Semantic/hybrid search scores (set when search is active)
 	SearchScore      float64
 	SearchTextScore  float64
@@ -78,15 +86,23 @@ func (i IssueItem) FilterValue() string {
 		sb.WriteString(i.Issue.Assignee)
 	}
 
-	if len(i.Issue.Labels) > 0 {
+	labels := i.Issue.Labels
+	if i.HubPresentation {
+		labels = i.PresentationLabels
+	}
+	if len(labels) > 0 {
 		sb.WriteString(" ")
-		sb.WriteString(strings.Join(i.Issue.Labels, " "))
+		sb.WriteString(strings.Join(labels, " "))
 	}
 
 	// Include repo prefix for filtering
 	if i.RepoPrefix != "" {
 		sb.WriteString(" ")
 		sb.WriteString(i.RepoPrefix)
+	}
+	if i.HubPresentation && len(i.RepositoryNames) > 0 {
+		sb.WriteString(" ")
+		sb.WriteString(strings.Join(i.RepositoryNames, " "))
 	}
 
 	return sb.String()

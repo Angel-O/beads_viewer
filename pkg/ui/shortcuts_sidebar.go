@@ -240,6 +240,7 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 				{"c", "Closed only"},
 				{"r", "Ready (no blocks)"},
 				{"l", "Label picker"},
+				{"w", "Repository scope"},
 				{"/", "Search"},
 			},
 		},

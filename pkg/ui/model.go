@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // View width thresholds for adaptive layout
@@ -269,7 +271,7 @@ func StartBackgroundWorkerCmd(w *BackgroundWorker) tea.Cmd {
 			return nil
 		}
 		if err := w.Start(); err != nil {
-			return SnapshotErrorMsg{Err: fmt.Errorf("starting background worker: %w", err), Recoverable: false}
+			return SnapshotErrorMsg{Err: fmt.Errorf("starting background worker: %w", err), Recoverable: false, StartFailure: true}
 		}
 		w.TriggerRefresh()
 		return nil
@@ -304,8 +306,9 @@ func CheckUpdateCmd() tea.Cmd {
 
 // HistoryLoadedMsg is sent when background history loading completes
 type HistoryLoadedMsg struct {
-	Report *correlation.HistoryReport
-	Error  error
+	Report     *correlation.HistoryReport
+	Error      error
+	Generation uint64
 }
 
 // AgentFileCheckMsg is sent after checking for AGENTS.md integration (bv-i8dk)
@@ -349,6 +352,10 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 }
 
 func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, mode correlation.HistoryMode, hubConfig string) tea.Cmd {
+	return loadHistoryWithProviderGenerationCmd(issues, beadsPath, mode, hubConfig, 0)
+}
+
+func loadHistoryWithProviderGenerationCmd(issues []model.Issue, beadsPath string, mode correlation.HistoryMode, hubConfig string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		var repoPath string
 		var err error
@@ -372,7 +379,7 @@ func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, mode cor
 		if repoPath == "" {
 			repoPath, err = os.Getwd()
 			if err != nil {
-				return HistoryLoadedMsg{Error: err}
+				return HistoryLoadedMsg{Error: err, Generation: generation}
 			}
 		}
 
@@ -408,7 +415,7 @@ func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, mode cor
 		}
 
 		report, err := correlator.GenerateReport(beads, opts)
-		return HistoryLoadedMsg{Report: report, Error: err}
+		return HistoryLoadedMsg{Report: report, Error: err, Generation: generation}
 	}
 }
 
@@ -462,17 +469,23 @@ func cloneIssuesForAsync(issues []model.Issue) []model.Issue {
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues        []model.Issue
-	pooledIssues  []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
-	issueMap      map[string]*model.Issue
-	analyzer      *analysis.Analyzer
-	analysis      *analysis.GraphStats
-	beadsPath     string // Path to beads.jsonl for reloading
-	semanticPath  string // Stable repository or dataset identity for semantic caching
-	hubConfigPath string
-	historyMode   correlation.HistoryMode
-	watcher       *watcher.Watcher // File watcher for live reload
-	instanceLock  *instance.Lock   // Multi-instance coordination lock
+	issues                  []model.Issue
+	pooledIssues            []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
+	issueMap                map[string]*model.Issue
+	analyzer                *analysis.Analyzer
+	analysis                *analysis.GraphStats
+	beadsPath               string // Path to beads.jsonl for reloading
+	semanticPath            string // Stable repository or dataset identity for semantic caching
+	hubConfigPath           string
+	historyMode             correlation.HistoryMode
+	hubRepositoryMode       bool
+	repositoryCatalog       model.RepositoryCatalog
+	repositoryCatalogIssues []model.Issue
+	repositoryIssues        []model.Issue
+	repositoryIssueIDs      map[string]bool
+	catalogGeneration       uint64
+	watcher                 *watcher.Watcher // File watcher for live reload
+	instanceLock            *instance.Lock   // Multi-instance coordination lock
 
 	// Background Worker (Phase 2 architecture - bv-m7v8)
 	// snapshot is the current immutable data snapshot from BackgroundWorker.
@@ -484,6 +497,7 @@ type Model struct {
 	snapshotInitPending bool
 	// backgroundSnapshotApplied distinguishes the worker's initial snapshot from reloads.
 	backgroundSnapshotApplied bool
+	lastSnapshotVersion       uint64
 	// backgroundWorker manages async data loading (nil if background mode disabled)
 	backgroundWorker  *BackgroundWorker
 	workerSpinnerIdx  int // Spinner frame for background worker activity (bv-9nfy)
@@ -553,6 +567,8 @@ type Model struct {
 
 	// History view
 	historyView       HistoryModel
+	historyReport     *correlation.HistoryReport
+	historyGeneration uint64
 	historyLoading    bool // True while history is being loaded in background
 	historyLoadFailed bool // True if history loading failed
 
@@ -595,7 +611,7 @@ type Model struct {
 	showLabelPicker bool
 	labelPicker     LabelPickerModel
 
-	// Repo picker (workspace mode)
+	// Repository scope picker (Hub or workspace mode)
 	showRepoPicker bool
 	repoPicker     RepoPickerModel
 
@@ -616,8 +632,9 @@ type Model struct {
 	statusIsError bool
 
 	// Workspace mode state
-	workspaceMode    bool            // True when viewing multiple repos
-	availableRepos   []string        // List of repo prefixes available
+	workspaceMode    bool     // True when viewing multiple repos
+	availableRepos   []string // List of repo prefixes available
+	workspaceRepos   []WorkspaceRepositoryInfo
 	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
 	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
 
@@ -670,7 +687,7 @@ type labelFlowSummary struct {
 // getCrossFlowsForLabel returns outgoing cross-label dependency counts for a label
 func (m Model) getCrossFlowsForLabel(label string) labelFlowSummary {
 	cfg := analysis.DefaultLabelHealthConfig()
-	flow := analysis.ComputeCrossLabelFlow(m.issues, cfg)
+	flow := analysis.ComputeCrossLabelFlow(m.repositoryIssues, cfg)
 	out := labelFlowSummary{}
 	inCounts := make(map[string]int)
 	outCounts := make(map[string]int)
@@ -716,7 +733,7 @@ func (m Model) filterIssuesByLabel(label string) []model.Issue {
 	}
 
 	var out []model.Issue
-	for _, iss := range m.issues {
+	for _, iss := range m.repositoryIssues {
 		for _, l := range iss.Labels {
 			if l == label {
 				out = append(out, iss)
@@ -749,6 +766,15 @@ type WorkspaceInfo struct {
 	FailedCount  int
 	TotalIssues  int
 	RepoPrefixes []string
+	Repositories []WorkspaceRepositoryInfo
+}
+
+// WorkspaceRepositoryInfo preserves display metadata while the normalized
+// prefix remains the exact legacy workspace scope identity.
+type WorkspaceRepositoryInfo struct {
+	Name   string
+	Path   string
+	Prefix string
 }
 
 func (m *Model) updateSemanticIDs(items []list.Item) {
@@ -782,13 +808,84 @@ func (m *Model) shouldShowSearchScores() bool {
 }
 
 func (m *Model) updateListDelegate() {
-	m.list.SetDelegate(IssueDelegate{
+	delegate := IssueDelegate{
 		Theme:             m.theme,
 		ShowPriorityHints: m.showPriorityHints,
 		PriorityHints:     m.priorityHints,
 		WorkspaceMode:     m.workspaceMode,
+		ShowRepositories:  m.hubRepositoryPresentation(),
 		ShowSearchScores:  m.shouldShowSearchScores(),
-	})
+	}
+	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidths(delegate)
+	m.list.SetDelegate(delegate)
+}
+
+func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
+	if !m.hubRepositoryPresentation() || m.list.Width() <= 45 {
+		return 0, 0
+	}
+	const nameWidthCap = 16
+	nameWidth := 0
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind != model.RepositoryIdentityHubContext {
+			continue
+		}
+		nameWidth = max(nameWidth, lipgloss.Width(repository.Name))
+	}
+	nameWidth = min(nameWidth, nameWidthCap)
+
+	extraWidth := 0
+	rowReserve := 0
+	rowWidth := m.list.Width() - 1
+	for _, listItem := range m.list.VisibleItems() {
+		item, ok := listItem.(IssueItem)
+		if !ok {
+			continue
+		}
+		rowReserve = max(rowReserve, delegate.rowWidthWithoutRepository(item, rowWidth))
+		if item.RepositoryExtra > 0 {
+			extraWidth = max(extraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
+		}
+	}
+	availableNameWidth := rowWidth - rowReserve - extraWidth - 3
+	if availableNameWidth < 1 {
+		return 0, 0
+	}
+	nameWidth = min(nameWidth, availableNameWidth)
+	return nameWidth, extraWidth
+}
+
+func (m *Model) setListItemsPreservingFilter(items []list.Item) {
+	defer m.updateListDelegate()
+	filterState := m.list.FilterState()
+	filterText := m.list.FilterInput.Value()
+	selectedID := ""
+	if selected, ok := m.list.SelectedItem().(IssueItem); ok {
+		selectedID = selected.Issue.ID
+	}
+	for i := range items {
+		item, ok := items[i].(IssueItem)
+		if !ok {
+			continue
+		}
+		m.decorateIssueItem(&item)
+		items[i] = item
+	}
+	m.list.SetItems(items)
+	if filterState == list.Unfiltered {
+		return
+	}
+	m.list.SetFilterText(filterText)
+	if filterState == list.Filtering {
+		m.list.SetFilterState(list.Filtering)
+	}
+	for i, visible := range m.list.VisibleItems() {
+		item, ok := visible.(IssueItem)
+		if ok && item.Issue.ID == selectedID {
+			m.list.Select(i)
+			return
+		}
+	}
 }
 
 func (m *Model) applySemanticScores(term string) {
@@ -1288,6 +1385,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	}
 
 	m.registerKeyBindings()
+	m.refreshRepositoryCandidates()
 	return m
 }
 
@@ -1304,6 +1402,101 @@ func hubAutoRefreshEnabled(value string) bool {
 func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 	m.historyMode = mode
 	m.hubConfigPath = path
+	m.hubRepositoryMode = path != "" && mode != correlation.HistoryModeGit
+	if path == "" {
+		return
+	}
+	if err := m.reloadRepositoryCatalog(); err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog load failed: %v", err)
+		m.statusIsError = true
+	}
+	m.refreshRepositoryPresentation()
+	autoRefresh := hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
+	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
+		worker, err := NewBackgroundWorker(WorkerConfig{
+			BeadsPath:     m.beadsPath,
+			DebounceDelay: 200 * time.Millisecond,
+			HubConfigPath: path,
+		})
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
+			m.statusIsError = true
+		} else {
+			m.backgroundWorker = worker
+			m.snapshotInitPending = len(m.issues) == 0
+		}
+	} else if m.backgroundWorker != nil {
+		if err := m.backgroundWorker.SetHubConfigPath(path, autoRefresh); err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
+			m.statusIsError = true
+		}
+	}
+}
+
+// SetRepositoryCatalogIssues provides the unfiltered issue universe used for
+// stable total counts when the initial TUI view is recipe-filtered.
+func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
+	m.repositoryCatalogIssues = cloneIssuesForAsync(issues)
+}
+
+func (m *Model) reloadRepositoryCatalog() error {
+	if m.workspaceMode {
+		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
+		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+		}
+		m.board.SetRepositoryPresentation(m.repositoryCatalog, false)
+		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false)
+		return nil
+	}
+	if strings.TrimSpace(m.hubConfigPath) == "" {
+		return nil
+	}
+	issues := m.issues
+	if m.repositoryCatalogIssues != nil {
+		issues = m.repositoryCatalogIssues
+	}
+	catalog, err := hub.LoadRepositoryCatalog(m.hubConfigPath, issues)
+	if err != nil {
+		return err
+	}
+	m.repositoryCatalog = catalog
+	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
+	if m.showRepoPicker {
+		m.repoPicker.SetCatalog(m.repositoryCatalog)
+	}
+	m.board.SetRepositoryPresentation(catalog, true)
+	m.insightsPanel.SetRepositoryPresentation(catalog, true)
+	return nil
+}
+
+func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, generation uint64, changed, recovered bool, err error) {
+	if m.workspaceMode || generation < m.catalogGeneration {
+		return
+	}
+	m.catalogGeneration = generation
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", err)
+		m.statusIsError = true
+		return
+	}
+	if changed {
+		before := sortedRepoKeys(m.activeRepos)
+		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+		}
+		m.refreshRepositoryPresentation()
+		if !slices.Equal(before, sortedRepoKeys(m.activeRepos)) {
+			m.refreshRepositoryCandidates()
+		}
+	}
+	if recovered && (strings.HasPrefix(m.statusMsg, "Repository catalog load failed:") || strings.HasPrefix(m.statusMsg, "Repository catalog reload failed")) {
+		m.statusMsg = ""
+		m.statusIsError = false
+	}
 }
 
 // SetSemanticDatasetPath sets the stable repository or dataset identity used
@@ -1322,9 +1515,11 @@ func (m *Model) rebuildInsightsPanel() {
 	case m.analysis != nil:
 		ins = m.analysis.GenerateInsights(len(m.issues))
 	}
+	ins = projectInsights(ins, m.repositoryIssueIDs)
 
 	prev := m.insightsPanel
 	panel := NewInsightsModel(ins, m.issueMap, m.theme)
+	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
 	panel.focusedPanel = prev.focusedPanel
 	panel.selectedIndex = prev.selectedIndex
 	panel.scrollOffset = prev.scrollOffset
@@ -1338,7 +1533,7 @@ func (m *Model) rebuildInsightsPanel() {
 	panel.showHeatmap = prev.showHeatmap
 
 	if m.analyzer != nil && m.analysis != nil {
-		triage := analysis.ComputeTriageFromAnalyzer(m.analyzer, m.analysis, m.issues, analysis.TriageOptions{}, time.Now())
+		triage := m.scopedTriage()
 		panel.SetTopPicks(triage.QuickRef.TopPicks)
 		dataHash := fmt.Sprintf("v%s@%s#%d", triage.Meta.Version, triage.Meta.GeneratedAt.Format("15:04:05"), triage.Meta.IssueCount)
 		panel.SetRecommendations(triage.Recommendations, dataHash)
@@ -1576,7 +1771,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SemanticFilterResultMsg:
 		// Async semantic filter results arrived - cache and refresh list
-		if m.semanticSearch != nil && msg.Results != nil {
+		if m.semanticSearch != nil && msg.Generation == m.semanticSearch.Snapshot().Generation && msg.Results != nil {
 			m.semanticSearch.SetCachedResults(msg.Term, msg.Results)
 
 			// Refresh list if still filtering with the same term
@@ -1655,21 +1850,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Update UI components with Phase 2 insights
-		m.insightsPanel.SetInsights(ins)
+		m.insightsPanel.SetInsights(projectInsights(ins, m.repositoryIssueIDs))
 		m.insightsPanel.issueMap = m.issueMap
 		bodyHeight := m.height - 1
 		if bodyHeight < 5 {
 			bodyHeight = 5
 		}
 		m.insightsPanel.SetSize(m.width, bodyHeight)
-		if m.snapshot != nil {
-			m.graphView.SetSnapshot(m.snapshot)
-		} else {
-			m.graphView.SetIssues(m.issues, &ins)
-		}
+		m.refreshBoardAndGraphForCurrentFilter()
 
 		// Compute triage for insights panel (separate from snapshot triage for UI-specific features)
-		triage := analysis.ComputeTriageFromAnalyzer(m.analyzer, m.analysis, m.issues, analysis.TriageOptions{}, time.Now())
+		triage := m.scopedTriage()
 		m.insightsPanel.SetTopPicks(triage.QuickRef.TopPicks)
 
 		// Set full recommendations with breakdown for priority radar (bv-93)
@@ -1684,13 +1875,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Refresh alerts now that full Phase 2 metrics (cycles, etc.) are available
-		m.alerts, m.alertsCritical, m.alertsWarning, m.alertsInfo = computeAlerts(m.issues, m.analysis, m.analyzer)
+		m.alerts, m.alertsCritical, m.alertsWarning, m.alertsInfo = computeAlerts(m.repositoryIssues, m.analysis, m.analyzer)
 
 		// Invalidate label health cache since we have new graph metrics (criticality)
 		m.labelHealthCached = false
 		if m.focused == focusLabelDashboard {
 			cfg := analysis.DefaultLabelHealthConfig()
-			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.issues, cfg, time.Now().UTC(), m.analysis)
+			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
 		}
@@ -1740,13 +1932,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Re-apply recipe filter if active (to update scores while preserving filter)
 		// Otherwise, update list respecting current filter (open/ready/etc.)
-		if m.activeRecipe != nil {
-			m.applyRecipe(m.activeRecipe)
-		} else if m.currentFilter == "" || m.currentFilter == "all" {
-			m.refreshListItemsPhase2()
-		} else {
-			m.applyFilter()
-		}
+		m.refreshRepositoryCandidates()
 
 	case Phase2UpdateMsg:
 		// BackgroundWorker notifies that Phase 2 analysis is complete (bv-e3ub)
@@ -1774,6 +1960,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case HistoryLoadedMsg:
 		// Background history loading completed
+		if msg.Generation != m.historyGeneration {
+			return m, nil
+		}
 		m.historyLoading = false
 		if msg.Error != nil {
 			m.historyLoadFailed = true
@@ -1785,7 +1974,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsError = false
 			}
 			m.historyLoadFailed = false
-			m.historyView = NewHistoryModel(msg.Report, m.theme)
+			m.historyReport = msg.Report
+			m.historyView = NewHistoryModel(m.repositoryHistoryReport(msg.Report), m.theme)
 			m.historyView.SetSize(m.width, m.height-1)
 			// Refresh detail pane if visible
 			if m.isSplitView || m.showDetails {
@@ -1801,6 +1991,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focused = focusAgentPrompt
 		}
 
+	case RepositoryCatalogReadyMsg:
+		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.Generation, true, msg.Recovered, nil)
+		if m.backgroundWorker != nil {
+			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+		}
+		return m, nil
+
+	case RepositoryCatalogErrorMsg:
+		m.applyRepositoryCatalogUpdate(nil, msg.Generation, false, false, msg.Err)
+		if m.backgroundWorker != nil {
+			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+		}
+		return m, nil
+
 	case SnapshotReadyMsg:
 		// Background worker has a new snapshot ready (bv-m7v8)
 		// This is the atomic pointer swap - O(1), sub-microsecond
@@ -1809,6 +2013,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
 			}
 			return m, nil
+		}
+		if msg.SnapshotVer > 0 && msg.SnapshotVer <= m.lastSnapshotVersion {
+			if m.backgroundWorker == nil || m.backgroundWorker.GetSnapshot() != msg.Snapshot {
+				pooled := msg.Snapshot.pooledIssues
+				msg.Snapshot.pooledIssues = nil
+				loader.ReturnIssuePtrsToPool(pooled)
+			}
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
+		if msg.SnapshotVer > 0 {
+			m.lastSnapshotVersion = msg.SnapshotVer
+		}
+		if m.watcher != nil {
+			m.watcher.Stop()
+			m.watcher = nil
 		}
 
 		firstBackgroundSnapshot := m.backgroundWorker != nil && !m.backgroundSnapshotApplied
@@ -1866,6 +2088,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update legacy fields for backwards compatibility during migration
 		// Eventually these will be removed when all code reads from snapshot
 		m.issues = msg.Snapshot.Issues
+		m.historyGeneration++
+		m.historyLoading = len(m.issues) > 0
+		if m.historyLoading {
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+		} else {
+			m.historyReport = nil
+			m.historyView.SetReport(nil)
+		}
+		if m.workspaceMode {
+			_ = m.reloadRepositoryCatalog()
+		}
 		m.issueMap = msg.Snapshot.IssueMap
 		m.analyzer = msg.Snapshot.Analyzer
 		m.analysis = msg.Snapshot.Analysis
@@ -1941,7 +2174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					filteredIssues = append(filteredIssues, issue)
 				}
 
-				m.list.SetItems(filteredItems)
+				m.setListItemsPreservingFilter(filteredItems)
 				m.updateSemanticIDs(filteredItems)
 				m.board.SetIssues(filteredIssues)
 
@@ -2022,7 +2255,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.sortFilteredItems(filteredItems, filteredIssues)
-			m.list.SetItems(filteredItems)
+			m.setListItemsPreservingFilter(filteredItems)
 			m.updateSemanticIDs(filteredItems)
 			if m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
 				m.board.SetSnapshot(m.snapshot)
@@ -2123,6 +2356,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Reloaded %d issues", len(m.issues))
 		}
 		m.statusIsError = false
+		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.CatalogGeneration, msg.CatalogChanged || msg.CatalogAvailable, msg.CatalogRecovered, msg.CatalogError)
+		m.refreshRepositoryCandidates()
 
 		// Wait for Phase 2 if not ready
 		if msg.Snapshot.Analysis != nil {
@@ -2148,6 +2383,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("Background reload error: %v", msg.Err)
 			}
 			m.statusIsError = true
+		}
+		if msg.StartFailure {
+			if m.backgroundWorker != nil {
+				m.backgroundWorker.Stop()
+				m.backgroundWorker = nil
+			}
+			if m.watcher != nil {
+				cmds = append(cmds, WatchFileCmd(m.watcher))
+			}
 		}
 		if m.backgroundWorker != nil {
 			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
@@ -2294,6 +2538,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Recompute analysis (async Phase 1/Phase 2) with caching
 		m.issues = newIssues
+		m.historyGeneration++
+		m.historyLoading = len(m.issues) > 0
+		if m.historyLoading {
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+		} else {
+			m.historyReport = nil
+			m.historyView.SetReport(nil)
+		}
+		m.repositoryCatalogIssues = cloneIssuesForAsync(newIssues)
+		if err := m.reloadRepositoryCatalog(); err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog reload failed: %v", err)
+			m.statusIsError = true
+		}
 		var analysisStart time.Time
 		if profileRefresh {
 			analysisStart = time.Now()
@@ -2385,6 +2642,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Impact:     m.analysis.GetCriticalPathScore(m.issues[i].ID),
 				RepoPrefix: issueRepoKey(m.issues[i]),
 			}
+			m.decorateIssueItem(&item)
 			item.TriageScore = m.triageScores[m.issues[i].ID]
 			if reasons, exists := m.triageReasons[m.issues[i].ID]; exists {
 				item.TriageReason = reasons.Primary
@@ -2410,7 +2668,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.semanticHybridBuilding = true
 			cmds = append(cmds, BuildHybridMetricsCmd(m.issuesForAsync()))
 		}
-		m.list.SetItems(items)
+		m.setListItemsPreservingFilter(items)
 
 		// Restore selection position
 		if selectedID != "" {
@@ -2444,6 +2702,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			oldHash := m.insightsPanel.triageDataHash
 
 			m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
+			m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
 			m.insightsPanel.topPicks = oldTopPicks
 			m.insightsPanel.recommendations = oldRecs
 			m.insightsPanel.recommendationMap = oldRecMap
@@ -2460,9 +2719,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				attentionStart = time.Now()
 			}
 			cfg := analysis.DefaultLabelHealthConfig()
-			m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
+			m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
 			m.attentionCached = true
-			attText, _ := ComputeAttentionView(m.issues, max(40, m.width-4))
+			attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 			m.rebuildInsightsPanel()
 			m.insightsPanel.labelAttention = m.attentionCache.Labels
 			m.insightsPanel.extraText = attText
@@ -2569,6 +2828,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					DebounceDelay: 200 * time.Millisecond,
 				})
 				if err == nil {
+					if m.hubConfigPath != "" {
+						err = bw.SetHubConfigPath(m.hubConfigPath, hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")))
+					}
+				}
+				if err == nil {
 					if m.watcher != nil {
 						m.watcher.Stop()
 					}
@@ -2594,6 +2858,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate label-derived caches
 		m.labelHealthCached = false
 		m.labelDrilldownCache = make(map[string][]model.Issue)
+		m.refreshRepositoryCandidates()
 		m.updateViewportContent()
 
 		// Re-start watching for next change + wait for Phase 2
@@ -2730,9 +2995,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "g":
 				// Show graph analysis sub-view (bv-109)
 				if m.labelDrilldownLabel != "" {
-					sg := analysis.ComputeLabelSubgraph(m.issues, m.labelDrilldownLabel)
-					pr := analysis.ComputeLabelPageRank(sg)
-					cp := analysis.ComputeLabelCriticalPath(sg)
+					sg := analysis.ComputeLabelSubgraph(m.repositoryIssues, m.labelDrilldownLabel)
+					fullSubgraph := analysis.ComputeLabelSubgraph(m.issues, m.labelDrilldownLabel)
+					pr := projectLabelPageRank(analysis.ComputeLabelPageRank(fullSubgraph), m.repositoryIssueIDs)
+					cp := projectLabelCriticalPath(analysis.ComputeLabelCriticalPath(fullSubgraph), m.repositoryIssueIDs)
+					if cp.HasCycle && !scopedIssueParticipatesInLabelCycle(fullSubgraph, m.repositoryIssueIDs) {
+						visibleCriticalPath := analysis.ComputeLabelCriticalPath(sg)
+						if !visibleCriticalPath.HasCycle {
+							cp = visibleCriticalPath
+						}
+					}
 					m.labelGraphAnalysisResult = &LabelGraphAnalysisResult{
 						Label:        m.labelDrilldownLabel,
 						Subgraph:     sg,
@@ -2854,7 +3126,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Handle repo picker overlay (workspace mode) before global keys (esc/q/etc.)
+		// Handle repository picker overlay before global keys (esc/q/etc.).
 		if m.showRepoPicker {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -3550,9 +3822,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isBoardView = false
 				m.isHistoryView = false
 				if m.isActionableView {
-					// Build execution plan
-					analyzer := analysis.NewAnalyzer(m.issues)
-					plan := analyzer.GetExecutionPlan()
+					// Build from the full analyzer, then project candidate rows.
+					plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.repositoryIssueIDs, m.repositoryIssues)
 					m.actionableView = NewActionableModel(plan, m.theme)
 					m.actionableView.SetSize(m.width, m.height-2)
 					m.focused = focusActionable
@@ -3571,12 +3842,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.isBoardView = false
 					m.isActionableView = false
 					m.isHistoryView = false
-					// Build tree from snapshot when available (bv-t435)
-					if m.snapshot != nil {
-						m.tree.BuildFromSnapshot(m.snapshot)
-					} else {
-						m.tree.Build(m.issues)
-					}
+					m.rebuildRepositoryTree()
 					m.tree.SetSize(m.width, m.height-2)
 					m.focused = focusTree
 				}
@@ -3646,7 +3912,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Compute label health (fast; phase1 metrics only needed) with caching
 				if !m.labelHealthCached {
 					cfg := analysis.DefaultLabelHealthConfig()
-					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.issues, cfg, time.Now().UTC(), m.analysis)
+					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 					m.labelHealthCached = true
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -3658,10 +3925,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.attentionOrigin = m.focused
 				if !m.attentionCached {
 					cfg := analysis.DefaultLabelHealthConfig()
-					m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
+					m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
 					m.attentionCached = true
 				}
-				attText, _ := ComputeAttentionView(m.issues, max(40, m.width-4))
+				attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
@@ -3682,20 +3949,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "f":
 				// Flow matrix view (cross-label dependencies)
 				m.clearAttentionOverlay()
-				cfg := analysis.DefaultLabelHealthConfig()
-				flow := analysis.ComputeCrossLabelFlow(m.issues, cfg)
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
 				m.isHistoryView = false
 				m.focused = focusFlowMatrix
-				m.flowMatrix = NewFlowMatrixModel(m.theme)
-				m.flowMatrix.SetData(&flow, m.issues)
-				panelHeight := m.height - 2
-				if panelHeight < 3 {
-					panelHeight = 3
-				}
-				m.flowMatrix.SetSize(m.width, panelHeight)
+				m.refreshFlowMatrix()
 				return m, nil
 
 			case "!":
@@ -3728,15 +3987,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "w":
-				// Toggle repo picker overlay (workspace mode)
-				if !m.workspaceMode || len(m.availableRepos) == 0 {
-					m.statusMsg = "Repo filter available only in workspace mode"
+				// Toggle the repository scope picker in Hub or workspace mode.
+				if !m.workspaceMode && !m.hubRepositoryMode {
+					m.statusMsg = "Repository filtering requires the Hub board; run wbv --hub"
+					m.statusIsError = false
+					return m, nil
+				}
+				if len(m.repositoryCatalog) == 0 {
+					m.statusMsg = "No repositories available"
 					m.statusIsError = false
 					return m, nil
 				}
 				m.showRepoPicker = !m.showRepoPicker
 				if m.showRepoPicker {
-					m.repoPicker = NewRepoPickerModel(m.availableRepos, m.theme)
+					m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 					m.repoPicker.SetActiveRepos(m.activeRepos)
 					m.repoPicker.SetSize(m.width, m.height-1)
 					m.focused = focusRepoPicker
@@ -3752,13 +4016,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "l":
 				// Open label picker for quick filter (bv-126)
-				if len(m.issues) == 0 {
+				if len(m.repositoryIssues) == 0 {
 					return m, nil
 				}
 				// Update labels in case they changed
-				labelExtraction := analysis.ExtractLabels(m.issues)
+				labelExtraction := analysis.ExtractLabels(m.repositoryIssues)
 				labelCounts := extractLabelCounts(labelExtraction.Stats)
-				m.labelPicker.SetLabels(labelExtraction.Labels, labelCounts)
+				labels := labelExtraction.Labels
+				if m.hubRepositoryPresentation() {
+					labels = filterHubContextLabels(labels)
+				}
+				m.labelPicker.SetLabels(labels, labelCounts)
 				m.labelPicker.Reset()
 				m.labelPicker.SetSize(m.width, m.height-1)
 				m.showLabelPicker = true
@@ -4688,8 +4956,23 @@ func (m Model) handleRecipePickerKeys(msg tea.KeyMsg) Model {
 	return m
 }
 
-// handleRepoPickerKeys handles keyboard input when repo picker is focused (workspace mode).
+// handleRepoPickerKeys handles keyboard input when the repository picker is focused.
 func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
+	if m.repoPicker.IsSearching() {
+		switch msg.String() {
+		case "esc":
+			m.repoPicker.ClearSearch()
+		case "enter":
+			return m.applyRepositoryPickerSelection()
+		case "down":
+			m.repoPicker.MoveDown()
+		case "up":
+			m.repoPicker.MoveUp()
+		default:
+			m.repoPicker.UpdateSearch(msg)
+		}
+		return m
+	}
 	switch msg.String() {
 	case "j", "down":
 		m.repoPicker.MoveDown()
@@ -4699,32 +4982,30 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 		m.repoPicker.ToggleSelected()
 	case "a":
 		m.repoPicker.SelectAll()
+	case "n":
+		m.repoPicker.ClearSelection()
+	case "/":
+		m.repoPicker.BeginSearch()
 	case "esc", "q":
 		m.showRepoPicker = false
 		m.focused = focusList
 	case "enter":
-		selected := m.repoPicker.SelectedRepos()
-
-		// Normalize: nil means "all repos" (no filter). Also treat empty as "all" to avoid hiding everything.
-		if len(selected) == 0 || len(selected) == len(m.availableRepos) {
-			m.activeRepos = nil
-			m.statusMsg = "Repo filter: all repos"
-		} else {
-			m.activeRepos = selected
-			m.statusMsg = fmt.Sprintf("Repo filter: %s", formatRepoList(sortedRepoKeys(selected), 3))
-		}
-		m.statusIsError = false
-
-		// Apply filter to views
-		if m.activeRecipe != nil {
-			m.applyRecipe(m.activeRecipe)
-		} else {
-			m.applyFilter()
-		}
-
-		m.showRepoPicker = false
-		m.focused = focusList
+		return m.applyRepositoryPickerSelection()
 	}
+	return m
+}
+
+func (m Model) applyRepositoryPickerSelection() Model {
+	selected := m.repoPicker.SelectedRepos()
+	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
+		m.statusMsg = "Repository scope: all"
+	} else {
+		m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+	}
+	m.statusIsError = false
+	m.SetRepositoryScope(selected)
+	m.showRepoPicker = false
+	m.focused = focusList
 	return m
 }
 
@@ -6116,6 +6397,44 @@ func (m Model) renderLabelGraphAnalysis() string {
 	)
 }
 
+func (m Model) repositoryScopeNames(selected map[string]bool) []string {
+	names := make([]string, 0, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if selected == nil || selected[repository.ID] {
+			name := repository.Name
+			if name == "" {
+				name = repository.ID
+			}
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
+	if !m.workspaceMode && !m.hubRepositoryMode {
+		return ""
+	}
+	selectedCount := len(m.activeRepos)
+	if m.activeRepos == nil {
+		selectedCount = len(m.repositoryCatalog)
+	}
+	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
+	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
+	if len(m.repositoryCatalog) == 0 && m.workspaceSummary != "" {
+		label = m.workspaceSummary
+	}
+	if label == "" || lipgloss.Width(label) > 28 || availableWidth < 24 || availableWidth < lipgloss.Width(label)+6 {
+		label = compact
+	}
+	return lipgloss.NewStyle().
+		Background(ThemeBg("#45B7D1")).
+		Foreground(ColorBg).
+		Bold(true).
+		Padding(0, 1).
+		Render("📦 " + label)
+}
+
 func (m *Model) renderFooter() string {
 	// ══════════════════════════════════════════════════════════════════════════
 	// POLISHED FOOTER - Stripe-level status bar with visual hierarchy
@@ -6123,6 +6442,11 @@ func (m *Model) renderFooter() string {
 
 	// If there's a status message, show it prominently with polished styling
 	if m.statusMsg != "" {
+		repoScope := m.renderRepositoryScopeBadge(m.width / 3)
+		repoWidth := lipgloss.Width(repoScope)
+		if repoWidth >= m.width {
+			return ansi.Truncate(repoScope, m.width, "")
+		}
 		var msgStyle lipgloss.Style
 		if m.statusIsError {
 			msgStyle = lipgloss.NewStyle().
@@ -6141,13 +6465,24 @@ func (m *Model) renderFooter() string {
 		if m.statusIsError {
 			prefix = "✗ "
 		}
-		msgSection := msgStyle.Render(prefix + m.statusMsg)
-		remaining := m.width - lipgloss.Width(msgSection)
+		messageWidth := m.width - repoWidth - 4
+		if repoScope != "" {
+			messageWidth--
+		}
+		if messageWidth < 0 {
+			messageWidth = 0
+		}
+		message := truncateRunesHelper(prefix+m.statusMsg, messageWidth, "...")
+		msgSection := msgStyle.Render(message)
+		remaining := m.width - lipgloss.Width(msgSection) - repoWidth
+		if repoScope != "" {
+			remaining--
+		}
 		if remaining < 0 {
 			remaining = 0
 		}
 		filler := lipgloss.NewStyle().Width(remaining).Render("")
-		return lipgloss.JoinHorizontal(lipgloss.Bottom, msgSection, filler)
+		return ansi.Truncate(lipgloss.JoinHorizontal(lipgloss.Bottom, repoScope, filler, msgSection), m.width, "")
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -6257,7 +6592,7 @@ func (m *Model) renderFooter() string {
 			filterInfo := ""
 			if m.currentFilter != "all" && m.currentFilter != "" {
 				shown := m.board.TotalCount()
-				total := len(m.issues)
+				total := len(m.repositoryIssues)
 				filterInfo = fmt.Sprintf("[%s:%d/%d] ", m.currentFilter, shown, total)
 			}
 			labelHint = lipgloss.NewStyle().
@@ -6560,32 +6895,9 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// WORKSPACE BADGE - Multi-repo mode indicator
+	// REPOSITORY SCOPE BADGE - Persistent Hub/workspace session scope
 	// ─────────────────────────────────────────────────────────────────────────
-	workspaceSection := ""
-	if m.workspaceMode && m.workspaceSummary != "" {
-		workspaceStyle := lipgloss.NewStyle().
-			Background(ThemeBg("#45B7D1")).
-			Foreground(ColorBg).
-			Bold(true).
-			Padding(0, 1)
-		workspaceSection = workspaceStyle.Render(fmt.Sprintf("📦 %s", m.workspaceSummary))
-	}
-
-	// ─────────────────────────────────────────────────────────────────────────
-	// REPO FILTER BADGE - Active repo selection (workspace mode)
-	// ─────────────────────────────────────────────────────────────────────────
-	repoFilterSection := ""
-	if m.workspaceMode && m.activeRepos != nil && len(m.activeRepos) > 0 {
-		active := sortedRepoKeys(m.activeRepos)
-		label := formatRepoList(active, 3)
-		repoStyle := lipgloss.NewStyle().
-			Background(ColorBgHighlight).
-			Foreground(ColorInfo).
-			Bold(true).
-			Padding(0, 1)
-		repoFilterSection = repoStyle.Render(fmt.Sprintf("🗂 %s", label))
-	}
+	repoScopeSection := m.renderRepositoryScopeBadge(m.width / 3)
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// KEYBOARD HINTS - Context-aware navigation help
@@ -6603,7 +6915,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showRecipePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a/n")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
@@ -6646,7 +6958,7 @@ func (m *Model) renderFooter() string {
 			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
-			if m.workspaceMode {
+			if m.workspaceMode || m.hubRepositoryMode {
 				keyHints = append(keyHints, keyStyle.Render("w")+" repos")
 			}
 		}
@@ -6693,11 +7005,8 @@ func (m *Model) renderFooter() string {
 	if sessionSection != "" {
 		leftWidth += lipgloss.Width(sessionSection) + 1
 	}
-	if workspaceSection != "" {
-		leftWidth += lipgloss.Width(workspaceSection) + 1
-	}
-	if repoFilterSection != "" {
-		leftWidth += lipgloss.Width(repoFilterSection) + 1
+	if repoScopeSection != "" {
+		leftWidth += lipgloss.Width(repoScopeSection) + 1
 	}
 	if updateSection != "" {
 		leftWidth += lipgloss.Width(updateSection) + 1
@@ -6715,6 +7024,9 @@ func (m *Model) renderFooter() string {
 
 	// Build the footer
 	var parts []string
+	if repoScopeSection != "" {
+		parts = append(parts, repoScopeSection)
+	}
 	parts = append(parts, filterBadge)
 	if searchBadge != "" {
 		parts = append(parts, searchBadge)
@@ -6731,12 +7043,6 @@ func (m *Model) renderFooter() string {
 	}
 	if sessionSection != "" {
 		parts = append(parts, sessionSection)
-	}
-	if workspaceSection != "" {
-		parts = append(parts, workspaceSection)
-	}
-	if repoFilterSection != "" {
-		parts = append(parts, repoFilterSection)
 	}
 	if updateSection != "" {
 		parts = append(parts, updateSection)
@@ -6756,7 +7062,7 @@ func (m *Model) renderFooter() string {
 	}
 	parts = append(parts, filler, countBadge, keysSection)
 
-	return lipgloss.JoinHorizontal(lipgloss.Bottom, parts...)
+	return ansi.Truncate(lipgloss.JoinHorizontal(lipgloss.Bottom, parts...), m.width, "")
 }
 
 func nextHybridPreset(current search.PresetName) search.PresetName {
@@ -6820,14 +7126,6 @@ func (m *Model) setActiveRecipe(r *recipe.Recipe) {
 }
 
 func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
-	// Workspace repo filter (nil = all repos)
-	if m.workspaceMode && m.activeRepos != nil {
-		repoKey := issueRepoKey(issue)
-		if repoKey != "" && !m.activeRepos[repoKey] {
-			return false
-		}
-	}
-
 	switch m.currentFilter {
 	case "all":
 		return true
@@ -6865,16 +7163,11 @@ func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
 }
 
 func (m *Model) filteredIssuesForActiveView() []model.Issue {
-	filtered := make([]model.Issue, 0, len(m.issues))
+	m.syncRepositoryCandidates()
+	filtered := make([]model.Issue, 0, len(m.repositoryIssues))
 	recipeFilterActive := m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:")
 	if recipeFilterActive {
-		for _, issue := range m.issues {
-			if m.workspaceMode && m.activeRepos != nil {
-				repoKey := issueRepoKey(issue)
-				if repoKey != "" && !m.activeRepos[repoKey] {
-					continue
-				}
-			}
+		for _, issue := range m.repositoryIssues {
 			if issueMatchesRecipe(issue, m.issueMap, m.activeRecipe) {
 				filtered = append(filtered, issue)
 			}
@@ -6882,7 +7175,7 @@ func (m *Model) filteredIssuesForActiveView() []model.Issue {
 		sortIssuesByRecipe(filtered, m.analysis, m.activeRecipe)
 		return filtered
 	}
-	for _, issue := range m.issues {
+	for _, issue := range m.repositoryIssues {
 		if m.matchesCurrentFilter(issue) {
 			filtered = append(filtered, issue)
 		}
@@ -6898,7 +7191,7 @@ func (m *Model) refreshBoardAndGraphForCurrentFilter() {
 	filteredIssues := m.filteredIssuesForActiveView()
 	recipeFilterActive := m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:")
 	if m.isBoardView {
-		useSnapshot := m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues)
+		useSnapshot := m.snapshot != nil && m.snapshot.BoardState != nil && m.activeRepos == nil && len(filteredIssues) == len(m.snapshot.Issues)
 		if useSnapshot {
 			if recipeFilterActive {
 				useSnapshot = m.snapshot.RecipeName == m.activeRecipe.Name && m.snapshot.RecipeHash == recipeFingerprint(m.activeRecipe)
@@ -6925,17 +7218,18 @@ func (m *Model) refreshBoardAndGraphForCurrentFilter() {
 		if useSnapshot {
 			m.graphView.SetSnapshot(m.snapshot)
 		} else {
-			filterIns := m.analysis.GenerateInsights(len(filteredIssues))
-			m.graphView.SetIssues(filteredIssues, &filterIns)
+			filterIns := projectInsights(m.analysis.GenerateInsights(len(m.issues)), issueIDSet(filteredIssues))
+			m.graphView.SetProjectedIssues(filteredIssues, m.issueMap, &filterIns)
 		}
 	}
 }
 
 func (m *Model) applyFilter() {
+	m.syncRepositoryCandidates()
 	var filteredItems []list.Item
 	var filteredIssues []model.Issue
 
-	for _, issue := range m.issues {
+	for _, issue := range m.repositoryIssues {
 		if m.matchesCurrentFilter(issue) {
 			// Use pre-computed graph scores (avoid redundant calculation)
 			item := IssueItem{
@@ -6945,6 +7239,7 @@ func (m *Model) applyFilter() {
 				DiffStatus: m.getDiffStatus(issue.ID),
 				RepoPrefix: issueRepoKey(issue),
 			}
+			m.decorateIssueItem(&item)
 			// Add triage data (bv-151)
 			item.TriageScore = m.triageScores[issue.ID]
 			if reasons, exists := m.triageReasons[issue.ID]; exists {
@@ -6962,9 +7257,9 @@ func (m *Model) applyFilter() {
 	// Apply sort mode (bv-3ita)
 	m.sortFilteredItems(filteredItems, filteredIssues)
 
-	m.list.SetItems(filteredItems)
+	m.setListItemsPreservingFilter(filteredItems)
 	m.updateSemanticIDs(filteredItems)
-	if m.snapshot != nil && m.snapshot.BoardState != nil && m.currentFilter == "all" && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
+	if m.snapshot != nil && m.snapshot.BoardState != nil && m.currentFilter == "all" && m.activeRepos == nil && len(filteredIssues) == len(m.snapshot.Issues) {
 		m.board.SetSnapshot(m.snapshot)
 	} else {
 		m.board.SetIssues(filteredIssues)
@@ -6973,8 +7268,8 @@ func (m *Model) applyFilter() {
 		m.graphView.SetSnapshot(m.snapshot)
 	} else {
 		// Generate insights for graph view (for metric rankings and sorting)
-		filterIns := m.analysis.GenerateInsights(len(filteredIssues))
-		m.graphView.SetIssues(filteredIssues, &filterIns)
+		filterIns := projectInsights(m.analysis.GenerateInsights(len(m.issues)), issueIDSet(filteredIssues))
+		m.graphView.SetProjectedIssues(filteredIssues, m.issueMap, &filterIns)
 	}
 
 	// Keep selection in bounds
@@ -7017,7 +7312,7 @@ func (m *Model) refreshListItemsPhase2() {
 		items[i] = item
 	}
 
-	m.list.SetItems(items)
+	m.setListItemsPreservingFilter(items)
 	if selectedIdx >= 0 && selectedIdx < len(items) {
 		m.list.Select(selectedIdx)
 	}
@@ -7122,20 +7417,13 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 	if r == nil {
 		return
 	}
+	m.syncRepositoryCandidates()
 
 	var filteredItems []list.Item
 	var filteredIssues []model.Issue
 
-	for _, issue := range m.issues {
+	for _, issue := range m.repositoryIssues {
 		include := true
-
-		// Workspace repo filter (nil = all repos)
-		if m.workspaceMode && m.activeRepos != nil {
-			repoKey := issueRepoKey(issue)
-			if repoKey != "" && !m.activeRepos[repoKey] {
-				include = false
-			}
-		}
 
 		// Apply status filter
 		if len(r.Filters.Status) > 0 {
@@ -7199,6 +7487,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 				DiffStatus: m.getDiffStatus(issue.ID),
 				RepoPrefix: issueRepoKey(issue),
 			}
+			m.decorateIssueItem(&item)
 			// Add triage data (bv-151)
 			item.TriageScore = m.triageScores[issue.ID]
 			if reasons, exists := m.triageReasons[issue.ID]; exists {
@@ -7330,12 +7619,12 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 		})
 	}
 
-	m.list.SetItems(filteredItems)
+	m.setListItemsPreservingFilter(filteredItems)
 	m.updateSemanticIDs(filteredItems)
 	m.board.SetIssues(filteredIssues)
 	// Generate insights for graph view (for metric rankings and sorting)
-	recipeIns := m.analysis.GenerateInsights(len(filteredIssues))
-	m.graphView.SetIssues(filteredIssues, &recipeIns)
+	recipeIns := projectInsights(m.analysis.GenerateInsights(len(m.issues)), issueIDSet(filteredIssues))
+	m.graphView.SetProjectedIssues(filteredIssues, m.issueMap, &recipeIns)
 
 	// Update filter indicator
 	m.currentFilter = "recipe:" + r.Name
@@ -7439,6 +7728,9 @@ func (m *Model) applyContentSizing() {
 	// them), so they keep using m.width rather than the reserved content width.
 	m.labelDashboard.SetSize(m.width, bodyHeight)
 	m.insightsPanel.SetSize(m.width, bodyHeight)
+	if m.showRepoPicker {
+		m.repoPicker.SetSize(m.width, bodyHeight)
+	}
 	m.updateViewportContent()
 }
 
@@ -7472,6 +7764,7 @@ func (m *Model) recalculateSplitPaneSizes() {
 	m.list.SetSize(listInnerWidth, listHeight)
 	m.viewport = viewport.New(detailInnerWidth, bodyHeight-2)
 	m.renderer.SetWidthWithTheme(detailInnerWidth, m.theme)
+	m.updateListDelegate()
 	m.updateViewportContent()
 }
 
@@ -7649,9 +7942,14 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation())
+	if len(presentation.Names) > 0 {
+		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
+	}
+
 	// Labels (bv-f103 fix: display labels in detail view)
-	if len(item.Labels) > 0 {
-		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(item.Labels, ", ")))
+	if len(presentation.Labels) > 0 {
+		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(presentation.Labels, ", ")))
 	}
 
 	// Triage Insights (bv-151)
@@ -7921,7 +8219,10 @@ func (m Model) FilteredIssues() []model.Issue {
 func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 	m.workspaceMode = info.Enabled
 	m.availableRepos = normalizeRepoPrefixes(info.RepoPrefixes)
+	m.workspaceRepos = append([]WorkspaceRepositoryInfo(nil), info.Repositories...)
 	m.activeRepos = nil // nil means all repos are active
+	m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
+	m.refreshRepositoryCandidates()
 
 	if info.RepoCount > 0 {
 		if info.FailedCount > 0 {
@@ -7982,14 +8283,16 @@ func (m *Model) enterHistoryView() {
 	}
 
 	// Initialize or update history view
-	m.historyView = NewHistoryModel(report, m.theme)
+	m.historyReport = report
+	projectedReport := m.repositoryHistoryReport(report)
+	m.historyView = NewHistoryModel(projectedReport, m.theme)
 	m.historyView.SetSize(m.width, m.height-1)
 	m.isHistoryView = true
 	m.focused = focusHistory
 
-	m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", report.Stats.BeadsWithCommits)
-	if len(report.Warnings) > 0 {
-		m.statusMsg += fmt.Sprintf(" (partial: %d source repositories unavailable)", len(report.Warnings))
+	m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", projectedReport.Stats.BeadsWithCommits)
+	if len(projectedReport.Warnings) > 0 {
+		m.statusMsg += fmt.Sprintf(" (partial: %d source repositories unavailable)", len(projectedReport.Warnings))
 	}
 	m.statusIsError = false
 }
@@ -9074,6 +9377,13 @@ func computeAlerts(issues []model.Issue, stats *analysis.GraphStats, analyzer *a
 		}
 	}
 
+	actionableCount := 0
+	candidateIDs := issueIDSet(issues)
+	for _, issue := range analyzer.GetActionableIssues() {
+		if candidateIDs[issue.ID] {
+			actionableCount++
+		}
+	}
 	curStats := baseline.GraphStats{
 		NodeCount:       stats.NodeCount,
 		EdgeCount:       stats.EdgeCount,
@@ -9082,7 +9392,7 @@ func computeAlerts(issues []model.Issue, stats *analysis.GraphStats, analyzer *a
 		ClosedCount:     closedCount,
 		BlockedCount:    blockedCount,
 		CycleCount:      len(stats.Cycles()),
-		ActionableCount: len(analyzer.GetActionableIssues()),
+		ActionableCount: actionableCount,
 	}
 
 	bl := &baseline.Baseline{Stats: curStats}

@@ -139,3 +139,21 @@ func TestIssueDelegate_RenderNarrow(t *testing.T) {
 		t.Fatalf("narrow output should hide comments count: %q", out)
 	}
 }
+
+func TestIssueDelegate_WideAssigneeKeepsSingleRowWidth(t *testing.T) {
+	item := newTestIssueItem("WIDE-ASSIGNEE")
+	item.Issue.Assignee = "仓库维护者"
+	theme := DefaultTheme(lipgloss.NewRenderer(os.Stdout))
+	delegate := IssueDelegate{Theme: theme}
+	l := list.New([]list.Item{item}, delegate, 110, 10)
+
+	var buf bytes.Buffer
+	delegate.Render(&buf, l, 0, item)
+	out := buf.String()
+	if strings.Contains(out, "\n") {
+		t.Fatalf("wide assignee wrapped a one-line delegate row: %q", out)
+	}
+	if width := lipgloss.Width(out); width > 109 {
+		t.Fatalf("wide assignee row width = %d, want <= 109: %q", width, out)
+	}
+}

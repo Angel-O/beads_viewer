@@ -663,10 +663,10 @@ func structuredTutorialPages() []StructuredTutorialPage {
 		},
 		{
 			ID:      "advanced-workspace",
-			Title:   "Workspace Mode",
+			Title:   "Repository Scope",
 			Section: "Advanced",
 			Elements: []TutorialElement{
-				Section{Title: "Multiple repos, unified view"},
+				Section{Title: "Hub and workspace repositories, unified view"},
 				Spacer{Lines: 1},
 				Section{Title: "When to Use"},
 				Bullet{Items: []string{
@@ -676,12 +676,17 @@ func structuredTutorialPages() []StructuredTutorialPage {
 				}},
 				Spacer{Lines: 1},
 				Section{Title: "Setup"},
-				Paragraph{Text: "Create .beads/workspace.json with repo paths and prefixes."},
+				Paragraph{Text: "Use wbv --hub for the Hub board, or configure legacy workspace mode in .bv/workspace.yaml."},
 				Spacer{Lines: 1},
 				Section{Title: "Navigation"},
 				KeyTable{Bindings: []KeyHint{
-					{Key: "w", Desc: "Toggle workspace picker"},
-					{Key: "W", Desc: "Workspace-wide search"},
+					{Key: "w", Desc: "Open repository scope picker"},
+					{Key: "j/k, arrows", Desc: "Navigate repositories"},
+					{Key: "Space", Desc: "Toggle repository"},
+					{Key: "a / n", Desc: "Select all / clear draft"},
+					{Key: "/", Desc: "Search name, path, or exact ID"},
+					{Key: "Enter", Desc: "Apply (empty means all)"},
+					{Key: "Esc", Desc: "Clear search, then cancel"},
 				}},
 				Spacer{Lines: 1},
 				Section{Title: "Cross-Repo Dependencies"},

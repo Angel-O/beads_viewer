@@ -34,6 +34,32 @@ func TestStatus_IsValid(t *testing.T) {
 	}
 }
 
+func TestReconcileRepositorySelection(t *testing.T) {
+	catalog := RepositoryCatalog{{ID: "ctx:a"}, {ID: "ctx:c"}}
+	if got := ReconcileRepositorySelection(nil, catalog); got != nil {
+		t.Fatalf("all selection changed to %#v", got)
+	}
+	selected := map[string]bool{"ctx:a": true, "ctx:b": true}
+	got := ReconcileRepositorySelection(selected, catalog)
+	if len(got) != 1 || !got["ctx:a"] {
+		t.Fatalf("subset reconciliation = %#v", got)
+	}
+	if got := ReconcileRepositorySelection(map[string]bool{"ctx:b": true}, catalog); got != nil {
+		t.Fatalf("empty subset = %#v, want all (nil)", got)
+	}
+}
+
+func TestSortRepositoryCatalog(t *testing.T) {
+	catalog := RepositoryCatalog{{ID: "ctx:z", Name: "same"}, {ID: "ctx:b", Name: "alpha"}, {ID: "ctx:a", Name: "same"}}
+	SortRepositoryCatalog(catalog)
+	want := []string{"ctx:b", "ctx:a", "ctx:z"}
+	for i := range want {
+		if catalog[i].ID != want[i] {
+			t.Fatalf("catalog[%d].ID = %q, want %q", i, catalog[i].ID, want[i])
+		}
+	}
+}
+
 func TestStatus_IsClosed(t *testing.T) {
 	tests := []struct {
 		name   string

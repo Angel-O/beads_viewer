@@ -24,6 +24,9 @@ type LoadResult struct {
 	// Prefix is the namespace prefix used for IDs
 	Prefix string
 
+	// RepoPath is the configured repository path.
+	RepoPath string
+
 	// Issues are the loaded issues with namespaced IDs
 	Issues []model.Issue
 
@@ -314,6 +317,7 @@ func (l *AggregateLoader) loadReposParallel(ctx context.Context, repos []RepoCon
 				results[i] = LoadResult{
 					RepoName: repo.GetName(),
 					Prefix:   repo.GetPrefix(),
+					RepoPath: repo.Path,
 					Error:    ctx.Err(),
 				}
 				return nil // Don't propagate context errors as fatal
@@ -325,6 +329,7 @@ func (l *AggregateLoader) loadReposParallel(ctx context.Context, repos []RepoCon
 			results[i] = LoadResult{
 				RepoName: repo.GetName(),
 				Prefix:   repo.GetPrefix(),
+				RepoPath: repo.Path,
 				Issues:   issues,
 				Error:    err,
 			}
@@ -471,6 +476,14 @@ type LoadSummary struct {
 	TotalIssues     int
 	FailedRepoNames []string
 	RepoPrefixes    []string // Prefixes of successfully loaded repos
+	Repositories    []RepositorySummary
+}
+
+// RepositorySummary carries picker metadata for one loaded workspace repository.
+type RepositorySummary struct {
+	Name   string
+	Path   string
+	Prefix string
 }
 
 // Summarize returns a summary of the load results
@@ -488,6 +501,9 @@ func Summarize(results []LoadResult) LoadSummary {
 			summary.TotalIssues += len(result.Issues)
 			if result.Prefix != "" {
 				summary.RepoPrefixes = append(summary.RepoPrefixes, result.Prefix)
+				summary.Repositories = append(summary.Repositories, RepositorySummary{
+					Name: result.RepoName, Path: result.RepoPath, Prefix: result.Prefix,
+				})
 			}
 		}
 	}
