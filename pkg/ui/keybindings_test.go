@@ -635,6 +635,45 @@ func TestKeyDispatch_Regression_QInHistoryClosesHistory(t *testing.T) {
 	t.Logf("focus=history key=q expected=close_history actual=isHistoryView:%v focused:%v", m.isHistoryView, m.focused)
 }
 
+func TestKeyDispatch_HistoryIgnoresShortcutsSidebarToggle(t *testing.T) {
+	m := setupTestModel(t)
+	m.width, m.height = 200, 40
+	updated, _ := m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("expected wide History view, got view=%v focus=%v", m.isHistoryView, m.focused)
+	}
+
+	m.historyView.ToggleViewMode()
+	m.historyView.StartSearchWithMode(searchModeCommit)
+	m.historyView.UpdateSearchInput(keyMsg("needle"))
+	m.historyView.FinishSearch()
+	m.historyView.SetFileTreeFocus(true)
+	m.historyView.MoveDownFileTree()
+	before := m.historyView.View()
+	beforeMode := m.historyView.IsGitMode()
+	beforeFocus := m.historyView.focused
+	beforeSearch := m.historyView.SearchQuery()
+	beforeFileTreeFocus := m.historyView.FileTreeHasFocus()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if m.showShortcutsSidebar || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("semicolon changed normal History routing: sidebar=%v view=%v focus=%v", m.showShortcutsSidebar, m.isHistoryView, m.focused)
+	}
+	if m.historyView.View() != before || m.historyView.IsGitMode() != beforeMode || m.historyView.focused != beforeFocus || m.historyView.SearchQuery() != beforeSearch || m.historyView.FileTreeHasFocus() != beforeFileTreeFocus {
+		t.Fatal("semicolon changed History state or rendering")
+	}
+
+	m.isHistoryView = false
+	m.focused = focusList
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon stopped toggling the supported list sidebar")
+	}
+}
+
 // TestKeyDispatch_Regression_EscInTreeReturnsList verifies that ESC in tree view
 // returns to list.
 func TestKeyDispatch_Regression_EscInTreeReturnsList(t *testing.T) {
