@@ -275,6 +275,46 @@ func (a *app) run(arguments []string) int {
 			a.signalMutation("link")
 		}
 		return code
+	case "unlink":
+		if err := need("bv"); err != nil {
+			return a.fail(err)
+		}
+		issue, issueErr := a.readIssue(request.positionals[0], false)
+		if issueErr != nil {
+			return a.fail(issueErr)
+		}
+		if policyErr := hub.ValidateCorrelationOwner(issue.policyState()); policyErr != nil {
+			return a.fail(policyErr)
+		}
+		registration, registerErr := a.register()
+		if registerErr != nil {
+			return a.fail(registerErr)
+		}
+		output, code := a.runBVCapture("correlate", "remove", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", request.positionals[1], "--hub-config", a.paths.Config)
+		if code != 0 {
+			return code
+		}
+		var result struct {
+			Correlation struct {
+				BeadID  string `json:"bead_id"`
+				Context string `json:"context"`
+				Commit  string `json:"commit"`
+			} `json:"correlation"`
+			Removed bool `json:"removed"`
+		}
+		if err := json.Unmarshal(output, &result); err != nil {
+			return a.fail(fmt.Errorf("decoding correlation removal result: %w", err))
+		}
+		if result.Correlation.BeadID != request.positionals[0] || result.Correlation.Context != registration.Context || !strings.EqualFold(result.Correlation.Commit, request.positionals[1]) {
+			return a.fail(errors.New("correlation removal returned a different tuple than requested"))
+		}
+		if result.Removed {
+			a.signalMutation("unlink")
+		}
+		if _, err := a.stdout.Write(output); err != nil {
+			return a.fail(fmt.Errorf("writing correlation removal result: %w", err))
+		}
+		return 0
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
@@ -378,7 +418,9 @@ Global options:
   --json     Emit JSON where supported; accepted before or after the command.
   -h, --help Show help without requiring a store or invoking child commands.
 
-Use --json for queries and mutations except context and link.
+link resolves a ref and adds a correlation. unlink requires an exact full SHA.
+Both correlation commands return JSON; unlink is idempotent when not found.
+Use --json for other queries and mutations except context.
 `)
 }
 
@@ -959,6 +1001,27 @@ func (a *app) runBDAt(directory string, bootstrap bool, arguments ...string) int
 
 func (a *app) runBV(arguments ...string) int {
 	return a.runChild(a.dir, "bv", arguments, true)
+}
+
+func (a *app) runBVCapture(arguments ...string) ([]byte, int) {
+	command := exec.Command("bv", arguments...)
+	command.Dir = a.dir
+	command.Stdin = a.stdin
+	command.Stderr = a.stderr
+	command.Env = isolatedEnvironment(a.paths.Store, true)
+	output, err := command.Output()
+	if err == nil {
+		return output, 0
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return output, 128 + int(status.Signal())
+		}
+		return output, exitError.ExitCode()
+	}
+	fmt.Fprintf(a.stderr, "wbd: executing bv: %v\n", err)
+	return output, 1
 }
 
 func (a *app) runChild(directory, name string, arguments []string, viewer bool) int {

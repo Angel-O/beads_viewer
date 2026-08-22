@@ -27,7 +27,7 @@ type commandSpec struct {
 var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "dep", "dep add", "dep remove",
-	"close", "reopen", "link",
+	"close", "reopen", "link", "unlink",
 }
 
 var commandSpecs = map[string]commandSpec{
@@ -129,6 +129,10 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{{name: "--reason", value: "<text>", description: "Reopen reason."}, {name: "--json", description: "Emit JSON."}},
 	},
 	"link": {path: "link", usage: "wbd link <bead-id> [commit]", summary: "Correlate current-context concrete work with a commit."},
+	"unlink": {
+		path: "unlink", usage: "wbd unlink <bead-id> <full-commit-sha>", summary: "Remove one exact current-context commit correlation.",
+		examples: []string{`wbd unlink <id> 0123456789abcdef0123456789abcdef01234567`},
+	},
 }
 
 func init() {
@@ -261,12 +265,42 @@ func parse(arguments []string) (request, error) {
 			}
 		}
 		result.positionals = arguments
+	case "unlink":
+		if result.json || len(arguments) != 2 {
+			return result, errors.New(usageFor("unlink"))
+		}
+		if err := safeID("unlink", arguments[0]); err != nil {
+			return result, err
+		}
+		if err := safeValue("commit", arguments[1]); err != nil {
+			return result, err
+		}
+		if !isFullCommitSHA(arguments[1]) {
+			return result, errors.New("unlink requires a full 40- or 64-character hexadecimal commit SHA")
+		}
+		result.positionals = arguments
 	case "init":
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands())
 	}
 	return result, nil
+}
+
+func isFullCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				if character < 'A' || character > 'F' {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func parseCreate(result request, arguments []string) (request, error) {
