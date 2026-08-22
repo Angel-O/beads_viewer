@@ -140,9 +140,10 @@ func TestGetTypeIconMD(t *testing.T) {
 	}{
 		{"bug", "🐛"},
 		{"feature", "✨"},
-		{"task", "📋"},
+		{"task", "🔧"},
 		{"epic", "🚀"}, // Changed from 🏔️ - VS-16 variation selector causes width issues
 		{"chore", "🧹"},
+		{"todo", "📝"},
 		{"unknown", "•"},
 		{"", "•"},
 	}

@@ -8269,11 +8269,13 @@ func GetTypeIconMD(t string) string {
 	case "feature":
 		return "✨"
 	case "task":
-		return "📋"
+		return "🔧"
 	case "epic":
 		return "🚀" // Use rocket instead of mountain - VS-16 variation selector causes width issues
 	case "chore":
 		return "🧹"
+	case "todo":
+		return "📝"
 	default:
 		return "•"
 	}
