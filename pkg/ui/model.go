@@ -3436,6 +3436,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.handleHistoryKeys(msg)
 			return m, nil
 		}
+		if m.focused == focusTree && m.tree.IsSearchActive() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m = m.handleTreeKeys(msg)
+			return m, nil
+		}
 		// The label picker overlay has an always-focused text input. Like the
 		// search submodes above, it must consume keys BEFORE the global key
 		// block; otherwise printable input — most notably a lowercase q — leaks
@@ -3520,6 +3527,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "esc":
 				// Escape closes modals and goes back
+				if m.focused == focusTree {
+					if m.tree.SearchQuery() != "" {
+						m.tree.ClearSearch()
+						return m, nil
+					}
+					m.focused = focusList
+					return m, nil
+				}
 				if m.showDetails && !m.isSplitView {
 					m.showDetails = false
 					m.focused = focusList
@@ -3750,7 +3765,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
-					"G", "o", "O", "E", "esc",
+					"G", "o", "O", "E", "esc", "/", "n", "N",
 					"enter", " ", "tab",
 					"ctrl+d", "ctrl+u", "pgup", "pgdown":
 					// Cancel any pending combo when pressing other keys
@@ -4464,6 +4479,18 @@ func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
 
 // handleTreeKeys handles keyboard input when tree view is focused (bv-gllx)
 func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
+	if m.tree.IsSearchActive() {
+		switch msg.String() {
+		case "esc":
+			m.tree.ClearSearch()
+		case "enter":
+			m.tree.FinishSearch()
+		default:
+			m.tree.UpdateSearchInput(msg)
+		}
+		return m
+	}
+
 	switch msg.String() {
 	case "j", "down":
 		m.tree.MoveDown()
@@ -4485,6 +4512,12 @@ func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
 		m.tree.PageDown()
 	case "ctrl+u", "pgup":
 		m.tree.PageUp()
+	case "/":
+		m.tree.StartSearch()
+	case "n":
+		m.tree.NextSearchMatch()
+	case "N":
+		m.tree.PreviousSearchMatch()
 	case "E", "esc":
 		// Return to list view
 		m.focused = focusList
@@ -6685,6 +6718,19 @@ func (m *Model) renderFooter() string {
 				Foreground(ColorFooterHint).
 				Padding(0, 1).
 				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • L:labels • /:search • ?:help", filterInfo))
+		}
+	}
+	if m.focused == focusTree {
+		if m.tree.IsSearchActive() || m.tree.SearchQuery() != "" {
+			labelHint = lipgloss.NewStyle().
+				Foreground(ColorFooterHint).
+				Padding(0, 1).
+				Render("type:search • Enter:select • n/N:match • Escape:clear")
+		} else {
+			labelHint = lipgloss.NewStyle().
+				Foreground(ColorFooterHint).
+				Padding(0, 1).
+				Render("j/k:move • h/l:fold • /:search • E:exit • ?:help")
 		}
 	}
 

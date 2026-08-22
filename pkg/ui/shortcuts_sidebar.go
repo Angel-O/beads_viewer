@@ -115,6 +115,9 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryOrder := []string{} // Preserve order of first appearance
 
 	for _, b := range bindings {
+		if s.focusHint == focusTree && b.Category != "Tree" && b.Category != "Views" {
+			continue
+		}
 		cat := b.Category
 		if cat == "" {
 			cat = "Other"
@@ -392,6 +395,8 @@ func ContextFromFocus(f focus) string {
 		return "insights"
 	case focusHistory:
 		return "history"
+	case focusTree:
+		return "tree"
 	case focusActionable:
 		return "actionable"
 	case focusLabelDashboard:

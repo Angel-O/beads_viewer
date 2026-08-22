@@ -10,11 +10,112 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 func newTreeTestTheme() Theme {
 	return DefaultTheme(lipgloss.NewRenderer(nil))
+}
+
+func treeSearchIssues() []model.Issue {
+	return []model.Issue{
+		{ID: "root", Title: "Planning", Priority: 1, IssueType: model.TypeEpic},
+		{ID: "child", Title: "Backend", Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "child", DependsOnID: "root", Type: model.DepParentChild}}},
+		{ID: "nested-match", Title: "Needle implementation", Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "nested-match", DependsOnID: "child", Type: model.DepParentChild}}},
+		{ID: "second-match", Title: "Needle tests", Priority: 2, IssueType: model.TypeTask},
+	}
+}
+
+func TestTreeSearchRevealsAncestorsAndRestoresExpansion(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchIssues())
+	tree.roots[0].Expanded = false
+	tree.rebuildFlatList()
+
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("implementation")})
+
+	if got := tree.SearchMatchCount(); got != 1 {
+		t.Fatalf("match count = %d, want 1", got)
+	}
+	if got := tree.NodeCount(); got != 3 {
+		t.Fatalf("visible search rows = %d, want matching node plus two ancestors", got)
+	}
+	if selected := tree.SelectedIssue(); selected == nil || selected.ID != "nested-match" {
+		t.Fatalf("selected issue = %#v, want nested match", selected)
+	}
+	if tree.roots[0].Expanded {
+		t.Fatal("search changed the user's collapsed root")
+	}
+
+	tree.ClearSearch()
+	if tree.roots[0].Expanded {
+		t.Fatal("clearing search did not preserve the collapsed root")
+	}
+	if got := tree.NodeCount(); got != 2 {
+		t.Fatalf("visible rows after clear = %d, want two collapsed roots", got)
+	}
+}
+
+func TestTreeSearchNavigationAndZeroResultState(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchIssues())
+	tree.SetSize(100, 20)
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+
+	if got := tree.SearchCursorPos(); got != 1 {
+		t.Fatalf("initial match position = %d, want 1", got)
+	}
+	tree.NextSearchMatch()
+	if got := tree.SearchCursorPos(); got != 2 {
+		t.Fatalf("next match position = %d, want 2", got)
+	}
+	tree.NextSearchMatch()
+	if got := tree.SearchCursorPos(); got != 1 {
+		t.Fatalf("wrapped next position = %d, want 1", got)
+	}
+	tree.PreviousSearchMatch()
+	if got := tree.SearchCursorPos(); got != 2 {
+		t.Fatalf("wrapped previous position = %d, want 2", got)
+	}
+
+	tree.ClearSearch()
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("absent")})
+	view := tree.View()
+	for _, expected := range []string{"/absent", "[0/0]", "No Tree matches"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("zero-result Tree view missing %q", expected)
+		}
+	}
+}
+
+func TestTreeSearchRetainsProjectedHierarchyContext(t *testing.T) {
+	parent := model.Issue{ID: "other-repo-parent", Title: "Parent outside scope", IssueType: model.TypeEpic}
+	child := model.Issue{
+		ID:        "scoped-child",
+		Title:     "Scoped needle",
+		IssueType: model.TypeTask,
+		Dependencies: []*model.Dependency{{
+			IssueID:     "scoped-child",
+			DependsOnID: parent.ID,
+			Type:        model.DepParentChild,
+		}},
+	}
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.BuildProjected([]model.Issue{child}, map[string]*model.Issue{parent.ID: &parent})
+	tree.SetSize(100, 10)
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+
+	if tree.RootCount() != 1 || tree.SearchMatchCount() != 1 {
+		t.Fatalf("search escaped projected scope: roots=%d matches=%d", tree.RootCount(), tree.SearchMatchCount())
+	}
+	if view := tree.View(); !strings.Contains(view, "[parent out of scope]") {
+		t.Fatal("projected Tree search lost omitted-parent hierarchy context")
+	}
 }
 
 // TestTreeBuildEmpty verifies Build() handles empty issues slice

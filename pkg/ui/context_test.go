@@ -130,6 +130,11 @@ func TestCurrentContext_Views(t *testing.T) {
 			expected: ContextGraph,
 		},
 		{
+			name:     "tree view",
+			setup:    func(m *Model) { m.focused = focusTree },
+			expected: ContextTree,
+		},
+		{
 			name:     "board view",
 			setup:    func(m *Model) { m.isBoardView = true },
 			expected: ContextBoard,

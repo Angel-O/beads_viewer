@@ -26,6 +26,7 @@ const (
 	ContextInsights       Context = "insights"
 	ContextFlowMatrix     Context = "flow-matrix"
 	ContextGraph          Context = "graph"
+	ContextTree           Context = "tree"
 	ContextBoard          Context = "board"
 	ContextActionable     Context = "actionable"
 	ContextHistory        Context = "history"
@@ -137,6 +138,11 @@ func (m Model) CurrentContext() Context {
 		return ContextGraph
 	}
 
+	// Hierarchical Tree view
+	if m.focused == focusTree {
+		return ContextTree
+	}
+
 	// Board view
 	if m.isBoardView {
 		return ContextBoard
@@ -204,6 +210,7 @@ func (c Context) Description() string {
 		ContextInsights:           "Insights panel",
 		ContextFlowMatrix:         "Flow matrix",
 		ContextGraph:              "Dependency graph",
+		ContextTree:               "Issue tree",
 		ContextBoard:              "Kanban board",
 		ContextActionable:         "Actionable view",
 		ContextHistory:            "History view",
@@ -237,7 +244,7 @@ func (c Context) IsOverlay() bool {
 // IsView returns true if the context is a full view (not overlay or default list)
 func (c Context) IsView() bool {
 	switch c {
-	case ContextInsights, ContextFlowMatrix, ContextGraph, ContextBoard,
+	case ContextInsights, ContextFlowMatrix, ContextGraph, ContextTree, ContextBoard,
 		ContextActionable, ContextHistory, ContextSprint, ContextLabelDashboard,
 		ContextAttention, ContextSplit, ContextDetail, ContextTimeTravel:
 		return true
@@ -256,6 +263,7 @@ func (c Context) TutorialPages() []int {
 		ContextSplit:              {4, 2},    // Detail View, List View
 		ContextBoard:              {5},       // Board View
 		ContextGraph:              {6},       // Graph View
+		ContextTree:               {1, 2},    // Navigation, List View
 		ContextInsights:           {7},       // Insights
 		ContextHistory:            {8},       // History View
 		ContextActionable:         {9},       // Actionable View
