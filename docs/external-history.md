@@ -73,10 +73,11 @@ and issue type is not an update field.
 work and its native `discovered-from` continuity relation. Todo close and reopen
 remain manual. An epic may parent ordinary project work only when the child's
 context belongs to the epic. `wbd replace <original-id> --context <context>`
-creates a correctly targeted replacement, preserves open blocking continuity,
-stores native supersession, and then closes the original with a replacement
-reason. It reports the replacement ID if that final close fails. Decisions do
-not use this explicit-target replacement path.
+prevalidates the request, creates a correctly targeted replacement with native
+supersession and applicable open blocking continuity, and then closes the
+original with `Superseded by <replacement-id>`. Success is reported only after
+the close. If that final close rarely fails, the error names the already-created
+replacement explicitly; decisions do not use this explicit-target path.
 
 `wbd link <bead-id> [commit]` adds a source correlation, defaulting to `HEAD`,
 and signals Viewer after success; todos cannot own direct correlations.
