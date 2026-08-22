@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1056,6 +1055,21 @@ func looksLikeBeadsDBFile(dbPath string) bool {
 	}
 }
 
+// beadsTreeModTime returns the most recent modification time among the
+// .beads/ directory itself and the regular files directly inside it.
+//
+// Only the top level is consulted, deliberately. Every data file bv loads
+// (issues.jsonl, beads.jsonl, beads.db and its -wal sidecar) lives directly in
+// .beads/, while its subdirectories (.br_history/, .br_recovery/, history/,
+// snapshot trees) hold append-only journals that never feed the graph and can
+// hold thousands of files. Recursing into them made every cache *validation*
+// cost O(files in .beads/) of stat calls — on medium repos that was several
+// times slower than simply recomputing the graph, so the "cached" path lost to
+// --no-cache (issue #192). Individual files are still stat'ed because a file
+// rewritten in place does not bump its parent directory's mtime.
+//
+// A file that vanishes between ReadDir and Info (br's transient *.lock files)
+// is skipped rather than disabling the check.
 func beadsTreeModTime(beadsDir string) time.Time {
 	info, err := os.Stat(beadsDir)
 	if err != nil {
@@ -1065,27 +1079,22 @@ func beadsTreeModTime(beadsDir string) time.Time {
 		return time.Time{}
 	}
 
-	// Scan the directory tree for the most recent file mtime.
-	// We walk subdirectories (e.g. .beads/history/) because modifications
-	// inside them don't always update parent directory mtime.
 	latest := info.ModTime()
-	if err := filepath.WalkDir(beadsDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	entries, err := os.ReadDir(beadsDir)
+	if err != nil {
+		return time.Time{}
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
-		if d.IsDir() {
-			return nil // continue into subdirs but don't use dir mtime
-		}
-		finfo, err := d.Info()
+		finfo, err := entry.Info()
 		if err != nil {
-			return err
+			continue
 		}
 		if finfo.ModTime().After(latest) {
 			latest = finfo.ModTime()
 		}
-		return nil
-	}); err != nil {
-		return time.Time{}
 	}
 	return latest
 }
@@ -1144,12 +1153,18 @@ func writeRobotDiskCacheLocked(f *os.File, cf robotAnalysisDiskCacheFile) error 
 	return f.Sync()
 }
 
-func pruneRobotDiskCacheEntries(now time.Time, entries map[string]robotAnalysisDiskCacheEntry) {
+// pruneRobotDiskCacheEntries drops entries older than robotAnalysisDiskCacheMaxAge
+// and reports how many were removed, so callers can skip rewriting the cache
+// file when nothing changed.
+func pruneRobotDiskCacheEntries(now time.Time, entries map[string]robotAnalysisDiskCacheEntry) int {
+	removed := 0
 	for k, e := range entries {
 		if e.CreatedAt.IsZero() || now.Sub(e.CreatedAt) > robotAnalysisDiskCacheMaxAge {
 			delete(entries, k)
+			removed++
 		}
 	}
+	return removed
 }
 
 func evictRobotDiskCacheLRU(entries map[string]robotAnalysisDiskCacheEntry) {
@@ -1206,12 +1221,18 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 
 	now := time.Now()
 	cf := readRobotDiskCacheLocked(f)
-	pruneRobotDiskCacheEntries(now, cf.Entries)
+	pruned := pruneRobotDiskCacheEntries(now, cf.Entries)
 
 	entry, ok := cf.Entries[fullKey]
 	if !ok {
-		// Best-effort: persist prunes.
-		_ = writeRobotDiskCacheLocked(f, cf)
+		// A plain miss must not rewrite (and fsync) the whole multi-MB cache
+		// file: the write path after the upcoming recompute persists the new
+		// entry anyway (issue #192). Only persist when pruning actually
+		// removed something, so expired entries don't linger forever on a
+		// repo that never gets a fresh put.
+		if pruned > 0 {
+			_ = writeRobotDiskCacheLocked(f, cf)
+		}
 		return nil, false, false
 	}
 
