@@ -2,9 +2,11 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -26,6 +28,93 @@ func TestDefaultPaths(t *testing.T) {
 	}
 	if paths != want {
 		t.Fatalf("DefaultPaths() = %#v, want %#v", paths, want)
+	}
+}
+
+func TestAdmitIssueCardinalityAndRegistration(t *testing.T) {
+	registered := map[string]Repository{"ctx:a": {}, "ctx:b": {}}
+	tests := []struct {
+		name     string
+		kind     string
+		contexts []string
+		want     []string
+		code     PolicyCode
+	}{
+		{name: "contextless todo", kind: "todo", want: []string{}},
+		{name: "deduplicated todo", kind: "todo", contexts: []string{"ctx:b", "ctx:a", "ctx:b"}, want: []string{"ctx:a", "ctx:b"}},
+		{name: "multi-context epic", kind: "epic", contexts: []string{"ctx:b", "ctx:a"}, want: []string{"ctx:a", "ctx:b"}},
+		{name: "contextless epic", kind: "epic", code: PolicyInvalidCardinality},
+		{name: "single project", kind: "task", contexts: []string{"ctx:a"}, want: []string{"ctx:a"}},
+		{name: "multi project", kind: "bug", contexts: []string{"ctx:a", "ctx:b"}, code: PolicyInvalidCardinality},
+		{name: "decision", kind: "decision", contexts: []string{"ctx:a"}, want: []string{"ctx:a"}},
+		{name: "unsupported", kind: "question", contexts: []string{"ctx:a"}, code: PolicyInvalidKind},
+		{name: "unregistered", kind: "task", contexts: []string{"ctx:nope"}, code: PolicyUnregisteredContext},
+		{name: "invalid context identity", kind: "todo", contexts: []string{"not-a-context"}, code: PolicyUnregisteredContext},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := AdmitIssue(test.kind, test.contexts, []string{"ordinary"}, registered)
+			if test.code != "" {
+				var policyErr *PolicyError
+				if !errors.As(err, &policyErr) || policyErr.Code != test.code {
+					t.Fatalf("error = %v, want policy code %q", err, test.code)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.Contexts, test.want) {
+				t.Fatalf("contexts = %#v, want %#v", got.Contexts, test.want)
+			}
+			wantLabels := append([]string{"ordinary"}, test.want...)
+			if !reflect.DeepEqual(got.Labels, wantLabels) {
+				t.Fatalf("labels = %#v, want %#v", got.Labels, wantLabels)
+			}
+		})
+	}
+}
+
+func TestAdmitIssueRejectsReservedLabels(t *testing.T) {
+	_, err := AdmitIssue("task", []string{"ctx:a"}, []string{"team", " ctx:other"}, map[string]Repository{"ctx:a": {}})
+	var policyErr *PolicyError
+	if !errors.As(err, &policyErr) || policyErr.Code != PolicyReservedLabel {
+		t.Fatalf("error = %v, want reserved-label policy error", err)
+	}
+}
+
+func TestLifecycleEndpointPolicy(t *testing.T) {
+	projectA := IssueState{ID: "work-a", Kind: "task", Labels: []string{"ctx:a"}}
+	projectB := IssueState{ID: "work-b", Kind: "bug", Labels: []string{"ctx:b"}}
+	todo := IssueState{ID: "todo", Kind: "todo"}
+	epic := IssueState{ID: "epic", Kind: "epic", Labels: []string{"ctx:a", "ctx:b"}}
+
+	if err := ValidateTodoResult(todo, projectA); err != nil {
+		t.Fatalf("valid todo result: %v", err)
+	}
+	if err := ValidateTodoResult(projectA, projectB); err == nil {
+		t.Fatal("project source accepted as todo result")
+	}
+	if err := ValidateCorrelationOwner(todo); err == nil {
+		t.Fatal("todo accepted as direct correlation owner")
+	}
+	if err := ValidateCorrelationOwner(projectA); err != nil {
+		t.Fatalf("project correlation owner: %v", err)
+	}
+	if err := ValidateEpicChild(epic, projectB); err != nil {
+		t.Fatalf("valid epic child: %v", err)
+	}
+	if err := ValidateEpicChild(epic, IssueState{ID: "outside", Kind: "task", Labels: []string{"ctx:c"}}); err == nil {
+		t.Fatal("outside-context epic child accepted")
+	}
+	if err := ValidateEpicChild(projectA, todo); err != nil {
+		t.Fatalf("non-epic behavior was constrained: %v", err)
+	}
+	if err := ValidateSupersession(IssueState{ID: "new", Kind: "task"}, projectA); err != nil {
+		t.Fatalf("valid supersession: %v", err)
+	}
+	if err := ValidateSupersession(IssueState{ID: "new", Kind: "bug"}, projectA); err == nil {
+		t.Fatal("cross-kind supersession accepted")
 	}
 }
 
