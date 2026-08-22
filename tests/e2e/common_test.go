@@ -17,6 +17,8 @@ import (
 )
 
 var bvBinaryPath string
+var wbdBinaryPath string
+var wbvBinaryPath string
 var bvBinaryDir string
 var e2eHomeDir string
 
@@ -41,9 +43,9 @@ func TestMain(m *testing.M) {
 	os.Setenv("HOME", homeDir)
 	os.Setenv("XDG_CONFIG_HOME", filepath.Join(homeDir, ".config"))
 
-	// Build the binary once for all tests
-	if err := buildBvOnce(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to build bv binary: %v\n", err)
+	// Build the public clients once in test-owned temporary space.
+	if err := buildClientBinariesOnce(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to build client binaries: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -122,18 +124,12 @@ func detectScriptTUICapability(bvPath string) (bool, string) {
 	return true, ""
 }
 
-func buildBvOnce() error {
+func buildClientBinariesOnce() error {
 	tempDir, err := os.MkdirTemp("", "bv-e2e-build-*")
 	if err != nil {
 		return err
 	}
 	bvBinaryDir = tempDir
-
-	binName := "bv"
-	if runtime.GOOS == "windows" {
-		binName += ".exe"
-	}
-	binPath := filepath.Join(tempDir, binName)
 
 	// Determine project root (../../) relative to this file
 	// We assume tests are run from project root or package dir.
@@ -141,12 +137,23 @@ func buildBvOnce() error {
 	// Actually `go test` sets CWD to the package directory.
 	// So `../../` is correct for `tests/e2e`.
 
-	cmd := exec.Command("go", "build", "-o", binPath, "../../cmd/bv")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("go build failed: %v\n%s", err, out)
+	paths := map[string]*string{
+		"bv":  &bvBinaryPath,
+		"wbd": &wbdBinaryPath,
+		"wbv": &wbvBinaryPath,
 	}
-
-	bvBinaryPath = binPath
+	for name, destination := range paths {
+		binName := name
+		if runtime.GOOS == "windows" {
+			binName += ".exe"
+		}
+		binPath := filepath.Join(tempDir, binName)
+		cmd := exec.Command("go", "build", "-o", binPath, "../../cmd/"+name)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("go build %s failed: %v\n%s", name, err, out)
+		}
+		*destination = binPath
+	}
 	return nil
 }
 

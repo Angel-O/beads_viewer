@@ -107,9 +107,10 @@ func TestGetTypeIcon(t *testing.T) {
 	}{
 		{"bug", "🐛", theme.Bug},
 		{"feature", "✨", theme.Feature},
-		{"task", "📋", theme.Task},
+		{"task", "🔧", theme.Task},
 		{"epic", "🚀", theme.Epic}, // Changed from 🏔️ - variation selector caused width issues
 		{"chore", "🧹", theme.Chore},
+		{"todo", "📝", theme.Task},
 		{"unknown", "•", theme.Subtext},
 	}
 
@@ -117,6 +118,9 @@ func TestGetTypeIcon(t *testing.T) {
 		icon, col := theme.GetTypeIcon(tt.typ)
 		if icon != tt.wantIcon {
 			t.Errorf("GetTypeIcon(%q) icon = %q, want %q", tt.typ, icon, tt.wantIcon)
+		}
+		if tt.typ == "todo" && lipgloss.Width(icon) != 2 {
+			t.Errorf("GetTypeIcon(%q) width = %d, want 2", tt.typ, lipgloss.Width(icon))
 		}
 		if col != tt.wantCol {
 			t.Errorf("GetTypeIcon(%q) color = %v, want %v", tt.typ, col, tt.wantCol)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,53 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	flag "github.com/spf13/pflag"
 )
+
+var bvSubprocessTestHome string
+var bvAmbientHome string
+
+func TestMain(m *testing.M) {
+	bvAmbientHome = os.Getenv("HOME")
+	home, err := os.MkdirTemp("", "bv-cmd-test-home-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create isolated cmd/bv test HOME: %v\n", err)
+		os.Exit(1)
+	}
+	bvSubprocessTestHome = home
+	for name, value := range map[string]string{
+		"HOME":               home,
+		"XDG_CONFIG_HOME":    filepath.Join(home, ".config"),
+		"BV_NO_BROWSER":      "1",
+		"BV_TEST_MODE":       "1",
+		"BV_NO_SAVED_CONFIG": "1",
+	} {
+		if err := os.Setenv(name, value); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s for cmd/bv tests: %v\n", name, err)
+			_ = os.RemoveAll(home)
+			os.Exit(1)
+		}
+	}
+
+	code := m.Run()
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
+func TestSubprocessHarnessUsesIsolatedHome(t *testing.T) {
+	if bvSubprocessTestHome == "" || os.Getenv("HOME") != bvSubprocessTestHome {
+		t.Fatalf("cmd/bv test HOME is not isolated: %q", os.Getenv("HOME"))
+	}
+	if bvAmbientHome != "" && bvSubprocessTestHome == bvAmbientHome {
+		t.Fatal("cmd/bv tests retained the ambient HOME")
+	}
+	if got, want := os.Getenv("XDG_CONFIG_HOME"), filepath.Join(bvSubprocessTestHome, ".config"); got != want {
+		t.Fatalf("XDG_CONFIG_HOME = %q, want %q", got, want)
+	}
+	for _, name := range []string{"BV_NO_BROWSER", "BV_TEST_MODE", "BV_NO_SAVED_CONFIG"} {
+		if os.Getenv(name) != "1" {
+			t.Errorf("%s is not enabled for cmd/bv subprocesses", name)
+		}
+	}
+}
 
 func runCommandWithTimeout(t *testing.T, dir, exe string, args ...string) (string, string, error) {
 	t.Helper()

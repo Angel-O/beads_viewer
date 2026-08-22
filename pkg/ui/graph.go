@@ -81,6 +81,7 @@ func (g *GraphModel) SetSnapshot(snapshot *DataSnapshot) {
 		g.blockers = layout.Blockers
 		g.dependents = layout.Dependents
 		g.sortedIDs = layout.SortedIDs
+		g.filterPresentationNodes()
 
 		g.rankPageRank = layout.RankPageRank
 		g.rankBetweenness = layout.RankBetweenness
@@ -132,6 +133,7 @@ func (g *GraphModel) SetProjectedIssues(issues []model.Issue, issueMap map[strin
 	g.rebuildGraph()
 	if issueMap != nil {
 		g.issueMap = issueMap
+		g.filterPresentationNodes()
 	}
 
 	// Restore selection
@@ -178,6 +180,7 @@ func (g *GraphModel) rebuildGraph() {
 			}
 		}
 	}
+	g.filterPresentationNodes()
 
 	// Compute rankings for all metrics
 	g.computeRankings()
@@ -199,6 +202,36 @@ func (g *GraphModel) rebuildGraph() {
 	if g.selectedIdx >= len(g.sortedIDs) {
 		g.selectedIdx = 0
 	}
+}
+
+// filterPresentationNodes omits capture-only todos without changing canonical issues.
+func (g *GraphModel) filterPresentationNodes() {
+	filteredIDs := make([]string, 0, len(g.sortedIDs))
+	for _, id := range g.sortedIDs {
+		if issue := g.issueMap[id]; issue != nil && issue.IssueType == "todo" {
+			continue
+		}
+		filteredIDs = append(filteredIDs, id)
+	}
+	g.sortedIDs = filteredIDs
+	g.blockers = g.filterPresentationRelationships(g.blockers)
+	g.dependents = g.filterPresentationRelationships(g.dependents)
+}
+
+func (g *GraphModel) filterPresentationRelationships(relationships map[string][]string) map[string][]string {
+	filtered := make(map[string][]string, len(relationships))
+	for id, relatedIDs := range relationships {
+		if issue := g.issueMap[id]; issue != nil && issue.IssueType == "todo" {
+			continue
+		}
+		for _, relatedID := range relatedIDs {
+			if issue := g.issueMap[relatedID]; issue != nil && issue.IssueType == "todo" {
+				continue
+			}
+			filtered[id] = append(filtered[id], relatedID)
+		}
+	}
+	return filtered
 }
 
 // computeRankings precomputes rankings for all metrics
@@ -302,12 +335,16 @@ func (g *GraphModel) View(width, height int) string {
 	t := g.theme
 
 	if len(g.sortedIDs) == 0 || g.selectedIdx < 0 || g.selectedIdx >= len(g.sortedIDs) {
+		emptyMessage := "No issues to display"
+		if len(g.issues) > 0 {
+			emptyMessage = "No issues eligible for Graph View"
+		}
 		return t.Renderer.NewStyle().
 			Width(width).
 			Height(height).
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(t.Secondary).
-			Render("No issues to display")
+			Render(emptyMessage)
 	}
 
 	selectedID := g.sortedIDs[g.selectedIdx]

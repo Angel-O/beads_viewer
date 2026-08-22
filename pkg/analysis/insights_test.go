@@ -133,6 +133,31 @@ func TestGenerateInsights_WithData(t *testing.T) {
 	}
 }
 
+func TestGenerateInsightsForCandidatesFiltersBeforeLimit(t *testing.T) {
+	stats := NewGraphStatsForTest(
+		map[string]float64{"hidden": 1, "visible": 0.5},
+		map[string]float64{"hidden": 1, "visible": 0.5},
+		map[string]float64{"hidden": 1, "visible": 0.5},
+		map[string]float64{"hidden": 1, "visible": 0.5},
+		map[string]float64{"hidden": 1, "visible": 0.5},
+		map[string]float64{"hidden": 1, "visible": 0.5},
+		map[string]int{"hidden": 0, "visible": 0}, nil, nil, 0, nil,
+	)
+
+	insights := stats.GenerateInsightsForCandidates(1, func(id string) bool { return id == "visible" })
+	for name, items := range map[string][]InsightItem{
+		"bottlenecks": insights.Bottlenecks,
+		"keystones":   insights.Keystones,
+		"influencers": insights.Influencers,
+		"hubs":        insights.Hubs,
+		"authorities": insights.Authorities,
+	} {
+		if len(items) != 1 || items[0].ID != "visible" {
+			t.Fatalf("%s = %#v", name, items)
+		}
+	}
+}
+
 func TestGenerateInsights_ZeroLimit(t *testing.T) {
 	stats := NewGraphStatsForTest(
 		map[string]float64{"A": 0.3, "B": 0.5}, // pageRank

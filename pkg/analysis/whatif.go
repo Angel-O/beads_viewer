@@ -118,11 +118,21 @@ type EnhancedPriorityRecommendation struct {
 
 // GenerateEnhancedRecommendations generates recommendations with what-if deltas
 func (a *Analyzer) GenerateEnhancedRecommendations() []EnhancedPriorityRecommendation {
-	return a.GenerateEnhancedRecommendationsWithThresholds(DefaultThresholds())
+	return a.GenerateEnhancedRecommendationsForCandidates(nil)
+}
+
+// GenerateEnhancedRecommendationsForCandidates applies candidate admission
+// after global scoring and ranking but before the existing ten-item cap.
+func (a *Analyzer) GenerateEnhancedRecommendationsForCandidates(predicate CandidatePredicate) []EnhancedPriorityRecommendation {
+	return a.generateEnhancedRecommendationsWithThresholds(DefaultThresholds(), predicate)
 }
 
 // GenerateEnhancedRecommendationsWithThresholds generates enhanced recommendations
 func (a *Analyzer) GenerateEnhancedRecommendationsWithThresholds(thresholds RecommendationThresholds) []EnhancedPriorityRecommendation {
+	return a.generateEnhancedRecommendationsWithThresholds(thresholds, nil)
+}
+
+func (a *Analyzer) generateEnhancedRecommendationsWithThresholds(thresholds RecommendationThresholds, predicate CandidatePredicate) []EnhancedPriorityRecommendation {
 	scores := a.ComputeImpactScores()
 	if len(scores) == 0 {
 		return nil
@@ -197,6 +207,15 @@ func (a *Analyzer) GenerateEnhancedRecommendationsWithThresholds(thresholds Reco
 	sort.Slice(enhanced, func(i, j int) bool {
 		return enhanced[i].ImpactScore > enhanced[j].ImpactScore
 	})
+	if predicate != nil {
+		filtered := enhanced[:0]
+		for _, recommendation := range enhanced {
+			if predicate(recommendation.IssueID) {
+				filtered = append(filtered, recommendation)
+			}
+		}
+		enhanced = filtered
+	}
 
 	// Cap at 10 items
 	if len(enhanced) > 10 {
@@ -224,6 +243,11 @@ type WhatIfEntry struct {
 
 // TopWhatIfDeltas returns the top N issues with highest downstream impact (bv-83)
 func (a *Analyzer) TopWhatIfDeltas(n int) []WhatIfEntry {
+	return a.TopWhatIfDeltasForCandidates(n, nil)
+}
+
+// TopWhatIfDeltasForCandidates applies candidate admission before truncation.
+func (a *Analyzer) TopWhatIfDeltasForCandidates(n int, predicate CandidatePredicate) []WhatIfEntry {
 	if n <= 0 {
 		n = 10
 	}
@@ -232,6 +256,9 @@ func (a *Analyzer) TopWhatIfDeltas(n int) []WhatIfEntry {
 
 	for id, issue := range a.issueMap {
 		if isClosedLikeStatus(issue.Status) {
+			continue
+		}
+		if !candidateAllowed(predicate, id) {
 			continue
 		}
 		delta := a.computeWhatIfDelta(id)

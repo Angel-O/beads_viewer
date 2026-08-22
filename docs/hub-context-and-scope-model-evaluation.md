@@ -56,7 +56,7 @@ Every coherent candidate was checked against these gates before scoring.
 | G-05 | A todo is a durable Beads-native identity, including at zero contexts. | HCS-INV-005, HCS-LIF-001 |
 | G-06 | Replacement preserves the original identity, history, and correlations. | HCS-LIF-003 through HCS-LIF-006, HCS-COR-006 |
 | G-07 | Todo, replacement, and epic continuity is explicit and auditable rather than inferred from text or shared membership. | HCS-LIF-002, HCS-LIF-007, HCS-LIF-008 |
-| G-08 | Scope supports current, explicit registered, contextless, intersection, and de-duplicated selection semantics without assigning deferred aggregate or mixed-scope meanings. | HCS-SCP-001 through HCS-SCP-005; HCS-BND-302, HCS-BND-303 |
+| G-08 | Scope supports current, explicit registered, independently composable contextless, de-duplicated union, and selected aggregate normalization semantics. | HCS-SCP-001 through HCS-SCP-005; HCS-BND-302, HCS-BND-303 |
 | G-09 | Scope projection cannot change dependency truth or readiness. | HCS-INV-007, HCS-INV-008 |
 | G-10 | Directly correlatable beads may own zero or more commit correlations and use immutable context membership as their repository boundary; todos are never directly correlatable. | HCS-COR-001 through HCS-COR-003, HCS-COR-005, HCS-COR-007 |
 | G-11 | Rejected creation and correlation attempts have no persisted side effect. | HCS-CRE-008, HCS-CRE-009, HCS-COR-004 |
@@ -220,34 +220,35 @@ the epic's context set are accepted model decisions.
 
 ### Scope Algebra
 
-A scope selector is one of `AllItems`, `SelectedContexts(K)`, or `Contextless`,
-where `K` is a non-empty set of registered context identities. Under
-`SelectedContexts`, an issue matches exactly when:
+A scope selector is one of `AllItems`, `SelectedContexts(K, includeContextless)`,
+or `Contextless`, where `K` is a non-empty set of registered context identities.
+Under `SelectedContexts`, an issue matches exactly when:
 
 ```text
-C(i) intersects K
+C(i) intersects K OR (includeContextless AND C(i) is empty)
 ```
 
 Under `Contextless`, an issue matches exactly when `C(i)` is empty. Set
-semantics ensure each matching issue appears at most once. This phase does not
-define a selector that composes `SelectedContexts` and `Contextless`.
+semantics ensure each matching issue appears at most once across the composed
+union.
 
 | Selection | Semantic value |
 |---|---|
 | Current-context default | `SelectedContexts({current})` |
 | One or more explicit contexts | `SelectedContexts(K)` |
 | Contextless only | `Contextless` |
-| Mixed registered and contextless | No selector selected; remains HCS-BND-303 |
-| Empty interface selection | Not a distinct model selector in this phase; current Viewer normalization maps it to `AllItems` |
-| All registered contexts | Whether this is distinct from `AllItems` remains HCS-BND-302 |
+| Mixed registered and contextless | `SelectedContexts(K, true)`; union of intersecting and zero-membership items |
+| Empty interface selection | `AllItems` by Viewer normalization |
+| All registered contexts | `SelectedContexts(K, false)`; does not include contextless or unregistered-context items |
+| All registered contexts plus Contextless | `AllItems` |
 | All items | `AllItems`; includes every issue identity once without membership matching |
 
-The selector algebra has no empty-selection value. Current Viewer behavior
-normalizes an empty selection and a selection containing the complete catalog
-to `AllItems`; this model preserves that behavior while leaving the final
-aggregate contract in HCS-BND-302. Mixed registered/contextless scope and
-missing-current behavior likewise remain HCS-BND-303 and HCS-BND-304 rather
-than being selected here.
+The selector algebra has no empty-selection value, so the interface normalizes
+an empty selection to `AllItems`. All registered contexts plus Contextless also
+normalizes to `AllItems`; all registered contexts without Contextless remains an
+explicit selected-context scope. HCS-BND-302 and HCS-BND-303 are resolved by
+these aggregate and mixed-union semantics. Missing-current behavior remains
+HCS-BND-304.
 
 Scope is applied only to the candidate projection. Dependency resolution,
 readiness, and graph metrics use the canonical full Hub issue graph first. A
@@ -344,9 +345,9 @@ writer-coverage evidence stated above.
 | HCS-LIF-008 | Conditional | `coordinates` explicitly exposes epic coordination across its context set. | R:HCS-LIF-008; A-003 |
 | HCS-SCP-001 | Covered | Default selector is the singleton registered current context. | R:HCS-SCP-001 |
 | HCS-SCP-002 | Covered | Explicit registered selector replaces the default selector. | R:HCS-SCP-002 |
-| HCS-SCP-003 | Covered | The dedicated `Contextless` selector includes zero-membership items. | R:HCS-SCP-003 |
-| HCS-SCP-004 | Covered | Matching uses non-empty set intersection. | R:HCS-SCP-004; E-005 |
-| HCS-SCP-005 | Covered | Set projection returns each issue identity at most once. | R:HCS-SCP-005; E-005 |
+| HCS-SCP-003 | Covered | Contextless is independently selectable alone or with registered contexts. | R:HCS-SCP-003 |
+| HCS-SCP-004 | Covered | Matching is the union of selected-context intersection and optional zero-membership items; all contexts plus Contextless normalizes to `AllItems`, while all contexts alone remain explicit. | R:HCS-SCP-004; E-005 |
+| HCS-SCP-005 | Covered | Set projection returns each issue identity at most once across the union. | R:HCS-SCP-005; E-005 |
 | HCS-COR-001 | Covered | External ledger accepts multiple optional immutable full-SHA records for directly correlatable beads. | R:HCS-COR-001; E-007 |
 | HCS-COR-002 | Covered | A directly correlatable bead's eligible repository set is exactly its immutable context set. | R:HCS-COR-002 |
 | HCS-COR-003 | Covered | Validation of the proposed association rejects an ineligible append. | R:HCS-COR-003; G-10 |
@@ -373,9 +374,9 @@ claimed as operationally enforceable.
 | HCS-BND-203 | Constrained | Correction selects a terminal supersession outcome and preserves all original facts; exact status, audit fields, and transaction contract are deferred. |
 | HCS-BND-204 | Resolved at semantic level | `superseded-by` is the formal directional association; physical encoding remains deferred. |
 | HCS-BND-205 | Resolved at semantic level | `coordinates` is explicit, and each coordinated ordinary work context belongs to the epic's set. Physical relationship encoding and presentation are deferred. |
-| HCS-BND-301 | Constrained/deferred | Current, explicit registered, and contextless scopes have exact semantic values; interface exposure is deferred. Mixed and aggregate semantics remain separate boundaries. |
-| HCS-BND-302 | Unresolved | The internal algebra distinguishes `AllItems` from selected contexts, but aggregate interface meanings remain deferred. Current Viewer empty/full-catalog normalization to `AllItems` is preserved. |
-| HCS-BND-303 | Unresolved | Contextless selection is supported; whether it composes with registered-context selection remains deferred. |
+| HCS-BND-301 | Resolved | Registered contexts and Contextless are independent picker selectors; robot metadata carries contexts plus `include_contextless`. |
+| HCS-BND-302 | Resolved | Empty selection and all registered contexts plus Contextless normalize to `AllItems`; all registered contexts alone remain explicit. |
+| HCS-BND-303 | Resolved | Contextless composes independently with registered-context selection as a de-duplicated union. |
 | HCS-BND-304 | Unresolved for reads | Creation follows HCS-CRE-009. Missing-current read behavior remains requirements and interface work. |
 | HCS-BND-305 | Constrained/deferred | Global analysis before projection is authoritative; hidden-edge and hierarchy presentation is deferred. |
 | HCS-BND-401 | Constrained/deferred | Rejection is side-effect free; exact error and machine-readable shape are deferred. |
@@ -439,10 +440,10 @@ claimed as operationally enforceable.
 | Field | Decision |
 |---|---|
 | Accepted model | MODEL-A: kind-indexed immutable Beads context sets, atomic Hub admission, dedicated lifecycle predicates, explicit scope algebra over canonical global graph truth, monotonic delta-validated external correlations, exact client compatibility profile, and Hub-only semantics |
-| Why selected | Highest requirements fidelity and authority coherence without assigning deferred aggregate-scope or existing-ledger policy |
+| Why selected | Highest requirements fidelity and authority coherence while preserving the selected aggregate and mixed-scope semantics without assigning existing-ledger policy |
 | Rejected nearest alternative | MODEL-B globally gates valid new correlations on unrelated historical integrity; MODEL-C additionally introduces a generic lifecycle interpretation layer |
 | Activation condition | A-001 through A-004 and G-SCP-001, G-CMP-001, G-CMP-002, G-ENF-001, and G-COR-001 require evidence; especially the exact supported-client profile |
-| Review disposition | Dedicated lifecycle predicates, the epic context-consistency rule, and monotonic delta validation for correlation writes are accepted |
+| Review disposition | Dedicated lifecycle predicates, the epic context-consistency rule, composable Hub scope union and aggregate normalization, and monotonic delta validation for correlation writes are accepted |
 | Evaluation outcome | MODEL-A is accepted as the semantic model for later contract work |
 | Not authorized by acceptance | Production changes, command or UI design, migration, MVP selection, implementation sequencing, or task creation |
 

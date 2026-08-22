@@ -848,6 +848,7 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		}
 		nameWidth = max(nameWidth, lipgloss.Width(repository.Name))
 	}
+	nameWidth = max(nameWidth, lipgloss.Width(contextlessRepositoryID))
 	nameWidth = min(nameWidth, nameWidthCap)
 
 	extraWidth := 0
@@ -2019,6 +2020,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 			}
 		}
+
+	case HubSourceRefreshCompleteMsg:
+		if m.historyMode == correlation.HistoryModeExternal && len(m.issues) > 0 {
+			m.historyGeneration++
+			m.historyLoading = true
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+		}
+		if m.backgroundWorker != nil {
+			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+		}
+		return m, tea.Batch(cmds...)
 
 	case AgentFileCheckMsg:
 		// AGENTS.md integration check (bv-i8dk)
@@ -5038,10 +5050,20 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 
 func (m Model) applyRepositoryPickerSelection() Model {
 	selected := m.repoPicker.SelectedRepos()
-	if m.hubRepositoryMode && m.repoPicker.ContextlessSelected() {
-		m.statusMsg = "Repository scope: contextless"
+	if m.hubRepositoryMode {
+		includeContextless := m.repoPicker.ContextlessSelected()
+		switch {
+		case len(selected) == 0 && includeContextless:
+			m.statusMsg = "Repository scope: contextless"
+		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeContextless:
+			m.statusMsg = "Repository scope: all"
+		case includeContextless:
+			m.statusMsg = fmt.Sprintf("Repository scope: %s, Contextless", strings.Join(m.repositoryScopeNames(selected), ", "))
+		default:
+			m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+		}
 		m.statusIsError = false
-		_ = m.SetHubScope(model.NewContextlessHubScope())
+		m.setHubRepositoryScope(selected, includeContextless)
 		m.showRepoPicker = false
 		m.focused = focusList
 		return m
@@ -6478,6 +6500,13 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 	}
 	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
 	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
+	if m.hubRepositoryMode && m.hubScope.IncludeContextless {
+		compact += " + CONTEXTLESS"
+		if label != "" {
+			label += ", "
+		}
+		label += "Contextless"
+	}
 	if len(m.repositoryCatalog) == 0 && m.workspaceSummary != "" {
 		label = m.workspaceSummary
 	}
@@ -8002,7 +8031,7 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation())
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), nil)
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && len(hubContextNames(item, m.repositoryCatalog)) == 1 && hubContextNames(item, m.repositoryCatalog)[0] == "contextless" {
@@ -8251,11 +8280,13 @@ func GetTypeIconMD(t string) string {
 	case "feature":
 		return "✨"
 	case "task":
-		return "📋"
+		return "🔧"
 	case "epic":
 		return "🚀" // Use rocket instead of mountain - VS-16 variation selector causes width issues
 	case "chore":
 		return "🧹"
+	case "todo":
+		return "📝"
 	default:
 		return "•"
 	}

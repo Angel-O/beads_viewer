@@ -4,16 +4,17 @@
 
 | Field | Value |
 |---|---|
-| Status | Approved; mandatory upstream P0 prerequisite identified |
+| Status | Implemented on repository-local integration lanes; final release evidence complete |
 | Inputs | Accepted requirements, MODEL-A, and MVP definition |
 | Target | Hub mode through `wbd` and `wbv`; local mode remains unchanged |
-| Authorization | Planning only; no production implementation is authorized by this document |
+| Authorization | Records the implemented contract and final integration scope |
 
 ## Delivery Contract
 
-The implementation must deliver all MVP workflows together. Partial support for
-mutable membership, lossy todo round trips, scoped-only readiness, or
-non-atomic lifecycle transitions is not releasable.
+The implementation delivers the MVP through repository-local wrapper policy,
+canonical Viewer projection, and the existing external correlation ledger.
+Mutable membership, lossy todo handling, and scoped-only readiness remain
+invalid outcomes.
 
 Use existing Beads structures:
 
@@ -26,26 +27,20 @@ Use existing Beads structures:
 | Correction | Replacement `supersedes` original; original closes |
 | Source history | Existing external correlation ledger |
 
-## Current Baseline
+## Implemented Baseline
 
-- `wbd create` always registers the current repository and injects one context.
-- `wbd` reserves `ctx:` labels, but `wbd update --type` can currently change an
-  existing issue's kind without revalidating whether its context count remains
-  valid for the new kind.
-- `wbd` has no explicit target set, contextless creation, todo type, or composite
-  lifecycle mutation.
-- Native `parent-child`, `discovered-from`, and `supersedes` are already accepted
-  dependency types.
-- TUI scope already supports exact registered-context intersection and preserves
-  global blocker truth in core derived views.
-- Empty and full-catalog TUI selections currently normalize to all items.
-- Contextless has no distinct selector.
-- Robot `--repo` filtering occurs before analysis and must not be reused for Hub
-  scope because it can change dependency truth.
-- Correlation append is already atomic and delta-validated, but it does not
-  reject todos.
-- Viewer issue data does not currently expose close reason or dedicated Hub
-  lifecycle interpretations.
+- `pkg/hub` owns kind, cardinality, registration, immutable membership, and
+  lifecycle endpoint policy.
+- `wbd` supports current, explicit, and intentional contextless creation,
+  durable todo results, epic-child validation, replacement correction,
+  correlation admission, and read-only compatibility findings.
+- `wbv` resolves current, explicit, contextless, and all-items Hub robot scope
+  without reusing legacy `--repo` filtering.
+- `bv` analyzes the canonical Hub graph before candidate projection, preserves
+  one canonical data hash, and emits deterministic boundary evidence where a
+  scoped result references a hidden endpoint.
+- Local mode retains its existing schemas and does not acquire Hub scope or
+  boundary fields.
 
 ## Architecture
 
@@ -73,27 +68,20 @@ Keep `wbd` as the only supported Hub mutation entry point. Enumerate every
 exposed writer and route membership- or lifecycle-sensitive operations through
 the policy before invoking Beads.
 
-Simple writes may continue through one `bd` subprocess. Composite operations
-must use one authoritative Beads transaction or an upstream primitive that is
-demonstrably atomic. Process-level locking plus compensating close/delete is not
-an acceptable substitute because it can expose partial durable state.
+Simple writes continue through one `bd` subprocess. Todo-result creation uses
+the installed client's graph-create primitive so the work and
+`discovered-from` relation are one graph mutation. Placement correction is an
+ordered wrapper-local operation because the installed public client cannot
+combine graph creation and closing an existing issue in one transaction. No
+upstream modification or client version gate is introduced.
 
-Beads v1.1.0 `create --graph` is sufficient for atomic todo-result creation: a
-single-node graph can create the work, labels, and `discovered-from` edge to an
-existing todo in one `RunInTransaction` call. It is not sufficient for
-correction because graph apply cannot close an existing issue. `bd batch` can
-close and add edges atomically, but its generated create ID cannot be referenced
-by later operations. The existing `bd supersede` command is also unsuitable: it
-writes the edge and status separately, stores original -> replacement rather
-than the accepted replacement -> original direction, and does not preserve the
-required close reason.
-
-The mandatory P0 prerequisite is a narrow extension to the graph-apply plan:
-accept existing-issue close operations with an ID and reason, and execute them
-through `Transaction.CloseIssue` in the same transaction as node and edge
-creation. Existing graph edge references already express replacement ->
-original and all copied blocking edges. Hub implementation must require a Beads
-client version containing this extension before exposing correction.
+Correction therefore has an explicit partial-failure boundary: prevalidation
+finishes before mutation; graph-create persists the replacement,
+replacement-to-original `supersedes`, and applicable open `blocks` continuity;
+the wrapper then force-closes the original with the exact reason `Superseded by
+<replacement-id>`. The command reports success only after that close. On the
+rare close failure, it returns an error that names the persisted replacement ID
+so an operator can inspect and complete the outcome without guessing.
 
 ### Canonical Read Model
 
@@ -159,15 +147,16 @@ do not add multi-parent or Hub-specific relationship storage.
 
 ### Correction
 
-Add one dedicated `wbd replace` workflow because generic create/dep/close calls
-cannot truthfully report an atomic correction. It accepts the original ID, new
-issue fields, and a complete valid target set, then atomically:
+The dedicated `wbd replace` workflow accepts the original ID, new issue fields,
+and a complete valid target set, then performs this ordered sequence:
 
-1. creates the replacement;
-2. stores replacement `supersedes` original;
-3. adds equivalent still-applicable blocking relationships so readiness is not
-   released by identity correction; and
-4. closes the original with a stable reason naming the replacement.
+1. Prevalidate the original, replacement kind, complete target set, and all
+   relationships needed for continuity.
+2. Graph-create the distinct replacement, replacement-to-original
+   `supersedes`, and applicable open incoming and outgoing `blocks` continuity.
+3. Force-close the original with `Superseded by <replacement-id>`.
+4. Report success only after close; if close fails, report the persisted
+   replacement ID explicitly.
 
 The original's membership, relationships, history, and correlations remain
 unchanged. Generic `dep add --type supersedes` is removed from the supported Hub
@@ -189,13 +178,13 @@ not semantically revalidated during append.
 Replace the implicit `nil/map` Hub scope with an explicit internal variant:
 
 - `AllItems`;
-- `SelectedContexts(non-empty set)`; or
+- `SelectedContexts(non-empty set, include-contextless)`; or
 - `Contextless`.
 
-Keep the current UI normalization of empty/full-catalog selection to `AllItems`.
-Do not add mixed context-plus-contextless selection. Contextless means no `ctx:`
-labels at all; an unregistered `ctx:` label is invalid membership, not
-contextless membership.
+Normalize empty selection and full-catalog plus contextless selection to
+`AllItems`. Registered contexts and contextless membership otherwise compose as
+an independent union. Contextless means no `ctx:` labels at all; an unregistered
+`ctx:` label is invalid membership, not contextless membership.
 
 If current context is unavailable or unregistered, preserve the current
 all-items fallback. Explicit scope still replaces that fallback.
@@ -220,7 +209,8 @@ Add additive deterministic Hub fields without changing local-mode output:
 {
   "scope": {
     "mode": "all_items|contexts|contextless",
-    "contexts": []
+    "contexts": [],
+    "include_contextless": false
   }
 }
 ```
@@ -229,8 +219,8 @@ Add additive deterministic Hub fields without changing local-mode output:
 appears once, including contextless items. It is not an alias for selecting only
 all registered contexts.
 
-`wbv --hub` accepts repeatable explicit context scope or contextless scope and
-rejects their combination. It passes canonical Hub scope separately from legacy
+`wbv --hub` accepts repeatable explicit context scope and an independently
+composable contextless scope. It passes canonical Hub scope separately from legacy
 `--repo`; analysis runs globally and each robot result projects candidates only
 after metrics/readiness are computed. Existing robot relationship fields remain
 the primary contract. Where a current schema would otherwise hide a blocker,
@@ -240,38 +230,14 @@ references carry stable IDs, type, status, contexts, and in-scope state.
 
 ## Compatibility And Migration
 
-### Capability Gate Results
+### Installed-Client Contract
 
-The gate was executed against the exact upstream Beads v1.1.0 tag used by the
-supported Homebrew client. A checkout-only embedded-Dolt contract test created
-and updated a configured custom `todo`, exported it, imported it into a fresh
-store, reloaded it through a new client process, and exported it again.
-
-| Capability | Result | Evidence |
-|---|---|---|
-| Custom `todo` create and scalar update | Pass | `types.custom=todo`; title and priority survived reload |
-| Zero, one, and many `ctx:` labels | Pass | Contextless, one-context, and two-context todos survived exactly |
-| Unrelated labels | Pass | Each todo retained its non-context label through update and reload |
-| Native relationships | Pass | `discovered-from`, `parent-child`, and replacement -> original `supersedes` retained type, direction, and endpoints |
-| Close reason | Pass | The original remained closed with its replacement-specific reason |
-| Atomic todo-result creation | Pass | `create --graph` executes node and edge creation inside `RunInTransaction` |
-| Atomic correction through a public command | Fail | Storage can transact create/edge/close, but no v1.1.0 CLI command exposes that composition |
-| Passive local-mode custom-type loading | Pass | Loader validation accepts every non-empty issue type; existing model tests cover custom types |
-
-The round-trip contract test passed with:
-
-```text
-BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd \
-  -run '^TestHubCapabilityGateExportImportReload$' -count=1
-```
-
-Relevant v1.1.0 implementation evidence is in `cmd/bd/graph_apply.go`,
-`cmd/bd/batch.go`, `cmd/bd/duplicate.go`, `internal/storage/storage.go`, and
-`internal/storage/dolt/transaction.go`. The capability gate is complete: data
-round trips and todo-result atomicity are supported, while P0 precisely closes
-the correction boundary.
-
-Extend Hub bootstrap/configuration to require `todo` in Beads custom types.
+Hub bootstrap configures `todo` as a custom type and uses the installed
+supported `bd` for native issue, relationship, graph-create, close, and export
+behavior. Final E2E coverage builds `wbd`, `wbv`, and `bv` in test-owned
+temporary space and gives each scenario an isolated `HOME`, Hub store, config,
+ledger, and source repositories. It does not modify upstream Beads, inspect a
+user Hub, open a browser, or enforce a client version gate.
 
 An existing Hub store that lacks the required custom type fails todo admission
 with one precise remediation; it never aliases todo or creates partial data.
@@ -287,62 +253,59 @@ with one precise remediation; it never aliases todo or creates partial data.
 
 ## Work Breakdown
 
-| ID | Deliverable | Primary files | Depends on |
-|---|---|---|---|
-| P0 | Extend Beads graph apply with transactional existing-issue close operations and require the released client version | Upstream Beads `cmd/bd/graph_apply.go`, transaction/CLI tests; `wbd` client-version gate | None |
-| P1 | Implement pure Hub kind/context/lifecycle policy with table-driven tests | `pkg/hub` | P0 |
-| P2 | Extend `wbd` parsing and complete-state admission; remove type/context bypasses | `cmd/wbd/parser.go`, `cmd/wbd/app.go`, tests | P1 |
-| P3 | Implement atomic todo-result and correction workflows using graph apply and native relationships | `cmd/wbd`, lifecycle contract tests | P0, P1, P2 |
-| P4 | Enforce epic child context consistency through existing parent-child mutation | `cmd/wbd`, tests | P1, P2 |
-| P5 | Reject todo correlations and add stale-unrelated-record append coverage | `pkg/correlation`, `cmd/wbd`, E2E tests | P1, P2 |
-| P6 | Introduce explicit Hub scope variants and contextless projection over canonical analysis | `pkg/ui/repository_scope.go`, model/scope tests | P1 |
-| P7 | Preserve hidden hierarchy/lifecycle evidence across TUI detail, tree, and board | `pkg/ui`, focused view tests | P3, P4, P6 |
-| P8 | Add Hub robot scope inputs, post-analysis projection, and deterministic boundary references | `cmd/wbv`, `cmd/bv`, robot registry/tests | P6, P7 |
-| P9 | Add compatibility report, full round-trip/E2E matrix, docs, and local-mode regression suite | `cmd/wbd`, `cmd/wbv`, `pkg/correlation`, `tests/e2e`, docs | P2-P8 |
-
-Parallel execution after P0 and P1:
-
-- Writer track: P2 -> P3/P4/P5.
-- Read track: P6 -> P7 -> P8.
-- P9 joins both tracks and is the release gate.
+| Lane | Delivered behavior | Primary evidence |
+|---|---|---|
+| Domain policy | Kind, cardinality, membership, lifecycle, and correlation predicates | `pkg/hub`, focused tests |
+| Writer | Admission, todo result, epic child, ordered correction, lifecycle guards, compatibility report | `cmd/wbd`, focused tests |
+| Viewer | Explicit Hub scope variants and lifecycle/boundary presentation | `pkg/model`, `pkg/ui`, focused tests |
+| Robot | `wbv` routing plus canonical post-analysis `bv` projection | `cmd/wbv`, `cmd/bv`, focused tests |
+| Correlation | Repository-aware eligibility and todo rejection without append | `pkg/correlation`, `cmd/wbd`, E2E tests |
+| Integration | Real compiled clients, installed `bd`, isolated stores, local parity, compile-linked 37-requirement evidence matrix | `tests/e2e/hub_context_scope_e2e_test.go` |
+| Documentation | Public behavior and implemented correction boundary | this plan, `docs/external-history.md` |
 
 ## Verification
 
 Each task adds focused unit tests. The release gate runs:
 
 ```text
-go test ./cmd/wbd ./cmd/wbv ./pkg/hub ./pkg/correlation ./pkg/ui
-go test ./tests/e2e/...
+go test ./cmd/wbd ./cmd/wbv ./cmd/bv ./pkg/hub ./pkg/correlation ./pkg/ui
+go test ./tests/e2e -run 'TestHubContextScopeRequirementEvidence|TestRealHub'
+go test ./...
 go test ./... -race
 go build ./...
 go vet ./...
-gofmt -l .
+git ls-files -z '*.go' ':!:vendor/**' | xargs -0 gofmt -l
+git diff --check
 ```
 
 Required scenario coverage:
 
-- every valid and invalid kind/context cardinality;
-- omitted, explicit, and intentional contextless creation;
-- writer attempts to mutate type or reserved context labels;
-- todo result, manual close/reopen, and multiple resulting work items;
-- cross-context epic hierarchy and invalid outside-context child;
-- atomic correction, readiness preservation, and correlation attribution;
-- zero, one, and multiple eligible correlations; todo rejection;
-- current, explicit multi-context, contextless, and all-items scope;
-- hidden blockers/parents across list, board, tree, detail, history, and robot;
-- client export/import/reload and legacy local-mode parity; and
-- concurrent create/correction/correlation operations under race detection.
+- focused policy and parser permutations remain in package tests;
+- vertical creation covers omitted, explicit, contextless, multi-context, and
+  rejected no-write outcomes;
+- vertical lifecycle covers durable todo continuity, valid and invalid epic
+  children, and ordered correction with blocking and correlation continuity;
+- vertical robot reads cover current, explicit aggregate, contextless, and
+  all-items scope with one canonical hash, de-duplication, readiness, and hidden
+  blocker evidence;
+- vertical correlation covers eligible append plus todo and wrong-context
+  rejection without append;
+- deterministic compatibility findings are read-only; and
+- representative local `wbv` and direct `bv` output retains no Hub-only scope
+  or boundary fields.
+
+Broad concurrency stress, recovery, migration, repair, browser, upstream
+capability, and exhaustive cross-view matrices remain outside this lane.
 
 ## Rollout
 
-1. Land and release P0, then enforce that minimum client version in `wbd`.
-2. Land pure policy and writer admission before lifecycle or correlation changes.
-3. Land read scope independently behind Hub-mode routing, without changing
-   local-mode output.
-4. Enable lifecycle workflows only when composite mutation tests prove atomicity.
-5. Release only after P9 demonstrates the complete supported-client and
-   cross-surface contract.
+1. Keep the reviewed policy, writer, Viewer, correlation, and robot commits
+   unchanged except for integration defects demonstrated by real-client tests.
+2. Land the final E2E and documentation lane as focused repository-local commits.
+3. Run focused vertical tests, then the complete test, race, build, vet,
+   formatting, diagnostics, diff, and scanner gates.
+4. Release the combined branch only when those gates and the private-ID metadata
+   audit pass.
 
-No partial fallback is permitted. The validated round trips and atomic
-todo-result path may not be used to ship a partial MVP while atomic correction
-remains unavailable. P0 is a release prerequisite, not optional follow-up work.
+There is no upstream release dependency or client version gate. The documented
+ordered-correction partial-failure boundary is the implemented operator contract.

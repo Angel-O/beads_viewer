@@ -70,9 +70,10 @@ func TestRepositoryScopeHubExactMultiContextAndAllSemantics(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "a", "both", "none", "upper")
 
 	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true, "ctx:beta": true})
-	if m.RepositoryScope() != nil {
-		t.Fatalf("full selection must normalize to all, got %v", m.RepositoryScope())
+	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || scope.IncludeContextless {
+		t.Fatalf("full repository selection must exclude contextless, got %#v", scope)
 	}
+	requireIssueIDs(t, visibleIssueIDs(m), "a", "both")
 }
 
 func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
@@ -118,6 +119,26 @@ func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
 	if err := m.SetHubScope(unknown); err == nil {
 		t.Fatal("unregistered explicit context was accepted")
 	}
+}
+
+func TestHubScopeMixedContextAndContextlessIsUnionWithoutDuplicates(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "both", Title: "Both", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}},
+		{ID: "contextless", Title: "Contextless", Status: model.StatusOpen},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	scope, err := model.NewSelectedContextsAndContextlessHubScope([]string{"ctx:alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "both", "contextless")
 }
 
 func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
@@ -526,7 +547,7 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: model.RepositoryIdentityHubContext},
 	}
 
-	presentation := repositoryPresentationForIssue(issue, catalog, true)
+	presentation := repositoryPresentationForIssue(issue, catalog, true, nil)
 	if presentation.ID != "ctx:alpha" || presentation.Name != "teams/alpha/service" || presentation.Extra != 1 {
 		t.Fatalf("presentation = %+v", presentation)
 	}
@@ -556,6 +577,60 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 	if !containsAll(filterValue, "teams/alpha/service", "teams/zeta/service", "Ctx:upper", "myctx:keep") || strings.Contains(filterValue, "ctx:alpha") {
 		t.Fatalf("fuzzy display tokens = %q", filterValue)
 	}
+}
+
+func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testing.T) {
+	issue := model.Issue{
+		ID: "shared", Title: "Multi-context item", Status: model.StatusOpen,
+		Labels: []string{"ctx:repo-a", "ctx:repo-b"},
+	}
+	catalog := model.RepositoryCatalog{
+		{ID: "ctx:repo-a", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:repo-b", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
+	}
+	tests := []struct {
+		name     string
+		selected map[string]bool
+		want     string
+	}{
+		{name: "dotfiles only", selected: map[string]bool{"ctx:repo-b": true}, want: "dotfiles"},
+		{name: "beads viewer only", selected: map[string]bool{"ctx:repo-a": true}, want: "beads_viewer"},
+		{name: "both selected", selected: map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true}, want: "beads_viewer"},
+		{name: "all items fallback", want: "beads_viewer"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{issue}, nil, "")
+			m.hubConfigPath = "hub.yaml"
+			m.repositoryCatalog = catalog
+			m.SetRepositoryScope(tt.selected)
+			m.refreshRepositoryPresentation()
+
+			row := m.list.View()
+			if !strings.Contains(row, "["+tt.want+"]") || !strings.Contains(row, "+1") {
+				t.Fatalf("list row = %q, want [%s] +1", row, tt.want)
+			}
+			if strings.Contains(row, "[beads_viewer]") == (tt.want != "beads_viewer") {
+				t.Fatalf("list row used wrong primary repository: %q", row)
+			}
+		})
+	}
+
+	t.Run("display name tie uses ID", func(t *testing.T) {
+		presentation := repositoryPresentationForIssue(
+			model.Issue{Labels: []string{"ctx:repo-b", "ctx:repo-a"}},
+			model.RepositoryCatalog{
+				{ID: "ctx:repo-b", Name: "same", Kind: model.RepositoryIdentityHubContext},
+				{ID: "ctx:repo-a", Name: "same", Kind: model.RepositoryIdentityHubContext},
+			},
+			true,
+			map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true},
+		)
+		if presentation.ID != "ctx:repo-a" || presentation.Extra != 1 {
+			t.Fatalf("presentation = %+v, want ctx:repo-a with +1", presentation)
+		}
+	})
 }
 
 func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {
@@ -736,10 +811,10 @@ func TestRepositoryBadgeKeepsLocalFormatAndKeysHubColorByIdentity(t *testing.T) 
 	if GetRepoColor("ctx:alpha") == GetRepoColor("ctx:gamma") {
 		t.Fatal("test identities unexpectedly share a color")
 	}
-	if got := RenderRepositoryBadge("ctx:beads-viewer-c67191f28f", "beads_viewer"); !strings.Contains(got, "[beads_viewer]") {
+	if got := RenderRepositoryBadge("ctx:viewer", "beads_viewer"); !strings.Contains(got, "[beads_viewer]") {
 		t.Fatalf("Hub badge did not show full friendly name: %q", got)
 	}
-	if got := RenderRepositoryBadge("ctx:mcp-discovery-e7538468e4", "mcp-discovery"); !strings.Contains(got, "[mcp-discovery]") {
+	if got := RenderRepositoryBadge("ctx:discovery", "mcp-discovery"); !strings.Contains(got, "[mcp-discovery]") {
 		t.Fatalf("Hub badge did not show full mcp-discovery name: %q", got)
 	}
 	if got := RenderRepositoryBadgeCompact("ctx:long", "readable-repository-name", 10); got != "[readable-…]" {
@@ -751,11 +826,11 @@ func TestRepositoryBadgeKeepsLocalFormatAndKeysHubColorByIdentity(t *testing.T) 
 }
 
 func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
-	issue := model.Issue{ID: "global-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:beads-viewer-c67191f28f"}}
+	issue := model.Issue{ID: "issue-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = model.RepositoryCatalog{{
-		ID: "ctx:beads-viewer-c67191f28f", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext,
+		ID: "ctx:alpha", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext,
 	}}
 	m.refreshRepositoryPresentation()
 	row := m.list.View()
@@ -764,8 +839,22 @@ func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
 	}
 }
 
+func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
+	issue := model.Issue{ID: "todo-1", Title: "Inbox", Status: model.StatusOpen, IssueType: "todo"}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha")
+	m.refreshRepositoryPresentation()
+	if row := m.list.View(); !strings.Contains(row, "[no-context]") {
+		t.Fatalf("contextless list row missing repository badge: %q", row)
+	}
+	if detail := m.viewport.View(); !strings.Contains(detail, "Repositories:") || !strings.Contains(detail, "Contextless") {
+		t.Fatalf("contextless detail changed: %q", detail)
+	}
+}
+
 func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
-	issue := model.Issue{ID: "global-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
+	issue := model.Issue{ID: "issue-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = model.RepositoryCatalog{
@@ -775,7 +864,7 @@ func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
 	m.list.SetSize(50, 10)
 	m.refreshRepositoryPresentation()
 	row := m.list.View()
-	if !containsAll(row, "…", "+1", "global-7td") {
+	if !containsAll(row, "…", "+1", "issue-7td") {
 		t.Fatalf("narrow list row lost constrained badge metadata or ID: %q", row)
 	}
 }

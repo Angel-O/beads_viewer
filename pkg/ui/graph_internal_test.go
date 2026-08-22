@@ -1,8 +1,12 @@
 package ui
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 func TestSmartTruncateID(t *testing.T) {
@@ -44,5 +48,62 @@ func TestSmartTruncateID(t *testing.T) {
 				t.Logf("Input: %s, Max: %d, Got: %s", tt.id, tt.maxLen, got)
 			}
 		})
+	}
+}
+
+func TestGraphModelOmitsTodoNodes(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "capture", Title: "Captured note", IssueType: "todo"},
+		{ID: "work", Title: "Ordinary work", IssueType: model.TypeTask},
+	}
+
+	g := NewGraphModel(issues, nil, createTheme())
+
+	if g.TotalCount() != 1 {
+		t.Fatalf("TotalCount() = %d, want 1", g.TotalCount())
+	}
+	if g.SelectByID("capture") {
+		t.Fatal("todo issue should not be selectable in Graph View")
+	}
+	if view := g.View(100, 30); strings.Contains(view, "capture") {
+		t.Fatalf("Graph View rendered todo ID: %q", view)
+	}
+}
+
+func TestGraphModelRetainsIsolatedTask(t *testing.T) {
+	issues := []model.Issue{{ID: "standalone", Title: "Standalone task", IssueType: model.TypeTask}}
+
+	g := NewGraphModel(issues, nil, createTheme())
+
+	if g.TotalCount() != 1 {
+		t.Fatalf("TotalCount() = %d, want 1", g.TotalCount())
+	}
+	if selected := g.SelectedIssue(); selected == nil || selected.ID != "standalone" {
+		t.Fatalf("SelectedIssue() = %#v, want isolated task", selected)
+	}
+}
+
+func TestGraphModelTodoFilterDoesNotMutateCanonicalIssues(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "capture", Title: "Captured note", IssueType: "todo"},
+		{ID: "work", Title: "Ordinary work", IssueType: model.TypeTask},
+	}
+	want := append([]model.Issue(nil), issues...)
+
+	g := NewGraphModel(issues, nil, createTheme())
+
+	if !reflect.DeepEqual(issues, want) {
+		t.Fatalf("source issues mutated: got %#v, want %#v", issues, want)
+	}
+	if len(g.issues) != len(want) || g.issueMap["capture"] == nil {
+		t.Fatalf("canonical GraphModel issues were filtered: issues=%d todo=%#v", len(g.issues), g.issueMap["capture"])
+	}
+}
+
+func TestGraphModelOnlyTodosUsesEligibleEmptyState(t *testing.T) {
+	g := NewGraphModel([]model.Issue{{ID: "capture", IssueType: "todo"}}, nil, createTheme())
+
+	if view := g.View(80, 24); !strings.Contains(view, "No issues eligible for Graph View") {
+		t.Fatalf("unexpected empty state: %q", view)
 	}
 }

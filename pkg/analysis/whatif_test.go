@@ -302,6 +302,42 @@ func TestGenerateEnhancedRecommendations_CappedAt10(t *testing.T) {
 	}
 }
 
+func TestGenerateEnhancedRecommendationsFiltersBeforeCap(t *testing.T) {
+	now := time.Now()
+	issues := make([]model.Issue, 0, 40)
+	for i := 0; i < 20; i++ {
+		blockerID := "BLOCKER-" + string(rune('A'+i))
+		dependentID := "DEPENDENT-" + string(rune('A'+i))
+		issues = append(issues,
+			model.Issue{ID: blockerID, Title: blockerID, Status: model.StatusOpen, Priority: 2, CreatedAt: now.Add(-time.Duration(i) * time.Hour), UpdatedAt: now},
+			model.Issue{ID: dependentID, Title: dependentID, Status: model.StatusOpen, Priority: 2, CreatedAt: now, UpdatedAt: now, Dependencies: []*model.Dependency{{DependsOnID: blockerID, Type: model.DepBlocks}}},
+		)
+	}
+	analyzer := NewCachedAnalyzer(issues, nil)
+	global := analyzer.GenerateEnhancedRecommendations()
+	if len(global) != 10 {
+		t.Fatalf("global recommendations = %d, want 10", len(global))
+	}
+	globalIDs := make(map[string]bool, len(global))
+	for _, recommendation := range global {
+		globalIDs[recommendation.IssueID] = true
+	}
+
+	for _, issue := range issues {
+		if globalIDs[issue.ID] {
+			continue
+		}
+		scoped := analyzer.GenerateEnhancedRecommendationsForCandidates(func(id string) bool { return id == issue.ID })
+		if len(scoped) == 1 {
+			if scoped[0].IssueID != issue.ID {
+				t.Fatalf("scoped recommendation = %s, want %s", scoped[0].IssueID, issue.ID)
+			}
+			return
+		}
+	}
+	t.Fatal("no recommendation below the global cap was admitted by scope")
+}
+
 func TestGenerateEnhancedRecommendations_SortedByImpactScore(t *testing.T) {
 	now := time.Now()
 	issues := []model.Issue{

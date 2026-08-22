@@ -139,9 +139,9 @@ Boundary records contain no normative language.
 |---|---|---|---|---|---|---|---|---|
 | HCS-SCP-001 | Confirmed | A Hub read initiated with a registered current context SHALL default to that context's scope. | Given current A and no explicit scope, then the read uses A. | It cannot silently default to unrelated B. | `DV:User-Selected Discovery Direction/Read scope` | `D:Current Behavior/Scoped listing`; `DV:Current Viewer Presentation/default scope` | UC-10; OQ-10 | HCS-BND-301, HCS-BND-304 |
 | HCS-SCP-002 | Confirmed | A Hub read SHALL allow explicit selection of a registered context instead of the current-context default. | Given current A and registered B, when B is selected, then the read projects B. | Current A cannot override explicit B. | `DV:User-Selected Discovery Direction/Read scope` | `DV:Viewer Representation/catalog` | UC-10; OQ-06 | HCS-BND-301 |
-| HCS-SCP-003 | Confirmed | A Hub read SHALL allow contextless items to be selected as a scope. | Given contextless todo T, when contextless scope is selected, then T is included. | T cannot require assignment to a repository merely to become selectable. | `DV:User-Selected Discovery Direction/Read scope` | `DV:Current Viewer Presentation/zero recognized contexts` | UC-02, UC-03, UC-10; OQ-02 | HCS-BND-301, HCS-BND-303 |
-| HCS-SCP-004 | Confirmed | For context-scope matching, a read selecting registered contexts SHALL treat an item as matching when its membership intersects the selected contexts. | Given epic E in A and B, when A is selected, then E matches the context scope. | Matching cannot require every membership to be selected. | `DV:User-Selected Discovery Direction/Read scope` | `DV:Current Viewer Presentation/exact-union filter` | UC-06, UC-10; OQ-03 | HCS-BND-302, HCS-BND-303 |
-| HCS-SCP-005 | Confirmed | A scoped read SHALL include each matching item at most once. | Given todo T in A and B, when both are selected, then T appears once. | Separate copies for A and B are not allowed. | `DV:User-Selected Discovery Direction/Read scope` | `DV:Current Viewer Presentation/exact-union filter` | UC-06, UC-10; OQ-03 | HCS-BND-302, HCS-BND-303 |
+| HCS-SCP-003 | Confirmed | A Hub read SHALL allow contextless items to be selected independently, alone or together with registered contexts. | Given context A plus Contextless, issues in A and issues with no context membership are included. | Selecting either class cannot clear the other class. | `User-Selected Product Decision/Hub scope composition` | Implemented Hub scope selector and picker behavior | UC-02, UC-03, UC-10; OQ-02 | HCS-BND-301, HCS-BND-303 |
+| HCS-SCP-004 | Confirmed | A composed Hub scope SHALL match the union of items whose membership intersects the selected registered contexts and, when selected, items with zero context memberships. All registered contexts plus Contextless SHALL normalize to `AllItems`; all registered contexts without Contextless SHALL remain explicit. | Given epic E in A and B, contextless todo T, and scope A plus Contextless, both E and T match. Selecting every registered context plus Contextless includes every loaded Hub item once. | An item in only unselected B cannot match, an item with an unregistered `ctx:` label is not contextless, and all registered contexts alone cannot include contextless items by being mislabeled `AllItems`. | `User-Selected Product Decision/Hub scope composition` | Implemented shared Hub scope membership predicate and picker normalization | UC-03, UC-06, UC-10; OQ-02, OQ-03 | HCS-BND-302, HCS-BND-303 |
+| HCS-SCP-005 | Confirmed | A scoped read SHALL include each matching item at most once across the composed union. | Given an item in A and B when A, B, and Contextless are selected, the item appears once. | Separate copies for repository and contextless selector branches are not allowed. | `User-Selected Product Decision/Hub scope composition` | Implemented single-pass projection and de-duplication | UC-06, UC-10; OQ-03 | HCS-BND-302, HCS-BND-303 |
 
 HCS-INV-007 and HCS-INV-008 govern dependency truth for every scoped read and
 are not duplicated as scope requirements.
@@ -175,7 +175,7 @@ user direction.
 ## Non-Normative Boundary Ledger
 
 Boundary records identify decisions that cannot be smuggled into requirements.
-They do not select a solution.
+Resolved entries record later explicit product decisions.
 
 | ID | Category | Deferred question | Why deferred | Affected requirements | Later phase |
 |---|---|---|---|---|---|
@@ -189,9 +189,9 @@ They do not select a solution.
 | HCS-BND-203 | Correction lifecycle | Which correction outcomes use closure, supersession, or both, and what audit details remain visible? | Detailed lifecycle and audit contracts remain unselected. | HCS-INV-003, HCS-LIF-003 through HCS-LIF-007 | Lifecycle requirements work |
 | HCS-BND-204 | Supersession model | What formal association, if any, represents supersession? | Relationship type remains unselected. | HCS-LIF-006, HCS-LIF-007 | Model work |
 | HCS-BND-205 | Epic coordination | What child semantics and context-consistency rules express epic coordination? | Relationship and child model remain unselected. | HCS-INV-004, HCS-LIF-008 | Requirements and model work |
-| HCS-BND-301 | Scope representation | How are current, other registered, and contextless scopes exposed through interactive and machine interfaces? | UI and robot/API representation remain unselected. | HCS-SCP-001, HCS-SCP-002, HCS-SCP-003 | Interface contract work |
-| HCS-BND-302 | Aggregate scope | What do empty selection, all registered contexts, and an all-items projection mean? | Current behavior and selected direction do not define a final aggregate contract. | HCS-SCP-004, HCS-SCP-005 | Scope requirements work |
-| HCS-BND-303 | Mixed scope | Can contextless items be selected together with registered contexts, and what combined projection results? | Contextless selection is selected; mixed composition is not. | HCS-SCP-003, HCS-SCP-004, HCS-SCP-005 | Scope requirements work |
+| HCS-BND-301 | Scope representation | Resolved: registered contexts and Contextless are independent picker checkboxes; robot scope metadata exposes selected contexts and `include_contextless`. | Product decision selects the implemented interactive and machine representation. | HCS-SCP-001, HCS-SCP-002, HCS-SCP-003 | Resolved |
+| HCS-BND-302 | Aggregate scope | Resolved: empty selection and all registered contexts plus Contextless normalize to `AllItems`; all registered contexts without Contextless remain explicit. | Product decision selects the aggregate contract implemented by the Hub scope picker and model. | HCS-SCP-004, HCS-SCP-005 | Resolved |
+| HCS-BND-303 | Mixed scope | Resolved: Contextless composes independently with registered contexts as a de-duplicated union. | Product decision selects mixed composition and its exact projection semantics. | HCS-SCP-003 through HCS-SCP-005 | Resolved |
 | HCS-BND-304 | Missing current context | What initial behavior applies when no registered current context can be derived? | Default, fallback, and interface policy remain unselected. | HCS-CRE-001, HCS-CRE-009, HCS-SCP-001 | Requirements and interface work |
 | HCS-BND-305 | Hidden relationships | How are hidden blockers, parents, and dependency edges communicated in scoped outputs? | Global truth is selected; presentation remains unselected. | HCS-INV-007, HCS-INV-008 | UI and robot contract work |
 | HCS-BND-401 | Rejection contract | What exact error and machine-readable outcome represents a rejected creation or correlation attempt? | Error shape and command/API representation remain unselected. | HCS-CRE-008, HCS-CRE-009, HCS-COR-003, HCS-COR-004, HCS-COR-007 | Interface contract work |
@@ -208,7 +208,7 @@ They do not select a solution.
 | Baseline classification and transfer versus immutable contexts | Validation direction supersedes mutation with durable todo linkage or replacement correction. |
 | Singular explicit target wording versus multi-context todo and epic | An explicit selection can supply the complete kind-valid context membership; its invocation and collection representation remain boundaries. |
 | Omitted selection versus intentional contextless todo | They are distinct observable intents; their invocation representation remains HCS-BND-103. |
-| Current all-scope visibility versus selectable contextless scope | Selectable contextless scope is confirmed behavior; aggregate and mixed selection semantics remain deferred. |
+| Current all-scope visibility versus selectable contextless scope | Contextless composes independently; all registered contexts plus Contextless is `AllItems`, while all registered contexts alone remain explicit. |
 | Scoped candidate projection versus hidden dependency truth | Candidate visibility follows scope requirements; readiness and graph truth follow HCS-INV-007 and HCS-INV-008. |
 | Correlation writer versus whole-ledger validation | New eligibility requirements are explicit; existing-record interpretation remains HCS-BND-403. |
 | Todo context membership versus source ownership | Todo contexts control routing and scope, but resulting project work owns source correlations; no todo context makes it directly correlatable. |
@@ -226,7 +226,7 @@ They do not select a solution.
 | Replacement-based correction | HCS-LIF-003 through HCS-LIF-007 |
 | Durable todo linked to project work | HCS-LIF-001, HCS-LIF-002 |
 | Context-limited optional project-work correlation | HCS-COR-001 through HCS-COR-005, HCS-COR-007 |
-| Current, other, and contextless read scopes | HCS-SCP-001 through HCS-SCP-005 |
+| Current, other, contextless, mixed, and all-items read scopes | HCS-SCP-001 through HCS-SCP-005 |
 | Global dependency truth | HCS-INV-007, HCS-INV-008 |
 
 ## Use-Case Coverage
@@ -250,7 +250,7 @@ They do not select a solution.
 | Question | Requirements or disposition | Remaining boundary |
 |---|---|---|
 | OQ-01 | HCS-INV-005, HCS-CRE-004, HCS-CRE-005 | HCS-BND-501 |
-| OQ-02 | HCS-INV-005, HCS-SCP-003; HCS-NG-004 | HCS-BND-301, HCS-BND-303 |
+| OQ-02 | HCS-INV-005, HCS-SCP-003, HCS-SCP-004; HCS-NG-004 | None for scope composition or representation |
 | OQ-03 | HCS-INV-004, HCS-CRE-006, HCS-LIF-008 | HCS-BND-205 |
 | OQ-04 | HCS-INV-006, HCS-CRE-007 | HCS-BND-105 |
 | OQ-05 | HCS-INV-003; HCS-NG-001, HCS-NG-002 | HCS-BND-203 |

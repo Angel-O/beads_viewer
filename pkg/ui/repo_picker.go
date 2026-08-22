@@ -94,8 +94,8 @@ func (m *RepoPickerModel) SetActiveRepos(active map[string]bool) {
 // picker from an explicit Hub selector.
 func (m *RepoPickerModel) SetHubScope(scope model.HubScope) {
 	m.showContextless = true
-	m.contextlessSelected = scope.Mode == model.HubScopeContextless
-	if m.contextlessSelected {
+	contextlessSelected := scope.Mode == model.HubScopeAllItems || scope.Mode == model.HubScopeContextless || scope.IncludeContextless
+	if scope.Mode == model.HubScopeContextless {
 		m.selected = make(map[string]bool)
 		m.selectFuture = false
 	} else if scope.Mode == model.HubScopeSelectedContexts {
@@ -107,6 +107,7 @@ func (m *RepoPickerModel) SetHubScope(scope model.HubScope) {
 	} else {
 		m.SetActiveRepos(nil)
 	}
+	m.contextlessSelected = contextlessSelected
 	m.filterCatalog("")
 }
 
@@ -157,17 +158,12 @@ func (m *RepoPickerModel) MoveDown() {
 func (m *RepoPickerModel) ToggleSelected() {
 	if m.currentChoiceIsContextless() {
 		m.contextlessSelected = !m.contextlessSelected
-		if m.contextlessSelected {
-			m.selected = make(map[string]bool)
-			m.selectFuture = false
-		}
 		return
 	}
 	id := m.currentRepositoryID()
 	if id == "" {
 		return
 	}
-	m.contextlessSelected = false
 	m.selected[id] = !m.selected[id]
 	m.selectFuture = len(m.selected) == len(m.catalog)
 	if m.selectFuture {
@@ -182,14 +178,14 @@ func (m *RepoPickerModel) ToggleSelected() {
 
 // SelectAll selects all repos.
 func (m *RepoPickerModel) SelectAll() {
-	m.contextlessSelected = false
+	m.contextlessSelected = m.showContextless
 	for _, repository := range m.catalog {
 		m.selected[repository.ID] = true
 	}
 	m.selectFuture = true
 }
 
-// ClearSelection clears the draft. Applying an empty draft means all.
+// ClearSelection clears every visible checkbox. Applying an empty draft means all.
 func (m *RepoPickerModel) ClearSelection() {
 	m.contextlessSelected = false
 	m.selected = make(map[string]bool)

@@ -127,20 +127,33 @@ func TestRepoPickerCatalogRefreshHonorsAllAndClearedDrafts(t *testing.T) {
 	}
 }
 
-func TestRepoPickerContextlessChoiceIsDistinctAndExclusive(t *testing.T) {
+func TestRepoPickerContextlessChoiceTogglesIndependently(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetHubScope(model.NewAllItemsHubScope())
 	if m.FilteredCount() != len(testRepositoryCatalog())+1 || !m.currentChoiceIsContextless() {
 		t.Fatalf("contextless choice missing: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
 	}
 	m.ToggleSelected()
-	if !m.ContextlessSelected() || len(m.SelectedRepos()) != 0 {
-		t.Fatalf("contextless selection not exclusive: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	if m.ContextlessSelected() || len(m.SelectedRepos()) != len(testRepositoryCatalog()) {
+		t.Fatalf("contextless toggle changed repositories: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
 	}
 	m.MoveDown()
 	m.ToggleSelected()
-	if m.ContextlessSelected() || !m.SelectedRepos()["ctx:alpha-123"] {
-		t.Fatalf("repository selection did not clear contextless: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	if m.ContextlessSelected() || m.SelectedRepos()["ctx:alpha-123"] || len(m.SelectedRepos()) != 2 {
+		t.Fatalf("repository toggle changed contextless: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	}
+	m.MoveUp()
+	m.ToggleSelected()
+	if !m.ContextlessSelected() || len(m.SelectedRepos()) != 2 {
+		t.Fatalf("contextless did not compose with subset: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	}
+	m.SelectAll()
+	if !m.ContextlessSelected() || len(m.SelectedRepos()) != len(testRepositoryCatalog()) {
+		t.Fatalf("SelectAll did not select every checkbox: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	}
+	m.ClearSelection()
+	if m.ContextlessSelected() || len(m.SelectedRepos()) != 0 {
+		t.Fatalf("ClearSelection did not clear every checkbox: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
 	}
 
 	m.BeginSearch()
@@ -151,6 +164,36 @@ func TestRepoPickerContextlessChoiceIsDistinctAndExclusive(t *testing.T) {
 	m.SetCatalog(append(testRepositoryCatalog(), model.RepositoryCatalogEntry{ID: "ctx:new", Name: "new"}))
 	if !m.currentChoiceIsContextless() {
 		t.Fatal("catalog refresh moved contextless cursor")
+	}
+}
+
+func TestRepoPickerAllItemsAppliesAndReopensWithEveryCheckboxChecked(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha-123", "ctx:beta-456", "ctx:gamma-789")
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetHubScope(model.NewContextlessHubScope())
+	m.repoPicker.SelectAll()
+	m = m.applyRepositoryPickerSelection()
+	if scope := m.HubScope(); scope.Mode != model.HubScopeAllItems {
+		t.Fatalf("all-checkbox scope = %#v", scope)
+	}
+
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetHubScope(m.HubScope())
+	if !m.repoPicker.ContextlessSelected() || len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
+		t.Fatalf("reopened all scope: contextless=%v repos=%v", m.repoPicker.ContextlessSelected(), m.repoPicker.SelectedRepos())
+	}
+
+	m.repoPicker.ToggleSelected()
+	m = m.applyRepositoryPickerSelection()
+	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || scope.IncludeContextless || len(scope.Contexts) != len(m.repositoryCatalog) {
+		t.Fatalf("repositories-only scope applied as all items: %#v", scope)
+	}
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetHubScope(m.HubScope())
+	if m.repoPicker.ContextlessSelected() || len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
+		t.Fatalf("reopened repositories-only scope: contextless=%v repos=%v", m.repoPicker.ContextlessSelected(), m.repoPicker.SelectedRepos())
 	}
 }
 

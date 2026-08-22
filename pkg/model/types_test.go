@@ -75,6 +75,13 @@ func TestHubScopeVariants(t *testing.T) {
 	if err := contextless.Validate(); err != nil || contextless.Mode != HubScopeContextless || contextless.Contexts == nil {
 		t.Fatalf("contextless scope = %#v, err = %v", contextless, err)
 	}
+	mixed, err := NewSelectedContextsAndContextlessHubScope([]string{"ctx:b", "ctx:a", "ctx:a"})
+	if err != nil || !mixed.IncludeContextless || !mixed.MatchesLabels(nil) || !mixed.MatchesLabels([]string{"ctx:a"}) || mixed.MatchesLabels([]string{"ctx:other"}) {
+		t.Fatalf("mixed scope = %#v, err = %v", mixed, err)
+	}
+	if !all.MatchesLabels([]string{"ctx:other"}) || !contextless.MatchesLabels(nil) || contextless.MatchesLabels([]string{"ctx:a"}) {
+		t.Fatal("Hub scope label membership changed")
+	}
 
 	invalid := []HubScope{
 		{},
@@ -82,6 +89,8 @@ func TestHubScopeVariants(t *testing.T) {
 		{Mode: HubScopeSelectedContexts, Contexts: []string{"ctx:z", "ctx:a"}},
 		{Mode: HubScopeSelectedContexts, Contexts: []string{"todo"}},
 		{Mode: HubScopeContextless, Contexts: []string{"ctx:a"}},
+		{Mode: HubScopeAllItems, Contexts: []string{}, IncludeContextless: true},
+		{Mode: HubScopeContextless, Contexts: []string{}, IncludeContextless: true},
 	}
 	for _, scope := range invalid {
 		if err := scope.Validate(); err == nil {

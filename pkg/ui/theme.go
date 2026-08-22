@@ -233,13 +233,15 @@ func (t Theme) GetTypeIcon(typ string) (string, lipgloss.AdaptiveColor) {
 	case "feature":
 		return "✨", t.Feature
 	case "task":
-		return "📋", t.Task
+		return "🔧", t.Task
 	case "epic":
 		// Use 🚀 instead of 🏔️ - the snow-capped mountain has a variation selector
 		// (U+FE0F) that causes inconsistent width calculations across terminals
 		return "🚀", t.Epic
 	case "chore":
 		return "🧹", t.Chore
+	case "todo":
+		return "📝", t.Task
 	default:
 		return "•", t.Subtext
 	}

@@ -24,11 +24,13 @@ type hubRelationshipEvidence struct {
 	Endpoint *model.Issue
 }
 
+const contextlessRepositoryID = "no-context"
+
 func isHubContextLabel(label string) bool {
 	return strings.HasPrefix(label, "ctx:")
 }
 
-func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool) issueRepositoryPresentation {
+func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool, preferredRepositories map[string]bool) issueRepositoryPresentation {
 	presentation := issueRepositoryPresentation{Labels: issue.Labels}
 	if !hubMode {
 		return presentation
@@ -52,10 +54,33 @@ func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryC
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
 	if len(matches) == 0 {
+		if len(contexts) == 0 {
+			presentation.ID = contextlessRepositoryID
+			presentation.Name = contextlessRepositoryID
+		}
 		return presentation
 	}
-	presentation.ID = matches[0].ID
-	presentation.Name = matches[0].Name
+	candidates := matches
+	if len(preferredRepositories) > 0 {
+		preferred := make([]model.RepositoryCatalogEntry, 0, len(matches))
+		for _, repository := range matches {
+			if preferredRepositories[repository.ID] {
+				preferred = append(preferred, repository)
+			}
+		}
+		if len(preferred) > 0 {
+			candidates = preferred
+		}
+	}
+
+	primary := candidates[0]
+	for _, repository := range candidates[1:] {
+		if repository.Name < primary.Name || repository.Name == primary.Name && repository.ID < primary.ID {
+			primary = repository
+		}
+	}
+	presentation.ID = primary.ID
+	presentation.Name = primary.Name
 	presentation.Extra = len(matches) - 1
 	presentation.Names = make([]string, 0, len(matches))
 	for _, repository := range matches {
@@ -182,7 +207,7 @@ func (m *Model) decorateIssueItem(item *IssueItem) {
 	if item == nil {
 		return
 	}
-	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation())
+	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.activeRepos)
 	item.HubPresentation = m.hubRepositoryPresentation()
 	item.RepositoryID = presentation.ID
 	item.RepositoryName = presentation.Name
@@ -265,26 +290,7 @@ func (m *Model) refreshRepositoryPresentation() {
 
 func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
 	if m.usesHubScope() {
-		switch m.hubScope.Mode {
-		case model.HubScopeContextless:
-			for _, label := range issue.Labels {
-				if isHubContextLabel(label) {
-					return false
-				}
-			}
-			return true
-		case model.HubScopeSelectedContexts:
-			for _, label := range issue.Labels {
-				for _, contextID := range m.hubScope.Contexts {
-					if label == contextID {
-						return true
-					}
-				}
-			}
-			return false
-		default:
-			return true
-		}
+		return m.hubScope.MatchesLabels(issue.Labels)
 	}
 	if m.activeRepos == nil {
 		return true
@@ -371,23 +377,35 @@ func repositoryCatalogIDs(catalog model.RepositoryCatalog) []string {
 }
 
 func (m *Model) reconcileHubScopeCatalog() {
-	if !m.usesHubScope() || m.hubScope.Mode == model.HubScopeContextless {
+	if !m.usesHubScope() || m.hubScope.Mode != model.HubScopeSelectedContexts {
 		return
 	}
-	selected := m.activeRepos
-	if m.hubScope.Mode == model.HubScopeSelectedContexts {
-		selected = make(map[string]bool, len(m.hubScope.Contexts))
-		for _, contextID := range m.hubScope.Contexts {
-			selected[contextID] = true
-		}
+	selected := make(map[string]bool, len(m.hubScope.Contexts))
+	for _, contextID := range m.hubScope.Contexts {
+		selected[contextID] = true
 	}
 	reconciled := model.ReconcileRepositorySelection(selected, m.repositoryCatalog)
 	if reconciled == nil {
+		if m.hubScope.IncludeContextless {
+			m.hubScope = model.NewContextlessHubScope()
+		} else {
+			m.hubScope = model.NewAllItemsHubScope()
+		}
+		m.activeRepos = nil
+		return
+	}
+	if m.hubScope.IncludeContextless && len(reconciled) == len(m.repositoryCatalog) {
 		m.hubScope = model.NewAllItemsHubScope()
 		m.activeRepos = nil
 		return
 	}
-	scope, err := model.NewSelectedContextsHubScope(sortedRepoKeys(reconciled))
+	var scope model.HubScope
+	var err error
+	if m.hubScope.IncludeContextless {
+		scope, err = model.NewSelectedContextsAndContextlessHubScope(sortedRepoKeys(reconciled))
+	} else {
+		scope, err = model.NewSelectedContextsHubScope(sortedRepoKeys(reconciled))
+	}
 	if err != nil {
 		m.hubScope = model.NewAllItemsHubScope()
 		m.activeRepos = nil
@@ -429,14 +447,14 @@ func (m *Model) applyDefaultRepositoryScope() bool {
 	return false
 }
 
-// SetRepositoryScope applies exact catalog IDs. Nil, an empty selection, and a
-// selection containing every catalog entry all mean the complete universe.
+// SetRepositoryScope applies exact catalog IDs. Nil and an empty selection mean
+// the complete universe; selecting every Hub repository excludes contextless items.
 func (m *Model) SetRepositoryScope(selected map[string]bool) {
 	m.defaultRepositorySet = true
 	m.defaultRepositoryID = ""
 	reconciled := model.ReconcileRepositorySelection(selected, m.repositoryCatalog)
 	if m.usesHubScope() {
-		if len(selected) == 0 || len(reconciled) == 0 || len(reconciled) == len(m.repositoryCatalog) {
+		if len(selected) == 0 || len(reconciled) == 0 {
 			_ = m.SetHubScope(model.NewAllItemsHubScope())
 			return
 		}
@@ -453,6 +471,32 @@ func (m *Model) SetRepositoryScope(selected map[string]bool) {
 		m.activeRepos = reconciled
 	}
 	m.refreshRepositoryCandidates()
+}
+
+func (m *Model) setHubRepositoryScope(selected map[string]bool, includeContextless bool) {
+	if len(selected) == 0 {
+		if includeContextless {
+			_ = m.SetHubScope(model.NewContextlessHubScope())
+		} else {
+			_ = m.SetHubScope(model.NewAllItemsHubScope())
+		}
+		return
+	}
+	if includeContextless && len(selected) == len(m.repositoryCatalog) {
+		_ = m.SetHubScope(model.NewAllItemsHubScope())
+		return
+	}
+	contexts := sortedRepoKeys(selected)
+	var scope model.HubScope
+	var err error
+	if includeContextless {
+		scope, err = model.NewSelectedContextsAndContextlessHubScope(contexts)
+	} else {
+		scope, err = model.NewSelectedContextsHubScope(contexts)
+	}
+	if err == nil {
+		_ = m.SetHubScope(scope)
+	}
 }
 
 // SetHubScope applies an explicit Hub candidate selector. Selected context IDs

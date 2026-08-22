@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -1810,11 +1811,18 @@ func TestBackgroundWorker_HubSignalRefreshesAndDeduplicates(t *testing.T) {
 	}
 	worker.TriggerRefresh()
 	waitForSnapshotVersion(t, worker, 1)
+	waitForWorkerIdle(t, worker, 1)
+	drainWorkerMessages(worker)
 
 	writeTestSignal(t, signalPath, "changed")
 	waitForSnapshotVersion(t, worker, 2)
+	waitForWorkerIdle(t, worker, 2)
 	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.Issues[0].ID != "FRESH" {
 		t.Fatalf("Hub signal did not load fresh data: %#v", snapshot)
+	}
+	changedMessages := drainWorkerMessages(worker)
+	if got := countMessagesOfType[HubSourceRefreshCompleteMsg](changedMessages); got != 0 {
+		t.Fatalf("changed Hub snapshot emitted %d unchanged refresh messages", got)
 	}
 	waitForFileLength(t, countPath, 1)
 
@@ -1822,9 +1830,16 @@ func TestBackgroundWorker_HubSignalRefreshesAndDeduplicates(t *testing.T) {
 	// not replace the snapshot or trigger repeated analysis.
 	writeTestSignal(t, signalPath, "unchanged")
 	waitForFileLength(t, countPath, 2)
-	waitForWorkerIdle(t, worker, 2)
+	waitForWorkerIdle(t, worker, 3)
 	if got := worker.Metrics().SnapshotVersion; got != 2 {
 		t.Fatalf("unchanged Hub data advanced snapshot version to %d", got)
+	}
+	unchangedMessages := drainWorkerMessages(worker)
+	if got := countMessagesOfType[HubSourceRefreshCompleteMsg](unchangedMessages); got != 1 {
+		t.Fatalf("unchanged Hub refresh emitted %d completion messages, want 1", got)
+	}
+	if got := countMessagesOfType[SnapshotReadyMsg](unchangedMessages); got != 0 {
+		t.Fatalf("unchanged Hub refresh emitted %d snapshots", got)
 	}
 	if err := os.WriteFile(payloadPath, []byte(fresh), 0o644); err != nil {
 		t.Fatal(err)
@@ -1894,6 +1909,10 @@ func TestBackgroundWorker_HubFailureRetainsSnapshotAndRecovers(t *testing.T) {
 		_, ok := msg.(SnapshotErrorMsg)
 		return ok
 	})
+	waitForWorkerIdle(t, worker, 2)
+	if got := countMessagesOfType[HubSourceRefreshCompleteMsg](drainWorkerMessages(worker)); got != 0 {
+		t.Fatalf("failed Hub refresh emitted %d completion messages", got)
+	}
 	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.Issues[0].ID != "STALE" {
 		t.Fatalf("failed refresh replaced last valid snapshot: %#v", snapshot)
 	}
@@ -1901,6 +1920,53 @@ func TestBackgroundWorker_HubFailureRetainsSnapshotAndRecovers(t *testing.T) {
 	waitForSnapshotVersion(t, worker, 2)
 	if snapshot := worker.GetSnapshot(); snapshot == nil || snapshot.Issues[0].ID != "FRESH" {
 		t.Fatalf("retry did not recover fresh data: %#v", snapshot)
+	}
+}
+
+func countMessagesOfType[T any](messages []tea.Msg) int {
+	count := 0
+	for _, message := range messages {
+		if _, ok := message.(T); ok {
+			count++
+		}
+	}
+	return count
+}
+
+func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t *testing.T) {
+	issue := model.Issue{ID: "fixture-1", Title: "Fixture", Status: model.StatusOpen, IssueType: model.TypeTask}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.SetHistoryProvider(correlation.HistoryModeExternal, "fixture-hub.yaml")
+	m.historyGeneration = 4
+	oldReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{}}
+	m.historyReport = oldReport
+
+	updated, cmd := m.Update(HubSourceRefreshCompleteMsg{})
+	m = updated.(Model)
+	if m.historyGeneration != 5 || !m.historyLoading || cmd == nil {
+		t.Fatalf("external refresh did not schedule one history generation: generation=%d loading=%v cmd=%v", m.historyGeneration, m.historyLoading, cmd)
+	}
+
+	staleReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{"fixture-stale": {}}}
+	updated, _ = m.Update(HistoryLoadedMsg{Report: staleReport, Generation: 4})
+	m = updated.(Model)
+	if m.historyReport != oldReport || !m.historyLoading {
+		t.Fatal("stale external history result replaced the active report")
+	}
+
+	currentReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{"fixture-current": {}}}
+	updated, _ = m.Update(HistoryLoadedMsg{Report: currentReport, Generation: 5})
+	m = updated.(Model)
+	if m.historyReport != currentReport || m.historyLoading {
+		t.Fatal("current external history result was not installed")
+	}
+
+	gitModel := NewModel([]model.Issue{issue}, nil, "")
+	gitModel.historyGeneration = 7
+	updated, cmd = gitModel.Update(HubSourceRefreshCompleteMsg{})
+	gitModel = updated.(Model)
+	if gitModel.historyGeneration != 7 || cmd != nil {
+		t.Fatalf("Hub refresh perturbed Git history: generation=%d cmd=%v", gitModel.historyGeneration, cmd)
 	}
 }
 

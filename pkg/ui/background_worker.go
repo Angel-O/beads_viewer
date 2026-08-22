@@ -1342,6 +1342,7 @@ func (w *BackgroundWorker) process() {
 			w.metrics.fullListCount.Add(1)
 		}
 	}
+	sourceRefreshUnchanged := refreshBDExport && snapshot == nil && w.lastError == nil
 	catalogChanged := false
 	catalogRecovered := false
 	if !catalogStale && w.hubConfigPath != "" {
@@ -1415,6 +1416,8 @@ func (w *BackgroundWorker) process() {
 			CatalogRecovered:  !catalogStale && catalogRecovered,
 			CatalogError:      deliveredCatalogErr,
 		})
+	} else if sourceRefreshUnchanged {
+		w.send(HubSourceRefreshCompleteMsg{})
 	}
 	if !catalogStale {
 		if catalogErr != nil {
@@ -2220,6 +2223,10 @@ type SnapshotErrorMsg struct {
 	StartFailure bool
 }
 
+// HubSourceRefreshCompleteMsg reports a successful Hub source refresh whose
+// issue content was unchanged, so consumers can refresh external-only data.
+type HubSourceRefreshCompleteMsg struct{}
+
 // RepositoryCatalogReadyMsg carries independently refreshed Hub metadata.
 type RepositoryCatalogReadyMsg struct {
 	Catalog    model.RepositoryCatalog
@@ -2351,7 +2358,7 @@ func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
 			return 4
 		}
 		return 3
-	case SnapshotErrorMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
+	case SnapshotErrorMsg, HubSourceRefreshCompleteMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
 		return 3
 	case WorkerProcessingMsg:
 		return 2

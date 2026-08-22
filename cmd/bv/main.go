@@ -1981,6 +1981,13 @@ func main() {
 			// When stdout is non-TTY, --diff-since auto-enables JSON output. Mark this
 			// as robot mode early so parsers keep stdout JSON clean.
 			(*diffSince != "" && !stdoutIsTTY)
+		hubRobotScope, err := parseHubRobotScope(os.Getenv("BV_WBV_HUB_SCOPE"), hubConfigPath, usesHubConfigStore, robotMode)
+		if err != nil {
+			return err
+		}
+		if hubRobotScope != nil && *repoFilter != "" {
+			return fmt.Errorf("--repo cannot be combined with wrapper Hub scope")
+		}
 
 		// Mark robot mode for downstream packages (e.g., parsers) to keep stdout JSON clean.
 		if robotMode && !envRobot {
@@ -2580,7 +2587,7 @@ func main() {
 		// When --label is specified, extract the label's subgraph and use it for all robot analysis.
 		// This includes label health context in the output.
 		var labelScopeContext *analysis.LabelHealth
-		if *labelScope != "" {
+		if *labelScope != "" && hubRobotScope == nil {
 			sg := analysis.ComputeLabelSubgraph(issues, *labelScope)
 			if sg.IssueCount == 0 {
 				if !envRobot {
@@ -2606,12 +2613,21 @@ func main() {
 					}
 				}
 			}
+		} else if *labelScope != "" {
+			cfg := analysis.DefaultLabelHealthConfig()
+			allHealth := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
+			for i := range allHealth.Labels {
+				if allHealth.Labels[i].Label == *labelScope {
+					labelScopeContext = &allHealth.Labels[i]
+					break
+				}
+			}
 		}
 
 		// Apply recipe filtering early for robot modes (bv-93)
 		// This ensures --recipe filters are applied before robot modes exit.
 		// dataHash uses pre-filtered issues for stability.
-		if activeRecipe != nil && (*robotTriage || *robotNext || *robotTriageByTrack || *robotTriageByLabel || *robotPriority || *robotInsights || *robotPlan) {
+		if activeRecipe != nil && hubRobotScope == nil && (*robotTriage || *robotNext || *robotTriageByTrack || *robotTriageByLabel || *robotPriority || *robotInsights || *robotPlan) {
 			issues = applyRecipeFilters(issues, activeRecipe)
 			issues = applyRecipeSort(issues, activeRecipe)
 			dataHashMatchesIssues = false
@@ -2623,6 +2639,13 @@ func main() {
 		robotDispatchContext.AsOfCommit = asOfResolved
 		robotDispatchContext.LabelScope = *labelScope
 		robotDispatchContext.LabelContext = labelScopeContext
+		if hubRobotScope != nil {
+			projection, projectionErr := newHubScopeProjection(*hubRobotScope, issues, *labelScope)
+			if projectionErr != nil {
+				return fmt.Errorf("preparing Hub scope projection: %w", projectionErr)
+			}
+			robotDispatchContext.HubProjection = projection
+		}
 
 		// Handle semantic search CLI (bv-9gf.3)
 		if *semanticQuery != "" {
@@ -7369,10 +7392,7 @@ func findBetterPagesSource(config *export.WizardConfig, current pagesSource, bea
 	currentDiff := absInt(currentCount - expected)
 
 	repoHint := strings.ToLower(strings.TrimSpace(config.RepoName))
-	altHint := repoHint
-	if strings.HasPrefix(altHint, "beads-for-") {
-		altHint = strings.TrimPrefix(altHint, "beads-for-")
-	}
+	altHint := strings.TrimPrefix(repoHint, "beads-for-")
 
 	roots := []string{}
 	seenRoots := map[string]bool{}
@@ -8522,6 +8542,7 @@ type robotCommandDoc struct {
 	NeedsSprint   bool     `json:"needs_sprint"`
 	NeedsBaseline bool     `json:"needs_baseline"`
 	MutatesState  bool     `json:"mutates_state"`
+	HubScope      string   `json:"hub_scope,omitempty"`
 }
 
 func robotDocsTopics() []string {
@@ -8553,7 +8574,7 @@ func robotExitCodes() map[string]string {
 }
 
 func robotCommandDocs() map[string]robotCommandDoc {
-	return map[string]robotCommandDoc{
+	docs := map[string]robotCommandDoc{
 		"robot-help": {
 			Flag:        "--robot-help",
 			Description: "Agent-focused command help. Use robot-docs guide for structured JSON documentation.",
@@ -8801,6 +8822,18 @@ func robotCommandDocs() map[string]robotCommandDoc {
 			NeedsGit:    true,
 		},
 	}
+	const hubScopeContract = "In wrapper Hub mode, candidate collections are projected after complete-universe analysis; aggregate graph values remain global and output includes scope metadata."
+	for _, name := range []string{
+		"robot-plan", "robot-priority", "robot-insights", "robot-graph",
+		"robot-label-health", "robot-label-flow", "robot-label-attention",
+		"robot-blocker-chain", "robot-sprint-list", "robot-sprint-show",
+		"robot-forecast", "robot-capacity", "robot-triage",
+	} {
+		doc := docs[name]
+		doc.HubScope = hubScopeContract
+		docs[name] = doc
+	}
+	return docs
 }
 
 func generateRobotCapabilities() map[string]interface{} {
@@ -9275,15 +9308,16 @@ func generateRobotSchemas() RobotSchemas {
 				"recommendation": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"id":       map[string]interface{}{"type": "string"},
-						"title":    map[string]interface{}{"type": "string"},
-						"type":     map[string]interface{}{"type": "string"},
-						"status":   map[string]interface{}{"type": "string"},
-						"priority": map[string]interface{}{"type": "integer"},
-						"labels":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-						"score":    map[string]interface{}{"type": "number"},
-						"reasons":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-						"unblocks": map[string]interface{}{"type": "integer"},
+						"id":            map[string]interface{}{"type": "string"},
+						"title":         map[string]interface{}{"type": "string"},
+						"type":          map[string]interface{}{"type": "string"},
+						"status":        map[string]interface{}{"type": "string"},
+						"priority":      map[string]interface{}{"type": "integer"},
+						"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+						"score":         map[string]interface{}{"type": "number"},
+						"reasons":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+						"unblocks":      map[string]interface{}{"type": "integer"},
+						"boundary_refs": hubBoundaryReferencesSchema(),
 					},
 					"required": []string{"id", "title", "score"},
 				},
@@ -9330,13 +9364,22 @@ func generateRobotSchemas() RobotSchemas {
 				"plan": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"phases": map[string]interface{}{
+						"tracks": map[string]interface{}{
 							"type": "array",
 							"items": map[string]interface{}{
 								"type": "object",
 								"properties": map[string]interface{}{
-									"phase":  map[string]interface{}{"type": "integer"},
-									"issues": map[string]interface{}{"type": "array"},
+									"track_id": map[string]interface{}{"type": "string"},
+									"items": map[string]interface{}{
+										"type": "array",
+										"items": map[string]interface{}{
+											"type": "object",
+											"properties": map[string]interface{}{
+												"id":            map[string]interface{}{"type": "string"},
+												"boundary_refs": hubBoundaryReferencesSchema(),
+											},
+										},
+									},
 								},
 							},
 						},
@@ -9386,7 +9429,16 @@ func generateRobotSchemas() RobotSchemas {
 				"status":          map[string]interface{}{"type": "object"},
 				"label_scope":     map[string]interface{}{"type": "string"},
 				"label_context":   map[string]interface{}{"type": "object"},
-				"recommendations": map[string]interface{}{"type": "array"},
+				"recommendations": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"issue_id":      map[string]interface{}{"type": "string"},
+							"boundary_refs": hubBoundaryReferencesSchema(),
+						},
+					},
+				},
 				"field_descriptions": map[string]interface{}{
 					"type":                 "object",
 					"additionalProperties": map[string]interface{}{"type": "string"},
@@ -9439,7 +9491,22 @@ func generateRobotSchemas() RobotSchemas {
 				"adjacency": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"nodes": map[string]interface{}{"type": "array"},
+						"nodes": map[string]interface{}{
+							"type": "array",
+							"items": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"id":            map[string]interface{}{"type": "string"},
+									"title":         map[string]interface{}{"type": "string"},
+									"status":        map[string]interface{}{"type": "string"},
+									"priority":      map[string]interface{}{"type": "integer"},
+									"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+									"pagerank":      map[string]interface{}{"type": "number"},
+									"boundary_refs": graphBoundaryReferencesSchema(),
+								},
+								"required": []string{"id", "title", "status", "priority"},
+							},
+						},
 						"edges": map[string]interface{}{"type": "array"},
 					},
 				},
@@ -9767,12 +9834,106 @@ func generateRobotSchemas() RobotSchemas {
 			commands[name] = genericRobotCommandSchema(name, doc)
 		}
 	}
+	for _, name := range []string{
+		"robot-plan", "robot-priority", "robot-insights", "robot-graph",
+		"robot-label-health", "robot-label-flow", "robot-label-attention",
+		"robot-blocker-chain", "robot-sprint-list", "robot-sprint-show",
+		"robot-forecast", "robot-capacity", "robot-triage",
+	} {
+		schema := commands[name]
+		properties, ok := schema["properties"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		properties["scope"] = hubScopeSchema()
+	}
 
 	return RobotSchemas{
 		SchemaVersion: robotContractVersion,
 		GeneratedAt:   now,
 		Envelope:      envelope,
 		Commands:      commands,
+	}
+}
+
+func hubScopeSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "object",
+		"description": "Hub-only candidate projection metadata; omitted from local robot output",
+		"properties": map[string]interface{}{
+			"mode": map[string]interface{}{
+				"type": "string",
+				"enum": []string{"all_items", "contexts", "contextless"},
+			},
+			"contexts": map[string]interface{}{
+				"type":  "array",
+				"items": map[string]interface{}{"type": "string"},
+			},
+			"include_contextless": map[string]interface{}{
+				"type":        "boolean",
+				"description": "For contexts mode, also include items without ctx-prefixed labels",
+			},
+		},
+		"required": []string{"mode", "contexts", "include_contextless"},
+	}
+}
+
+func hubBoundaryReferencesSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "array",
+		"description": "Focused Hub-only references to relationship endpoints outside the candidate scope",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"relation_type": map[string]interface{}{"type": "string"},
+				"endpoint_id":   map[string]interface{}{"type": "string"},
+				"issue_type":    map[string]interface{}{"type": "string"},
+				"status":        map[string]interface{}{"type": "string"},
+				"contexts": map[string]interface{}{
+					"type":  "array",
+					"items": map[string]interface{}{"type": "string"},
+				},
+				"in_scope": map[string]interface{}{"type": "boolean", "const": false},
+				"from":     map[string]interface{}{"type": "string"},
+				"to":       map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope"},
+		},
+	}
+}
+
+func graphBoundaryReferencesSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "array",
+		"description": "Deterministically ordered focused graph edges from a visible node to a hidden endpoint",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"relation_type": map[string]interface{}{"type": "string", "description": "Canonical dependency relation type"},
+				"endpoint_id":   map[string]interface{}{"type": "string", "description": "Deterministic identity of the hidden endpoint"},
+				"issue_type":    map[string]interface{}{"type": "string", "description": "Hidden endpoint issue type"},
+				"status":        map[string]interface{}{"type": "string", "description": "Hidden endpoint status"},
+				"contexts": map[string]interface{}{
+					"type":        "array",
+					"description": "Sorted Hub contexts of the hidden endpoint",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+				"in_scope": map[string]interface{}{"type": "boolean", "const": false, "description": "Hidden endpoint is outside candidate scope"},
+				"from":     map[string]interface{}{"type": "string", "description": "Canonical directed edge source"},
+				"to":       map[string]interface{}{"type": "string", "description": "Canonical directed edge target"},
+			},
+			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope", "from", "to"},
+		},
+	}
+}
+
+func hubScopedCandidateSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"id":            map[string]interface{}{"type": "string"},
+			"boundary_refs": hubBoundaryReferencesSchema(),
+		},
 	}
 }
 
@@ -10674,9 +10835,9 @@ func robotGroupedTriageOutputSchema(title, description, groupProperty string, gr
 				"properties": map[string]interface{}{
 					"meta":              map[string]interface{}{"type": "object"},
 					"quick_ref":         map[string]interface{}{"type": "object"},
-					"recommendations":   map[string]interface{}{"type": "array"},
-					"quick_wins":        map[string]interface{}{"type": "array"},
-					"blockers_to_clear": map[string]interface{}{"type": "array"},
+					"recommendations":   map[string]interface{}{"type": "array", "items": hubScopedCandidateSchema()},
+					"quick_wins":        map[string]interface{}{"type": "array", "items": hubScopedCandidateSchema()},
+					"blockers_to_clear": map[string]interface{}{"type": "array", "items": hubScopedCandidateSchema()},
 					"project_health":    map[string]interface{}{"type": "object"},
 					"commands":          map[string]interface{}{"type": "object"},
 					groupProperty: map[string]interface{}{
@@ -10699,8 +10860,8 @@ func robotTrackRecommendationGroupSchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"track_id":        map[string]interface{}{"type": "string"},
 			"reason":          map[string]interface{}{"type": "string"},
-			"recommendations": map[string]interface{}{"type": "array"},
-			"top_pick":        map[string]interface{}{"type": "object"},
+			"recommendations": map[string]interface{}{"type": "array", "items": hubScopedCandidateSchema()},
+			"top_pick":        hubScopedCandidateSchema(),
 			"claim_command":   map[string]interface{}{"type": "string"},
 			"total_unblocks":  map[string]interface{}{"type": "integer"},
 		},
@@ -10713,8 +10874,8 @@ func robotLabelRecommendationGroupSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"label":           map[string]interface{}{"type": "string"},
-			"recommendations": map[string]interface{}{"type": "array"},
-			"top_pick":        map[string]interface{}{"type": "object"},
+			"recommendations": map[string]interface{}{"type": "array", "items": hubScopedCandidateSchema()},
+			"top_pick":        hubScopedCandidateSchema(),
 			"claim_command":   map[string]interface{}{"type": "string"},
 			"total_unblocks":  map[string]interface{}{"type": "integer"},
 		},

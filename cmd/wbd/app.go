@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -22,12 +27,68 @@ var isolatedVariables = map[string]bool{
 	"BEADS_DOLT_SHARED_SERVER": true, "BEADS_DIR": true,
 }
 
+const customIssueTypesKey = "types.custom"
+
 type app struct {
-	paths  hub.Paths
-	dir    string
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
+	paths       hub.Paths
+	dir         string
+	stdin       io.Reader
+	stdout      io.Writer
+	stderr      io.Writer
+	jsonFailure bool
+}
+
+type bdIssue struct {
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	Description  string       `json:"description"`
+	Status       string       `json:"status"`
+	Priority     int          `json:"priority"`
+	IssueType    string       `json:"issue_type"`
+	Labels       []string     `json:"labels"`
+	Dependencies []bdRelation `json:"dependencies"`
+	Dependents   []bdRelation `json:"dependents"`
+}
+
+type bdRelation struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	IssueType      string `json:"issue_type"`
+	DependencyType string `json:"dependency_type"`
+}
+
+func (i bdIssue) policyState() hub.IssueState {
+	return hub.IssueState{ID: i.ID, Kind: i.IssueType, Status: i.Status, Labels: i.Labels}
+}
+
+type graphPlan struct {
+	Nodes []graphNode `json:"nodes"`
+	Edges []graphEdge `json:"edges,omitempty"`
+}
+
+type graphNode struct {
+	Key         string   `json:"key"`
+	Title       string   `json:"title"`
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Priority    int      `json:"priority"`
+	Labels      []string `json:"labels,omitempty"`
+}
+
+type graphEdge struct {
+	FromKey string `json:"from_key,omitempty"`
+	FromID  string `json:"from_id,omitempty"`
+	ToKey   string `json:"to_key,omitempty"`
+	ToID    string `json:"to_id,omitempty"`
+	Type    string `json:"type"`
+}
+
+type compatibilityFinding struct {
+	Code    string `json:"code"`
+	IssueID string `json:"issue_id"`
+	Related string `json:"related_id,omitempty"`
+	Value   string `json:"value,omitempty"`
+	Message string `json:"message"`
 }
 
 func newApp(stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
@@ -43,6 +104,11 @@ func newApp(stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 }
 
 func (a *app) run(arguments []string) int {
+	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
+		a.printHelp()
+		return 0
+	}
+	a.jsonFailure = containsArgument(arguments, "--json")
 	command, err := commandName(arguments)
 	if err != nil {
 		return a.fail(err)
@@ -89,14 +155,11 @@ func (a *app) run(arguments []string) int {
 		fmt.Fprintf(a.stdout, "%s\t%s\n", registration.Context, registration.Root)
 		return 0
 	case "create", "new":
-		registration, registerErr := a.register()
-		if registerErr != nil {
-			return a.fail(registerErr)
-		}
-		args := appendJSON(nil, request.json)
-		args = append(args, request.command, "--labels", registration.Context, request.positionals[0])
-		args = append(args, request.args...)
-		return a.runBDMutation(a.dir, args...)
+		return a.create(request)
+	case "replace":
+		return a.replace(request)
+	case "compatibility":
+		return a.compatibility()
 	case "list":
 		args := appendJSON(nil, request.json)
 		args = append(args, "list")
@@ -114,17 +177,72 @@ func (a *app) run(arguments []string) int {
 		args = append(args, "show", request.positionals[0])
 		return a.runBD(a.dir, args...)
 	case "update":
+		if requestValue(request.args, "--status", "") != "" {
+			issue, issueErr := a.readIssue(request.positionals[0], true)
+			if issueErr != nil {
+				return a.fail(issueErr)
+			}
+			if issue.Status == "closed" {
+				if policyErr := validateReactivation(issue); policyErr != nil {
+					return a.fail(policyErr)
+				}
+			}
+		}
 		args := appendJSON(nil, request.json)
 		args = append(args, "update", request.positionals[0])
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
 	case "dep":
+		if request.subcommand == "add" && requestValue(request.args, "--type", "blocks") == "parent-child" {
+			child, childErr := a.readIssue(request.positionals[0], false)
+			if childErr != nil {
+				return a.fail(childErr)
+			}
+			parent, parentErr := a.readIssue(request.positionals[1], false)
+			if parentErr != nil {
+				return a.fail(parentErr)
+			}
+			if policyErr := hub.ValidateEpicChild(parent.policyState(), child.policyState()); policyErr != nil {
+				return a.fail(policyErr)
+			}
+		}
+		if request.subcommand == "remove" {
+			source, sourceErr := a.readIssue(request.positionals[0], false)
+			if sourceErr != nil {
+				return a.fail(sourceErr)
+			}
+			var target *bdIssue
+			for _, dependency := range source.Dependencies {
+				if dependency.ID != request.positionals[1] || dependency.DependencyType != "supersedes" && dependency.DependencyType != "discovered-from" {
+					continue
+				}
+				if target == nil {
+					issue, targetErr := a.readIssue(request.positionals[1], false)
+					if targetErr != nil {
+						return a.fail(targetErr)
+					}
+					target = &issue
+				}
+				if policyErr := hub.ValidateLifecycleRemoval(source.policyState(), target.policyState(), dependency.DependencyType); policyErr != nil {
+					return a.fail(policyErr)
+				}
+			}
+		}
 		args := appendJSON(nil, request.json)
 		args = append(args, "dep", request.subcommand)
 		args = append(args, request.positionals...)
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
 	case "close", "reopen":
+		if request.command == "reopen" {
+			issue, issueErr := a.readIssue(request.positionals[0], true)
+			if issueErr != nil {
+				return a.fail(issueErr)
+			}
+			if policyErr := validateReactivation(issue); policyErr != nil {
+				return a.fail(policyErr)
+			}
+		}
 		args := appendJSON(nil, request.json)
 		args = append(args, request.command, request.positionals[0])
 		args = append(args, request.args...)
@@ -132,6 +250,13 @@ func (a *app) run(arguments []string) int {
 	case "link":
 		if err := need("bv"); err != nil {
 			return a.fail(err)
+		}
+		issue, issueErr := a.readIssue(request.positionals[0], false)
+		if issueErr != nil {
+			return a.fail(issueErr)
+		}
+		if policyErr := hub.ValidateCorrelationOwner(issue.policyState()); policyErr != nil {
+			return a.fail(policyErr)
 		}
 		registration, registerErr := a.register()
 		if registerErr != nil {
@@ -141,10 +266,453 @@ func (a *app) run(arguments []string) int {
 		if len(request.positionals) == 2 {
 			commit = request.positionals[1]
 		}
-		return a.runBV("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
+		code := a.runBV("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
+		if code == 0 {
+			a.signalMutation("link")
+		}
+		return code
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
+}
+
+func (a *app) printHelp() {
+	fmt.Fprint(a.stdout, `Usage: wbd <command> [options]
+
+wbd is the safe command boundary for the private Beads Hub.
+
+Choose an issue type:
+  todo      Capture something not yet concrete project work. It may be
+            contextless or span contexts and cannot own commit correlations.
+  epic      Coordinate related project work across one or more contexts.
+  task, bug, feature, chore
+            Track concrete work in exactly one context.
+  decision  Record a decision in the current context.
+
+Creation targeting:
+  (omitted)              Use the current repository context.
+  --context <ctx-id>     Supply the complete target set; repeat for todo/epic.
+  --contextless          Create a todo without repository context.
+  --from-todo <todo-id>  Create concrete work discovered from a todo.
+
+Commands:
+  bootstrap, configure, register, context, create, new, replace,
+  compatibility, list, show, update, dep, close, reopen, link
+
+Use --json for queries and mutations except context and link.
+`)
+}
+
+func validateReactivation(issue bdIssue) error {
+	for _, dependent := range issue.Dependents {
+		if dependent.DependencyType != "supersedes" {
+			continue
+		}
+		if dependent.ID == "" || dependent.IssueType == "" {
+			return fmt.Errorf("issue %s has an incomplete incoming supersession relation", issue.ID)
+		}
+		if hub.ValidateSupersession(hub.IssueState{ID: dependent.ID, Kind: dependent.IssueType}, issue.policyState()) == nil {
+			return &hub.PolicyError{Code: hub.PolicyInvalidSupersession, Field: "status", Value: issue.ID, Message: "a superseded issue cannot be routinely reactivated"}
+		}
+	}
+	return nil
+}
+
+func (a *app) create(request request) int {
+	kind := requestValue(request.args, "--type", "task")
+	if kind == "todo" {
+		if err := a.requireTodoCapability(); err != nil {
+			return a.fail(err)
+		}
+	}
+	if kind == "decision" && (request.contextless || len(request.contexts) > 0) {
+		return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidKind, Field: "type", Value: kind, Message: "decision supports default-current creation only"})
+	}
+	contexts, repositories, err := a.creationTargets(request)
+	if err != nil {
+		return a.fail(err)
+	}
+	labels := requestLabels(request.args)
+	admitted, err := hub.AdmitIssue(kind, contexts, labels, repositories)
+	if err != nil {
+		return a.fail(err)
+	}
+	if request.fromTodo == "" {
+		args := appendJSON(nil, request.json)
+		args = append(args, request.command)
+		if len(admitted.Contexts) > 0 {
+			args = append(args, "--labels", strings.Join(admitted.Contexts, ","))
+		}
+		args = append(args, request.positionals[0])
+		args = append(args, request.args...)
+		return a.runBDMutation(a.dir, args...)
+	}
+
+	todo, err := a.readIssue(request.fromTodo, false)
+	if err != nil {
+		return a.fail(err)
+	}
+	proposed := hub.IssueState{ID: "proposed", Kind: admitted.Kind, Labels: admitted.Labels}
+	if err := hub.ValidateTodoResult(todo.policyState(), proposed); err != nil {
+		return a.fail(err)
+	}
+	priority, _ := strconv.Atoi(strings.TrimPrefix(requestValue(request.args, "--priority", "2"), "P"))
+	plan := graphPlan{
+		Nodes: []graphNode{{
+			Key: "result", Title: request.positionals[0], Type: admitted.Kind,
+			Description: requestValue(request.args, "--description", ""), Priority: priority, Labels: admitted.Labels,
+		}},
+		Edges: []graphEdge{{FromKey: "result", ToID: todo.ID, Type: "discovered-from"}},
+	}
+	id, err := a.runGraph(plan, "result")
+	if err != nil {
+		return a.fail(err)
+	}
+	a.writeCreated(id, request.json)
+	return 0
+}
+
+func (a *app) creationTargets(request request) ([]string, map[string]hub.Repository, error) {
+	if len(request.contexts) == 0 && !request.contextless {
+		registration, err := a.register()
+		if err != nil {
+			return nil, nil, err
+		}
+		config, err := hub.Resolve(a.paths.Config)
+		if err != nil {
+			return nil, nil, err
+		}
+		return []string{registration.Context}, config.Repositories, nil
+	}
+	config, err := hub.Resolve(a.paths.Config)
+	if err != nil {
+		return nil, nil, err
+	}
+	return request.contexts, config.Repositories, nil
+}
+
+func (a *app) replace(request request) int {
+	original, err := a.readIssue(request.positionals[0], true)
+	if err != nil {
+		return a.fail(err)
+	}
+	if original.Status == "closed" {
+		return a.fail(errors.New("cannot replace a closed issue"))
+	}
+	kind := requestValue(request.args, "--type", original.IssueType)
+	if kind != original.IssueType {
+		return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidSupersession, Field: "type", Value: kind, Message: "replacement must keep the original issue type"})
+	}
+	if kind == "decision" {
+		return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidSupersession, Field: "type", Value: kind, Message: "decision does not support explicit replacement targeting"})
+	}
+	config, err := hub.Resolve(a.paths.Config)
+	if err != nil {
+		return a.fail(err)
+	}
+	ordinaryLabels := make([]string, 0, len(original.Labels))
+	for _, label := range original.Labels {
+		if !strings.HasPrefix(label, "ctx:") {
+			ordinaryLabels = append(ordinaryLabels, label)
+		}
+	}
+	admitted, err := hub.AdmitIssue(kind, request.contexts, ordinaryLabels, config.Repositories)
+	if err != nil {
+		return a.fail(err)
+	}
+	proposed := hub.IssueState{ID: "replacement", Kind: kind, Labels: admitted.Labels}
+	if err := hub.ValidateSupersession(proposed, original.policyState()); err != nil {
+		return a.fail(err)
+	}
+
+	title := requestValue(request.args, "--title", original.Title)
+	description := requestValue(request.args, "--description", original.Description)
+	priorityText := requestValue(request.args, "--priority", strconv.Itoa(original.Priority))
+	priority, _ := strconv.Atoi(strings.TrimPrefix(priorityText, "P"))
+	edges := []graphEdge{{FromKey: "replacement", ToID: original.ID, Type: "supersedes"}}
+	for _, dependency := range original.Dependencies {
+		if isOpenBlocking(dependency) {
+			edges = append(edges, graphEdge{FromKey: "replacement", ToID: dependency.ID, Type: "blocks"})
+		}
+	}
+	for _, dependent := range original.Dependents {
+		if isOpenBlocking(dependent) {
+			edges = append(edges, graphEdge{FromID: dependent.ID, ToKey: "replacement", Type: "blocks"})
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		return edges[i].FromID+edges[i].FromKey+edges[i].ToID+edges[i].Type < edges[j].FromID+edges[j].FromKey+edges[j].ToID+edges[j].Type
+	})
+	plan := graphPlan{Nodes: []graphNode{{Key: "replacement", Title: title, Type: kind, Description: description, Priority: priority, Labels: admitted.Labels}}, Edges: edges}
+	replacementID, err := a.runGraph(plan, "replacement")
+	if err != nil {
+		return a.fail(err)
+	}
+	_, closeErr := a.runBDCapture(a.dir, "--json", "close", original.ID, "--force", "--reason", "Superseded by "+replacementID)
+	if closeErr != nil {
+		return a.fail(fmt.Errorf("replacement %s was created but closing original %s failed: %w", replacementID, original.ID, closeErr))
+	}
+	a.signalMutation("replace")
+	a.writeReplacement(original.ID, replacementID, request.json)
+	return 0
+}
+
+func (a *app) compatibility() int {
+	config, err := hub.Resolve(a.paths.Config)
+	if err != nil {
+		return a.fail(err)
+	}
+	data, err := a.runBDCapture(a.dir, "--json", "list", "--all", "--limit", "0")
+	if err != nil {
+		return a.fail(fmt.Errorf("reading authoritative issues: %w", err))
+	}
+	var summaries []bdIssue
+	if err := json.Unmarshal(data, &summaries); err != nil {
+		return a.fail(fmt.Errorf("decoding authoritative issue list: %w", err))
+	}
+	sort.Slice(summaries, func(i, j int) bool { return summaries[i].ID < summaries[j].ID })
+	issues := make(map[string]bdIssue, len(summaries))
+	for _, summary := range summaries {
+		issue, readErr := a.readIssue(summary.ID, false)
+		if readErr != nil {
+			return a.fail(readErr)
+		}
+		issues[issue.ID] = issue
+	}
+
+	findings := make([]compatibilityFinding, 0)
+	for _, summary := range summaries {
+		issue := issues[summary.ID]
+		contexts := hub.Contexts(issue.Labels)
+		if _, kindErr := hub.ClassifyKind(issue.IssueType); kindErr != nil {
+			findings = appendPolicyFinding(findings, issue.ID, kindErr)
+		} else {
+			findings = appendPolicyFinding(findings, issue.ID, hub.ValidateCardinality(issue.IssueType, len(contexts)))
+		}
+		for _, context := range contexts {
+			findings = appendPolicyFinding(findings, issue.ID, hub.ValidateRegisteredContexts([]string{context}, config.Repositories))
+		}
+		for _, relation := range issue.Dependencies {
+			target, ok := issues[relation.ID]
+			if !ok {
+				if relation.DependencyType == "discovered-from" || relation.DependencyType == "parent-child" || relation.DependencyType == "supersedes" {
+					findings = append(findings, compatibilityFinding{Code: "malformed_lifecycle_edge", IssueID: issue.ID, Related: relation.ID, Message: "lifecycle relation references a missing issue"})
+				}
+				continue
+			}
+			var lifecycleErr error
+			switch relation.DependencyType {
+			case "discovered-from":
+				lifecycleErr = hub.ValidateTodoResult(target.policyState(), issue.policyState())
+			case "parent-child":
+				if target.IssueType == "epic" {
+					lifecycleErr = hub.ValidateEpicChild(target.policyState(), issue.policyState())
+				}
+			case "supersedes":
+				lifecycleErr = hub.ValidateSupersession(issue.policyState(), target.policyState())
+				if lifecycleErr == nil && target.Status != "closed" {
+					lifecycleErr = errors.New("superseded original is not closed")
+				}
+			}
+			if lifecycleErr != nil {
+				findings = append(findings, compatibilityFinding{Code: "malformed_lifecycle_edge", IssueID: issue.ID, Related: target.ID, Message: lifecycleErr.Error()})
+			}
+		}
+	}
+	correlationFindings, err := todoCorrelationFindings(config.Ledger, issues)
+	if err != nil {
+		return a.fail(err)
+	}
+	findings = append(findings, correlationFindings...)
+	sort.Slice(findings, func(i, j int) bool {
+		left := findings[i].Code + "\x00" + findings[i].IssueID + "\x00" + findings[i].Related + "\x00" + findings[i].Value
+		right := findings[j].Code + "\x00" + findings[j].IssueID + "\x00" + findings[j].Related + "\x00" + findings[j].Value
+		return left < right
+	})
+	return a.writeJSON(map[string]any{"findings": findings})
+}
+
+func appendPolicyFinding(findings []compatibilityFinding, issueID string, err error) []compatibilityFinding {
+	if err == nil {
+		return findings
+	}
+	var structured *hub.PolicyError
+	if !errors.As(err, &structured) {
+		return findings
+	}
+	return append(findings, compatibilityFinding{Code: string(structured.Code), IssueID: issueID, Value: structured.Value, Message: structured.Message})
+}
+
+func todoCorrelationFindings(path string, issues map[string]bdIssue) ([]compatibilityFinding, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading authoritative correlation ledger: %w", err)
+	}
+	defer file.Close()
+
+	var findings []compatibilityFinding
+	scanner := bufio.NewScanner(file)
+	for line := 1; scanner.Scan(); line++ {
+		var record struct {
+			BeadID string `json:"bead_id"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil || record.BeadID == "" {
+			if err == nil {
+				err = errors.New("missing bead_id")
+			}
+			return nil, fmt.Errorf("reading authoritative correlation ledger line %d: %w", line, err)
+		}
+		if issue, ok := issues[record.BeadID]; ok && issue.IssueType == "todo" {
+			findings = append(findings, compatibilityFinding{Code: "todo_correlation", IssueID: record.BeadID, Message: "todo owns a direct commit correlation"})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading authoritative correlation ledger: %w", err)
+	}
+	return findings, nil
+}
+
+func (a *app) readIssue(id string, includeDependents bool) (bdIssue, error) {
+	args := []string{"--json", "show", id}
+	if includeDependents {
+		args = append(args, "--include-dependents")
+	}
+	data, err := a.runBDCapture(a.dir, args...)
+	if err != nil {
+		return bdIssue{}, fmt.Errorf("reading issue %s: %w", id, err)
+	}
+	var issues []bdIssue
+	if err := json.Unmarshal(data, &issues); err != nil {
+		return bdIssue{}, fmt.Errorf("decoding issue %s: %w", id, err)
+	}
+	if len(issues) != 1 || issues[0].ID != id || issues[0].IssueType == "" || issues[0].Status == "" {
+		return bdIssue{}, fmt.Errorf("issue %s returned an invalid authoritative record", id)
+	}
+	return issues[0], nil
+}
+
+func (a *app) runGraph(plan graphPlan, key string) (string, error) {
+	file, err := os.CreateTemp("", "wbd-graph-*.json")
+	if err != nil {
+		return "", fmt.Errorf("creating graph plan: %w", err)
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("securing graph plan: %w", err)
+	}
+	if err := json.NewEncoder(file).Encode(plan); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("encoding graph plan: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("closing graph plan: %w", err)
+	}
+	data, err := a.runBDCapture(a.dir, "--json", "create", "--graph", path)
+	if err != nil {
+		return "", err
+	}
+	a.signalMutation("graph mutation")
+	var result struct {
+		IDs map[string]string `json:"ids"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", fmt.Errorf("decoding graph result: %w", err)
+	}
+	id := result.IDs[key]
+	if id == "" {
+		return "", fmt.Errorf("graph result omitted %q issue ID", key)
+	}
+	return id, nil
+}
+
+func (a *app) runBDCapture(directory string, arguments ...string) ([]byte, error) {
+	arguments = append([]string{"--db", a.paths.Store}, arguments...)
+	command := exec.Command("bd", arguments...)
+	command.Dir = directory
+	command.Stdin = a.stdin
+	command.Env = isolatedEnvironment(a.paths.Store, false)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, errors.New(detail)
+	}
+	return output, nil
+}
+
+func (a *app) signalMutation(operation string) {
+	if err := hub.SignalChange(a.paths); err != nil {
+		fmt.Fprintf(a.stderr, "wbd: warning: %s succeeded but Viewer notification failed: %v\n", operation, err)
+	}
+}
+
+func (a *app) writeCreated(id string, jsonOutput bool) {
+	if jsonOutput {
+		_ = a.writeJSON(map[string]string{"id": id})
+		return
+	}
+	fmt.Fprintf(a.stdout, "Created issue: %s\n", id)
+}
+
+func (a *app) writeReplacement(original, replacement string, jsonOutput bool) {
+	if jsonOutput {
+		_ = a.writeJSON(map[string]string{"original_id": original, "replacement_id": replacement})
+		return
+	}
+	fmt.Fprintf(a.stdout, "Replaced %s with %s\n", original, replacement)
+}
+
+func (a *app) writeJSON(value any) int {
+	encoder := json.NewEncoder(a.stdout)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return a.fail(fmt.Errorf("encoding JSON output: %w", err))
+	}
+	return 0
+}
+
+func isOpenBlocking(relation bdRelation) bool {
+	return (relation.DependencyType == "" || relation.DependencyType == "blocks") && relation.Status != "closed"
+}
+
+func requestValue(arguments []string, flag, fallback string) string {
+	for index := 0; index+1 < len(arguments); index += 2 {
+		if arguments[index] == flag {
+			return arguments[index+1]
+		}
+	}
+	return fallback
+}
+
+func requestLabels(arguments []string) []string {
+	var labels []string
+	for index := 0; index+1 < len(arguments); index += 2 {
+		if arguments[index] != "--labels" {
+			continue
+		}
+		for _, label := range strings.Split(arguments[index+1], ",") {
+			labels = append(labels, strings.TrimSpace(label))
+		}
+	}
+	return labels
+}
+
+func containsArgument(arguments []string, wanted string) bool {
+	for _, argument := range arguments {
+		if argument == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *app) register() (hub.Registration, error) {
@@ -168,11 +736,18 @@ func (a *app) bootstrap(prefix string) int {
 	if err := need("bd"); err != nil {
 		return a.fail(err)
 	}
+	storeInfo, storeErr := os.Stat(a.paths.Store)
+	if storeErr == nil {
+		if !storeInfo.IsDir() {
+			return a.fail(fmt.Errorf("store path is not a directory: %s", a.paths.Store))
+		}
+		return a.bootstrapExistingStore()
+	}
+	if !errors.Is(storeErr, os.ErrNotExist) {
+		return a.fail(fmt.Errorf("inspecting store: %w", storeErr))
+	}
 	if err := need("git"); err != nil {
 		return a.fail(err)
-	}
-	if _, err := os.Stat(a.paths.Store); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return a.fail(fmt.Errorf("store already exists: %s", a.paths.Store))
 	}
 	home := os.Getenv("HOME")
 	info, err := os.Stat(home)
@@ -197,6 +772,7 @@ func (a *app) bootstrap(prefix string) int {
 	}{
 		{true, []string{"metrics", "off"}},
 		{true, []string{"init", "--prefix", prefix, "--non-interactive", "--skip-hooks", "--skip-agents"}},
+		{false, []string{"config", "set", "types.custom", "todo"}},
 		{false, []string{"config", "set", "export.auto", "false"}},
 		{false, []string{"config", "set", "export.git-add", "false"}},
 		{false, []string{"config", "set", "dolt.auto-push", "false"}},
@@ -215,6 +791,72 @@ func (a *app) bootstrap(prefix string) int {
 	return 0
 }
 
+func (a *app) bootstrapExistingStore() int {
+	types, err := a.customIssueTypes()
+	if err != nil {
+		return a.fail(fmt.Errorf("reading existing custom issue types: %w", err))
+	}
+	if _, err := hub.EnsureConfig(a.paths); err != nil {
+		return a.fail(err)
+	}
+	changed := !containsString(types, "todo")
+	if changed {
+		types = append(types, "todo")
+		if _, err := a.runBDCapture(a.dir, "--json", "config", "set", customIssueTypesKey, strings.Join(types, ",")); err != nil {
+			return a.fail(fmt.Errorf("enabling todo issue type: %w", err))
+		}
+	}
+	if changed {
+		fmt.Fprintln(a.stdout, "Hub store ready: todo issue type enabled.")
+	} else {
+		fmt.Fprintln(a.stdout, "Hub store ready: todo issue type already enabled.")
+	}
+	return 0
+}
+
+func (a *app) requireTodoCapability() error {
+	types, err := a.customIssueTypes()
+	if err != nil {
+		return fmt.Errorf("todo issue type capability could not be verified: %w; run 'wbd bootstrap' to enable it", err)
+	}
+	if !containsString(types, "todo") {
+		return errors.New("todo issue type is unavailable in the Hub store; run 'wbd bootstrap' to enable it")
+	}
+	return nil
+}
+
+func (a *app) customIssueTypes() ([]string, error) {
+	data, err := a.runBDCapture(a.dir, "--readonly", "--json", "config", "get", customIssueTypesKey)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Value *string `json:"value"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decoding custom issue types: %w", err)
+	}
+	if result.Value == nil {
+		return nil, nil
+	}
+	var types []string
+	for _, issueType := range strings.Split(*result.Value, ",") {
+		if issueType = strings.TrimSpace(issueType); issueType != "" {
+			types = append(types, issueType)
+		}
+	}
+	return types, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *app) runBD(directory string, arguments ...string) int {
 	return a.runBDAt(directory, false, arguments...)
 }
@@ -224,9 +866,7 @@ func (a *app) runBDMutation(directory string, arguments ...string) int {
 	if code != 0 {
 		return code
 	}
-	if err := hub.SignalChange(a.paths); err != nil {
-		fmt.Fprintf(a.stderr, "wbd: warning: mutation succeeded but Viewer notification failed: %v\n", err)
-	}
+	a.signalMutation("mutation")
 	return 0
 }
 
@@ -263,6 +903,17 @@ func (a *app) runChild(directory, name string, arguments []string, viewer bool) 
 }
 
 func (a *app) fail(err error) int {
+	if a.jsonFailure {
+		code := "invalid_request"
+		var policyErr *hub.PolicyError
+		if errors.As(err, &policyErr) {
+			code = string(policyErr.Code)
+		}
+		_ = json.NewEncoder(a.stderr).Encode(map[string]any{
+			"error": map[string]string{"code": code, "message": err.Error()},
+		})
+		return 1
+	}
 	fmt.Fprintf(a.stderr, "wbd: %v\n", err)
 	return 1
 }
