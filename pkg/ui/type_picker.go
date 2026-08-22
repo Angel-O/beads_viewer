@@ -137,14 +137,24 @@ func (m *TypePickerModel) clampSelection() {
 }
 
 func (m *TypePickerModel) View() string {
-	if m.width == 0 {
+	if m.width == 0 && m.height == 0 {
 		m.width = 60
-	}
-	if m.height == 0 {
 		m.height = 20
 	}
-	if m.width < 14 || m.height < 5 {
-		return lipgloss.Place(max(1, m.width), max(1, m.height), lipgloss.Center, lipgloss.Center, "Types")
+	if m.width <= 0 || m.height <= 0 {
+		return ""
+	}
+	if m.width < 14 || m.height < 9 {
+		label := "Types"
+		if m.selectedIndex >= 0 && m.selectedIndex < len(m.types) {
+			check := "[ ]"
+			if m.selected[m.types[m.selectedIndex]] {
+				check = "[x]"
+			}
+			label = check + " " + string(m.types[m.selectedIndex])
+		}
+		label = truncateRunesHelper(label, m.width, "…")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, label)
 	}
 
 	boxWidth := 54
@@ -153,11 +163,12 @@ func (m *TypePickerModel) View() string {
 	}
 	contentWidth := max(1, boxWidth-4)
 	titleStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true)
-	lines := []string{titleStyle.Render("Issue Type Filter"), ""}
+	lines := []string{titleStyle.Render(truncateRunesHelper("Issue Type Filter", contentWidth, "...")), ""}
 	if len(m.types) == 0 {
-		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(m.theme.Secondary).Italic(true).Render("No issue types loaded."))
+		empty := truncateRunesHelper("No issue types loaded.", contentWidth, "...")
+		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(m.theme.Secondary).Italic(true).Render(empty))
 	} else {
-		maxVisible := max(1, min(12, m.height-9))
+		maxVisible := max(1, min(12, m.height-8))
 		start := 0
 		if m.selectedIndex >= maxVisible {
 			start = m.selectedIndex - maxVisible + 1

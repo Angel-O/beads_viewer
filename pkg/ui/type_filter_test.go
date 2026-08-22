@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -150,5 +151,44 @@ func TestBareTypeNameRemainsFuzzySearchText(t *testing.T) {
 	}
 	if !foundTask {
 		t.Fatalf("ordinary fuzzy search omitted task whose title contains bug: %#v", visible)
+	}
+}
+
+func TestTypePickerRenderingFitsTinyAndBoundaryAllocations(t *testing.T) {
+	wideType := model.IssueType("事故調査種別")
+	picker := NewTypePickerModel(
+		[]model.IssueType{model.TypeBug, wideType},
+		map[model.IssueType]bool{wideType: true},
+		DefaultTheme(lipgloss.NewRenderer(nil)),
+	)
+	picker.MoveDown()
+
+	tests := []struct {
+		name          string
+		width, height int
+	}{
+		{name: "single cell", width: 1, height: 1},
+		{name: "narrow compact", width: 7, height: 4},
+		{name: "width boundary short", width: 14, height: 5},
+		{name: "width boundary tall compact", width: 14, height: 8},
+		{name: "minimum modal", width: 14, height: 9},
+		{name: "wide name narrow modal", width: 18, height: 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			picker.SetSize(tt.width, tt.height)
+			view := picker.View()
+			if width := lipgloss.Width(view); width > tt.width {
+				t.Fatalf("rendered width = %d, allocation = %d:\n%s", width, tt.width, view)
+			}
+			if height := lipgloss.Height(view); height > tt.height {
+				t.Fatalf("rendered height = %d, allocation = %d:\n%s", height, tt.height, view)
+			}
+		})
+	}
+
+	selected := picker.SelectedTypes()
+	if len(selected) != 1 || !selected[wideType] {
+		t.Fatalf("rendering changed exact selection: %#v", selected)
 	}
 }
