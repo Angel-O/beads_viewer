@@ -811,10 +811,10 @@ func TestRepositoryBadgeKeepsLocalFormatAndKeysHubColorByIdentity(t *testing.T) 
 	if GetRepoColor("ctx:alpha") == GetRepoColor("ctx:gamma") {
 		t.Fatal("test identities unexpectedly share a color")
 	}
-	if got := RenderRepositoryBadge("ctx:beads-viewer-c67191f28f", "beads_viewer"); !strings.Contains(got, "[beads_viewer]") {
+	if got := RenderRepositoryBadge("ctx:viewer", "beads_viewer"); !strings.Contains(got, "[beads_viewer]") {
 		t.Fatalf("Hub badge did not show full friendly name: %q", got)
 	}
-	if got := RenderRepositoryBadge("ctx:mcp-discovery-e7538468e4", "mcp-discovery"); !strings.Contains(got, "[mcp-discovery]") {
+	if got := RenderRepositoryBadge("ctx:discovery", "mcp-discovery"); !strings.Contains(got, "[mcp-discovery]") {
 		t.Fatalf("Hub badge did not show full mcp-discovery name: %q", got)
 	}
 	if got := RenderRepositoryBadgeCompact("ctx:long", "readable-repository-name", 10); got != "[readable-…]" {
@@ -826,11 +826,11 @@ func TestRepositoryBadgeKeepsLocalFormatAndKeysHubColorByIdentity(t *testing.T) 
 }
 
 func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
-	issue := model.Issue{ID: "global-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:beads-viewer-c67191f28f"}}
+	issue := model.Issue{ID: "issue-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = model.RepositoryCatalog{{
-		ID: "ctx:beads-viewer-c67191f28f", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext,
+		ID: "ctx:alpha", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext,
 	}}
 	m.refreshRepositoryPresentation()
 	row := m.list.View()
@@ -840,7 +840,7 @@ func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
 }
 
 func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
-	issue := model.Issue{ID: "global-todo", Title: "Inbox", Status: model.StatusOpen, IssueType: "todo"}
+	issue := model.Issue{ID: "todo-1", Title: "Inbox", Status: model.StatusOpen, IssueType: "todo"}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha")
@@ -854,7 +854,7 @@ func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
 }
 
 func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
-	issue := model.Issue{ID: "global-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
+	issue := model.Issue{ID: "issue-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = model.RepositoryCatalog{
@@ -864,7 +864,7 @@ func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
 	m.list.SetSize(50, 10)
 	m.refreshRepositoryPresentation()
 	row := m.list.View()
-	if !containsAll(row, "…", "+1", "global-7td") {
+	if !containsAll(row, "…", "+1", "issue-7td") {
 		t.Fatalf("narrow list row lost constrained badge metadata or ID: %q", row)
 	}
 }
