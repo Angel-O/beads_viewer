@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -21,6 +22,7 @@ type childCall struct {
 	Args []string          `json:"args"`
 	Env  map[string]string `json:"env"`
 	Dir  string            `json:"dir"`
+	Plan json.RawMessage   `json:"plan,omitempty"`
 }
 
 func TestMain(m *testing.M) {
@@ -47,6 +49,14 @@ func fakeChild() {
 		Env:  environment,
 		Dir:  directory,
 	}
+	if key := fakeCommandKey(call.Args); key == "create:graph" {
+		for index, argument := range call.Args {
+			if argument == "--graph" && index+1 < len(call.Args) {
+				call.Plan, _ = os.ReadFile(call.Args[index+1])
+				break
+			}
+		}
+	}
 	file, err := os.OpenFile(os.Getenv("WBD_CALLS"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		os.Exit(97)
@@ -61,8 +71,55 @@ func fakeChild() {
 			os.Exit(95)
 		}
 	}
+	responses := make(map[string]string)
+	if raw := os.Getenv("WBD_RESPONSES"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &responses); err != nil {
+			os.Exit(94)
+		}
+	}
+	key := fakeCommandKey(call.Args)
+	response := responses[key]
+	if response == "" && strings.HasPrefix(key, "show:") {
+		id := strings.TrimPrefix(key, "show:")
+		response = fmt.Sprintf(`[{"id":%q,"title":"Issue","status":"open","priority":2,"issue_type":"task"}]`, id)
+	}
+	if response != "" {
+		_, _ = io.WriteString(os.Stdout, response)
+	}
 	code, _ := strconv.Atoi(os.Getenv("WBD_CHILD_EXIT"))
+	exitCodes := make(map[string]int)
+	if raw := os.Getenv("WBD_EXIT_CODES"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &exitCodes); err != nil {
+			os.Exit(93)
+		}
+	}
+	if commandCode, ok := exitCodes[key]; ok {
+		code = commandCode
+	}
 	os.Exit(code)
+}
+
+func fakeCommandKey(arguments []string) string {
+	for len(arguments) > 0 {
+		switch arguments[0] {
+		case "--db":
+			arguments = arguments[2:]
+		case "--json":
+			arguments = arguments[1:]
+		default:
+			if arguments[0] == "show" && len(arguments) > 1 {
+				return "show:" + arguments[1]
+			}
+			if arguments[0] == "create" && len(arguments) > 1 && arguments[1] == "--graph" {
+				return "create:graph"
+			}
+			if (arguments[0] == "close" || arguments[0] == "reopen") && len(arguments) > 1 {
+				return arguments[0] + ":" + arguments[1]
+			}
+			return arguments[0]
+		}
+	}
+	return ""
 }
 
 func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
@@ -96,6 +153,319 @@ func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 	config := readTestConfig(t, test.config)
 	if config.Repositories[context].Path != test.repository {
 		t.Fatalf("registered repository = %#v", config.Repositories)
+	}
+}
+
+func TestCreateTargetingAndAdmission(t *testing.T) {
+	t.Run("explicit target does not register current", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+		code, _, stderr := test.run("create", "Explicit", "--context", "ctx:target", "--context", "ctx:target", "--type", "task")
+		if code != 0 {
+			t.Fatalf("run code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		want := []string{"--db", test.store, "create", "--labels", "ctx:target", "Explicit", "--type", "task"}
+		if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls = %#v, want %#v", calls, want)
+		}
+		if got := readTestConfig(t, test.config).Repositories; len(got) != 1 {
+			t.Fatalf("explicit create registered current repository: %#v", got)
+		}
+	})
+
+	t.Run("contextless todo", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+		code, _, stderr := test.run("create", "Inbox", "--type", "todo", "--contextless")
+		if code != 0 {
+			t.Fatalf("run code = %d, stderr = %q", code, stderr)
+		}
+		want := []string{"--db", test.store, "create", "Inbox", "--type", "todo"}
+		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls = %#v, want %#v", calls, want)
+		}
+	})
+
+	t.Run("invalid cardinality fails before mutation", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+		code, _, stderr := test.run("--json", "create", "Invalid", "--type", "task", "--contextless")
+		if code != 1 || !strings.Contains(stderr, `"code":"invalid_cardinality"`) {
+			t.Fatalf("run code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 0 {
+			t.Fatalf("invalid admission mutated store: %#v", calls)
+		}
+	})
+
+	t.Run("unregistered target fails before mutation", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+		code, _, stderr := test.run("--json", "create", "Invalid", "--context", "ctx:unknown")
+		if code != 1 || !strings.Contains(stderr, `"code":"unregistered_context"`) {
+			t.Fatalf("run code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 0 {
+			t.Fatalf("unregistered target mutated store: %#v", calls)
+		}
+	})
+
+	t.Run("decision permits only default current", func(t *testing.T) {
+		test := newAppTest(t, true)
+		code, _, stderr := test.run("create", "Decision", "--type", "decision")
+		if code != 0 {
+			t.Fatalf("default-current decision code = %d, stderr = %q", code, stderr)
+		}
+		test = newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+		code, _, stderr = test.run("--json", "create", "Decision", "--type", "decision", "--context", "ctx:target")
+		if code != 1 || len(test.calls()) != 0 {
+			t.Fatalf("explicit decision code = %d, stderr = %q, calls = %#v", code, stderr, test.calls())
+		}
+	})
+}
+
+func TestCreateFromTodoUsesOneGraphMutation(t *testing.T) {
+	test := newAppTest(t, true)
+	writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+	setResponses(t, map[string]string{
+		"show:todo-1":  `[{"id":"todo-1","title":"Capture","status":"open","priority":2,"issue_type":"todo"}]`,
+		"create:graph": `{"ids":{"result":"work-1"}}`,
+	})
+	code, stdout, stderr := test.run("create", "Implement", "--type", "task", "--context", "ctx:target", "--from-todo", "todo-1", "--labels", "team")
+	if code != 0 {
+		t.Fatalf("run code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "work-1") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	calls := test.calls()
+	if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:todo-1" || fakeCommandKey(calls[1].Args) != "create:graph" {
+		t.Fatalf("calls = %#v", calls)
+	}
+	var plan graphPlan
+	if err := json.Unmarshal(calls[1].Plan, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Nodes) != 1 || !reflect.DeepEqual(plan.Nodes[0].Labels, []string{"team", "ctx:target"}) {
+		t.Fatalf("graph nodes = %#v", plan.Nodes)
+	}
+	if len(plan.Edges) != 1 || plan.Edges[0].Type != "discovered-from" || plan.Edges[0].ToID != "todo-1" {
+		t.Fatalf("graph edges = %#v", plan.Edges)
+	}
+}
+
+func TestReplaceCopiesOpenBlockingContinuityThenCloses(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:new": "/new"})
+	setResponses(t, map[string]string{
+		"show:old-1":   `[{"id":"old-1","title":"Original","description":"Details","status":"open","priority":1,"issue_type":"task","labels":["ctx:old","team"],"dependencies":[{"id":"blocker-open","status":"open","dependency_type":"blocks"},{"id":"blocker-closed","status":"closed","dependency_type":"blocks"},{"id":"related","status":"open","dependency_type":"related"}],"dependents":[{"id":"dependent-open","status":"in_progress","dependency_type":"blocks"},{"id":"dependent-closed","status":"closed","dependency_type":"blocks"}] }]`,
+		"create:graph": `{"ids":{"replacement":"new-1"}}`,
+		"close:old-1":  `{}`,
+	})
+	code, stdout, stderr := test.run("replace", "old-1", "--context", "ctx:new")
+	if code != 0 {
+		t.Fatalf("run code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "new-1") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	calls := test.calls()
+	if len(calls) != 3 || fakeCommandKey(calls[1].Args) != "create:graph" || fakeCommandKey(calls[2].Args) != "close:old-1" {
+		t.Fatalf("calls = %#v", calls)
+	}
+	if !reflect.DeepEqual(calls[2].Args[len(calls[2].Args)-2:], []string{"--reason", "Superseded by new-1"}) {
+		t.Fatalf("close args = %#v", calls[2].Args)
+	}
+	var plan graphPlan
+	if err := json.Unmarshal(calls[1].Plan, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Nodes) != 1 || plan.Nodes[0].Title != "Original" || plan.Nodes[0].Description != "Details" || plan.Nodes[0].Priority != 1 {
+		t.Fatalf("replacement inheritance = %#v", plan.Nodes)
+	}
+	if !reflect.DeepEqual(plan.Nodes[0].Labels, []string{"team", "ctx:new"}) {
+		t.Fatalf("replacement labels = %#v", plan.Nodes[0].Labels)
+	}
+	wantEdges := map[string]bool{
+		"replacement||old-1|supersedes":      true,
+		"replacement||blocker-open|blocks":   true,
+		"|dependent-open|replacement|blocks": true,
+	}
+	for _, edge := range plan.Edges {
+		delete(wantEdges, edge.FromKey+"|"+edge.FromID+"|"+firstNonEmpty(edge.ToID, edge.ToKey)+"|"+edge.Type)
+	}
+	if len(wantEdges) != 0 || len(plan.Edges) != 3 {
+		t.Fatalf("graph edges = %#v, missing = %#v", plan.Edges, wantEdges)
+	}
+}
+
+func TestReplaceCloseFailureNamesPersistedReplacement(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:new": "/new"})
+	setResponses(t, map[string]string{
+		"show:old-1":   `[{"id":"old-1","title":"Original","status":"open","priority":2,"issue_type":"task","labels":["ctx:old"]}]`,
+		"create:graph": `{"ids":{"replacement":"new-1"}}`,
+	})
+	setExitCodes(t, map[string]int{"close:old-1": 8})
+	code, _, stderr := test.run("replace", "old-1", "--context", "ctx:new")
+	if code != 1 || !strings.Contains(stderr, "replacement new-1 was created") {
+		t.Fatalf("run code = %d, stderr = %q", code, stderr)
+	}
+	if calls := test.calls(); len(calls) != 3 {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
+func TestReplaceRejectsDecisionExplicitTarget(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:new": "/new"})
+	setResponses(t, map[string]string{
+		"show:decision-1": `[{"id":"decision-1","title":"Decision","status":"open","priority":2,"issue_type":"decision","labels":["ctx:old"]}]`,
+	})
+	code, _, stderr := test.run("--json", "replace", "decision-1", "--context", "ctx:new")
+	if code != 1 || !strings.Contains(stderr, `"code":"invalid_supersession"`) {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if calls := test.calls(); len(calls) != 1 || fakeCommandKey(calls[0].Args) != "show:decision-1" {
+		t.Fatalf("decision replacement mutated store: %#v", calls)
+	}
+}
+
+func TestEpicParentAndSupersededReopenPrevalidation(t *testing.T) {
+	t.Run("outside epic context", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{
+			"show:child-1": `[{"id":"child-1","status":"open","issue_type":"task","labels":["ctx:outside"]}]`,
+			"show:epic-1":  `[{"id":"epic-1","status":"open","issue_type":"epic","labels":["ctx:inside"]}]`,
+		})
+		code, _, _ := test.run("dep", "add", "child-1", "epic-1", "--type", "parent-child")
+		if code != 1 || len(test.calls()) != 2 {
+			t.Fatalf("code = %d, calls = %#v", code, test.calls())
+		}
+	})
+
+	t.Run("valid epic child delegates", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{
+			"show:child-1": `[{"id":"child-1","status":"open","issue_type":"task","labels":["ctx:inside"]}]`,
+			"show:epic-1":  `[{"id":"epic-1","status":"open","issue_type":"epic","labels":["ctx:inside","ctx:other"]}]`,
+		})
+		code, _, stderr := test.run("dep", "add", "child-1", "epic-1", "--type", "parent-child")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 3 || fakeCommandKey(calls[2].Args) != "dep" {
+			t.Fatalf("calls = %#v", calls)
+		}
+	})
+
+	t.Run("superseded issue", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{
+			"show:old-1": `[{"id":"old-1","status":"closed","issue_type":"task","dependents":[{"id":"new-1","status":"open","issue_type":"task","dependency_type":"supersedes"}]}]`,
+		})
+		code, _, stderr := test.run("reopen", "old-1")
+		if code != 1 || !strings.Contains(stderr, "cannot be routinely reopened") || len(test.calls()) != 1 {
+			t.Fatalf("code = %d, stderr = %q, calls = %#v", code, stderr, test.calls())
+		}
+	})
+}
+
+func TestCompatibilityReportsAcceptedFindingClasses(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:known": "/known"})
+	if err := os.MkdirAll(filepath.Dir(test.app.paths.Ledger), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(test.app.paths.Ledger, []byte(`{"bead_id":"todo-1","context":"ctx:known","commit":"abc"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setResponses(t, map[string]string{
+		"list":             `[{"id":"bad-kind"},{"id":"bad-count"},{"id":"bad-context"},{"id":"todo-1"},{"id":"new-1"},{"id":"old-1"}]`,
+		"show:bad-kind":    `[{"id":"bad-kind","status":"open","issue_type":"question","labels":["ctx:known"]}]`,
+		"show:bad-count":   `[{"id":"bad-count","status":"open","issue_type":"task","dependencies":[{"id":"old-1","dependency_type":"discovered-from"}]}]`,
+		"show:bad-context": `[{"id":"bad-context","status":"open","issue_type":"todo","labels":["ctx:missing-a","ctx:missing-b"]}]`,
+		"show:todo-1":      `[{"id":"todo-1","status":"open","issue_type":"todo"}]`,
+		"show:new-1":       `[{"id":"new-1","status":"open","issue_type":"task","labels":["ctx:known"],"dependencies":[{"id":"old-1","dependency_type":"supersedes"}]}]`,
+		"show:old-1":       `[{"id":"old-1","status":"closed","issue_type":"bug","labels":["ctx:known"]}]`,
+	})
+	code, stdout, stderr := test.run("compatibility", "--json")
+	if code != 0 {
+		t.Fatalf("run code = %d, stderr = %q", code, stderr)
+	}
+	for _, code := range []string{"invalid_kind", "invalid_cardinality", "unregistered_context", "todo_correlation", "malformed_lifecycle_edge"} {
+		if !strings.Contains(stdout, `"code":"`+code+`"`) {
+			t.Errorf("output missing %s: %s", code, stdout)
+		}
+	}
+	var report struct {
+		Findings []compatibilityFinding `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Findings) != 7 {
+		t.Fatalf("findings = %#v, want 7 independent violations", report.Findings)
+	}
+	var missingContexts []string
+	for index, finding := range report.Findings {
+		if index > 0 {
+			previous := report.Findings[index-1]
+			left := previous.Code + "\x00" + previous.IssueID + "\x00" + previous.Related + "\x00" + previous.Value
+			right := finding.Code + "\x00" + finding.IssueID + "\x00" + finding.Related + "\x00" + finding.Value
+			if left > right {
+				t.Fatalf("findings are not deterministic: %#v", report.Findings)
+			}
+		}
+		if finding.Code == "unregistered_context" {
+			missingContexts = append(missingContexts, finding.Value)
+		}
+	}
+	if !reflect.DeepEqual(missingContexts, []string{"ctx:missing-a", "ctx:missing-b"}) {
+		t.Fatalf("unregistered findings = %#v", missingContexts)
+	}
+	for _, call := range test.calls() {
+		key := fakeCommandKey(call.Args)
+		if key != "list" && !strings.HasPrefix(key, "show:") {
+			t.Fatalf("compatibility performed mutation: %#v", call)
+		}
+	}
+}
+
+func TestCompatibilityUnreadableAuthoritativeDataFails(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:known": "/known"})
+	if err := os.MkdirAll(filepath.Dir(test.app.paths.Ledger), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(test.app.paths.Ledger, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setResponses(t, map[string]string{"list": `[]`})
+	code, _, stderr := test.run("compatibility", "--json")
+	if code != 1 || !strings.Contains(stderr, "authoritative correlation ledger") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+}
+
+func TestParserRejectsRemovedAndInvalidCompositions(t *testing.T) {
+	tests := [][]string{
+		{"update", "item-1", "--type", "bug"},
+		{"dep", "add", "item-1", "item-2", "--type", "supersedes"},
+		{"create", "Title", "--context", "ctx:a", "--contextless"},
+		{"create", "Title", "--type", "custom-kind"},
+		{"replace", "item-1", "--context", "ctx:a", "--from-todo", "todo-1"},
+		{"compatibility"},
+	}
+	for _, arguments := range tests {
+		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
+			if _, err := parse(arguments); err == nil {
+				t.Fatalf("parse(%#v) succeeded", arguments)
+			}
+		})
 	}
 }
 
@@ -141,10 +511,27 @@ func TestLinkDelegatesToBVWithRegistrationAndIsolation(t *testing.T) {
 	context := contextForTest(t, test.repository)
 	want := []string{"correlate", "add", "--bead", "bead-12", "--repo", context, "--commit", "HEAD~2", "--hub-config", test.config}
 	calls := test.calls()
-	if len(calls) != 1 || calls[0].Name != "bv" || !reflect.DeepEqual(calls[0].Args, want) {
+	if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:bead-12" || calls[1].Name != "bv" || !reflect.DeepEqual(calls[1].Args, want) {
 		t.Fatalf("calls = %#v, want args %#v", calls, want)
 	}
-	assertIsolatedEnvironment(t, calls[0].Env, test.store, true)
+	assertIsolatedEnvironment(t, calls[1].Env, test.store, true)
+	if data, err := os.ReadFile(hub.ChangeSignalPath(test.app.paths)); err != nil || len(data) == 0 {
+		t.Fatalf("Viewer signal missing after link: data=%q err=%v", data, err)
+	}
+}
+
+func TestLinkRejectsTodoBeforeCorrelation(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{
+		"show:todo-1": `[{"id":"todo-1","status":"open","issue_type":"todo"}]`,
+	})
+	code, _, stderr := test.run("link", "todo-1")
+	if code != 1 || !strings.Contains(stderr, "todo cannot own a direct commit correlation") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if calls := test.calls(); len(calls) != 1 || calls[0].Name != "bd" {
+		t.Fatalf("todo link delegated correlation mutation: %#v", calls)
+	}
 }
 
 func TestBootstrapUsesDefaultPrefixAndExactSequence(t *testing.T) {
@@ -158,6 +545,7 @@ func TestBootstrapUsesDefaultPrefixAndExactSequence(t *testing.T) {
 	want := [][]string{
 		{"metrics", "off"},
 		{"init", "--prefix", "bead", "--non-interactive", "--skip-hooks", "--skip-agents"},
+		{"--db", test.store, "config", "set", "types.custom", "todo"},
 		{"--db", test.store, "config", "set", "export.auto", "false"},
 		{"--db", test.store, "config", "set", "export.git-add", "false"},
 		{"--db", test.store, "config", "set", "dolt.auto-push", "false"},
@@ -477,4 +865,55 @@ func readTestConfig(t *testing.T, path string) testConfig {
 		t.Fatal(err)
 	}
 	return config
+}
+
+func writeHubConfig(t *testing.T, test *appTest, repositories map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(test.config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wire := map[string]any{
+		"version": 1,
+		"store":   test.store,
+		"ledger":  test.app.paths.Ledger,
+	}
+	repositoryWire := make(map[string]map[string]string, len(repositories))
+	for context, path := range repositories {
+		repositoryWire[context] = map[string]string{"path": path}
+	}
+	wire["repositories"] = repositoryWire
+	data, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(test.config, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setResponses(t *testing.T, responses map[string]string) {
+	t.Helper()
+	data, err := json.Marshal(responses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WBD_RESPONSES", string(data))
+}
+
+func setExitCodes(t *testing.T, codes map[string]int) {
+	t.Helper()
+	data, err := json.Marshal(codes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WBD_EXIT_CODES", string(data))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
