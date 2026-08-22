@@ -205,11 +205,12 @@ const (
 
 // IssueTreeNode represents a node in the hierarchical issue tree
 type IssueTreeNode struct {
-	Issue    *model.Issue     // Reference to the actual issue
-	Children []*IssueTreeNode // Child nodes
-	Expanded bool             // Is this node expanded?
-	Depth    int              // Nesting level (0 = root)
-	Parent   *IssueTreeNode   // Back-reference for navigation
+	Issue         *model.Issue     // Reference to the actual issue
+	Children      []*IssueTreeNode // Child nodes
+	Expanded      bool             // Is this node expanded?
+	Depth         int              // Nesting level (0 = root)
+	Parent        *IssueTreeNode   // Back-reference for navigation
+	OmittedParent bool             // Canonical parent exists but is outside the projection
 }
 
 // TreeModel manages the hierarchical tree view state
@@ -354,6 +355,30 @@ func (t *TreeModel) Build(issues []model.Issue) {
 	t.rebuildFlatList()
 
 	t.built = true
+}
+
+// BuildProjected builds visible nodes while retaining evidence that a visible
+// root has a canonical parent outside the candidate projection.
+func (t *TreeModel) BuildProjected(issues []model.Issue, canonical map[string]*model.Issue) {
+	t.Build(issues)
+	visible := make(map[string]bool, len(issues))
+	for _, issue := range issues {
+		visible[issue.ID] = true
+	}
+	for _, node := range t.issueMap {
+		if node == nil || node.Issue == nil || node.Parent != nil {
+			continue
+		}
+		for _, dependency := range node.Issue.Dependencies {
+			if dependency == nil || dependency.Type != model.DepParentChild || visible[dependency.DependsOnID] {
+				continue
+			}
+			if canonical[dependency.DependsOnID] != nil {
+				node.OmittedParent = true
+				break
+			}
+		}
+	}
 }
 
 // BuildFromSnapshot wires the tree view to precomputed tree data from a DataSnapshot.
@@ -604,6 +629,9 @@ func (t *TreeModel) renderNode(node *IssueTreeNode, isSelected bool) string {
 	// Build the tree prefix (indentation + branch characters)
 	prefix := t.buildTreePrefix(node)
 	sb.WriteString(prefix)
+	if node.OmittedParent {
+		sb.WriteString(r.NewStyle().Foreground(t.theme.Muted).Render("[parent out of scope] "))
+	}
 
 	// Expand/collapse indicator
 	indicator := t.getExpandIndicator(node)

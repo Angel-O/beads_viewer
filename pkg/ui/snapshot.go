@@ -960,9 +960,10 @@ func deepCopyTree(roots []*IssueTreeNode, nodeMap map[string]*IssueTreeNode, iss
 			}
 		}
 		newNode := &IssueTreeNode{
-			Issue:    issue,
-			Expanded: oldNode.Expanded,
-			Depth:    oldNode.Depth,
+			Issue:         issue,
+			Expanded:      oldNode.Expanded,
+			Depth:         oldNode.Depth,
+			OmittedParent: oldNode.OmittedParent,
 			// Children and Parent set in second pass
 		}
 		oldToNew[oldNode] = newNode

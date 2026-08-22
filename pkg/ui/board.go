@@ -31,6 +31,7 @@ type BoardModel struct {
 
 	// Issue lookup map: ID -> *Issue for getting blocker titles (bv-kklp)
 	issueMap          map[string]*model.Issue
+	candidateIDs      map[string]bool
 	repositoryCatalog model.RepositoryCatalog
 	hubPresentation   bool
 
@@ -439,8 +440,10 @@ func NewBoardModel(issues []model.Issue, theme Theme) BoardModel {
 
 	// Build issue lookup map for getting blocker titles (bv-kklp)
 	issueMap := make(map[string]*model.Issue, len(issues))
+	candidateIDs := make(map[string]bool, len(issues))
 	for i := range issues {
 		issueMap[issues[i].ID] = &issues[i]
+		candidateIDs[issues[i].ID] = true
 	}
 
 	b := BoardModel{
@@ -451,6 +454,7 @@ func NewBoardModel(issues []model.Issue, theme Theme) BoardModel {
 		allIssues:    issues,       // Store for regrouping (bv-wjs0)
 		blocksIndex:  buildBlocksIndex(issues),
 		issueMap:     issueMap,
+		candidateIDs: candidateIDs,
 		detailVP:     viewport.New(40, 20),
 		mdRenderer:   mdRenderer,
 	}
@@ -471,8 +475,10 @@ func (b *BoardModel) SetIssues(issues []model.Issue) {
 
 	// Rebuild issue lookup map for blocker titles (bv-kklp)
 	b.issueMap = make(map[string]*model.Issue, len(issues))
+	b.candidateIDs = make(map[string]bool, len(issues))
 	for i := range issues {
 		b.issueMap[issues[i].ID] = &issues[i]
+		b.candidateIDs[issues[i].ID] = true
 	}
 
 	// Clear search state - stale matches could reference invalid positions (bv-yg39)
@@ -498,6 +504,29 @@ func (b *BoardModel) SetIssues(issues []model.Issue) {
 	b.updateActiveColumns()
 }
 
+// SetCanonicalIssues keeps dependency truth global while board cards remain a
+// projected candidate set.
+func (b *BoardModel) SetCanonicalIssues(issues []model.Issue) {
+	b.issueMap = make(map[string]*model.Issue, len(issues))
+	for i := range issues {
+		b.issueMap[issues[i].ID] = &issues[i]
+	}
+	b.blocksIndex = buildBlocksIndex(issues)
+	b.lastDetailID = ""
+}
+
+func (b BoardModel) hasOpenBlocker(issue model.Issue) bool {
+	for _, dependency := range issue.Dependencies {
+		if dependency == nil || !dependency.Type.IsBlocking() {
+			continue
+		}
+		if blocker := b.issueMap[dependency.DependsOnID]; blocker != nil && !isClosedLikeStatus(blocker.Status) {
+			return true
+		}
+	}
+	return false
+}
+
 // SetSnapshot updates the board data directly from a DataSnapshot (bv-guxz).
 // This avoids UI-thread grouping/sorting work when the full dataset is shown.
 func (b *BoardModel) SetSnapshot(s *DataSnapshot) {
@@ -507,6 +536,7 @@ func (b *BoardModel) SetSnapshot(s *DataSnapshot) {
 	}
 
 	b.allIssues = s.Issues
+	b.candidateIDs = issueIDSet(s.Issues)
 	b.boardState = s.BoardState
 
 	if b.boardState != nil {
@@ -1295,13 +1325,7 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (bv-kklp)
 	// ══════════════════════════════════════════════════════════════════════════
-	hasBlockingDeps := false
-	for _, dep := range issue.Dependencies {
-		if dep != nil && dep.Type.IsBlocking() {
-			hasBlockingDeps = true
-			break
-		}
-	}
+	hasBlockingDeps := b.hasOpenBlocker(issue)
 	blocksOthers := len(b.blocksIndex[issue.ID]) > 0
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1443,13 +1467,20 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// Blocked-by indicator: 🚫←bv-456 (title...) - show first blocking dep with title (bv-kklp)
 	for _, dep := range issue.Dependencies {
 		if dep != nil && dep.Type.IsBlocking() {
+			blocker := b.issueMap[dep.DependsOnID]
+			if blocker == nil || isClosedLikeStatus(blocker.Status) {
+				continue
+			}
 			blockerID := truncateRunesHelper(dep.DependsOnID, 10, "…")
 			blockedStyle := t.Renderer.NewStyle().Foreground(t.Blocked)
 			// Try to get blocker title for better context
 			blockerBadge := "🚫←" + blockerID
-			if blocker, ok := b.issueMap[dep.DependsOnID]; ok && blocker != nil {
+			if blocker != nil {
 				titleSnippet := truncateRunesHelper(blocker.Title, 12, "…")
 				blockerBadge = fmt.Sprintf("🚫←%s (%s)", blockerID, titleSnippet)
+			}
+			if !b.candidateIDs[dep.DependsOnID] {
+				blockerBadge += " [out]"
 			}
 			meta = append(meta, blockedStyle.Render(blockerBadge))
 			break // Only show first blocker
@@ -1459,7 +1490,14 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// Blocks count: ⚡→N (this card blocks N others) - from reverse index
 	if blockedIDs, ok := b.blocksIndex[issue.ID]; ok && len(blockedIDs) > 0 {
 		blocksStyle := t.Renderer.NewStyle().Foreground(t.Feature)
-		meta = append(meta, blocksStyle.Render(fmt.Sprintf("⚡→%d", len(blockedIDs))))
+		blocksBadge := fmt.Sprintf("⚡→%d", len(blockedIDs))
+		for _, blockedID := range blockedIDs {
+			if !b.candidateIDs[blockedID] {
+				blocksBadge += " [out]"
+				break
+			}
+		}
+		meta = append(meta, blocksStyle.Render(blocksBadge))
 	}
 
 	// Labels: show 2-3 label names (no "+N" count per spec)
@@ -1497,13 +1535,7 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (same as renderCard)
 	// ══════════════════════════════════════════════════════════════════════════
-	hasBlockingDeps := false
-	for _, dep := range issue.Dependencies {
-		if dep != nil && dep.Type.IsBlocking() {
-			hasBlockingDeps = true
-			break
-		}
-	}
+	hasBlockingDeps := b.hasOpenBlocker(issue)
 	blocksOthers := len(b.blocksIndex[issue.ID]) > 0
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1592,6 +1624,10 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 	var blockingDeps []*model.Dependency
 	for _, dep := range issue.Dependencies {
 		if dep != nil && dep.Type.IsBlocking() {
+			blocker := b.issueMap[dep.DependsOnID]
+			if blocker == nil || isClosedLikeStatus(blocker.Status) {
+				continue
+			}
 			blockingDeps = append(blockingDeps, dep)
 		}
 	}
@@ -1599,8 +1635,11 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 		depLines = append(depLines, t.Renderer.NewStyle().Bold(true).Foreground(t.Blocked).Render("Blocked by:"))
 		for _, dep := range blockingDeps {
 			blockerText := fmt.Sprintf("  • %s", dep.DependsOnID)
-			if blocker, ok := b.issueMap[dep.DependsOnID]; ok && blocker != nil {
+			if blocker := b.issueMap[dep.DependsOnID]; blocker != nil {
 				blockerText = fmt.Sprintf("  • %s: %s (%s)", dep.DependsOnID, blocker.Title, blocker.Status)
+			}
+			if !b.candidateIDs[dep.DependsOnID] {
+				blockerText += " [out of scope]"
 			}
 			depLines = append(depLines, t.Renderer.NewStyle().Foreground(t.Blocked).Render(blockerText))
 		}
@@ -1613,6 +1652,9 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 			blockedText := fmt.Sprintf("  • %s", blockedID)
 			if blocked, ok := b.issueMap[blockedID]; ok && blocked != nil {
 				blockedText = fmt.Sprintf("  • %s: %s", blockedID, blocked.Title)
+			}
+			if !b.candidateIDs[blockedID] {
+				blockedText += " [out of scope]"
 			}
 			depLines = append(depLines, t.Renderer.NewStyle().Foreground(t.Feature).Render(blockedText))
 		}
