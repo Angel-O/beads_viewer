@@ -2141,6 +2141,13 @@ func (h *HistoryModel) renderEmpty(msg string) string {
 	if h.report != nil && len(h.report.Warnings) > 0 {
 		msg += fmt.Sprintf("\n\nPARTIAL HISTORY: %d source repositories unavailable", len(h.report.Warnings))
 	}
+	hint := h.historyEmptyHint()
+	if strings.TrimSpace(msg) == "" {
+		msg = "No results"
+	}
+	if hint != "" {
+		msg = msg + "\n\n" + hint
+	}
 	header := h.renderHeader()
 	bodyHeight := h.historyPanelHeight()
 	bodyStyle := t.Renderer.NewStyle().
@@ -2148,17 +2155,18 @@ func (h *HistoryModel) renderEmpty(msg string) string {
 		Height(bodyHeight).
 		Align(lipgloss.Center, lipgloss.Center).
 		Foreground(t.Secondary)
-	bodyText := msg
-	if strings.TrimSpace(bodyText) == "" {
-		bodyText = "No results"
-	}
-	style := t.Renderer.NewStyle().
-		Width(h.width).
-		Height(bodyHeight).
-		Align(lipgloss.Center, lipgloss.Center).
-		Foreground(t.Secondary)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, bodyStyle.Render(bodyText), "", style.Render("Esc/q to close"))
+	return lipgloss.JoinVertical(lipgloss.Left, header, bodyStyle.Render(msg))
+}
+
+func (h *HistoryModel) historyEmptyHint() string {
+	if h.searchActive {
+		return ""
+	}
+	if h.HasSearchQuery() {
+		return "esc: clear"
+	}
+	return "esc/h/q: close"
 }
 
 func (h *HistoryModel) historyPanelHeight() int {

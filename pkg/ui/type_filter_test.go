@@ -211,3 +211,22 @@ func TestTypePickerFooterHintsDoNotTruncateAtWideModalWidth(t *testing.T) {
 		t.Fatalf("footer appears truncated in modal width=100; view=%q", view)
 	}
 }
+
+func TestTypePickerFooterFitsAtMinimumFullModalSize(t *testing.T) {
+	picker := NewTypePickerModel(
+		[]model.IssueType{model.TypeBug, model.TypeTask, model.TypeFeature},
+		map[model.IssueType]bool{model.TypeBug: true},
+		DefaultTheme(lipgloss.NewRenderer(nil)),
+	)
+
+	for _, width := range []int{14, 18, 24} {
+		picker.SetSize(width, 12)
+		view := picker.View()
+		if got := lipgloss.Width(view); got > width {
+			t.Fatalf("width %d rendered width = %d:\n%s", width, got, view)
+		}
+		if got := lipgloss.Height(view); got > 12 {
+			t.Fatalf("width %d rendered height = %d:\n%s", width, got, view)
+		}
+	}
+}

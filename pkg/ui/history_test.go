@@ -1139,11 +1139,37 @@ func TestHistoryModel_ZeroResultSearchKeepsQueryAndSearchBarVisible(t *testing.T
 	if strings.Contains(view, "Press h to close") {
 		t.Fatalf("zero-match history search view showed a close hint that interferes with typed search input: %q", view)
 	}
-	if !strings.Contains(view, "Esc/q to close") {
-		t.Fatalf("zero-result history search view lost non-printable close hint: %q", view)
+	if !strings.Contains(view, "esc: clear") {
+		t.Fatalf("zero-result history search view lost clear hint: %q", view)
 	}
 	if normalHeaderHeight != activeHeaderHeight || activeHeaderHeight != lipgloss.Height(h.renderHeader()) {
 		t.Fatalf("History header height jumped across search states: normal=%d active=%d submitted=%d", normalHeaderHeight, activeHeaderHeight, lipgloss.Height(h.renderHeader()))
+	}
+}
+
+func TestHistoryModel_EmptyStateHintsMatchSearchState(t *testing.T) {
+	h := NewHistoryModel(createTestHistoryReport(), testTheme())
+	h.SetSize(120, 30)
+	h.StartSearch()
+	h.searchInput.SetValue("no matching history")
+	h.applySearchFilter()
+
+	active := h.View()
+	if strings.Contains(active, "esc: clear") || strings.Contains(active, "esc/h/q: close") {
+		t.Fatalf("active search empty state showed an exit hint: %q", active)
+	}
+
+	h.FinishSearch()
+	submitted := h.View()
+	if !strings.Contains(submitted, "esc: clear") || strings.Contains(submitted, "esc/h/q: close") {
+		t.Fatalf("submitted search empty state hints = %q", submitted)
+	}
+
+	plain := NewHistoryModel(nil, testTheme())
+	plain.SetSize(120, 30)
+	view := plain.View()
+	if !strings.Contains(view, "esc/h/q: close") {
+		t.Fatalf("plain empty state lost close hint: %q", view)
 	}
 }
 

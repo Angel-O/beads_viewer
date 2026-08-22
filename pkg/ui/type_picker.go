@@ -164,11 +164,42 @@ func (m *TypePickerModel) View() string {
 	contentWidth := max(1, boxWidth-4)
 	titleStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true)
 	lines := []string{titleStyle.Render(truncateRunesHelper("Issue Type Filter", contentWidth, "...")), ""}
+
+	controlHints := []string{
+		"j/k: navigate",
+		"space: toggle",
+		"a: all",
+		"n: reset",
+		"enter: apply",
+		"esc: cancel",
+	}
+
+	contentRows := max(m.height-4, 1)
+	hintLines := wrapControlHints(controlHints, contentWidth)
+	maxHintRows := contentRows - 2
+	if maxHintRows < 1 {
+		maxHintRows = 1
+	}
+	if len(m.types) > 0 {
+		maxHintRows = max(1, contentRows-3)
+	}
+	if len(hintLines) > maxHintRows {
+		if maxHintRows == 1 {
+			hintLines = []string{truncateRunesHelper("…", contentWidth, "…")}
+		} else {
+			hintLines = append(hintLines[:maxHintRows-1], truncateRunesHelper("…", contentWidth, "…"))
+		}
+	}
+
 	if len(m.types) == 0 {
 		empty := truncateRunesHelper("No issue types loaded.", contentWidth, "...")
 		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(m.theme.Secondary).Italic(true).Render(empty))
 	} else {
-		maxVisible := max(1, min(12, m.height-8))
+		maxVisible := contentRows - 2 - len(hintLines)
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		maxVisible = min(12, maxVisible)
 		start := 0
 		if m.selectedIndex >= maxVisible {
 			start = m.selectedIndex - maxVisible + 1
@@ -188,15 +219,7 @@ func (m *TypePickerModel) View() string {
 			lines = append(lines, style.Render(truncateRunesHelper(prefix+check+" "+string(m.types[i]), contentWidth, "...")))
 		}
 	}
-	controlHints := []string{
-		"j/k: navigate",
-		"space: toggle",
-		"a: all",
-		"n: reset",
-		"enter: apply",
-		"esc: cancel",
-	}
-	hintLines := wrapControlHints(controlHints, contentWidth)
+
 	for _, line := range hintLines {
 		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(ColorFooterHint).Italic(true).Render(line))
 	}
