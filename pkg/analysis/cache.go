@@ -197,6 +197,12 @@ func ComputeDataHash(issues []model.Issue) string {
 			h.Write([]byte(issue.ClosedAt.UTC().Format(time.RFC3339Nano)))
 		}
 		h.Write([]byte{0})
+		// defer_until gates actionability (issue #191), so (un)deferring a bead
+		// is a data change agents must be able to observe via data_hash.
+		if issue.DeferUntil != nil {
+			h.Write([]byte(issue.DeferUntil.UTC().Format(time.RFC3339Nano)))
+		}
+		h.Write([]byte{0})
 
 		// Labels (sorted for determinism)
 		if len(issue.Labels) > 0 {
@@ -400,6 +406,7 @@ func computeIssueContentHash(issue model.Issue) string {
 	writeTimeHash(h, issue.CreatedAt)
 	writeTimeHash(h, issue.UpdatedAt)
 	writeTimePtrHash(h, issue.DueDate)
+	writeTimePtrHash(h, issue.DeferUntil)
 	writeTimePtrHash(h, issue.ClosedAt)
 
 	writeIntHash(h, issue.CompactionLevel)

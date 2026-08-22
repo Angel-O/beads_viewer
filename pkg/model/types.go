@@ -24,6 +24,7 @@ type Issue struct {
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
 	DueDate            *time.Time    `json:"due_date,omitempty"`
+	DeferUntil         *time.Time    `json:"defer_until,omitempty"` // Scheduler deferral: hidden from ready/actionable until this instant passes
 	ClosedAt           *time.Time    `json:"closed_at,omitempty"`
 	ExternalRef        *string       `json:"external_ref,omitempty"`
 	CompactionLevel    int           `json:"compaction_level,omitempty"`
@@ -51,6 +52,10 @@ func (i Issue) Clone() Issue {
 	if i.DueDate != nil {
 		v := *i.DueDate
 		clone.DueDate = &v
+	}
+	if i.DeferUntil != nil {
+		v := *i.DeferUntil
+		clone.DeferUntil = &v
 	}
 	if i.ExternalRef != nil {
 		v := *i.ExternalRef
@@ -91,6 +96,16 @@ func (i Issue) Clone() Issue {
 	}
 
 	return clone
+}
+
+// IsDeferredAt reports whether the issue's defer_until deferral is still
+// active at the given instant. This mirrors `br ready`: a bead whose
+// defer_until lies strictly in the future is withheld from ready/actionable
+// views; once the instant is reached (or if no deferral is set) it is not
+// deferred. The comparison is instant-based, so the source timezone of the
+// timestamp is irrelevant.
+func (i Issue) IsDeferredAt(now time.Time) bool {
+	return i.DeferUntil != nil && i.DeferUntil.After(now)
 }
 
 // Validate checks if the issue data is logically valid
