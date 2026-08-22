@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TreeState represents the persistent state of the tree view (bv-zv7p).
@@ -225,6 +228,9 @@ type TreeModel struct {
 	width          int                       // Available width
 	height         int                       // Available height
 	viewportOffset int                       // Index of first visible node (bv-r4ng)
+	searchQuery    string
+	searchActive   bool
+	searchMatches  []*IssueTreeNode
 
 	// Build state
 	built    bool   // Has tree been built?
@@ -538,11 +544,18 @@ func issueTypeOrder(t model.IssueType) int {
 // Only renders visible nodes based on viewportOffset and height for O(viewport)
 // performance instead of O(n) where n is total nodes.
 func (t *TreeModel) View() string {
-	if !t.built || len(t.flatList) == 0 {
+	if !t.built || (len(t.roots) == 0 && t.searchQuery == "") {
 		return t.renderEmptyState()
 	}
 
-	var sb strings.Builder
+	rows := []string{t.renderHeader()}
+
+	if len(t.flatList) == 0 {
+		if t.height <= 0 || t.height > 1 {
+			rows = append(rows, t.renderNoMatches())
+		}
+		return strings.Join(rows, "\n")
+	}
 
 	// Get visible range - O(1) calculation based on viewportOffset and height
 	start, end := t.visibleRange()
@@ -562,18 +575,46 @@ func (t *TreeModel) View() string {
 			line = t.theme.Selected.Render(line)
 		}
 
-		sb.WriteString(line)
-		sb.WriteString("\n")
+		rows = append(rows, line)
 	}
 
 	// Add position indicator if scrolling is needed (bv-2nax)
 	// Only shows when there are more nodes than fit in the viewport
-	if len(t.flatList) > t.height && t.height > 0 {
-		indicator := t.renderPositionIndicator(start, end)
-		sb.WriteString(indicator)
+	if t.showPositionIndicator() {
+		rows = append(rows, t.renderPositionIndicator(start, end))
 	}
 
-	return sb.String()
+	return strings.Join(rows, "\n")
+}
+
+func (t *TreeModel) renderHeader() string {
+	style := t.theme.Renderer.NewStyle().Foreground(t.theme.Primary).Bold(true)
+	if t.searchActive || t.searchQuery != "" {
+		position := "0/0"
+		if len(t.searchMatches) > 0 {
+			position = fmt.Sprintf("%d/%d", t.SearchCursorPos(), len(t.searchMatches))
+		}
+		return style.Render(t.fitSearchChrome(fmt.Sprintf("Tree View  /%s  [%s]", t.searchQuery, position)))
+	}
+	return style.Render(t.fitSearchChrome("Tree View"))
+}
+
+func (t *TreeModel) renderNoMatches() string {
+	return t.theme.Renderer.NewStyle().Foreground(t.theme.Muted).
+		Render(t.fitSearchChrome(fmt.Sprintf("No Tree matches for %q. Escape clears search.", t.searchQuery)))
+}
+
+func (t *TreeModel) fitSearchChrome(text string) string {
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
+	if t.width <= 0 || lipgloss.Width(text) <= t.width {
+		return text
+	}
+	return ansi.Truncate(text, t.width, "…")
 }
 
 // renderPositionIndicator renders the scroll position indicator (bv-2nax).
@@ -589,6 +630,29 @@ func (t *TreeModel) renderPositionIndicator(start, end int) string {
 	return t.theme.Renderer.NewStyle().
 		Foreground(t.theme.Muted).
 		Render(indicator)
+}
+
+// visibleNodeCapacity returns the rows available for issues after reserving the
+// header and, when needed, the position indicator. A non-positive height keeps
+// the historical default used before terminal dimensions are known.
+func (t *TreeModel) visibleNodeCapacity() int {
+	if t.height <= 0 {
+		return 20
+	}
+	capacity := t.height - 1
+	if t.showPositionIndicator() {
+		capacity--
+	}
+	if capacity < 0 {
+		return 0
+	}
+	return capacity
+}
+
+func (t *TreeModel) showPositionIndicator() bool {
+	// At least one issue row must remain visible alongside the header and
+	// indicator. Tiny views therefore prioritize content over the indicator.
+	return t.height >= 3 && len(t.flatList) > t.height-1
 }
 
 // renderEmptyState renders the view when there are no issues.
@@ -985,10 +1049,9 @@ func (t *TreeModel) visibleRange() (start, end int) {
 		return 0, 0
 	}
 
-	// Each node renders as 1 line
-	visibleCount := t.height
-	if visibleCount <= 0 {
-		visibleCount = 20 // Default
+	visibleCount := t.visibleNodeCapacity()
+	if visibleCount == 0 {
+		return 0, 0
 	}
 
 	// Start with the viewport offset, clamped to non-negative
@@ -1025,6 +1088,127 @@ func (t *TreeModel) SelectByID(id string) bool {
 	return false
 }
 
+// StartSearch focuses Tree-local search without changing the current query.
+func (t *TreeModel) StartSearch() {
+	t.searchActive = true
+}
+
+// IsSearchActive reports whether printable input belongs to Tree search.
+func (t *TreeModel) IsSearchActive() bool {
+	return t.searchActive
+}
+
+// SearchQuery returns the visible Tree-local query.
+func (t *TreeModel) SearchQuery() string {
+	return t.searchQuery
+}
+
+// SearchMatchCount returns the number of directly matching issues. Ancestors
+// retained for hierarchy context are not counted as matches.
+func (t *TreeModel) SearchMatchCount() int {
+	return len(t.searchMatches)
+}
+
+// SearchCursorPos returns the one-based position of the selected match.
+func (t *TreeModel) SearchCursorPos() int {
+	selected := t.SelectedNode()
+	for i, node := range t.searchMatches {
+		if node == selected {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// FinishSearch leaves the query applied and returns navigation keys to Tree.
+func (t *TreeModel) FinishSearch() {
+	t.searchActive = false
+}
+
+// ClearSearch clears the query and restores the user's normal expansion view.
+func (t *TreeModel) ClearSearch() {
+	selectedID := t.GetSelectedID()
+	t.searchActive = false
+	t.searchQuery = ""
+	t.rebuildFlatList()
+	if selectedID != "" {
+		t.SelectByID(selectedID)
+	}
+	t.ensureCursorVisible()
+}
+
+// UpdateSearchInput consumes text editing keys while Tree search is focused.
+func (t *TreeModel) UpdateSearchInput(msg tea.KeyMsg) {
+	query := t.searchQuery
+	switch msg.Type {
+	case tea.KeyBackspace, tea.KeyDelete:
+		runes := []rune(query)
+		if len(runes) > 0 {
+			query = string(runes[:len(runes)-1])
+		}
+	case tea.KeyRunes:
+		query += string(msg.Runes)
+	default:
+		return
+	}
+	if query == t.searchQuery {
+		return
+	}
+	t.searchQuery = query
+	t.rebuildFlatList()
+	if len(t.searchMatches) > 0 {
+		t.selectSearchMatch(0)
+	}
+}
+
+// NextSearchMatch selects the next direct match, wrapping at the ends.
+func (t *TreeModel) NextSearchMatch() {
+	t.moveSearchMatch(1)
+}
+
+// PreviousSearchMatch selects the previous direct match, wrapping at the ends.
+func (t *TreeModel) PreviousSearchMatch() {
+	t.moveSearchMatch(-1)
+}
+
+func (t *TreeModel) moveSearchMatch(delta int) {
+	if len(t.searchMatches) == 0 {
+		return
+	}
+	current := -1
+	selected := t.SelectedNode()
+	for i, node := range t.searchMatches {
+		if node == selected {
+			current = i
+			break
+		}
+	}
+	if current < 0 {
+		if delta < 0 {
+			t.selectSearchMatch(len(t.searchMatches) - 1)
+		} else {
+			t.selectSearchMatch(0)
+		}
+		return
+	}
+	next := (current + delta + len(t.searchMatches)) % len(t.searchMatches)
+	t.selectSearchMatch(next)
+}
+
+func (t *TreeModel) selectSearchMatch(index int) {
+	if index < 0 || index >= len(t.searchMatches) {
+		return
+	}
+	target := t.searchMatches[index]
+	for i, node := range t.flatList {
+		if node == target {
+			t.cursor = i
+			t.ensureCursorVisible()
+			return
+		}
+	}
+}
+
 // GetSelectedID returns the ID of the currently selected issue, or empty string.
 func (t *TreeModel) GetSelectedID() string {
 	if issue := t.SelectedIssue(); issue != nil {
@@ -1047,8 +1231,15 @@ func (t *TreeModel) setExpandedRecursive(node *IssueTreeNode, expanded bool) {
 // rebuildFlatList rebuilds the flattened list of visible nodes.
 func (t *TreeModel) rebuildFlatList() {
 	t.flatList = t.flatList[:0]
-	for _, root := range t.roots {
-		t.appendVisible(root)
+	t.searchMatches = t.searchMatches[:0]
+	if strings.TrimSpace(t.searchQuery) != "" {
+		for _, root := range t.roots {
+			t.flatList = append(t.flatList, t.searchBranch(root)...)
+		}
+	} else {
+		for _, root := range t.roots {
+			t.appendVisible(root)
+		}
 	}
 	// Ensure cursor stays in bounds
 	if t.cursor >= len(t.flatList) {
@@ -1057,6 +1248,29 @@ func (t *TreeModel) rebuildFlatList() {
 	if t.cursor < 0 {
 		t.cursor = 0
 	}
+}
+
+// searchBranch returns matching nodes plus the ancestors needed to retain
+// hierarchy context. It deliberately ignores Expanded without modifying it,
+// so clearing search restores the exact expansion choices the user had made.
+func (t *TreeModel) searchBranch(node *IssueTreeNode) []*IssueTreeNode {
+	if node == nil || node.Issue == nil {
+		return nil
+	}
+	query := strings.ToLower(strings.TrimSpace(t.searchQuery))
+	matches := strings.Contains(strings.ToLower(node.Issue.ID), query) ||
+		strings.Contains(strings.ToLower(node.Issue.Title), query)
+	if matches {
+		t.searchMatches = append(t.searchMatches, node)
+	}
+	var descendants []*IssueTreeNode
+	for _, child := range node.Children {
+		descendants = append(descendants, t.searchBranch(child)...)
+	}
+	if !matches && len(descendants) == 0 {
+		return nil
+	}
+	return append([]*IssueTreeNode{node}, descendants...)
 }
 
 // appendVisible adds a node and its visible descendants to flatList.
@@ -1096,9 +1310,10 @@ func (t *TreeModel) ensureCursorVisible() {
 		return
 	}
 
-	visibleCount := t.height
-	if visibleCount <= 0 {
-		visibleCount = 20 // Default
+	visibleCount := t.visibleNodeCapacity()
+	if visibleCount == 0 {
+		t.viewportOffset = 0
+		return
 	}
 
 	// Cursor above viewport - scroll up to show cursor at top

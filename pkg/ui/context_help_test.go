@@ -13,6 +13,7 @@ func TestContextHelpContentMap(t *testing.T) {
 	expectedContexts := []Context{
 		ContextList,
 		ContextGraph,
+		ContextTree,
 		ContextBoard,
 		ContextInsights,
 		ContextHistory,
@@ -21,6 +22,7 @@ func TestContextHelpContentMap(t *testing.T) {
 		ContextFilter,
 		ContextLabelPicker,
 		ContextRepoPicker,
+		ContextTypePicker,
 		ContextRecipePicker,
 		ContextHelp,
 		ContextTimeTravel,
@@ -56,6 +58,11 @@ func TestGetContextHelp(t *testing.T) {
 			name:     "graph context",
 			ctx:      ContextGraph,
 			contains: "Graph View",
+		},
+		{
+			name:     "tree context",
+			ctx:      ContextTree,
+			contains: "Tree View",
 		},
 		{
 			name:     "board context",
@@ -202,6 +209,9 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 		{ContextList, "Enter"},
 		{ContextGraph, "h/l"},
 		{ContextGraph, "f"},
+		{ContextTree, "/"},
+		{ContextTree, "n/N"},
+		{ContextTree, "E / Escape"},
 		{ContextBoard, "h/l"},
 		{ContextDetail, "Esc"},
 		{ContextSplit, "Tab"},
@@ -212,6 +222,19 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 		content := GetContextHelp(tt.ctx)
 		if !strings.Contains(content, tt.shortcut) {
 			t.Errorf("Context %v help should document shortcut %q", tt.ctx, tt.shortcut)
+		}
+	}
+}
+
+func TestContextHelpTreeDocumentsExactEntryAndExitKeys(t *testing.T) {
+	list := GetContextHelp(ContextList)
+	if !strings.Contains(list, "E         Enter Tree view (uppercase E)") {
+		t.Fatal("List help must document uppercase E Tree entry")
+	}
+	tree := GetContextHelp(ContextTree)
+	for _, expected := range []string{"E / Escape  Exit Tree (uppercase E)", "Enter     Toggle expansion; select during search", "Matches retain their hierarchy ancestors"} {
+		if !strings.Contains(tree, expected) {
+			t.Errorf("Tree help missing %q", expected)
 		}
 	}
 }

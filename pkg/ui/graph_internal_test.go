@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestSmartTruncateID(t *testing.T) {
@@ -106,4 +107,195 @@ func TestGraphModelOnlyTodosUsesEligibleEmptyState(t *testing.T) {
 	if view := g.View(80, 24); !strings.Contains(view, "No issues eligible for Graph View") {
 		t.Fatalf("unexpected empty state: %q", view)
 	}
+}
+
+func TestGraphModelSearchIDTitleAndRepeat(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha-1", Title: "First worker", IssueType: model.TypeTask},
+		{ID: "beta-2", Title: "Alpha follow-up", IssueType: model.TypeTask},
+		{ID: "gamma-3", Title: "Unrelated", IssueType: model.TypeTask},
+	}
+	g := NewGraphModel(issues, nil, createTheme())
+	g.SelectByID("gamma-3")
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("ALPHA"))
+	if !g.CommitSearch() {
+		t.Fatal("CommitSearch() did not select the first ID/title match")
+	}
+	if selected := g.SelectedIssue(); selected == nil || selected.ID != "alpha-1" {
+		t.Fatalf("first match = %#v, want alpha-1", selected)
+	}
+	if !g.NextSearchMatch() || g.SelectedIssue().ID != "beta-2" {
+		t.Fatalf("next match = %#v, want beta-2", g.SelectedIssue())
+	}
+	if !g.NextSearchMatch() || g.SelectedIssue().ID != "alpha-1" {
+		t.Fatalf("wrapped next match = %#v, want alpha-1", g.SelectedIssue())
+	}
+	if !g.PreviousSearchMatch() || g.SelectedIssue().ID != "beta-2" {
+		t.Fatalf("previous match = %#v, want beta-2", g.SelectedIssue())
+	}
+}
+
+func TestGraphModelSearchZeroResultsAndClearing(t *testing.T) {
+	g := NewGraphModel([]model.Issue{{ID: "alpha-1", Title: "First worker", IssueType: model.TypeTask}}, nil, createTheme())
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("missing"))
+	if g.CommitSearch() {
+		t.Fatal("zero-result search unexpectedly selected a node")
+	}
+	view := g.View(100, 30)
+	if !strings.Contains(view, "Search: /missing") || !strings.Contains(view, "no matches") {
+		t.Fatalf("zero-result query feedback missing from Graph view: %q", view)
+	}
+
+	g.ClearSearch()
+	if g.HasSearchQuery() || g.IsSearchInputActive() {
+		t.Fatalf("search was not cleared: query=%q input=%v", g.SearchQuery(), g.IsSearchInputActive())
+	}
+	if view := g.View(100, 30); strings.Contains(view, "Search: /") {
+		t.Fatalf("cleared query remains visible: %q", view)
+	}
+}
+
+func TestGraphModelSearchStatusStaysWithinOneDisplayLine(t *testing.T) {
+	tests := []struct {
+		name      string
+		width     int
+		query     string
+		forbidden []rune
+	}{
+		{name: "long ASCII", width: 24, query: strings.Repeat("long-query-", 20)},
+		{name: "wide CJK", width: 17, query: strings.Repeat("検索", 20)},
+		{name: "narrow", width: 1, query: "検索"},
+		{name: "C0 control characters", width: 20, query: "first\tsecond\nthird", forbidden: []rune{'\t', '\n'}},
+		{name: "C1 control characters", width: 30, query: "first\u0085second\u009bthird", forbidden: []rune{'\u0085', '\u009b'}},
+		{name: "zero width", width: 0, query: "hidden"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGraphModel(nil, nil, createTheme())
+			g.StartSearch()
+			g.AppendSearchRunes([]rune(tt.query))
+			if got := g.SearchQuery(); got != tt.query {
+				t.Fatalf("stored query = %q, want unchanged %q", got, tt.query)
+			}
+
+			status := g.renderSearchStatus(tt.width, g.theme)
+			if tt.width <= 0 {
+				if status != "" {
+					t.Fatalf("zero-width status = %q, want empty", status)
+				}
+				return
+			}
+			if height := lipgloss.Height(status); height != 1 {
+				t.Fatalf("status height = %d, want 1: %q", height, status)
+			}
+			if width := lipgloss.Width(status); width > tt.width {
+				t.Fatalf("status width = %d, want <= %d: %q", width, tt.width, status)
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.ContainsRune(status, forbidden) {
+					t.Fatalf("rendered status contains control rune U+%04X: %q", forbidden, status)
+				}
+			}
+		})
+	}
+}
+
+func TestGraphModelSearchStatusPreservesViewBounds(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "small", width: 12, height: 6},
+		{name: "single row", width: 12, height: 1},
+		{name: "single cell", width: 1, height: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGraphModel(nil, nil, createTheme())
+			g.StartSearch()
+			g.AppendSearchRunes([]rune(strings.Repeat("検索", 20)))
+
+			view := g.View(tt.width, tt.height)
+			if got := lipgloss.Width(view); got > tt.width {
+				t.Fatalf("Graph view width = %d, want <= %d:\n%s", got, tt.width, view)
+			}
+			if got := lipgloss.Height(view); got > tt.height {
+				t.Fatalf("Graph view height = %d, want <= %d:\n%s", got, tt.height, view)
+			}
+		})
+	}
+}
+
+func TestGraphModelSearchCancellationRestoresSelection(t *testing.T) {
+	g := NewGraphModel([]model.Issue{
+		{ID: "alpha-1", Title: "First", IssueType: model.TypeTask},
+		{ID: "beta-2", Title: "Second", IssueType: model.TypeTask},
+	}, nil, createTheme())
+	g.SelectByID("beta-2")
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("alpha"))
+	g.ClearSearch()
+
+	if selected := g.SelectedIssue(); selected == nil || selected.ID != "beta-2" {
+		t.Fatalf("selection after cancelled input = %#v, want beta-2", selected)
+	}
+}
+
+func TestGraphModelSearchRespectsProjectedScopeAndTopology(t *testing.T) {
+	visible := []model.Issue{
+		{ID: "scope-a", Title: "Visible alpha", IssueType: model.TypeTask},
+		{ID: "scope-b", Title: "Visible beta", IssueType: model.TypeTask, Dependencies: []*model.Dependency{{DependsOnID: "scope-a", Type: model.DepBlocks}}},
+	}
+	hidden := model.Issue{ID: "other-alpha", Title: "Hidden alpha", IssueType: model.TypeTask}
+	todo := model.Issue{ID: "todo-alpha", Title: "Captured alpha", IssueType: "todo"}
+	canonical := map[string]*model.Issue{
+		visible[0].ID: &visible[0],
+		visible[1].ID: &visible[1],
+		hidden.ID:     &hidden,
+		todo.ID:       &todo,
+	}
+
+	g := NewGraphModel(nil, nil, createTheme())
+	g.SetProjectedIssues(visible, canonical, nil)
+	wantIDs := append([]string(nil), g.sortedIDs...)
+	wantBlockers := cloneStringSlices(g.blockers)
+	wantDependents := cloneStringSlices(g.dependents)
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("other-alpha"))
+	if g.CommitSearch() {
+		t.Fatal("search selected a node outside the projected repository scope")
+	}
+	g.ClearSearch()
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("todo-alpha"))
+	if g.CommitSearch() {
+		t.Fatal("search selected a hidden todo node")
+	}
+	g.ClearSearch()
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("visible beta"))
+	if !g.CommitSearch() || g.SelectedIssue().ID != "scope-b" {
+		t.Fatalf("visible scoped match = %#v, want scope-b", g.SelectedIssue())
+	}
+
+	if !reflect.DeepEqual(g.sortedIDs, wantIDs) || !reflect.DeepEqual(g.blockers, wantBlockers) || !reflect.DeepEqual(g.dependents, wantDependents) {
+		t.Fatal("Graph search changed presentation nodes or topology")
+	}
+}
+
+func cloneStringSlices(source map[string][]string) map[string][]string {
+	clone := make(map[string][]string, len(source))
+	for key, values := range source {
+		clone[key] = append([]string(nil), values...)
+	}
+	return clone
 }
