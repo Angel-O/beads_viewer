@@ -459,7 +459,13 @@ func (g *GraphModel) View(width, height int) string {
 	g.height = height
 	t := g.theme
 	searchStatus := g.renderSearchStatus(width, t)
-	if searchStatus != "" && height > 1 {
+	if searchStatus != "" {
+		if height <= 0 {
+			return ""
+		}
+		if height == 1 {
+			return searchStatus
+		}
 		height--
 	}
 
@@ -514,7 +520,7 @@ func (g *GraphModel) View(width, height int) string {
 }
 
 func (g *GraphModel) renderSearchStatus(width int, t Theme) string {
-	if !g.searchInput && !g.HasSearchQuery() {
+	if width <= 0 || (!g.searchInput && !g.HasSearchQuery()) {
 		return ""
 	}
 	status := "Search: /" + g.searchQuery
@@ -527,10 +533,16 @@ func (g *GraphModel) renderSearchStatus(width int, t Theme) string {
 			status += fmt.Sprintf(" (%d matches)", len(g.searchMatches))
 		}
 	}
+	status = strings.Map(func(r rune) rune {
+		if r < ' ' || r == '\x7f' {
+			return ' '
+		}
+		return r
+	}, status)
+	status = truncateRunesHelper(status, width, "…")
 	return t.Renderer.NewStyle().
 		Foreground(t.Primary).
 		Bold(g.searchInput).
-		Width(width).
 		Render(status)
 }
 

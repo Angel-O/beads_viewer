@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestSmartTruncateID(t *testing.T) {
@@ -155,6 +156,73 @@ func TestGraphModelSearchZeroResultsAndClearing(t *testing.T) {
 	}
 	if view := g.View(100, 30); strings.Contains(view, "Search: /") {
 		t.Fatalf("cleared query remains visible: %q", view)
+	}
+}
+
+func TestGraphModelSearchStatusStaysWithinOneDisplayLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		width int
+		query string
+	}{
+		{name: "long ASCII", width: 24, query: strings.Repeat("long-query-", 20)},
+		{name: "wide CJK", width: 17, query: strings.Repeat("検索", 20)},
+		{name: "narrow", width: 1, query: "検索"},
+		{name: "control characters", width: 20, query: "first\tsecond\nthird"},
+		{name: "zero width", width: 0, query: "hidden"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGraphModel(nil, nil, createTheme())
+			g.StartSearch()
+			g.AppendSearchRunes([]rune(tt.query))
+			if got := g.SearchQuery(); got != tt.query {
+				t.Fatalf("stored query = %q, want unchanged %q", got, tt.query)
+			}
+
+			status := g.renderSearchStatus(tt.width, g.theme)
+			if tt.width <= 0 {
+				if status != "" {
+					t.Fatalf("zero-width status = %q, want empty", status)
+				}
+				return
+			}
+			if height := lipgloss.Height(status); height != 1 {
+				t.Fatalf("status height = %d, want 1: %q", height, status)
+			}
+			if width := lipgloss.Width(status); width > tt.width {
+				t.Fatalf("status width = %d, want <= %d: %q", width, tt.width, status)
+			}
+		})
+	}
+}
+
+func TestGraphModelSearchStatusPreservesViewBounds(t *testing.T) {
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "small", width: 12, height: 6},
+		{name: "single row", width: 12, height: 1},
+		{name: "single cell", width: 1, height: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGraphModel(nil, nil, createTheme())
+			g.StartSearch()
+			g.AppendSearchRunes([]rune(strings.Repeat("検索", 20)))
+
+			view := g.View(tt.width, tt.height)
+			if got := lipgloss.Width(view); got > tt.width {
+				t.Fatalf("Graph view width = %d, want <= %d:\n%s", got, tt.width, view)
+			}
+			if got := lipgloss.Height(view); got > tt.height {
+				t.Fatalf("Graph view height = %d, want <= %d:\n%s", got, tt.height, view)
+			}
+		})
 	}
 }
 
