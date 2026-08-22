@@ -360,3 +360,35 @@ func TestWorkspaceRepositoryPickerUsesCatalogAndAppliesPrefixScope(t *testing.T)
 		t.Fatalf("workspace scope = %#v, want api", m.RepositoryScope())
 	}
 }
+
+func TestWorkspaceRepositoryPickerWCancelPreservesAppliedScopeAndSearchInput(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "api-1", SourceRepo: "api", Title: "API"},
+		{ID: "web-1", SourceRepo: "web", Title: "Web"},
+	}, nil, "")
+	m.ready = true
+	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+	m.SetRepositoryScope(map[string]bool{"api": true})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(Model)
+	m.repoPicker.SelectAll()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(Model)
+	if m.showRepoPicker || m.focused != focusList {
+		t.Fatalf("second w did not cancel picker: shown=%v focus=%v", m.showRepoPicker, m.focused)
+	}
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["api"] {
+		t.Fatalf("w cancel applied draft repository scope: %#v", scope)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(Model)
+	if !m.showRepoPicker || !m.repoPicker.IsSearching() || m.repoPicker.SearchValue() != "w" {
+		t.Fatalf("search did not own printable w: shown=%v searching=%v query=%q", m.showRepoPicker, m.repoPicker.IsSearching(), m.repoPicker.SearchValue())
+	}
+}

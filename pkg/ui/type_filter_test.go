@@ -70,6 +70,60 @@ func TestTypeFilterComposesWithStatusLabelRepositoryRecipeAndText(t *testing.T) 
 	requireIssueIDs(t, visibleIssueIDs(m), "api-bug")
 }
 
+func TestStatusKeysToggleAndPreserveComposedListFilters(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	m.ready = true
+	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+	m.SetRepositoryScope(map[string]bool{"api": true})
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.currentFilter = "label:urgent"
+	m.applyFilter()
+	m.list.SetFilterText("needle")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if m.currentFilter != "label:urgent" || m.statusFilter != "closed" {
+		t.Fatalf("closed toggle changed composed filters: base=%q status=%q", m.currentFilter, m.statusFilter)
+	}
+	if m.list.FilterValue() != "needle" || len(m.RepositoryScope()) != 1 || !m.RepositoryScope()["api"] || !m.activeIssueTypes[model.TypeBug] {
+		t.Fatalf("closed toggle changed unrelated filters: text=%q repos=%v types=%v", m.list.FilterValue(), m.RepositoryScope(), m.activeIssueTypes)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-closed")
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.statusFilter != "open" {
+		t.Fatalf("switch to open status = %q", m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-bug")
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.statusFilter != "" || m.currentFilter != "label:urgent" {
+		t.Fatalf("second open did not clear only status: base=%q status=%q", m.currentFilter, m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-closed")
+}
+
+func TestStatusTogglePreservesRecipeAndBoardContract(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	r := &recipe.Recipe{Name: "urgent", Filters: recipe.FilterConfig{Tags: []string{"urgent"}}}
+	m.setActiveRecipe(r)
+	m.applyRecipe(r)
+
+	m = m.handleListKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if m.activeRecipe != r || m.currentFilter != "recipe:urgent" || m.statusFilter != "closed" {
+		t.Fatalf("list status toggle changed recipe: active=%p base=%q status=%q", m.activeRecipe, m.currentFilter, m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-closed")
+
+	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if m.activeRecipe != r || m.currentFilter != "recipe:urgent" || m.statusFilter != "" {
+		t.Fatalf("board second toggle did not clear only status: active=%p base=%q status=%q", m.activeRecipe, m.currentFilter, m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-custom", "api-task", "web-bug", "api-closed")
+}
+
 func TestTypeFilterResetPreservesUnrelatedScopeAndSearch(t *testing.T) {
 	m := NewModel(typeFilterIssues(), nil, "")
 	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})

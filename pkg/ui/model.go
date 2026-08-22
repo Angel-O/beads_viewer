@@ -591,6 +591,7 @@ type Model struct {
 
 	// Filter and sort state
 	currentFilter          string
+	statusFilter           string
 	sortMode               SortMode // bv-3ita: current sort mode
 	semanticSearchEnabled  bool
 	semanticIndexBuilding  bool
@@ -2212,7 +2213,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update list/board/graph views while preserving the current recipe/filter state.
 		if m.activeRecipe != nil {
 			// If the snapshot already includes recipe filtering/sorting, use it directly (bv-cwwd).
-			if msg.Snapshot.RecipeName == m.activeRecipe.Name && msg.Snapshot.RecipeHash == recipeFingerprint(m.activeRecipe) {
+			if msg.Snapshot.RecipeName == m.activeRecipe.Name && msg.Snapshot.RecipeHash == recipeFingerprint(m.activeRecipe) && m.statusFilter == "" {
 				filteredItems := make([]list.Item, 0, len(msg.Snapshot.ListItems))
 				filteredIssues := make([]model.Issue, 0, len(msg.Snapshot.ListItems))
 
@@ -2305,7 +2306,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 
-				if include {
+				if include && m.matchesStatusFilter(issue) {
 					filteredItems = append(filteredItems, item)
 					filteredIssues = append(filteredIssues, issue)
 				}
@@ -4412,20 +4413,11 @@ func (m Model) handleBoardKeys(msg tea.KeyMsg) Model {
 
 	// Global filter keys (bv-naov) - consistent with list view
 	case "o":
-		m.currentFilter = "open"
-		m.applyFilter()
-		m.statusMsg = "Filter: Open issues"
-		m.statusIsError = false
+		m.toggleStatusFilter("open")
 	case "c":
-		m.currentFilter = "closed"
-		m.applyFilter()
-		m.statusMsg = "Filter: Closed issues"
-		m.statusIsError = false
+		m.toggleStatusFilter("closed")
 	case "r":
-		m.currentFilter = "ready"
-		m.applyFilter()
-		m.statusMsg = "Filter: Ready (no blockers)"
-		m.statusIsError = false
+		m.toggleStatusFilter("ready")
 
 	// Swimlane mode cycling (bv-wjs0)
 	case "s":
@@ -5152,7 +5144,7 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 		m.repoPicker.ClearSelection()
 	case "/":
 		m.repoPicker.BeginSearch()
-	case "esc", "q":
+	case "esc", "q", "w":
 		m.showRepoPicker = false
 		m.focused = focusList
 	case "enter":
@@ -5390,20 +5382,15 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 			m.list.Select(newIdx)
 		}
 	case "o":
-		m.setActiveRecipe(nil)
-		m.currentFilter = "open"
-		m.applyFilter()
+		m.toggleStatusFilter("open")
 	case "c":
-		m.setActiveRecipe(nil)
-		m.currentFilter = "closed"
-		m.applyFilter()
+		m.toggleStatusFilter("closed")
 	case "r":
-		m.setActiveRecipe(nil)
-		m.currentFilter = "ready"
-		m.applyFilter()
+		m.toggleStatusFilter("ready")
 	case "a":
 		m.setActiveRecipe(nil)
 		m.currentFilter = "all"
+		m.statusFilter = ""
 		m.applyFilter()
 	case "t":
 		// Toggle time-travel mode off, or show prompt for custom revision
@@ -6026,6 +6013,7 @@ func (m *Model) renderHelpOverlay() string {
 	viewsSection := []struct{ key, desc string }{
 		{"b", "Kanban board"},
 		{"g", "Graph view"},
+		{"E", "Tree view"},
 		{"i", "Insights"},
 		{"h", "History view"},
 		{"a", "Actionable"},
@@ -6040,7 +6028,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"!", "Alerts panel"},
 		{"'", "Recipes"},
 		{"w", "Repo picker"},
-		{"I", "Issue type filter"},
+		{"I", "Exact issue-type picker"},
 		{"q", "Back / Quit"},
 		{"Ctrl+c", "Force quit"},
 	}
@@ -6054,7 +6042,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"c", "Closed issues"},
 		{"r", "Ready (unblocked)"},
 		{"l", "Filter by label"},
-		{"I", "Filter by issue type"},
+		{"I", "Exact issue-type picker"},
 		{"s", "Cycle sort"},
 		{"S", "Triage sort"},
 	}
@@ -7379,7 +7367,7 @@ func (m Model) getDiffStatus(id string) DiffStatus {
 // (status filter, label filter, recipe filter, or fuzzy search)
 func (m *Model) hasActiveFilters() bool {
 	// Check status/label/recipe filter
-	if m.currentFilter != "all" {
+	if m.currentFilter != "all" || m.statusFilter != "" {
 		return true
 	}
 	if len(m.activeIssueTypes) > 0 {
@@ -7395,6 +7383,7 @@ func (m *Model) hasActiveFilters() bool {
 // clearAllFilters resets all filters to their default state
 func (m *Model) clearAllFilters() {
 	m.currentFilter = "all"
+	m.statusFilter = ""
 	m.setActiveRecipe(nil) // Clear any active recipe filter
 	m.activeIssueTypes = nil
 	// Reset the fuzzy search filter by resetting the filter state
@@ -7409,8 +7398,8 @@ func (m *Model) setActiveRecipe(r *recipe.Recipe) {
 	}
 }
 
-func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
-	switch m.currentFilter {
+func (m *Model) matchesFilter(issue model.Issue, filter string) bool {
+	switch filter {
 	case "all":
 		return true
 	case "open":
@@ -7434,8 +7423,8 @@ func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
 		}
 		return true
 	default:
-		if strings.HasPrefix(m.currentFilter, "label:") {
-			label := strings.TrimPrefix(m.currentFilter, "label:")
+		if strings.HasPrefix(filter, "label:") {
+			label := strings.TrimPrefix(filter, "label:")
 			for _, l := range issue.Labels {
 				if l == label {
 					return true
@@ -7444,6 +7433,49 @@ func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
 		}
 		return false
 	}
+}
+
+func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
+	return m.matchesFilter(issue, m.currentFilter)
+}
+
+func (m *Model) matchesStatusFilter(issue model.Issue) bool {
+	return m.statusFilter == "" || m.matchesFilter(issue, m.statusFilter)
+}
+
+func (m *Model) toggleStatusFilter(filter string) {
+	if m.currentFilter == "open" || m.currentFilter == "closed" || m.currentFilter == "ready" {
+		if m.currentFilter == filter {
+			m.currentFilter = "all"
+		} else {
+			m.currentFilter = filter
+		}
+	} else if m.currentFilter == "all" && m.statusFilter == "" {
+		m.currentFilter = filter
+	} else if m.statusFilter == filter {
+		m.statusFilter = ""
+	} else {
+		m.statusFilter = filter
+	}
+
+	if m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:") {
+		m.applyRecipe(m.activeRecipe)
+	} else {
+		m.applyFilter()
+	}
+	m.statusIsError = false
+	if active := m.activeStatusFilter(); active == "" {
+		m.statusMsg = "Filter: All statuses"
+	} else {
+		m.statusMsg = "Filter: " + strings.ToUpper(active[:1]) + active[1:] + " issues"
+	}
+}
+
+func (m *Model) activeStatusFilter() string {
+	if m.currentFilter == "open" || m.currentFilter == "closed" || m.currentFilter == "ready" {
+		return m.currentFilter
+	}
+	return m.statusFilter
 }
 
 func (m *Model) matchesIssueType(issue model.Issue) bool {
@@ -7467,7 +7499,7 @@ func (m *Model) filteredIssuesForActiveView() []model.Issue {
 	recipeFilterActive := m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:")
 	if recipeFilterActive {
 		for _, issue := range m.repositoryIssues {
-			if m.matchesIssueType(issue) && issueMatchesRecipe(issue, m.issueMap, m.activeRecipe) {
+			if m.matchesIssueType(issue) && m.matchesStatusFilter(issue) && issueMatchesRecipe(issue, m.issueMap, m.activeRecipe) {
 				filtered = append(filtered, issue)
 			}
 		}
@@ -7475,7 +7507,7 @@ func (m *Model) filteredIssuesForActiveView() []model.Issue {
 		return filtered
 	}
 	for _, issue := range m.repositoryIssues {
-		if m.matchesCurrentFilter(issue) && m.matchesIssueType(issue) {
+		if m.matchesCurrentFilter(issue) && m.matchesStatusFilter(issue) && m.matchesIssueType(issue) {
 			filtered = append(filtered, issue)
 		}
 	}
@@ -7530,7 +7562,7 @@ func (m *Model) applyFilter() {
 	var filteredIssues []model.Issue
 
 	for _, issue := range m.repositoryIssues {
-		if m.matchesCurrentFilter(issue) && m.matchesIssueType(issue) {
+		if m.matchesCurrentFilter(issue) && m.matchesStatusFilter(issue) && m.matchesIssueType(issue) {
 			// Use pre-computed graph scores (avoid redundant calculation)
 			item := IssueItem{
 				Issue:      issue,
@@ -7724,7 +7756,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 	var filteredIssues []model.Issue
 
 	for _, issue := range m.repositoryIssues {
-		include := m.matchesIssueType(issue)
+		include := m.matchesIssueType(issue) && m.matchesStatusFilter(issue)
 
 		// Apply status filter
 		if len(r.Filters.Status) > 0 {
