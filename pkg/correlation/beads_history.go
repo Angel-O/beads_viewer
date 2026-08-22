@@ -20,8 +20,9 @@ type beadsHistorySnapshot struct {
 }
 
 type beadsIssue struct {
-	ID     string   `json:"id"`
-	Labels []string `json:"labels"`
+	ID        string   `json:"id"`
+	IssueType string   `json:"issue_type"`
+	Labels    []string `json:"labels"`
 }
 
 func validateBeadContext(store, beadID, contextKey string) error {
@@ -36,6 +37,9 @@ func validateBeadContext(store, beadID, contextKey string) error {
 	}
 	if len(issues) == 0 || issues[0].ID != beadID {
 		return fmt.Errorf("bead %q was not found in configured store %q", beadID, store)
+	}
+	if strings.EqualFold(strings.TrimSpace(issues[0].IssueType), "todo") {
+		return fmt.Errorf("bead %q is a todo and cannot be correlated with a Git commit", beadID)
 	}
 	for _, label := range issues[0].Labels {
 		if label == contextKey {

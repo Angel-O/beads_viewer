@@ -69,6 +69,8 @@ func createExternalHistoryFixture(t *testing.T) externalHistoryFixture {
 		`{"id":"work-1","title":"Cross repo work","status":"in_progress","priority":1,"issue_type":"task","labels":["ctx:repo-a-111","ctx:repo-b-222"]}`,
 		`{"id":"work-2","title":"Shared commit work","status":"open","priority":2,"issue_type":"task","labels":["ctx:repo-a-111"]}`,
 		`{"id":"work-3","title":"Uncorrelated global work","status":"open","priority":3,"issue_type":"task","labels":["ctx:repo-b-222"]}`,
+		`{"id":"work-todo-contextual","title":"Contextual todo","status":"open","priority":2,"issue_type":"todo","labels":["ctx:repo-a-111"]}`,
+		`{"id":"work-todo-contextless","title":"Contextless todo","status":"open","priority":2,"issue_type":"todo","labels":[]}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(issues), 0o600); err != nil {
 		t.Fatal(err)
@@ -176,20 +178,23 @@ for arg in "$@"; do
 done
 case " $* " in
   *" show "*)
-    case "$bead" in
-      work-1) labels='["ctx:repo-a-111","ctx:repo-b-222"]' ;;
-      work-2) labels='["ctx:repo-a-111"]' ;;
-      work-3) labels='["ctx:repo-b-222"]' ;;
-      work-missing) printf '[]\n'; exit 0 ;;
-      work-query-fail) echo "store query failed" >&2; exit 42 ;;
-      *) echo "unknown bead: $bead" >&2; exit 1 ;;
-    esac
-    printf '[{"id":"%s","labels":%s}]\n' "$bead" "$labels"
+	issue_type=task
+	case "$bead" in
+	  work-1) labels='["ctx:repo-a-111","ctx:repo-b-222"]' ;;
+	  work-2) labels='["ctx:repo-a-111"]' ;;
+	  work-3) labels='["ctx:repo-b-222"]' ;;
+	  work-todo-contextual) issue_type=todo; labels='["ctx:repo-a-111"]' ;;
+	  work-todo-contextless) issue_type=todo; labels='[]' ;;
+	  work-missing) printf '[]\n'; exit 0 ;;
+	  work-query-fail) echo "store query failed" >&2; exit 42 ;;
+	  *) echo "unknown bead: $bead" >&2; exit 1 ;;
+	esac
+	printf '[{"id":"%s","issue_type":"%s","labels":%s}]\n' "$bead" "$issue_type" "$labels"
     exit 0
     ;;
 esac
 cat <<JSON
-[{"CommitHash":"dolt-closed-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"$bead","status":"in_progress"}},{"CommitHash":"dolt-created-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"$bead","status":"open"}}]
+[{"CommitHash":"dolt-closed-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"$bead","status":"in_progress","issue_type":"task"}},{"CommitHash":"dolt-created-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"$bead","status":"open","issue_type":"task"}}]
 JSON
 `
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(bdScript), 0o755); err != nil {
@@ -734,6 +739,87 @@ func TestCorrelateAddResolvesFullSHAAndDeduplicates(t *testing.T) {
 	}
 	if strings.Count(strings.TrimSpace(string(data)), "\n") != 0 || !strings.Contains(string(data), fixture.renameSHA) {
 		t.Fatalf("ledger should contain exactly one full-SHA record: %s", data)
+	}
+}
+
+func TestCorrelateAddRejectsTodosBeforeGitAndLedgerAccess(t *testing.T) {
+	bv := buildBvBinary(t)
+	tests := []struct {
+		name       string
+		bead       string
+		existing   []byte
+		useMissing bool
+	}{
+		{name: "contextual with existing ledger", bead: "work-todo-contextual", existing: []byte("{malformed legacy ledger}\n")},
+		{name: "contextless with absent ledger", bead: "work-todo-contextless", useMissing: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := createExternalHistoryFixture(t)
+			ledgerPath := fixture.ledgerPath
+			if test.useMissing {
+				ledgerPath = filepath.Join(fixture.root, "not-created", "private", "correlations.jsonl")
+				config := fmt.Sprintf("version: 1\nstore: %q\nledger: %q\nrepositories:\n  ctx:repo-a-111:\n    path: %q\n  ctx:repo-b-222:\n    path: %q\n", filepath.Join(fixture.storeRoot, ".beads"), ledgerPath, fixture.repoA, fixture.repoB)
+				if err := os.WriteFile(fixture.configPath, []byte(config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(ledgerPath, test.existing, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			gitLog := filepath.Join(fixture.root, "git-invocations.log")
+			gitScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BV_FAKE_GIT_LOG\"\nexit 88\n"
+			if err := os.WriteFile(filepath.Join(fixture.root, "bin", "git"), []byte(gitScript), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out, err := fixture.commandFromEnv(t, bv, fixture.storeRoot, []string{"BV_FAKE_GIT_LOG=" + gitLog}, "correlate", "add", "--bead", test.bead, "--repo", "ctx:repo-a-111", "--commit", "HEAD", "--hub-config", fixture.configPath)
+			if err == nil || !strings.Contains(string(out), "is a todo and cannot be correlated") {
+				t.Fatalf("expected todo rejection, got err=%v output=%s", err, out)
+			}
+			if _, statErr := os.Stat(gitLog); !os.IsNotExist(statErr) {
+				t.Fatalf("todo rejection invoked Git: %v", statErr)
+			}
+			if _, statErr := os.Stat(ledgerPath + ".lock"); !os.IsNotExist(statErr) {
+				t.Fatalf("todo rejection accessed ledger lock: %v", statErr)
+			}
+			if test.useMissing {
+				if _, statErr := os.Stat(filepath.Dir(ledgerPath)); !os.IsNotExist(statErr) {
+					t.Fatalf("todo rejection created ledger directory: %v", statErr)
+				}
+			} else {
+				got, readErr := os.ReadFile(ledgerPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if string(got) != string(test.existing) {
+					t.Fatalf("todo rejection changed ledger bytes: got %q want %q", got, test.existing)
+				}
+			}
+		})
+	}
+}
+
+func TestCorrelateAddPreservesUnrelatedLegacyRecord(t *testing.T) {
+	bv := buildBvBinary(t)
+	fixture := createExternalHistoryFixture(t)
+	legacy := fmt.Sprintf("{\"bead_id\":\"retired-work\",\"context\":\"ctx:retired-repo\",\"commit\":%q,\"legacy_metadata\":{\"keep\":true}}\n", fixture.shaA)
+	if err := os.WriteFile(fixture.ledgerPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := fixture.command(t, bv, "correlate", "add", "--bead", "work-1", "--repo", "ctx:repo-a-111", "--commit", "HEAD", "--hub-config", fixture.configPath)
+	if err != nil {
+		t.Fatalf("correlate add with unrelated legacy record failed: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(fixture.ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), legacy) {
+		t.Fatalf("legacy record was not preserved verbatim: %s", data)
+	}
+	if strings.Count(strings.TrimSpace(string(data)), "\n") != 1 || !strings.Contains(string(data), fixture.renameSHA) {
+		t.Fatalf("ledger should contain the legacy record and one valid delta: %s", data)
 	}
 }
 
