@@ -752,6 +752,45 @@ func TestLinkSignalsCommittedAdditionWhenBVDurabilityCheckFails(t *testing.T) {
 	}
 }
 
+func TestLinkNonzeroUnconfirmedAdditionDoesNotSignal(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	tests := []struct {
+		name     string
+		response func(string) string
+	}{
+		{name: "missing durability marker", response: func(context string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":%q},"added":true}`+"\n", context, sha)
+		}},
+		{name: "missing commit", response: func(context string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q},"added":true,"durability_error":"synthetic failure"}`+"\n", context)
+		}},
+		{name: "malformed commit", response: func(context string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":"not-a-full-sha"},"added":true,"durability_error":"synthetic failure"}`+"\n", context)
+		}},
+		{name: "wrong bead", response: func(context string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-other","context":%q,"commit":%q},"added":true,"durability_error":"synthetic failure"}`+"\n", context, sha)
+		}},
+		{name: "wrong context", response: func(string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":"ctx:synthetic-other","commit":%q},"added":true,"durability_error":"synthetic failure"}`+"\n", sha)
+		}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			setResponses(t, map[string]string{"correlate": testCase.response(context)})
+			setExitCodes(t, map[string]int{"correlate": 7})
+
+			code, _, _ := test.run("link", "item-alpha", "HEAD")
+			if code != 7 {
+				t.Fatalf("code=%d", code)
+			}
+			assertNoViewerSignal(t, test)
+		})
+	}
+}
+
 func TestUnlinkDelegatesExactTupleAndSignalsOnlyOnRemoval(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	for _, testCase := range []struct {
@@ -836,6 +875,35 @@ func TestUnlinkSignalsCommittedRemovalWhenBVDurabilityCheckFails(t *testing.T) {
 	}
 	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
 		t.Fatalf("committed removal did not signal Viewer after durability error: %v", err)
+	}
+}
+
+func TestUnlinkNonzeroSuccessShapedResultWithoutDurabilityDoesNotSignal(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, testCase := range []struct {
+		name     string
+		response func(string) string
+	}{
+		{name: "missing durability marker", response: func(context string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":%q},"removed":true}`+"\n", context, sha)
+		}},
+		{name: "wrong commit", response: func(context string) string {
+			return fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":"89abcdef0123456789abcdef0123456789abcdef"},"removed":true,"durability_error":"synthetic failure"}`+"\n", context)
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			setResponses(t, map[string]string{"correlate": testCase.response(context)})
+			setExitCodes(t, map[string]int{"correlate": 7})
+
+			code, _, _ := test.run("unlink", "item-alpha", sha)
+			if code != 7 {
+				t.Fatalf("code=%d", code)
+			}
+			assertNoViewerSignal(t, test)
+		})
 	}
 }
 

@@ -277,11 +277,16 @@ func (a *app) run(arguments []string) int {
 				Correlation struct {
 					BeadID  string `json:"bead_id"`
 					Context string `json:"context"`
+					Commit  string `json:"commit"`
 				} `json:"correlation"`
-				Added bool `json:"added"`
+				Added      bool   `json:"added"`
+				Durability string `json:"durability_error"`
 			}
 			if err := json.Unmarshal(output, &result); err == nil {
-				committed = result.Added && result.Correlation.BeadID == request.positionals[0] && result.Correlation.Context == registration.Context
+				committed = result.Added && result.Durability != "" &&
+					result.Correlation.BeadID == request.positionals[0] &&
+					result.Correlation.Context == registration.Context &&
+					isFullCommitSHA(result.Correlation.Commit)
 			}
 		}
 		if committed {
@@ -313,7 +318,8 @@ func (a *app) run(arguments []string) int {
 				Context string `json:"context"`
 				Commit  string `json:"commit"`
 			} `json:"correlation"`
-			Removed bool `json:"removed"`
+			Removed    bool   `json:"removed"`
+			Durability string `json:"durability_error"`
 		}
 		if err := json.Unmarshal(output, &result); err != nil {
 			if code != 0 {
@@ -321,13 +327,14 @@ func (a *app) run(arguments []string) int {
 			}
 			return a.fail(fmt.Errorf("decoding correlation removal result: %w", err))
 		}
-		if result.Correlation.BeadID != request.positionals[0] || result.Correlation.Context != registration.Context || !strings.EqualFold(result.Correlation.Commit, request.positionals[1]) {
-			if code != 0 {
-				return code
-			}
+		tupleValid := result.Correlation.BeadID == request.positionals[0] &&
+			result.Correlation.Context == registration.Context &&
+			isFullCommitSHA(result.Correlation.Commit) &&
+			strings.EqualFold(result.Correlation.Commit, request.positionals[1])
+		if code == 0 && !tupleValid {
 			return a.fail(errors.New("correlation removal returned a different tuple than requested"))
 		}
-		if result.Removed {
+		if result.Removed && tupleValid && (code == 0 || result.Durability != "") {
 			a.signalMutation("unlink")
 		}
 		if _, err := a.stdout.Write(output); err != nil {

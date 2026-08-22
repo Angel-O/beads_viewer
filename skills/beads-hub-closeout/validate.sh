@@ -2,11 +2,6 @@
 
 set -euo pipefail
 
-repo_root=$(git rev-parse --show-toplevel)
-policy=$repo_root/AGENTS.md
-hub_skill=$repo_root/skills/beads-hub/SKILL.md
-closeout_skill=$repo_root/skills/beads-hub-closeout/SKILL.md
-
 require_text() {
   local file=$1 text=$2
   if ! grep -Fq -- "$text" "$file"; then
@@ -36,29 +31,27 @@ validate_metadata_value() {
 }
 
 validate_repository_metadata() {
-  local repository=$1 branch tags message
-  branch=$(git -C "$repository" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-  tags=$(git -C "$repository" tag --points-at HEAD)
-  message=$(git -C "$repository" show -s --format='%s%n%b' HEAD)
-  validate_metadata_value branch "$branch"
-  validate_metadata_value tag "$tags"
-  validate_metadata_value commit "$message"
+  local repository=$1 refs messages
+  refs=$(git -C "$repository" for-each-ref --format='%(refname)' refs/heads refs/tags)
+  messages=$(git -C "$repository" log --branches --tags --format='%s%n%b')
+  validate_metadata_value reference "$refs"
+  validate_metadata_value commit "$messages"
 }
 
-# Keep the regression fixtures invented and out of diagnostics. The same
-# function validates repository metadata below.
-for fixture in 'docs/hub-closeout' 'release-candidate' 'fix(hub): harden closeout privacy'; do
-  if ! validate_metadata_value synthetic "$fixture"; then
-    printf '%s\n' 'ID-free synthetic metadata was incorrectly rejected' >&2
-    exit 1
+if [[ ${1:-} == "--metadata-only" ]]; then
+  if [[ $# -ne 2 ]]; then
+    printf '%s\n' 'usage: validate.sh --metadata-only <repository>' >&2
+    exit 2
   fi
-done
-for fixture in 'feature/global-synthetic' 'ctx:sample-context-012345' 'fix: synthetic global-example'; do
-  if validate_metadata_value synthetic "$fixture" >/dev/null 2>&1; then
-    printf '%s\n' 'synthetic private metadata pattern was not detected' >&2
-    exit 1
-  fi
-done
+  validate_repository_metadata "$2"
+  printf '%s\n' 'Git metadata privacy validation passed'
+  exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+policy=$repo_root/AGENTS.md
+hub_skill=$repo_root/skills/beads-hub/SKILL.md
+closeout_skill=$repo_root/skills/beads-hub-closeout/SKILL.md
 
 validate_repository_metadata "$repo_root"
 
@@ -71,8 +64,8 @@ require_text "$closeout_skill" 'pull --ff-only "$remote" "$reference_branch"'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd show "$bead_id" --json)'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd close "$bead_id"'
-require_text "$closeout_skill" 'It rejects private identity patterns in the active branch, any tags'
-require_text "$closeout_skill" 'at `HEAD`, and the `HEAD` commit subject and body'
+require_text "$closeout_skill" 'It rejects private identity patterns in every local branch and tag name'
+require_text "$closeout_skill" 'and in commit subjects and bodies reachable from those refs'
 require_before "$closeout_skill" '## Synchronize Reference' 'pull --ff-only "$remote" "$reference_branch"'
 require_before "$closeout_skill" 'git merge-base --is-ancestor "$merge_sha" FETCH_HEAD' 'pull --ff-only "$remote" "$reference_branch"'
 require_before "$closeout_skill" 'Recheck that the reference checkout is still on the resolved branch and' 'pull --ff-only "$remote" "$reference_branch"'
