@@ -875,6 +875,63 @@ func TestKeyDispatch_Regression_HistorySearchEnterKeepsFilter(t *testing.T) {
 	}
 }
 
+func TestKeyDispatch_Regression_HistoryLowercaseHAndSubmittedSearchEscape(t *testing.T) {
+	m := setupTestModel(t)
+	updated, _ := m.Update(keyMsg("h"))
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if got := m.historyView.SearchQuery(); got != "h" || !m.historyView.IsSearchActive() {
+		t.Fatalf("focused h should remain search text: query=%q active=%v", got, m.historyView.IsSearchActive())
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.historyView.HasSearchQuery() || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("first esc should clear submitted search without leaving History: query=%q view=%v focus=%v", m.historyView.SearchQuery(), m.isHistoryView, m.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if m.isHistoryView || m.focused != focusList {
+		t.Fatalf("unfocused lowercase h should close History: view=%v focus=%v", m.isHistoryView, m.focused)
+	}
+}
+
+func TestKeyDispatch_Regression_HistoryGitZeroMatchEscapeRestoresCommits(t *testing.T) {
+	m := setupTestModel(t)
+	m.isHistoryView = true
+	m.focused = focusHistory
+	m.historyView = NewHistoryModel(createTestHistoryReport(), testTheme())
+	m.historyView.ToggleViewMode()
+
+	updated, _ := m.Update(keyMsg("/"))
+	m = updated.(Model)
+	for _, key := range []string{"z", "z", "z"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if commits := m.historyView.GetFilteredCommitList(); len(commits) != 0 {
+		t.Fatalf("submitted zero-match Git query returned %d commits, want 0", len(commits))
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.historyView.HasSearchQuery() || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("Escape did not clear Git query in place: query=%q view=%v focus=%v", m.historyView.SearchQuery(), m.isHistoryView, m.focused)
+	}
+	if got, want := len(m.historyView.GetFilteredCommitList()), len(m.historyView.commitList); got != want || got == 0 {
+		t.Fatalf("Escape did not restore unfiltered commits: got=%d want=%d", got, want)
+	}
+}
+
 func TestKeyDispatch_Regression_HistoryFileTreeEscStaysInHistory(t *testing.T) {
 	m := setupTestModel(t)
 	m.isHistoryView = true

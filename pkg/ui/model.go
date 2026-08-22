@@ -2021,7 +2021,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.historyLoadFailed = false
 			m.historyReport = msg.Report
-			m.historyView = NewHistoryModel(m.repositoryHistoryReport(msg.Report), m.theme)
+			m.historyView.SetReport(m.repositoryHistoryReport(msg.Report))
 			m.historyView.SetSize(m.width, m.height-1)
 			// Refresh detail pane if visible
 			if m.isSplitView || m.showDetails {
@@ -3564,6 +3564,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 					m.focused = focusList
+					return m, nil
+				}
+				if m.focused == focusHistory && m.historyView.HasSearchQuery() {
+					m.historyView.CancelSearch()
+					m.statusMsg = "🔍 Search cleared"
+					m.statusIsError = false
 					return m, nil
 				}
 				if m.showDetails && !m.isSplitView {

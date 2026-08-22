@@ -88,6 +88,30 @@ func TestModelUpdateHistoryPartialAndFatalState(t *testing.T) {
 	}
 }
 
+func TestModelUpdateHistoryRefreshReconcilesExistingView(t *testing.T) {
+	report := createTestHistoryReport()
+	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
+	m.width, m.height = 120, 40
+	m.historyReport = report
+	m.historyView.SetReport(report)
+	m.historyView.StartSearchWithMode(searchModeCommit)
+	m.historyView.searchInput.SetValue("auth")
+	m.historyView.applySearchFilter()
+	m.historyView.FinishSearch()
+	m.historyView.ToggleViewMode()
+
+	refreshed := createTestHistoryReport()
+	updated, _ := m.Update(HistoryLoadedMsg{Report: refreshed})
+	m = updated.(Model)
+
+	if m.historyView.SearchQuery() != "auth" || m.historyView.searchMode != searchModeCommit || m.historyView.IsSearchActive() || !m.historyView.IsGitMode() {
+		t.Fatalf("HistoryLoadedMsg replaced stable view state: query=%q mode=%v active=%v git=%v", m.historyView.SearchQuery(), m.historyView.searchMode, m.historyView.IsSearchActive(), m.historyView.IsGitMode())
+	}
+	if m.historyView.report != refreshed {
+		t.Fatal("HistoryLoadedMsg did not install refreshed report")
+	}
+}
+
 // exercise Phase2Ready and FileChanged branches of Update for coverage.
 func TestModelUpdatePhase2AndFileChanged(t *testing.T) {
 	issues := []model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen}}

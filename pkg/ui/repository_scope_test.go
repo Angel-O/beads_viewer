@@ -1136,6 +1136,29 @@ func TestRepositoryScopeEmptySnapshotClearsHistory(t *testing.T) {
 	}
 }
 
+func TestRepositoryHistoryProjectionPreservesCommitIdentity(t *testing.T) {
+	now := time.Now()
+	report := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{
+		"alpha": {BeadID: "alpha", Commits: []correlation.CorrelatedCommit{{Repository: "ctx:alpha", SHA: "shared", Message: "alpha", Timestamp: now}}},
+		"beta":  {BeadID: "beta", Commits: []correlation.CorrelatedCommit{{Repository: "ctx:beta", SHA: "shared", Message: "beta", Timestamp: now.Add(time.Minute)}}},
+	}}
+	h := NewHistoryModel(report, testTheme())
+	h.ToggleViewMode()
+	for index, commit := range h.GetFilteredCommitList() {
+		if commit.Repository == "ctx:alpha" && commit.SHA == "shared" {
+			h.selectedGitCommit = index
+		}
+	}
+
+	projected := projectHistoryReport(report, map[string]bool{"alpha": true}, map[string]bool{"ctx:alpha": true})
+	h.SetReport(projected)
+
+	commit := h.SelectedGitCommit()
+	if commit == nil || commit.Repository != "ctx:alpha" || commit.SHA != "shared" {
+		t.Fatalf("repository projection did not preserve repository-qualified commit selection: %#v", commit)
+	}
+}
+
 func TestScopedIssueParticipatesInCrossRepositoryLabelCycle(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "visible", Labels: []string{"work"}, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},

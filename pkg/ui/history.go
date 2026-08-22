@@ -191,8 +191,182 @@ func NewHistoryModel(report *correlation.HistoryReport, theme Theme) HistoryMode
 
 // SetReport updates the history data
 func (h *HistoryModel) SetReport(report *correlation.HistoryReport) {
+	selectedBeadID := h.SelectedBeadID()
+	selectedCommitID := correlatedCommitIdentity(h.SelectedCommit())
+	selectedGitCommitID := commitListEntryIdentity(h.SelectedGitCommit())
+	selectedRelatedBeadID := h.SelectedRelatedBeadID()
+	selectedFilePath := ""
+	if selectedFile := h.SelectedFileNode(); selectedFile != nil {
+		selectedFilePath = selectedFile.Path
+	}
+	expandedFilePaths := expandedHistoryFilePaths(h.fileTree)
+	scrollOffset := h.scrollOffset
+	gitScrollOffset := h.gitScrollOffset
+	middleScrollOffset := h.middleScrollOffset
+	timelineScrollOffset := h.timelineScrollOffset
+	fileTreeScroll := h.fileTreeScroll
+
 	h.report = report
-	h.rebuildFilteredList()
+	if h.fileFilter != "" && !historyReportHasFile(report, h.fileFilter) {
+		h.fileFilter = ""
+	}
+	h.applySearchFilter()
+
+	beadFound, beadCommitFound := h.restoreBeadSelection(selectedBeadID, selectedCommitID)
+	gitCommitFound, relatedBeadFound := h.restoreGitSelection(selectedGitCommitID, selectedRelatedBeadID)
+
+	if h.showFileTree || h.fileTree != nil {
+		h.buildFileTree()
+		restoreHistoryFileExpansions(h.fileTree, expandedFilePaths)
+		h.rebuildFlatFileList()
+		if !h.restoreFileSelection(selectedFilePath) {
+			h.selectedFileIdx = 0
+			h.fileTreeScroll = 0
+		} else {
+			h.fileTreeScroll = fileTreeScroll
+		}
+	}
+
+	if beadFound {
+		h.scrollOffset = scrollOffset
+		h.timelineScrollOffset = timelineScrollOffset
+	} else {
+		h.scrollOffset = 0
+		h.timelineScrollOffset = 0
+	}
+	middleIdentityFound := beadCommitFound
+	if h.viewMode == historyModeGit {
+		middleIdentityFound = relatedBeadFound
+	}
+	if middleIdentityFound {
+		h.middleScrollOffset = middleScrollOffset
+	} else {
+		h.middleScrollOffset = 0
+	}
+	if gitCommitFound {
+		h.gitScrollOffset = gitScrollOffset
+	} else {
+		h.gitScrollOffset = 0
+	}
+
+	validExpandedBeads := make(map[string]bool, len(h.expandedBeads))
+	for beadID, expanded := range h.expandedBeads {
+		if _, ok := reportHistory(report, beadID); ok && expanded {
+			validExpandedBeads[beadID] = true
+		}
+	}
+	h.expandedBeads = validExpandedBeads
+}
+
+func correlatedCommitIdentity(commit *correlation.CorrelatedCommit) string {
+	if commit == nil {
+		return ""
+	}
+	return commit.Repository + "\x00" + commit.SHA
+}
+
+func commitListEntryIdentity(commit *CommitListEntry) string {
+	if commit == nil {
+		return ""
+	}
+	return commit.Repository + "\x00" + commit.SHA
+}
+
+func reportHistory(report *correlation.HistoryReport, beadID string) (correlation.BeadHistory, bool) {
+	if report == nil {
+		return correlation.BeadHistory{}, false
+	}
+	history, ok := report.Histories[beadID]
+	return history, ok
+}
+
+func historyReportHasFile(report *correlation.HistoryReport, path string) bool {
+	if report == nil || path == "" {
+		return false
+	}
+	for _, history := range report.Histories {
+		for _, commit := range history.Commits {
+			for _, file := range commit.Files {
+				if historyFileIdentity(file) == path {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func expandedHistoryFilePaths(nodes []*FileTreeNode) map[string]bool {
+	expanded := make(map[string]bool)
+	var visit func([]*FileTreeNode)
+	visit = func(nodes []*FileTreeNode) {
+		for _, node := range nodes {
+			if node.IsDir && node.Expanded {
+				expanded[node.Path] = true
+			}
+			visit(node.Children)
+		}
+	}
+	visit(nodes)
+	return expanded
+}
+
+func restoreHistoryFileExpansions(nodes []*FileTreeNode, expanded map[string]bool) {
+	for _, node := range nodes {
+		node.Expanded = node.IsDir && expanded[node.Path]
+		restoreHistoryFileExpansions(node.Children, expanded)
+	}
+}
+
+func (h *HistoryModel) restoreBeadSelection(beadID, commitID string) (bool, bool) {
+	for beadIndex, id := range h.beadIDs {
+		if id != beadID {
+			continue
+		}
+		h.selectedBead = beadIndex
+		h.selectedCommit = 0
+		for commitIndex := range h.histories[beadIndex].Commits {
+			if correlatedCommitIdentity(&h.histories[beadIndex].Commits[commitIndex]) == commitID {
+				h.selectedCommit = commitIndex
+				return true, true
+			}
+		}
+		return true, false
+	}
+	h.selectedBead = 0
+	h.selectedCommit = 0
+	return false, false
+}
+
+func (h *HistoryModel) restoreGitSelection(commitID, relatedBeadID string) (bool, bool) {
+	commits := h.GetFilteredCommitList()
+	for commitIndex := range commits {
+		if commitListEntryIdentity(&commits[commitIndex]) != commitID {
+			continue
+		}
+		h.selectedGitCommit = commitIndex
+		h.selectedRelatedBead = 0
+		for beadIndex, beadID := range commits[commitIndex].BeadIDs {
+			if beadID == relatedBeadID {
+				h.selectedRelatedBead = beadIndex
+				return true, true
+			}
+		}
+		return true, false
+	}
+	h.selectedGitCommit = 0
+	h.selectedRelatedBead = 0
+	return false, false
+}
+
+func (h *HistoryModel) restoreFileSelection(path string) bool {
+	for index, node := range h.flatFileList {
+		if node.Path == path {
+			h.selectedFileIdx = index
+			return true
+		}
+	}
+	return false
 }
 
 // SetSessionsForBead stores correlated sessions for a bead in the cache (bv-pr1l)
@@ -841,6 +1015,11 @@ func (h *HistoryModel) SearchQuery() string {
 	return h.searchInput.Value()
 }
 
+// HasSearchQuery reports whether a submitted or active search is filtering History.
+func (h *HistoryModel) HasSearchQuery() bool {
+	return strings.TrimSpace(h.searchInput.Value()) != ""
+}
+
 // UpdateSearchInput updates the search input model (call from Update)
 func (h *HistoryModel) UpdateSearchInput(msg interface{}) {
 	h.searchInput, _ = h.searchInput.Update(msg)
@@ -880,12 +1059,12 @@ func (h *HistoryModel) applySearchFilter() {
 // filterCommitList filters commits in git mode based on search query
 func (h *HistoryModel) filterCommitList(query string) {
 	if len(h.commitList) == 0 {
-		h.filteredCommits = nil
+		h.filteredCommits = make([]CommitListEntry, 0)
 		return
 	}
 
 	query = strings.ToLower(query)
-	var filtered []CommitListEntry
+	filtered := make([]CommitListEntry, 0)
 
 	for _, commit := range h.commitList {
 		if h.commitMatchesQuery(commit, query) {
@@ -960,12 +1139,11 @@ func (h *HistoryModel) filterBeadList(query string) {
 	var filteredHistories []correlation.BeadHistory
 	var filteredIDs []string
 
-	for _, beadID := range h.beadIDs {
-		if hist, ok := h.report.Histories[beadID]; ok {
-			if h.beadMatchesQuery(beadID, hist, query) {
-				filteredHistories = append(filteredHistories, hist)
-				filteredIDs = append(filteredIDs, beadID)
-			}
+	for index, beadID := range h.beadIDs {
+		hist := h.histories[index]
+		if h.beadMatchesQuery(beadID, hist, query) {
+			filteredHistories = append(filteredHistories, hist)
+			filteredIDs = append(filteredIDs, beadID)
 		}
 	}
 
@@ -1327,7 +1505,7 @@ func (h *HistoryModel) ensureMiddleScrollVisible(selectedIdx, itemCount int) {
 
 // listHeight returns the number of visible items in the list
 func (h *HistoryModel) listHeight() int {
-	return historyListVisibleItems(h.height - 2)
+	return historyListVisibleItems(h.historyPanelHeight())
 }
 
 func (h *HistoryModel) historyListPanelWidth() int {
@@ -1468,11 +1646,11 @@ func (h *HistoryModel) renderTwoPaneView() string {
 	// Render panels based on view mode (bv-tl3n)
 	var listPanel, detailPanel string
 	if h.viewMode == historyModeGit {
-		listPanel = h.renderGitCommitListPanel(listWidth, h.height-2)
-		detailPanel = h.renderGitDetailPanel(detailWidth, h.height-2)
+		listPanel = h.renderGitCommitListPanel(listWidth, h.historyPanelHeight())
+		detailPanel = h.renderGitDetailPanel(detailWidth, h.historyPanelHeight())
 	} else {
-		listPanel = h.renderListPanel(listWidth, h.height-2)
-		detailPanel = h.renderDetailPanel(detailWidth, h.height-2)
+		listPanel = h.renderListPanel(listWidth, h.historyPanelHeight())
+		detailPanel = h.renderDetailPanel(detailWidth, h.historyPanelHeight())
 	}
 
 	// Combine panels
@@ -1488,7 +1666,7 @@ func (h *HistoryModel) renderThreePaneView() string {
 
 	// Render header
 	header := h.renderHeader()
-	panelHeight := h.height - 2
+	panelHeight := h.historyPanelHeight()
 
 	// Wide layout: 4 panes with timeline (bv-1x6o)
 	if layout == layoutWide && h.viewMode != historyModeGit {
@@ -1963,13 +2141,19 @@ func (h *HistoryModel) renderEmpty(msg string) string {
 	if h.report != nil && len(h.report.Warnings) > 0 {
 		msg += fmt.Sprintf("\n\nPARTIAL HISTORY: %d source repositories unavailable", len(h.report.Warnings))
 	}
+	header := h.renderHeader()
+	bodyHeight := h.historyPanelHeight()
 	style := t.Renderer.NewStyle().
 		Width(h.width).
-		Height(h.height).
+		Height(bodyHeight).
 		Align(lipgloss.Center, lipgloss.Center).
 		Foreground(t.Secondary)
 
-	return style.Render(msg + "\n\nPress H to close")
+	return lipgloss.JoinVertical(lipgloss.Left, header, style.Render(msg+"\n\nPress h to close"))
+}
+
+func (h *HistoryModel) historyPanelHeight() int {
+	return max(h.height-4, 3)
 }
 
 // renderHeader renders the filter bar, statistics, and title (bv-y5sx)
@@ -2016,43 +2200,29 @@ func (h *HistoryModel) renderHeader() string {
 	modeIndicator := fmt.Sprintf("%s %s", modeIcon, modeLabel)
 	title := titleStyle.Render("HISTORY") + modeStyle.Render(modeIndicator)
 
-	// Search input or close hint (bv-nkrj)
+	// Keep the right side one line tall so focusing search never moves the panels.
 	var rightContent string
-	if h.searchActive {
-		// Show search input
-		searchStyle := t.Renderer.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(t.Primary).
-			Padding(0, 1)
-
-		modeLabel := t.Renderer.NewStyle().
-			Foreground(t.Secondary).
-			Render(fmt.Sprintf("[%s] ", h.GetSearchModeName()))
-
-		inputView := h.searchInput.View()
-		searchBox := searchStyle.Render(modeLabel + inputView)
-
-		escHint := t.Renderer.NewStyle().
-			Foreground(t.Muted).
-			Padding(0, 1).
-			Render("[Esc] cancel")
-
-		rightContent = searchBox + escHint
+	showSearch := h.searchActive || h.HasSearchQuery()
+	if showSearch {
+		escAction := "clear"
+		if h.searchActive {
+			escAction = "cancel"
+		}
+		modeLabel := t.Renderer.NewStyle().Foreground(t.Secondary).Render(fmt.Sprintf("[%s]", h.GetSearchModeName()))
+		escHint := t.Renderer.NewStyle().Foreground(t.Muted).Render("esc:" + escAction)
+		available := max(h.width-lipgloss.Width(title)-lipgloss.Width(modeLabel)-lipgloss.Width(escHint)-10, 1)
+		h.searchInput.Width = min(40, available)
+		rightContent = "/ " + modeLabel + " " + h.searchInput.View() + "  " + escHint
 	} else {
-		// Show close hint and search hint
 		rightContent = t.Renderer.NewStyle().
 			Foreground(t.Muted).
-			Padding(0, 1).
-			Render("[/] search  [H] close")
+			Render("[/] search  [v] mode  [h] close")
 	}
 
-	// Combine title line with spacing
-	titleLineSpacerWidth := h.width - lipgloss.Width(title) - lipgloss.Width(rightContent)
-	if titleLineSpacerWidth < 1 {
-		titleLineSpacerWidth = 1
-	}
-	titleLineSpacer := strings.Repeat(" ", titleLineSpacerWidth)
-	titleLine := lipgloss.JoinHorizontal(lipgloss.Top, title, titleLineSpacer, rightContent)
+	// Allocate by terminal display width, not byte length, and constrain narrow views.
+	rightWidth := max(h.width-lipgloss.Width(title), 0)
+	rightSlot := t.Renderer.NewStyle().Width(rightWidth).MaxWidth(rightWidth).Align(lipgloss.Right).Render(rightContent)
+	titleLine := lipgloss.JoinHorizontal(lipgloss.Top, title, rightSlot)
 
 	// Build stats line (bv-y5sx)
 	statsLine := h.renderStatsLine()
