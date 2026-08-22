@@ -15,6 +15,11 @@ import (
 
 var fullCommitSHARegex = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 
+type correlationLedgerEntry struct {
+	correlation ExternalHistoryCorrelation
+	raw         []byte
+}
+
 // HubConfig is the shared version-1 Hub configuration schema.
 type HubConfig = hub.Config
 
@@ -112,17 +117,24 @@ func AddExternalCorrelation(configPath, beadID, repository, ref string) (Externa
 	}
 	defer func() { _ = unlockFile(lock) }()
 
-	records, err := loadCorrelationLedgerIfExists(ledger)
+	entries, err := loadCorrelationLedgerEntriesIfExists(ledger)
 	if err != nil {
 		return ExternalHistoryCorrelation{}, false, err
 	}
-	for _, existing := range records {
-		if existing.BeadID == record.BeadID && existing.Context == record.Context && strings.EqualFold(existing.Commit, record.Commit) {
+	for _, entry := range entries {
+		existing := entry.correlation
+		if strings.TrimSpace(existing.BeadID) == record.BeadID &&
+			strings.TrimSpace(existing.Context) == record.Context &&
+			strings.EqualFold(strings.TrimSpace(existing.Commit), record.Commit) {
 			return record, false, nil
 		}
 	}
-	records = append(records, record)
-	if err := writeCorrelationLedgerAtomic(ledger, records); err != nil {
+	encodedRecord, err := json.Marshal(record)
+	if err != nil {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("encoding correlation ledger record: %w", err)
+	}
+	entries = append(entries, correlationLedgerEntry{correlation: record, raw: encodedRecord})
+	if err := writeCorrelationLedgerAtomic(ledger, entries); err != nil {
 		return ExternalHistoryCorrelation{}, false, err
 	}
 	return record, true, nil
@@ -161,7 +173,19 @@ func resolveConfiguredRepository(repositories map[string]HubConfigRepository, va
 }
 
 func loadCorrelationLedgerIfExists(path string) ([]ExternalHistoryCorrelation, error) {
-	records, err := loadCorrelationLedger(path)
+	entries, err := loadCorrelationLedgerEntriesIfExists(path)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]ExternalHistoryCorrelation, len(entries))
+	for i, entry := range entries {
+		records[i] = entry.correlation
+	}
+	return records, nil
+}
+
+func loadCorrelationLedgerEntriesIfExists(path string) ([]correlationLedgerEntry, error) {
+	entries, err := loadCorrelationLedgerEntries(path)
 	if os.IsNotExist(unwrapPathError(err)) {
 		if _, linkErr := os.Lstat(path); linkErr == nil {
 			return nil, err
@@ -170,7 +194,7 @@ func loadCorrelationLedgerIfExists(path string) ([]ExternalHistoryCorrelation, e
 		}
 		return nil, nil
 	}
-	return records, err
+	return entries, err
 }
 
 func unwrapPathError(err error) error {
@@ -184,7 +208,7 @@ func unwrapPathError(err error) error {
 	return nil
 }
 
-func writeCorrelationLedgerAtomic(path string, records []ExternalHistoryCorrelation) error {
+func writeCorrelationLedgerAtomic(path string, entries []correlationLedgerEntry) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating correlation ledger directory %q: %w", dir, err)
@@ -199,12 +223,20 @@ func writeCorrelationLedgerAtomic(path string, records []ExternalHistoryCorrelat
 		tmp.Close()
 		return fmt.Errorf("securing temporary correlation ledger: %w", err)
 	}
-	encoder := json.NewEncoder(tmp)
-	for _, record := range records {
-		if err := encoder.Encode(record); err != nil {
+	writer := bufio.NewWriter(tmp)
+	for _, entry := range entries {
+		if _, err := writer.Write(entry.raw); err != nil {
 			tmp.Close()
-			return fmt.Errorf("encoding correlation ledger: %w", err)
+			return fmt.Errorf("writing correlation ledger: %w", err)
 		}
+		if err := writer.WriteByte('\n'); err != nil {
+			tmp.Close()
+			return fmt.Errorf("writing correlation ledger: %w", err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing correlation ledger: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
@@ -319,13 +351,25 @@ func pathWithin(parent, child string) bool {
 }
 
 func loadCorrelationLedger(path string) ([]ExternalHistoryCorrelation, error) {
+	entries, err := loadCorrelationLedgerEntries(path)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]ExternalHistoryCorrelation, len(entries))
+	for i, entry := range entries {
+		records[i] = entry.correlation
+	}
+	return records, nil
+}
+
+func loadCorrelationLedgerEntries(path string) ([]correlationLedgerEntry, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading correlation ledger %q: %w", path, err)
 	}
 	defer file.Close()
 
-	var records []ExternalHistoryCorrelation
+	var entries []correlationLedgerEntry
 	scanner := bufio.NewScanner(file)
 	for line := 1; scanner.Scan(); line++ {
 		if strings.TrimSpace(scanner.Text()) == "" {
@@ -335,12 +379,15 @@ func loadCorrelationLedger(path string) ([]ExternalHistoryCorrelation, error) {
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 			return nil, fmt.Errorf("parsing correlation ledger %q line %d: %w", path, line, err)
 		}
-		records = append(records, record)
+		entries = append(entries, correlationLedgerEntry{
+			correlation: record,
+			raw:         append([]byte(nil), scanner.Bytes()...),
+		})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("reading correlation ledger %q: %w", path, err)
 	}
-	return records, nil
+	return entries, nil
 }
 
 func expandConfigPath(path string) (string, error) {
