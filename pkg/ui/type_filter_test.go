@@ -139,6 +139,61 @@ func TestStatusKeysToggleAndPreserveComposedListFilters(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-closed")
 }
 
+func TestStatusFilterBadgeRendersWithComposedFilters(t *testing.T) {
+	t.Run("label", func(t *testing.T) {
+		m := NewModel(typeFilterIssues(), nil, "")
+		m.width = 200
+		m.currentFilter = "label:urgent"
+		m.applyFilter()
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "CLOSED") {
+			t.Fatalf("label + closed footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "OPEN") {
+			t.Fatalf("label + open footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		footer := ansi.Strip(m.renderFooter())
+		if strings.Contains(footer, "OPEN") || strings.Contains(footer, "CLOSED") || strings.Contains(footer, "READY") || !strings.Contains(footer, "label:urgent") {
+			t.Fatalf("cleared label status changed footer filter: %q", footer)
+		}
+	})
+
+	t.Run("recipe", func(t *testing.T) {
+		m := NewModel(typeFilterIssues(), nil, "")
+		m.width = 200
+		r := &recipe.Recipe{Name: "urgent", Filters: recipe.FilterConfig{Tags: []string{"urgent"}}}
+		m.setActiveRecipe(r)
+		m.applyRecipe(r)
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "CLOSED") {
+			t.Fatalf("recipe + closed footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "OPEN") {
+			t.Fatalf("recipe + open footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		footer := ansi.Strip(m.renderFooter())
+		if strings.Contains(footer, "OPEN") || strings.Contains(footer, "CLOSED") || strings.Contains(footer, "READY") || !strings.Contains(footer, "URGENT") {
+			t.Fatalf("cleared recipe status changed footer filter: %q", footer)
+		}
+	})
+}
+
 func TestStatusKeysRenderNormalFooterImmediately(t *testing.T) {
 	footerLine := func(view string) string {
 		view = strings.TrimRight(view, "\n")

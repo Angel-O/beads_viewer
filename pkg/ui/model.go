@@ -6738,7 +6738,11 @@ func (m *Model) renderFooter() string {
 		filterTxt = fmt.Sprintf("LABEL %s: enter filter • g graph • esc/q/d close", m.labelDrilldownLabel)
 		filterIcon = "🏷️"
 	} else {
-		switch m.currentFilter {
+		filter := m.currentFilter
+		if status := m.activeStatusFilter(); status != "" {
+			filter = status
+		}
+		switch filter {
 		case "all":
 			filterTxt = "ALL"
 			filterIcon = "📋"
@@ -6752,11 +6756,11 @@ func (m *Model) renderFooter() string {
 			filterTxt = "READY"
 			filterIcon = "🚀"
 		default:
-			if strings.HasPrefix(m.currentFilter, "recipe:") {
-				filterTxt = strings.ToUpper(m.currentFilter[7:])
+			if strings.HasPrefix(filter, "recipe:") {
+				filterTxt = strings.ToUpper(filter[7:])
 				filterIcon = "📑"
 			} else {
-				filterTxt = m.currentFilter
+				filterTxt = filter
 				filterIcon = "🔍"
 			}
 		}
@@ -7441,6 +7445,13 @@ func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
 
 func (m *Model) matchesStatusFilter(issue model.Issue) bool {
 	return m.statusFilter == "" || m.matchesFilter(issue, m.statusFilter)
+}
+
+func (m *Model) activeStatusFilter() string {
+	if m.currentFilter == "open" || m.currentFilter == "closed" || m.currentFilter == "ready" {
+		return m.currentFilter
+	}
+	return m.statusFilter
 }
 
 func (m *Model) toggleStatusFilter(filter string) {
