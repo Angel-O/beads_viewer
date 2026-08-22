@@ -94,6 +94,12 @@ Once the file exists, `bv` works identically regardless of which tool produced i
 
 ---
 
+## Private Hub Agent Skill
+
+This fork ships a separate [`beads-hub` agent skill](skills/beads-hub/SKILL.md) for installations that use its private global Hub through `wbd` and `wbv`. Install that skill from the same commit used to build the wrapper binaries so their safety and command contracts remain in sync. The root `SKILL.md` continues to describe the standard repository-local `bv` workflow and must not be substituted for the Hub skill.
+
+---
+
 ## 🤖 Agent Quickstart (Robot Mode)
 
 ⚠️ **Never run bare `bv` in an agent context** — it launches the interactive TUI. Always use `--robot-*`.
