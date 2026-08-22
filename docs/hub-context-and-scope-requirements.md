@@ -4,7 +4,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Requirements synthesis complete; all 36 normative requirements are Confirmed |
+| Status | Requirements synthesis complete; all 37 normative requirements are Confirmed |
 | Inputs | `docs/hub-context-and-scope-discovery.md`; `docs/hub-context-and-scope-discovery-validation.md` |
 | Scope | Externally observable Hub behavior for context membership, creation, lifecycle continuity, read scope, dependency truth, and explicit source correlation |
 | Interpretation | Validated current state constrains the requirements; user-selected discovery direction supplies the desired behavior |
@@ -20,6 +20,7 @@ records unresolved mechanisms separately in a non-normative boundary ledger.
 |---|---|
 | `D` | `docs/hub-context-and-scope-discovery.md` |
 | `DV` | `docs/hub-context-and-scope-discovery-validation.md` |
+| `MVP` | User-selected direction during MVP definition |
 
 Traceability uses stable section and row names rather than depending only on
 line numbers. A direction source explains why behavior is desired. An evidence
@@ -43,7 +44,8 @@ evidence field says `Direction-only` rather than presenting intent as evidence.
 | Immutable membership | Context membership does not change after creation |
 | Replacement | New correctly scoped bead created to correct mistaken placement |
 | Supersession | Auditable indication that an original bead was replaced; no relationship type is selected here |
-| Explicit correlation | Optional association between a bead and an immutable commit in an eligible repository |
+| Explicit correlation | Optional association between a directly correlatable bead and an immutable commit in an eligible repository |
+| Directly correlatable bead | Any bead except a todo; resulting project work, not its source todo, owns commit correlations |
 | Scope | Selected projection of Hub issues |
 | Global dependency truth | Dependencies hidden by scope continue to govern readiness and graph semantics |
 
@@ -148,12 +150,13 @@ are not duplicated as scope requirements.
 
 | ID | Status | Normative statement | Positive example | Negative or boundary example | Direction | Evidence | Coverage | Boundaries |
 |---|---|---|---|---|---|---|---|---|
-| HCS-COR-001 | Confirmed | A bead MAY be explicitly correlated with an immutable commit in an eligible repository. | Given bead B eligible in A, a caller can associate B with immutable commit X in A. | Eligibility does not create a correlation automatically. | `DV:User-Selected Discovery Direction/Correlation` | `D:Working Vocabulary/External Hub correlation`; `DV:Correlation Lifecycle/persisted identity` | UC-08; OQ-08 | HCS-BND-402 |
-| HCS-COR-002 | Confirmed | A bead's eligible repository set for explicit correlation SHALL equal its context membership set. | Given memberships A and B, then only A and B are eligible. | Caller location or related work in C cannot add C. | `DV:User-Selected Discovery Direction/Correlation` | `D:Current Behavior/Commit correlation`; `DV:Correlation Lifecycle/membership validation` | UC-02, UC-03, UC-06, UC-07, UC-08; OQ-01, OQ-02, OQ-03, OQ-04, OQ-08 | HCS-BND-403 |
+| HCS-COR-001 | Confirmed | A directly correlatable bead MAY be explicitly correlated with multiple immutable commits in an eligible repository. | Given project work B eligible in A, a caller can associate B with immutable commits X and Y in A. | Eligibility does not create a correlation automatically or limit the bead to one commit. | `DV:User-Selected Discovery Direction/Correlation` | `D:Working Vocabulary/External Hub correlation`; `DV:Correlation Lifecycle/persisted identity` | UC-08; OQ-08 | HCS-BND-402 |
+| HCS-COR-002 | Confirmed | A directly correlatable bead's eligible repository set for explicit correlation SHALL equal its context membership set. | Given memberships A and B, then multiple commits in A and B are eligible. | Caller location or related work in C cannot add C. | `DV:User-Selected Discovery Direction/Correlation` | `D:Current Behavior/Commit correlation`; `DV:Correlation Lifecycle/membership validation` | UC-06, UC-07, UC-08; OQ-03, OQ-04, OQ-08 | HCS-BND-403 |
 | HCS-COR-003 | Confirmed | An ineligible explicit-correlation attempt SHALL be rejected. | Given work scoped to A, when correlation is attempted in B, then the attempt is rejected. | Caller location in B cannot override membership. | `DV:User-Selected Discovery Direction/Correlation` | `D:Known Evidence/correlation-write membership`; `DV:Correlation Lifecycle/write validation` | UC-03, UC-06, UC-07, UC-08; OQ-08 | HCS-BND-401 |
 | HCS-COR-004 | Confirmed | A rejected explicit-correlation attempt SHALL NOT create a correlation. | Given an ineligible attempt, when rejection completes, then no new association exists. | A rejected outcome with a persisted association is invalid. | `DV:User-Selected Discovery Direction/Correlation` | `DV:Validated Current State/Correlation Lifecycle/write validation` | UC-03, UC-08; OQ-08 | HCS-BND-401, HCS-BND-403 |
 | HCS-COR-005 | Confirmed | A bead with zero explicit correlations SHALL remain valid. | Given eligible work with no correlations, when inspected, then it remains valid. | Absence of source history cannot force a correlation. | `DV:Use-Case Disposition/UC-08` | `D:UC-08`; `D:Candidate Lifecycle Examples/Source history` | UC-03, UC-08; OQ-08 | HCS-BND-402 |
 | HCS-COR-006 | Confirmed | Correlation history SHALL continue to attribute an original bead's correlations to that original after a replacement is created. | Given O correlated with X, when R replaces O, then X remains attributed to O. | X cannot be reassigned to R merely because R is the replacement. | `DV:User-Selected Discovery Direction/Correction, Correlation` | Direction-only; no current replacement workflow | UC-05; OQ-07 | HCS-BND-402, HCS-BND-403 |
+| HCS-COR-007 | Confirmed | A todo SHALL NOT own explicit commit correlations. | Given todo T results in task W, commit X is correlated with W while T retains only the `results-in` continuity. | Context membership on T cannot make T directly correlatable. | `MVP:Todo correlation` | Direction-only; current correlation code does not distinguish issue kinds | UC-02, UC-03, UC-08, UC-11; OQ-01, OQ-02, OQ-08 | HCS-BND-401, HCS-BND-402 |
 
 ## Explicit Non-Goals
 
@@ -167,7 +170,7 @@ user direction.
 | HCS-NG-002 | Transfer an existing bead from one context to another | Replaced by new-bead correction and auditable closure or supersession | `DV:Use-Case Disposition/UC-05` |
 | HCS-NG-003 | Promote a Viewer-owned intake record into a Bead | Reframed as a durable Beads-native todo linked to resulting project work | `DV:Use-Case Disposition/UC-11` |
 | HCS-NG-004 | Distinguish initially unscoped from intentionally neutral using separate states | Both use the zero-context todo direction | `DV:Baseline Question Disposition/OQ-02` |
-| HCS-NG-005 | Add a separate never-correlate policy | Context determines eligibility and actual correlation remains optional | `DV:Baseline Question Disposition/OQ-08` |
+| HCS-NG-005 | Add a separate per-bead never-correlate policy | Kind and context determine eligibility, while actual correlation remains optional; todos are excluded by lifecycle role | `DV:Baseline Question Disposition/OQ-08` |
 
 ## Non-Normative Boundary Ledger
 
@@ -191,8 +194,8 @@ They do not select a solution.
 | HCS-BND-303 | Mixed scope | Can contextless items be selected together with registered contexts, and what combined projection results? | Contextless selection is selected; mixed composition is not. | HCS-SCP-003, HCS-SCP-004, HCS-SCP-005 | Scope requirements work |
 | HCS-BND-304 | Missing current context | What initial behavior applies when no registered current context can be derived? | Default, fallback, and interface policy remain unselected. | HCS-CRE-001, HCS-CRE-009, HCS-SCP-001 | Requirements and interface work |
 | HCS-BND-305 | Hidden relationships | How are hidden blockers, parents, and dependency edges communicated in scoped outputs? | Global truth is selected; presentation remains unselected. | HCS-INV-007, HCS-INV-008 | UI and robot contract work |
-| HCS-BND-401 | Rejection contract | What exact error and machine-readable outcome represents a rejected creation or correlation attempt? | Error shape and command/API representation remain unselected. | HCS-CRE-008, HCS-CRE-009, HCS-COR-003, HCS-COR-004 | Interface contract work |
-| HCS-BND-402 | History presentation | How do history surfaces expose optional absence and original/replacement attribution? | UI and robot representation remain unselected. | HCS-LIF-005, HCS-COR-001, HCS-COR-005, HCS-COR-006 | History interface work |
+| HCS-BND-401 | Rejection contract | What exact error and machine-readable outcome represents a rejected creation or correlation attempt? | Error shape and command/API representation remain unselected. | HCS-CRE-008, HCS-CRE-009, HCS-COR-003, HCS-COR-004, HCS-COR-007 | Interface contract work |
+| HCS-BND-402 | History presentation | How do history surfaces expose optional absence and original/replacement attribution? | UI and robot representation remain unselected. | HCS-LIF-005, HCS-COR-001, HCS-COR-005 through HCS-COR-007 | History interface work |
 | HCS-BND-403 | Existing correlations | How are existing records interpreted if they conflict with the selected immutable-membership requirements? | Existing-data compatibility, repair, and migration remain outside this phase. | HCS-COR-002, HCS-COR-004, HCS-COR-006 | Compatibility and migration analysis |
 | HCS-BND-501 | Upstream compatibility | Which installed and supported Beads clients accept and preserve the selected todo behavior? | Released upstream evidence does not establish the supported client contract. | HCS-INV-005, HCS-CRE-004, HCS-CRE-005 | Compatibility analysis |
 | HCS-BND-502 | Local mode | Which requirements, if any, apply outside Hub mode? | Local-mode policy remains deliberately unselected. | Entire requirement set | Later product requirements |
@@ -208,6 +211,7 @@ They do not select a solution.
 | Current all-scope visibility versus selectable contextless scope | Selectable contextless scope is confirmed behavior; aggregate and mixed selection semantics remain deferred. |
 | Scoped candidate projection versus hidden dependency truth | Candidate visibility follows scope requirements; readiness and graph truth follow HCS-INV-007 and HCS-INV-008. |
 | Correlation writer versus whole-ledger validation | New eligibility requirements are explicit; existing-record interpretation remains HCS-BND-403. |
+| Todo context membership versus source ownership | Todo contexts control routing and scope, but resulting project work owns source correlations; no todo context makes it directly correlatable. |
 | Upstream custom type support versus client portability | Beads-native todo is confirmed behavior; supported-client feasibility remains HCS-BND-501. |
 
 ## Direction Coverage
@@ -221,7 +225,7 @@ They do not select a solution.
 | Current or explicit creation targeting | HCS-CRE-001, HCS-CRE-002, HCS-CRE-008, HCS-CRE-009 |
 | Replacement-based correction | HCS-LIF-003 through HCS-LIF-007 |
 | Durable todo linked to project work | HCS-LIF-001, HCS-LIF-002 |
-| Context-limited optional correlation | HCS-COR-001 through HCS-COR-005 |
+| Context-limited optional project-work correlation | HCS-COR-001 through HCS-COR-005, HCS-COR-007 |
 | Current, other, and contextless read scopes | HCS-SCP-001 through HCS-SCP-005 |
 | Global dependency truth | HCS-INV-007, HCS-INV-008 |
 
@@ -230,16 +234,16 @@ They do not select a solution.
 | Use case | Coverage | Disposition |
 |---|---|---|
 | UC-01 | HCS-INV-001, HCS-INV-006, HCS-CRE-001, HCS-CRE-002, HCS-CRE-008, HCS-CRE-009 | Retained |
-| UC-02 | HCS-INV-005, HCS-CRE-003 through HCS-CRE-005, HCS-LIF-001, HCS-COR-002 | Retained as durable todo capture |
-| UC-03 | HCS-INV-005, HCS-CRE-003, HCS-CRE-004, HCS-SCP-003, HCS-COR-002, HCS-COR-005 | Retained as zero-context todo |
+| UC-02 | HCS-INV-005, HCS-CRE-003 through HCS-CRE-005, HCS-LIF-001, HCS-COR-007 | Retained as durable todo capture |
+| UC-03 | HCS-INV-005, HCS-CRE-003, HCS-CRE-004, HCS-SCP-003, HCS-COR-005, HCS-COR-007 | Retained as zero-context todo |
 | UC-04 | HCS-LIF-002; HCS-NG-001 | Reframed as linked project work rather than context mutation |
 | UC-05 | HCS-INV-003, HCS-LIF-003 through HCS-LIF-007, HCS-COR-006; HCS-NG-002 | Reframed as replacement correction |
 | UC-06 | HCS-INV-004, HCS-CRE-006, HCS-LIF-008, HCS-SCP-004 | Retained as multi-context epic coordination |
 | UC-07 | HCS-INV-006, HCS-CRE-001, HCS-CRE-002, HCS-CRE-007 | Retained as single-context ordinary work |
-| UC-08 | HCS-COR-001 through HCS-COR-005; HCS-NG-005 | Retained as optional explicit correlation |
+| UC-08 | HCS-COR-001 through HCS-COR-005, HCS-COR-007; HCS-NG-005 | Retained as optional explicit correlation on resulting project work |
 | UC-09 | HCS-INV-003; HCS-NG-001 | Superseded as membership mutation |
 | UC-10 | HCS-INV-007, HCS-INV-008, HCS-SCP-001 through HCS-SCP-005 | Retained |
-| UC-11 | HCS-LIF-001, HCS-LIF-002; HCS-NG-003 | Reframed as durable todo continuity |
+| UC-11 | HCS-LIF-001, HCS-LIF-002, HCS-COR-007; HCS-NG-003 | Reframed as durable todo continuity without direct source ownership |
 
 ## Baseline-Question Coverage
 
@@ -252,7 +256,7 @@ They do not select a solution.
 | OQ-05 | HCS-INV-003; HCS-NG-001, HCS-NG-002 | HCS-BND-203 |
 | OQ-06 | HCS-INV-001, HCS-CRE-001, HCS-CRE-002, HCS-CRE-008, HCS-CRE-009 | HCS-BND-102, HCS-BND-304 |
 | OQ-07 | HCS-LIF-003 through HCS-LIF-007, HCS-COR-006; HCS-NG-002 | HCS-BND-203, HCS-BND-403 |
-| OQ-08 | HCS-COR-001 through HCS-COR-005; HCS-NG-005 | HCS-BND-401, HCS-BND-402 |
+| OQ-08 | HCS-COR-001 through HCS-COR-005, HCS-COR-007; HCS-NG-005 | HCS-BND-401, HCS-BND-402 |
 | OQ-09 | HCS-INV-007, HCS-INV-008 | HCS-BND-305 |
 | OQ-10 | Hub requirements only | HCS-BND-502 |
 | OQ-11 | HCS-INV-005, HCS-LIF-001; HCS-NG-003 | HCS-BND-501 |
@@ -272,7 +276,7 @@ They do not select a solution.
 | Duplicate and conflicting obligations have been reconciled. | Pass |
 | Deferred mechanisms appear only in the boundary ledger. | Pass |
 | No prohibited design or implementation decision is selected. | Pass |
-| Parent review disposition is recorded for every normative requirement. | Pass; all 36 normative requirements are Confirmed |
+| Review disposition is recorded for every normative requirement. | Pass; all 37 normative requirements are Confirmed |
 
 Requirements synthesis is complete and accepted as the requirements baseline.
 Deferred boundaries remain assigned to later phases and do not reduce the

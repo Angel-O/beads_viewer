@@ -6,7 +6,7 @@
 |---|---|
 | Status | Model accepted; lifecycle predicates, epic coordination constraint, and delta-validated correlation writes selected |
 | Inputs | `docs/hub-context-and-scope-discovery.md`; `docs/hub-context-and-scope-discovery-validation.md`; `docs/hub-context-and-scope-requirements.md` |
-| Requirements baseline | All 36 `HCS-*` normative requirements are Confirmed and act as hard gates |
+| Requirements baseline | All 37 `HCS-*` normative requirements are Confirmed and act as hard gates |
 | Scope | Domain authority, persistence ownership, invariant enforcement, lifecycle relationships, scope algebra, dependency truth, correlation integrity, and Hub/local compatibility boundaries |
 | Out of scope | Command syntax, detailed UI or robot shape, migration execution, MVP selection, implementation tasks, sequencing, and estimates |
 
@@ -58,10 +58,11 @@ Every coherent candidate was checked against these gates before scoring.
 | G-07 | Todo, replacement, and epic continuity is explicit and auditable rather than inferred from text or shared membership. | HCS-LIF-002, HCS-LIF-007, HCS-LIF-008 |
 | G-08 | Scope supports current, explicit registered, contextless, intersection, and de-duplicated selection semantics without assigning deferred aggregate or mixed-scope meanings. | HCS-SCP-001 through HCS-SCP-005; HCS-BND-302, HCS-BND-303 |
 | G-09 | Scope projection cannot change dependency truth or readiness. | HCS-INV-007, HCS-INV-008 |
-| G-10 | Correlation eligibility equals immutable context membership. | HCS-COR-001 through HCS-COR-003 |
+| G-10 | Directly correlatable beads may own zero or more commit correlations and use immutable context membership as their repository boundary; todos are never directly correlatable. | HCS-COR-001 through HCS-COR-003, HCS-COR-005, HCS-COR-007 |
 | G-11 | Rejected creation and correlation attempts have no persisted side effect. | HCS-CRE-008, HCS-CRE-009, HCS-COR-004 |
 | G-12 | Every supported writer and round-trip path preserves the selected kind, membership, and lifecycle semantics. | HCS-BND-501; E-001 through E-003 |
 | G-13 | Hub semantics do not silently reinterpret local-mode records or history. | HCS-BND-502; E-008 |
+| G-14 | Omitted targeting, explicit complete-set targeting, and intentional contextless todo creation remain distinct creation intents. | HCS-CRE-001 through HCS-CRE-006 |
 
 G-12 is a conditional gate because the evidence identifies, but does not yet
 populate, the supported-client contract. A candidate may survive only by making
@@ -101,9 +102,9 @@ Ratings use a 0-5 scale. Weighted points equal `rating / 5 * weight`.
 | Scope | SCP-1 selector algebra plus global analysis | Scope is a set union selector; canonical analysis runs globally and results are projected afterward. | Pass |
 | Scope | SCP-2 induced scoped graph | Dependencies and analysis are rebuilt from only visible candidates. | Fail G-09 |
 | Scope | SCP-3 implicit all aliases | Every selector, including explicit contextless selection, collapses to an all-items view. | Fail G-08 |
-| Correlation | COR-1 monotonic delta-validated external ledger | Each append validates the proposed association and identity uniqueness without reinterpreting unrelated existing records; complete-ledger validation remains an integrity/read concern. | Pass |
+| Correlation | COR-1 monotonic delta-validated external ledger | Each append validates kind eligibility, context membership, the proposed association, and identity uniqueness without reinterpreting unrelated existing records; complete-ledger validation remains an integrity/read concern. | Pass |
 | Correlation | COR-2 correlation embedded in issue data | Beads records directly own commit associations. | Fail evidence gate G-12; no authoritative supported-client round trip is proven |
-| Correlation | COR-3 full-ledger-gated external ledger | Every append requires every historical record to remain valid under current state. | Conditional; stronger than HCS-COR-001 through HCS-COR-006 and prematurely selects HCS-BND-403 policy |
+| Correlation | COR-3 full-ledger-gated external ledger | Every append requires every historical record to remain valid under current state. | Conditional; stronger than HCS-COR-001 through HCS-COR-007 and prematurely selects HCS-BND-403 policy |
 | Compatibility | CMP-1 exact supported-client profile | Only empirically verified clients and round trips are supported; there is no semantic fallback. | Pass conditionally |
 | Compatibility | CMP-2 optimistic custom-kind compatibility | Any client accepting arbitrary strings is assumed to preserve all semantics. | Fail G-12 |
 | Local boundary | LOC-1 shared Hub/local semantics | Local records acquire Hub context and external-ledger meaning. | Fail G-13 |
@@ -126,7 +127,7 @@ SCP-1, PER-1, CMP-1, and LOC-2.
 | Finding | Basis |
 |---|---|
 | MODEL-A best preserves one authority per fact. | Beads owns issue facts, the Hub registry owns selectable repository identities, and the external ledger owns only correlations. `I:E-001,E-004,E-007` |
-| MODEL-A treats append authorization and historical integrity as separate obligations. | HCS-COR-001 through HCS-COR-006 constrain the proposed association; interpretation of conflicting existing records remains deferred by HCS-BND-403. `R:HCS-COR-001..006`; `E:E-007` |
+| MODEL-A treats append authorization and historical integrity as separate obligations. | HCS-COR-001 through HCS-COR-007 constrain the proposed association; interpretation of conflicting existing records remains deferred by HCS-BND-403. `R:HCS-COR-001..007`; `E:E-007` |
 | MODEL-B provides stronger resulting-ledger validity but creates global write coupling. | An unrelated stale bead, context, or repository can reject an otherwise valid association, selecting compatibility policy not required by the baseline. `I:E-007`; `R:HCS-BND-403` |
 | MODEL-C is viable but makes every lifecycle reader interpret a generic role envelope before it can establish continuity. | Dedicated predicates express the three materially different obligations directly. `R:HCS-LIF-002,HCS-LIF-007,HCS-LIF-008` |
 | New native fields are not scored despite conceptual cleanliness. | No supported-client evidence shows that such fields survive all writers and round trips. `G:G-12`; `E:E-002` |
@@ -142,9 +143,9 @@ coverage are demonstrated.
 
 | Fact | Authority | Derived consumers |
 |---|---|---|
-| Bead identity, issue kind, status, content, lifecycle history | Beads issue record | Hub orchestration, Viewer, analysis |
+| Bead identity, issue kind, status, content, lifecycle history | Beads issue record | Hub orchestration, Viewer, analysis, direct-correlation kind eligibility |
 | Registered context identity and live repository location | Hub registry | Creation target resolution, scope selection, correlation repository access |
-| Immutable context membership | Reserved context labels in the Beads issue | Scope matching, cardinality checks, correlation eligibility, catalog counts |
+| Immutable context membership | Reserved context labels in the Beads issue | Scope matching, cardinality checks, eligible repositories for directly correlatable beads, catalog counts |
 | Todo-result, supersession, and epic-coordination continuity | Dedicated semantic relationship predicates associated with durable bead IDs | Lifecycle and audit views; physical Beads encoding deferred |
 | Explicit source correlation | External ledger record `(bead identity, context identity, full commit SHA)` | External history and correlation views |
 | Read scope | Ephemeral selector, never persisted as membership | Candidate projection only |
@@ -256,9 +257,11 @@ candidates.
 
 ### Correlation Integrity
 
-The eligible repository set for issue `i` is exactly `C(i)`. Correlation remains
-optional. A contextless todo therefore has no eligible repository but remains a
-valid issue.
+For every non-todo issue `i`, the eligible repository set is exactly `C(i)`.
+Correlation remains optional and each eligible issue may own multiple commit
+correlations. A todo is never directly correlatable, regardless of whether its
+context set is empty or non-empty. Its resulting project work owns any source
+correlations while `results-in` preserves continuity to the todo.
 
 The external ledger remains the sole correlation authority. An append validates
 the proposed association's stable bead ID, immutable membership, registered
@@ -344,14 +347,15 @@ writer-coverage evidence stated above.
 | HCS-SCP-003 | Covered | The dedicated `Contextless` selector includes zero-membership items. | R:HCS-SCP-003 |
 | HCS-SCP-004 | Covered | Matching uses non-empty set intersection. | R:HCS-SCP-004; E-005 |
 | HCS-SCP-005 | Covered | Set projection returns each issue identity at most once. | R:HCS-SCP-005; E-005 |
-| HCS-COR-001 | Covered | External ledger accepts optional immutable full-SHA records in eligible repositories. | R:HCS-COR-001; E-007 |
-| HCS-COR-002 | Covered | Eligibility is defined as exactly the immutable context set. | R:HCS-COR-002 |
+| HCS-COR-001 | Covered | External ledger accepts multiple optional immutable full-SHA records for directly correlatable beads. | R:HCS-COR-001; E-007 |
+| HCS-COR-002 | Covered | A directly correlatable bead's eligible repository set is exactly its immutable context set. | R:HCS-COR-002 |
 | HCS-COR-003 | Covered | Validation of the proposed association rejects an ineligible append. | R:HCS-COR-003; G-10 |
 | HCS-COR-004 | Covered | The proposed association is appended only after its validation succeeds. | R:HCS-COR-004; G-11 |
 | HCS-COR-005 | Covered | Empty correlation history is valid and requires no policy flag. | R:HCS-COR-005 |
 | HCS-COR-006 | Covered | Records remain keyed to the original identity after `superseded-by`. | R:HCS-COR-006; E-007 |
+| HCS-COR-007 | Covered | Todo kind makes direct correlation ineligible; resulting project work owns source correlations. | R:HCS-COR-007 |
 
-All 36 requirements have a disposition. The Conditional rows do not weaken a
+All 37 requirements have a disposition. The Conditional rows do not weaken a
 requirement; they identify evidence that must exist before the model can be
 claimed as operationally enforceable.
 
@@ -424,7 +428,7 @@ claimed as operationally enforceable.
 | General transfer | Not present; `superseded-by` preserves both immutable records. |
 | Viewer-owned intake or permanent todo | Not present; todo remains a Beads identity. |
 | Separate unclassified versus neutral state | Not present; a zero-context todo is one state. |
-| Separate never-correlate policy | Not present; eligibility follows membership and actual correlation is optional. |
+| Separate per-bead never-correlate policy | Not present; kind and membership determine eligibility, todos are excluded by lifecycle role, and actual project-work correlation is optional. |
 | Relationship-derived membership | Not present; relationships never create or change `C(i)`. |
 | Scope-derived dependency truth | Not present; canonical graph truth precedes projection. |
 | Local-mode reinterpretation | Not present; MODEL-A is Hub-only. |
@@ -446,7 +450,7 @@ claimed as operationally enforceable.
 
 | Criterion | Result |
 |---|---|
-| Every Confirmed requirement acts as a hard gate and has a MODEL-A disposition. | Pass; 36 of 36 covered or explicitly conditional on feasibility evidence |
+| Every Confirmed requirement acts as a hard gate and has a MODEL-A disposition. | Pass; 37 of 37 covered or explicitly conditional on feasibility evidence |
 | Whole models, not isolated components, were compared. | Pass; three gate-surviving bundles were scored |
 | Every requirements boundary has a disposition. | Pass; resolved, constrained/deferred, or unresolved |
 | Current evidence, assumptions, inference, and unresolved questions remain distinguishable. | Pass; notation and dedicated registers are used |
