@@ -85,6 +85,11 @@ func TestCurrentContext_Overlays(t *testing.T) {
 			setup:    func(m *Model) { m.showRepoPicker = true },
 			expected: ContextRepoPicker,
 		},
+		{
+			name:     "type picker",
+			setup:    func(m *Model) { m.showTypePicker = true },
+			expected: ContextTypePicker,
+		},
 	}
 
 	for _, tt := range tests {
@@ -257,7 +262,7 @@ func TestContext_IsOverlay(t *testing.T) {
 	overlays := []Context{
 		ContextLabelPicker, ContextRecipePicker, ContextHelp, ContextQuitConfirm,
 		ContextLabelHealthDetail, ContextLabelDrilldown, ContextLabelGraphAnalysis,
-		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextAgentPrompt,
+		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextTypePicker, ContextAgentPrompt,
 	}
 
 	for _, c := range overlays {

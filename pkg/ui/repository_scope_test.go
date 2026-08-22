@@ -406,7 +406,7 @@ func TestHubFocusedRelationshipBoundaryEvidence(t *testing.T) {
 	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
 
 	work := m.hubRelationshipMarkdown(*m.issueMap["work"])
-	if !containsAll(work, "Blocked by", "Hidden blocker", "Result of todo", "Captured idea", "contexts: ctx:beta", "contexts: contextless", "out of scope") {
+	if !containsAll(work, "Blocked by", "Hidden blocker", "Result of todo", "Captured idea", "contexts: ctx:beta", "contexts: no-context", "out of scope") {
 		t.Fatalf("work relationship evidence:\n%s", work)
 	}
 	replacement := m.hubRelationshipMarkdown(*m.issueMap["replacement"])
@@ -848,8 +848,39 @@ func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
 	if row := m.list.View(); !strings.Contains(row, "[no-context]") {
 		t.Fatalf("contextless list row missing repository badge: %q", row)
 	}
-	if detail := m.viewport.View(); !strings.Contains(detail, "Repositories:") || !strings.Contains(detail, "Contextless") {
+	if detail := m.viewport.View(); !strings.Contains(detail, "Repositories:") || !strings.Contains(detail, "no-context") || strings.Contains(detail, "Contextless") {
 		t.Fatalf("contextless detail changed: %q", detail)
+	}
+}
+
+func TestHubNoContextPickerStatusAndScopeBadges(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetHubScope(model.NewContextlessHubScope())
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context") || strings.Contains(picker, "Contextless") {
+		t.Fatalf("picker presentation = %q", picker)
+	}
+
+	m = m.applyRepositoryPickerSelection()
+	if m.statusMsg != "Repository scope: no-context" {
+		t.Fatalf("pure scope status = %q", m.statusMsg)
+	}
+	if badge := m.renderRepositoryScopeBadge(80); !strings.Contains(badge, "no-context") || strings.Contains(badge, "Contextless") {
+		t.Fatalf("pure scope badge = %q", badge)
+	}
+
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetHubScope(model.NewContextlessHubScope())
+	m.repoPicker.MoveDown()
+	m.repoPicker.ToggleSelected()
+	m = m.applyRepositoryPickerSelection()
+	if m.statusMsg != "Repository scope: ctx:alpha, no-context" {
+		t.Fatalf("mixed scope status = %q", m.statusMsg)
+	}
+	if badge := m.renderRepositoryScopeBadge(80); !strings.Contains(badge, "no-context") || strings.Contains(badge, "CONTEXTLESS") || strings.Contains(badge, "Contextless") {
+		t.Fatalf("mixed scope badge = %q", badge)
 	}
 }
 

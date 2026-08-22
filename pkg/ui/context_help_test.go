@@ -21,6 +21,7 @@ func TestContextHelpContentMap(t *testing.T) {
 		ContextFilter,
 		ContextLabelPicker,
 		ContextRepoPicker,
+		ContextTypePicker,
 		ContextRecipePicker,
 		ContextHelp,
 		ContextTimeTravel,

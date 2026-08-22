@@ -67,6 +67,7 @@ const (
 	focusHistory
 	focusAttention
 	focusLabelPicker
+	focusTypePicker
 	focusSprint      // Sprint dashboard view (bv-161)
 	focusAgentPrompt // AGENTS.md integration prompt (bv-i8dk)
 	focusFlowMatrix  // Cross-label flow matrix view
@@ -626,6 +627,11 @@ type Model struct {
 	// Label picker (bv-126)
 	showLabelPicker bool
 	labelPicker     LabelPickerModel
+
+	// Exact issue-type filter picker
+	showTypePicker   bool
+	typePicker       TypePickerModel
+	activeIssueTypes map[model.IssueType]bool
 
 	// Repository scope picker (Hub or workspace mode)
 	showRepoPicker bool
@@ -1215,6 +1221,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	labelExtraction := analysis.ExtractLabels(issues)
 	labelCounts := extractLabelCounts(labelExtraction.Stats)
 	labelPicker := NewLabelPickerModel(labelExtraction.Labels, labelCounts, theme)
+	typePicker := NewTypePickerModel(issueTypesFromIssues(issues, nil), nil, theme)
 
 	// Initialize time-travel input
 	ti := textinput.New()
@@ -1376,6 +1383,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		recipePicker:        recipePicker,
 		activeRecipe:        activeRecipe,
 		labelPicker:         labelPicker,
+		typePicker:          typePicker,
 		labelDrilldownCache: make(map[string][]model.Issue),
 		timeTravelInput:     ti,
 		statusMsg:           initialStatus,
@@ -3184,6 +3192,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle issue-type picker overlay before global keys.
+		if m.showTypePicker {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m = m.handleTypePickerKeys(msg)
+			return m, nil
+		}
+
 		// Handle recipe picker overlay before global keys (esc/q/etc.)
 		if m.showRecipePicker {
 			if msg.String() == "ctrl+c" {
@@ -3630,6 +3647,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m = m.handleRepoPickerKeys(msg)
 				return m, nil
 
+			case focusTypePicker:
+				m = m.handleTypePickerKeys(msg)
+				return m, nil
+
 			case focusLabelPicker:
 				m = m.handleLabelPickerKeys(msg)
 				return m, nil
@@ -4033,6 +4054,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.focused = focusList
 				}
+				return m, nil
+
+			case "I":
+				if m.focused != focusList {
+					return m, nil
+				}
+				m.typePicker = NewTypePickerModel(issueTypesFromIssues(m.issues, m.activeIssueTypes), m.activeIssueTypes, m.theme)
+				m.typePicker.SetSize(m.width, m.height-1)
+				m.showTypePicker = true
+				m.focused = focusTypePicker
 				return m, nil
 
 			case "w":
@@ -5048,17 +5079,53 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 	return m
 }
 
+func (m Model) handleTypePickerKeys(msg tea.KeyMsg) Model {
+	switch msg.String() {
+	case "j", "down":
+		m.typePicker.MoveDown()
+	case "k", "up":
+		m.typePicker.MoveUp()
+	case " ", "space":
+		m.typePicker.ToggleSelected()
+	case "a":
+		m.typePicker.SelectAll()
+	case "n":
+		m.typePicker.ClearSelection()
+	case "esc", "q":
+		m.showTypePicker = false
+		m.focused = focusList
+	case "enter":
+		selected := m.typePicker.SelectedTypes()
+		if len(selected) == 0 || m.typePicker.AllSelected() {
+			m.activeIssueTypes = nil
+			m.statusMsg = "Issue type filter: all"
+		} else {
+			m.activeIssueTypes = selected
+			m.statusMsg = "Issue type filter: " + strings.Join(m.activeIssueTypeNames(), ", ")
+		}
+		m.statusIsError = false
+		if m.activeRecipe != nil {
+			m.applyRecipe(m.activeRecipe)
+		} else {
+			m.applyFilter()
+		}
+		m.showTypePicker = false
+		m.focused = focusList
+	}
+	return m
+}
+
 func (m Model) applyRepositoryPickerSelection() Model {
 	selected := m.repoPicker.SelectedRepos()
 	if m.hubRepositoryMode {
 		includeContextless := m.repoPicker.ContextlessSelected()
 		switch {
 		case len(selected) == 0 && includeContextless:
-			m.statusMsg = "Repository scope: contextless"
+			m.statusMsg = "Repository scope: no-context"
 		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeContextless:
 			m.statusMsg = "Repository scope: all"
 		case includeContextless:
-			m.statusMsg = fmt.Sprintf("Repository scope: %s, Contextless", strings.Join(m.repositoryScopeNames(selected), ", "))
+			m.statusMsg = fmt.Sprintf("Repository scope: %s, no-context", strings.Join(m.repositoryScopeNames(selected), ", "))
 		default:
 			m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
 		}
@@ -5092,6 +5159,7 @@ func (m Model) handleLabelPickerKeys(msg tea.KeyMsg) Model {
 		m.labelPicker.MoveUp()
 	case "enter":
 		if selected := m.labelPicker.SelectedLabel(); selected != "" {
+			m.setActiveRecipe(nil)
 			m.currentFilter = "label:" + selected
 			m.applyFilter()
 			m.statusMsg = fmt.Sprintf("Filtered by label: %s", selected)
@@ -5240,15 +5308,19 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 			m.list.Select(newIdx)
 		}
 	case "o":
+		m.setActiveRecipe(nil)
 		m.currentFilter = "open"
 		m.applyFilter()
 	case "c":
+		m.setActiveRecipe(nil)
 		m.currentFilter = "closed"
 		m.applyFilter()
 	case "r":
+		m.setActiveRecipe(nil)
 		m.currentFilter = "ready"
 		m.applyFilter()
 	case "a":
+		m.setActiveRecipe(nil)
 		m.currentFilter = "all"
 		m.applyFilter()
 	case "t":
@@ -5493,6 +5565,8 @@ func (m Model) View() string {
 		body = m.recipePicker.View()
 	} else if m.showRepoPicker {
 		body = m.repoPicker.View()
+	} else if m.showTypePicker {
+		body = m.typePicker.View()
 	} else if m.showLabelPicker {
 		body = m.labelPicker.View()
 	} else if m.showHelp {
@@ -5884,6 +5958,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"!", "Alerts panel"},
 		{"'", "Recipes"},
 		{"w", "Repo picker"},
+		{"I", "Issue type filter"},
 		{"q", "Back / Quit"},
 		{"Ctrl+c", "Force quit"},
 	}
@@ -5897,6 +5972,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"c", "Closed issues"},
 		{"r", "Ready (unblocked)"},
 		{"l", "Filter by label"},
+		{"I", "Filter by issue type"},
 		{"s", "Cycle sort"},
 		{"S", "Triage sort"},
 	}
@@ -6493,7 +6569,7 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 			Foreground(ColorBg).
 			Bold(true).
 			Padding(0, 1).
-			Render("📦 Contextless")
+			Render("📦 no-context")
 	}
 	if m.activeRepos == nil {
 		selectedCount = len(m.repositoryCatalog)
@@ -6501,11 +6577,11 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
 	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
 	if m.hubRepositoryMode && m.hubScope.IncludeContextless {
-		compact += " + CONTEXTLESS"
+		compact += " + no-context"
 		if label != "" {
 			label += ", "
 		}
-		label += "Contextless"
+		label += "no-context"
 	}
 	if len(m.repositoryCatalog) == 0 && m.workspaceSummary != "" {
 		label = m.workspaceSummary
@@ -6641,6 +6717,18 @@ func (m *Model) renderFooter() string {
 			Foreground(ColorSecondary).
 			Padding(0, 1).
 			Render(fmt.Sprintf("🔎 %s", mode))
+	}
+	typeBadge := ""
+	if names := m.activeIssueTypeNames(); len(names) > 0 {
+		label := strings.Join(names, ",")
+		if len(names) > 3 {
+			label = fmt.Sprintf("%s +%d", strings.Join(names[:3], ","), len(names)-3)
+		}
+		typeBadge = lipgloss.NewStyle().
+			Background(ColorBgHighlight).
+			Foreground(ColorInfo).
+			Padding(0, 1).
+			Render("TYPE " + label)
 	}
 
 	// Sort badge - only show when not default (bv-3ita)
@@ -7002,6 +7090,8 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a/n")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
+	} else if m.showTypePicker {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all", keyStyle.Render("n")+" reset", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
@@ -7043,7 +7133,7 @@ func (m *Model) renderFooter() string {
 		} else if m.showDetails {
 			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else {
-			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 			if m.workspaceMode || m.hubRepositoryMode {
 				keyHints = append(keyHints, keyStyle.Render("w")+" repos")
 			}
@@ -7078,6 +7168,9 @@ func (m *Model) renderFooter() string {
 	}
 	if searchBadge != "" {
 		leftWidth += lipgloss.Width(searchBadge) + 1
+	}
+	if typeBadge != "" {
+		leftWidth += lipgloss.Width(typeBadge) + 1
 	}
 	if sortBadge != "" {
 		leftWidth += lipgloss.Width(sortBadge) + 1
@@ -7116,6 +7209,9 @@ func (m *Model) renderFooter() string {
 	parts = append(parts, filterBadge)
 	if searchBadge != "" {
 		parts = append(parts, searchBadge)
+	}
+	if typeBadge != "" {
+		parts = append(parts, typeBadge)
 	}
 	if sortBadge != "" {
 		parts = append(parts, sortBadge)
@@ -7188,6 +7284,9 @@ func (m *Model) hasActiveFilters() bool {
 	if m.currentFilter != "all" {
 		return true
 	}
+	if len(m.activeIssueTypes) > 0 {
+		return true
+	}
 	// Check if fuzzy search filter is active
 	if m.list.FilterState() == list.Filtering || m.list.FilterState() == list.FilterApplied {
 		return true
@@ -7199,6 +7298,7 @@ func (m *Model) hasActiveFilters() bool {
 func (m *Model) clearAllFilters() {
 	m.currentFilter = "all"
 	m.setActiveRecipe(nil) // Clear any active recipe filter
+	m.activeIssueTypes = nil
 	// Reset the fuzzy search filter by resetting the filter state
 	m.list.ResetFilter()
 	m.applyFilter()
@@ -7248,13 +7348,28 @@ func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
 	}
 }
 
+func (m *Model) matchesIssueType(issue model.Issue) bool {
+	return len(m.activeIssueTypes) == 0 || m.activeIssueTypes[issue.IssueType]
+}
+
+func (m *Model) activeIssueTypeNames() []string {
+	names := make([]string, 0, len(m.activeIssueTypes))
+	for issueType, selected := range m.activeIssueTypes {
+		if selected {
+			names = append(names, string(issueType))
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (m *Model) filteredIssuesForActiveView() []model.Issue {
 	m.syncRepositoryCandidates()
 	filtered := make([]model.Issue, 0, len(m.repositoryIssues))
 	recipeFilterActive := m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:")
 	if recipeFilterActive {
 		for _, issue := range m.repositoryIssues {
-			if issueMatchesRecipe(issue, m.issueMap, m.activeRecipe) {
+			if m.matchesIssueType(issue) && issueMatchesRecipe(issue, m.issueMap, m.activeRecipe) {
 				filtered = append(filtered, issue)
 			}
 		}
@@ -7262,7 +7377,7 @@ func (m *Model) filteredIssuesForActiveView() []model.Issue {
 		return filtered
 	}
 	for _, issue := range m.repositoryIssues {
-		if m.matchesCurrentFilter(issue) {
+		if m.matchesCurrentFilter(issue) && m.matchesIssueType(issue) {
 			filtered = append(filtered, issue)
 		}
 	}
@@ -7317,7 +7432,7 @@ func (m *Model) applyFilter() {
 	var filteredIssues []model.Issue
 
 	for _, issue := range m.repositoryIssues {
-		if m.matchesCurrentFilter(issue) {
+		if m.matchesCurrentFilter(issue) && m.matchesIssueType(issue) {
 			// Use pre-computed graph scores (avoid redundant calculation)
 			item := IssueItem{
 				Issue:      issue,
@@ -7511,7 +7626,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 	var filteredIssues []model.Issue
 
 	for _, issue := range m.repositoryIssues {
-		include := true
+		include := m.matchesIssueType(issue)
 
 		// Apply status filter
 		if len(r.Filters.Status) > 0 {
@@ -7820,6 +7935,9 @@ func (m *Model) applyContentSizing() {
 	if m.showRepoPicker {
 		m.repoPicker.SetSize(m.width, bodyHeight)
 	}
+	if m.showTypePicker {
+		m.typePicker.SetSize(m.width, bodyHeight)
+	}
 	m.updateViewportContent()
 }
 
@@ -7936,7 +8054,7 @@ func (m Model) handleLeftClick(x, y int) Model {
 	if m.showQuitConfirm || m.showAgentPrompt || m.showCassModal ||
 		m.showUpdateModal || m.showLabelHealthDetail || m.showLabelGraphAnalysis ||
 		m.showLabelDrilldown || m.showAlertsPanel || m.showTimeTravelPrompt ||
-		m.showRecipePicker || m.showRepoPicker || m.showLabelPicker ||
+		m.showRecipePicker || m.showRepoPicker || m.showTypePicker || m.showLabelPicker ||
 		m.showHelp || m.showTutorial {
 		return m
 	}
@@ -8034,8 +8152,8 @@ func (m *Model) updateViewportContent() {
 	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), nil)
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
-	} else if m.hubRepositoryPresentation() && len(hubContextNames(item, m.repositoryCatalog)) == 1 && hubContextNames(item, m.repositoryCatalog)[0] == "contextless" {
-		sb.WriteString("**Repositories:** Contextless\n\n")
+	} else if m.hubRepositoryPresentation() && presentation.ID == contextlessRepositoryID {
+		sb.WriteString("**Repositories:** no-context\n\n")
 	}
 
 	// Labels (bv-f103 fix: display labels in detail view)
@@ -8530,6 +8648,8 @@ func (f focus) String() string {
 		return "attention"
 	case focusLabelPicker:
 		return "label_picker"
+	case focusTypePicker:
+		return "type_picker"
 	case focusSprint:
 		return "sprint"
 	case focusAgentPrompt:

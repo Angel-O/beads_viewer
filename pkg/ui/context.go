@@ -19,6 +19,7 @@ const (
 	ContextTimeTravelInput    Context = "time-travel-input"
 	ContextAlerts             Context = "alerts"
 	ContextRepoPicker         Context = "repo-picker"
+	ContextTypePicker         Context = "type-picker"
 	ContextAgentPrompt        Context = "agent-prompt"
 	ContextCassSession        Context = "cass-session"
 
@@ -110,6 +111,9 @@ func (m Model) CurrentContext() Context {
 	if m.showRepoPicker {
 		return ContextRepoPicker
 	}
+	if m.showTypePicker {
+		return ContextTypePicker
+	}
 
 	// === Views (based on focus or view flags) ===
 
@@ -199,6 +203,7 @@ func (c Context) Description() string {
 		ContextTimeTravelInput:    "Time-travel input",
 		ContextAlerts:             "Alerts panel",
 		ContextRepoPicker:         "Repo picker",
+		ContextTypePicker:         "Issue type picker",
 		ContextAgentPrompt:        "Agent prompt",
 		ContextCassSession:        "Cass session preview",
 		ContextInsights:           "Insights panel",
@@ -227,7 +232,7 @@ func (c Context) IsOverlay() bool {
 	switch c {
 	case ContextLabelPicker, ContextRecipePicker, ContextHelp, ContextQuitConfirm,
 		ContextLabelHealthDetail, ContextLabelDrilldown, ContextLabelGraphAnalysis,
-		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextAgentPrompt,
+		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextTypePicker, ContextAgentPrompt,
 		ContextCassSession:
 		return true
 	}
@@ -269,6 +274,7 @@ func (c Context) TutorialPages() []int {
 		ContextLabelPicker:        {11, 3},   // Labels, Filtering
 		ContextRecipePicker:       {3, 12},   // Filtering, Advanced
 		ContextRepoPicker:         {12},      // Advanced (workspace)
+		ContextTypePicker:         {3},       // Filtering
 		ContextAgentPrompt:        {16},      // AI Agent Integration
 		ContextLabelHealthDetail:  {11},      // Labels
 		ContextLabelDrilldown:     {11},      // Labels
