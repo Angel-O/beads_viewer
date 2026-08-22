@@ -123,7 +123,9 @@ func AddExternalCorrelation(configPath, beadID, repository, ref string) (Externa
 	}
 	for _, entry := range entries {
 		existing := entry.correlation
-		if existing.BeadID == record.BeadID && existing.Context == record.Context && strings.EqualFold(existing.Commit, record.Commit) {
+		if strings.TrimSpace(existing.BeadID) == record.BeadID &&
+			strings.TrimSpace(existing.Context) == record.Context &&
+			strings.EqualFold(strings.TrimSpace(existing.Commit), record.Commit) {
 			return record, false, nil
 		}
 	}

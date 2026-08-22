@@ -183,6 +183,10 @@ case " $* " in
 	  work-1) labels='["ctx:repo-a-111","ctx:repo-b-222"]' ;;
 	  work-2) labels='["ctx:repo-a-111"]' ;;
 	  work-3) labels='["ctx:repo-b-222"]' ;;
+	  work-custom) issue_type=review; labels='["ctx:repo-a-111"]' ;;
+	  work-kind-absent) printf '[{"id":"%s","labels":["ctx:repo-a-111"]}]\n' "$bead"; exit 0 ;;
+	  work-kind-empty) issue_type=; labels='["ctx:repo-a-111"]' ;;
+	  work-kind-null) printf '[{"id":"%s","issue_type":null,"labels":["ctx:repo-a-111"]}]\n' "$bead"; exit 0 ;;
 	  work-todo-contextual) issue_type=todo; labels='["ctx:repo-a-111"]' ;;
 	  work-todo-contextless) issue_type=todo; labels='[]' ;;
 	  work-missing) printf '[]\n'; exit 0 ;;
@@ -742,16 +746,36 @@ func TestCorrelateAddResolvesFullSHAAndDeduplicates(t *testing.T) {
 	}
 }
 
-func TestCorrelateAddRejectsTodosBeforeGitAndLedgerAccess(t *testing.T) {
+func TestCorrelateAddAllowsCustomIssueType(t *testing.T) {
+	bv := buildBvBinary(t)
+	fixture := createExternalHistoryFixture(t)
+	if err := os.WriteFile(fixture.ledgerPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := fixture.command(t, bv, "correlate", "add", "--bead", "work-custom", "--repo", "ctx:repo-a-111", "--commit", "HEAD", "--hub-config", fixture.configPath)
+	if err != nil {
+		t.Fatalf("custom issue type should be eligible: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `"added":true`) {
+		t.Fatalf("unexpected custom issue type output: %s", out)
+	}
+}
+
+func TestCorrelateAddRejectsIneligibleIssuesBeforeGitAndLedgerAccess(t *testing.T) {
 	bv := buildBvBinary(t)
 	tests := []struct {
 		name       string
 		bead       string
+		want       string
 		existing   []byte
 		useMissing bool
 	}{
-		{name: "contextual with existing ledger", bead: "work-todo-contextual", existing: []byte("{malformed legacy ledger}\n")},
-		{name: "contextless with absent ledger", bead: "work-todo-contextless", useMissing: true},
+		{name: "missing issue type", bead: "work-kind-absent", want: "does not provide a non-empty issue_type", existing: []byte("{malformed legacy ledger}\n")},
+		{name: "empty issue type", bead: "work-kind-empty", want: "does not provide a non-empty issue_type", existing: []byte("{malformed legacy ledger}\n")},
+		{name: "null issue type", bead: "work-kind-null", want: "does not provide a non-empty issue_type", existing: []byte("{malformed legacy ledger}\n")},
+		{name: "contextual todo with existing ledger", bead: "work-todo-contextual", want: "is a todo and cannot be correlated", existing: []byte("{malformed legacy ledger}\n")},
+		{name: "contextless todo with absent ledger", bead: "work-todo-contextless", want: "is a todo and cannot be correlated", useMissing: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -773,18 +797,18 @@ func TestCorrelateAddRejectsTodosBeforeGitAndLedgerAccess(t *testing.T) {
 				t.Fatal(err)
 			}
 			out, err := fixture.commandFromEnv(t, bv, fixture.storeRoot, []string{"BV_FAKE_GIT_LOG=" + gitLog}, "correlate", "add", "--bead", test.bead, "--repo", "ctx:repo-a-111", "--commit", "HEAD", "--hub-config", fixture.configPath)
-			if err == nil || !strings.Contains(string(out), "is a todo and cannot be correlated") {
-				t.Fatalf("expected todo rejection, got err=%v output=%s", err, out)
+			if err == nil || !strings.Contains(string(out), test.want) {
+				t.Fatalf("expected %q rejection, got err=%v output=%s", test.want, err, out)
 			}
 			if _, statErr := os.Stat(gitLog); !os.IsNotExist(statErr) {
-				t.Fatalf("todo rejection invoked Git: %v", statErr)
+				t.Fatalf("ineligible issue rejection invoked Git: %v", statErr)
 			}
 			if _, statErr := os.Stat(ledgerPath + ".lock"); !os.IsNotExist(statErr) {
-				t.Fatalf("todo rejection accessed ledger lock: %v", statErr)
+				t.Fatalf("ineligible issue rejection accessed ledger lock: %v", statErr)
 			}
 			if test.useMissing {
 				if _, statErr := os.Stat(filepath.Dir(ledgerPath)); !os.IsNotExist(statErr) {
-					t.Fatalf("todo rejection created ledger directory: %v", statErr)
+					t.Fatalf("ineligible issue rejection created ledger directory: %v", statErr)
 				}
 			} else {
 				got, readErr := os.ReadFile(ledgerPath)
@@ -792,10 +816,34 @@ func TestCorrelateAddRejectsTodosBeforeGitAndLedgerAccess(t *testing.T) {
 					t.Fatal(readErr)
 				}
 				if string(got) != string(test.existing) {
-					t.Fatalf("todo rejection changed ledger bytes: got %q want %q", got, test.existing)
+					t.Fatalf("ineligible issue rejection changed ledger bytes: got %q want %q", got, test.existing)
 				}
 			}
 		})
+	}
+}
+
+func TestCorrelateAddDeduplicatesWhitespaceEquivalentLegacyIdentity(t *testing.T) {
+	bv := buildBvBinary(t)
+	fixture := createExternalHistoryFixture(t)
+	legacy := fmt.Sprintf("{\"bead_id\":\" work-1 \",\"context\":\" ctx:repo-a-111 \",\"commit\":\"  %s  \",\"legacy_metadata\":{\"keep\":true}}\n", strings.ToUpper(fixture.renameSHA))
+	if err := os.WriteFile(fixture.ledgerPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := fixture.command(t, bv, "correlate", "add", "--bead", "work-1", "--repo", "ctx:repo-a-111", "--commit", "HEAD", "--hub-config", fixture.configPath)
+	if err != nil {
+		t.Fatalf("whitespace-equivalent duplicate failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), `"added":false`) {
+		t.Fatalf("whitespace-equivalent duplicate was not suppressed: %s", out)
+	}
+	data, err := os.ReadFile(fixture.ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != legacy {
+		t.Fatalf("duplicate changed legacy ledger bytes: got %q want %q", data, legacy)
 	}
 }
 

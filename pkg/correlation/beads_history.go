@@ -38,7 +38,11 @@ func validateBeadContext(store, beadID, contextKey string) error {
 	if len(issues) == 0 || issues[0].ID != beadID {
 		return fmt.Errorf("bead %q was not found in configured store %q", beadID, store)
 	}
-	if strings.EqualFold(strings.TrimSpace(issues[0].IssueType), "todo") {
+	issueType := strings.TrimSpace(issues[0].IssueType)
+	if issueType == "" {
+		return fmt.Errorf("bead %q does not provide a non-empty issue_type", beadID)
+	}
+	if strings.EqualFold(issueType, "todo") {
 		return fmt.Errorf("bead %q is a todo and cannot be correlated with a Git commit", beadID)
 	}
 	for _, label := range issues[0].Labels {
