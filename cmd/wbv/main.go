@@ -243,9 +243,6 @@ func parseHubScopeRequest(arguments []string) (hubScopeRequest, []string, error)
 		switch arguments[i] {
 		case "--context":
 			request.explicit = true
-			if request.contextless {
-				return hubScopeRequest{}, nil, errors.New("--context and --contextless are mutually exclusive")
-			}
 			if i+1 >= len(arguments) {
 				return hubScopeRequest{}, nil, errors.New("missing value for --context")
 			}
@@ -260,9 +257,6 @@ func parseHubScopeRequest(arguments []string) (hubScopeRequest, []string, error)
 			if request.contextless {
 				return hubScopeRequest{}, nil, errors.New("duplicate Viewer option: --contextless")
 			}
-			if len(request.contexts) > 0 {
-				return hubScopeRequest{}, nil, errors.New("--context and --contextless are mutually exclusive")
-			}
 			request.contextless = true
 		default:
 			if strings.HasPrefix(arguments[i], "--context=") || strings.HasPrefix(arguments[i], "--contextless=") {
@@ -275,7 +269,7 @@ func parseHubScopeRequest(arguments []string) (hubScopeRequest, []string, error)
 }
 
 func (r runner) resolveHubScope(configPath string, request hubScopeRequest) (model.HubScope, error) {
-	if request.contextless {
+	if request.contextless && len(request.contexts) == 0 {
 		return model.NewContextlessHubScope(), nil
 	}
 	config, err := hub.Resolve(configPath)
@@ -283,7 +277,13 @@ func (r runner) resolveHubScope(configPath string, request hubScopeRequest) (mod
 		if err != nil {
 			return model.HubScope{}, fmt.Errorf("loading registered Hub contexts: %w", err)
 		}
-		scope, scopeErr := model.NewSelectedContextsHubScope(request.contexts)
+		var scope model.HubScope
+		var scopeErr error
+		if request.contextless {
+			scope, scopeErr = model.NewSelectedContextsAndContextlessHubScope(request.contexts)
+		} else {
+			scope, scopeErr = model.NewSelectedContextsHubScope(request.contexts)
+		}
 		if scopeErr != nil {
 			return model.HubScope{}, scopeErr
 		}
@@ -761,7 +761,7 @@ available for explicit refresh.
   --context <registered-context>
            Select a registered Hub context for robot candidates (repeatable).
   --contextless
-           Select Hub items without any ctx-prefixed label for robot candidates.
+           Also select Hub items without any ctx-prefixed label for robot candidates.
   -h, --help
            Show this help.
 `)

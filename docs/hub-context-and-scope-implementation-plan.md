@@ -178,13 +178,13 @@ not semantically revalidated during append.
 Replace the implicit `nil/map` Hub scope with an explicit internal variant:
 
 - `AllItems`;
-- `SelectedContexts(non-empty set)`; or
+- `SelectedContexts(non-empty set, include-contextless)`; or
 - `Contextless`.
 
-Keep the current UI normalization of empty/full-catalog selection to `AllItems`.
-Do not add mixed context-plus-contextless selection. Contextless means no `ctx:`
-labels at all; an unregistered `ctx:` label is invalid membership, not
-contextless membership.
+Normalize empty selection and full-catalog plus contextless selection to
+`AllItems`. Registered contexts and contextless membership otherwise compose as
+an independent union. Contextless means no `ctx:` labels at all; an unregistered
+`ctx:` label is invalid membership, not contextless membership.
 
 If current context is unavailable or unregistered, preserve the current
 all-items fallback. Explicit scope still replaces that fallback.
@@ -209,7 +209,8 @@ Add additive deterministic Hub fields without changing local-mode output:
 {
   "scope": {
     "mode": "all_items|contexts|contextless",
-    "contexts": []
+    "contexts": [],
+    "include_contextless": false
   }
 }
 ```
@@ -218,8 +219,8 @@ Add additive deterministic Hub fields without changing local-mode output:
 appears once, including contextless items. It is not an alias for selecting only
 all registered contexts.
 
-`wbv --hub` accepts repeatable explicit context scope or contextless scope and
-rejects their combination. It passes canonical Hub scope separately from legacy
+`wbv --hub` accepts repeatable explicit context scope and an independently
+composable contextless scope. It passes canonical Hub scope separately from legacy
 `--repo`; analysis runs globally and each robot result projects candidates only
 after metrics/readiness are computed. Existing robot relationship fields remain
 the primary contract. Where a current schema would otherwise hide a blocker,

@@ -307,6 +307,10 @@ func TestHubScopeProjectionVariantsAndCanonicalHash(t *testing.T) {
 		{ID: "unregistered", Labels: []string{"ctx:" + "unknown"}},
 	}
 	canonicalHash := analysis.ComputeDataHash(issues)
+	mixed, err := model.NewSelectedContextsAndContextlessHubScope([]string{contextID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name  string
 		scope model.HubScope
@@ -314,6 +318,7 @@ func TestHubScopeProjectionVariantsAndCanonicalHash(t *testing.T) {
 	}{
 		{name: "all items", scope: model.NewAllItemsHubScope(), want: []string{"selected", "contextless", "unregistered"}},
 		{name: "contextless", scope: model.NewContextlessHubScope(), want: []string{"contextless"}},
+		{name: "selected and contextless", scope: mixed, want: []string{"selected", "contextless"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -335,6 +340,10 @@ func TestHubScopeProjectionVariantsAndCanonicalHash(t *testing.T) {
 			}
 			if got := objectIDs(output["forecasts"].([]any)); !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("forecast IDs = %#v, want %#v", got, test.want)
+			}
+			metadata := output["scope"].(map[string]any)
+			if metadata["include_contextless"] != test.scope.IncludeContextless {
+				t.Fatalf("scope metadata = %#v", metadata)
 			}
 		})
 	}

@@ -848,6 +848,7 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		}
 		nameWidth = max(nameWidth, lipgloss.Width(repository.Name))
 	}
+	nameWidth = max(nameWidth, lipgloss.Width(contextlessRepositoryID))
 	nameWidth = min(nameWidth, nameWidthCap)
 
 	extraWidth := 0
@@ -5038,10 +5039,20 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 
 func (m Model) applyRepositoryPickerSelection() Model {
 	selected := m.repoPicker.SelectedRepos()
-	if m.hubRepositoryMode && m.repoPicker.ContextlessSelected() {
-		m.statusMsg = "Repository scope: contextless"
+	if m.hubRepositoryMode {
+		includeContextless := m.repoPicker.ContextlessSelected()
+		switch {
+		case len(selected) == 0 && includeContextless:
+			m.statusMsg = "Repository scope: contextless"
+		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeContextless:
+			m.statusMsg = "Repository scope: all"
+		case includeContextless:
+			m.statusMsg = fmt.Sprintf("Repository scope: %s, Contextless", strings.Join(m.repositoryScopeNames(selected), ", "))
+		default:
+			m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+		}
 		m.statusIsError = false
-		_ = m.SetHubScope(model.NewContextlessHubScope())
+		m.setHubRepositoryScope(selected, includeContextless)
 		m.showRepoPicker = false
 		m.focused = focusList
 		return m
@@ -6478,6 +6489,13 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 	}
 	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
 	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
+	if m.hubRepositoryMode && m.hubScope.IncludeContextless {
+		compact += " + CONTEXTLESS"
+		if label != "" {
+			label += ", "
+		}
+		label += "Contextless"
+	}
 	if len(m.repositoryCatalog) == 0 && m.workspaceSummary != "" {
 		label = m.workspaceSummary
 	}

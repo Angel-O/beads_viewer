@@ -77,14 +77,14 @@ outside the MVP unless explicitly resolved below.
 
 - A registered current context is the default Hub read scope.
 - A caller may explicitly select one or more registered contexts instead.
-- A caller may select contextless items as a distinct scope.
+- A caller may select contextless items alone or together with registered contexts.
 - Context matching uses set intersection and returns each issue once.
 - Scope filters candidates only. Readiness, blockers, and graph truth are
   computed from the complete Hub graph before projection.
 - Multi-context membership remains visible on scoped items.
 - Hidden blockers remain observable as blockers.
-- Current Viewer normalization of empty or full-catalog selection to all items
-  remains unchanged.
+- Empty selection and full-catalog plus contextless selection normalize to all
+  items; full-catalog without contextless remains an explicit context scope.
 
 ### Source Correlation
 
@@ -129,7 +129,6 @@ sidecar, or silently drops lifecycle relationships.
 - Automatic todo closure or closure coupled to resulting-work completion.
 - Multiple epic parents or a new coordination relationship type.
 - Nested-epic coordination, progress rollups, or epic completion policy.
-- Mixed registered-context plus contextless selection.
 - New aggregate-scope semantics beyond current Viewer normalization.
 - Automatic repair or reinterpretation of conflicting existing records.
 - Supersession reversal.

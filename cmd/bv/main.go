@@ -9869,8 +9869,12 @@ func hubScopeSchema() map[string]interface{} {
 				"type":  "array",
 				"items": map[string]interface{}{"type": "string"},
 			},
+			"include_contextless": map[string]interface{}{
+				"type":        "boolean",
+				"description": "For contexts mode, also include items without ctx-prefixed labels",
+			},
 		},
-		"required": []string{"mode", "contexts"},
+		"required": []string{"mode", "contexts", "include_contextless"},
 	}
 }
 

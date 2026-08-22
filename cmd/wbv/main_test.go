@@ -273,6 +273,18 @@ func TestHubRobotScopeDefaultsAndContextless(t *testing.T) {
 			t.Fatalf("scope = %q", got)
 		}
 	})
+
+	t.Run("context and contextless union", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		fixture.makeHubStore(t)
+		fixture.makeHubConfig(t, contextID)
+		if code, stderr := fixture.run("--hub", "--context", contextID, "--contextless", "--robot-plan"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if got := fixture.record(t, "bv").Env["BV_WBV_HUB_SCOPE"]; got != `{"mode":"contexts","contexts":["ctx:current"],"include_contextless":true}` {
+			t.Fatalf("scope = %q", got)
+		}
+	})
 }
 
 func TestHubRobotScopeRejectsInvalidSelections(t *testing.T) {
@@ -282,7 +294,6 @@ func TestHubRobotScopeRejectsInvalidSelections(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "mutual exclusion", args: []string{"--hub", "--context", registered, "--contextless", "--robot-plan"}, want: "mutually exclusive"},
 		{name: "unregistered", args: []string{"--hub", "--context", "ctx:" + "missing", "--robot-plan"}, want: "not registered"},
 		{name: "missing", args: []string{"--hub", "--robot-plan", "--context"}, want: "missing value for --context"},
 		{name: "unsafe", args: []string{"--hub", "--context", "-unsafe", "--robot-plan"}, want: "invalid value"},

@@ -70,9 +70,10 @@ func TestRepositoryScopeHubExactMultiContextAndAllSemantics(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "a", "both", "none", "upper")
 
 	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true, "ctx:beta": true})
-	if m.RepositoryScope() != nil {
-		t.Fatalf("full selection must normalize to all, got %v", m.RepositoryScope())
+	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || scope.IncludeContextless {
+		t.Fatalf("full repository selection must exclude contextless, got %#v", scope)
 	}
+	requireIssueIDs(t, visibleIssueIDs(m), "a", "both")
 }
 
 func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
@@ -118,6 +119,26 @@ func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
 	if err := m.SetHubScope(unknown); err == nil {
 		t.Fatal("unregistered explicit context was accepted")
 	}
+}
+
+func TestHubScopeMixedContextAndContextlessIsUnionWithoutDuplicates(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "both", Title: "Both", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}},
+		{ID: "contextless", Title: "Contextless", Status: model.StatusOpen},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	scope, err := model.NewSelectedContextsAndContextlessHubScope([]string{"ctx:alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "both", "contextless")
 }
 
 func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
@@ -761,6 +782,20 @@ func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
 	row := m.list.View()
 	if !strings.Contains(row, "[beads_viewer]") || strings.Contains(row, "bead…") {
 		t.Fatalf("normal list row did not show full repository name: %q", row)
+	}
+}
+
+func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
+	issue := model.Issue{ID: "global-todo", Title: "Inbox", Status: model.StatusOpen, IssueType: "todo"}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha")
+	m.refreshRepositoryPresentation()
+	if row := m.list.View(); !strings.Contains(row, "[no-context]") {
+		t.Fatalf("contextless list row missing repository badge: %q", row)
+	}
+	if detail := m.viewport.View(); !strings.Contains(detail, "Repositories:") || !strings.Contains(detail, "Contextless") {
+		t.Fatalf("contextless detail changed: %q", detail)
 	}
 }
 

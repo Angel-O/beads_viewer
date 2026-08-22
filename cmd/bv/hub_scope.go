@@ -100,28 +100,7 @@ func issueHasExactLabel(issue model.Issue, label string) bool {
 }
 
 func hubScopeContains(scope model.HubScope, issue model.Issue) bool {
-	switch scope.Mode {
-	case model.HubScopeAllItems:
-		return true
-	case model.HubScopeContextless:
-		for _, label := range issue.Labels {
-			if strings.HasPrefix(label, "ctx:") {
-				return false
-			}
-		}
-		return true
-	case model.HubScopeSelectedContexts:
-		selected := make(map[string]bool, len(scope.Contexts))
-		for _, contextID := range scope.Contexts {
-			selected[contextID] = true
-		}
-		for _, label := range issue.Labels {
-			if selected[label] {
-				return true
-			}
-		}
-	}
-	return false
+	return scope.MatchesLabels(issue.Labels)
 }
 
 func (p *hubScopeProjection) issuesInScope(issues []model.Issue) []model.Issue {
@@ -261,8 +240,9 @@ func (e hubScopeRobotEncoder) Encode(value any) error {
 
 func (p *hubScopeProjection) project(command string, output map[string]any) {
 	output["scope"] = map[string]any{
-		"mode":     string(p.scope.Mode),
-		"contexts": append([]string(nil), p.scope.Contexts...),
+		"mode":                string(p.scope.Mode),
+		"contexts":            append([]string(nil), p.scope.Contexts...),
+		"include_contextless": p.scope.IncludeContextless,
 	}
 
 	switch command {

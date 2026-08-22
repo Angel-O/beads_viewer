@@ -44,8 +44,9 @@ const (
 // HubScope is an explicit Hub candidate selector. Contexts is populated only
 // for HubScopeSelectedContexts and is always sorted and unique.
 type HubScope struct {
-	Mode     HubScopeMode `json:"mode"`
-	Contexts []string     `json:"contexts"`
+	Mode               HubScopeMode `json:"mode"`
+	Contexts           []string     `json:"contexts"`
+	IncludeContextless bool         `json:"include_contextless,omitempty"`
 }
 
 // NewAllItemsHubScope selects every loaded Hub issue exactly once.
@@ -56,6 +57,16 @@ func NewAllItemsHubScope() HubScope {
 // NewSelectedContextsHubScope selects issues whose ctx labels intersect the
 // supplied non-empty set.
 func NewSelectedContextsHubScope(contexts []string) (HubScope, error) {
+	return newSelectedContextsHubScope(contexts, false)
+}
+
+// NewSelectedContextsAndContextlessHubScope selects the union of issues in the
+// supplied contexts and issues without any ctx-prefixed label.
+func NewSelectedContextsAndContextlessHubScope(contexts []string) (HubScope, error) {
+	return newSelectedContextsHubScope(contexts, true)
+}
+
+func newSelectedContextsHubScope(contexts []string, includeContextless bool) (HubScope, error) {
 	normalized := append([]string(nil), contexts...)
 	sort.Strings(normalized)
 	unique := normalized[:0]
@@ -70,7 +81,7 @@ func NewSelectedContextsHubScope(contexts []string) (HubScope, error) {
 	if len(unique) == 0 {
 		return HubScope{}, fmt.Errorf("selected Hub contexts cannot be empty")
 	}
-	return HubScope{Mode: HubScopeSelectedContexts, Contexts: unique}, nil
+	return HubScope{Mode: HubScopeSelectedContexts, Contexts: unique, IncludeContextless: includeContextless}, nil
 }
 
 // NewContextlessHubScope selects issues with no ctx-prefixed labels.
@@ -85,9 +96,12 @@ func (s HubScope) Validate() error {
 		if len(s.Contexts) != 0 {
 			return fmt.Errorf("Hub scope %q cannot include contexts", s.Mode)
 		}
+		if s.IncludeContextless {
+			return fmt.Errorf("Hub scope %q cannot set include_contextless", s.Mode)
+		}
 		return nil
 	case HubScopeSelectedContexts:
-		normalized, err := NewSelectedContextsHubScope(s.Contexts)
+		normalized, err := newSelectedContextsHubScope(s.Contexts, s.IncludeContextless)
 		if err != nil {
 			return err
 		}
@@ -103,6 +117,31 @@ func (s HubScope) Validate() error {
 	default:
 		return fmt.Errorf("invalid Hub scope mode: %q", s.Mode)
 	}
+}
+
+// MatchesLabels reports whether labels belong to this candidate scope.
+func (s HubScope) MatchesLabels(labels []string) bool {
+	if s.Mode == HubScopeAllItems {
+		return true
+	}
+	selected := make(map[string]bool, len(s.Contexts))
+	for _, contextID := range s.Contexts {
+		selected[contextID] = true
+	}
+	hasContext := false
+	for _, label := range labels {
+		if !strings.HasPrefix(label, "ctx:") {
+			continue
+		}
+		hasContext = true
+		if s.Mode == HubScopeSelectedContexts && selected[label] {
+			return true
+		}
+	}
+	if hasContext {
+		return false
+	}
+	return s.Mode == HubScopeContextless || s.Mode == HubScopeSelectedContexts && s.IncludeContextless
 }
 
 // Clone returns a detached copy suitable for API boundaries.
