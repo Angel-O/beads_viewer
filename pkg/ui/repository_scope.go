@@ -30,7 +30,7 @@ func isHubContextLabel(label string) bool {
 	return strings.HasPrefix(label, "ctx:")
 }
 
-func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool) issueRepositoryPresentation {
+func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool, preferredRepositories map[string]bool) issueRepositoryPresentation {
 	presentation := issueRepositoryPresentation{Labels: issue.Labels}
 	if !hubMode {
 		return presentation
@@ -60,8 +60,17 @@ func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryC
 		}
 		return presentation
 	}
-	presentation.ID = matches[0].ID
-	presentation.Name = matches[0].Name
+	primary := matches[0]
+	for _, repository := range matches {
+		if len(preferredRepositories) > 0 && !preferredRepositories[repository.ID] {
+			continue
+		}
+		if len(preferredRepositories) > 0 && !preferredRepositories[primary.ID] || repository.Name > primary.Name || repository.Name == primary.Name && repository.ID > primary.ID {
+			primary = repository
+		}
+	}
+	presentation.ID = primary.ID
+	presentation.Name = primary.Name
 	presentation.Extra = len(matches) - 1
 	presentation.Names = make([]string, 0, len(matches))
 	for _, repository := range matches {
@@ -188,7 +197,7 @@ func (m *Model) decorateIssueItem(item *IssueItem) {
 	if item == nil {
 		return
 	}
-	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation())
+	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.activeRepos)
 	item.HubPresentation = m.hubRepositoryPresentation()
 	item.RepositoryID = presentation.ID
 	item.RepositoryName = presentation.Name

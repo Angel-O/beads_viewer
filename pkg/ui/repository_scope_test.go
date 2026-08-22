@@ -547,8 +547,8 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: model.RepositoryIdentityHubContext},
 	}
 
-	presentation := repositoryPresentationForIssue(issue, catalog, true)
-	if presentation.ID != "ctx:alpha" || presentation.Name != "teams/alpha/service" || presentation.Extra != 1 {
+	presentation := repositoryPresentationForIssue(issue, catalog, true, nil)
+	if presentation.ID != "ctx:zeta" || presentation.Name != "teams/zeta/service" || presentation.Extra != 1 {
 		t.Fatalf("presentation = %+v", presentation)
 	}
 	if got := strings.Join(presentation.Names, ","); got != "teams/alpha/service,teams/zeta/service" {
@@ -576,6 +576,45 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 	filterValue := item.FilterValue()
 	if !containsAll(filterValue, "teams/alpha/service", "teams/zeta/service", "Ctx:upper", "myctx:keep") || strings.Contains(filterValue, "ctx:alpha") {
 		t.Fatalf("fuzzy display tokens = %q", filterValue)
+	}
+}
+
+func TestHubListBadgePrefersSelectedRepositoryByDescendingDisplayName(t *testing.T) {
+	issue := model.Issue{
+		ID: "shared", Title: "Multi-context item", Status: model.StatusOpen,
+		Labels: []string{"ctx:beads-viewer", "ctx:dotfiles"},
+	}
+	catalog := model.RepositoryCatalog{
+		{ID: "ctx:beads-viewer", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
+	}
+	tests := []struct {
+		name     string
+		selected map[string]bool
+		want     string
+	}{
+		{name: "dotfiles only", selected: map[string]bool{"ctx:dotfiles": true}, want: "dotfiles"},
+		{name: "both selected", selected: map[string]bool{"ctx:beads-viewer": true, "ctx:dotfiles": true}, want: "dotfiles"},
+		{name: "beads viewer only", selected: map[string]bool{"ctx:beads-viewer": true}, want: "beads_viewer"},
+		{name: "all items fallback", want: "dotfiles"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{issue}, nil, "")
+			m.hubConfigPath = "hub.yaml"
+			m.repositoryCatalog = catalog
+			m.SetRepositoryScope(tt.selected)
+			m.refreshRepositoryPresentation()
+
+			row := m.list.View()
+			if !strings.Contains(row, "["+tt.want+"]") || !strings.Contains(row, "+1") {
+				t.Fatalf("list row = %q, want [%s] +1", row, tt.want)
+			}
+			if strings.Contains(row, "[beads_viewer]") == (tt.want != "beads_viewer") {
+				t.Fatalf("list row used wrong primary repository: %q", row)
+			}
+		})
 	}
 }
 

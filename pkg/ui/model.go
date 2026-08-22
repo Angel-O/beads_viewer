@@ -8020,7 +8020,7 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation())
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), nil)
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && len(hubContextNames(item, m.repositoryCatalog)) == 1 && hubContextNames(item, m.repositoryCatalog)[0] == "contextless" {
