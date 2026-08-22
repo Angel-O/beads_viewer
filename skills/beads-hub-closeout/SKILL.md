@@ -73,7 +73,7 @@ Keep the selected remote, reference branch, reference checkout, and merge SHA
 fixed after preflight. If concurrent activity invalidates any of them, stop and
 rerun preflight rather than substituting new values.
 
-## Correlate And Close
+## Synchronize Reference
 
 1. Fetch only the selected reference branch without tags:
    `git fetch --no-tags "$remote" "refs/heads/$reference_branch"`.
@@ -81,42 +81,64 @@ rerun preflight rather than substituting new values.
    `git cat-file -e "$merge_sha^{commit}"`, then require
    `git merge-base --is-ancestor "$merge_sha" FETCH_HEAD`. A missing object or
    nonzero ancestry result stops closeout before any Hub mutation.
-3. Re-run `wbd show "$bead_id" --json` and repeat every eligibility check to
-   guard against state or context changes after the fetch.
-4. Run `wbd link "$bead_id" "$merge_sha"`. Check its exit status and JSON
-   result. Do not close on any link error or ambiguous response. The exact
-   duplicate correlation is a successful no-op and makes this step idempotent.
-5. If the refreshed item is not closed, run
-   `wbd close "$bead_id" --reason "Merged and correlated" --json`. Only do this
-   after successful correlation. Re-run `wbd show "$bead_id" --json` and require
-   `status` to be `closed`. If it was already closed, do not close it again.
-6. Recheck that the reference checkout is still on the resolved branch and
-   clean. Finish with
+3. Recheck that the reference checkout is still on the resolved branch and
+   clean. Stop without Hub mutation if its branch, path, or status changed.
+4. Synchronize the clean reference checkout with
    `git -C "$reference_worktree" pull --ff-only "$remote" "$reference_branch"`.
-   Any branch change, dirtiness, non-fast-forward result, or pull error is a
-   partial failure; never repair it with stash, reset, checkout, rebase, merge,
-   force, or history rewriting.
+   Any non-fast-forward result or pull error stops closeout before Hub mutation;
+   never repair it with stash, reset, checkout, rebase, merge, force, or history
+   rewriting.
+5. After the pull, require the checkout to remain on the resolved branch and be
+   clean. Resolve its `HEAD` to a full SHA and require
+   `git -C "$reference_worktree" merge-base --is-ancestor "$merge_sha" HEAD`.
+   This synchronized, verified checkout is the only permitted working directory
+   for the Hub operations below.
+
+## Revalidate And Close
+
+1. Immediately before the first Hub mutation, revalidate that the reference
+   worktree path is unchanged, is still on the resolved branch, is clean, and
+   still contains the merge result. Stop if any check differs from the
+   synchronized state.
+2. From the resolved reference worktree, run
+   `(cd -- "$reference_worktree" && wbd show "$bead_id" --json)` and repeat every
+   eligibility check. Running from this checkout binds `wbd` repository-context
+   discovery to the reference repository rather than the caller's directory.
+3. Recheck the reference worktree's path, branch, cleanliness, and merge
+   reachability once more. Then, from that same checkout, run
+   `(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")`. Check
+   its exit status and JSON result. Do not close on any link error or ambiguous
+   response. The exact duplicate correlation is a successful no-op and makes
+   this step idempotent.
+4. If the refreshed item is not closed, run
+   `(cd -- "$reference_worktree" && wbd close "$bead_id" --reason "Merged and correlated" --json)`.
+   Only do this after successful correlation. From the same checkout, re-run
+   `wbd show "$bead_id" --json` and require `status` to be `closed`. If it was
+   already closed, do not close it again.
 
 ## Idempotence And Partial Failures
 
-- Before `wbd link` succeeds, a failure leaves the Hub unchanged. Fetches may
-  refresh normal Git fetch state but do not alter worktree files.
+- Any fetch, reachability, cleanliness, branch, or ff-only synchronization
+  failure occurs before `wbd link` and leaves the Hub unchanged. A successful
+  pull may advance the clean reference checkout before a later phase fails.
 - `wbd link` deduplicates the same bead, context, and full commit. A rerun after
-  correlation can safely retry that exact link before deciding whether closure
-  is still needed.
+  synchronization can safely repeat the already-up-to-date ff-only pull and
+  retry that exact link before deciding whether closure is still needed.
+- If revalidation or linking fails after synchronization, report the reference
+  checkout as synchronized and the Hub as unchanged. Never move Hub mutation
+  ahead of synchronization to avoid this partial Git-only state.
 - If linking succeeds and closure fails, preserve the correlation, report the
-  item as still open, and rerun from preflight. Never close by another route.
-- If closure succeeds and the final ff-only pull fails, the Hub closeout remains
-  complete but reference synchronization is incomplete. Report that split
-  state and rerun preflight; the duplicate link and already-closed checks make
-  the retry safe.
+  item as still open, and rerun from preflight. The reference checkout is
+  already synchronized; never close by another route.
 - If final verification cannot prove the correlation, closed state, merge
-  reachability, or clean ff-only update, report exactly which phase succeeded
-  without exposing private identities. Never claim full closeout from a partial
-  result.
+  reachability, or synchronized clean checkout, report exactly which phase
+  succeeded without exposing private identities. Never claim full closeout from
+  a partial result.
 
 ## Safe Report
 
 Report the full merge-result SHA, resolved reference branch, whether correlation
-was new or already present, closure state, and ff-only pull result. Omit the bead
-ID, contexts, private titles, and private descriptions.
+was new or already present, closure state, and the pre-mutation ff-only pull
+result. Distinguish synchronized-but-Hub-unchanged and correlated-but-still-open
+partial states. Omit the bead ID, contexts, private titles, and private
+descriptions.
