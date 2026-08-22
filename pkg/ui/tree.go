@@ -579,7 +579,7 @@ func (t *TreeModel) View() string {
 
 	// Add position indicator if scrolling is needed (bv-2nax)
 	// Only shows when there are more nodes than fit in the viewport
-	if len(t.flatList) > t.height && t.height > 0 {
+	if t.showPositionIndicator() {
 		indicator := t.renderPositionIndicator(start, end)
 		sb.WriteString(indicator)
 	}
@@ -617,6 +617,29 @@ func (t *TreeModel) renderPositionIndicator(start, end int) string {
 	return t.theme.Renderer.NewStyle().
 		Foreground(t.theme.Muted).
 		Render(indicator)
+}
+
+// visibleNodeCapacity returns the rows available for issues after reserving the
+// header and, when needed, the position indicator. A non-positive height keeps
+// the historical default used before terminal dimensions are known.
+func (t *TreeModel) visibleNodeCapacity() int {
+	if t.height <= 0 {
+		return 20
+	}
+	capacity := t.height - 1
+	if t.showPositionIndicator() {
+		capacity--
+	}
+	if capacity < 0 {
+		return 0
+	}
+	return capacity
+}
+
+func (t *TreeModel) showPositionIndicator() bool {
+	// At least one issue row must remain visible alongside the header and
+	// indicator. Tiny views therefore prioritize content over the indicator.
+	return t.height >= 3 && len(t.flatList) > t.height-1
 }
 
 // renderEmptyState renders the view when there are no issues.
@@ -1013,10 +1036,9 @@ func (t *TreeModel) visibleRange() (start, end int) {
 		return 0, 0
 	}
 
-	// Each node renders as 1 line
-	visibleCount := t.height - 1 // Reserve one line for the Tree header/search state.
-	if visibleCount <= 0 {
-		visibleCount = 20 // Default
+	visibleCount := t.visibleNodeCapacity()
+	if visibleCount == 0 {
+		return 0, 0
 	}
 
 	// Start with the viewport offset, clamped to non-negative
@@ -1275,9 +1297,10 @@ func (t *TreeModel) ensureCursorVisible() {
 		return
 	}
 
-	visibleCount := t.height - 1 // Reserve one line for the Tree header/search state.
-	if visibleCount <= 0 {
-		visibleCount = 20 // Default
+	visibleCount := t.visibleNodeCapacity()
+	if visibleCount == 0 {
+		t.viewportOffset = 0
+		return
 	}
 
 	// Cursor above viewport - scroll up to show cursor at top
