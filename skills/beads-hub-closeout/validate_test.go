@@ -9,12 +9,21 @@ import (
 )
 
 func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
-	t.Run("allows ID-free metadata", func(t *testing.T) {
+	t.Run("allows ID-free reviewed range", func(t *testing.T) {
 		repository := syntheticRepository(t, "docs: harden closeout validation")
-		git(t, repository, "branch", "docs/closeout-validation")
+		commit(t, repository, "docs: safe target change")
 		git(t, repository, "tag", "validation-fixture")
 		if output, err := runMetadataValidation(repository); err != nil {
 			t.Fatalf("metadata validation failed: %v\n%s", err, output)
+		}
+	})
+
+	t.Run("ignores unrelated local branch and accepted baseline", func(t *testing.T) {
+		repository := syntheticRepository(t, "docs: accepted baseline with ctx:synthetic-baseline")
+		git(t, repository, "branch", "feature/global-synthetic-unrelated")
+		commit(t, repository, "docs: safe target change")
+		if output, err := runMetadataValidation(repository); err != nil {
+			t.Fatalf("unrelated metadata blocked target range: %v\n%s", err, output)
 		}
 	})
 
@@ -24,33 +33,33 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 		setup func(*testing.T, string, string)
 	}{
 		{
-			name: "other local branch",
+			name: "active branch",
 			leak: "feature/global-synthetic",
 			setup: func(t *testing.T, repository, leak string) {
-				git(t, repository, "branch", leak)
+				git(t, repository, "checkout", "--quiet", "-b", leak)
+				commit(t, repository, "docs: safe target change")
 			},
 		},
 		{
-			name: "local tag",
+			name: "tag on reviewed range",
 			leak: "global-synthetic-tag",
 			setup: func(t *testing.T, repository, leak string) {
+				commit(t, repository, "docs: safe target change")
 				git(t, repository, "tag", leak)
 			},
 		},
 		{
-			name: "ancestor subject",
+			name: "new commit subject",
 			leak: "ctx:synthetic-history",
 			setup: func(t *testing.T, repository, leak string) {
 				commit(t, repository, leak)
-				commit(t, repository, "docs: safe descendant")
 			},
 		},
 		{
-			name: "ancestor body",
+			name: "new commit body",
 			leak: "global-synthetic-body",
 			setup: func(t *testing.T, repository, leak string) {
 				commit(t, repository, "docs: synthetic body\n\nprivate marker "+leak)
-				commit(t, repository, "docs: safe descendant")
 			},
 		},
 	}
@@ -79,6 +88,7 @@ func syntheticRepository(t *testing.T, message string) string {
 	git(t, repository, "config", "user.name", "Synthetic Test")
 	git(t, repository, "config", "user.email", "synthetic@example.invalid")
 	commit(t, repository, message)
+	git(t, repository, "branch", "baseline")
 	return repository
 }
 
@@ -109,6 +119,6 @@ func git(t *testing.T, repository string, arguments ...string) {
 }
 
 func runMetadataValidation(repository string) ([]byte, error) {
-	command := exec.Command("bash", "validate.sh", "--metadata-only", repository)
+	command := exec.Command("bash", "validate.sh", "--metadata-only", repository, "refs/heads/baseline")
 	return command.CombinedOutput()
 }

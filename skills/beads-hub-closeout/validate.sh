@@ -31,19 +31,49 @@ validate_metadata_value() {
 }
 
 validate_repository_metadata() {
-  local repository=$1 refs messages
-  refs=$(git -C "$repository" for-each-ref --format='%(refname)' refs/heads refs/tags)
-  messages=$(git -C "$repository" log --branches --tags --format='%s%n%b')
-  validate_metadata_value reference "$refs"
+  local repository=$1 base=${2:-} branch commits messages tags commit commit_tags
+  branch=$(git -C "$repository" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  if [[ -z $branch ]]; then
+    printf '%s\n' 'cannot validate Git metadata without an active branch' >&2
+    return 1
+  fi
+  if [[ -z $base ]]; then
+    base=${CLOSEOUT_METADATA_BASE:-}
+  fi
+  if [[ -z $base ]]; then
+    base=$(git -C "$repository" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+  fi
+  if [[ -z $base ]] || ! git -C "$repository" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+    printf '%s\n' 'cannot validate Git metadata without a valid upstream or reference' >&2
+    return 1
+  fi
+  if ! git -C "$repository" merge-base --is-ancestor "$base" HEAD; then
+    printf '%s\n' 'configured metadata reference is not an ancestor of HEAD' >&2
+    return 1
+  fi
+
+  commits=$(git -C "$repository" rev-list --reverse "$base..HEAD")
+  messages=$(git -C "$repository" log --format='%s%n%b' "$base..HEAD")
+  tags=
+  while IFS= read -r commit; do
+    [[ -n $commit ]] || continue
+    commit_tags=$(git -C "$repository" tag --points-at "$commit")
+    if [[ -n $commit_tags ]]; then
+      tags+=$'\n'$commit_tags
+    fi
+  done <<<"$commits"
+
+  validate_metadata_value branch "$branch"
+  validate_metadata_value tag "$tags"
   validate_metadata_value commit "$messages"
 }
 
 if [[ ${1:-} == "--metadata-only" ]]; then
-  if [[ $# -ne 2 ]]; then
-    printf '%s\n' 'usage: validate.sh --metadata-only <repository>' >&2
+  if [[ $# -lt 2 || $# -gt 3 ]]; then
+    printf '%s\n' 'usage: validate.sh --metadata-only <repository> [reference]' >&2
     exit 2
   fi
-  validate_repository_metadata "$2"
+  validate_repository_metadata "$2" "${3:-}"
   printf '%s\n' 'Git metadata privacy validation passed'
   exit 0
 fi
@@ -64,8 +94,8 @@ require_text "$closeout_skill" 'pull --ff-only "$remote" "$reference_branch"'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd show "$bead_id" --json)'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd close "$bead_id"'
-require_text "$closeout_skill" 'It rejects private identity patterns in every local branch and tag name'
-require_text "$closeout_skill" 'and in commit subjects and bodies reachable from those refs'
+require_text "$closeout_skill" 'It rejects private identity patterns in the active branch name,'
+require_text "$closeout_skill" 'commits unique to its configured upstream or reference, and tags on those'
 require_before "$closeout_skill" '## Synchronize Reference' 'pull --ff-only "$remote" "$reference_branch"'
 require_before "$closeout_skill" 'git merge-base --is-ancestor "$merge_sha" FETCH_HEAD' 'pull --ff-only "$remote" "$reference_branch"'
 require_before "$closeout_skill" 'Recheck that the reference checkout is still on the resolved branch and' 'pull --ff-only "$remote" "$reference_branch"'

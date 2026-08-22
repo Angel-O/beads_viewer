@@ -22,9 +22,11 @@ merge, push, or pull-request workflow.
 - Do not print private values into validation logs or the final closeout report.
   Keep shell variables containing them local to the closeout process.
 - Run `skills/beads-hub-closeout/validate.sh` from the intended checkout before
-  closeout. It rejects private identity patterns in every local branch and tag
-  name and in commit subjects and bodies reachable from those refs, without
-  printing the matched value. Its tests use isolated synthetic repositories.
+  closeout. It rejects private identity patterns in the active branch name,
+  commits unique to its configured upstream or reference, and tags on those
+  commits, without printing the matched value. Unrelated local refs and accepted
+  baseline history are outside this gate. Tests use isolated synthetic
+  repositories.
 - Never modify repository `.beads`, hooks, ignores, exports, Hub configuration,
   ledgers, or agent routing files directly. Use only `wbd` for the two Hub
   mutations authorized below.
