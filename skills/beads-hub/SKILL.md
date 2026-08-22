@@ -43,6 +43,11 @@ wbd link <work-id> HEAD
 
 Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` for the supported command and targeting summary.
 
+For post-merge correlation and closure of concrete private work, load
+[`beads-hub-closeout`](../beads-hub-closeout/SKILL.md). It keeps private
+identities out of Git-visible metadata and requires verified merge reachability
+before `wbd link` can succeed and closure can begin.
+
 ## Viewer
 
 - Bare `wbv` is human-only. Agents must use exactly one approved read-only robot primary: plan, priority, insights, graph, label health/flow/attention, blocker chain, sprint list/show, forecast, capacity, or triage with `--brief`. The wrapper forces JSON and rejects every unknown or unsafe flag.
