@@ -2021,6 +2021,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case HubSourceRefreshCompleteMsg:
+		if m.historyMode == correlation.HistoryModeExternal && len(m.issues) > 0 {
+			m.historyGeneration++
+			m.historyLoading = true
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+		}
+		if m.backgroundWorker != nil {
+			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+		}
+		return m, tea.Batch(cmds...)
+
 	case AgentFileCheckMsg:
 		// AGENTS.md integration check (bv-i8dk)
 		if msg.ShouldPrompt && msg.FilePath != "" {
