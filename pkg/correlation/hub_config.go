@@ -211,6 +211,9 @@ func removeExternalCorrelation(configPath, beadID, repository, commit string, wr
 	if err != nil {
 		return ExternalHistoryCorrelation{}, false, err
 	}
+	if err := validateCorrelationLedgerForRemoval(ledger, entries, config.Repositories, store, record); err != nil {
+		return ExternalHistoryCorrelation{}, false, err
+	}
 	kept := make([]correlationLedgerEntry, 0, len(entries))
 	removed := false
 	for _, entry := range entries {
@@ -230,6 +233,40 @@ func removeExternalCorrelation(configPath, beadID, repository, commit string, wr
 		return ExternalHistoryCorrelation{}, false, err
 	}
 	return record, true, nil
+}
+
+func validateCorrelationLedgerForRemoval(ledger string, entries []correlationLedgerEntry, repositories map[string]HubConfigRepository, store string, target ExternalHistoryCorrelation) error {
+	targetIdentity := target.BeadID + "\x00" + target.Context + "\x00" + strings.ToLower(target.Commit)
+	seen := make(map[string]struct{}, len(entries))
+	validatedContexts := make(map[string]struct{})
+	for i, entry := range entries {
+		record := entry.correlation
+		record.BeadID = strings.TrimSpace(record.BeadID)
+		record.Context = strings.TrimSpace(record.Context)
+		record.Commit = strings.TrimSpace(record.Commit)
+		if record.BeadID == "" || record.Context == "" || record.Commit == "" {
+			return fmt.Errorf("correlation ledger %q record %d requires non-empty bead_id, context, and commit", ledger, i+1)
+		}
+		if _, exists := repositories[record.Context]; !exists {
+			return fmt.Errorf("correlation ledger %q record %d references undefined context %q", ledger, i+1, record.Context)
+		}
+		if !fullCommitSHARegex.MatchString(record.Commit) {
+			return fmt.Errorf("correlation ledger %q record %d commit %q must be a full 40- or 64-character Git object ID", ledger, i+1, record.Commit)
+		}
+		beadContext := record.BeadID + "\x00" + record.Context
+		if _, validated := validatedContexts[beadContext]; !validated {
+			if err := validateBeadContext(store, record.BeadID, record.Context); err != nil {
+				return fmt.Errorf("correlation ledger %q record %d: %w", ledger, i+1, err)
+			}
+			validatedContexts[beadContext] = struct{}{}
+		}
+		identity := beadContext + "\x00" + strings.ToLower(record.Commit)
+		if _, duplicate := seen[identity]; duplicate && identity != targetIdentity {
+			return fmt.Errorf("correlation ledger %q repeats correlation for bead %q, context %q, commit %q", ledger, record.BeadID, record.Context, record.Commit)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
 }
 
 func resolveConfiguredRepository(repositories map[string]HubConfigRepository, value, baseDir string) (string, string, error) {

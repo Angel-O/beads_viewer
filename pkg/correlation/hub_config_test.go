@@ -414,6 +414,48 @@ func TestRemoveExternalCorrelationMalformedLedgerAndWriteFailurePreserveLedger(t
 	})
 }
 
+func TestRemoveExternalCorrelationRejectsInvalidUnrelatedRecordsWithoutMutation(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	otherSHA := "89abcdef0123456789abcdef0123456789abcdef"
+	validTarget := `{"bead_id":"item-alpha","context":"ctx:synthetic-a","commit":"` + sha + `"}`
+	tests := []struct {
+		name    string
+		records []string
+		want    string
+	}{
+		{name: "empty field", records: []string{validTarget, `{"bead_id":"item-beta","context":"","commit":"` + otherSHA + `"}`}, want: "requires non-empty"},
+		{name: "invalid full SHA", records: []string{validTarget, `{"bead_id":"item-beta","context":"ctx:synthetic-a","commit":"89abcdef"}`}, want: "must be a full"},
+		{name: "undefined context", records: []string{validTarget, `{"bead_id":"item-beta","context":"ctx:undefined","commit":"` + otherSHA + `"}`}, want: "undefined context"},
+		{name: "mismatched context", records: []string{validTarget, `{"bead_id":"item-mismatch","context":"ctx:synthetic-a","commit":"` + otherSHA + `"}`}, want: "does not carry context label"},
+		{name: "unknown bead", records: []string{validTarget, `{"bead_id":"item-missing","context":"ctx:synthetic-a","commit":"` + otherSHA + `"}`}, want: "was not found"},
+		{name: "ineligible bead", records: []string{validTarget, `{"bead_id":"item-todo","context":"ctx:synthetic-a","commit":"` + otherSHA + `"}`}, want: "cannot be correlated"},
+		{name: "duplicate unrelated tuple", records: []string{validTarget, `{"bead_id":"item-beta","context":"ctx:synthetic-a","commit":"` + otherSHA + `"}`, `{"bead_id":"item-beta","context":"ctx:synthetic-a","commit":"` + otherSHA + `"}`}, want: "repeats correlation"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			configPath, ledgerPath := correlationRemovalFixture(t)
+			original := strings.Join(testCase.records, "\n") + "\n"
+			if err := os.WriteFile(ledgerPath, []byte(original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writerCalled := false
+			writer := func(string, []correlationLedgerEntry) error {
+				writerCalled = true
+				return nil
+			}
+			if _, _, err := removeExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", sha, writer); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %v, want containing %q", err, testCase.want)
+			}
+			if writerCalled {
+				t.Fatal("invalid unrelated record invoked ledger writer")
+			}
+			if data, err := os.ReadFile(ledgerPath); err != nil || string(data) != original {
+				t.Fatalf("invalid unrelated record changed ledger: data=%q err=%v", data, err)
+			}
+		})
+	}
+}
+
 func correlationRemovalFixture(t *testing.T) (string, string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -428,7 +470,15 @@ func correlationRemovalFixture(t *testing.T) (string, string) {
 			t.Fatal(err)
 		}
 	}
-	bd := "#!/bin/sh\nprintf '[{\"id\":\"item-alpha\",\"issue_type\":\"task\",\"labels\":[\"ctx:synthetic-a\"]}]\\n'\n"
+	bd := `#!/bin/sh
+bead="$5"
+case "$bead" in
+  item-alpha|item-beta) printf '[{"id":"%s","issue_type":"task","labels":["ctx:synthetic-a"]}]\n' "$bead" ;;
+  item-mismatch) printf '[{"id":"%s","issue_type":"task","labels":["ctx:synthetic-b"]}]\n' "$bead" ;;
+  item-todo) printf '[{"id":"%s","issue_type":"todo","labels":["ctx:synthetic-a"]}]\n' "$bead" ;;
+  *) printf '[]\n' ;;
+esac
+`
 	if err := os.WriteFile(filepath.Join(bin, "bd"), []byte(bd), 0o755); err != nil {
 		t.Fatal(err)
 	}

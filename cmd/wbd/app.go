@@ -304,11 +304,11 @@ func (a *app) run(arguments []string) int {
 		if result.Correlation.BeadID != request.positionals[0] || result.Correlation.Context != registration.Context || !strings.EqualFold(result.Correlation.Commit, request.positionals[1]) {
 			return a.fail(errors.New("correlation removal returned a different tuple than requested"))
 		}
-		if _, err := a.stdout.Write(output); err != nil {
-			return a.fail(fmt.Errorf("writing correlation removal result: %w", err))
-		}
 		if result.Removed {
 			a.signalMutation("unlink")
+		}
+		if _, err := a.stdout.Write(output); err != nil {
+			return a.fail(fmt.Errorf("writing correlation removal result: %w", err))
 		}
 		return 0
 	default:

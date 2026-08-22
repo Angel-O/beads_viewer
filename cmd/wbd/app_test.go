@@ -26,6 +26,12 @@ type childCall struct {
 	Plan json.RawMessage   `json:"plan,omitempty"`
 }
 
+type failingOutput struct{}
+
+func (failingOutput) Write([]byte) (int, error) {
+	return 0, errors.New("synthetic stdout failure")
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("WBD_FAKE_CHILD") == "1" {
 		fakeChild()
@@ -701,6 +707,39 @@ func TestUnlinkDelegatesExactTupleAndSignalsOnlyOnRemoval(t *testing.T) {
 			}
 			if !testCase.removed && !os.IsNotExist(signalErr) {
 				t.Fatalf("not-found correlation signaled Viewer: %v", signalErr)
+			}
+		})
+	}
+}
+
+func TestUnlinkSignalsConfirmedRemovalWhenOutputFails(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, testCase := range []struct {
+		name    string
+		removed bool
+	}{
+		{name: "removed", removed: true},
+		{name: "not found", removed: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			response := fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":%q},"removed":%t}`+"\n", context, sha, testCase.removed)
+			setResponses(t, map[string]string{"correlate": response})
+			var stderr bytes.Buffer
+			test.app.stdout = failingOutput{}
+			test.app.stderr = &stderr
+			code := test.app.run([]string{"unlink", "item-alpha", sha})
+			if code != 1 || !strings.Contains(stderr.String(), "synthetic stdout failure") {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			_, signalErr := os.Stat(hub.ChangeSignalPath(test.app.paths))
+			if testCase.removed && signalErr != nil {
+				t.Fatalf("confirmed removal did not signal after output failure: %v", signalErr)
+			}
+			if !testCase.removed && !os.IsNotExist(signalErr) {
+				t.Fatalf("not-found result signaled after output failure: %v", signalErr)
 			}
 		})
 	}
