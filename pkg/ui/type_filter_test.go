@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -43,6 +44,39 @@ func TestTypePickerAppliesExactMultiSelectionAndShowsActiveState(t *testing.T) {
 	if footer := m.renderFooter(); !strings.Contains(footer, "TYPE bug,decision") {
 		t.Fatalf("active type badge missing: %q", footer)
 	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
+	m = updated.(Model)
+	m.typePicker.MoveDown()
+	m.typePicker.ToggleSelected()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
+	m = updated.(Model)
+	if m.showTypePicker || m.focused != focusList {
+		t.Fatalf("uppercase I did not cancel type picker: shown=%v focus=%v", m.showTypePicker, m.focused)
+	}
+	if got := strings.Join(m.activeIssueTypeNames(), ","); got != "bug,decision" {
+		t.Fatalf("uppercase I applied draft type selection: %q", got)
+	}
+}
+
+func TestTypePickerLeavesBlankRowBeforeWrappedHints(t *testing.T) {
+	picker := NewTypePickerModel([]model.IssueType{model.TypeBug, model.TypeTask, "decision"}, nil, DefaultTheme(lipgloss.NewRenderer(nil)))
+	picker.SetSize(70, 20)
+
+	lines := strings.Split(picker.View(), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, string(model.TypeTask)) {
+			blankRow := ""
+			if i+1 < len(lines) {
+				blankRow = strings.Trim(strings.TrimSpace(ansi.Strip(lines[i+1])), "│ ")
+			}
+			if i+2 >= len(lines) || blankRow != "" || !strings.Contains(ansi.Strip(lines[i+2]), "j/k: navigate") {
+				t.Fatalf("type picker lacks blank row before hints:\n%s", picker.View())
+			}
+			return
+		}
+	}
+	t.Fatalf("type picker did not render task option:\n%s", picker.View())
 }
 
 func TestTypeFilterComposesWithStatusLabelRepositoryRecipeAndText(t *testing.T) {
@@ -68,6 +102,169 @@ func TestTypeFilterComposesWithStatusLabelRepositoryRecipeAndText(t *testing.T) 
 		t.Fatalf("text filter was not preserved: state=%v value=%q", m.list.FilterState(), m.list.FilterValue())
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "api-bug")
+}
+
+func TestStatusKeysToggleAndPreserveComposedListFilters(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	m.ready = true
+	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+	m.SetRepositoryScope(map[string]bool{"api": true})
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.currentFilter = "label:urgent"
+	m.applyFilter()
+	m.list.SetFilterText("needle")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if m.currentFilter != "label:urgent" || m.statusFilter != "closed" {
+		t.Fatalf("closed toggle changed composed filters: base=%q status=%q", m.currentFilter, m.statusFilter)
+	}
+	if m.list.FilterValue() != "needle" || len(m.RepositoryScope()) != 1 || !m.RepositoryScope()["api"] || !m.activeIssueTypes[model.TypeBug] {
+		t.Fatalf("closed toggle changed unrelated filters: text=%q repos=%v types=%v", m.list.FilterValue(), m.RepositoryScope(), m.activeIssueTypes)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-closed")
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.statusFilter != "open" {
+		t.Fatalf("switch to open status = %q", m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-bug")
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.statusFilter != "" || m.currentFilter != "label:urgent" {
+		t.Fatalf("second open did not clear only status: base=%q status=%q", m.currentFilter, m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-closed")
+}
+
+func TestStatusFilterBadgeRendersWithComposedFilters(t *testing.T) {
+	t.Run("label", func(t *testing.T) {
+		m := NewModel(typeFilterIssues(), nil, "")
+		m.width = 200
+		m.currentFilter = "label:urgent"
+		m.applyFilter()
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "CLOSED") {
+			t.Fatalf("label + closed footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "OPEN") {
+			t.Fatalf("label + open footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		footer := ansi.Strip(m.renderFooter())
+		if strings.Contains(footer, "OPEN") || strings.Contains(footer, "CLOSED") || strings.Contains(footer, "READY") || !strings.Contains(footer, "label:urgent") {
+			t.Fatalf("cleared label status changed footer filter: %q", footer)
+		}
+	})
+
+	t.Run("recipe", func(t *testing.T) {
+		m := NewModel(typeFilterIssues(), nil, "")
+		m.width = 200
+		r := &recipe.Recipe{Name: "urgent", Filters: recipe.FilterConfig{Tags: []string{"urgent"}}}
+		m.setActiveRecipe(r)
+		m.applyRecipe(r)
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "CLOSED") {
+			t.Fatalf("recipe + closed footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "OPEN") {
+			t.Fatalf("recipe + open footer missing status badge: %q", footer)
+		}
+
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		m = updated.(Model)
+		footer := ansi.Strip(m.renderFooter())
+		if strings.Contains(footer, "OPEN") || strings.Contains(footer, "CLOSED") || strings.Contains(footer, "READY") || !strings.Contains(footer, "URGENT") {
+			t.Fatalf("cleared recipe status changed footer filter: %q", footer)
+		}
+	})
+}
+
+func TestStatusKeysRenderNormalFooterImmediately(t *testing.T) {
+	footerLine := func(view string) string {
+		view = strings.TrimRight(view, "\n")
+		if index := strings.LastIndex(view, "\n"); index >= 0 {
+			return view[index+1:]
+		}
+		return view
+	}
+
+	for _, testCase := range []struct {
+		name  string
+		key   string
+		badge string
+	}{
+		{name: "closed", key: "c", badge: "CLOSED"},
+		{name: "open", key: "o", badge: "OPEN"},
+		{name: "ready", key: "r", badge: "READY"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			m := NewModel(typeFilterIssues(), nil, "")
+			m.width, m.height = 200, 40
+			m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+			m.SetRepositoryScope(map[string]bool{"api": true})
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
+			m = updated.(Model)
+			view := ansi.Strip(m.View())
+			footer := footerLine(view)
+			if !strings.Contains(footer, "📦 api") || !strings.Contains(footer, testCase.badge) {
+				t.Fatalf("immediate %s view missing persistent badges:\n%s", testCase.key, view)
+			}
+			if !strings.Contains(footer, "⏎ details") || !strings.Contains(footer, "Ctrl+R refresh") {
+				t.Fatalf("immediate %s view missing normal shortcut hints:\n%s", testCase.key, view)
+			}
+			if strings.Contains(footer, "Filter: ") {
+				t.Fatalf("immediate %s view retained transient status message:\n%s", testCase.key, view)
+			}
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
+			m = updated.(Model)
+			view = ansi.Strip(m.View())
+			footer = footerLine(view)
+			for _, badge := range []string{"CLOSED", "OPEN", "READY"} {
+				if strings.Contains(footer, badge) {
+					t.Fatalf("cleared %s view retained status badge %q:\n%s", testCase.key, badge, view)
+				}
+			}
+			if !strings.Contains(footer, "⏎ details") || !strings.Contains(footer, "Ctrl+R refresh") {
+				t.Fatalf("cleared %s view missing normal shortcut hints:\n%s", testCase.key, view)
+			}
+		})
+	}
+}
+
+func TestStatusTogglePreservesRecipeAndBoardContract(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	r := &recipe.Recipe{Name: "urgent", Filters: recipe.FilterConfig{Tags: []string{"urgent"}}}
+	m.setActiveRecipe(r)
+	m.applyRecipe(r)
+
+	m = m.handleListKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if m.activeRecipe != r || m.currentFilter != "recipe:urgent" || m.statusFilter != "closed" {
+		t.Fatalf("list status toggle changed recipe: active=%p base=%q status=%q", m.activeRecipe, m.currentFilter, m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-closed")
+
+	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if m.activeRecipe != r || m.currentFilter != "recipe:urgent" || m.statusFilter != "" {
+		t.Fatalf("board second toggle did not clear only status: active=%p base=%q status=%q", m.activeRecipe, m.currentFilter, m.statusFilter)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-custom", "api-task", "web-bug", "api-closed")
 }
 
 func TestTypeFilterResetPreservesUnrelatedScopeAndSearch(t *testing.T) {

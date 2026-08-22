@@ -10,6 +10,23 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestListHelpRendersTreeAndExactTypePickerShortcuts(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width = 160
+	m.height = 40
+	m.focused = focusList
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m = updated.(Model)
+	if !m.showHelp || m.focused != focusHelp {
+		t.Fatalf("? did not open List help: shown=%v focus=%v", m.showHelp, m.focused)
+	}
+	help := m.renderHelpOverlay()
+	if !strings.Contains(help, "E         Tree view") || !strings.Contains(help, "I         Exact issue-type picker") {
+		t.Fatalf("List help lacks Tree or exact type shortcut:\n%s", help)
+	}
+}
+
 func TestUpdateInsightsHeatmapKey(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 
