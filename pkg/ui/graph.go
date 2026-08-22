@@ -38,14 +38,22 @@ type GraphModel struct {
 	rankCriticalPath map[string]int
 	rankInDegree     map[string]int
 	rankOutDegree    map[string]int
+
+	// Search selects existing presentation nodes without changing graph topology.
+	searchInput      bool
+	searchQuery      string
+	searchMatches    []string
+	searchMatchIndex int
+	searchStartID    string
 }
 
 // NewGraphModel creates a new graph view from issues
 func NewGraphModel(issues []model.Issue, insights *analysis.Insights, theme Theme) GraphModel {
 	g := GraphModel{
-		issues:   issues,
-		insights: insights,
-		theme:    theme,
+		issues:           issues,
+		insights:         insights,
+		theme:            theme,
+		searchMatchIndex: -1,
 	}
 	g.rebuildGraph()
 	return g
@@ -112,6 +120,7 @@ func (g *GraphModel) SetSnapshot(snapshot *DataSnapshot) {
 	if g.selectedIdx >= len(g.sortedIDs) {
 		g.selectedIdx = 0
 	}
+	g.refreshSearchMatches()
 }
 
 // SetIssues updates the graph data preserving the selected issue if possible
@@ -156,6 +165,7 @@ func (g *GraphModel) SetProjectedIssues(issues []model.Issue, issueMap map[strin
 			}
 		}
 	}
+	g.refreshSearchMatches()
 }
 
 func (g *GraphModel) rebuildGraph() {
@@ -324,6 +334,121 @@ func (g *GraphModel) SelectByID(id string) bool {
 	return false
 }
 
+// StartSearch opens Graph-local search and remembers the current selection so
+// Escape can cancel an unfinished query without moving the user.
+func (g *GraphModel) StartSearch() {
+	g.searchInput = true
+	g.searchQuery = ""
+	g.searchMatches = nil
+	g.searchMatchIndex = -1
+	g.searchStartID = ""
+	if selected := g.SelectedIssue(); selected != nil {
+		g.searchStartID = selected.ID
+	}
+}
+
+func (g *GraphModel) IsSearchInputActive() bool {
+	return g.searchInput
+}
+
+func (g *GraphModel) HasSearchQuery() bool {
+	return strings.TrimSpace(g.searchQuery) != ""
+}
+
+func (g *GraphModel) SearchQuery() string {
+	return g.searchQuery
+}
+
+func (g *GraphModel) AppendSearchRunes(runes []rune) {
+	if !g.searchInput || len(runes) == 0 {
+		return
+	}
+	g.searchQuery += string(runes)
+	g.refreshSearchMatches()
+}
+
+func (g *GraphModel) BackspaceSearch() {
+	if !g.searchInput || g.searchQuery == "" {
+		return
+	}
+	runes := []rune(g.searchQuery)
+	g.searchQuery = string(runes[:len(runes)-1])
+	g.refreshSearchMatches()
+}
+
+// CommitSearch selects the first ID/title match and keeps the query active for
+// n/N repeat navigation. A zero-result query remains visible.
+func (g *GraphModel) CommitSearch() bool {
+	if !g.searchInput {
+		return false
+	}
+	g.searchInput = false
+	g.searchStartID = ""
+	if len(g.searchMatches) == 0 {
+		return false
+	}
+	g.searchMatchIndex = 0
+	return g.SelectByID(g.searchMatches[0])
+}
+
+func (g *GraphModel) NextSearchMatch() bool {
+	if !g.HasSearchQuery() || len(g.searchMatches) == 0 {
+		return false
+	}
+	g.searchMatchIndex = (g.searchMatchIndex + 1) % len(g.searchMatches)
+	return g.SelectByID(g.searchMatches[g.searchMatchIndex])
+}
+
+func (g *GraphModel) PreviousSearchMatch() bool {
+	if !g.HasSearchQuery() || len(g.searchMatches) == 0 {
+		return false
+	}
+	if g.searchMatchIndex <= 0 {
+		g.searchMatchIndex = len(g.searchMatches) - 1
+	} else {
+		g.searchMatchIndex--
+	}
+	return g.SelectByID(g.searchMatches[g.searchMatchIndex])
+}
+
+// ClearSearch cancels input or clears an accepted query. Cancelling input
+// restores the selection from before slash was pressed.
+func (g *GraphModel) ClearSearch() {
+	if g.searchInput && g.searchStartID != "" {
+		g.SelectByID(g.searchStartID)
+	}
+	g.searchInput = false
+	g.searchQuery = ""
+	g.searchMatches = nil
+	g.searchMatchIndex = -1
+	g.searchStartID = ""
+}
+
+func (g *GraphModel) refreshSearchMatches() {
+	g.searchMatches = nil
+	g.searchMatchIndex = -1
+	query := strings.ToLower(strings.TrimSpace(g.searchQuery))
+	if query == "" {
+		return
+	}
+	selectedID := ""
+	if selected := g.SelectedIssue(); selected != nil {
+		selectedID = selected.ID
+	}
+	for _, id := range g.sortedIDs {
+		issue := g.issueMap[id]
+		if issue == nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(issue.ID), query) || strings.Contains(strings.ToLower(issue.Title), query) {
+			g.searchMatches = append(g.searchMatches, id)
+			if id == selectedID {
+				g.searchMatchIndex = len(g.searchMatches) - 1
+			}
+		}
+	}
+}
+
 func (g *GraphModel) TotalCount() int {
 	return len(g.sortedIDs)
 }
@@ -333,18 +458,23 @@ func (g *GraphModel) View(width, height int) string {
 	g.width = width
 	g.height = height
 	t := g.theme
+	searchStatus := g.renderSearchStatus(width, t)
+	if searchStatus != "" && height > 1 {
+		height--
+	}
 
 	if len(g.sortedIDs) == 0 || g.selectedIdx < 0 || g.selectedIdx >= len(g.sortedIDs) {
 		emptyMessage := "No issues to display"
 		if len(g.issues) > 0 {
 			emptyMessage = "No issues eligible for Graph View"
 		}
-		return t.Renderer.NewStyle().
+		body := t.Renderer.NewStyle().
 			Width(width).
 			Height(height).
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(t.Secondary).
 			Render(emptyMessage)
+		return joinGraphSearchStatus(searchStatus, body)
 	}
 
 	selectedID := g.sortedIDs[g.selectedIdx]
@@ -360,7 +490,7 @@ func (g *GraphModel) View(width, height int) string {
 	}
 	if width < 80 {
 		// Narrow: just show visual graph
-		return g.renderVisualGraph(selectedID, selectedIssue, width, height, t)
+		return joinGraphSearchStatus(searchStatus, g.renderVisualGraph(selectedID, selectedIssue, width, height, t))
 	}
 
 	detailWidth := width - listWidth - 3
@@ -380,7 +510,35 @@ func (g *GraphModel) View(width, height int) string {
 		Foreground(t.Secondary).
 		Render(strings.Repeat("│\n", sepHeight))
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, listView, separator, graphView)
+	return joinGraphSearchStatus(searchStatus, lipgloss.JoinHorizontal(lipgloss.Top, listView, separator, graphView))
+}
+
+func (g *GraphModel) renderSearchStatus(width int, t Theme) string {
+	if !g.searchInput && !g.HasSearchQuery() {
+		return ""
+	}
+	status := "Search: /" + g.searchQuery
+	if g.HasSearchQuery() {
+		if len(g.searchMatches) == 0 {
+			status += " (no matches)"
+		} else if !g.searchInput && g.searchMatchIndex >= 0 {
+			status += fmt.Sprintf(" (%d/%d)", g.searchMatchIndex+1, len(g.searchMatches))
+		} else {
+			status += fmt.Sprintf(" (%d matches)", len(g.searchMatches))
+		}
+	}
+	return t.Renderer.NewStyle().
+		Foreground(t.Primary).
+		Bold(g.searchInput).
+		Width(width).
+		Render(status)
+}
+
+func joinGraphSearchStatus(status, body string) string {
+	if status == "" {
+		return body
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, status, body)
 }
 
 // renderNodeList renders the left panel with all nodes
@@ -495,7 +653,7 @@ func (g *GraphModel) renderVisualGraph(id string, issue *model.Issue, width, hei
 		Foreground(t.Secondary).
 		Italic(true)
 	sections = append(sections, "")
-	sections = append(sections, navStyle.Render("j/k: navigate • enter: view details • g: back to list"))
+	sections = append(sections, navStyle.Render("j/k: navigate • /: search • n/N: matches • enter: details • esc: clear/back"))
 
 	return strings.Join(sections, "\n")
 }

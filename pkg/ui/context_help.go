@@ -125,8 +125,12 @@ const contextHelpGraph = `## Graph View
   j/k       Navigate nodes vertically
   h/l       Navigate siblings
   Enter     View selected issue
-  f         Focus on subgraph
-  Esc       Exit to list
+
+**Search**
+  /         Search bead ID or title
+  Enter     Select first match
+  n/N       Next/previous match
+  Esc       Cancel/clear, then exit
 
 **Understanding the Graph**
 • Arrows point TO what's blocked

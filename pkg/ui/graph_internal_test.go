@@ -107,3 +107,120 @@ func TestGraphModelOnlyTodosUsesEligibleEmptyState(t *testing.T) {
 		t.Fatalf("unexpected empty state: %q", view)
 	}
 }
+
+func TestGraphModelSearchIDTitleAndRepeat(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha-1", Title: "First worker", IssueType: model.TypeTask},
+		{ID: "beta-2", Title: "Alpha follow-up", IssueType: model.TypeTask},
+		{ID: "gamma-3", Title: "Unrelated", IssueType: model.TypeTask},
+	}
+	g := NewGraphModel(issues, nil, createTheme())
+	g.SelectByID("gamma-3")
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("ALPHA"))
+	if !g.CommitSearch() {
+		t.Fatal("CommitSearch() did not select the first ID/title match")
+	}
+	if selected := g.SelectedIssue(); selected == nil || selected.ID != "alpha-1" {
+		t.Fatalf("first match = %#v, want alpha-1", selected)
+	}
+	if !g.NextSearchMatch() || g.SelectedIssue().ID != "beta-2" {
+		t.Fatalf("next match = %#v, want beta-2", g.SelectedIssue())
+	}
+	if !g.NextSearchMatch() || g.SelectedIssue().ID != "alpha-1" {
+		t.Fatalf("wrapped next match = %#v, want alpha-1", g.SelectedIssue())
+	}
+	if !g.PreviousSearchMatch() || g.SelectedIssue().ID != "beta-2" {
+		t.Fatalf("previous match = %#v, want beta-2", g.SelectedIssue())
+	}
+}
+
+func TestGraphModelSearchZeroResultsAndClearing(t *testing.T) {
+	g := NewGraphModel([]model.Issue{{ID: "alpha-1", Title: "First worker", IssueType: model.TypeTask}}, nil, createTheme())
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("missing"))
+	if g.CommitSearch() {
+		t.Fatal("zero-result search unexpectedly selected a node")
+	}
+	view := g.View(100, 30)
+	if !strings.Contains(view, "Search: /missing") || !strings.Contains(view, "no matches") {
+		t.Fatalf("zero-result query feedback missing from Graph view: %q", view)
+	}
+
+	g.ClearSearch()
+	if g.HasSearchQuery() || g.IsSearchInputActive() {
+		t.Fatalf("search was not cleared: query=%q input=%v", g.SearchQuery(), g.IsSearchInputActive())
+	}
+	if view := g.View(100, 30); strings.Contains(view, "Search: /") {
+		t.Fatalf("cleared query remains visible: %q", view)
+	}
+}
+
+func TestGraphModelSearchCancellationRestoresSelection(t *testing.T) {
+	g := NewGraphModel([]model.Issue{
+		{ID: "alpha-1", Title: "First", IssueType: model.TypeTask},
+		{ID: "beta-2", Title: "Second", IssueType: model.TypeTask},
+	}, nil, createTheme())
+	g.SelectByID("beta-2")
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("alpha"))
+	g.ClearSearch()
+
+	if selected := g.SelectedIssue(); selected == nil || selected.ID != "beta-2" {
+		t.Fatalf("selection after cancelled input = %#v, want beta-2", selected)
+	}
+}
+
+func TestGraphModelSearchRespectsProjectedScopeAndTopology(t *testing.T) {
+	visible := []model.Issue{
+		{ID: "scope-a", Title: "Visible alpha", IssueType: model.TypeTask},
+		{ID: "scope-b", Title: "Visible beta", IssueType: model.TypeTask, Dependencies: []*model.Dependency{{DependsOnID: "scope-a", Type: model.DepBlocks}}},
+	}
+	hidden := model.Issue{ID: "other-alpha", Title: "Hidden alpha", IssueType: model.TypeTask}
+	todo := model.Issue{ID: "todo-alpha", Title: "Captured alpha", IssueType: "todo"}
+	canonical := map[string]*model.Issue{
+		visible[0].ID: &visible[0],
+		visible[1].ID: &visible[1],
+		hidden.ID:     &hidden,
+		todo.ID:       &todo,
+	}
+
+	g := NewGraphModel(nil, nil, createTheme())
+	g.SetProjectedIssues(visible, canonical, nil)
+	wantIDs := append([]string(nil), g.sortedIDs...)
+	wantBlockers := cloneStringSlices(g.blockers)
+	wantDependents := cloneStringSlices(g.dependents)
+
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("other-alpha"))
+	if g.CommitSearch() {
+		t.Fatal("search selected a node outside the projected repository scope")
+	}
+	g.ClearSearch()
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("todo-alpha"))
+	if g.CommitSearch() {
+		t.Fatal("search selected a hidden todo node")
+	}
+	g.ClearSearch()
+	g.StartSearch()
+	g.AppendSearchRunes([]rune("visible beta"))
+	if !g.CommitSearch() || g.SelectedIssue().ID != "scope-b" {
+		t.Fatalf("visible scoped match = %#v, want scope-b", g.SelectedIssue())
+	}
+
+	if !reflect.DeepEqual(g.sortedIDs, wantIDs) || !reflect.DeepEqual(g.blockers, wantBlockers) || !reflect.DeepEqual(g.dependents, wantDependents) {
+		t.Fatal("Graph search changed presentation nodes or topology")
+	}
+}
+
+func cloneStringSlices(source map[string][]string) map[string][]string {
+	clone := make(map[string][]string, len(source))
+	for key, values := range source {
+		clone[key] = append([]string(nil), values...)
+	}
+	return clone
+}
