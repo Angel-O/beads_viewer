@@ -7463,19 +7463,8 @@ func (m *Model) toggleStatusFilter(filter string) {
 	} else {
 		m.applyFilter()
 	}
+	m.statusMsg = ""
 	m.statusIsError = false
-	if active := m.activeStatusFilter(); active == "" {
-		m.statusMsg = "Filter: All statuses"
-	} else {
-		m.statusMsg = "Filter: " + strings.ToUpper(active[:1]) + active[1:] + " issues"
-	}
-}
-
-func (m *Model) activeStatusFilter() string {
-	if m.currentFilter == "open" || m.currentFilter == "closed" || m.currentFilter == "ready" {
-		return m.currentFilter
-	}
-	return m.statusFilter
 }
 
 func (m *Model) matchesIssueType(issue model.Issue) bool {

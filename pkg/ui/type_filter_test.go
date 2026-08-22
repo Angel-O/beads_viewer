@@ -126,6 +126,60 @@ func TestStatusKeysToggleAndPreserveComposedListFilters(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-closed")
 }
 
+func TestStatusKeysRenderNormalFooterImmediately(t *testing.T) {
+	footerLine := func(view string) string {
+		view = strings.TrimRight(view, "\n")
+		if index := strings.LastIndex(view, "\n"); index >= 0 {
+			return view[index+1:]
+		}
+		return view
+	}
+
+	for _, testCase := range []struct {
+		name  string
+		key   string
+		badge string
+	}{
+		{name: "closed", key: "c", badge: "CLOSED"},
+		{name: "open", key: "o", badge: "OPEN"},
+		{name: "ready", key: "r", badge: "READY"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			m := NewModel(typeFilterIssues(), nil, "")
+			m.width, m.height = 200, 40
+			m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+			m.SetRepositoryScope(map[string]bool{"api": true})
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
+			m = updated.(Model)
+			view := ansi.Strip(m.View())
+			footer := footerLine(view)
+			if !strings.Contains(footer, "📦 api") || !strings.Contains(footer, testCase.badge) {
+				t.Fatalf("immediate %s view missing persistent badges:\n%s", testCase.key, view)
+			}
+			if !strings.Contains(footer, "⏎ details") || !strings.Contains(footer, "Ctrl+R refresh") {
+				t.Fatalf("immediate %s view missing normal shortcut hints:\n%s", testCase.key, view)
+			}
+			if strings.Contains(footer, "Filter: ") {
+				t.Fatalf("immediate %s view retained transient status message:\n%s", testCase.key, view)
+			}
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
+			m = updated.(Model)
+			view = ansi.Strip(m.View())
+			footer = footerLine(view)
+			for _, badge := range []string{"CLOSED", "OPEN", "READY"} {
+				if strings.Contains(footer, badge) {
+					t.Fatalf("cleared %s view retained status badge %q:\n%s", testCase.key, badge, view)
+				}
+			}
+			if !strings.Contains(footer, "⏎ details") || !strings.Contains(footer, "Ctrl+R refresh") {
+				t.Fatalf("cleared %s view missing normal shortcut hints:\n%s", testCase.key, view)
+			}
+		})
+	}
+}
+
 func TestStatusTogglePreservesRecipeAndBoardContract(t *testing.T) {
 	m := NewModel(typeFilterIssues(), nil, "")
 	r := &recipe.Recipe{Name: "urgent", Filters: recipe.FilterConfig{Tags: []string{"urgent"}}}
