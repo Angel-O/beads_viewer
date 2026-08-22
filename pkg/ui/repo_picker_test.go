@@ -165,6 +165,12 @@ func TestRepoPickerContextlessChoiceTogglesIndependently(t *testing.T) {
 	if !m.currentChoiceIsContextless() {
 		t.Fatal("catalog refresh moved contextless cursor")
 	}
+	m.ClearSearch()
+	m.BeginSearch()
+	m.UpdateSearch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("no-context")})
+	if m.FilteredCount() != 1 || !m.currentChoiceIsContextless() {
+		t.Fatalf("no-context search results: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
+	}
 }
 
 func TestRepoPickerAllItemsAppliesAndReopensWithEveryCheckboxChecked(t *testing.T) {

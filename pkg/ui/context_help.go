@@ -20,6 +20,7 @@ var ContextHelpContent = map[Context]string{
 	ContextFilter:         contextHelpFilter,
 	ContextLabelPicker:    contextHelpLabelPicker,
 	ContextRepoPicker:     contextHelpRepoPicker,
+	ContextTypePicker:     contextHelpTypePicker,
 	ContextRecipePicker:   contextHelpRecipePicker,
 	ContextHelp:           contextHelpHelp,
 	ContextTimeTravel:     contextHelpTimeTravel,
@@ -103,6 +104,7 @@ const contextHelpList = `## List View
   o         Open issues only
   c         Closed issues only
   r         Ready (no blockers)
+  I         Exact issue-type picker
   /         Fuzzy search
   Ctrl+S    Semantic search (AI)
   H         Hybrid ranking
@@ -268,7 +270,10 @@ const contextHelpFilter = `## Filter Mode
   Esc       Clear search
 
 **Label Filters**
-  l         Open label picker`
+  l         Open label picker
+
+**Issue Types**
+  I         Exact multi-select picker`
 
 const contextHelpLabelPicker = `## Label Picker
 
@@ -301,6 +306,21 @@ const contextHelpRepoPicker = `## Repository Scope
   /         Search name, path, or exact ID
 
 While searching, Esc clears search first.`
+
+const contextHelpTypePicker = `## Issue Type Filter
+
+**Navigation**
+  j/k       Move selection
+  Space     Toggle exact issue type
+  Enter     Apply selection
+  Esc       Cancel
+
+**Actions**
+  a         Select all types
+  n         Reset type filter
+
+Composes with status, labels, repositories, recipes,
+and text search.`
 
 const contextHelpRecipePicker = `## Recipe Picker
 

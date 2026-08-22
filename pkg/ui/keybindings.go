@@ -313,6 +313,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"c", "Closed issues only", "Filters", "list"},
 		{"r", "Ready (unblocked)", "Filters", "list"},
 		{"l", "Label picker", "Filters", "list"},
+		{"I", "Exact issue-type picker", "Filters", "list"},
 		{"w", "Repository scope picker", "Filters", "list"},
 		{"/", "Search/filter", "Filters", "list"},
 

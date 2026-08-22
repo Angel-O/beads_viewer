@@ -254,7 +254,7 @@ func (m RepoPickerModel) currentRepositoryID() string {
 
 func (m *RepoPickerModel) filterCatalog(preferredID string) {
 	query := strings.TrimSpace(m.searchInput.Value())
-	m.contextlessMatch = m.showContextless && (query == "" || fuzzyScore("contextless no repository", query) > 0)
+	m.contextlessMatch = m.showContextless && (query == "" || fuzzyScore("no-context contextless no repository", query) > 0)
 	if query == "" {
 		m.filtered = append(model.RepositoryCatalog(nil), m.catalog...)
 	} else {
@@ -443,11 +443,11 @@ func (m *RepoPickerModel) View() string {
 				if m.contextlessSelected {
 					check = "[x]"
 				}
-				line := prefix + check + " Contextless"
+				line := prefix + check + " no-context"
 				lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
 				if showDetails {
 					detailStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
-					lines = append(lines, detailStyle.Render("      No ctx: labels"))
+					lines = append(lines, detailStyle.Render("      No repository context"))
 				}
 				continue
 			}
