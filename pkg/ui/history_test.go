@@ -1173,6 +1173,29 @@ func TestHistoryModel_EmptyStateHintsMatchSearchState(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_EmptyStateBoundsNarrowWrappedContent(t *testing.T) {
+	report := createTestHistoryReport()
+	report.Histories = map[string]correlation.BeadHistory{}
+	report.Warnings = []correlation.HistoryWarning{{
+		Code:    correlation.HistoryWarningExternalRepositoryUnavailable,
+		Context: "ctx:very-long-repository-name",
+		Reason:  "a very long warning reason that must not overflow",
+		Message: "a very long warning message that must not overflow",
+	}}
+	h := NewHistoryModel(report, testTheme())
+
+	for _, height := range []int{1, 3, 6, 7} {
+		h.SetSize(12, height)
+		view := h.renderEmpty(strings.Repeat("message ", 20) + "\n\n" + strings.Repeat("warning ", 20))
+		if got := lipgloss.Width(view); got > 12 {
+			t.Fatalf("height %d rendered width = %d:\n%s", height, got, view)
+		}
+		if got := lipgloss.Height(view); got > height {
+			t.Fatalf("height %d rendered height = %d:\n%s", height, got, view)
+		}
+	}
+}
+
 func TestHistoryModel_HeaderHintsAndWidthStayStableAcrossSearch(t *testing.T) {
 	for _, width := range []int{80, 120, 160} {
 		h := NewHistoryModel(createTestHistoryReport(), testTheme())

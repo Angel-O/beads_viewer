@@ -230,3 +230,16 @@ func TestTypePickerFooterFitsAtMinimumFullModalSize(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyTypePickerFitsAtMinimumFullModalSize(t *testing.T) {
+	picker := NewTypePickerModel(nil, nil, DefaultTheme(lipgloss.NewRenderer(nil)))
+	picker.SetSize(14, 12)
+
+	view := picker.View()
+	if got := lipgloss.Width(view); got > 14 {
+		t.Fatalf("empty picker rendered width = %d:\n%s", got, view)
+	}
+	if got := lipgloss.Height(view); got > 12 {
+		t.Fatalf("empty picker rendered height = %d:\n%s", got, view)
+	}
+}

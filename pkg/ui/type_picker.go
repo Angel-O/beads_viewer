@@ -176,13 +176,8 @@ func (m *TypePickerModel) View() string {
 
 	contentRows := max(m.height-4, 1)
 	hintLines := wrapControlHints(controlHints, contentWidth)
-	maxHintRows := contentRows - 2
-	if maxHintRows < 1 {
-		maxHintRows = 1
-	}
-	if len(m.types) > 0 {
-		maxHintRows = max(1, contentRows-3)
-	}
+	// Both the list and empty states reserve title, spacer, and content rows.
+	maxHintRows := max(1, contentRows-3)
 	if len(hintLines) > maxHintRows {
 		if maxHintRows == 1 {
 			hintLines = []string{truncateRunesHelper("…", contentWidth, "…")}
