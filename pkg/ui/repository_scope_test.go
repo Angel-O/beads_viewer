@@ -548,7 +548,7 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 	}
 
 	presentation := repositoryPresentationForIssue(issue, catalog, true, nil)
-	if presentation.ID != "ctx:zeta" || presentation.Name != "teams/zeta/service" || presentation.Extra != 1 {
+	if presentation.ID != "ctx:alpha" || presentation.Name != "teams/alpha/service" || presentation.Extra != 1 {
 		t.Fatalf("presentation = %+v", presentation)
 	}
 	if got := strings.Join(presentation.Names, ","); got != "teams/alpha/service,teams/zeta/service" {
@@ -579,24 +579,24 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 	}
 }
 
-func TestHubListBadgePrefersSelectedRepositoryByDescendingDisplayName(t *testing.T) {
+func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testing.T) {
 	issue := model.Issue{
 		ID: "shared", Title: "Multi-context item", Status: model.StatusOpen,
-		Labels: []string{"ctx:beads-viewer", "ctx:dotfiles"},
+		Labels: []string{"ctx:repo-a", "ctx:repo-b"},
 	}
 	catalog := model.RepositoryCatalog{
-		{ID: "ctx:beads-viewer", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:repo-a", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:repo-b", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
 	}
 	tests := []struct {
 		name     string
 		selected map[string]bool
 		want     string
 	}{
-		{name: "dotfiles only", selected: map[string]bool{"ctx:dotfiles": true}, want: "dotfiles"},
-		{name: "both selected", selected: map[string]bool{"ctx:beads-viewer": true, "ctx:dotfiles": true}, want: "dotfiles"},
-		{name: "beads viewer only", selected: map[string]bool{"ctx:beads-viewer": true}, want: "beads_viewer"},
-		{name: "all items fallback", want: "dotfiles"},
+		{name: "dotfiles only", selected: map[string]bool{"ctx:repo-b": true}, want: "dotfiles"},
+		{name: "beads viewer only", selected: map[string]bool{"ctx:repo-a": true}, want: "beads_viewer"},
+		{name: "both selected", selected: map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true}, want: "beads_viewer"},
+		{name: "all items fallback", want: "beads_viewer"},
 	}
 
 	for _, tt := range tests {
@@ -616,6 +616,21 @@ func TestHubListBadgePrefersSelectedRepositoryByDescendingDisplayName(t *testing
 			}
 		})
 	}
+
+	t.Run("display name tie uses ID", func(t *testing.T) {
+		presentation := repositoryPresentationForIssue(
+			model.Issue{Labels: []string{"ctx:repo-b", "ctx:repo-a"}},
+			model.RepositoryCatalog{
+				{ID: "ctx:repo-b", Name: "same", Kind: model.RepositoryIdentityHubContext},
+				{ID: "ctx:repo-a", Name: "same", Kind: model.RepositoryIdentityHubContext},
+			},
+			true,
+			map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true},
+		)
+		if presentation.ID != "ctx:repo-a" || presentation.Extra != 1 {
+			t.Fatalf("presentation = %+v, want ctx:repo-a with +1", presentation)
+		}
+	})
 }
 
 func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {

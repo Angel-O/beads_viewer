@@ -60,12 +60,22 @@ func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryC
 		}
 		return presentation
 	}
-	primary := matches[0]
-	for _, repository := range matches {
-		if len(preferredRepositories) > 0 && !preferredRepositories[repository.ID] {
-			continue
+	candidates := matches
+	if len(preferredRepositories) > 0 {
+		preferred := make([]model.RepositoryCatalogEntry, 0, len(matches))
+		for _, repository := range matches {
+			if preferredRepositories[repository.ID] {
+				preferred = append(preferred, repository)
+			}
 		}
-		if len(preferredRepositories) > 0 && !preferredRepositories[primary.ID] || repository.Name > primary.Name || repository.Name == primary.Name && repository.ID > primary.ID {
+		if len(preferred) > 0 {
+			candidates = preferred
+		}
+	}
+
+	primary := candidates[0]
+	for _, repository := range candidates[1:] {
+		if repository.Name < primary.Name || repository.Name == primary.Name && repository.ID < primary.ID {
 			primary = repository
 		}
 	}
