@@ -477,8 +477,9 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 ### Conventions
 
 - **Single source of truth:** Beads for task status/priority/dependencies; Agent Mail for conversation and audit
-- **Shared identifiers:** Use Beads issue ID (e.g., `br-123`) as Mail `thread_id` and prefix subjects with `[br-123]`
-- **Reservations:** When starting a task, call `file_reservation_paths()` with the issue ID in `reason`
+- **Visibility boundary:** Repository-local identifiers may be shared in coordination metadata only when repository policy permits it. Private Hub IDs and `ctx:` identities stay in private Hub operations and private conversation; never put them in Agent Mail archives or Git-visible metadata.
+- **Git metadata:** Keep private Hub IDs and contexts out of branch and tag names, commit messages, source, tests, docs, fixtures, release notes, and pull-request titles, bodies, comments, labels, or other metadata. Use an ID-free description of the work instead.
+- **Reservations:** For private Hub work, use an ID-free purpose in reservation reasons. Use an issue ID only for repository-local work that is explicitly safe to expose.
 
 ### Typical Agent Flow
 
@@ -509,14 +510,18 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
    ```
    Final Mail reply: `[br-123] Completed` with summary
 
-### Mapping Cheat Sheet
+### Repository-Local Mapping Cheat Sheet
+
+Use this mapping only for repository-local identifiers that are approved for
+Git-visible coordination. It never applies to private Hub identifiers or
+contexts.
 
 | Concept | Value |
 |---------|-------|
 | Mail `thread_id` | `br-###` |
 | Mail subject | `[br-###] ...` |
 | File reservation `reason` | `br-###` |
-| Commit messages | Include `br-###` for traceability |
+| Commit messages | Follow repository policy; never include private Hub identifiers |
 
 ---
 
