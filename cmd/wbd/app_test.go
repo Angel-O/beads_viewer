@@ -105,11 +105,16 @@ func fakeCommandKey(arguments []string) string {
 		switch arguments[0] {
 		case "--db":
 			arguments = arguments[2:]
+		case "--readonly":
+			arguments = arguments[1:]
 		case "--json":
 			arguments = arguments[1:]
 		default:
 			if arguments[0] == "show" && len(arguments) > 1 {
 				return "show:" + arguments[1]
+			}
+			if arguments[0] == "config" && len(arguments) > 1 {
+				return "config:" + arguments[1]
 			}
 			if arguments[0] == "create" && len(arguments) > 1 && arguments[1] == "--graph" {
 				return "create:graph"
@@ -178,13 +183,17 @@ func TestCreateTargetingAndAdmission(t *testing.T) {
 	t.Run("contextless todo", func(t *testing.T) {
 		test := newAppTest(t, true)
 		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
+		setResponses(t, map[string]string{"config:get": `{"key":"types.custom","value":"todo"}`})
 		code, _, stderr := test.run("create", "Inbox", "--type", "todo", "--contextless")
 		if code != 0 {
 			t.Fatalf("run code = %d, stderr = %q", code, stderr)
 		}
 		want := []string{"--db", test.store, "create", "Inbox", "--type", "todo"}
-		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		if calls := test.calls(); len(calls) != 2 || fakeCommandKey(calls[0].Args) != "config:get" || !reflect.DeepEqual(calls[1].Args, want) {
 			t.Fatalf("calls = %#v, want %#v", calls, want)
+		}
+		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+			t.Fatalf("successful todo creation did not signal Viewer: %v", err)
 		}
 	})
 
@@ -693,6 +702,157 @@ func TestBootstrapUsesDefaultPrefixAndExactSequence(t *testing.T) {
 	}
 	if _, err := os.Stat(test.config); err != nil {
 		t.Fatalf("bootstrap config: %v", err)
+	}
+}
+
+func TestBootstrapExistingStoreMergesCustomTypesWithoutReinitializing(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", value: "", want: "todo"},
+		{name: "one", value: "review", want: "review,todo"},
+		{name: "multiple with whitespace", value: "review, docs", want: "review,docs,todo"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, false)
+			setResponses(t, map[string]string{"config:get": fmt.Sprintf(`{"key":"types.custom","value":%q}`, testCase.value)})
+			code, stdout, stderr := test.run("bootstrap")
+			if code != 0 || stdout != "Hub store ready: todo issue type enabled.\n" {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+			calls := test.calls()
+			want := [][]string{
+				{"--db", test.store, "--readonly", "--json", "config", "get", "types.custom"},
+				{"--db", test.store, "--json", "config", "set", "types.custom", testCase.want},
+			}
+			if len(calls) != len(want) {
+				t.Fatalf("calls = %#v", calls)
+			}
+			for index := range want {
+				if !reflect.DeepEqual(calls[index].Args, want[index]) {
+					t.Fatalf("call %d = %#v, want %#v", index, calls[index].Args, want[index])
+				}
+			}
+			if _, err := os.Stat(test.config); err != nil {
+				t.Fatalf("existing-store bootstrap did not ensure Hub config: %v", err)
+			}
+			assertNoViewerSignal(t, test)
+		})
+	}
+}
+
+func TestBootstrapExistingStoreIsIdempotent(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"config:get": `{"key":"types.custom","value":"todo"}`})
+	for attempt := 0; attempt < 2; attempt++ {
+		code, stdout, stderr := test.run("bootstrap")
+		if code != 0 || stdout != "Hub store ready: todo issue type already enabled.\n" {
+			t.Fatalf("attempt %d: code = %d, stdout = %q, stderr = %q", attempt, code, stdout, stderr)
+		}
+	}
+	for _, call := range test.calls() {
+		if fakeCommandKey(call.Args) != "config:get" {
+			t.Fatalf("idempotent bootstrap wrote configuration: %#v", call)
+		}
+	}
+	if _, err := os.Stat(test.config); err != nil {
+		t.Fatalf("idempotent bootstrap did not ensure Hub config: %v", err)
+	}
+}
+
+func TestBootstrapExistingStoreFailuresNeverCleanStore(t *testing.T) {
+	tests := []struct {
+		name            string
+		responses       map[string]string
+		exitCodes       map[string]int
+		malformedConfig bool
+		message         string
+		calls           int
+	}{
+		{name: "query failure", exitCodes: map[string]int{"config:get": 7}, message: "reading existing custom issue types", calls: 1},
+		{name: "malformed query", responses: map[string]string{"config:get": `{`}, message: "decoding custom issue types", calls: 1},
+		{name: "config failure", responses: map[string]string{"config:get": `{"key":"types.custom","value":"review"}`}, malformedConfig: true, message: "loading hub config", calls: 1},
+		{name: "set failure", responses: map[string]string{"config:get": `{"key":"types.custom","value":"review"}`}, exitCodes: map[string]int{"config:set": 8}, message: "enabling todo issue type", calls: 2},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, false)
+			marker := filepath.Join(test.store, "preserve-me")
+			if err := os.WriteFile(marker, []byte("unchanged"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.malformedConfig {
+				if err := os.MkdirAll(filepath.Dir(test.config), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(test.config, []byte("not: [valid"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setResponses(t, testCase.responses)
+			setExitCodes(t, testCase.exitCodes)
+			code, _, stderr := test.run("bootstrap")
+			if code != 1 || !strings.Contains(stderr, testCase.message) {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if data, err := os.ReadFile(marker); err != nil || string(data) != "unchanged" {
+				t.Fatalf("existing store was cleaned: data=%q err=%v", data, err)
+			}
+			calls := test.calls()
+			if len(calls) != testCase.calls {
+				t.Fatalf("calls = %#v", calls)
+			}
+			for _, call := range calls {
+				if fakeCommandKey(call.Args) == "init" {
+					t.Fatalf("existing store was reinitialized: %#v", calls)
+				}
+			}
+			assertNoViewerSignal(t, test)
+		})
+	}
+}
+
+func TestTodoCreateRequiresCapabilityBeforeTargetResolution(t *testing.T) {
+	tests := []struct {
+		name       string
+		arguments  []string
+		json       bool
+		unreadable bool
+	}{
+		{name: "omitted target", arguments: []string{"create", "Capture", "--type", "todo"}},
+		{name: "contextless human", arguments: []string{"create", "Capture", "--type", "todo", "--contextless"}, json: false},
+		{name: "explicit JSON", arguments: []string{"--json", "create", "Capture", "--type", "todo", "--context", "unavailable-target"}, json: true},
+		{name: "unreadable capability", arguments: []string{"create", "Capture", "--type", "todo"}, unreadable: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			setResponses(t, map[string]string{"config:get": `{"key":"types.custom","value":""}`})
+			if testCase.unreadable {
+				setExitCodes(t, map[string]int{"config:get": 7})
+			}
+			code, _, stderr := test.run(testCase.arguments...)
+			if code != 1 || !strings.Contains(stderr, "run 'wbd bootstrap' to enable it") {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if testCase.json && (!strings.Contains(stderr, `"code":"invalid_request"`) || !json.Valid([]byte(stderr))) {
+				t.Fatalf("JSON error = %q", stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 1 || fakeCommandKey(calls[0].Args) != "config:get" {
+				t.Fatalf("todo rejection reached registration or mutation: %#v", calls)
+			}
+			if !slices.Contains(calls[0].Args, "--readonly") {
+				t.Fatalf("todo capability query was not read-only: %#v", calls[0].Args)
+			}
+			if _, err := os.Stat(test.config); !os.IsNotExist(err) {
+				t.Fatalf("todo rejection registered current context: %v", err)
+			}
+			assertNoViewerSignal(t, test)
+		})
 	}
 }
 

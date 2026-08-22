@@ -27,6 +27,8 @@ var isolatedVariables = map[string]bool{
 	"BEADS_DOLT_SHARED_SERVER": true, "BEADS_DIR": true,
 }
 
+const customIssueTypesKey = "types.custom"
+
 type app struct {
 	paths       hub.Paths
 	dir         string
@@ -287,6 +289,11 @@ func validateReactivation(issue bdIssue) error {
 
 func (a *app) create(request request) int {
 	kind := requestValue(request.args, "--type", "task")
+	if kind == "todo" {
+		if err := a.requireTodoCapability(); err != nil {
+			return a.fail(err)
+		}
+	}
 	if kind == "decision" && (request.contextless || len(request.contexts) > 0) {
 		return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidKind, Field: "type", Value: kind, Message: "decision supports default-current creation only"})
 	}
@@ -698,11 +705,18 @@ func (a *app) bootstrap(prefix string) int {
 	if err := need("bd"); err != nil {
 		return a.fail(err)
 	}
+	storeInfo, storeErr := os.Stat(a.paths.Store)
+	if storeErr == nil {
+		if !storeInfo.IsDir() {
+			return a.fail(fmt.Errorf("store path is not a directory: %s", a.paths.Store))
+		}
+		return a.bootstrapExistingStore()
+	}
+	if !errors.Is(storeErr, os.ErrNotExist) {
+		return a.fail(fmt.Errorf("inspecting store: %w", storeErr))
+	}
 	if err := need("git"); err != nil {
 		return a.fail(err)
-	}
-	if _, err := os.Stat(a.paths.Store); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return a.fail(fmt.Errorf("store already exists: %s", a.paths.Store))
 	}
 	home := os.Getenv("HOME")
 	info, err := os.Stat(home)
@@ -744,6 +758,72 @@ func (a *app) bootstrap(prefix string) int {
 		return a.fail(err)
 	}
 	return 0
+}
+
+func (a *app) bootstrapExistingStore() int {
+	types, err := a.customIssueTypes()
+	if err != nil {
+		return a.fail(fmt.Errorf("reading existing custom issue types: %w", err))
+	}
+	if _, err := hub.EnsureConfig(a.paths); err != nil {
+		return a.fail(err)
+	}
+	changed := !containsString(types, "todo")
+	if changed {
+		types = append(types, "todo")
+		if _, err := a.runBDCapture(a.dir, "--json", "config", "set", customIssueTypesKey, strings.Join(types, ",")); err != nil {
+			return a.fail(fmt.Errorf("enabling todo issue type: %w", err))
+		}
+	}
+	if changed {
+		fmt.Fprintln(a.stdout, "Hub store ready: todo issue type enabled.")
+	} else {
+		fmt.Fprintln(a.stdout, "Hub store ready: todo issue type already enabled.")
+	}
+	return 0
+}
+
+func (a *app) requireTodoCapability() error {
+	types, err := a.customIssueTypes()
+	if err != nil {
+		return fmt.Errorf("todo issue type capability could not be verified: %w; run 'wbd bootstrap' to enable it", err)
+	}
+	if !containsString(types, "todo") {
+		return errors.New("todo issue type is unavailable in the Hub store; run 'wbd bootstrap' to enable it")
+	}
+	return nil
+}
+
+func (a *app) customIssueTypes() ([]string, error) {
+	data, err := a.runBDCapture(a.dir, "--readonly", "--json", "config", "get", customIssueTypesKey)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Value *string `json:"value"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decoding custom issue types: %w", err)
+	}
+	if result.Value == nil {
+		return nil, nil
+	}
+	var types []string
+	for _, issueType := range strings.Split(*result.Value, ",") {
+		if issueType = strings.TrimSpace(issueType); issueType != "" {
+			types = append(types, issueType)
+		}
+	}
+	return types, nil
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *app) runBD(directory string, arguments ...string) int {
