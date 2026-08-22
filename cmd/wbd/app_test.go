@@ -735,6 +735,23 @@ func TestLinkRejectsTodoBeforeCorrelation(t *testing.T) {
 	}
 }
 
+func TestLinkSignalsCommittedAdditionWhenBVDurabilityCheckFails(t *testing.T) {
+	test := newAppTest(t, true)
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	response := fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":"0123456789abcdef0123456789abcdef01234567"},"added":true,"durability_error":"synthetic post-rename durability failure"}`+"\n", context)
+	setResponses(t, map[string]string{"correlate": response})
+	setExitCodes(t, map[string]int{"correlate": 7})
+
+	code, stdout, _ := test.run("link", "item-alpha", "HEAD")
+	if code != 7 || stdout != response {
+		t.Fatalf("code=%d stdout=%q", code, stdout)
+	}
+	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+		t.Fatalf("committed addition did not signal Viewer after durability error: %v", err)
+	}
+}
+
 func TestUnlinkDelegatesExactTupleAndSignalsOnlyOnRemoval(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	for _, testCase := range []struct {
@@ -801,6 +818,24 @@ func TestUnlinkSignalsConfirmedRemovalWhenOutputFails(t *testing.T) {
 				t.Fatalf("not-found result signaled after output failure: %v", signalErr)
 			}
 		})
+	}
+}
+
+func TestUnlinkSignalsCommittedRemovalWhenBVDurabilityCheckFails(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	test := newAppTest(t, true)
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	response := fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":%q},"removed":true,"durability_error":"synthetic post-rename durability failure"}`+"\n", context, sha)
+	setResponses(t, map[string]string{"correlate": response})
+	setExitCodes(t, map[string]int{"correlate": 7})
+
+	code, stdout, _ := test.run("unlink", "item-alpha", sha)
+	if code != 7 || stdout != response {
+		t.Fatalf("code=%d stdout=%q", code, stdout)
+	}
+	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+		t.Fatalf("committed removal did not signal Viewer after durability error: %v", err)
 	}
 }
 

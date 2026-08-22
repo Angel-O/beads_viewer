@@ -1730,15 +1730,22 @@ func main() {
 				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
 			}
 			record, added, err := correlation.AddExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
-			if err != nil {
+			if err != nil && !added {
 				return fmt.Errorf("adding correlation: %w", err)
 			}
 			output := struct {
 				Correlation correlation.ExternalHistoryCorrelation `json:"correlation"`
 				Added       bool                                   `json:"added"`
+				Durability  string                                 `json:"durability_error,omitempty"`
 			}{Correlation: record, Added: added}
+			if err != nil {
+				output.Durability = err.Error()
+			}
 			if err := newRobotEncoder(os.Stdout).Encode(output); err != nil {
 				return fmt.Errorf("encoding correlation result: %w", err)
+			}
+			if err != nil {
+				return fmt.Errorf("adding correlation after ledger replacement: %w", err)
 			}
 			return nil
 		}
@@ -1747,15 +1754,22 @@ func main() {
 				return fmt.Errorf("correlate remove requires --hub-config or ~/.config/bv/hub.yaml")
 			}
 			record, removed, err := correlation.RemoveExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
-			if err != nil {
+			if err != nil && !removed {
 				return fmt.Errorf("removing correlation: %w", err)
 			}
 			output := struct {
 				Correlation correlation.ExternalHistoryCorrelation `json:"correlation"`
 				Removed     bool                                   `json:"removed"`
+				Durability  string                                 `json:"durability_error,omitempty"`
 			}{Correlation: record, Removed: removed}
+			if err != nil {
+				output.Durability = err.Error()
+			}
 			if err := newRobotEncoder(os.Stdout).Encode(output); err != nil {
 				return fmt.Errorf("encoding correlation result: %w", err)
+			}
+			if err != nil {
+				return fmt.Errorf("removing correlation after ledger replacement: %w", err)
 			}
 			return nil
 		}

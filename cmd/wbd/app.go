@@ -270,9 +270,25 @@ func (a *app) run(arguments []string) int {
 		if len(request.positionals) == 2 {
 			commit = request.positionals[1]
 		}
-		code := a.runBV("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
-		if code == 0 {
+		output, code := a.runBVCapture("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
+		committed := code == 0
+		if code != 0 {
+			var result struct {
+				Correlation struct {
+					BeadID  string `json:"bead_id"`
+					Context string `json:"context"`
+				} `json:"correlation"`
+				Added bool `json:"added"`
+			}
+			if err := json.Unmarshal(output, &result); err == nil {
+				committed = result.Added && result.Correlation.BeadID == request.positionals[0] && result.Correlation.Context == registration.Context
+			}
+		}
+		if committed {
 			a.signalMutation("link")
+		}
+		if _, err := a.stdout.Write(output); err != nil {
+			return a.fail(fmt.Errorf("writing correlation addition result: %w", err))
 		}
 		return code
 	case "unlink":
@@ -291,9 +307,6 @@ func (a *app) run(arguments []string) int {
 			return a.fail(registerErr)
 		}
 		output, code := a.runBVCapture("correlate", "remove", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", request.positionals[1], "--hub-config", a.paths.Config)
-		if code != 0 {
-			return code
-		}
 		var result struct {
 			Correlation struct {
 				BeadID  string `json:"bead_id"`
@@ -303,9 +316,15 @@ func (a *app) run(arguments []string) int {
 			Removed bool `json:"removed"`
 		}
 		if err := json.Unmarshal(output, &result); err != nil {
+			if code != 0 {
+				return code
+			}
 			return a.fail(fmt.Errorf("decoding correlation removal result: %w", err))
 		}
 		if result.Correlation.BeadID != request.positionals[0] || result.Correlation.Context != registration.Context || !strings.EqualFold(result.Correlation.Commit, request.positionals[1]) {
+			if code != 0 {
+				return code
+			}
 			return a.fail(errors.New("correlation removal returned a different tuple than requested"))
 		}
 		if result.Removed {
@@ -314,7 +333,7 @@ func (a *app) run(arguments []string) int {
 		if _, err := a.stdout.Write(output); err != nil {
 			return a.fail(fmt.Errorf("writing correlation removal result: %w", err))
 		}
-		return 0
+		return code
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
@@ -997,10 +1016,6 @@ func (a *app) runBDAt(directory string, bootstrap bool, arguments ...string) int
 		arguments = append([]string{"--db", a.paths.Store}, arguments...)
 	}
 	return a.runChild(directory, "bd", arguments, false)
-}
-
-func (a *app) runBV(arguments ...string) int {
-	return a.runChild(a.dir, "bv", arguments, true)
 }
 
 func (a *app) runBVCapture(arguments ...string) ([]byte, int) {

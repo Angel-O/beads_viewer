@@ -404,12 +404,72 @@ func TestRemoveExternalCorrelationMalformedLedgerAndWriteFailurePreserveLedger(t
 		if err := os.WriteFile(ledgerPath, original, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		failingWriter := func(string, []correlationLedgerEntry) error { return errors.New("synthetic write failure") }
+		failingWriter := func(string, []correlationLedgerEntry) (bool, error) {
+			return false, errors.New("synthetic write failure")
+		}
 		if _, _, err := removeExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", "0123456789abcdef0123456789abcdef01234567", failingWriter); err == nil || !strings.Contains(err.Error(), "synthetic write failure") {
 			t.Fatalf("write failure error = %v", err)
 		}
 		if data, err := os.ReadFile(ledgerPath); err != nil || string(data) != string(original) {
 			t.Fatalf("failed write changed ledger: data=%q err=%v", data, err)
+		}
+	})
+}
+
+func TestCorrelationPostRenameFailureReportsCommittedMutation(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	postRenameFailure := func(path string, entries []correlationLedgerEntry) (bool, error) {
+		committed, err := writeCorrelationLedgerAtomic(path, entries)
+		if err != nil {
+			return committed, err
+		}
+		return true, errors.New("synthetic post-rename durability failure")
+	}
+
+	t.Run("remove", func(t *testing.T) {
+		configPath, ledgerPath := correlationRemovalFixture(t)
+		original := `{"bead_id":"item-alpha","context":"ctx:synthetic-a","commit":"` + sha + `"}` + "\n"
+		if err := os.WriteFile(ledgerPath, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		record, removed, err := removeExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", sha, postRenameFailure)
+		if !removed || err == nil || !strings.Contains(err.Error(), "post-rename durability failure") {
+			t.Fatalf("record=%#v removed=%v err=%v", record, removed, err)
+		}
+		if record.BeadID != "item-alpha" || record.Context != "ctx:synthetic-a" || record.Commit != sha {
+			t.Fatalf("committed removal returned wrong record: %#v", record)
+		}
+		if data, readErr := os.ReadFile(ledgerPath); readErr != nil || len(data) != 0 {
+			t.Fatalf("committed removal ledger=%q err=%v", data, readErr)
+		}
+	})
+
+	t.Run("add", func(t *testing.T) {
+		configPath, ledgerPath := correlationRemovalFixture(t)
+		repository := filepath.Join(filepath.Dir(configPath), "repository")
+		for _, arguments := range [][]string{
+			{"init", "--quiet"},
+			{"config", "user.name", "Synthetic Test"},
+			{"config", "user.email", "synthetic@example.invalid"},
+			{"commit", "--allow-empty", "--quiet", "-m", "synthetic correlation fixture"},
+		} {
+			if out, commandErr := exec.Command("git", append([]string{"-C", repository}, arguments...)...).CombinedOutput(); commandErr != nil {
+				t.Fatalf("git %v: %v\n%s", arguments, commandErr, out)
+			}
+		}
+
+		record, added, err := addExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", "HEAD", postRenameFailure)
+		if !added || err == nil || !strings.Contains(err.Error(), "post-rename durability failure") {
+			t.Fatalf("record=%#v added=%v err=%v", record, added, err)
+		}
+		data, readErr := os.ReadFile(ledgerPath)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		entries, loadErr := loadCorrelationLedger(ledgerPath)
+		if loadErr != nil || len(entries) != 1 || entries[0] != record {
+			t.Fatalf("committed add ledger=%q entries=%#v err=%v", data, entries, loadErr)
 		}
 	})
 }
@@ -439,9 +499,9 @@ func TestRemoveExternalCorrelationRejectsInvalidUnrelatedRecordsWithoutMutation(
 				t.Fatal(err)
 			}
 			writerCalled := false
-			writer := func(string, []correlationLedgerEntry) error {
+			writer := func(string, []correlationLedgerEntry) (bool, error) {
 				writerCalled = true
-				return nil
+				return true, nil
 			}
 			if _, _, err := removeExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", sha, writer); err == nil || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %v, want containing %q", err, testCase.want)

@@ -21,6 +21,10 @@ merge, push, or pull-request workflow.
   an ID-free conventional commit subject.
 - Do not print private values into validation logs or the final closeout report.
   Keep shell variables containing them local to the closeout process.
+- Run `skills/beads-hub-closeout/validate.sh` from the intended checkout before
+  closeout. It rejects private identity patterns in the active branch, any tags
+  at `HEAD`, and the `HEAD` commit subject and body without printing the matched
+  value. Its built-in pass/fail fixtures are synthetic only.
 - Never modify repository `.beads`, hooks, ignores, exports, Hub configuration,
   ledgers, or agent routing files directly. Use only `wbd` for the two Hub
   mutations authorized below.
