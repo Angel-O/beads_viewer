@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const supportedCommands = "supported commands: bootstrap, configure, register, context, create, new, list, show, update, dep, close, reopen, link"
+const supportedCommands = "supported commands: bootstrap, configure, register, context, create, new, replace, compatibility, list, show, update, dep, close, reopen, link"
 
 type request struct {
 	command     string
@@ -17,6 +17,9 @@ type request struct {
 	json        bool
 	allContexts bool
 	prefix      string
+	contexts    []string
+	contextless bool
+	fromTodo    string
 }
 
 func commandName(arguments []string) (string, error) {
@@ -68,6 +71,17 @@ func parse(arguments []string) (request, error) {
 		}
 	case "create", "new":
 		return parseCreate(result, arguments)
+	case "replace":
+		return parseReplace(result, arguments)
+	case "compatibility":
+		if result.json && len(arguments) == 0 {
+			return result, nil
+		}
+		if len(arguments) == 1 && arguments[0] == "--json" {
+			result.json = true
+			return result, nil
+		}
+		return result, errors.New("usage: wbd compatibility --json")
 	case "list":
 		return parseList(result, arguments)
 	case "show":
@@ -113,12 +127,33 @@ func parseCreate(result request, arguments []string) (request, error) {
 			}
 			continue
 		}
-		flag, value, consumed, matched, err := optionValue(argument, arguments, "--description", "--type", "--priority", "--labels")
+		if argument == "--contextless" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.contextless = true
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--description", "--type", "--priority", "--labels", "--context", "--from-todo")
 		if err != nil {
 			return result, err
 		}
 		if matched {
 			arguments = arguments[consumed:]
+			if flag == "--context" {
+				result.contexts = append(result.contexts, value)
+				continue
+			}
+			if flag == "--from-todo" {
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+				if err := safeID("from-todo", value); err != nil {
+					return result, err
+				}
+				result.fromTodo = value
+				continue
+			}
 			if err := validateCreateOption(flag, value, seen); err != nil {
 				return result, err
 			}
@@ -135,6 +170,69 @@ func parseCreate(result request, arguments []string) (request, error) {
 	}
 	if len(result.positionals) != 1 {
 		return result, fmt.Errorf("usage: wbd %s <title> [options]", result.command)
+	}
+	if result.contextless && len(result.contexts) > 0 {
+		return result, errors.New("--context and --contextless are mutually exclusive")
+	}
+	return result, nil
+}
+
+func parseReplace(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if argument == "--contextless" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.contextless = true
+			continue
+		}
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--context", "--title", "--description", "--type", "--priority")
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if flag == "--context" {
+				result.contexts = append(result.contexts, value)
+				continue
+			}
+			if err := markSeen(seen, flag); err != nil {
+				return result, err
+			}
+			switch flag {
+			case "--type":
+				err = validateType(value)
+			case "--priority":
+				err = validatePriority(value)
+			}
+			if err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for replace: %s", argument)
+		}
+		if err := safeID("replace", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 1 || len(result.contexts) == 0 && !result.contextless {
+		return result, errors.New("usage: wbd replace <original-id> (--context <ctx-id>...|--contextless) [options]")
+	}
+	if result.contextless && len(result.contexts) > 0 {
+		return result, errors.New("--context and --contextless are mutually exclusive")
 	}
 	return result, nil
 }
@@ -249,7 +347,7 @@ func parseUpdate(result request, arguments []string) (request, error) {
 			}
 			continue
 		}
-		flag, value, consumed, matched, err := optionValue(argument, arguments, "--title", "--description", "--type", "--priority", "--status", "--add-label")
+		flag, value, consumed, matched, err := optionValue(argument, arguments, "--title", "--description", "--priority", "--status", "--add-label")
 		if err != nil {
 			return result, err
 		}
@@ -261,8 +359,6 @@ func parseUpdate(result request, arguments []string) (request, error) {
 				}
 			}
 			switch flag {
-			case "--type":
-				err = validateType(value)
 			case "--priority":
 				err = validatePriority(value)
 			case "--status":
@@ -321,7 +417,7 @@ func parseDep(result request, arguments []string) (request, error) {
 			if err := markSeen(seen, flag); err != nil {
 				return result, err
 			}
-			if !oneOf(value, "blocks", "tracks", "related", "parent-child", "discovered-from", "until", "caused-by", "validates", "relates-to", "supersedes") {
+			if !oneOf(value, "blocks", "tracks", "related", "parent-child", "discovered-from", "until", "caused-by", "validates", "relates-to") {
 				return result, fmt.Errorf("invalid dependency type: %s", value)
 			}
 			result.args = append(result.args, flag, value)
@@ -444,7 +540,7 @@ func validatePriority(value string) error {
 }
 
 func validateType(value string) error {
-	if oneOf(value, "bug", "feature", "task", "epic", "chore", "decision") {
+	if oneOf(value, "bug", "feature", "task", "epic", "chore", "decision", "todo") {
 		return nil
 	}
 	return fmt.Errorf("invalid issue type: %s", value)

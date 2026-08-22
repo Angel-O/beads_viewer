@@ -61,12 +61,31 @@ From an origin-backed source checkout, `wbd context` prints its credential-free
 `ctx:` label. `wbd register` records the durable primary checkout that shares
 the current worktree's Git common directory, with the current non-bare worktree
 as a safe fallback. `wbd configure` reconciles an existing registration.
-Scoped `wbd create`, `wbd new`, and `wbd list` operations register the checkout
-as needed; `wbd link <bead-id> [commit]` adds a source correlation, defaulting
-to `HEAD`. `wbd show`, `update`, `dep`, `close`, and `reopen` operate against
-the same Hub store. Use the supported wrapper commands rather than passing
-arbitrary `bd` options; direct `wbd init` and alternate database/config paths
-are intentionally unavailable.
+Creation without a target registers the checkout as needed and uses its current
+context. Repeat `--context <context>` to supply a complete explicit target set,
+or use `--contextless` for a contextless `todo`; neither form registers or adds
+the current checkout. Todos accept zero or more contexts, epics one or more,
+and `task`, `bug`, `feature`, and `chore` exactly one. A `decision` retains only
+the default-current creation form. Context labels are immutable after creation,
+and issue type is not an update field.
+
+`wbd create <title> --from-todo <todo-id>` atomically creates ordinary project
+work and its native `discovered-from` continuity relation. Todo close and reopen
+remain manual. An epic may parent ordinary project work only when the child's
+context belongs to the epic. `wbd replace <original-id> --context <context>`
+creates a correctly targeted replacement, preserves open blocking continuity,
+stores native supersession, and then closes the original with a replacement
+reason. It reports the replacement ID if that final close fails. Decisions do
+not use this explicit-target replacement path.
+
+`wbd link <bead-id> [commit]` adds a source correlation, defaulting to `HEAD`,
+and signals Viewer after success; todos cannot own direct correlations.
+`wbd compatibility --json` reports supported
+legacy policy findings without repair and exits successfully when findings are
+present. `wbd show`, scalar `update`, `dep`, `close`, and allowed `reopen`
+operations use the same Hub store. Use the supported wrapper commands rather
+than passing arbitrary `bd` options; direct `wbd init` and alternate
+database/config paths are intentionally unavailable.
 
 Without a mode selector, `wbv` selects local mode only when the current Git
 worktree root has a real, non-symlink `.beads` directory containing a valid

@@ -27,6 +27,278 @@ const changeSignalName = "viewer-generation"
 
 const semanticCacheDirName = "semantic"
 
+// PolicyCode is a stable machine-readable Hub admission or lifecycle error.
+type PolicyCode string
+
+const (
+	PolicyInvalidKind         PolicyCode = "invalid_kind"
+	PolicyInvalidCardinality  PolicyCode = "invalid_cardinality"
+	PolicyUnregisteredContext PolicyCode = "unregistered_context"
+	PolicyReservedLabel       PolicyCode = "reserved_context_label"
+	PolicyInvalidTodoResult   PolicyCode = "invalid_todo_result"
+	PolicyTodoCorrelation     PolicyCode = "todo_correlation"
+	PolicyInvalidEpicChild    PolicyCode = "invalid_epic_child"
+	PolicyInvalidSupersession PolicyCode = "invalid_supersession"
+	PolicyProtectedLifecycle  PolicyCode = "protected_lifecycle_edge"
+)
+
+// PolicyError describes a rejected Hub state without depending on a writer.
+type PolicyError struct {
+	Code    PolicyCode `json:"code"`
+	Field   string     `json:"field,omitempty"`
+	Value   string     `json:"value,omitempty"`
+	Message string     `json:"message"`
+}
+
+func (e *PolicyError) Error() string { return e.Message }
+
+// KindClass is the Hub policy category for an issue type.
+type KindClass uint8
+
+const (
+	KindUnsupported KindClass = iota
+	KindProjectWork
+	KindTodo
+	KindEpic
+	KindDecision
+)
+
+// IssueState contains the authoritative issue facts used by Hub policy.
+type IssueState struct {
+	ID     string
+	Kind   string
+	Status string
+	Labels []string
+}
+
+// AdmittedIssue is a complete validated issue type and label set.
+type AdmittedIssue struct {
+	Kind     string
+	Contexts []string
+	Labels   []string
+}
+
+// ClassifyKind maps only the issue types accepted by the Hub writer.
+func ClassifyKind(kind string) (KindClass, error) {
+	switch kind {
+	case "task", "bug", "feature", "chore":
+		return KindProjectWork, nil
+	case "todo":
+		return KindTodo, nil
+	case "epic":
+		return KindEpic, nil
+	case "decision":
+		return KindDecision, nil
+	default:
+		return KindUnsupported, &PolicyError{
+			Code: PolicyInvalidKind, Field: "type", Value: kind,
+			Message: fmt.Sprintf("unsupported Hub issue type %q", kind),
+		}
+	}
+}
+
+// Contexts extracts a sorted, de-duplicated set of reserved context labels.
+func Contexts(labels []string) []string {
+	seen := make(map[string]struct{})
+	for _, label := range labels {
+		if strings.HasPrefix(label, "ctx:") {
+			seen[label] = struct{}{}
+		}
+	}
+	contexts := make([]string, 0, len(seen))
+	for context := range seen {
+		contexts = append(contexts, context)
+	}
+	sort.Strings(contexts)
+	return contexts
+}
+
+// AdmitIssue validates the complete proposed membership before persistence.
+// labels must contain ordinary caller-owned labels only; contexts are supplied
+// separately by target resolution.
+func AdmitIssue(kind string, contexts, labels []string, registered map[string]Repository) (AdmittedIssue, error) {
+	class, err := ClassifyKind(kind)
+	if err != nil {
+		return AdmittedIssue{}, err
+	}
+	for _, label := range labels {
+		if strings.HasPrefix(strings.TrimLeft(label, " "), "ctx:") {
+			return AdmittedIssue{}, &PolicyError{
+				Code: PolicyReservedLabel, Field: "labels", Value: label,
+				Message: "ctx: labels are wrapper-owned and immutable",
+			}
+		}
+	}
+
+	contexts = uniqueSorted(contexts)
+	if err := ValidateRegisteredContexts(contexts, registered); err != nil {
+		return AdmittedIssue{}, err
+	}
+	if err := validateCardinality(kind, class, len(contexts)); err != nil {
+		return AdmittedIssue{}, err
+	}
+
+	completeLabels := append([]string(nil), labels...)
+	completeLabels = append(completeLabels, contexts...)
+	return AdmittedIssue{Kind: kind, Contexts: contexts, Labels: completeLabels}, nil
+}
+
+// ValidateStoredIssue checks kind, context registration, and cardinality for
+// an authoritative record without interpreting ordinary labels.
+func ValidateStoredIssue(issue IssueState, registered map[string]Repository) error {
+	return validateMembership(issue.Kind, Contexts(issue.Labels), registered)
+}
+
+// ValidateRegisteredContexts rejects the first unregistered context in sorted
+// order, giving callers deterministic structured errors.
+func ValidateRegisteredContexts(contexts []string, registered map[string]Repository) error {
+	for _, context := range uniqueSorted(contexts) {
+		if _, ok := registered[context]; !ok {
+			return &PolicyError{
+				Code: PolicyUnregisteredContext, Field: "context", Value: context,
+				Message: fmt.Sprintf("context %q is not registered", context),
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateCardinality checks the immutable membership count for a supported
+// issue type.
+func ValidateCardinality(kind string, count int) error {
+	class, err := ClassifyKind(kind)
+	if err != nil {
+		return err
+	}
+	return validateCardinality(kind, class, count)
+}
+
+// ValidateTodoResult requires todo -> ordinary project-work continuity.
+func ValidateTodoResult(todo, result IssueState) error {
+	todoClass, todoErr := ClassifyKind(todo.Kind)
+	resultClass, resultErr := ClassifyKind(result.Kind)
+	if todoErr != nil || resultErr != nil || todoClass != KindTodo || resultClass != KindProjectWork || todo.ID == result.ID {
+		return &PolicyError{
+			Code: PolicyInvalidTodoResult, Field: "from_todo", Value: todo.ID,
+			Message: "todo results require a todo source and ordinary project-work result",
+		}
+	}
+	return nil
+}
+
+// ValidateCorrelationOwner prevents capture-only todos from owning commits.
+func ValidateCorrelationOwner(issue IssueState) error {
+	class, err := ClassifyKind(issue.Kind)
+	if err != nil {
+		return err
+	}
+	if class == KindTodo {
+		return &PolicyError{
+			Code: PolicyTodoCorrelation, Field: "bead", Value: issue.ID,
+			Message: "todo cannot own a direct commit correlation",
+		}
+	}
+	return nil
+}
+
+// ValidateEpicChild preserves ordinary parent-child behavior for non-epic
+// parents and constrains only epic coordination.
+func ValidateEpicChild(parent, child IssueState) error {
+	parentClass, err := ClassifyKind(parent.Kind)
+	if err != nil || parentClass != KindEpic {
+		return nil
+	}
+	childClass, childErr := ClassifyKind(child.Kind)
+	childContexts := Contexts(child.Labels)
+	parentContexts := Contexts(parent.Labels)
+	if childErr != nil || childClass != KindProjectWork || len(childContexts) != 1 || !contains(parentContexts, childContexts[0]) {
+		return &PolicyError{
+			Code: PolicyInvalidEpicChild, Field: "parent", Value: parent.ID,
+			Message: "an epic may parent only ordinary project work in one of its contexts",
+		}
+	}
+	return nil
+}
+
+// ValidateSupersession requires a replacement and original of the same
+// supported issue type. Membership is validated independently at admission.
+func ValidateSupersession(replacement, original IssueState) error {
+	_, replacementErr := ClassifyKind(replacement.Kind)
+	_, originalErr := ClassifyKind(original.Kind)
+	if replacementErr != nil || originalErr != nil || replacement.Kind != original.Kind || replacement.ID == original.ID {
+		return &PolicyError{
+			Code: PolicyInvalidSupersession, Field: "supersedes", Value: original.ID,
+			Message: "replacement and original must be distinct and have the same supported type",
+		}
+	}
+	return nil
+}
+
+// ValidateLifecycleRemoval rejects deletion of valid native lifecycle edges.
+func ValidateLifecycleRemoval(source, target IssueState, relationType string) error {
+	protected := relationType == "supersedes" && ValidateSupersession(source, target) == nil ||
+		relationType == "discovered-from" && ValidateTodoResult(target, source) == nil
+	if !protected {
+		return nil
+	}
+	return &PolicyError{
+		Code: PolicyProtectedLifecycle, Field: "dependency", Value: target.ID,
+		Message: fmt.Sprintf("cannot remove protected %s lifecycle edge from %s to %s", relationType, source.ID, target.ID),
+	}
+}
+
+func validateMembership(kind string, contexts []string, registered map[string]Repository) error {
+	class, err := ClassifyKind(kind)
+	if err != nil {
+		return err
+	}
+	if err := ValidateRegisteredContexts(contexts, registered); err != nil {
+		return err
+	}
+	return validateCardinality(kind, class, len(contexts))
+}
+
+func validateCardinality(kind string, class KindClass, count int) error {
+	valid := class == KindTodo || class == KindEpic && count >= 1 ||
+		(class == KindProjectWork || class == KindDecision) && count == 1
+	if !valid {
+		return &PolicyError{
+			Code: PolicyInvalidCardinality, Field: "context", Value: kind,
+			Message: cardinalityMessage(kind, count),
+		}
+	}
+	return nil
+}
+
+func cardinalityMessage(kind string, count int) string {
+	switch kind {
+	case "todo":
+		return "todo permits zero or more contexts"
+	case "epic":
+		return fmt.Sprintf("epic requires one or more contexts (got %d)", count)
+	default:
+		return fmt.Sprintf("%s requires exactly one context (got %d)", kind, count)
+	}
+}
+
+func contains(values []string, wanted string) bool {
+	index := sort.SearchStrings(values, wanted)
+	return index < len(values) && values[index] == wanted
+}
+
+func uniqueSorted(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	result := make([]string, 0, len(seen))
+	for value := range seen {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
 // Paths identifies the fixed files and directories used by a Hub.
 type Paths struct {
 	Store  string
