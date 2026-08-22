@@ -31,6 +31,87 @@ type RepositoryCatalogEntry struct {
 // RepositoryCatalog is sorted deterministically by friendly name, then ID.
 type RepositoryCatalog []RepositoryCatalogEntry
 
+// HubScopeMode identifies the candidate projection applied to the canonical
+// Hub issue universe.
+type HubScopeMode string
+
+const (
+	HubScopeAllItems         HubScopeMode = "all_items"
+	HubScopeSelectedContexts HubScopeMode = "contexts"
+	HubScopeContextless      HubScopeMode = "contextless"
+)
+
+// HubScope is an explicit Hub candidate selector. Contexts is populated only
+// for HubScopeSelectedContexts and is always sorted and unique.
+type HubScope struct {
+	Mode     HubScopeMode `json:"mode"`
+	Contexts []string     `json:"contexts"`
+}
+
+// NewAllItemsHubScope selects every loaded Hub issue exactly once.
+func NewAllItemsHubScope() HubScope {
+	return HubScope{Mode: HubScopeAllItems, Contexts: []string{}}
+}
+
+// NewSelectedContextsHubScope selects issues whose ctx labels intersect the
+// supplied non-empty set.
+func NewSelectedContextsHubScope(contexts []string) (HubScope, error) {
+	normalized := append([]string(nil), contexts...)
+	sort.Strings(normalized)
+	unique := normalized[:0]
+	for _, contextID := range normalized {
+		if contextID == "" || !strings.HasPrefix(contextID, "ctx:") {
+			return HubScope{}, fmt.Errorf("invalid Hub context identity: %q", contextID)
+		}
+		if len(unique) == 0 || unique[len(unique)-1] != contextID {
+			unique = append(unique, contextID)
+		}
+	}
+	if len(unique) == 0 {
+		return HubScope{}, fmt.Errorf("selected Hub contexts cannot be empty")
+	}
+	return HubScope{Mode: HubScopeSelectedContexts, Contexts: unique}, nil
+}
+
+// NewContextlessHubScope selects issues with no ctx-prefixed labels.
+func NewContextlessHubScope() HubScope {
+	return HubScope{Mode: HubScopeContextless, Contexts: []string{}}
+}
+
+// Validate checks that the scope is one of the supported explicit variants.
+func (s HubScope) Validate() error {
+	switch s.Mode {
+	case HubScopeAllItems, HubScopeContextless:
+		if len(s.Contexts) != 0 {
+			return fmt.Errorf("Hub scope %q cannot include contexts", s.Mode)
+		}
+		return nil
+	case HubScopeSelectedContexts:
+		normalized, err := NewSelectedContextsHubScope(s.Contexts)
+		if err != nil {
+			return err
+		}
+		if len(normalized.Contexts) != len(s.Contexts) {
+			return fmt.Errorf("selected Hub contexts must be unique")
+		}
+		for i := range normalized.Contexts {
+			if normalized.Contexts[i] != s.Contexts[i] {
+				return fmt.Errorf("selected Hub contexts must be sorted")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid Hub scope mode: %q", s.Mode)
+	}
+}
+
+// Clone returns a detached copy suitable for API boundaries.
+func (s HubScope) Clone() HubScope {
+	clone := s
+	clone.Contexts = append([]string(nil), s.Contexts...)
+	return clone
+}
+
 // ReconcileRepositorySelection intersects an explicit selection with the
 // current catalog. Nil means all repositories, including future additions.
 // If removals empty an explicit selection, the result normalizes to all.
@@ -82,6 +163,7 @@ type Issue struct {
 	UpdatedAt          time.Time     `json:"updated_at"`
 	DueDate            *time.Time    `json:"due_date,omitempty"`
 	ClosedAt           *time.Time    `json:"closed_at,omitempty"`
+	CloseReason        string        `json:"close_reason,omitempty"`
 	ExternalRef        *string       `json:"external_ref,omitempty"`
 	CompactionLevel    int           `json:"compaction_level,omitempty"`
 	CompactedAt        *time.Time    `json:"compacted_at,omitempty"`
@@ -300,12 +382,13 @@ const (
 	DepRelated        DependencyType = "related"
 	DepParentChild    DependencyType = "parent-child"
 	DepDiscoveredFrom DependencyType = "discovered-from"
+	DepSupersedes     DependencyType = "supersedes"
 )
 
 // IsValid returns true if the dependency type is a recognized value
 func (d DependencyType) IsValid() bool {
 	switch d {
-	case DepBlocks, DepRelated, DepParentChild, DepDiscoveredFrom:
+	case DepBlocks, DepRelated, DepParentChild, DepDiscoveredFrom, DepSupersedes:
 		return true
 	}
 	return false

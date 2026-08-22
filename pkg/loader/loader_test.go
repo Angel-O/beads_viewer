@@ -1137,6 +1137,34 @@ func TestLoadIssuesFromFile_DependencyTargetAliases(t *testing.T) {
 	}
 }
 
+func TestLoadIssuesFromFile_PreservesLifecycleFieldsAndCustomType(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lifecycle.jsonl")
+	content := `{"id":"original","title":"Original","status":"closed","issue_type":"todo","close_reason":"Superseded by replacement"}
+{"id":"replacement","title":"Replacement","status":"open","issue_type":"custom-work","dependencies":[{"depends_on_id":"original","type":"supersedes"}]}`
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	issues, err := loader.LoadIssuesFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadIssuesFromFile: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("issues = %d, want 2", len(issues))
+	}
+	if issues[0].CloseReason != "Superseded by replacement" || issues[0].IssueType != "todo" {
+		t.Fatalf("original lifecycle fields = %#v", issues[0])
+	}
+	if issues[1].IssueType != "custom-work" || len(issues[1].Dependencies) != 1 {
+		t.Fatalf("replacement fields = %#v", issues[1])
+	}
+	dependency := issues[1].Dependencies[0]
+	if dependency.Type != model.DepSupersedes || dependency.DependsOnID != "original" || dependency.Type.IsBlocking() {
+		t.Fatalf("supersedes dependency = %#v", dependency)
+	}
+}
+
 // =============================================================================
 // Original Test (kept for compatibility)
 // =============================================================================
