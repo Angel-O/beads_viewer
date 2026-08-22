@@ -390,6 +390,10 @@ type TriageOptions struct {
 	// workflows that keep a bead open to stay visible but signal not-ready with
 	// a label.
 	NotReadyLabels []string
+
+	// CandidateFilter admits globally ranked issues to candidate collections
+	// before their existing presentation limits are applied.
+	CandidateFilter CandidatePredicate
 }
 
 // TrackRecommendationGroup groups recommendations by execution track (bv-87)
@@ -572,16 +576,25 @@ func ComputeTriageFromAnalyzer(analyzer *Analyzer, stats *GraphStats, issues []m
 	// first, slice to opts.TopN for the user-visible recommendations
 	// list, and feed the *unsliced* set into buildTopPicks.
 	allRecommendations := buildRecommendationsFromTriageScores(triageScores, triageCtx, len(triageScores))
+	if opts.CandidateFilter != nil {
+		filtered := allRecommendations[:0]
+		for _, recommendation := range allRecommendations {
+			if opts.CandidateFilter(recommendation.ID) {
+				filtered = append(filtered, recommendation)
+			}
+		}
+		allRecommendations = filtered
+	}
 	recommendations := allRecommendations
 	if len(recommendations) > opts.TopN {
 		recommendations = recommendations[:opts.TopN]
 	}
 
 	// Build quick wins
-	quickWins := buildQuickWins(impactScores, unblocksMap, opts.QuickWinN)
+	quickWins := buildQuickWins(impactScores, unblocksMap, opts.QuickWinN, opts.CandidateFilter)
 
 	// Build blockers to clear (uses cached actionable issues)
-	blockersToClear := buildBlockersToClearWithContext(triageCtx, unblocksMap, opts.BlockerN)
+	blockersToClear := buildBlockersToClearWithContext(triageCtx, unblocksMap, opts.BlockerN, opts.CandidateFilter)
 
 	// Parents with open children are excluded from claimable top picks (issue
 	// #17 parity): such a parent is a planning container, not directly claimable
@@ -864,7 +877,7 @@ func buildRecommendationsFromTriageScores(scores []TriageScore, ctx *TriageConte
 }
 
 // buildQuickWins finds low-complexity, high-impact items
-func buildQuickWins(scores []ImpactScore, unblocksMap map[string][]string, limit int) []QuickWin {
+func buildQuickWins(scores []ImpactScore, unblocksMap map[string][]string, limit int, predicates ...CandidatePredicate) []QuickWin {
 	// Quick wins: high score but likely simple (no deep dependency chains)
 	// Heuristic: items that unblock others but have low blocker ratio themselves
 
@@ -875,7 +888,14 @@ func buildQuickWins(scores []ImpactScore, unblocksMap map[string][]string, limit
 	}
 
 	candidates := make([]candidate, 0, len(scores))
+	var predicate CandidatePredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
+	}
 	for _, score := range scores {
+		if !candidateAllowed(predicate, score.IssueID) {
+			continue
+		}
 		unblocks := unblocksMap[score.IssueID]
 		// Quick win score formula: Balance Impact vs Effort
 		// 1. Unblocks Impact: Logarithmic scale to prevent domination by huge fan-outs
@@ -996,7 +1016,7 @@ func buildBlockersToClear(analyzer *Analyzer, unblocksMap map[string][]string, l
 
 // buildBlockersToClearWithContext finds items that block the most downstream work.
 // This version uses TriageContext for cached actionable lookups and open blockers.
-func buildBlockersToClearWithContext(ctx *TriageContext, unblocksMap map[string][]string, limit int) []BlockerItem {
+func buildBlockersToClearWithContext(ctx *TriageContext, unblocksMap map[string][]string, limit int, predicates ...CandidatePredicate) []BlockerItem {
 	type blocker struct {
 		id       string
 		title    string
@@ -1004,7 +1024,14 @@ func buildBlockersToClearWithContext(ctx *TriageContext, unblocksMap map[string]
 	}
 
 	var blockers []blocker
+	var predicate CandidatePredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
+	}
 	for id, unblocks := range unblocksMap {
+		if !candidateAllowed(predicate, id) {
+			continue
+		}
 		if len(unblocks) == 0 {
 			continue
 		}

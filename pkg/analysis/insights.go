@@ -11,6 +11,14 @@ type InsightItem struct {
 	Value float64
 }
 
+// CandidatePredicate controls which globally analyzed issues may be presented
+// as result candidates. A nil predicate admits every issue.
+type CandidatePredicate func(issueID string) bool
+
+func candidateAllowed(predicate CandidatePredicate, issueID string) bool {
+	return predicate == nil || predicate(issueID)
+}
+
 // Insights is a high-level summary of graph analysis
 type Insights struct {
 	Bottlenecks    []InsightItem // Top betweenness nodes
@@ -42,6 +50,12 @@ type VelocitySnapshot struct {
 
 // GenerateInsights translates raw stats into actionable data
 func (s *GraphStats) GenerateInsights(limit int) Insights {
+	return s.GenerateInsightsForCandidates(limit, nil)
+}
+
+// GenerateInsightsForCandidates ranks global metrics, admits candidates, then
+// applies the presentation limit.
+func (s *GraphStats) GenerateInsightsForCandidates(limit int, predicate CandidatePredicate) Insights {
 	// Get thread-safe copies of all Phase 2 data
 	pageRank := s.PageRank()
 	betweenness := s.Betweenness()
@@ -83,15 +97,15 @@ func (s *GraphStats) GenerateInsights(limit int) Insights {
 	}
 
 	return Insights{
-		Bottlenecks:    getTopItems(betweenness, limit),
-		Keystones:      getTopItems(criticalPath, limit),
-		Influencers:    getTopItems(eigenvector, limit),
-		Hubs:           getTopItems(hubs, limit),
-		Authorities:    getTopItems(authorities, limit),
-		Cores:          getTopItemsInt(coreNum, limit),
-		Articulation:   limitStrings(artPts, limit),
-		Slack:          getTopItems(slack, limit),
-		Orphans:        limitStrings(orphans, limit),
+		Bottlenecks:    getTopItemsForCandidates(betweenness, limit, predicate),
+		Keystones:      getTopItemsForCandidates(criticalPath, limit, predicate),
+		Influencers:    getTopItemsForCandidates(eigenvector, limit, predicate),
+		Hubs:           getTopItemsForCandidates(hubs, limit, predicate),
+		Authorities:    getTopItemsForCandidates(authorities, limit, predicate),
+		Cores:          getTopItemsIntForCandidates(coreNum, limit, predicate),
+		Articulation:   limitStringsForCandidates(artPts, limit, predicate),
+		Slack:          getTopItemsForCandidates(slack, limit, predicate),
+		Orphans:        limitStringsForCandidates(orphans, limit, predicate),
 		Cycles:         cycles,
 		ClusterDensity: s.Density,
 		Velocity:       velocity,
@@ -114,13 +128,19 @@ func findOrphans(outDegree map[string]int) []string {
 }
 
 func getTopItems(m map[string]float64, limit int) []InsightItem {
+	return getTopItemsForCandidates(m, limit, nil)
+}
+
+func getTopItemsForCandidates(m map[string]float64, limit int, predicate CandidatePredicate) []InsightItem {
 	type kv struct {
 		Key   string
 		Value float64
 	}
 	var ss []kv
 	for k, v := range m {
-		ss = append(ss, kv{k, v})
+		if candidateAllowed(predicate, k) {
+			ss = append(ss, kv{k, v})
+		}
 	}
 
 	sort.Slice(ss, func(i, j int) bool {
@@ -138,13 +158,19 @@ func getTopItems(m map[string]float64, limit int) []InsightItem {
 }
 
 func getTopItemsInt(m map[string]int, limit int) []InsightItem {
+	return getTopItemsIntForCandidates(m, limit, nil)
+}
+
+func getTopItemsIntForCandidates(m map[string]int, limit int, predicate CandidatePredicate) []InsightItem {
 	type kv struct {
 		Key   string
 		Value int
 	}
 	var ss []kv
 	for k, v := range m {
-		ss = append(ss, kv{k, v})
+		if candidateAllowed(predicate, k) {
+			ss = append(ss, kv{k, v})
+		}
 	}
 	sort.Slice(ss, func(i, j int) bool {
 		if ss[i].Value == ss[j].Value {
@@ -160,6 +186,19 @@ func getTopItemsInt(m map[string]int, limit int) []InsightItem {
 }
 
 func limitStrings(s []string, limit int) []string {
+	return limitStringsForCandidates(s, limit, nil)
+}
+
+func limitStringsForCandidates(s []string, limit int, predicate CandidatePredicate) []string {
+	if predicate != nil {
+		filtered := make([]string, 0, len(s))
+		for _, id := range s {
+			if predicate(id) {
+				filtered = append(filtered, id)
+			}
+		}
+		s = filtered
+	}
 	if limit <= 0 || len(s) <= limit {
 		return s
 	}

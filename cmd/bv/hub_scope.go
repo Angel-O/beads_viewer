@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -135,6 +137,115 @@ func (p *hubScopeProjection) issuesInScope(issues []model.Issue) []model.Issue {
 	return result
 }
 
+func (p *hubScopeProjection) candidateFilter() analysis.CandidatePredicate {
+	if p == nil {
+		return nil
+	}
+	return func(issueID string) bool { return p.inScopeID[issueID] }
+}
+
+func (p *hubScopeProjection) exportGraph(issues []model.Issue, stats *analysis.GraphStats, config export.GraphExportConfig) (*export.GraphExportResult, error) {
+	canonicalConfig := config
+	canonicalConfig.Format = export.GraphFormatJSON
+	canonicalConfig.Label = ""
+	canonical, err := export.ExportGraph(issues, stats, canonicalConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	focused := make(map[string]bool)
+	if canonical.Adjacency != nil {
+		for _, node := range canonical.Adjacency.Nodes {
+			focused[node.ID] = true
+		}
+	}
+	visibleIssues := make([]model.Issue, 0, len(focused))
+	for _, issue := range issues {
+		if focused[issue.ID] && p.inScopeID[issue.ID] {
+			visibleIssues = append(visibleIssues, issue)
+		}
+	}
+
+	renderConfig := config
+	renderConfig.Label = ""
+	renderConfig.Root = ""
+	renderConfig.Depth = 0
+	result, err := export.ExportGraph(visibleIssues, stats, renderConfig)
+	if err != nil {
+		return nil, err
+	}
+	result.DataHash = config.DataHash
+	result.FiltersApplied = canonical.FiltersApplied
+	if result.FiltersApplied == nil {
+		result.FiltersApplied = make(map[string]string)
+	}
+	if p.label != "" {
+		result.FiltersApplied["label"] = p.label
+	}
+	result.Adjacency = p.projectGraphAdjacency(canonical.Adjacency)
+	result.Nodes = len(result.Adjacency.Nodes)
+	result.Edges = len(result.Adjacency.Edges)
+	return result, nil
+}
+
+func (p *hubScopeProjection) projectGraphAdjacency(canonical *export.AdjacencyGraph) *export.AdjacencyGraph {
+	result := &export.AdjacencyGraph{Nodes: []export.AdjacencyNode{}, Edges: []export.AdjacencyEdge{}}
+	if canonical == nil {
+		return result
+	}
+	nodeIndex := make(map[string]int)
+	for _, node := range canonical.Nodes {
+		if p.inScopeID[node.ID] {
+			nodeIndex[node.ID] = len(result.Nodes)
+			result.Nodes = append(result.Nodes, node)
+		}
+	}
+	for _, edge := range canonical.Edges {
+		fromVisible := p.inScopeID[edge.From]
+		toVisible := p.inScopeID[edge.To]
+		if fromVisible && toVisible {
+			result.Edges = append(result.Edges, edge)
+			continue
+		}
+		if fromVisible == toVisible {
+			continue
+		}
+		visibleID, hiddenID := edge.From, edge.To
+		if !fromVisible {
+			visibleID, hiddenID = edge.To, edge.From
+		}
+		hidden, exists := p.issues[hiddenID]
+		if !exists {
+			continue
+		}
+		index := nodeIndex[visibleID]
+		result.Nodes[index].BoundaryRefs = append(result.Nodes[index].BoundaryRefs, export.GraphBoundaryReference{
+			RelationType: edge.Type,
+			EndpointID:   hiddenID,
+			IssueType:    string(hidden.IssueType),
+			Status:       string(hidden.Status),
+			Contexts:     issueContexts(hidden),
+			InScope:      false,
+			From:         edge.From,
+			To:           edge.To,
+		})
+	}
+	for i := range result.Nodes {
+		sort.Slice(result.Nodes[i].BoundaryRefs, func(left, right int) bool {
+			first := result.Nodes[i].BoundaryRefs[left]
+			second := result.Nodes[i].BoundaryRefs[right]
+			if first.From != second.From {
+				return first.From < second.From
+			}
+			if first.To != second.To {
+				return first.To < second.To
+			}
+			return first.RelationType < second.RelationType
+		})
+	}
+	return result
+}
+
 func (e hubScopeRobotEncoder) Encode(value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -168,6 +279,19 @@ func (p *hubScopeProjection) project(command string, output map[string]any) {
 	case "robot-capacity":
 		p.filterStringArray(output, "actionable")
 		p.filterObjectArray(output, "bottlenecks", false, "id")
+		p.filterStringArray(output, "critical_path")
+		if actionable, ok := output["actionable"].([]any); ok {
+			output["actionable_count"] = len(actionable)
+		}
+		if criticalPath, ok := output["critical_path"].([]any); ok {
+			output["critical_path_length"] = len(criticalPath)
+		}
+	case "robot-label-health":
+		p.projectLabelHealth(output)
+	case "robot-label-flow":
+		if flow, ok := output["flow"].(map[string]any); ok {
+			p.projectLabelFlow(flow)
+		}
 	case "robot-sprint-list":
 		p.projectSprintList(output)
 	case "robot-sprint-show":
@@ -176,6 +300,52 @@ func (p *hubScopeProjection) project(command string, output map[string]any) {
 		}
 	case "robot-triage", "robot-triage-by-track", "robot-triage-by-label":
 		p.projectTriage(output)
+	}
+}
+
+func (p *hubScopeProjection) projectLabelHealth(output map[string]any) {
+	results, ok := output["results"].(map[string]any)
+	if !ok {
+		return
+	}
+	labels, _ := results["labels"].([]any)
+	topIssueByLabel := make(map[string]string)
+	for _, rawLabel := range labels {
+		if label, ok := rawLabel.(map[string]any); ok {
+			p.filterStringArray(label, "issues")
+			issues, _ := label["issues"].([]any)
+			if len(issues) > 0 {
+				if name, ok := label["label"].(string); ok {
+					topIssueByLabel[name], _ = issues[0].(string)
+				}
+			}
+		}
+	}
+	if summaries, ok := results["summaries"].([]any); ok {
+		for _, rawSummary := range summaries {
+			summary, ok := rawSummary.(map[string]any)
+			if !ok {
+				continue
+			}
+			label, _ := summary["label"].(string)
+			if topIssue := topIssueByLabel[label]; topIssue != "" {
+				summary["top_issue"] = topIssue
+			} else {
+				delete(summary, "top_issue")
+			}
+		}
+	}
+	if flow, ok := results["cross_label_flow"].(map[string]any); ok {
+		p.projectLabelFlow(flow)
+	}
+}
+
+func (p *hubScopeProjection) projectLabelFlow(flow map[string]any) {
+	dependencies, _ := flow["dependencies"].([]any)
+	for _, rawDependency := range dependencies {
+		if dependency, ok := rawDependency.(map[string]any); ok {
+			p.filterStringArray(dependency, "issue_ids")
+		}
 	}
 }
 

@@ -2613,6 +2613,15 @@ func main() {
 					}
 				}
 			}
+		} else if *labelScope != "" {
+			cfg := analysis.DefaultLabelHealthConfig()
+			allHealth := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
+			for i := range allHealth.Labels {
+				if allHealth.Labels[i].Label == *labelScope {
+					labelScopeContext = &allHealth.Labels[i]
+					break
+				}
+			}
 		}
 
 		// Apply recipe filtering early for robot modes (bv-93)
@@ -7383,10 +7392,7 @@ func findBetterPagesSource(config *export.WizardConfig, current pagesSource, bea
 	currentDiff := absInt(currentCount - expected)
 
 	repoHint := strings.ToLower(strings.TrimSpace(config.RepoName))
-	altHint := repoHint
-	if strings.HasPrefix(altHint, "beads-for-") {
-		altHint = strings.TrimPrefix(altHint, "beads-for-")
-	}
+	altHint := strings.TrimPrefix(repoHint, "beads-for-")
 
 	roots := []string{}
 	seenRoots := map[string]bool{}
@@ -9864,7 +9870,7 @@ func hubScopeSchema() map[string]interface{} {
 func hubBoundaryReferencesSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type":        "array",
-		"description": "Focused Hub-only references to open blocking endpoints outside the candidate scope",
+		"description": "Focused Hub-only references to relationship endpoints outside the candidate scope",
 		"items": map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -9877,6 +9883,8 @@ func hubBoundaryReferencesSchema() map[string]interface{} {
 					"items": map[string]interface{}{"type": "string"},
 				},
 				"in_scope": map[string]interface{}{"type": "boolean", "const": false},
+				"from":     map[string]interface{}{"type": "string"},
+				"to":       map[string]interface{}{"type": "string"},
 			},
 			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope"},
 		},

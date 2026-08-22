@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -131,20 +132,21 @@ func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 	}
 
 	executable := buildTestBinary(t)
-	run := func(scope model.HubScope, extra ...string) map[string]any {
+	run := func(scope model.HubScope, arguments ...string) map[string]any {
 		t.Helper()
 		scopeData, err := json.Marshal(scope)
 		if err != nil {
 			t.Fatal(err)
 		}
-		arguments := []string{"--history-mode", "external", "--hub-config", configPath, "--robot-plan", "--format", "json"}
-		arguments = append(arguments, extra...)
-		command := exec.Command(executable, arguments...)
+		commandArguments := []string{"--history-mode", "external", "--hub-config", configPath}
+		commandArguments = append(commandArguments, arguments...)
+		commandArguments = append(commandArguments, "--format", "json")
+		command := exec.Command(executable, commandArguments...)
 		command.Dir = root
 		command.Env = isolatedRobotTestEnv(root, string(scopeData))
 		output, err := command.CombinedOutput()
 		if err != nil {
-			t.Fatalf("bv %v: %v\n%s", arguments, err, output)
+			t.Fatalf("bv %v: %v\n%s", commandArguments, err, output)
 		}
 		var payload map[string]any
 		if err := json.Unmarshal(output, &payload); err != nil {
@@ -157,9 +159,9 @@ func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected := run(selectedScope)
-	contextless := run(model.NewContextlessHubScope())
-	allItems := run(model.NewAllItemsHubScope())
+	selected := run(selectedScope, "--robot-plan")
+	contextless := run(model.NewContextlessHubScope(), "--robot-plan")
+	allItems := run(model.NewAllItemsHubScope(), "--robot-plan")
 	if selected["data_hash"] != contextless["data_hash"] || selected["data_hash"] != allItems["data_hash"] {
 		t.Fatalf("canonical data hash varied by scope: selected=%v contextless=%v all=%v", selected["data_hash"], contextless["data_hash"], allItems["data_hash"])
 	}
@@ -171,6 +173,34 @@ func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 	}
 	if got := planItemIDs(allItems); !slices.Contains(got, "beta-blocker") || !slices.Contains(got, "unowned-ready") {
 		t.Fatalf("all-items plan omitted loaded issues: %#v", got)
+	}
+
+	priority := run(selectedScope, "--robot-priority")
+	recommendations := priority["recommendations"].([]any)
+	prioritySummary := priority["summary"].(map[string]any)
+	if int(prioritySummary["recommendations"].(float64)) != len(recommendations) {
+		t.Fatalf("priority summary = %#v, recommendations = %d", prioritySummary, len(recommendations))
+	}
+	highConfidence := 0
+	for _, raw := range recommendations {
+		if raw.(map[string]any)["confidence"].(float64) >= 0.7 {
+			highConfidence++
+		}
+	}
+	if int(prioritySummary["high_confidence"].(float64)) != highConfidence {
+		t.Fatalf("priority high confidence = %#v, want %d", prioritySummary, highConfidence)
+	}
+
+	forecast := run(selectedScope, "--robot-forecast", "all")
+	forecasts := forecast["forecasts"].([]any)
+	if int(forecast["forecast_count"].(float64)) != len(forecasts) {
+		t.Fatalf("forecast count = %v, forecasts = %d", forecast["forecast_count"], len(forecasts))
+	}
+
+	labelOutput := run(selectedScope, "--robot-insights", "--label", first)
+	labelContext, ok := labelOutput["label_context"].(map[string]any)
+	if !ok || labelContext["label"] != first || int(labelContext["issue_count"].(float64)) != 3 {
+		t.Fatalf("canonical label context = %#v", labelOutput["label_context"])
 	}
 
 	localCommand := exec.Command(executable, "--history-mode", "off", "--robot-plan", "--repo", "alpha", "--format", "json")
@@ -361,6 +391,102 @@ func TestHubScopeProjectionPlanGraphAndGlobalAggregates(t *testing.T) {
 	}
 	if graph["nodes"] != 1 || graph["edges"] != 1 {
 		t.Fatalf("graph counts = nodes:%v edges:%v", graph["nodes"], graph["edges"])
+	}
+
+	labelHealth := map[string]any{
+		"results": map[string]any{
+			"labels": []any{map[string]any{
+				"label":       "overall-health",
+				"issue_count": float64(2),
+				"issues":      []any{"hidden", "visible"},
+			}},
+			"summaries": []any{map[string]any{
+				"label":       "overall-health",
+				"issue_count": float64(2),
+				"top_issue":   "hidden",
+			}},
+			"cross_label_flow": map[string]any{
+				"total_cross_label_deps": float64(2),
+				"dependencies": []any{map[string]any{
+					"issue_count": float64(2),
+					"issue_ids":   []any{"hidden", "visible"},
+				}},
+			},
+		},
+	}
+	projection.project("robot-label-health", labelHealth)
+	results := labelHealth["results"].(map[string]any)
+	health := results["labels"].([]any)[0].(map[string]any)
+	if health["issue_count"] != float64(2) || !reflect.DeepEqual(health["issues"], []any{"visible"}) {
+		t.Fatalf("label health projection changed aggregate or leaked candidate: %#v", health)
+	}
+	summary := results["summaries"].([]any)[0].(map[string]any)
+	if summary["issue_count"] != float64(2) || summary["top_issue"] != "visible" {
+		t.Fatalf("label summary projection = %#v", summary)
+	}
+	flow := results["cross_label_flow"].(map[string]any)
+	dependency := flow["dependencies"].([]any)[0].(map[string]any)
+	if flow["total_cross_label_deps"] != float64(2) || dependency["issue_count"] != float64(2) || !reflect.DeepEqual(dependency["issue_ids"], []any{"visible"}) {
+		t.Fatalf("label flow projection changed aggregate or leaked candidate: %#v", flow)
+	}
+}
+
+func TestHubGraphTraversalCrossesHiddenIntermediary(t *testing.T) {
+	selected := "ctx:" + "selected"
+	hidden := "ctx:" + "hidden"
+	issues := []model.Issue{
+		{ID: "visible-a", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{selected}, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},
+		{ID: "hidden", Status: model.StatusInProgress, IssueType: model.TypeBug, Labels: []string{hidden}, Dependencies: []*model.Dependency{{DependsOnID: "visible-b", Type: model.DepRelated}}},
+		{ID: "visible-b", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{selected}},
+	}
+	scope, err := model.NewSelectedContextsHubScope([]string{selected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := newHubScopeProjection(scope, issues, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := analysis.NewAnalyzer(issues).Analyze()
+	result, err := projection.exportGraph(issues, &stats, export.GraphExportConfig{
+		Format: export.GraphFormatJSON,
+		Root:   "visible-a",
+		Depth:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{result.Adjacency.Nodes[0].ID, result.Adjacency.Nodes[1].ID}; !reflect.DeepEqual(got, []string{"visible-a", "visible-b"}) {
+		t.Fatalf("visible nodes = %#v", got)
+	}
+	if len(result.Adjacency.Edges) != 0 {
+		t.Fatalf("synthetic or hidden edge leaked: %#v", result.Adjacency.Edges)
+	}
+	refs := append([]export.GraphBoundaryReference(nil), result.Adjacency.Nodes[0].BoundaryRefs...)
+	refs = append(refs, result.Adjacency.Nodes[1].BoundaryRefs...)
+	if len(refs) != 2 {
+		t.Fatalf("boundary refs = %#v", refs)
+	}
+	if refs[0].From != "visible-a" || refs[0].To != "hidden" || refs[0].EndpointID != "hidden" {
+		t.Fatalf("first boundary ref = %#v", refs[0])
+	}
+	if refs[1].From != "hidden" || refs[1].To != "visible-b" || refs[1].RelationType != "related" {
+		t.Fatalf("second boundary ref = %#v", refs[1])
+	}
+
+	dot, err := projection.exportGraph(issues, &stats, export.GraphExportConfig{
+		Format: export.GraphFormatDOT,
+		Root:   "visible-a",
+		Depth:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(dot.Graph, `"hidden"`) || !strings.Contains(dot.Graph, `"visible-b"`) {
+		t.Fatalf("DOT graph did not project canonical traversal correctly:\n%s", dot.Graph)
+	}
+	if len(dot.Adjacency.Nodes) != 2 || len(dot.Adjacency.Nodes[0].BoundaryRefs)+len(dot.Adjacency.Nodes[1].BoundaryRefs) != 2 {
+		t.Fatalf("DOT boundary evidence = %#v", dot.Adjacency)
 	}
 }
 

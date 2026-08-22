@@ -22,6 +22,26 @@ func TestComputeTriage_Empty(t *testing.T) {
 	}
 }
 
+func TestComputeTriageCandidateFilterRunsBeforePresentationLimits(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "hidden", Title: "Hidden", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 0},
+		{ID: "visible", Title: "Visible", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 4},
+	}
+	result := ComputeTriageWithOptionsAndTime(issues, TriageOptions{
+		TopN:            1,
+		QuickWinN:       1,
+		BlockerN:        1,
+		CandidateFilter: func(id string) bool { return id == "visible" },
+	}, time.Unix(1_700_000_000, 0).UTC())
+
+	if len(result.Recommendations) != 1 || result.Recommendations[0].ID != "visible" {
+		t.Fatalf("recommendations = %#v", result.Recommendations)
+	}
+	if len(result.QuickRef.TopPicks) != 1 || result.QuickRef.TopPicks[0].ID != "visible" {
+		t.Fatalf("top picks = %#v", result.QuickRef.TopPicks)
+	}
+}
+
 func TestComputeTriage_BasicIssues(t *testing.T) {
 	issues := []model.Issue{
 		{
