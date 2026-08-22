@@ -11,6 +11,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // historyFocus tracks which pane has focus in the history view
@@ -2137,19 +2138,71 @@ func (h *HistoryModel) renderCompactTimeline(hist correlation.BeadHistory, maxWi
 
 // renderEmpty renders an empty state message
 func (h *HistoryModel) renderEmpty(msg string) string {
+	if h.width <= 0 || h.height <= 0 {
+		return ""
+	}
 	t := h.theme
 	if h.report != nil && len(h.report.Warnings) > 0 {
 		msg += fmt.Sprintf("\n\nPARTIAL HISTORY: %d source repositories unavailable", len(h.report.Warnings))
 	}
+	hint := h.historyEmptyHint()
+	if strings.TrimSpace(msg) == "" {
+		msg = "No results"
+	}
+	if hint != "" {
+		msg = msg + "\n\n" + hint
+	}
 	header := h.renderHeader()
-	bodyHeight := h.historyPanelHeight()
-	style := t.Renderer.NewStyle().
-		Width(h.width).
-		Height(bodyHeight).
-		Align(lipgloss.Center, lipgloss.Center).
+	headerHeight := lipgloss.Height(header)
+	if headerHeight <= 0 || headerHeight >= h.height {
+		return renderCompactHistoryEmpty(msg, h.width, h.height)
+	}
+	bodyHeight := h.height - headerHeight
+	header = boundHistoryText(header, h.width, headerHeight)
+	bodyText := boundHistoryText(msg, h.width, bodyHeight)
+	bodyStyle := t.Renderer.NewStyle().
 		Foreground(t.Secondary)
+	body := lipgloss.Place(h.width, bodyHeight, lipgloss.Center, lipgloss.Center, bodyStyle.Render(bodyText))
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, style.Render(msg+"\n\nPress h to close"))
+	return lipgloss.JoinVertical(lipgloss.Left, header, body)
+}
+
+func boundHistoryText(text string, width, rows int) string {
+	if width <= 0 || rows <= 0 {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > rows {
+		parts := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				parts = append(parts, trimmed)
+			}
+		}
+		lines = []string{strings.Join(parts, " | ")}
+	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, width, "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderCompactHistoryEmpty(msg string, width, height int) string {
+	compact := boundHistoryText(msg, width, 1)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, compact)
+}
+
+func (h *HistoryModel) historyEmptyHint() string {
+	if h.searchActive {
+		return ""
+	}
+	if h.HasSearchQuery() {
+		return "esc: clear"
+	}
+	return "esc/h/q: close"
 }
 
 func (h *HistoryModel) historyPanelHeight() int {

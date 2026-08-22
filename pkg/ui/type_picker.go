@@ -144,7 +144,7 @@ func (m *TypePickerModel) View() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
-	if m.width < 14 || m.height < 9 {
+	if m.width < 14 || m.height < 12 {
 		label := "Types"
 		if m.selectedIndex >= 0 && m.selectedIndex < len(m.types) {
 			check := "[ ]"
@@ -164,11 +164,37 @@ func (m *TypePickerModel) View() string {
 	contentWidth := max(1, boxWidth-4)
 	titleStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true)
 	lines := []string{titleStyle.Render(truncateRunesHelper("Issue Type Filter", contentWidth, "...")), ""}
+
+	controlHints := []string{
+		"j/k: navigate",
+		"space: toggle",
+		"a: all",
+		"n: reset",
+		"enter: apply",
+		"esc: cancel",
+	}
+
+	contentRows := max(m.height-4, 1)
+	hintLines := wrapControlHints(controlHints, contentWidth)
+	// Both the list and empty states reserve title, spacer, and content rows.
+	maxHintRows := max(1, contentRows-3)
+	if len(hintLines) > maxHintRows {
+		if maxHintRows == 1 {
+			hintLines = []string{truncateRunesHelper("…", contentWidth, "…")}
+		} else {
+			hintLines = append(hintLines[:maxHintRows-1], truncateRunesHelper("…", contentWidth, "…"))
+		}
+	}
+
 	if len(m.types) == 0 {
 		empty := truncateRunesHelper("No issue types loaded.", contentWidth, "...")
 		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(m.theme.Secondary).Italic(true).Render(empty))
 	} else {
-		maxVisible := max(1, min(12, m.height-8))
+		maxVisible := contentRows - 2 - len(hintLines)
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		maxVisible = min(12, maxVisible)
 		start := 0
 		if m.selectedIndex >= maxVisible {
 			start = m.selectedIndex - maxVisible + 1
@@ -188,9 +214,10 @@ func (m *TypePickerModel) View() string {
 			lines = append(lines, style.Render(truncateRunesHelper(prefix+check+" "+string(m.types[i]), contentWidth, "...")))
 		}
 	}
-	lines = append(lines, "", m.theme.Renderer.NewStyle().Foreground(ColorFooterHint).Italic(true).Render(
-		truncateRunesHelper("j/k: navigate | space: toggle | a: all | n: reset | enter: apply | esc: cancel", contentWidth, "..."),
-	))
+
+	for _, line := range hintLines {
+		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(ColorFooterHint).Italic(true).Render(line))
+	}
 
 	box := m.theme.Renderer.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -199,4 +226,46 @@ func (m *TypePickerModel) View() string {
 		Width(boxWidth).
 		Render(strings.Join(lines, "\n"))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func wrapControlHints(hints []string, maxWidth int) []string {
+	if len(hints) == 0 || maxWidth <= 0 {
+		return nil
+	}
+	if maxWidth == 1 {
+		return []string{"..."}
+	}
+
+	const sep = " • "
+	var lines []string
+	current := ""
+	currentLen := 0
+	for _, hint := range hints {
+		hintLen := len([]rune(hint))
+		if current == "" {
+			if hintLen > maxWidth {
+				lines = append(lines, truncateRunesHelper(hint, maxWidth, "…"))
+				current = ""
+				currentLen = 0
+				continue
+			}
+			current = hint
+			currentLen = hintLen
+			continue
+		}
+
+		sepLen := len([]rune(sep))
+		if currentLen+sepLen+hintLen <= maxWidth {
+			current += sep + hint
+			currentLen += sepLen + hintLen
+			continue
+		}
+		lines = append(lines, current)
+		current = hint
+		currentLen = hintLen
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
 }
