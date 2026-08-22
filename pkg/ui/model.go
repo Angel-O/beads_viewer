@@ -5165,7 +5165,7 @@ func (m Model) handleTypePickerKeys(msg tea.KeyMsg) Model {
 		m.typePicker.SelectAll()
 	case "n":
 		m.typePicker.ClearSelection()
-	case "esc", "q":
+	case "esc", "q", "I":
 		m.showTypePicker = false
 		m.focused = focusList
 	case "enter":

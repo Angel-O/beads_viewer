@@ -44,6 +44,19 @@ func TestTypePickerAppliesExactMultiSelectionAndShowsActiveState(t *testing.T) {
 	if footer := m.renderFooter(); !strings.Contains(footer, "TYPE bug,decision") {
 		t.Fatalf("active type badge missing: %q", footer)
 	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
+	m = updated.(Model)
+	m.typePicker.MoveDown()
+	m.typePicker.ToggleSelected()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
+	m = updated.(Model)
+	if m.showTypePicker || m.focused != focusList {
+		t.Fatalf("uppercase I did not cancel type picker: shown=%v focus=%v", m.showTypePicker, m.focused)
+	}
+	if got := strings.Join(m.activeIssueTypeNames(), ","); got != "bug,decision" {
+		t.Fatalf("uppercase I applied draft type selection: %q", got)
+	}
 }
 
 func TestTypePickerLeavesBlankRowBeforeWrappedHints(t *testing.T) {
