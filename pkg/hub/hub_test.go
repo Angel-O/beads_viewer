@@ -116,6 +116,18 @@ func TestLifecycleEndpointPolicy(t *testing.T) {
 	if err := ValidateSupersession(IssueState{ID: "new", Kind: "bug"}, projectA); err == nil {
 		t.Fatal("cross-kind supersession accepted")
 	}
+	if err := ValidateLifecycleRemoval(IssueState{ID: "new", Kind: "task"}, projectA, "supersedes"); err == nil {
+		t.Fatal("valid supersession edge was removable")
+	}
+	if err := ValidateLifecycleRemoval(projectA, todo, "discovered-from"); err == nil {
+		t.Fatal("valid todo-result edge was removable")
+	}
+	if err := ValidateLifecycleRemoval(projectA, projectB, "discovered-from"); err != nil {
+		t.Fatalf("generic discovered-from edge was protected: %v", err)
+	}
+	if err := ValidateLifecycleRemoval(projectA, projectB, "blocks"); err != nil {
+		t.Fatalf("ordinary blocking edge was protected: %v", err)
+	}
 }
 
 func TestSignalChangeAtomicallyAdvancesGeneration(t *testing.T) {

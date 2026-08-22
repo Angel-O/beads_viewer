@@ -39,6 +39,7 @@ const (
 	PolicyTodoCorrelation     PolicyCode = "todo_correlation"
 	PolicyInvalidEpicChild    PolicyCode = "invalid_epic_child"
 	PolicyInvalidSupersession PolicyCode = "invalid_supersession"
+	PolicyProtectedLifecycle  PolicyCode = "protected_lifecycle_edge"
 )
 
 // PolicyError describes a rejected Hub state without depending on a writer.
@@ -231,6 +232,19 @@ func ValidateSupersession(replacement, original IssueState) error {
 		}
 	}
 	return nil
+}
+
+// ValidateLifecycleRemoval rejects deletion of valid native lifecycle edges.
+func ValidateLifecycleRemoval(source, target IssueState, relationType string) error {
+	protected := relationType == "supersedes" && ValidateSupersession(source, target) == nil ||
+		relationType == "discovered-from" && ValidateTodoResult(target, source) == nil
+	if !protected {
+		return nil
+	}
+	return &PolicyError{
+		Code: PolicyProtectedLifecycle, Field: "dependency", Value: target.ID,
+		Message: fmt.Sprintf("cannot remove protected %s lifecycle edge from %s to %s", relationType, source.ID, target.ID),
+	}
 }
 
 func validateMembership(kind string, contexts []string, registered map[string]Repository) error {

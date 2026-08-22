@@ -171,6 +171,17 @@ func (a *app) run(arguments []string) int {
 		args = append(args, "show", request.positionals[0])
 		return a.runBD(a.dir, args...)
 	case "update":
+		if requestValue(request.args, "--status", "") != "" {
+			issue, issueErr := a.readIssue(request.positionals[0], true)
+			if issueErr != nil {
+				return a.fail(issueErr)
+			}
+			if issue.Status == "closed" {
+				if policyErr := validateReactivation(issue); policyErr != nil {
+					return a.fail(policyErr)
+				}
+			}
+		}
 		args := appendJSON(nil, request.json)
 		args = append(args, "update", request.positionals[0])
 		args = append(args, request.args...)
@@ -189,6 +200,28 @@ func (a *app) run(arguments []string) int {
 				return a.fail(policyErr)
 			}
 		}
+		if request.subcommand == "remove" {
+			source, sourceErr := a.readIssue(request.positionals[0], false)
+			if sourceErr != nil {
+				return a.fail(sourceErr)
+			}
+			var target *bdIssue
+			for _, dependency := range source.Dependencies {
+				if dependency.ID != request.positionals[1] || dependency.DependencyType != "supersedes" && dependency.DependencyType != "discovered-from" {
+					continue
+				}
+				if target == nil {
+					issue, targetErr := a.readIssue(request.positionals[1], false)
+					if targetErr != nil {
+						return a.fail(targetErr)
+					}
+					target = &issue
+				}
+				if policyErr := hub.ValidateLifecycleRemoval(source.policyState(), target.policyState(), dependency.DependencyType); policyErr != nil {
+					return a.fail(policyErr)
+				}
+			}
+		}
 		args := appendJSON(nil, request.json)
 		args = append(args, "dep", request.subcommand)
 		args = append(args, request.positionals...)
@@ -200,11 +233,8 @@ func (a *app) run(arguments []string) int {
 			if issueErr != nil {
 				return a.fail(issueErr)
 			}
-			for _, dependent := range issue.Dependents {
-				if dependent.DependencyType == "supersedes" && hub.ValidateSupersession(
-					hub.IssueState{ID: dependent.ID, Kind: dependent.IssueType}, issue.policyState()) == nil {
-					return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidSupersession, Field: "reopen", Value: issue.ID, Message: "a superseded issue cannot be routinely reopened"})
-				}
+			if policyErr := validateReactivation(issue); policyErr != nil {
+				return a.fail(policyErr)
 			}
 		}
 		args := appendJSON(nil, request.json)
@@ -238,6 +268,21 @@ func (a *app) run(arguments []string) int {
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
+}
+
+func validateReactivation(issue bdIssue) error {
+	for _, dependent := range issue.Dependents {
+		if dependent.DependencyType != "supersedes" {
+			continue
+		}
+		if dependent.ID == "" || dependent.IssueType == "" {
+			return fmt.Errorf("issue %s has an incomplete incoming supersession relation", issue.ID)
+		}
+		if hub.ValidateSupersession(hub.IssueState{ID: dependent.ID, Kind: dependent.IssueType}, issue.policyState()) == nil {
+			return &hub.PolicyError{Code: hub.PolicyInvalidSupersession, Field: "status", Value: issue.ID, Message: "a superseded issue cannot be routinely reactivated"}
+		}
+	}
+	return nil
 }
 
 func (a *app) create(request request) int {
@@ -505,7 +550,7 @@ func (a *app) readIssue(id string, includeDependents bool) (bdIssue, error) {
 	if err := json.Unmarshal(data, &issues); err != nil {
 		return bdIssue{}, fmt.Errorf("decoding issue %s: %w", id, err)
 	}
-	if len(issues) != 1 || issues[0].ID == "" {
+	if len(issues) != 1 || issues[0].ID != id || issues[0].IssueType == "" || issues[0].Status == "" {
 		return bdIssue{}, fmt.Errorf("issue %s returned an invalid authoritative record", id)
 	}
 	return issues[0], nil

@@ -368,10 +368,133 @@ func TestEpicParentAndSupersededReopenPrevalidation(t *testing.T) {
 			"show:old-1": `[{"id":"old-1","status":"closed","issue_type":"task","dependents":[{"id":"new-1","status":"open","issue_type":"task","dependency_type":"supersedes"}]}]`,
 		})
 		code, _, stderr := test.run("reopen", "old-1")
-		if code != 1 || !strings.Contains(stderr, "cannot be routinely reopened") || len(test.calls()) != 1 {
+		if code != 1 || !strings.Contains(stderr, "cannot be routinely reactivated") || len(test.calls()) != 1 {
 			t.Fatalf("code = %d, stderr = %q, calls = %#v", code, stderr, test.calls())
 		}
 	})
+}
+
+func TestClosedIssueStatusReactivationGuard(t *testing.T) {
+	for _, status := range []string{"open", "in_progress", "blocked", "deferred"} {
+		t.Run("superseded_to_"+status, func(t *testing.T) {
+			test := newAppTest(t, false)
+			setResponses(t, map[string]string{
+				"show:original-1": `[{"id":"original-1","status":"closed","issue_type":"task","dependents":[{"id":"replacement-1","status":"open","issue_type":"task","dependency_type":"supersedes"}]}]`,
+			})
+			code, _, stderr := test.run("--json", "update", "original-1", "--status", status)
+			if code != 1 || !strings.Contains(stderr, `"code":"invalid_supersession"`) {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 1 || fakeCommandKey(calls[0].Args) != "show:original-1" {
+				t.Fatalf("rejected reactivation reached mutation child: %#v", calls)
+			}
+			assertNoViewerSignal(t, test)
+		})
+	}
+
+	t.Run("ordinary closed issue", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{
+			"show:ordinary-1": `[{"id":"ordinary-1","status":"closed","issue_type":"task"}]`,
+		})
+		code, _, stderr := test.run("update", "ordinary-1", "--status", "open")
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:ordinary-1" || fakeCommandKey(calls[1].Args) != "update" {
+			t.Fatalf("ordinary reactivation calls = %#v", calls)
+		}
+		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+			t.Fatalf("ordinary reactivation did not signal Viewer: %v", err)
+		}
+	})
+
+	t.Run("incomplete incoming supersession fails closed", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{
+			"show:original-1": `[{"id":"original-1","status":"closed","issue_type":"task","dependents":[{"id":"replacement-1","dependency_type":"supersedes"}]}]`,
+		})
+		code, _, stderr := test.run("update", "original-1", "--status", "open")
+		if code != 1 || !strings.Contains(stderr, "incomplete incoming supersession relation") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 1 || fakeCommandKey(calls[0].Args) != "show:original-1" {
+			t.Fatalf("incomplete relation reached mutation child: %#v", calls)
+		}
+		assertNoViewerSignal(t, test)
+	})
+}
+
+func TestDependencyRemovalProtectsLifecycleContinuity(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceKind string
+		targetKind string
+		relation   string
+	}{
+		{name: "replacement to original supersedes", sourceKind: "task", targetKind: "task", relation: "supersedes"},
+		{name: "project work to todo discovered-from", sourceKind: "feature", targetKind: "todo", relation: "discovered-from"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, false)
+			source := fmt.Sprintf(`[{"id":"source-1","status":"open","issue_type":%q,"dependencies":[{"id":"target-1","dependency_type":"related"},{"id":"target-1","dependency_type":%q}]}]`, testCase.sourceKind, testCase.relation)
+			target := fmt.Sprintf(`[{"id":"target-1","status":"open","issue_type":%q}]`, testCase.targetKind)
+			setResponses(t, map[string]string{"show:source-1": source, "show:target-1": target})
+			code, _, stderr := test.run("--json", "dep", "remove", "source-1", "target-1")
+			if code != 1 || !strings.Contains(stderr, `"code":"protected_lifecycle_edge"`) {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:source-1" || fakeCommandKey(calls[1].Args) != "show:target-1" {
+				t.Fatalf("protected removal reached mutation child: %#v", calls)
+			}
+			assertNoViewerSignal(t, test)
+		})
+	}
+}
+
+func TestDependencyRemovalPreservesOrdinaryRelations(t *testing.T) {
+	tests := []struct {
+		name         string
+		sourceKind   string
+		targetKind   string
+		dependencies string
+		targetRead   bool
+	}{
+		{name: "reverse supersession direction", sourceKind: "task", targetKind: "task", dependencies: `[],"dependents":[{"id":"target-1","dependency_type":"supersedes"}]`},
+		{name: "cross-kind supersedes", sourceKind: "task", targetKind: "bug", dependencies: `[{"id":"target-1","dependency_type":"supersedes"}]`, targetRead: true},
+		{name: "generic discovered-from", sourceKind: "task", targetKind: "task", dependencies: `[{"id":"target-1","dependency_type":"discovered-from"}]`, targetRead: true},
+		{name: "reverse discovered-from direction", sourceKind: "todo", targetKind: "task", dependencies: `[{"id":"target-1","dependency_type":"discovered-from"}]`, targetRead: true},
+		{name: "blocks", sourceKind: "task", targetKind: "task", dependencies: `[{"id":"target-1","dependency_type":"blocks"}]`},
+		{name: "related", sourceKind: "task", targetKind: "task", dependencies: `[{"id":"target-1","dependency_type":"related"}]`},
+		{name: "parent-child", sourceKind: "task", targetKind: "epic", dependencies: `[{"id":"target-1","dependency_type":"parent-child"}]`},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, false)
+			source := fmt.Sprintf(`[{"id":"source-1","status":"open","issue_type":%q,"dependencies":%s}]`, testCase.sourceKind, testCase.dependencies)
+			target := fmt.Sprintf(`[{"id":"target-1","status":"open","issue_type":%q}]`, testCase.targetKind)
+			setResponses(t, map[string]string{"show:source-1": source, "show:target-1": target})
+			code, _, stderr := test.run("dep", "remove", "source-1", "target-1")
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			calls := test.calls()
+			wantCalls := 2
+			if testCase.targetRead {
+				wantCalls = 3
+			}
+			if len(calls) != wantCalls || fakeCommandKey(calls[len(calls)-1].Args) != "dep" {
+				t.Fatalf("ordinary removal calls = %#v", calls)
+			}
+			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+				t.Fatalf("ordinary removal did not signal Viewer: %v", err)
+			}
+		})
+	}
 }
 
 func TestCompatibilityReportsAcceptedFindingClasses(t *testing.T) {
@@ -916,4 +1039,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func assertNoViewerSignal(t *testing.T, test *appTest) {
+	t.Helper()
+	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected Viewer signal: %v", err)
+	}
 }
