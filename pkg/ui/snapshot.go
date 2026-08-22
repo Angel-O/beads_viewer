@@ -706,8 +706,12 @@ func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *
 		}
 	}
 
-	// Actionable filter (true = no open blockers)
+	// Actionable filter (true = no open blockers and not scheduler-deferred;
+	// issue #191 parity with `br ready`)
 	if r.Filters.Actionable != nil && *r.Filters.Actionable {
+		if issue.IsDeferredAt(time.Now()) {
+			return false
+		}
 		for _, dep := range issue.Dependencies {
 			if dep == nil || !dep.Type.IsBlocking() {
 				continue

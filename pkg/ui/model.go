@@ -6972,10 +6972,11 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 			}
 		}
 
-		// Apply actionable filter
+		// Apply actionable filter (no open blockers, not scheduler-deferred;
+		// issue #191 parity with `br ready`)
 		if include && r.Filters.Actionable != nil && *r.Filters.Actionable {
 			// Check if issue is blocked
-			isBlocked := false
+			isBlocked := issue.IsDeferredAt(time.Now())
 			for _, dep := range issue.Dependencies {
 				if dep == nil || !dep.Type.IsBlocking() {
 					continue

@@ -6013,8 +6013,13 @@ func applyRecipeFilters(issues []model.Issue, r *recipe.Recipe) []model.Issue {
 			}
 		}
 
-		// Actionable filter (no open blockers)
+		// Actionable filter (no open blockers, not scheduler-deferred).
+		// A future defer_until withholds the bead exactly as `br ready` does
+		// (issue #191); the deferral lapses on its own once the instant passes.
 		if f.Actionable != nil && *f.Actionable {
+			if issue.IsDeferredAt(now) {
+				continue
+			}
 			hasOpenBlockers := false
 			for _, dep := range issue.Dependencies {
 				if dep != nil && dep.Type.IsBlocking() && openBlockers[dep.DependsOnID] {
