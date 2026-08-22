@@ -49,6 +49,47 @@ func TestReconcileRepositorySelection(t *testing.T) {
 	}
 }
 
+func TestHubScopeVariants(t *testing.T) {
+	all := NewAllItemsHubScope()
+	if err := all.Validate(); err != nil || all.Mode != HubScopeAllItems || all.Contexts == nil {
+		t.Fatalf("all-items scope = %#v, err = %v", all, err)
+	}
+
+	selected, err := NewSelectedContextsHubScope([]string{"ctx:z", "ctx:a", "ctx:z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(selected.Contexts, ","); got != "ctx:a,ctx:z" {
+		t.Fatalf("normalized contexts = %q", got)
+	}
+	if err := selected.Validate(); err != nil {
+		t.Fatalf("selected scope validation: %v", err)
+	}
+	clone := selected.Clone()
+	clone.Contexts[0] = "ctx:changed"
+	if selected.Contexts[0] != "ctx:a" {
+		t.Fatal("scope clone shares context storage")
+	}
+
+	contextless := NewContextlessHubScope()
+	if err := contextless.Validate(); err != nil || contextless.Mode != HubScopeContextless || contextless.Contexts == nil {
+		t.Fatalf("contextless scope = %#v, err = %v", contextless, err)
+	}
+
+	invalid := []HubScope{
+		{},
+		{Mode: HubScopeSelectedContexts},
+		{Mode: HubScopeSelectedContexts, Contexts: []string{"ctx:z", "ctx:a"}},
+		{Mode: HubScopeSelectedContexts, Contexts: []string{"todo"}},
+		{Mode: HubScopeContextless, Contexts: []string{"ctx:a"}},
+	}
+	for _, scope := range invalid {
+		if err := scope.Validate(); err == nil {
+			t.Fatalf("scope %#v unexpectedly valid", scope)
+		}
+	}
+}
+
 func TestSortRepositoryCatalog(t *testing.T) {
 	catalog := RepositoryCatalog{{ID: "ctx:z", Name: "same"}, {ID: "ctx:b", Name: "alpha"}, {ID: "ctx:a", Name: "same"}}
 	SortRepositoryCatalog(catalog)
@@ -163,6 +204,7 @@ func TestDependencyType_IsValid(t *testing.T) {
 		{"Related", DepRelated, true},
 		{"ParentChild", DepParentChild, true},
 		{"DiscoveredFrom", DepDiscoveredFrom, true},
+		{"Supersedes", DepSupersedes, true},
 		{"Invalid", "causes", false},
 		{"Empty", "", false},
 	}
@@ -184,6 +226,7 @@ func TestDependencyType_IsBlocking(t *testing.T) {
 		{"Blocks", DepBlocks, true},
 		{"Related", DepRelated, false},
 		{"ParentChild", DepParentChild, false},
+		{"Supersedes", DepSupersedes, false},
 		{"Legacy (Empty)", "", true},
 	}
 	for _, tt := range tests {
@@ -288,6 +331,20 @@ func TestDependency_UnmarshalJSON_TargetAliases(t *testing.T) {
 				t.Fatalf("Type = %q, want %q", dep.Type, DepBlocks)
 			}
 		})
+	}
+}
+
+func TestIssue_UnmarshalCloseReasonAndSupersedes(t *testing.T) {
+	var issue Issue
+	err := json.Unmarshal([]byte(`{"id":"replacement","title":"Replacement","status":"closed","issue_type":"todo","close_reason":"Superseded by replacement","dependencies":[{"depends_on_id":"original","type":"supersedes"}]}`), &issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issue.CloseReason != "Superseded by replacement" {
+		t.Fatalf("close reason = %q", issue.CloseReason)
+	}
+	if len(issue.Dependencies) != 1 || issue.Dependencies[0].Type != DepSupersedes || issue.Dependencies[0].Type.IsBlocking() {
+		t.Fatalf("supersedes dependency = %#v", issue.Dependencies)
 	}
 }
 
@@ -732,12 +789,13 @@ func TestIssue_Clone(t *testing.T) {
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		ClosedAt:          &closedAt,
+		CloseReason:       "Superseded by replacement",
 		ExternalRef:       &externalRef,
 		CompactedAt:       &compactedAt,
 		CompactedAtCommit: &compactedAtCommit,
 		Labels:            []string{"bug", "critical"},
 		Dependencies: []*Dependency{
-			{IssueID: "TEST-1", DependsOnID: "TEST-2", Type: DepBlocks},
+			{IssueID: "TEST-1", DependsOnID: "TEST-2", Type: DepSupersedes},
 		},
 		Comments: []*Comment{
 			{ID: "1", IssueID: "TEST-1", Author: "user", Text: "comment"},
@@ -752,6 +810,9 @@ func TestIssue_Clone(t *testing.T) {
 	}
 	if clone.Title != original.Title {
 		t.Errorf("Title mismatch")
+	}
+	if clone.CloseReason != original.CloseReason {
+		t.Errorf("CloseReason mismatch")
 	}
 
 	// Verify pointer fields are deep copied
@@ -794,6 +855,9 @@ func TestIssue_Clone(t *testing.T) {
 	}
 	if clone.Dependencies[0] == original.Dependencies[0] {
 		t.Errorf("Dependencies[0] should be a new pointer")
+	}
+	if clone.Dependencies[0].Type != DepSupersedes || clone.Dependencies[0].Type.IsBlocking() {
+		t.Errorf("supersedes dependency was not preserved as nonblocking")
 	}
 
 	// Verify Comments are deep copied

@@ -75,6 +75,79 @@ func TestRepositoryScopeHubExactMultiContextAndAllSemantics(t *testing.T) {
 	}
 }
 
+func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "both", Title: "Both", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}},
+		{ID: "contextless", Title: "Contextless", Status: model.StatusOpen, IssueType: "todo"},
+		{ID: "unregistered", Title: "Unregistered", Status: model.StatusOpen, Labels: []string{"ctx:unknown"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+
+	if err := m.SetHubScope(model.NewAllItemsHubScope()); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "both", "contextless", "unregistered")
+
+	selected, err := model.NewSelectedContextsHubScope([]string{"ctx:beta", "ctx:alpha", "ctx:beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(selected); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "both")
+	if got := strings.Join(m.HubScope().Contexts, ","); got != "ctx:alpha,ctx:beta" {
+		t.Fatalf("selected contexts = %q", got)
+	}
+
+	if err := m.SetHubScope(model.NewContextlessHubScope()); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "contextless")
+	if m.HubScope().Mode != model.HubScopeContextless {
+		t.Fatalf("scope = %#v", m.HubScope())
+	}
+
+	unknown, err := model.NewSelectedContextsHubScope([]string{"ctx:unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(unknown); err == nil {
+		t.Fatal("unregistered explicit context was accepted")
+	}
+}
+
+func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "none", Title: "None", Status: model.StatusOpen, IssueType: "todo"},
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+	}, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha")
+	if err := m.SetHubScope(model.NewContextlessHubScope()); err != nil {
+		t.Fatal(err)
+	}
+
+	m.applyRepositoryCatalogUpdate(hubScopeCatalog("ctx:alpha", "ctx:beta"), 1, true, false, nil)
+	if m.HubScope().Mode != model.HubScopeContextless {
+		t.Fatalf("catalog refresh changed scope to %#v", m.HubScope())
+	}
+
+	snapshot := NewSnapshotBuilder([]model.Issue{
+		{ID: "none-new", Title: "None", Status: model.StatusOpen, IssueType: "todo"},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
+	m = updated.(Model)
+	if m.HubScope().Mode != model.HubScopeContextless {
+		t.Fatalf("snapshot refresh changed scope to %#v", m.HubScope())
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "none-new")
+}
+
 func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "hub.yaml")
@@ -107,6 +180,43 @@ func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
 	m = updated.(Model)
 	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
 		t.Fatalf("async scope = %#v, want ctx:alpha", scope)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+}
+
+func TestRejectedHubScopePreservesPendingDefault(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}, nil, "")
+	m.hubRepositoryMode = true
+	if m.SetDefaultRepositoryScope("ctx:alpha") {
+		t.Fatal("default applied before the initial catalog arrived")
+	}
+
+	beforeScope := m.HubScope()
+	beforeDefaultSet := m.defaultRepositorySet
+	beforeDefaultID := m.defaultRepositoryID
+	unknown, err := model.NewSelectedContextsHubScope([]string{"ctx:unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(unknown); err == nil {
+		t.Fatal("unregistered explicit context was accepted")
+	}
+	afterScope := m.HubScope()
+	if afterScope.Mode != beforeScope.Mode || strings.Join(afterScope.Contexts, ",") != strings.Join(beforeScope.Contexts, ",") {
+		t.Fatalf("rejected scope changed Hub scope: before=%#v after=%#v", beforeScope, afterScope)
+	}
+	if m.defaultRepositorySet != beforeDefaultSet || m.defaultRepositoryID != beforeDefaultID {
+		t.Fatalf("rejected scope changed pending default: set %v -> %v, ID %q -> %q",
+			beforeDefaultSet, m.defaultRepositorySet, beforeDefaultID, m.defaultRepositoryID)
+	}
+
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
+	m = updated.(Model)
+	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:alpha" {
+		t.Fatalf("pending current-context default did not apply: %#v", scope)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
 }
@@ -255,6 +365,77 @@ func TestRepositoryScopeComposesAfterScopeAndKeepsHiddenBlockerTruth(t *testing.
 	m.setActiveRecipe(r)
 	m.applyRecipe(r)
 	requireIssueIDs(t, visibleIssueIDs(m))
+}
+
+func TestHubFocusedRelationshipBoundaryEvidence(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "todo", Title: "Captured idea", Status: model.StatusOpen, IssueType: "todo"},
+		{ID: "work", Title: "Visible work", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}, Dependencies: []*model.Dependency{
+			{DependsOnID: "blocker", Type: model.DepBlocks},
+			{DependsOnID: "todo", Type: model.DepDiscoveredFrom},
+		}},
+		{ID: "blocker", Title: "Hidden blocker", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "original", Title: "Original", Status: model.StatusClosed, CloseReason: "Superseded after placement correction", Labels: []string{"ctx:beta"}},
+		{ID: "replacement", Title: "Replacement", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}, Dependencies: []*model.Dependency{{DependsOnID: "original", Type: model.DepSupersedes}}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
+
+	work := m.hubRelationshipMarkdown(*m.issueMap["work"])
+	if !containsAll(work, "Blocked by", "Hidden blocker", "Result of todo", "Captured idea", "contexts: ctx:beta", "contexts: contextless", "out of scope") {
+		t.Fatalf("work relationship evidence:\n%s", work)
+	}
+	replacement := m.hubRelationshipMarkdown(*m.issueMap["replacement"])
+	if !containsAll(replacement, "Supersedes original", "Original", "contexts: ctx:beta", "out of scope") {
+		t.Fatalf("replacement relationship evidence:\n%s", replacement)
+	}
+	original := m.hubRelationshipMarkdown(*m.issueMap["original"])
+	if !containsAll(original, "Superseded by", "Replacement", "Close reason", "Superseded after placement correction", "contexts: ctx:alpha") {
+		t.Fatalf("original relationship evidence:\n%s", original)
+	}
+	if !strings.Contains(m.hubRelationshipMarkdown(*m.issueMap["todo"]), "Results in") {
+		t.Fatal("todo did not expose resulting work")
+	}
+}
+
+func TestHubTreeAndBoardMarkHiddenCanonicalEndpoints(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "child", Title: "Visible child", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}, Dependencies: []*model.Dependency{
+			{DependsOnID: "parent", Type: model.DepParentChild},
+			{DependsOnID: "blocker", Type: model.DepBlocks},
+		}},
+		{ID: "parent", Title: "Hidden parent", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "blocker", Title: "Hidden blocker", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "source", Title: "Visible source", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "dependent", Title: "Hidden dependent", Status: model.StatusOpen, Labels: []string{"ctx:beta"}, Dependencies: []*model.Dependency{{DependsOnID: "source", Type: model.DepBlocks}}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
+
+	m.focused = focusTree
+	m.rebuildRepositoryTree()
+	treeView := m.tree.View()
+	if !containsAll(treeView, "Visible child", "parent out of scope") || strings.Contains(treeView, "Hidden parent") {
+		t.Fatalf("projected tree:\n%s", treeView)
+	}
+
+	card := m.board.renderCard(*m.issueMap["child"], 48, false, 0, 0)
+	if !containsAll(card, "Hidden bloc", "[out]") || !m.board.hasOpenBlocker(*m.issueMap["child"]) {
+		t.Fatalf("projected board card:\n%s", card)
+	}
+	expanded := m.board.renderExpandedCard(*m.issueMap["child"], 70, 0, 0)
+	if !containsAll(expanded, "Hidden blocker", "out of scope") {
+		t.Fatalf("expanded board card:\n%s", expanded)
+	}
+	sourceCard := m.board.renderCard(*m.issueMap["source"], 48, false, 0, 0)
+	if !containsAll(sourceCard, "→1", "[out]") {
+		t.Fatalf("board card lost hidden dependent evidence:\n%s", sourceCard)
+	}
 }
 
 func boolPointer(value bool) *bool { return &value }

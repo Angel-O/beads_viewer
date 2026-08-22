@@ -491,6 +491,7 @@ type Model struct {
 	historyMode             correlation.HistoryMode
 	hubRepositoryMode       bool
 	repositoryCatalog       model.RepositoryCatalog
+	hubScope                model.HubScope
 	repositoryCatalogIssues []model.Issue
 	repositoryIssues        []model.Issue
 	repositoryIssueIDs      map[string]bool
@@ -1328,6 +1329,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		analysis:               graphStats,
 		beadsPath:              beadsPath,
 		semanticPath:           beadsPath,
+		hubScope:               model.NewAllItemsHubScope(),
 		watcher:                fileWatcher,
 		snapshotInitPending:    backgroundWorker != nil && len(issues) == 0,
 		backgroundWorker:       backgroundWorker,
@@ -1477,7 +1479,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 		return err
 	}
 	m.repositoryCatalog = catalog
-	m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, catalog)
+	m.reconcileHubScopeCatalog()
 	m.repositoryCatalogReady = true
 	if m.showRepoPicker {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
@@ -1498,16 +1500,21 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		return
 	}
 	if changed {
-		before := sortedRepoKeys(m.activeRepos)
+		beforeScope := m.HubScope()
+		beforeRepos := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
-		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		if m.usesHubScope() {
+			m.reconcileHubScopeCatalog()
+		} else {
+			m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		}
 		m.repositoryCatalogReady = true
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
 		}
 		m.refreshRepositoryPresentation()
 		defaultApplied := m.applyDefaultRepositoryScope()
-		if !defaultApplied && !slices.Equal(before, sortedRepoKeys(m.activeRepos)) {
+		if !defaultApplied && (beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))) {
 			m.refreshRepositoryCandidates()
 		}
 	}
@@ -2287,7 +2294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sortFilteredItems(filteredItems, filteredIssues)
 			m.setListItemsPreservingFilter(filteredItems)
 			m.updateSemanticIDs(filteredItems)
-			if m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
+			if m.snapshot != nil && m.snapshot.BoardState != nil && m.repositoryScopeIsAll() && len(filteredIssues) == len(m.snapshot.Issues) {
 				m.board.SetSnapshot(m.snapshot)
 			} else {
 				m.board.SetIssues(filteredIssues)
@@ -4023,7 +4030,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusIsError = false
 					return m, nil
 				}
-				if len(m.repositoryCatalog) == 0 {
+				if len(m.repositoryCatalog) == 0 && !m.hubRepositoryMode {
 					m.statusMsg = "No repositories available"
 					m.statusIsError = false
 					return m, nil
@@ -4031,7 +4038,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showRepoPicker = !m.showRepoPicker
 				if m.showRepoPicker {
 					m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-					m.repoPicker.SetActiveRepos(m.activeRepos)
+					if m.hubRepositoryMode {
+						m.repoPicker.SetHubScope(m.hubScope)
+					} else {
+						m.repoPicker.SetActiveRepos(m.activeRepos)
+					}
 					m.repoPicker.SetSize(m.width, m.height-1)
 					m.focused = focusRepoPicker
 				} else {
@@ -5027,6 +5038,14 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 
 func (m Model) applyRepositoryPickerSelection() Model {
 	selected := m.repoPicker.SelectedRepos()
+	if m.hubRepositoryMode && m.repoPicker.ContextlessSelected() {
+		m.statusMsg = "Repository scope: contextless"
+		m.statusIsError = false
+		_ = m.SetHubScope(model.NewContextlessHubScope())
+		m.showRepoPicker = false
+		m.focused = focusList
+		return m
+	}
 	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
 		m.statusMsg = "Repository scope: all"
 	} else {
@@ -6446,6 +6465,14 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 		return ""
 	}
 	selectedCount := len(m.activeRepos)
+	if m.hubRepositoryMode && m.hubScope.Mode == model.HubScopeContextless {
+		return lipgloss.NewStyle().
+			Background(ThemeBg("#45B7D1")).
+			Foreground(ColorBg).
+			Bold(true).
+			Padding(0, 1).
+			Render("📦 Contextless")
+	}
 	if m.activeRepos == nil {
 		selectedCount = len(m.repositoryCatalog)
 	}
@@ -7221,7 +7248,7 @@ func (m *Model) refreshBoardAndGraphForCurrentFilter() {
 	filteredIssues := m.filteredIssuesForActiveView()
 	recipeFilterActive := m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:")
 	if m.isBoardView {
-		useSnapshot := m.snapshot != nil && m.snapshot.BoardState != nil && m.activeRepos == nil && len(filteredIssues) == len(m.snapshot.Issues)
+		useSnapshot := m.snapshot != nil && m.snapshot.BoardState != nil && m.repositoryScopeIsAll() && len(filteredIssues) == len(m.snapshot.Issues)
 		if useSnapshot {
 			if recipeFilterActive {
 				useSnapshot = m.snapshot.RecipeName == m.activeRecipe.Name && m.snapshot.RecipeHash == recipeFingerprint(m.activeRecipe)
@@ -7233,6 +7260,7 @@ func (m *Model) refreshBoardAndGraphForCurrentFilter() {
 			m.board.SetSnapshot(m.snapshot)
 		} else {
 			m.board.SetIssues(filteredIssues)
+			m.board.SetCanonicalIssues(m.issues)
 		}
 	}
 
@@ -7289,10 +7317,11 @@ func (m *Model) applyFilter() {
 
 	m.setListItemsPreservingFilter(filteredItems)
 	m.updateSemanticIDs(filteredItems)
-	if m.snapshot != nil && m.snapshot.BoardState != nil && m.currentFilter == "all" && m.activeRepos == nil && len(filteredIssues) == len(m.snapshot.Issues) {
+	if m.snapshot != nil && m.snapshot.BoardState != nil && m.currentFilter == "all" && m.repositoryScopeIsAll() && len(filteredIssues) == len(m.snapshot.Issues) {
 		m.board.SetSnapshot(m.snapshot)
 	} else {
 		m.board.SetIssues(filteredIssues)
+		m.board.SetCanonicalIssues(m.issues)
 	}
 	if m.snapshot != nil && m.snapshot.GetGraphLayout() != nil && m.currentFilter == "all" && len(filteredIssues) == len(m.snapshot.Issues) {
 		m.graphView.SetSnapshot(m.snapshot)
@@ -7652,6 +7681,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 	m.setListItemsPreservingFilter(filteredItems)
 	m.updateSemanticIDs(filteredItems)
 	m.board.SetIssues(filteredIssues)
+	m.board.SetCanonicalIssues(m.issues)
 	// Generate insights for graph view (for metric rankings and sorting)
 	recipeIns := projectInsights(m.analysis.GenerateInsights(len(m.issues)), issueIDSet(filteredIssues))
 	m.graphView.SetProjectedIssues(filteredIssues, m.issueMap, &recipeIns)
@@ -7975,6 +8005,8 @@ func (m *Model) updateViewportContent() {
 	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation())
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
+	} else if m.hubRepositoryPresentation() && len(hubContextNames(item, m.repositoryCatalog)) == 1 && hubContextNames(item, m.repositoryCatalog)[0] == "contextless" {
+		sb.WriteString("**Repositories:** Contextless\n\n")
 	}
 
 	// Labels (bv-f103 fix: display labels in detail view)
@@ -8077,6 +8109,8 @@ func (m *Model) updateViewportContent() {
 		sb.WriteString("### Notes\n")
 		sb.WriteString(item.Notes + "\n\n")
 	}
+
+	sb.WriteString(m.hubRelationshipMarkdown(item))
 
 	// Dependency Graph (Tree)
 	if len(item.Dependencies) > 0 {

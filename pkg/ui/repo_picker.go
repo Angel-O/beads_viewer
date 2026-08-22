@@ -14,16 +14,19 @@ import (
 
 // RepoPickerModel represents the repository scope picker overlay.
 type RepoPickerModel struct {
-	catalog       model.RepositoryCatalog
-	filtered      model.RepositoryCatalog
-	selectedIndex int
-	selected      map[string]bool // exact repository ID -> selected
-	selectFuture  bool
-	searching     bool
-	searchInput   textinput.Model
-	width         int
-	height        int
-	theme         Theme
+	catalog             model.RepositoryCatalog
+	filtered            model.RepositoryCatalog
+	selectedIndex       int
+	selected            map[string]bool // exact repository ID -> selected
+	selectFuture        bool
+	showContextless     bool
+	contextlessSelected bool
+	contextlessMatch    bool
+	searching           bool
+	searchInput         textinput.Model
+	width               int
+	height              int
+	theme               Theme
 }
 
 // NewRepoPickerModel creates a repository picker with all entries selected.
@@ -64,6 +67,7 @@ func (m *RepoPickerModel) SetSize(width, height int) {
 
 // SetActiveRepos initializes selection from the currently active repo filter (nil = all).
 func (m *RepoPickerModel) SetActiveRepos(active map[string]bool) {
+	m.contextlessSelected = false
 	if len(m.catalog) == 0 {
 		m.selected = map[string]bool{}
 		m.selectFuture = active == nil
@@ -86,9 +90,30 @@ func (m *RepoPickerModel) SetActiveRepos(active map[string]bool) {
 	}
 }
 
+// SetHubScope enables the dedicated contextless choice and initializes the
+// picker from an explicit Hub selector.
+func (m *RepoPickerModel) SetHubScope(scope model.HubScope) {
+	m.showContextless = true
+	m.contextlessSelected = scope.Mode == model.HubScopeContextless
+	if m.contextlessSelected {
+		m.selected = make(map[string]bool)
+		m.selectFuture = false
+	} else if scope.Mode == model.HubScopeSelectedContexts {
+		selected := make(map[string]bool, len(scope.Contexts))
+		for _, contextID := range scope.Contexts {
+			selected[contextID] = true
+		}
+		m.SetActiveRepos(selected)
+	} else {
+		m.SetActiveRepos(nil)
+	}
+	m.filterCatalog("")
+}
+
 // SetCatalog refreshes picker options while preserving draft selection and the
 // cursor by exact repository ID. New entries join only an all-repositories draft.
 func (m *RepoPickerModel) SetCatalog(catalog model.RepositoryCatalog) {
+	contextlessCursor := m.currentChoiceIsContextless()
 	cursorID := m.currentRepositoryID()
 	previousIndex := m.selectedIndex
 	available := make(map[string]bool, len(catalog))
@@ -105,6 +130,9 @@ func (m *RepoPickerModel) SetCatalog(catalog model.RepositoryCatalog) {
 	}
 	m.catalog = append(model.RepositoryCatalog(nil), catalog...)
 	m.filterCatalog(cursorID)
+	if contextlessCursor && m.contextlessMatch {
+		m.selectedIndex = 0
+	}
 	if cursorID == "" || m.currentRepositoryID() != cursorID {
 		m.selectedIndex = previousIndex
 		m.clampSelection()
@@ -120,17 +148,26 @@ func (m *RepoPickerModel) MoveUp() {
 
 // MoveDown moves selection down.
 func (m *RepoPickerModel) MoveDown() {
-	if m.selectedIndex < len(m.filtered)-1 {
+	if m.selectedIndex < m.choiceCount()-1 {
 		m.selectedIndex++
 	}
 }
 
 // ToggleSelected toggles the selected state of the current repo.
 func (m *RepoPickerModel) ToggleSelected() {
-	if len(m.filtered) == 0 || m.selectedIndex < 0 || m.selectedIndex >= len(m.filtered) {
+	if m.currentChoiceIsContextless() {
+		m.contextlessSelected = !m.contextlessSelected
+		if m.contextlessSelected {
+			m.selected = make(map[string]bool)
+			m.selectFuture = false
+		}
 		return
 	}
-	id := m.filtered[m.selectedIndex].ID
+	id := m.currentRepositoryID()
+	if id == "" {
+		return
+	}
+	m.contextlessSelected = false
 	m.selected[id] = !m.selected[id]
 	m.selectFuture = len(m.selected) == len(m.catalog)
 	if m.selectFuture {
@@ -145,6 +182,7 @@ func (m *RepoPickerModel) ToggleSelected() {
 
 // SelectAll selects all repos.
 func (m *RepoPickerModel) SelectAll() {
+	m.contextlessSelected = false
 	for _, repository := range m.catalog {
 		m.selected[repository.ID] = true
 	}
@@ -153,6 +191,7 @@ func (m *RepoPickerModel) SelectAll() {
 
 // ClearSelection clears the draft. Applying an empty draft means all.
 func (m *RepoPickerModel) ClearSelection() {
+	m.contextlessSelected = false
 	m.selected = make(map[string]bool)
 	m.selectFuture = false
 }
@@ -167,6 +206,8 @@ func (m RepoPickerModel) SelectedRepos() map[string]bool {
 	}
 	return out
 }
+
+func (m RepoPickerModel) ContextlessSelected() bool { return m.contextlessSelected }
 
 func (m *RepoPickerModel) BeginSearch() {
 	m.searching = true
@@ -190,17 +231,34 @@ func (m *RepoPickerModel) UpdateSearch(msg tea.KeyMsg) {
 
 func (m RepoPickerModel) SearchValue() string { return m.searchInput.Value() }
 
-func (m RepoPickerModel) FilteredCount() int { return len(m.filtered) }
+func (m RepoPickerModel) FilteredCount() int { return m.choiceCount() }
+
+func (m RepoPickerModel) choiceCount() int {
+	count := len(m.filtered)
+	if m.contextlessMatch {
+		count++
+	}
+	return count
+}
+
+func (m RepoPickerModel) currentChoiceIsContextless() bool {
+	return m.contextlessMatch && m.selectedIndex == 0
+}
 
 func (m RepoPickerModel) currentRepositoryID() string {
-	if m.selectedIndex < 0 || m.selectedIndex >= len(m.filtered) {
+	index := m.selectedIndex
+	if m.contextlessMatch {
+		index--
+	}
+	if index < 0 || index >= len(m.filtered) {
 		return ""
 	}
-	return m.filtered[m.selectedIndex].ID
+	return m.filtered[index].ID
 }
 
 func (m *RepoPickerModel) filterCatalog(preferredID string) {
 	query := strings.TrimSpace(m.searchInput.Value())
+	m.contextlessMatch = m.showContextless && (query == "" || fuzzyScore("contextless no repository", query) > 0)
 	if query == "" {
 		m.filtered = append(model.RepositoryCatalog(nil), m.catalog...)
 	} else {
@@ -235,9 +293,13 @@ func (m *RepoPickerModel) filterCatalog(preferredID string) {
 		}
 	}
 	m.selectedIndex = 0
+	offset := 0
+	if m.contextlessMatch {
+		offset = 1
+	}
 	for i, repository := range m.filtered {
 		if repository.ID == preferredID {
-			m.selectedIndex = i
+			m.selectedIndex = i + offset
 			break
 		}
 	}
@@ -245,12 +307,12 @@ func (m *RepoPickerModel) filterCatalog(preferredID string) {
 }
 
 func (m *RepoPickerModel) clampSelection() {
-	if len(m.filtered) == 0 {
+	if m.choiceCount() == 0 {
 		m.selectedIndex = 0
 		return
 	}
-	if m.selectedIndex >= len(m.filtered) {
-		m.selectedIndex = len(m.filtered) - 1
+	if m.selectedIndex >= m.choiceCount() {
+		m.selectedIndex = m.choiceCount() - 1
 	}
 	if m.selectedIndex < 0 {
 		m.selectedIndex = 0
@@ -318,7 +380,7 @@ func (m *RepoPickerModel) View() string {
 		}
 	}
 
-	if len(m.filtered) == 0 {
+	if m.choiceCount() == 0 {
 		emptyStyle := t.Renderer.NewStyle().Foreground(t.Secondary).Italic(true)
 		message := "No repositories available."
 		if len(m.catalog) > 0 {
@@ -354,7 +416,8 @@ func (m *RepoPickerModel) View() string {
 		if maxVisible > 10 {
 			maxVisible = 10
 		}
-		showPosition := len(m.filtered) > maxVisible && maxVisible > 0
+		choiceCount := m.choiceCount()
+		showPosition := choiceCount > maxVisible && maxVisible > 0
 		if showPosition && lineBudget-fixedLines-maxVisible*rowHeight < 1 {
 			maxVisible--
 			showPosition = maxVisible > 0
@@ -364,13 +427,11 @@ func (m *RepoPickerModel) View() string {
 			start = m.selectedIndex - maxVisible + 1
 		}
 		end := start + maxVisible
-		if end > len(m.filtered) {
-			end = len(m.filtered)
+		if end > choiceCount {
+			end = choiceCount
 		}
 		for i := start; i < end; i++ {
-			repository := m.filtered[i]
 			isCursor := i == m.selectedIndex
-			isSelected := m.selected[repository.ID]
 
 			nameStyle := t.Renderer.NewStyle().Foreground(t.Base.GetForeground())
 			if isCursor {
@@ -381,6 +442,25 @@ func (m *RepoPickerModel) View() string {
 			if isCursor {
 				prefix = "▸ "
 			}
+			if m.contextlessMatch && i == 0 {
+				check := "[ ]"
+				if m.contextlessSelected {
+					check = "[x]"
+				}
+				line := prefix + check + " Contextless"
+				lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
+				if showDetails {
+					detailStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
+					lines = append(lines, detailStyle.Render("      No ctx: labels"))
+				}
+				continue
+			}
+			repositoryIndex := i
+			if m.contextlessMatch {
+				repositoryIndex--
+			}
+			repository := m.filtered[repositoryIndex]
+			isSelected := m.selected[repository.ID]
 			check := "[ ]"
 			if isSelected {
 				check = "[x]"
@@ -404,7 +484,7 @@ func (m *RepoPickerModel) View() string {
 		}
 		if showPosition {
 			lines = append(lines, t.Renderer.NewStyle().Foreground(t.Secondary).Render(
-				fmt.Sprintf("  %d/%d", m.selectedIndex+1, len(m.filtered)),
+				fmt.Sprintf("  %d/%d", m.selectedIndex+1, choiceCount),
 			))
 		}
 	}

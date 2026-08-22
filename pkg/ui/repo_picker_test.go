@@ -127,6 +127,33 @@ func TestRepoPickerCatalogRefreshHonorsAllAndClearedDrafts(t *testing.T) {
 	}
 }
 
+func TestRepoPickerContextlessChoiceIsDistinctAndExclusive(t *testing.T) {
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m.SetHubScope(model.NewAllItemsHubScope())
+	if m.FilteredCount() != len(testRepositoryCatalog())+1 || !m.currentChoiceIsContextless() {
+		t.Fatalf("contextless choice missing: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
+	}
+	m.ToggleSelected()
+	if !m.ContextlessSelected() || len(m.SelectedRepos()) != 0 {
+		t.Fatalf("contextless selection not exclusive: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	}
+	m.MoveDown()
+	m.ToggleSelected()
+	if m.ContextlessSelected() || !m.SelectedRepos()["ctx:alpha-123"] {
+		t.Fatalf("repository selection did not clear contextless: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+	}
+
+	m.BeginSearch()
+	m.UpdateSearch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("contextless")})
+	if m.FilteredCount() != 1 || !m.currentChoiceIsContextless() {
+		t.Fatalf("contextless search results: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
+	}
+	m.SetCatalog(append(testRepositoryCatalog(), model.RepositoryCatalogEntry{ID: "ctx:new", Name: "new"}))
+	if !m.currentChoiceIsContextless() {
+		t.Fatal("catalog refresh moved contextless cursor")
+	}
+}
+
 func TestRepoPickerFitsSmallTerminalWhileSearching(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetSize(20, 8)

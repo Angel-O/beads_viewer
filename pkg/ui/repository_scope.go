@@ -19,6 +19,11 @@ type issueRepositoryPresentation struct {
 	Labels []string
 }
 
+type hubRelationshipEvidence struct {
+	Label    string
+	Endpoint *model.Issue
+}
+
 func isHubContextLabel(label string) bool {
 	return strings.HasPrefix(label, "ctx:")
 }
@@ -57,6 +62,116 @@ func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryC
 		presentation.Names = append(presentation.Names, repository.Name)
 	}
 	return presentation
+}
+
+func hubContextNames(issue model.Issue, catalog model.RepositoryCatalog) []string {
+	namesByID := make(map[string]string, len(catalog))
+	for _, repository := range catalog {
+		if repository.Kind == model.RepositoryIdentityHubContext {
+			name := repository.Name
+			if name == "" {
+				name = repository.ID
+			}
+			namesByID[repository.ID] = name
+		}
+	}
+	contexts := make([]string, 0)
+	for _, label := range issue.Labels {
+		if !isHubContextLabel(label) {
+			continue
+		}
+		name := namesByID[label]
+		if name == "" {
+			name = label
+		}
+		contexts = append(contexts, name)
+	}
+	sort.Strings(contexts)
+	if len(contexts) == 0 {
+		return []string{"contextless"}
+	}
+	return contexts
+}
+
+func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
+	if !m.hubRepositoryPresentation() {
+		return ""
+	}
+	evidence := make([]hubRelationshipEvidence, 0)
+	for _, dependency := range issue.Dependencies {
+		if dependency == nil {
+			continue
+		}
+		endpoint := m.issueMap[dependency.DependsOnID]
+		if endpoint == nil {
+			continue
+		}
+		label := ""
+		switch dependency.Type {
+		case model.DepBlocks, "":
+			label = "Blocked by"
+		case model.DepDiscoveredFrom:
+			label = "Result of todo"
+		case model.DepSupersedes:
+			label = "Supersedes original"
+		case model.DepParentChild:
+			label = "Parent"
+		}
+		if label != "" {
+			evidence = append(evidence, hubRelationshipEvidence{Label: label, Endpoint: endpoint})
+		}
+	}
+	supersededOriginal := false
+	for i := range m.issues {
+		candidate := &m.issues[i]
+		for _, dependency := range candidate.Dependencies {
+			if dependency == nil || dependency.DependsOnID != issue.ID {
+				continue
+			}
+			label := ""
+			switch dependency.Type {
+			case model.DepBlocks, "":
+				label = "Blocks"
+			case model.DepDiscoveredFrom:
+				label = "Results in"
+			case model.DepSupersedes:
+				label = "Superseded by"
+				supersededOriginal = true
+			case model.DepParentChild:
+				label = "Child"
+			}
+			if label != "" {
+				evidence = append(evidence, hubRelationshipEvidence{Label: label, Endpoint: candidate})
+			}
+		}
+	}
+	if len(evidence) == 0 && !(supersededOriginal && issue.CloseReason != "") {
+		return ""
+	}
+	sort.SliceStable(evidence, func(i, j int) bool {
+		if evidence[i].Label != evidence[j].Label {
+			return evidence[i].Label < evidence[j].Label
+		}
+		return evidence[i].Endpoint.ID < evidence[j].Endpoint.ID
+	})
+
+	var sb strings.Builder
+	sb.WriteString("### Relationships\n")
+	if supersededOriginal && issue.CloseReason != "" {
+		sb.WriteString(fmt.Sprintf("- **Close reason:** %s\n", issue.CloseReason))
+	}
+	for _, relation := range evidence {
+		endpoint := relation.Endpoint
+		boundary := ""
+		if !m.issueMatchesRepositoryScope(*endpoint) {
+			boundary = " _(out of scope)_"
+		}
+		sb.WriteString(fmt.Sprintf("- **%s:** `%s` %s (%s; contexts: %s)%s\n",
+			relation.Label, endpoint.ID, endpoint.Title, endpoint.Status,
+			strings.Join(hubContextNames(*endpoint, m.repositoryCatalog), ", "), boundary))
+	}
+	sb.WriteString("\n")
+	return sb.String()
 }
 
 func (m *Model) hubRepositoryPresentation() bool {
@@ -149,6 +264,28 @@ func (m *Model) refreshRepositoryPresentation() {
 }
 
 func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
+	if m.usesHubScope() {
+		switch m.hubScope.Mode {
+		case model.HubScopeContextless:
+			for _, label := range issue.Labels {
+				if isHubContextLabel(label) {
+					return false
+				}
+			}
+			return true
+		case model.HubScopeSelectedContexts:
+			for _, label := range issue.Labels {
+				for _, contextID := range m.hubScope.Contexts {
+					if label == contextID {
+						return true
+					}
+				}
+			}
+			return false
+		default:
+			return true
+		}
+	}
 	if m.activeRepos == nil {
 		return true
 	}
@@ -183,7 +320,7 @@ func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
 }
 
 func (m *Model) repositoryCandidates() []model.Issue {
-	if m.activeRepos == nil {
+	if (!m.usesHubScope() && m.activeRepos == nil) || (m.usesHubScope() && m.hubScope.Mode == model.HubScopeAllItems) {
 		return m.issues
 	}
 	candidates := make([]model.Issue, 0, len(m.issues))
@@ -193,6 +330,28 @@ func (m *Model) repositoryCandidates() []model.Issue {
 		}
 	}
 	return candidates
+}
+
+func (m Model) repositoryScopeIsAll() bool {
+	if m.usesHubScope() {
+		return m.hubScope.Mode == model.HubScopeAllItems
+	}
+	return m.activeRepos == nil
+}
+
+func (m Model) usesHubScope() bool {
+	if m.workspaceMode {
+		return false
+	}
+	if m.hubRepositoryMode || strings.TrimSpace(m.hubConfigPath) != "" {
+		return true
+	}
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind == model.RepositoryIdentityHubContext {
+			return true
+		}
+	}
+	return false
 }
 
 func issueIDSet(issues []model.Issue) map[string]bool {
@@ -209,6 +368,33 @@ func repositoryCatalogIDs(catalog model.RepositoryCatalog) []string {
 		ids = append(ids, repository.ID)
 	}
 	return ids
+}
+
+func (m *Model) reconcileHubScopeCatalog() {
+	if !m.usesHubScope() || m.hubScope.Mode == model.HubScopeContextless {
+		return
+	}
+	selected := m.activeRepos
+	if m.hubScope.Mode == model.HubScopeSelectedContexts {
+		selected = make(map[string]bool, len(m.hubScope.Contexts))
+		for _, contextID := range m.hubScope.Contexts {
+			selected[contextID] = true
+		}
+	}
+	reconciled := model.ReconcileRepositorySelection(selected, m.repositoryCatalog)
+	if reconciled == nil {
+		m.hubScope = model.NewAllItemsHubScope()
+		m.activeRepos = nil
+		return
+	}
+	scope, err := model.NewSelectedContextsHubScope(sortedRepoKeys(reconciled))
+	if err != nil {
+		m.hubScope = model.NewAllItemsHubScope()
+		m.activeRepos = nil
+		return
+	}
+	m.hubScope = scope
+	m.activeRepos = reconciled
 }
 
 // SetDefaultRepositoryScope applies an exact Hub context once the initial
@@ -232,6 +418,11 @@ func (m *Model) applyDefaultRepositoryScope() bool {
 			continue
 		}
 		m.activeRepos = map[string]bool{repository.ID: true}
+		scope, err := model.NewSelectedContextsHubScope([]string{repository.ID})
+		if err != nil {
+			return false
+		}
+		m.hubScope = scope
 		m.refreshRepositoryCandidates()
 		return true
 	}
@@ -244,6 +435,18 @@ func (m *Model) SetRepositoryScope(selected map[string]bool) {
 	m.defaultRepositorySet = true
 	m.defaultRepositoryID = ""
 	reconciled := model.ReconcileRepositorySelection(selected, m.repositoryCatalog)
+	if m.usesHubScope() {
+		if len(selected) == 0 || len(reconciled) == 0 || len(reconciled) == len(m.repositoryCatalog) {
+			_ = m.SetHubScope(model.NewAllItemsHubScope())
+			return
+		}
+		contexts := sortedRepoKeys(reconciled)
+		scope, err := model.NewSelectedContextsHubScope(contexts)
+		if err == nil {
+			_ = m.SetHubScope(scope)
+		}
+		return
+	}
 	if len(selected) == 0 || len(reconciled) == len(m.repositoryCatalog) {
 		m.activeRepos = nil
 	} else {
@@ -252,9 +455,57 @@ func (m *Model) SetRepositoryScope(selected map[string]bool) {
 	m.refreshRepositoryCandidates()
 }
 
+// SetHubScope applies an explicit Hub candidate selector. Selected context IDs
+// must be present in the current Hub repository catalog.
+func (m *Model) SetHubScope(scope model.HubScope) error {
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+	if scope.Mode == model.HubScopeSelectedContexts {
+		available := make(map[string]bool, len(m.repositoryCatalog))
+		for _, repository := range m.repositoryCatalog {
+			if repository.Kind == model.RepositoryIdentityHubContext {
+				available[repository.ID] = true
+			}
+		}
+		for _, contextID := range scope.Contexts {
+			if !available[contextID] {
+				return fmt.Errorf("Hub context is not registered: %s", contextID)
+			}
+		}
+	}
+	m.defaultRepositorySet = true
+	m.defaultRepositoryID = ""
+	switch scope.Mode {
+	case model.HubScopeAllItems:
+		m.hubScope = model.NewAllItemsHubScope()
+	case model.HubScopeContextless:
+		m.hubScope = model.NewContextlessHubScope()
+	default:
+		m.hubScope = scope.Clone()
+	}
+	m.activeRepos = nil
+	if scope.Mode == model.HubScopeSelectedContexts {
+		m.activeRepos = make(map[string]bool, len(scope.Contexts))
+		for _, contextID := range scope.Contexts {
+			m.activeRepos[contextID] = true
+		}
+	}
+	m.refreshRepositoryCandidates()
+	return nil
+}
+
+// HubScope returns a detached explicit Hub selector.
+func (m Model) HubScope() model.HubScope {
+	return m.hubScope.Clone()
+}
+
 // RepositoryScope returns a defensive copy of the selected exact catalog IDs.
 // Nil means all repositories.
 func (m Model) RepositoryScope() map[string]bool {
+	if m.usesHubScope() && m.hubScope.Mode != model.HubScopeSelectedContexts {
+		return nil
+	}
 	if m.activeRepos == nil {
 		return nil
 	}
@@ -617,7 +868,11 @@ func (m *Model) rebuildRepositoryTree() {
 	if selected := m.tree.SelectedIssue(); selected != nil {
 		selectedID = selected.ID
 	}
-	m.tree.Build(m.repositoryIssues)
+	if m.usesHubScope() {
+		m.tree.BuildProjected(m.repositoryIssues, m.issueMap)
+	} else {
+		m.tree.Build(m.repositoryIssues)
+	}
 	if selectedID == "" {
 		return
 	}
@@ -631,10 +886,17 @@ func (m *Model) rebuildRepositoryTree() {
 }
 
 func (m Model) repositoryHistoryReport(report *correlation.HistoryReport) *correlation.HistoryReport {
-	if m.activeRepos == nil {
+	if m.usesHubScope() && m.hubScope.Mode == model.HubScopeAllItems {
 		return report
 	}
-	return projectHistoryReport(report, m.repositoryIssueIDs, m.activeRepos)
+	repositories := m.activeRepos
+	if m.usesHubScope() && m.hubScope.Mode == model.HubScopeContextless {
+		repositories = map[string]bool{}
+	}
+	if !m.usesHubScope() && repositories == nil {
+		return report
+	}
+	return projectHistoryReport(report, m.repositoryIssueIDs, repositories)
 }
 
 func (m *Model) refreshAttentionView() {
