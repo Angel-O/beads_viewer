@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 )
 
 type verticalAssertion uint8
@@ -119,6 +121,85 @@ func TestHubContextScopeRequirementEvidence(t *testing.T) {
 	for id := range requirementEvidence {
 		if !seen[id] {
 			t.Errorf("evidence matrix contains unknown requirement ID: %s", id)
+		}
+	}
+}
+
+func TestRealHubExistingStoreTodoActivation(t *testing.T) {
+	fixture := newRealHubFixtureWithoutBootstrap(t)
+	store := filepath.Join(fixture.home, ".local", "share", "beads", "hub", ".beads")
+	parent := filepath.Dir(store)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture.runSuccess(t, parent, fixture.bd, "metrics", "off")
+	fixture.runSuccess(t, parent, fixture.bd, "init", "--prefix", "qa", "--non-interactive", "--skip-hooks", "--skip-agents")
+	existingID := extractCreatedID(t, fixture.runSuccess(t, fixture.outside, fixture.bd, "--db", store, "--json", "create", "Existing work", "--type", "task"))
+	marker := filepath.Join(store, "preserve-me")
+	if err := os.WriteFile(marker, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	before := fixture.issueIDs(t)
+	rejection := fixture.runFailure(t, fixture.outside, "wbd", "--json", "create", "Unavailable todo", "--type", "todo", "--contextless")
+	if !bytes.Contains(rejection, []byte("run 'wbd bootstrap' to enable it")) {
+		t.Fatalf("todo rejection lacks remediation:\n%s", rejection)
+	}
+	if after := fixture.issueIDs(t); !reflect.DeepEqual(after, before) {
+		t.Fatalf("rejected todo changed issues: before=%v after=%v", before, after)
+	}
+	configPath := filepath.Join(fixture.home, ".config", "bv", "hub.yaml")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected todo registered or configured the Hub: %v", err)
+	}
+
+	fixture.runSuccess(t, fixture.outside, fixture.bd, "--db", store, "config", "set", "types.custom", "review")
+	activation := fixture.runSuccess(t, fixture.outside, "wbd", "bootstrap")
+	if string(activation) != "Hub store ready: todo issue type enabled.\n" {
+		t.Fatalf("activation output = %q", activation)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("activation did not ensure Hub config: %v", err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "unchanged" {
+		t.Fatalf("activation changed existing store marker: data=%q err=%v", data, err)
+	}
+	if after := fixture.issueIDs(t); !reflect.DeepEqual(after, before) {
+		t.Fatalf("activation changed existing issues: before=%v after=%v", before, after)
+	}
+	if issue := fixture.show(t, existingID); issue.ID != existingID || issue.IssueType != "task" {
+		t.Fatalf("existing issue was not preserved: %#v", issue)
+	}
+	configOutput := fixture.runSuccess(t, fixture.outside, fixture.bd, "--db", store, "--json", "config", "get", "types.custom")
+	var configured struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(configOutput, &configured); err != nil || configured.Value != "review,todo" {
+		t.Fatalf("custom types = %q, decode error = %v\n%s", configured.Value, err, configOutput)
+	}
+	secondActivation := fixture.runSuccess(t, fixture.outside, "wbd", "bootstrap")
+	if string(secondActivation) != "Hub store ready: todo issue type already enabled.\n" {
+		t.Fatalf("second activation output = %q", secondActivation)
+	}
+	configOutput = fixture.runSuccess(t, fixture.outside, fixture.bd, "--db", store, "--json", "config", "get", "types.custom")
+	if err := json.Unmarshal(configOutput, &configured); err != nil || configured.Value != "review,todo" {
+		t.Fatalf("idempotent custom types = %q, decode error = %v\n%s", configured.Value, err, configOutput)
+	}
+	if _, err := os.Stat(hub.ChangeSignalPath(hub.Paths{Store: store})); !os.IsNotExist(err) {
+		t.Fatalf("existing-store bootstrap signaled Viewer: %v", err)
+	}
+
+	id := fixture.create(t, fixture.outside, "Activated todo", "--type", "todo", "--contextless", "--labels", "setup-regression")
+	issue := fixture.show(t, id)
+	if !strings.HasPrefix(existingID, "qa-") || !strings.HasPrefix(id, "qa-") {
+		t.Fatalf("activation changed store prefix: existing=%q todo=%q", existingID, id)
+	}
+	if issue.ID != id || issue.IssueType != "todo" || !slices.Contains(issue.Labels, "setup-regression") {
+		t.Fatalf("created todo = %#v", issue)
+	}
+	for _, label := range issue.Labels {
+		if strings.HasPrefix(label, "ctx:") {
+			t.Fatalf("contextless todo acquired context label: %#v", issue.Labels)
 		}
 	}
 }
@@ -300,6 +381,7 @@ type realHubFixture struct {
 type realIssue struct {
 	ID           string         `json:"id"`
 	Status       string         `json:"status"`
+	IssueType    string         `json:"issue_type"`
 	Labels       []string       `json:"labels"`
 	CloseReason  string         `json:"close_reason"`
 	Dependencies []realRelation `json:"dependencies"`
@@ -318,6 +400,13 @@ type ledgerRecord struct {
 
 func newRealHubFixture(t *testing.T) *realHubFixture {
 	t.Helper()
+	f := newRealHubFixtureWithoutBootstrap(t)
+	f.runSuccess(t, f.outside, "wbd", "bootstrap")
+	return f
+}
+
+func newRealHubFixtureWithoutBootstrap(t *testing.T) *realHubFixture {
+	t.Helper()
 	bd, err := exec.LookPath("bd")
 	if err != nil {
 		t.Skip("installed supported bd is unavailable")
@@ -331,7 +420,6 @@ func newRealHubFixture(t *testing.T) *realHubFixture {
 		}
 	}
 	f := &realHubFixture{t: t, root: root, home: home, outside: outside, bin: filepath.Dir(bvBinaryPath), bd: bd}
-	f.runSuccess(t, outside, "wbd", "bootstrap")
 	return f
 }
 
