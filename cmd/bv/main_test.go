@@ -589,6 +589,11 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 			want: []string{"--robot-docs", "guide", "--format", "json"},
 		},
 		{
+			name: "correlate remove maps to exact removal flag",
+			args: []string{"correlate", "remove", "--bead", "item-alpha", "--commit", "0123456789abcdef0123456789abcdef01234567"},
+			want: []string{"--correlate-remove", "--bead", "item-alpha", "--commit", "0123456789abcdef0123456789abcdef01234567"},
+		},
+		{
 			name: "canonical docs command name",
 			args: []string{"robot-docs", "guide", "--json"},
 			want: []string{"--robot-docs", "guide", "--format", "json"},

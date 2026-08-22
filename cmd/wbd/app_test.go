@@ -670,6 +670,100 @@ func TestLinkRejectsTodoBeforeCorrelation(t *testing.T) {
 	}
 }
 
+func TestUnlinkDelegatesExactTupleAndSignalsOnlyOnRemoval(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	for _, testCase := range []struct {
+		name    string
+		removed bool
+	}{
+		{name: "removed", removed: true},
+		{name: "not found", removed: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			response := fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":%q},"removed":%t}`+"\n", context, sha, testCase.removed)
+			setResponses(t, map[string]string{"correlate": response})
+			code, stdout, stderr := test.run("unlink", "item-alpha", sha)
+			if code != 0 || stderr != "" || stdout != response {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			want := []string{"correlate", "remove", "--bead", "item-alpha", "--repo", context, "--commit", sha, "--hub-config", test.config}
+			calls := test.calls()
+			if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:item-alpha" || calls[1].Name != "bv" || !reflect.DeepEqual(calls[1].Args, want) {
+				t.Fatalf("calls = %#v, want bv args %#v", calls, want)
+			}
+			assertIsolatedEnvironment(t, calls[1].Env, test.store, true)
+			_, signalErr := os.Stat(hub.ChangeSignalPath(test.app.paths))
+			if testCase.removed && signalErr != nil {
+				t.Fatalf("removed correlation did not signal Viewer: %v", signalErr)
+			}
+			if !testCase.removed && !os.IsNotExist(signalErr) {
+				t.Fatalf("not-found correlation signaled Viewer: %v", signalErr)
+			}
+		})
+	}
+}
+
+func TestUnlinkUsesSharedContextFromLinkedWorktree(t *testing.T) {
+	const sha = "89abcdef0123456789abcdef0123456789abcdef"
+	test := newAppTest(t, true)
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, test.repository, "worktree", "add", "--detach", linked, "HEAD")
+	canonicalLinked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	test.app.dir = canonicalLinked
+	response := fmt.Sprintf(`{"correlation":{"bead_id":"item-alpha","context":%q,"commit":%q},"removed":false}`+"\n", context, sha)
+	setResponses(t, map[string]string{"correlate": response})
+	code, _, stderr := test.run("unlink", "item-alpha", sha)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	calls := test.calls()
+	if len(calls) != 2 || calls[1].Dir != canonicalLinked || requestValue(calls[1].Args, "--repo", "") != context {
+		t.Fatalf("linked worktree calls = %#v", calls)
+	}
+}
+
+func TestUnlinkRejectsBroadOrAmbiguousRequests(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"unlink", "item-alpha"},
+		{"unlink", "item-alpha", "0123456"},
+		{"unlink", "item-alpha", "0123456789abcdef0123456789abcdef01234567", "extra"},
+		{"--json", "unlink", "item-alpha", "0123456789abcdef0123456789abcdef01234567"},
+	} {
+		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
+			test := newAppTest(t, true)
+			code, _, stderr := test.run(arguments...)
+			if code != 1 || stderr == "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			if calls := test.calls(); len(calls) != 0 {
+				t.Fatalf("rejected unlink delegated: %#v", calls)
+			}
+		})
+	}
+}
+
+func TestUnlinkRejectsTodoBeforeCorrelation(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{
+		"show:todo-alpha": `[{"id":"todo-alpha","status":"open","issue_type":"todo"}]`,
+	})
+	code, _, stderr := test.run("unlink", "todo-alpha", "0123456789abcdef0123456789abcdef01234567")
+	if code != 1 || !strings.Contains(stderr, "todo cannot own a direct commit correlation") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if calls := test.calls(); len(calls) != 1 || calls[0].Name != "bd" {
+		t.Fatalf("todo unlink delegated correlation mutation: %#v", calls)
+	}
+}
+
 func TestBootstrapUsesDefaultPrefixAndExactSequence(t *testing.T) {
 	test := newAppTestWithoutStore(t)
 	t.Setenv("WBD_CREATE_STORE", "1")
@@ -864,7 +958,7 @@ func TestHelpExplainsIssueTypesAndTargetingWithoutStore(t *testing.T) {
 			if code != 0 || stderr != "" {
 				t.Fatalf("code = %d, stderr = %q", code, stderr)
 			}
-			for _, want := range []string{"Capture something not yet concrete project work", "--contextless", "--from-todo", "cannot own commit correlations", "link"} {
+			for _, want := range []string{"Capture something not yet concrete project work", "--contextless", "--from-todo", "cannot own commit correlations", "link", "unlink", "exact full SHA", "idempotent"} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("help does not contain %q:\n%s", want, stdout)
 				}

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const supportedCommands = "supported commands: bootstrap, configure, register, context, create, new, replace, compatibility, list, show, update, dep, close, reopen, link"
+const supportedCommands = "supported commands: bootstrap, configure, register, context, create, new, replace, compatibility, list, show, update, dep, close, reopen, link, unlink"
 
 type request struct {
 	command     string
@@ -108,12 +108,42 @@ func parse(arguments []string) (request, error) {
 			}
 		}
 		result.positionals = arguments
+	case "unlink":
+		if result.json || len(arguments) != 2 {
+			return result, errors.New("usage: wbd unlink <bead-id> <full-commit-sha>")
+		}
+		if err := safeID("unlink", arguments[0]); err != nil {
+			return result, err
+		}
+		if err := safeValue("commit", arguments[1]); err != nil {
+			return result, err
+		}
+		if !isFullCommitSHA(arguments[1]) {
+			return result, errors.New("unlink requires a full 40- or 64-character hexadecimal commit SHA")
+		}
+		result.positionals = arguments
 	case "init":
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands)
 	}
 	return result, nil
+}
+
+func isFullCommitSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			if character < 'a' || character > 'f' {
+				if character < 'A' || character > 'F' {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func parseCreate(result request, arguments []string) (request, error) {

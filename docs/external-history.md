@@ -88,8 +88,11 @@ original with `Superseded by <replacement-id>`. Success is reported only after
 the close. If that final close rarely fails, the error names the already-created
 replacement explicitly; decisions do not use this explicit-target path.
 
-`wbd link <bead-id> [commit]` adds a source correlation, defaulting to `HEAD`,
-and signals Viewer after success; todos cannot own direct correlations.
+`wbd link <bead-id> [commit]` adds a source correlation, defaulting to `HEAD`.
+`wbd unlink <bead-id> <full-commit-sha>` removes only the exact correlation in
+the current registered repository context. Both return JSON; unlink reports
+`"removed":false` when the tuple is absent and signals Viewer only when it
+actually removes the correlation. Todos cannot own direct correlations.
 `wbd compatibility --json` reports supported
 legacy policy findings without repair and exits successfully when findings are
 present. `wbd show`, scalar `update`, `dep`, `close`, and allowed `reopen`
@@ -262,6 +265,31 @@ ledger. The command
 reports `"added":false` without duplicating an existing association. Ledger
 replacement holds an inter-process lock and uses a same-directory temporary
 file, `fsync`, atomic rename, and parent-directory sync.
+
+## Removing Correlations
+
+Use the safe Hub wrapper from the repository that owns the correlation:
+
+```bash
+wbd unlink item-a3f2dd 0123456789abcdef0123456789abcdef01234567
+```
+
+Removal requires an eligible non-todo bead, the current registered repository
+context, and an immutable full 40- or 64-character commit SHA. It does not
+accept a ref, abbreviated SHA, omitted tuple field, context override, wildcard,
+or bead-wide/repository-wide deletion. The exact bead/context/SHA tuple is
+matched case-insensitively for hexadecimal SHA text. If duplicate physical rows
+encode that same logical tuple, all are removed so readers cannot surface the
+deleted correlation again; unrelated records retain their original bytes and
+ordering.
+
+The operation uses the same private-ledger lock, configured-store eligibility
+check, malformed-ledger rejection, and atomic rewrite as addition. A missing
+tuple is a successful idempotent no-op with deterministic JSON:
+
+```json
+{"correlation":{"bead_id":"item-a3f2dd","context":"ctx:project-a-5365b77092","commit":"0123456789abcdef0123456789abcdef01234567"},"removed":false}
+```
 
 ## Lifecycle Provider
 
