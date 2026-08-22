@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -604,6 +605,12 @@ func (t *TreeModel) renderNoMatches() string {
 }
 
 func (t *TreeModel) fitSearchChrome(text string) string {
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
 	if t.width <= 0 || lipgloss.Width(text) <= t.width {
 		return text
 	}

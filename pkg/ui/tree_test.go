@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
@@ -102,6 +103,7 @@ func TestTreeSearchZeroResultChromeRespectsBounds(t *testing.T) {
 	}{
 		{name: "long ASCII", query: strings.Repeat("unmatched", 40), width: 24, height: 3, wantNoMatch: true},
 		{name: "wide CJK", query: strings.Repeat("検索不能", 30), width: 21, height: 2, wantNoMatch: true},
+		{name: "multiline and C1 controls", query: "absent\nnext\u0085\x1b[31m", width: 18, height: 2, wantNoMatch: true},
 		{name: "tiny height", query: strings.Repeat("absent", 20), width: 8, height: 1, wantNoMatch: false},
 	}
 
@@ -122,6 +124,13 @@ func TestTreeSearchZeroResultChromeRespectsBounds(t *testing.T) {
 			}
 			if got := lipgloss.Height(output); got > tt.height {
 				t.Errorf("rendered height = %d, want <= %d:\n%s", got, tt.height, output)
+			}
+			for lineNumber, line := range strings.Split(output, "\n") {
+				for _, r := range line {
+					if unicode.IsControl(r) {
+						t.Errorf("rendered line %d contains control rune %U", lineNumber+1, r)
+					}
+				}
 			}
 			if got := strings.Contains(output, "No Tree"); got != tt.wantNoMatch {
 				t.Errorf("no-match row presence = %v, want %v:\n%s", got, tt.wantNoMatch, output)
