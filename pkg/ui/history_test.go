@@ -1050,6 +1050,40 @@ func TestHistoryModel_GetFilteredCommitList(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_GitSearchZeroMatchesBeforeAndAfterRefresh(t *testing.T) {
+	h := NewHistoryModel(createTestHistoryReport(), testTheme())
+	h.ToggleViewMode()
+	h.StartSearchWithMode(searchModeCommit)
+	h.searchInput.SetValue("no matching commit")
+	h.applySearchFilter()
+	h.FinishSearch()
+
+	if h.filteredCommits == nil {
+		t.Fatal("active zero-match query was represented as an unfiltered commit list")
+	}
+	if commits := h.GetFilteredCommitList(); len(commits) != 0 {
+		t.Fatalf("zero-match Git search returned %d commits, want 0", len(commits))
+	}
+	if commit := h.SelectedGitCommit(); commit != nil {
+		t.Fatalf("zero-match Git search retained a selected commit: %#v", commit)
+	}
+
+	h.SetReport(createTestHistoryReport())
+
+	if h.SearchQuery() != "no matching commit" || h.searchMode != searchModeCommit || h.IsSearchActive() {
+		t.Fatalf("refresh changed submitted Git query state: query=%q mode=%v active=%v", h.SearchQuery(), h.searchMode, h.IsSearchActive())
+	}
+	if h.filteredCommits == nil {
+		t.Fatal("refresh collapsed zero-match Git results into the unfiltered state")
+	}
+	if commits := h.GetFilteredCommitList(); len(commits) != 0 {
+		t.Fatalf("zero-match Git search returned %d commits after refresh, want 0", len(commits))
+	}
+	if commit := h.SelectedGitCommit(); commit != nil {
+		t.Fatalf("zero-match Git search selected a commit after refresh: %#v", commit)
+	}
+}
+
 func TestHistoryModel_ToggleViewModePreservesFinishedSearch(t *testing.T) {
 	report := createTestHistoryReport()
 	theme := testTheme()

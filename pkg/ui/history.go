@@ -1059,12 +1059,12 @@ func (h *HistoryModel) applySearchFilter() {
 // filterCommitList filters commits in git mode based on search query
 func (h *HistoryModel) filterCommitList(query string) {
 	if len(h.commitList) == 0 {
-		h.filteredCommits = nil
+		h.filteredCommits = make([]CommitListEntry, 0)
 		return
 	}
 
 	query = strings.ToLower(query)
-	var filtered []CommitListEntry
+	filtered := make([]CommitListEntry, 0)
 
 	for _, commit := range h.commitList {
 		if h.commitMatchesQuery(commit, query) {
