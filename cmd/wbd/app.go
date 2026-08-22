@@ -71,6 +71,7 @@ type graphNode struct {
 	Title       string   `json:"title"`
 	Type        string   `json:"type"`
 	Description string   `json:"description,omitempty"`
+	Assignee    string   `json:"assignee,omitempty"`
 	Priority    int      `json:"priority"`
 	Labels      []string `json:"labels,omitempty"`
 }
@@ -104,8 +105,11 @@ func newApp(stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 }
 
 func (a *app) run(arguments []string) int {
-	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
-		a.printHelp()
+	if target, requested, err := helpTarget(arguments); requested {
+		if err != nil {
+			return a.fail(err)
+		}
+		a.printHelp(target)
 		return 0
 	}
 	a.jsonFailure = containsArgument(arguments, "--json")
@@ -276,7 +280,67 @@ func (a *app) run(arguments []string) int {
 	}
 }
 
-func (a *app) printHelp() {
+func helpTarget(arguments []string) (string, bool, error) {
+	help := false
+	filtered := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		if argument == "--help" || argument == "-h" {
+			help = true
+			continue
+		}
+		filtered = append(filtered, argument)
+	}
+	if !help {
+		return "", false, nil
+	}
+	if len(filtered) > 0 && filtered[0] == "--json" {
+		filtered = filtered[1:]
+	}
+	if len(filtered) == 0 {
+		return "", true, nil
+	}
+	if _, ok := specFor(filtered[0]); !ok {
+		return "", true, errors.New(supportedCommands())
+	}
+	path := filtered[0]
+	if path == "dep" && len(filtered) > 1 {
+		candidate := path + " " + filtered[1]
+		if _, ok := specFor(candidate); !ok {
+			return "", true, errors.New(usageFor("dep"))
+		}
+		path = candidate
+	}
+	return path, true, nil
+}
+
+func (a *app) printHelp(path string) {
+	if path != "" {
+		spec, _ := specFor(path)
+		fmt.Fprintf(a.stdout, "Usage: %s\n\n%s\n", spec.usage, spec.summary)
+		if len(spec.options) > 0 {
+			fmt.Fprintln(a.stdout, "\nOptions:")
+			for _, option := range spec.options {
+				name := option.name
+				if option.value != "" {
+					name += " " + option.value
+				}
+				detail := option.description
+				if option.defaultText != "" {
+					detail += " (default: " + option.defaultText + ")"
+				}
+				fmt.Fprintf(a.stdout, "  %-31s %s\n", name, detail)
+			}
+		}
+		fmt.Fprintln(a.stdout, "  -h, --help                      Show this help without opening the Hub store.")
+		if len(spec.examples) > 0 {
+			fmt.Fprintln(a.stdout, "\nExamples:")
+			for _, example := range spec.examples {
+				fmt.Fprintln(a.stdout, "  "+example)
+			}
+		}
+		return
+	}
+
 	fmt.Fprint(a.stdout, `Usage: wbd <command> [options]
 
 wbd is the safe command boundary for the private Beads Hub.
@@ -295,9 +359,24 @@ Creation targeting:
   --contextless          Create a todo without repository context.
   --from-todo <todo-id>  Create concrete work discovered from a todo.
 
+Assignment:
+  --assignee <identity>  Assign explicitly on create or update; never inferred.
+  --assignee ""          Clear an assignment with update.
+  A status-only update preserves the existing assignee.
+
 Commands:
-  bootstrap, configure, register, context, create, new, replace,
-  compatibility, list, show, update, dep, close, reopen, link
+`)
+	for _, name := range commandOrder {
+		if strings.Contains(name, " ") {
+			continue
+		}
+		spec := commandSpecs[name]
+		fmt.Fprintf(a.stdout, "  %-14s %s\n", name, spec.summary)
+	}
+	fmt.Fprint(a.stdout, `
+Global options:
+  --json     Emit JSON where supported; accepted before or after the command.
+  -h, --help Show help without requiring a store or invoking child commands.
 
 Use --json for queries and mutations except context and link.
 `)
@@ -360,7 +439,8 @@ func (a *app) create(request request) int {
 	plan := graphPlan{
 		Nodes: []graphNode{{
 			Key: "result", Title: request.positionals[0], Type: admitted.Kind,
-			Description: requestValue(request.args, "--description", ""), Priority: priority, Labels: admitted.Labels,
+			Description: requestValue(request.args, "--description", ""), Assignee: requestValue(request.args, "--assignee", ""),
+			Priority: priority, Labels: admitted.Labels,
 		}},
 		Edges: []graphEdge{{FromKey: "result", ToID: todo.ID, Type: "discovered-from"}},
 	}

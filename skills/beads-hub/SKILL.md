@@ -27,7 +27,7 @@ Omitted targeting uses the current repository context. Repeat `--context <ctx-id
 
 ```sh
 wbd context
-wbd create "Implement token refresh" --type task --priority 2 --json
+wbd create "Implement token refresh" --type task --priority 2 --assignee <identity> --json
 
 # Repository-related discovery that may later become project work.
 wbd create "Investigate flaky authentication" --type todo --context <auth-context> --json
@@ -41,7 +41,9 @@ wbd dep add <child-id> <epic-id> --type parent-child --json
 wbd link <work-id> HEAD
 ```
 
-Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` for the supported command and targeting summary.
+Assign only from an explicit stable identity: `wbd update <id> --status in_progress --assignee <identity> --json`. A status-only update preserves the current assignee; `wbd update <id> --assignee "" --json` clears it. Never infer an assignee from owner, creator, Git, environment, or Viewer claim text.
+
+Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
 For post-merge correlation and closure of concrete private work, load
 [`beads-hub-closeout`](../beads-hub-closeout/SKILL.md). It keeps private
