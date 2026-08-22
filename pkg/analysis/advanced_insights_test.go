@@ -29,6 +29,36 @@ func TestDefaultAdvancedInsightsConfig(t *testing.T) {
 	}
 }
 
+func TestAdvancedInsightsCandidateFilterRunsBeforeCaps(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "hidden", Title: "Hidden", Status: model.StatusOpen},
+		{ID: "visible", Title: "Visible", Status: model.StatusOpen},
+		{ID: "hidden-dependent", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},
+		{ID: "hidden-dependent-2", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},
+		{ID: "visible-dependent", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "visible", Type: model.DepBlocks}}},
+		{ID: "visible-dependent-2", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "visible", Type: model.DepBlocks}}},
+	}
+	config := DefaultAdvancedInsightsConfig()
+	config.TopKSetLimit = 1
+	config.CoverageSetLimit = 1
+	config.ParallelCutLimit = 1
+	config.CandidateFilter = func(id string) bool { return id == "visible" }
+	result := NewAnalyzer(issues).GenerateAdvancedInsights(config)
+
+	if len(result.TopKSet.Items) != 1 || result.TopKSet.Items[0].ID != "visible" {
+		t.Fatalf("top-k items = %#v", result.TopKSet.Items)
+	}
+	if len(result.CoverageSet.Items) != 1 || result.CoverageSet.Items[0].ID != "visible" {
+		t.Fatalf("coverage items = %#v", result.CoverageSet.Items)
+	}
+	if len(result.ParallelCut.Suggestions) != 1 || result.ParallelCut.Suggestions[0].ID != "visible" {
+		t.Fatalf("parallel cut suggestions = %#v", result.ParallelCut.Suggestions)
+	}
+	if result.ParallelCut.Status.Count != len(result.ParallelCut.Suggestions) {
+		t.Fatalf("parallel cut status = %#v", result.ParallelCut.Status)
+	}
+}
+
 func TestDefaultUsageHints(t *testing.T) {
 	hints := DefaultUsageHints()
 

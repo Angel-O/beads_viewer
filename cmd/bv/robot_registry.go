@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/baseline"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
@@ -59,6 +58,7 @@ type RobotContext struct {
 	Diff                  *analysis.SnapshotDiff
 	DiffHistoricalIssues  []model.Issue
 	DiffResolvedRevision  string
+	HubProjection         *hubScopeProjection
 }
 
 type RobotRegistry struct {
@@ -301,6 +301,13 @@ func (r *RobotRegistry) DispatchFlag(flagName string, ctx RobotContext) (bool, e
 		}
 		if cmd.Handler == nil {
 			return true, fmt.Errorf("robot command %q has no handler", cmd.Name)
+		}
+		if ctx.HubProjection != nil {
+			ctx.Encoder = hubScopeRobotEncoder{
+				base:       ctx.EncoderOrDefault(),
+				command:    cmd.Name,
+				projection: ctx.HubProjection,
+			}
 		}
 		return true, cmd.Handler(ctx)
 	}
@@ -711,7 +718,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			stats := analyzer.AnalyzeAsyncWithConfig(context.Background(), config)
 			stats.WaitForPhase2()
 
-			recommendations := analyzer.GenerateEnhancedRecommendations()
+			recommendations := analyzer.GenerateEnhancedRecommendationsForCandidates(ctx.HubProjection.candidateFilter())
 			filtered := make([]analysis.EnhancedPriorityRecommendation, 0, len(recommendations))
 			issueMap := make(map[string]model.Issue, len(ctx.Issues))
 			for _, issue := range ctx.Issues {
@@ -831,7 +838,6 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
 			stats := analyzer.Analyze()
-
 			format := export.GraphFormatJSON
 			if cfg.GraphFormat != nil {
 				switch strings.ToLower(strings.TrimSpace(*cfg.GraphFormat)) {
@@ -854,10 +860,17 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				config.Depth = *cfg.GraphDepth
 			}
 
-			result, err := export.ExportGraph(ctx.Issues, &stats, config)
+			var result *export.GraphExportResult
+			var err error
+			if ctx.HubProjection != nil {
+				result, err = ctx.HubProjection.exportGraph(ctx.Issues, &stats, config)
+			} else {
+				result, err = export.ExportGraph(ctx.Issues, &stats, config)
+			}
 			if err != nil {
 				return fmt.Errorf("exporting graph: %w", err)
 			}
+			result.DataHash = ctx.DataHash
 			if err := ctx.EncoderOrDefault().Encode(result); err != nil {
 				return fmt.Errorf("encoding graph: %w", err)
 			}
@@ -1185,6 +1198,9 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				if sprintBeadIDs != nil && !sprintBeadIDs[issue.ID] {
 					continue
 				}
+				if ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[issue.ID] {
+					continue
+				}
 				targetIssues = append(targetIssues, issue)
 			}
 
@@ -1213,6 +1229,10 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			forecastTarget := ""
 			if cfg.RobotForecastFlag != nil {
 				forecastTarget = *cfg.RobotForecastFlag
+			}
+			if forecastTarget != "all" && ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[forecastTarget] {
+				fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in Hub scope: %s\n", forecastTarget)
+				return newReportedRobotHandlerExit(1)
 			}
 
 			forecasts := make([]analysis.ETAEstimate, 0)
@@ -1556,7 +1576,8 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		analyzer.SetConfig(&fullConfig)
 	}
 	stats := analyzer.Analyze()
-	insights := stats.GenerateInsights(50)
+	predicate := ctx.HubProjection.candidateFilter()
+	insights := stats.GenerateInsightsForCandidates(50, predicate)
 
 	if velocity := analysis.ComputeProjectVelocity(ctx.Issues, time.Now(), 8); velocity != nil {
 		snapshot := &analysis.VelocitySnapshot{
@@ -1575,6 +1596,15 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	}
 
 	limitMaps := func(m map[string]float64, limit int) map[string]float64 {
+		if predicate != nil {
+			filtered := make(map[string]float64)
+			for id, value := range m {
+				if predicate(id) {
+					filtered[id] = value
+				}
+			}
+			m = filtered
+		}
 		if limit <= 0 || limit >= len(m) {
 			return m
 		}
@@ -1600,6 +1630,15 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	}
 
 	limitMapInt := func(m map[string]int, limit int) map[string]int {
+		if predicate != nil {
+			filtered := make(map[string]int)
+			for id, value := range m {
+				if predicate(id) {
+					filtered[id] = value
+				}
+			}
+			m = filtered
+		}
 		if limit <= 0 || len(m) <= limit {
 			return m
 		}
@@ -1625,6 +1664,15 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	}
 
 	limitSlice := func(in []string, limit int) []string {
+		if predicate != nil {
+			filtered := make([]string, 0, len(in))
+			for _, id := range in {
+				if predicate(id) {
+					filtered = append(filtered, id)
+				}
+			}
+			in = filtered
+		}
 		if limit <= 0 || len(in) <= limit {
 			return in
 		}
@@ -1675,18 +1723,17 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"`
 		UsageHints       []string                   `json:"usage_hints"`
 	}{
-		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
-		DataHash:         ctx.DataHash,
-		AsOf:             ctx.AsOf,
-		AsOfCommit:       ctx.AsOfCommit,
-		AnalysisConfig:   stats.Config,
-		Status:           stats.Status(),
-		LabelScope:       ctx.LabelScope,
-		LabelContext:     ctx.LabelContext,
-		Insights:         insights,
-		FullStats:        fullStats,
-		TopWhatIfs:       analyzer.TopWhatIfDeltas(10),
-		AdvancedInsights: analyzer.GenerateAdvancedInsights(analysis.DefaultAdvancedInsightsConfig()),
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		DataHash:       ctx.DataHash,
+		AsOf:           ctx.AsOf,
+		AsOfCommit:     ctx.AsOfCommit,
+		AnalysisConfig: stats.Config,
+		Status:         stats.Status(),
+		LabelScope:     ctx.LabelScope,
+		LabelContext:   ctx.LabelContext,
+		Insights:       insights,
+		FullStats:      fullStats,
+		TopWhatIfs:     analyzer.TopWhatIfDeltasForCandidates(10, predicate),
 		UsageHints: []string{
 			"jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
 			"jq '.CriticalPath[:3]' - Top 3 critical path items",
@@ -1700,6 +1747,9 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 			"BV_INSIGHTS_MAP_LIMIT=50 bv --robot-insights - Reduce map sizes",
 		},
 	}
+	advancedConfig := analysis.DefaultAdvancedInsightsConfig()
+	advancedConfig.CandidateFilter = predicate
+	output.AdvancedInsights = analyzer.GenerateAdvancedInsights(advancedConfig)
 
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding insights: %w", err)
@@ -1852,14 +1902,15 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		seedHash = ctx.DataHash
 	}
 	triage := analysis.ComputeTriageWithOptionsAndTime(ctx.Issues, analysis.TriageOptions{
-		GroupByTrack:   cfg.RobotTriageByTrackFlag != nil && *cfg.RobotTriageByTrackFlag,
-		GroupByLabel:   cfg.RobotTriageByLabelFlag != nil && *cfg.RobotTriageByLabelFlag,
-		WaitForPhase2:  true,
-		UseFastConfig:  true,
-		History:        historyReport,
-		RootIssueID:    rootIssueID,
-		SeedDataHash:   seedHash,
-		NotReadyLabels: resolveNotReadyLabels(cfg),
+		GroupByTrack:    cfg.RobotTriageByTrackFlag != nil && *cfg.RobotTriageByTrackFlag,
+		GroupByLabel:    cfg.RobotTriageByLabelFlag != nil && *cfg.RobotTriageByLabelFlag,
+		WaitForPhase2:   true,
+		UseFastConfig:   true,
+		History:         historyReport,
+		RootIssueID:     rootIssueID,
+		SeedDataHash:    seedHash,
+		NotReadyLabels:  resolveNotReadyLabels(cfg),
+		CandidateFilter: ctx.HubProjection.candidateFilter(),
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 	triage.Meta.HistoryStatus = historyStatus
@@ -2895,16 +2946,11 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 }
 
 func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	workDir, err := ctx.WorkDirOrDefault()
-	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+	if ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[*cfg.RobotBlockerChainFlag] {
+		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in Hub scope: %s\n", *cfg.RobotBlockerChainFlag)
+		return newReportedRobotHandlerExit(1)
 	}
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-
-	result := analysis.NewAnalyzer(issues).GetBlockerChain(*cfg.RobotBlockerChainFlag)
+	result := analysis.NewAnalyzer(ctx.Issues).GetBlockerChain(*cfg.RobotBlockerChainFlag)
 	if result == nil {
 		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found: %s\n", *cfg.RobotBlockerChainFlag)
 		return newReportedRobotHandlerExit(1)
@@ -2914,7 +2960,7 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 		RobotEnvelope
 		Result *analysis.BlockerChainResult `json:"result"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(issues)),
+		RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
 		Result:        result,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
@@ -3192,8 +3238,28 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 	}
 	sort.Slice(bottlenecks, func(i, j int) bool {
+		if bottlenecks[i].BlocksCount == bottlenecks[j].BlocksCount {
+			return bottlenecks[i].ID < bottlenecks[j].ID
+		}
 		return bottlenecks[i].BlocksCount > bottlenecks[j].BlocksCount
 	})
+	if ctx.HubProjection != nil {
+		filtered := bottlenecks[:0]
+		for _, candidate := range bottlenecks {
+			if ctx.HubProjection.inScopeID[candidate.ID] {
+				filtered = append(filtered, candidate)
+			}
+		}
+		bottlenecks = filtered
+
+		visibleActionable := actionable[:0]
+		for _, id := range actionable {
+			if ctx.HubProjection.inScopeID[id] {
+				visibleActionable = append(visibleActionable, id)
+			}
+		}
+		actionable = visibleActionable
+	}
 	if len(bottlenecks) > 5 {
 		bottlenecks = bottlenecks[:5]
 	}

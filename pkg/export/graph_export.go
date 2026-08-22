@@ -56,12 +56,25 @@ type AdjacencyGraph struct {
 
 // AdjacencyNode represents a node in the adjacency graph.
 type AdjacencyNode struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Status   string   `json:"status"`
-	Priority int      `json:"priority"`
-	Labels   []string `json:"labels,omitempty"`
-	PageRank float64  `json:"pagerank,omitempty"`
+	ID           string                   `json:"id"`
+	Title        string                   `json:"title"`
+	Status       string                   `json:"status"`
+	Priority     int                      `json:"priority"`
+	Labels       []string                 `json:"labels,omitempty"`
+	PageRank     float64                  `json:"pagerank,omitempty"`
+	BoundaryRefs []GraphBoundaryReference `json:"boundary_refs,omitempty"`
+}
+
+// GraphBoundaryReference preserves a focused edge to a hidden graph endpoint.
+type GraphBoundaryReference struct {
+	RelationType string   `json:"relation_type"`
+	EndpointID   string   `json:"endpoint_id"`
+	IssueType    string   `json:"issue_type"`
+	Status       string   `json:"status"`
+	Contexts     []string `json:"contexts"`
+	InScope      bool     `json:"in_scope"`
+	From         string   `json:"from"`
+	To           string   `json:"to"`
 }
 
 // AdjacencyEdge represents an edge in the adjacency graph.

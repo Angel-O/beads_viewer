@@ -26,6 +26,8 @@ func (h *intHeap) Pop() any {
 // AdvancedInsightsConfig holds caps and limits for advanced analysis features.
 // All caps ensure deterministic, bounded outputs suitable for agents.
 type AdvancedInsightsConfig struct {
+	CandidateFilter CandidatePredicate `json:"-"`
+
 	// TopK caps
 	TopKSetLimit     int `json:"topk_set_limit"`     // Max items in top-k unlock set (default 5)
 	CoverageSetLimit int `json:"coverage_set_limit"` // Max items in coverage set (default 5)
@@ -215,16 +217,16 @@ func (a *Analyzer) GenerateAdvancedInsights(config AdvancedInsightsConfig) *Adva
 	}
 
 	// TopK Set - greedy submodular selection for maximum unlock (bv-145)
-	insights.TopKSet = a.generateTopKSet(config.TopKSetLimit)
+	insights.TopKSet = a.generateTopKSet(config.TopKSetLimit, config.CandidateFilter)
 
 	// Coverage Set - greedy 2-approx vertex cover (bv-152)
-	insights.CoverageSet = a.generateCoverageSet(config.CoverageSetLimit)
+	insights.CoverageSet = a.generateCoverageSet(config.CoverageSetLimit, config.CandidateFilter)
 
 	// K-Paths - top k longest/critical paths through the dependency graph (bv-153)
 	insights.KPaths = a.generateKPaths(config.KPathsLimit, config.PathLengthCap)
 
 	// Parallel Cut - suggestions for maximizing parallel work (bv-154)
-	insights.ParallelCut = a.generateParallelCut(config.ParallelCutLimit)
+	insights.ParallelCut = a.generateParallelCut(config.ParallelCutLimit, config.CandidateFilter)
 
 	// Parallel Gain - placeholder until bv-129 implements
 	insights.ParallelGain = &ParallelGainResult{
@@ -348,7 +350,7 @@ func (a *Analyzer) countDependents(issueID string) int {
 
 // generateTopKSet implements greedy submodular selection to find the best k issues
 // that maximize downstream unlocks when completed together (bv-145).
-func (a *Analyzer) generateTopKSet(k int) *TopKSetResult {
+func (a *Analyzer) generateTopKSet(k int, predicate CandidatePredicate) *TopKSetResult {
 	if k <= 0 {
 		k = 5 // default
 	}
@@ -356,7 +358,7 @@ func (a *Analyzer) generateTopKSet(k int) *TopKSetResult {
 	// Get actionable (non-closed) issues as candidates
 	var candidates []string
 	for id, issue := range a.issueMap {
-		if !isClosedLikeStatus(issue.Status) {
+		if !isClosedLikeStatus(issue.Status) && candidateAllowed(predicate, id) {
 			candidates = append(candidates, id)
 		}
 	}
@@ -491,7 +493,7 @@ func (a *Analyzer) computeMarginalUnblocks(issueID string, alreadyCompleted map[
 
 // generateCoverageSet computes a greedy vertex cover (2-approx) over blocking edges.
 // Uses only open issues; returns deterministic ordering with caps.
-func (a *Analyzer) generateCoverageSet(limit int) *CoverageSetResult {
+func (a *Analyzer) generateCoverageSet(limit int, predicate CandidatePredicate) *CoverageSetResult {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -550,6 +552,9 @@ func (a *Analyzer) generateCoverageSet(limit int) *CoverageSetResult {
 		bestID := ""
 		bestDeg := -1
 		for id, d := range deg {
+			if !candidateAllowed(predicate, id) {
+				continue
+			}
 			if d > bestDeg || (d == bestDeg && (bestID == "" || id < bestID)) {
 				bestID, bestDeg = id, d
 			}
@@ -819,7 +824,7 @@ func (a *Analyzer) generateKPaths(k int, pathLengthCap int) *KPathsResult {
 // generateParallelCut finds nodes that maximize parallel work opportunities (bv-154).
 // A node has positive "parallel gain" if completing it would unblock more than one
 // dependent, increasing the number of items that can be worked on in parallel.
-func (a *Analyzer) generateParallelCut(limit int) *ParallelCutResult {
+func (a *Analyzer) generateParallelCut(limit int, predicate CandidatePredicate) *ParallelCutResult {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -881,6 +886,9 @@ func (a *Analyzer) generateParallelCut(limit int) *ParallelCutResult {
 	var candidates []parallelCandidate
 
 	for id := range openIssues {
+		if !candidateAllowed(predicate, id) {
+			continue
+		}
 		// Count how many dependents would become actionable if this issue is completed
 		var newlyActionable []string
 
