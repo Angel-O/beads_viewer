@@ -71,6 +71,7 @@ type graphNode struct {
 	Title       string   `json:"title"`
 	Type        string   `json:"type"`
 	Description string   `json:"description,omitempty"`
+	Assignee    string   `json:"assignee,omitempty"`
 	Priority    int      `json:"priority"`
 	Labels      []string `json:"labels,omitempty"`
 }
@@ -104,8 +105,11 @@ func newApp(stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 }
 
 func (a *app) run(arguments []string) int {
-	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
-		a.printHelp()
+	if target, requested, err := helpTarget(arguments); requested {
+		if err != nil {
+			return a.fail(err)
+		}
+		a.printHelp(target)
 		return 0
 	}
 	a.jsonFailure = containsArgument(arguments, "--json")
@@ -266,9 +270,75 @@ func (a *app) run(arguments []string) int {
 		if len(request.positionals) == 2 {
 			commit = request.positionals[1]
 		}
-		code := a.runBV("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
-		if code == 0 {
+		output, code := a.runBVCapture("correlate", "add", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", commit, "--hub-config", a.paths.Config)
+		committed := code == 0
+		if code != 0 {
+			var result struct {
+				Correlation struct {
+					BeadID  string `json:"bead_id"`
+					Context string `json:"context"`
+					Commit  string `json:"commit"`
+				} `json:"correlation"`
+				Added      bool   `json:"added"`
+				Durability string `json:"durability_error"`
+			}
+			if err := json.Unmarshal(output, &result); err == nil {
+				committed = result.Added && result.Durability != "" &&
+					result.Correlation.BeadID == request.positionals[0] &&
+					result.Correlation.Context == registration.Context &&
+					isFullCommitSHA(result.Correlation.Commit)
+			}
+		}
+		if committed {
 			a.signalMutation("link")
+		}
+		if _, err := a.stdout.Write(output); err != nil {
+			return a.fail(fmt.Errorf("writing correlation addition result: %w", err))
+		}
+		return code
+	case "unlink":
+		if err := need("bv"); err != nil {
+			return a.fail(err)
+		}
+		issue, issueErr := a.readIssue(request.positionals[0], false)
+		if issueErr != nil {
+			return a.fail(issueErr)
+		}
+		if policyErr := hub.ValidateCorrelationOwner(issue.policyState()); policyErr != nil {
+			return a.fail(policyErr)
+		}
+		registration, registerErr := a.register()
+		if registerErr != nil {
+			return a.fail(registerErr)
+		}
+		output, code := a.runBVCapture("correlate", "remove", "--bead", request.positionals[0], "--repo", registration.Context, "--commit", request.positionals[1], "--hub-config", a.paths.Config)
+		var result struct {
+			Correlation struct {
+				BeadID  string `json:"bead_id"`
+				Context string `json:"context"`
+				Commit  string `json:"commit"`
+			} `json:"correlation"`
+			Removed    bool   `json:"removed"`
+			Durability string `json:"durability_error"`
+		}
+		if err := json.Unmarshal(output, &result); err != nil {
+			if code != 0 {
+				return code
+			}
+			return a.fail(fmt.Errorf("decoding correlation removal result: %w", err))
+		}
+		tupleValid := result.Correlation.BeadID == request.positionals[0] &&
+			result.Correlation.Context == registration.Context &&
+			isFullCommitSHA(result.Correlation.Commit) &&
+			strings.EqualFold(result.Correlation.Commit, request.positionals[1])
+		if code == 0 && !tupleValid {
+			return a.fail(errors.New("correlation removal returned a different tuple than requested"))
+		}
+		if result.Removed && tupleValid && (code == 0 || result.Durability != "") {
+			a.signalMutation("unlink")
+		}
+		if _, err := a.stdout.Write(output); err != nil {
+			return a.fail(fmt.Errorf("writing correlation removal result: %w", err))
 		}
 		return code
 	default:
@@ -276,7 +346,67 @@ func (a *app) run(arguments []string) int {
 	}
 }
 
-func (a *app) printHelp() {
+func helpTarget(arguments []string) (string, bool, error) {
+	help := false
+	filtered := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		if argument == "--help" || argument == "-h" {
+			help = true
+			continue
+		}
+		filtered = append(filtered, argument)
+	}
+	if !help {
+		return "", false, nil
+	}
+	if len(filtered) > 0 && filtered[0] == "--json" {
+		filtered = filtered[1:]
+	}
+	if len(filtered) == 0 {
+		return "", true, nil
+	}
+	if _, ok := specFor(filtered[0]); !ok {
+		return "", true, errors.New(supportedCommands())
+	}
+	path := filtered[0]
+	if path == "dep" && len(filtered) > 1 {
+		candidate := path + " " + filtered[1]
+		if _, ok := specFor(candidate); !ok {
+			return "", true, errors.New(usageFor("dep"))
+		}
+		path = candidate
+	}
+	return path, true, nil
+}
+
+func (a *app) printHelp(path string) {
+	if path != "" {
+		spec, _ := specFor(path)
+		fmt.Fprintf(a.stdout, "Usage: %s\n\n%s\n", spec.usage, spec.summary)
+		if len(spec.options) > 0 {
+			fmt.Fprintln(a.stdout, "\nOptions:")
+			for _, option := range spec.options {
+				name := option.name
+				if option.value != "" {
+					name += " " + option.value
+				}
+				detail := option.description
+				if option.defaultText != "" {
+					detail += " (default: " + option.defaultText + ")"
+				}
+				fmt.Fprintf(a.stdout, "  %-31s %s\n", name, detail)
+			}
+		}
+		fmt.Fprintln(a.stdout, "  -h, --help                      Show this help without opening the Hub store.")
+		if len(spec.examples) > 0 {
+			fmt.Fprintln(a.stdout, "\nExamples:")
+			for _, example := range spec.examples {
+				fmt.Fprintln(a.stdout, "  "+example)
+			}
+		}
+		return
+	}
+
 	fmt.Fprint(a.stdout, `Usage: wbd <command> [options]
 
 wbd is the safe command boundary for the private Beads Hub.
@@ -295,11 +425,28 @@ Creation targeting:
   --contextless          Create a todo without repository context.
   --from-todo <todo-id>  Create concrete work discovered from a todo.
 
-Commands:
-  bootstrap, configure, register, context, create, new, replace,
-  compatibility, list, show, update, dep, close, reopen, link
+Assignment:
+  --assignee <identity>  Assign explicitly on create or update; never inferred.
+  --assignee ""          Clear an assignment with update.
+  A status-only update preserves the existing assignee.
 
-Use --json for queries and mutations except context and link.
+Commands:
+`)
+	for _, name := range commandOrder {
+		if strings.Contains(name, " ") {
+			continue
+		}
+		spec := commandSpecs[name]
+		fmt.Fprintf(a.stdout, "  %-14s %s\n", name, spec.summary)
+	}
+	fmt.Fprint(a.stdout, `
+Global options:
+  --json     Emit JSON where supported; accepted before or after the command.
+  -h, --help Show help without requiring a store or invoking child commands.
+
+link resolves a ref and adds a correlation. unlink requires an exact full SHA.
+Both correlation commands return JSON; unlink is idempotent when not found.
+Use --json for other queries and mutations except context.
 `)
 }
 
@@ -360,7 +507,8 @@ func (a *app) create(request request) int {
 	plan := graphPlan{
 		Nodes: []graphNode{{
 			Key: "result", Title: request.positionals[0], Type: admitted.Kind,
-			Description: requestValue(request.args, "--description", ""), Priority: priority, Labels: admitted.Labels,
+			Description: requestValue(request.args, "--description", ""), Assignee: requestValue(request.args, "--assignee", ""),
+			Priority: priority, Labels: admitted.Labels,
 		}},
 		Edges: []graphEdge{{FromKey: "result", ToID: todo.ID, Type: "discovered-from"}},
 	}
@@ -877,8 +1025,25 @@ func (a *app) runBDAt(directory string, bootstrap bool, arguments ...string) int
 	return a.runChild(directory, "bd", arguments, false)
 }
 
-func (a *app) runBV(arguments ...string) int {
-	return a.runChild(a.dir, "bv", arguments, true)
+func (a *app) runBVCapture(arguments ...string) ([]byte, int) {
+	command := exec.Command("bv", arguments...)
+	command.Dir = a.dir
+	command.Stdin = a.stdin
+	command.Stderr = a.stderr
+	command.Env = isolatedEnvironment(a.paths.Store, true)
+	output, err := command.Output()
+	if err == nil {
+		return output, 0
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			return output, 128 + int(status.Signal())
+		}
+		return output, exitError.ExitCode()
+	}
+	fmt.Fprintf(a.stderr, "wbd: executing bv: %v\n", err)
+	return output, 1
 }
 
 func (a *app) runChild(directory, name string, arguments []string, viewer bool) int {

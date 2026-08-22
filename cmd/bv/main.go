@@ -609,6 +609,9 @@ func rewriteAgentIntentCommand(args []string) ([]string, bool) {
 		if len(rest) > 0 && strings.EqualFold(rest[0], "add") {
 			return append([]string{"--correlate-add"}, rest[1:]...), true
 		}
+		if len(rest) > 0 && strings.EqualFold(rest[0], "remove") {
+			return append([]string{"--correlate-remove"}, rest[1:]...), true
+		}
 		return append([]string{"--correlate-add"}, rest...), true
 	case "labels", "label-health":
 		return append([]string{"--robot-label-health"}, rewriteAgentIntentFlagAliases(rest, "label-health")...), true
@@ -1506,8 +1509,9 @@ func main() {
 	historyMode := flag.String("history-mode", "auto", "History provider: auto, git, external, or off")
 	hubConfig := flag.String("hub-config", "", "Private external history hub config (default: ~/.config/bv/hub.yaml when present)")
 	correlateAdd := flag.Bool("correlate-add", false, "Add an explicit bead-to-source-commit correlation")
-	correlateBead := flag.String("bead", "", "Bead ID for --correlate-add")
-	correlateCommit := flag.String("commit", "", "Git commit/ref for --correlate-add")
+	correlateRemove := flag.Bool("correlate-remove", false, "Remove one exact bead-to-source-commit correlation")
+	correlateBead := flag.String("bead", "", "Bead ID for correlation mutation")
+	correlateCommit := flag.String("commit", "", "Git commit/ref for add, or immutable full SHA for remove")
 	beadHistory := flag.String("bead-history", "", "Show history for specific bead ID")
 	historySince := flag.String("history-since", "", "Limit history to commits after this date/ref (e.g., '30 days ago', '2024-01-01')")
 	historyLimit := flag.Int("history-limit", 500, "Max commits to analyze (0 = unlimited)")
@@ -1718,20 +1722,54 @@ func main() {
 		if usesHubConfigStore && *asOf != "" {
 			return fmt.Errorf("--as-of cannot be combined with the configured hub store; config.store is authoritative")
 		}
+		if *correlateAdd && *correlateRemove {
+			return fmt.Errorf("correlate add and correlate remove are mutually exclusive")
+		}
 		if *correlateAdd {
 			if hubConfigPath == "" {
 				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
 			}
 			record, added, err := correlation.AddExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
-			if err != nil {
+			if err != nil && !added {
 				return fmt.Errorf("adding correlation: %w", err)
 			}
 			output := struct {
 				Correlation correlation.ExternalHistoryCorrelation `json:"correlation"`
 				Added       bool                                   `json:"added"`
+				Durability  string                                 `json:"durability_error,omitempty"`
 			}{Correlation: record, Added: added}
+			if err != nil {
+				output.Durability = err.Error()
+			}
 			if err := newRobotEncoder(os.Stdout).Encode(output); err != nil {
 				return fmt.Errorf("encoding correlation result: %w", err)
+			}
+			if err != nil {
+				return fmt.Errorf("adding correlation after ledger replacement: %w", err)
+			}
+			return nil
+		}
+		if *correlateRemove {
+			if hubConfigPath == "" {
+				return fmt.Errorf("correlate remove requires --hub-config or ~/.config/bv/hub.yaml")
+			}
+			record, removed, err := correlation.RemoveExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
+			if err != nil && !removed {
+				return fmt.Errorf("removing correlation: %w", err)
+			}
+			output := struct {
+				Correlation correlation.ExternalHistoryCorrelation `json:"correlation"`
+				Removed     bool                                   `json:"removed"`
+				Durability  string                                 `json:"durability_error,omitempty"`
+			}{Correlation: record, Removed: removed}
+			if err != nil {
+				output.Durability = err.Error()
+			}
+			if err := newRobotEncoder(os.Stdout).Encode(output); err != nil {
+				return fmt.Errorf("encoding correlation result: %w", err)
+			}
+			if err != nil {
+				return fmt.Errorf("removing correlation after ledger replacement: %w", err)
 			}
 			return nil
 		}

@@ -9,9 +9,9 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 
 - Use `wbd` for Hub issue operations. Never run raw `bd`, `bv`, or `br`.
 - The user owns setup. If the store or todo support is missing, ask them to run `wbd bootstrap`; agents must not call `bootstrap`, `configure`, or `register`.
-- Never modify repository `.beads`, hooks, ignores, exports, agent files, or routing configuration. Deletion is unsupported.
+- Never modify repository `.beads`, hooks, ignores, exports, agent files, or routing configuration. Broad deletion is unsupported; only exact commit-correlation removal through `wbd unlink` is allowed.
 - Hub IDs and `ctx:` identities are private. Keep real values out of commits, branches, PRs, tests, docs, and other Git-visible artifacts.
-- Use `--json` for queries and mutations except `wbd context` and `wbd link`, which already returns JSON. Check exit status and treat stderr as diagnostics.
+- Use `--json` for queries and mutations except `wbd context`, `wbd link`, and `wbd unlink`; the correlation commands already return JSON. Check exit status and treat stderr as diagnostics.
 - Before mutating an ID, run `wbd show <id> --json` and verify its type and contexts. Never add, remove, or replace `ctx:` labels or change issue type.
 
 ## Choose A Record
@@ -27,7 +27,7 @@ Omitted targeting uses the current repository context. Repeat `--context <ctx-id
 
 ```sh
 wbd context
-wbd create "Implement token refresh" --type task --priority 2 --json
+wbd create "Implement token refresh" --type task --priority 2 --assignee <identity> --json
 
 # Repository-related discovery that may later become project work.
 wbd create "Investigate flaky authentication" --type todo --context <auth-context> --json
@@ -39,9 +39,18 @@ wbd create "Fix token refresh race" --type bug --context <auth-context> --from-t
 wbd create "Authentication reliability" --type epic --context <auth-context> --json
 wbd dep add <child-id> <epic-id> --type parent-child --json
 wbd link <work-id> HEAD
+# Exact correction only; use the current repository and a verified full SHA.
+wbd unlink <work-id> <full-commit-sha>
 ```
 
-Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` for the supported command and targeting summary.
+Assign only from an explicit stable identity: `wbd update <id> --status in_progress --assignee <identity> --json`. A status-only update preserves the current assignee; `wbd update <id> --assignee "" --json` clears it. Never infer an assignee from owner, creator, Git, environment, or Viewer claim text.
+
+Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
+
+For post-merge correlation and closure of concrete private work, load
+[`beads-hub-closeout`](../beads-hub-closeout/SKILL.md). It keeps private
+identities out of Git-visible metadata and requires verified merge reachability
+before `wbd link` can succeed and closure can begin.
 
 ## Viewer
 

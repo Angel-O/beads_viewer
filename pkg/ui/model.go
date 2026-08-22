@@ -8238,12 +8238,16 @@ func (m *Model) updateViewportContent() {
 	sb.WriteString(fmt.Sprintf("# %s %s\n", GetTypeIconMD(string(item.IssueType)), item.Title))
 
 	// Meta Table
+	assignee := "Unassigned"
+	if item.Assignee != "" {
+		assignee = "@" + item.Assignee
+	}
 	sb.WriteString("| ID | Status | Priority | Assignee | Created |\n|---|---|---|---|---|\n")
-	sb.WriteString(fmt.Sprintf("| **%s** | **%s** | %s | @%s | %s |\n\n",
+	sb.WriteString(fmt.Sprintf("| **%s** | **%s** | %s | %s | %s |\n\n",
 		item.ID,
 		strings.ToUpper(string(item.Status)),
 		GetPriorityIcon(item.Priority),
-		item.Assignee,
+		assignee,
 		item.CreatedAt.Format("2006-01-02"),
 	))
 

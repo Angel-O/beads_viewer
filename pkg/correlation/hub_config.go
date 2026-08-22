@@ -20,6 +20,8 @@ type correlationLedgerEntry struct {
 	raw         []byte
 }
 
+type correlationLedgerWriter func(string, []correlationLedgerEntry) (bool, error)
+
 // HubConfig is the shared version-1 Hub configuration schema.
 type HubConfig = hub.Config
 
@@ -49,6 +51,10 @@ func HubConfigStore(configPath string) (string, error) {
 // AddExternalCorrelation resolves ref to an immutable source commit and writes
 // one deduplicated JSONL record to the private ledger using atomic replacement.
 func AddExternalCorrelation(configPath, beadID, repository, ref string) (ExternalHistoryCorrelation, bool, error) {
+	return addExternalCorrelation(configPath, beadID, repository, ref, writeCorrelationLedgerAtomic)
+}
+
+func addExternalCorrelation(configPath, beadID, repository, ref string, writeLedger correlationLedgerWriter) (ExternalHistoryCorrelation, bool, error) {
 	resolvedConfigPath, err := expandConfigPath(configPath)
 	if err != nil {
 		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving hub config: %w", err)
@@ -134,10 +140,147 @@ func AddExternalCorrelation(configPath, beadID, repository, ref string) (Externa
 		return ExternalHistoryCorrelation{}, false, fmt.Errorf("encoding correlation ledger record: %w", err)
 	}
 	entries = append(entries, correlationLedgerEntry{correlation: record, raw: encodedRecord})
-	if err := writeCorrelationLedgerAtomic(ledger, entries); err != nil {
+	committed, err := writeLedger(ledger, entries)
+	if err != nil {
+		if committed {
+			return record, true, err
+		}
 		return ExternalHistoryCorrelation{}, false, err
 	}
 	return record, true, nil
+}
+
+// RemoveExternalCorrelation removes one exact logical association from the
+// private ledger. Duplicate physical records for that tuple are removed
+// together so the deleted correlation cannot remain visible to readers.
+func RemoveExternalCorrelation(configPath, beadID, repository, commit string) (ExternalHistoryCorrelation, bool, error) {
+	return removeExternalCorrelation(configPath, beadID, repository, commit, writeCorrelationLedgerAtomic)
+}
+
+func removeExternalCorrelation(configPath, beadID, repository, commit string, writeLedger correlationLedgerWriter) (ExternalHistoryCorrelation, bool, error) {
+	resolvedConfigPath, err := expandConfigPath(configPath)
+	if err != nil {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving hub config: %w", err)
+	}
+	config, err := hub.Load(resolvedConfigPath)
+	if err != nil {
+		return ExternalHistoryCorrelation{}, false, err
+	}
+	beadID = strings.TrimSpace(beadID)
+	repository = strings.TrimSpace(repository)
+	commit = strings.TrimSpace(commit)
+	if beadID == "" || repository == "" || commit == "" {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("bead, repo, and commit must all be non-empty")
+	}
+	if !fullCommitSHARegex.MatchString(commit) {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("commit %q must be a full 40- or 64-character Git object ID", commit)
+	}
+
+	baseDir := filepath.Dir(resolvedConfigPath)
+	ledger, err := resolvePrivatePath(config.Ledger, baseDir)
+	if err != nil || ledger == "" {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving correlation ledger: %w", err)
+	}
+	for _, contextKey := range sortedRepositoryKeys(config.Repositories) {
+		configuredRepository := config.Repositories[contextKey]
+		configuredPath, resolveErr := resolvePrivatePath(configuredRepository.Path, baseDir)
+		if resolveErr != nil {
+			return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving repository %q: %w", contextKey, resolveErr)
+		}
+		if pathWithin(configuredPath, ledger) {
+			return ExternalHistoryCorrelation{}, false, fmt.Errorf("correlation ledger %q must not be inside source repository %q at %q", ledger, contextKey, configuredPath)
+		}
+	}
+	contextKey, _, err := resolveConfiguredRepository(config.Repositories, repository, baseDir)
+	if err != nil {
+		return ExternalHistoryCorrelation{}, false, err
+	}
+	store, err := resolvePrivatePath(config.Store, baseDir)
+	if err != nil || store == "" {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("resolving hub config store: %w", err)
+	}
+	if err := validateBeadContext(store, beadID, contextKey); err != nil {
+		return ExternalHistoryCorrelation{}, false, err
+	}
+	record := ExternalHistoryCorrelation{BeadID: beadID, Context: contextKey, Commit: strings.ToLower(commit)}
+
+	if err := os.MkdirAll(filepath.Dir(ledger), 0o700); err != nil {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("creating correlation ledger directory: %w", err)
+	}
+	lock, err := os.OpenFile(ledger+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("opening correlation ledger lock: %w", err)
+	}
+	defer lock.Close()
+	if err := lockFile(lock); err != nil {
+		return ExternalHistoryCorrelation{}, false, fmt.Errorf("locking correlation ledger: %w", err)
+	}
+	defer func() { _ = unlockFile(lock) }()
+
+	entries, err := loadCorrelationLedgerEntriesIfExists(ledger)
+	if err != nil {
+		return ExternalHistoryCorrelation{}, false, err
+	}
+	if err := validateCorrelationLedgerForRemoval(ledger, entries, config.Repositories, store, record); err != nil {
+		return ExternalHistoryCorrelation{}, false, err
+	}
+	kept := make([]correlationLedgerEntry, 0, len(entries))
+	removed := false
+	for _, entry := range entries {
+		existing := entry.correlation
+		if strings.TrimSpace(existing.BeadID) == record.BeadID &&
+			strings.TrimSpace(existing.Context) == record.Context &&
+			strings.EqualFold(strings.TrimSpace(existing.Commit), record.Commit) {
+			removed = true
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if !removed {
+		return record, false, nil
+	}
+	committed, err := writeLedger(ledger, kept)
+	if err != nil {
+		if committed {
+			return record, true, err
+		}
+		return ExternalHistoryCorrelation{}, false, err
+	}
+	return record, true, nil
+}
+
+func validateCorrelationLedgerForRemoval(ledger string, entries []correlationLedgerEntry, repositories map[string]HubConfigRepository, store string, target ExternalHistoryCorrelation) error {
+	targetIdentity := target.BeadID + "\x00" + target.Context + "\x00" + strings.ToLower(target.Commit)
+	seen := make(map[string]struct{}, len(entries))
+	validatedContexts := make(map[string]struct{})
+	for i, entry := range entries {
+		record := entry.correlation
+		record.BeadID = strings.TrimSpace(record.BeadID)
+		record.Context = strings.TrimSpace(record.Context)
+		record.Commit = strings.TrimSpace(record.Commit)
+		if record.BeadID == "" || record.Context == "" || record.Commit == "" {
+			return fmt.Errorf("correlation ledger %q record %d requires non-empty bead_id, context, and commit", ledger, i+1)
+		}
+		if _, exists := repositories[record.Context]; !exists {
+			return fmt.Errorf("correlation ledger %q record %d references undefined context %q", ledger, i+1, record.Context)
+		}
+		if !fullCommitSHARegex.MatchString(record.Commit) {
+			return fmt.Errorf("correlation ledger %q record %d commit %q must be a full 40- or 64-character Git object ID", ledger, i+1, record.Commit)
+		}
+		beadContext := record.BeadID + "\x00" + record.Context
+		if _, validated := validatedContexts[beadContext]; !validated {
+			if err := validateBeadContext(store, record.BeadID, record.Context); err != nil {
+				return fmt.Errorf("correlation ledger %q record %d: %w", ledger, i+1, err)
+			}
+			validatedContexts[beadContext] = struct{}{}
+		}
+		identity := beadContext + "\x00" + strings.ToLower(record.Commit)
+		if _, duplicate := seen[identity]; duplicate && identity != targetIdentity {
+			return fmt.Errorf("correlation ledger %q repeats correlation for bead %q, context %q, commit %q", ledger, record.BeadID, record.Context, record.Commit)
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
 }
 
 func resolveConfiguredRepository(repositories map[string]HubConfigRepository, value, baseDir string) (string, string, error) {
@@ -208,55 +351,55 @@ func unwrapPathError(err error) error {
 	return nil
 }
 
-func writeCorrelationLedgerAtomic(path string, entries []correlationLedgerEntry) error {
+func writeCorrelationLedgerAtomic(path string, entries []correlationLedgerEntry) (bool, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating correlation ledger directory %q: %w", dir, err)
+		return false, fmt.Errorf("creating correlation ledger directory %q: %w", dir, err)
 	}
 	tmp, err := os.CreateTemp(dir, ".bv-correlations-*")
 	if err != nil {
-		return fmt.Errorf("creating temporary correlation ledger: %w", err)
+		return false, fmt.Errorf("creating temporary correlation ledger: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
-		return fmt.Errorf("securing temporary correlation ledger: %w", err)
+		return false, fmt.Errorf("securing temporary correlation ledger: %w", err)
 	}
 	writer := bufio.NewWriter(tmp)
 	for _, entry := range entries {
 		if _, err := writer.Write(entry.raw); err != nil {
 			tmp.Close()
-			return fmt.Errorf("writing correlation ledger: %w", err)
+			return false, fmt.Errorf("writing correlation ledger: %w", err)
 		}
 		if err := writer.WriteByte('\n'); err != nil {
 			tmp.Close()
-			return fmt.Errorf("writing correlation ledger: %w", err)
+			return false, fmt.Errorf("writing correlation ledger: %w", err)
 		}
 	}
 	if err := writer.Flush(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("writing correlation ledger: %w", err)
+		return false, fmt.Errorf("writing correlation ledger: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("syncing correlation ledger: %w", err)
+		return false, fmt.Errorf("syncing correlation ledger: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing correlation ledger: %w", err)
+		return false, fmt.Errorf("closing correlation ledger: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("replacing correlation ledger %q: %w", path, err)
+		return false, fmt.Errorf("replacing correlation ledger %q: %w", path, err)
 	}
 	directory, err := os.Open(dir)
 	if err != nil {
-		return fmt.Errorf("opening correlation ledger directory %q: %w", dir, err)
+		return true, fmt.Errorf("opening correlation ledger directory %q after replacement: %w", dir, err)
 	}
 	defer directory.Close()
 	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("syncing correlation ledger directory %q: %w", dir, err)
+		return true, fmt.Errorf("syncing correlation ledger directory %q after replacement: %w", dir, err)
 	}
-	return nil
+	return true, nil
 }
 
 // ExternalHistoryCorrelation is one append-friendly private ledger record.

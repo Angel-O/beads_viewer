@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,33 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 )
+
+func TestIssueDetailsRenderAssignedAndUnassignedAssignees(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		assignee   string
+		want       string
+		notContain string
+	}{
+		{name: "assigned", assignee: "agent-7", want: "@agent-7"},
+		{name: "unassigned", want: "Unassigned", notContain: "| @ |"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			m := ui.NewModel([]model.Issue{{
+				ID: "work-1", Title: "Work", Status: model.StatusOpen, Priority: 2,
+				Assignee: testCase.assignee, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+			}}, nil, "")
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+			view := updated.(ui.Model).View()
+			if !strings.Contains(view, testCase.want) {
+				t.Fatalf("detail view missing %q:\n%s", testCase.want, view)
+			}
+			if testCase.notContain != "" && strings.Contains(view, testCase.notContain) {
+				t.Fatalf("detail view retained bare assignee marker:\n%s", view)
+			}
+		})
+	}
+}
 
 func TestModelFiltering(t *testing.T) {
 	issues := []model.Issue{

@@ -319,6 +319,43 @@ func TestExternalHistoryAllowsMissingLedger(t *testing.T) {
 	}
 }
 
+func TestExternalCorrelationRemovalStopsReaderSurfacingExactTuple(t *testing.T) {
+	bv := buildBvBinary(t)
+	fixture := createExternalHistoryFixture(t)
+	remove := []string{"correlate", "remove", "--bead", "work-2", "--repo", "ctx:repo-a-111", "--commit", fixture.shaA, "--hub-config", fixture.configPath}
+	out, err := fixture.command(t, bv, remove...)
+	if err != nil {
+		t.Fatalf("remove correlation: %v\n%s", err, out)
+	}
+	var result struct {
+		Removed bool `json:"removed"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil || !result.Removed {
+		t.Fatalf("removal result: %v, payload=%s", err, out)
+	}
+
+	historyOut, err := fixture.command(t, bv, "--robot-history", "--history-mode", "external", "--hub-config", fixture.configPath)
+	if err != nil {
+		t.Fatalf("history after removal: %v\n%s", err, historyOut)
+	}
+	payload := decodeExternalHistoryPayload(t, historyOut)
+	if payload.Stats.TotalCommits != 5 || len(payload.Histories["work-2"].Commits) != 0 {
+		t.Fatalf("removed tuple still surfaced: %+v", payload)
+	}
+
+	out, err = fixture.command(t, bv, remove...)
+	if err != nil {
+		t.Fatalf("idempotent remove: %v\n%s", err, out)
+	}
+	if err := json.Unmarshal(out, &result); err != nil || result.Removed {
+		t.Fatalf("not-found result: %v, payload=%s", err, out)
+	}
+	wantNotFound := fmt.Sprintf("{\"correlation\":{\"bead_id\":\"work-2\",\"context\":\"ctx:repo-a-111\",\"commit\":%q},\"removed\":false}\n", fixture.shaA)
+	if string(out) != wantNotFound {
+		t.Fatalf("not-found JSON = %q, want %q", out, wantNotFound)
+	}
+}
+
 func TestExternalHistoryDoesNotProbeUnusedOrUnselectedRepositories(t *testing.T) {
 	bv := buildBvBinary(t)
 	t.Run("unused configured context", func(t *testing.T) {
