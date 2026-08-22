@@ -184,6 +184,43 @@ func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
 }
 
+func TestRejectedHubScopePreservesPendingDefault(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}, nil, "")
+	m.hubRepositoryMode = true
+	if m.SetDefaultRepositoryScope("ctx:alpha") {
+		t.Fatal("default applied before the initial catalog arrived")
+	}
+
+	beforeScope := m.HubScope()
+	beforeDefaultSet := m.defaultRepositorySet
+	beforeDefaultID := m.defaultRepositoryID
+	unknown, err := model.NewSelectedContextsHubScope([]string{"ctx:unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(unknown); err == nil {
+		t.Fatal("unregistered explicit context was accepted")
+	}
+	afterScope := m.HubScope()
+	if afterScope.Mode != beforeScope.Mode || strings.Join(afterScope.Contexts, ",") != strings.Join(beforeScope.Contexts, ",") {
+		t.Fatalf("rejected scope changed Hub scope: before=%#v after=%#v", beforeScope, afterScope)
+	}
+	if m.defaultRepositorySet != beforeDefaultSet || m.defaultRepositoryID != beforeDefaultID {
+		t.Fatalf("rejected scope changed pending default: set %v -> %v, ID %q -> %q",
+			beforeDefaultSet, m.defaultRepositorySet, beforeDefaultID, m.defaultRepositoryID)
+	}
+
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
+	m = updated.(Model)
+	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:alpha" {
+		t.Fatalf("pending current-context default did not apply: %#v", scope)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+}
+
 func TestPendingDefaultDoesNotOverridePickerChoiceOnCatalogRecovery(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},

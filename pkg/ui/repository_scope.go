@@ -461,8 +461,6 @@ func (m *Model) SetHubScope(scope model.HubScope) error {
 	if err := scope.Validate(); err != nil {
 		return err
 	}
-	m.defaultRepositorySet = true
-	m.defaultRepositoryID = ""
 	if scope.Mode == model.HubScopeSelectedContexts {
 		available := make(map[string]bool, len(m.repositoryCatalog))
 		for _, repository := range m.repositoryCatalog {
@@ -476,6 +474,8 @@ func (m *Model) SetHubScope(scope model.HubScope) error {
 			}
 		}
 	}
+	m.defaultRepositorySet = true
+	m.defaultRepositoryID = ""
 	switch scope.Mode {
 	case model.HubScopeAllItems:
 		m.hubScope = model.NewAllItemsHubScope()
