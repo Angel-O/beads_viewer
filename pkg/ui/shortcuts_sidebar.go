@@ -187,9 +187,12 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			contexts: []string{"graph"},
 			items: []shortcutItem{
 				{"hjkl", "Navigate"},
+				{"/", "Search ID/title"},
+				{"n/N", "Next/prev match"},
 				{"H/L", "Scroll ←/→"},
 				{"PgUp/Dn", "Scroll ↑/↓"},
 				{"Enter", "Jump to issue"},
+				{"Esc", "Clear/back"},
 			},
 		},
 		{

@@ -334,6 +334,9 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"L", "Scroll right", "Graph", "graph"},
 		{"PgUp", "Scroll up", "Graph", "graph"},
 		{"PgDn", "Scroll down", "Graph", "graph"},
+		{"/", "Search ID or title", "Graph", "graph"},
+		{"n/N", "Next/previous match", "Graph", "graph"},
+		{"Esc", "Clear search or exit", "Graph", "graph"},
 
 		// Board View
 		{"h", "Previous column", "Board", "board"},

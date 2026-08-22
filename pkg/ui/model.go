@@ -3222,6 +3222,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Graph search owns every key while editing so printable query text cannot
+		// leak into global help, tutorial, refresh, sidebar, or view shortcuts.
+		if m.focused == focusGraph && m.graphView.IsSearchInputActive() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m = m.handleGraphKeys(msg)
+			return m, nil
+		}
+
 		// Handle help overlay toggle (? or F1)
 		if (msg.String() == "?" || msg.String() == "f1") && m.list.FilterState() != list.Filtering {
 			m.showHelp = !m.showHelp
@@ -3444,6 +3454,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m = m.handleBoardKeys(msg)
+			return m, nil
+		}
+		if m.focused == focusGraph && m.graphView.HasSearchQuery() && msg.String() == "esc" {
+			m = m.handleGraphKeys(msg)
 			return m, nil
 		}
 		if m.focused == focusHistory && (m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus()) {
@@ -3737,13 +3751,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case focusGraph:
-				// Graph uses h/l for nav — intercept those.
+				// Graph uses h/l for nav and owns its local search keys.
 				// Let other view-toggle keys (b/a/i/E/f/etc.) fall through.
 				switch keyStr {
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
 					"H", "L", "ctrl+d", "ctrl+u", "pgup", "pgdown",
-					"enter":
+					"/", "n", "N", "enter":
 					m = m.handleGraphKeys(msg)
 					viewToggleHandled = true
 				}
@@ -4452,7 +4466,29 @@ func (m Model) handleBoardKeys(msg tea.KeyMsg) Model {
 
 // handleGraphKeys handles keyboard input when the graph view is focused
 func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
+	if m.graphView.IsSearchInputActive() {
+		switch msg.Type {
+		case tea.KeyEnter:
+			m.graphView.CommitSearch()
+		case tea.KeyEsc:
+			m.graphView.ClearSearch()
+		case tea.KeyBackspace:
+			m.graphView.BackspaceSearch()
+		case tea.KeyRunes:
+			m.graphView.AppendSearchRunes(msg.Runes)
+		}
+		return m
+	}
+
 	switch msg.String() {
+	case "/":
+		m.graphView.StartSearch()
+	case "n":
+		m.graphView.NextSearchMatch()
+	case "N":
+		m.graphView.PreviousSearchMatch()
+	case "esc":
+		m.graphView.ClearSearch()
 	case "h", "left":
 		m.graphView.MoveLeft()
 	case "l", "right":
@@ -5979,9 +6015,12 @@ func (m *Model) renderHelpOverlay() string {
 
 	graphSection := []struct{ key, desc string }{
 		{"hjkl", "Navigate nodes"},
+		{"/", "Search ID/title"},
+		{"n/N", "Next/prev match"},
 		{"H/L", "Scroll left/right"},
 		{"PgUp/Dn", "Scroll up/down"},
 		{"Enter", "Jump to issue"},
+		{"Esc", "Clear search / back"},
 	}
 
 	insightsSection := []struct{ key, desc string }{
