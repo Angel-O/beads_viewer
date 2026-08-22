@@ -304,6 +304,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"g", "Graph view", "Views", "list,detail"},
 		{"h", "History view", "Views", "list,detail"},
 		{"i", "Insights panel", "Views", "list,detail"},
+		{"E", "Enter Tree (uppercase)", "Views", "list,detail"},
 		{"?", "Help overlay", "Views", "all"},
 		{";", "Shortcuts sidebar", "Views", "all"},
 		{"p", "Priority hints", "Views", "list,detail"},
@@ -337,6 +338,19 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"/", "Search ID or title", "Graph", "graph"},
 		{"n/N", "Next/previous match", "Graph", "graph"},
 		{"Esc", "Clear search or exit", "Graph", "graph"},
+
+		// Tree View
+		{"h", "Collapse or visit parent", "Tree", "tree"},
+		{"l", "Expand or visit child", "Tree", "tree"},
+		{"enter", "Toggle expansion / select match", "Tree", "tree"},
+		{"space", "Toggle expansion", "Tree", "tree"},
+		{"/", "Search Tree", "Tree", "tree"},
+		{"n", "Next search match", "Tree", "tree"},
+		{"N", "Previous search match", "Tree", "tree"},
+		{"o", "Expand all", "Tree", "tree"},
+		{"O", "Collapse all", "Tree", "tree"},
+		{"E", "Exit Tree", "Tree", "tree"},
+		{"esc", "Clear search or exit Tree", "Tree", "tree"},
 
 		// Board View
 		{"h", "Previous column", "Board", "board"},

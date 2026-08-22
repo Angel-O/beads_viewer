@@ -12,6 +12,7 @@ import (
 var ContextHelpContent = map[Context]string{
 	ContextList:           contextHelpList,
 	ContextGraph:          contextHelpGraph,
+	ContextTree:           contextHelpTree,
 	ContextBoard:          contextHelpBoard,
 	ContextInsights:       contextHelpInsights,
 	ContextHistory:        contextHelpHistory,
@@ -111,6 +112,7 @@ const contextHelpList = `## List View
   Alt+H     Hybrid preset
 
 **Switch Views**
+  E         Enter Tree view (uppercase E)
   a         Actionable view
   b         Board view
   g         Graph view
@@ -140,6 +142,25 @@ const contextHelpGraph = `## Graph View
 • Node size = priority
 • Color = status
   Green=closed, Blue=in_progress`
+
+const contextHelpTree = `## Tree View
+
+**Navigation**
+  j/k       Move up/down
+  h/l       Collapse/expand or visit parent/child
+  Enter     Toggle expansion; select during search
+  Space     Toggle expansion
+  g/G       Jump to top/bottom
+  o/O       Expand/collapse all
+
+**Search**
+  /         Search this Tree by ID or title
+  n/N       Next/previous match
+  Escape    Clear or cancel search first
+  Matches retain their hierarchy ancestors
+
+**Exit**
+  E / Escape  Exit Tree (uppercase E)`
 
 const contextHelpBoard = `## Board View
 

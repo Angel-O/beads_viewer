@@ -657,6 +657,59 @@ func TestKeyDispatch_Regression_EscInTreeReturnsList(t *testing.T) {
 	t.Logf("focus=tree key=esc expected=return_to_list actual=focused:%v", m.focused)
 }
 
+func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
+	m := setupTestModel(t)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree || m.tree.SearchQuery() != "E" {
+		t.Fatalf("uppercase input escaped Tree search: focus=%v query=%q", m.focused, m.tree.SearchQuery())
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.tree.IsSearchActive() {
+		t.Fatal("Enter should select the current result and finish Tree input")
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusTree || m.tree.SearchQuery() != "" {
+		t.Fatalf("first Escape should clear search in Tree: focus=%v query=%q", m.focused, m.tree.SearchQuery())
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusList {
+		t.Fatalf("second Escape should exit Tree, got focus=%v", m.focused)
+	}
+}
+
+func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
+	docs := GetKeyBindingDocs()
+	wants := map[string]bool{
+		"E|list,detail|Enter Tree (uppercase)": false,
+		"/|tree|Search Tree":                   false,
+		"n|tree|Next search match":             false,
+		"N|tree|Previous search match":         false,
+		"E|tree|Exit Tree":                     false,
+		"esc|tree|Clear search or exit Tree":   false,
+	}
+	for _, doc := range docs {
+		key := doc.Key + "|" + doc.Context + "|" + doc.Desc
+		if _, ok := wants[key]; ok {
+			wants[key] = true
+		}
+	}
+	for binding, found := range wants {
+		if !found {
+			t.Errorf("authoritative key docs missing %q", binding)
+		}
+	}
+}
+
 // TestKeyDispatch_Regression_FInHistoryTogglesFileTree verifies that 'f' in history view
 // toggles the file tree within history.
 func TestKeyDispatch_Regression_FInHistoryTogglesFileTree(t *testing.T) {

@@ -8,13 +8,161 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 func newTreeTestTheme() Theme {
 	return DefaultTheme(lipgloss.NewRenderer(nil))
+}
+
+func treeSearchIssues() []model.Issue {
+	return []model.Issue{
+		{ID: "root", Title: "Planning", Priority: 1, IssueType: model.TypeEpic},
+		{ID: "child", Title: "Backend", Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "child", DependsOnID: "root", Type: model.DepParentChild}}},
+		{ID: "nested-match", Title: "Needle implementation", Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "nested-match", DependsOnID: "child", Type: model.DepParentChild}}},
+		{ID: "second-match", Title: "Needle tests", Priority: 2, IssueType: model.TypeTask},
+	}
+}
+
+func TestTreeSearchRevealsAncestorsAndRestoresExpansion(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchIssues())
+	tree.roots[0].Expanded = false
+	tree.rebuildFlatList()
+
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("implementation")})
+
+	if got := tree.SearchMatchCount(); got != 1 {
+		t.Fatalf("match count = %d, want 1", got)
+	}
+	if got := tree.NodeCount(); got != 3 {
+		t.Fatalf("visible search rows = %d, want matching node plus two ancestors", got)
+	}
+	if selected := tree.SelectedIssue(); selected == nil || selected.ID != "nested-match" {
+		t.Fatalf("selected issue = %#v, want nested match", selected)
+	}
+	if tree.roots[0].Expanded {
+		t.Fatal("search changed the user's collapsed root")
+	}
+
+	tree.ClearSearch()
+	if tree.roots[0].Expanded {
+		t.Fatal("clearing search did not preserve the collapsed root")
+	}
+	if got := tree.NodeCount(); got != 2 {
+		t.Fatalf("visible rows after clear = %d, want two collapsed roots", got)
+	}
+}
+
+func TestTreeSearchNavigationAndZeroResultState(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchIssues())
+	tree.SetSize(100, 20)
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+
+	if got := tree.SearchCursorPos(); got != 1 {
+		t.Fatalf("initial match position = %d, want 1", got)
+	}
+	tree.NextSearchMatch()
+	if got := tree.SearchCursorPos(); got != 2 {
+		t.Fatalf("next match position = %d, want 2", got)
+	}
+	tree.NextSearchMatch()
+	if got := tree.SearchCursorPos(); got != 1 {
+		t.Fatalf("wrapped next position = %d, want 1", got)
+	}
+	tree.PreviousSearchMatch()
+	if got := tree.SearchCursorPos(); got != 2 {
+		t.Fatalf("wrapped previous position = %d, want 2", got)
+	}
+
+	tree.ClearSearch()
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("absent")})
+	view := tree.View()
+	for _, expected := range []string{"/absent", "[0/0]", "No Tree matches"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("zero-result Tree view missing %q", expected)
+		}
+	}
+}
+
+func TestTreeSearchZeroResultChromeRespectsBounds(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		width       int
+		height      int
+		wantNoMatch bool
+	}{
+		{name: "long ASCII", query: strings.Repeat("unmatched", 40), width: 24, height: 3, wantNoMatch: true},
+		{name: "wide CJK", query: strings.Repeat("検索不能", 30), width: 21, height: 2, wantNoMatch: true},
+		{name: "multiline and C1 controls", query: "absent\nnext\u0085\x1b[31m", width: 18, height: 2, wantNoMatch: true},
+		{name: "tiny height", query: strings.Repeat("absent", 20), width: 8, height: 1, wantNoMatch: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := NewTreeModel(newTreeTestTheme())
+			tree.Build(treeSearchIssues())
+			tree.SetSize(tt.width, tt.height)
+			tree.StartSearch()
+			tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.query)})
+
+			output := tree.View()
+			if got := tree.SearchQuery(); got != tt.query {
+				t.Fatalf("stored query changed during rendering: got %q", got)
+			}
+			if got := lipgloss.Width(output); got > tt.width {
+				t.Errorf("rendered width = %d, want <= %d:\n%s", got, tt.width, output)
+			}
+			if got := lipgloss.Height(output); got > tt.height {
+				t.Errorf("rendered height = %d, want <= %d:\n%s", got, tt.height, output)
+			}
+			for lineNumber, line := range strings.Split(output, "\n") {
+				for _, r := range line {
+					if unicode.IsControl(r) {
+						t.Errorf("rendered line %d contains control rune %U", lineNumber+1, r)
+					}
+				}
+			}
+			if got := strings.Contains(output, "No Tree"); got != tt.wantNoMatch {
+				t.Errorf("no-match row presence = %v, want %v:\n%s", got, tt.wantNoMatch, output)
+			}
+		})
+	}
+}
+
+func TestTreeSearchRetainsProjectedHierarchyContext(t *testing.T) {
+	parent := model.Issue{ID: "other-repo-parent", Title: "Parent outside scope", IssueType: model.TypeEpic}
+	child := model.Issue{
+		ID:        "scoped-child",
+		Title:     "Scoped needle",
+		IssueType: model.TypeTask,
+		Dependencies: []*model.Dependency{{
+			IssueID:     "scoped-child",
+			DependsOnID: parent.ID,
+			Type:        model.DepParentChild,
+		}},
+	}
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.BuildProjected([]model.Issue{child}, map[string]*model.Issue{parent.ID: &parent})
+	tree.SetSize(100, 10)
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+
+	if tree.RootCount() != 1 || tree.SearchMatchCount() != 1 {
+		t.Fatalf("search escaped projected scope: roots=%d matches=%d", tree.RootCount(), tree.SearchMatchCount())
+	}
+	if view := tree.View(); !strings.Contains(view, "[parent out of scope]") {
+		t.Fatal("projected Tree search lost omitted-parent hierarchy context")
+	}
 }
 
 // TestTreeBuildEmpty verifies Build() handles empty issues slice
@@ -757,15 +905,16 @@ func TestVisibleRange(t *testing.T) {
 	}{
 		{"empty tree", 0, 10, 0, 0, 0},
 		{"fewer nodes than viewport", 5, 10, 0, 0, 5},
-		{"exact fit", 10, 10, 0, 0, 10},
-		{"offset at start", 100, 10, 0, 0, 10},
-		{"offset in middle", 100, 10, 45, 45, 55},
-		{"offset near end", 100, 10, 90, 90, 100},
-		{"offset past end clamps", 100, 10, 95, 90, 100},
+		{"header-adjusted exact fit", 9, 10, 0, 0, 9},
+		{"one over exact fit reserves indicator", 10, 10, 0, 0, 8},
+		{"offset at start", 100, 10, 0, 0, 8},
+		{"offset in middle", 100, 10, 45, 45, 53},
+		{"offset near end", 100, 10, 90, 90, 98},
+		{"offset past end clamps", 100, 10, 95, 92, 100},
 		{"zero height uses default 20", 100, 0, 0, 0, 20},
 		{"negative height uses default 20", 100, -5, 0, 0, 20},
 		{"single node", 1, 10, 0, 0, 1},
-		{"negative offset clamps to start", 100, 10, -5, 0, 10},
+		{"negative offset clamps to start", 100, 10, -5, 0, 8},
 		{"negative offset small list", 5, 10, -5, 0, 5},
 	}
 
@@ -819,8 +968,8 @@ func TestVisibleRangePerformance(t *testing.T) {
 	// Should complete instantly (O(1))
 	start, end := tree.visibleRange()
 
-	if start != 50000 || end != 50020 {
-		t.Errorf("visibleRange() = (%d, %d), want (50000, 50020)", start, end)
+	if start != 50000 || end != 50018 {
+		t.Errorf("visibleRange() = (%d, %d), want (50000, 50018)", start, end)
 	}
 }
 
@@ -1246,17 +1395,17 @@ func TestEnsureCursorVisible(t *testing.T) {
 	}{
 		{"cursor at start, offset at start", 100, 10, 0, 0, 0},
 		{"cursor in visible range", 100, 10, 5, 0, 0},
-		{"cursor below viewport - scroll down", 100, 10, 15, 0, 6},
+		{"cursor below viewport - scroll down", 100, 10, 15, 0, 8},
 		{"cursor above viewport - scroll up", 100, 10, 0, 10, 0},
-		{"cursor at viewport bottom edge", 100, 10, 9, 0, 0},
-		{"cursor just past viewport bottom", 100, 10, 10, 0, 1},
-		{"cursor at end of list", 100, 10, 99, 0, 90},
+		{"cursor at viewport bottom edge", 100, 10, 7, 0, 0},
+		{"cursor just past viewport bottom", 100, 10, 8, 0, 1},
+		{"cursor at end of list", 100, 10, 99, 0, 92},
 		{"offset already correct", 100, 10, 50, 45, 45},
 		{"empty list", 0, 10, 0, 0, 0},
 		{"single node", 1, 10, 0, 0, 0},
 		{"fewer nodes than viewport", 5, 10, 3, 0, 0},
 		{"zero height uses default 20", 100, 0, 25, 0, 6},
-		{"large cursor with max offset clamping", 100, 10, 95, 0, 86},
+		{"large cursor with max offset clamping", 100, 10, 95, 0, 88},
 	}
 
 	for _, tt := range tests {
@@ -1282,10 +1431,7 @@ func TestEnsureCursorVisible(t *testing.T) {
 
 			// Verify cursor is now within visible range (unless empty)
 			if tt.nodeCount > 0 {
-				visibleCount := tt.height
-				if visibleCount <= 0 {
-					visibleCount = 20
-				}
+				visibleCount := tree.visibleNodeCapacity()
 				if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+visibleCount {
 					// This check needs adjustment for edge case where list is smaller than viewport
 					if tt.nodeCount > visibleCount && tree.cursor >= tree.viewportOffset+visibleCount {
@@ -1416,10 +1562,9 @@ func TestViewRendersOnlyVisible(t *testing.T) {
 	output := tree.View()
 	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 
-	// Should have exactly 11 lines: 10 content lines + 1 position indicator (bv-2nax)
-	// The position indicator shows "[start-end of total]" when scrolling is needed
-	if len(lines) != 11 {
-		t.Errorf("expected 11 lines (10 content + 1 indicator), got %d", len(lines))
+	// Header, eight issue rows, and the position indicator fit the allocation.
+	if len(lines) != 10 {
+		t.Errorf("expected 10 lines (header + 8 issues + indicator), got %d", len(lines))
 	}
 
 	// Should contain node 50's content (issue-50)
@@ -1427,9 +1572,9 @@ func TestViewRendersOnlyVisible(t *testing.T) {
 		t.Error("first visible node (issue-50) not rendered")
 	}
 
-	// Should contain node 59's content (last visible)
-	if !strings.Contains(output, "issue-59") {
-		t.Error("last visible node (issue-59) not rendered")
+	// Should contain node 57's content (last visible)
+	if !strings.Contains(output, "issue-57") {
+		t.Error("last visible node (issue-57) not rendered")
 	}
 
 	// Should NOT contain node 0's content
@@ -1442,9 +1587,39 @@ func TestViewRendersOnlyVisible(t *testing.T) {
 		t.Error("non-visible node (issue-49) incorrectly rendered")
 	}
 
-	// Should NOT contain node 60's content (just after viewport)
-	if strings.Contains(output, "issue-60") {
-		t.Error("non-visible node (issue-60) incorrectly rendered")
+	// Should NOT contain node 58's content (just after viewport)
+	if strings.Contains(output, "issue-58") {
+		t.Error("non-visible node (issue-58) incorrectly rendered")
+	}
+}
+
+func TestViewHeaderAdjustedExactFit(t *testing.T) {
+	issues := make([]model.Issue, 9)
+	for i := range issues {
+		issues[i] = model.Issue{
+			ID:        fmt.Sprintf("exact-%d", i),
+			Title:     fmt.Sprintf("Exact %d", i),
+			Priority:  2,
+			IssueType: model.TypeTask,
+		}
+	}
+
+	tree := NewTreeModel(testTheme())
+	tree.Build(issues)
+	tree.SetSize(80, 10)
+	output := tree.View()
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+
+	if len(lines) != 10 || lines[0] != "Tree View" {
+		t.Fatalf("exact-fit Tree should use one header plus nine issue rows, got %d lines:\n%s", len(lines), output)
+	}
+	if strings.Contains(output, " of 9]") {
+		t.Fatalf("exact-fit Tree should not render a position indicator:\n%s", output)
+	}
+	for i := range issues {
+		if !strings.Contains(output, issues[i].ID) {
+			t.Errorf("exact-fit Tree missing %s", issues[i].ID)
+		}
 	}
 }
 
@@ -1503,7 +1678,7 @@ func TestViewSelectionHighlightWithOffset(t *testing.T) {
 	}
 
 	// Cursor should be visible
-	if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+10 {
+	if tree.cursor < tree.viewportOffset || tree.cursor >= tree.viewportOffset+tree.visibleNodeCapacity() {
 		t.Errorf("cursor %d not visible with offset %d", tree.cursor, tree.viewportOffset)
 	}
 }
@@ -1534,14 +1709,18 @@ func TestViewAtEndOfList(t *testing.T) {
 		t.Error("last issue (issue-99) not rendered")
 	}
 
-	// Should contain issue-90 (10 items from the end)
-	if !strings.Contains(output, "issue-90") {
-		t.Error("issue-90 not rendered")
+	// Should contain issue-92 (eight issue rows from the end)
+	if !strings.Contains(output, "issue-92") {
+		t.Error("issue-92 not rendered")
 	}
 
-	// Should NOT contain issue-89
-	if strings.Contains(output, "issue-89") {
-		t.Error("issue-89 incorrectly rendered")
+	// Should NOT contain issue-91
+	if strings.Contains(output, "issue-91") {
+		t.Error("issue-91 incorrectly rendered")
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) != 10 || lines[0] != "Tree View" || !strings.Contains(lines[len(lines)-1], "[93-100 of 100]") {
+		t.Errorf("end-of-list rendering does not fit header/indicator contract:\n%s", output)
 	}
 }
 
@@ -1567,8 +1746,8 @@ func TestPositionIndicatorShown(t *testing.T) {
 
 	output := tree.View()
 
-	// Should contain position indicator "[1-10 of 100]"
-	if !strings.Contains(output, "[1-10 of 100]") {
+	// Header and indicator leave eight rows for issues.
+	if !strings.Contains(output, "[1-8 of 100]") {
 		t.Errorf("position indicator not found in output, got:\n%s", output)
 	}
 }
@@ -1643,8 +1822,8 @@ func TestPositionIndicatorAtEnd(t *testing.T) {
 
 	output := tree.View()
 
-	// Should contain "[91-100 of 100]"
-	if !strings.Contains(output, "[91-100 of 100]") {
+	// Should contain "[93-100 of 100]"
+	if !strings.Contains(output, "[93-100 of 100]") {
 		t.Errorf("position indicator at end not found, got:\n%s", output)
 	}
 }

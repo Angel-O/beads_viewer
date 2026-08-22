@@ -232,6 +232,27 @@ func TestShortcutsSidebar_MatchesRegistry(t *testing.T) {
 	})
 }
 
+func TestShortcutsSidebarTreeCoverageIsCompact(t *testing.T) {
+	theme := Theme{Renderer: lipgloss.DefaultRenderer(), Base: lipgloss.NewStyle()}
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(theme)
+	sidebar.SetSize(34, 40)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusTree)
+	view := sidebar.View()
+
+	for _, expected := range []string{"Search Tree", "Next search match", "Previous search match", "Exit Tree", "Help overlay"} {
+		if !strings.Contains(view, expected) {
+			t.Errorf("Tree shortcuts sidebar missing %q", expected)
+		}
+	}
+	if strings.Contains(view, "Self-update") || strings.Contains(view, "Copy issue ID") {
+		t.Fatal("Tree shortcuts sidebar includes unrelated actions")
+	}
+}
+
 // TestShortcutsSidebarReservesLayoutWidth is the regression test for issue #168:
 // toggling the shortcuts sidebar (`;`) must reserve its own fixed-width column so
 // the main list/detail panes reflow into the remaining width. Previously the body
