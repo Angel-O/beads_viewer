@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TreeState represents the persistent state of the tree view (bv-zv7p).
@@ -546,13 +547,13 @@ func (t *TreeModel) View() string {
 		return t.renderEmptyState()
 	}
 
-	var sb strings.Builder
-	sb.WriteString(t.renderHeader())
-	sb.WriteString("\n")
+	rows := []string{t.renderHeader()}
 
 	if len(t.flatList) == 0 {
-		sb.WriteString(t.renderNoMatches())
-		return sb.String()
+		if t.height <= 0 || t.height > 1 {
+			rows = append(rows, t.renderNoMatches())
+		}
+		return strings.Join(rows, "\n")
 	}
 
 	// Get visible range - O(1) calculation based on viewportOffset and height
@@ -573,18 +574,16 @@ func (t *TreeModel) View() string {
 			line = t.theme.Selected.Render(line)
 		}
 
-		sb.WriteString(line)
-		sb.WriteString("\n")
+		rows = append(rows, line)
 	}
 
 	// Add position indicator if scrolling is needed (bv-2nax)
 	// Only shows when there are more nodes than fit in the viewport
 	if t.showPositionIndicator() {
-		indicator := t.renderPositionIndicator(start, end)
-		sb.WriteString(indicator)
+		rows = append(rows, t.renderPositionIndicator(start, end))
 	}
 
-	return sb.String()
+	return strings.Join(rows, "\n")
 }
 
 func (t *TreeModel) renderHeader() string {
@@ -594,14 +593,21 @@ func (t *TreeModel) renderHeader() string {
 		if len(t.searchMatches) > 0 {
 			position = fmt.Sprintf("%d/%d", t.SearchCursorPos(), len(t.searchMatches))
 		}
-		return style.Render(fmt.Sprintf("Tree View  /%s  [%s]", t.searchQuery, position))
+		return style.Render(t.fitSearchChrome(fmt.Sprintf("Tree View  /%s  [%s]", t.searchQuery, position)))
 	}
-	return style.Render("Tree View")
+	return style.Render(t.fitSearchChrome("Tree View"))
 }
 
 func (t *TreeModel) renderNoMatches() string {
 	return t.theme.Renderer.NewStyle().Foreground(t.theme.Muted).
-		Render(fmt.Sprintf("No Tree matches for %q. Escape clears search.", t.searchQuery))
+		Render(t.fitSearchChrome(fmt.Sprintf("No Tree matches for %q. Escape clears search.", t.searchQuery)))
+}
+
+func (t *TreeModel) fitSearchChrome(text string) string {
+	if t.width <= 0 || lipgloss.Width(text) <= t.width {
+		return text
+	}
+	return ansi.Truncate(text, t.width, "…")
 }
 
 // renderPositionIndicator renders the scroll position indicator (bv-2nax).

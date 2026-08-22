@@ -92,6 +92,44 @@ func TestTreeSearchNavigationAndZeroResultState(t *testing.T) {
 	}
 }
 
+func TestTreeSearchZeroResultChromeRespectsBounds(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		width       int
+		height      int
+		wantNoMatch bool
+	}{
+		{name: "long ASCII", query: strings.Repeat("unmatched", 40), width: 24, height: 3, wantNoMatch: true},
+		{name: "wide CJK", query: strings.Repeat("検索不能", 30), width: 21, height: 2, wantNoMatch: true},
+		{name: "tiny height", query: strings.Repeat("absent", 20), width: 8, height: 1, wantNoMatch: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tree := NewTreeModel(newTreeTestTheme())
+			tree.Build(treeSearchIssues())
+			tree.SetSize(tt.width, tt.height)
+			tree.StartSearch()
+			tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.query)})
+
+			output := tree.View()
+			if got := tree.SearchQuery(); got != tt.query {
+				t.Fatalf("stored query changed during rendering: got %q", got)
+			}
+			if got := lipgloss.Width(output); got > tt.width {
+				t.Errorf("rendered width = %d, want <= %d:\n%s", got, tt.width, output)
+			}
+			if got := lipgloss.Height(output); got > tt.height {
+				t.Errorf("rendered height = %d, want <= %d:\n%s", got, tt.height, output)
+			}
+			if got := strings.Contains(output, "No Tree"); got != tt.wantNoMatch {
+				t.Errorf("no-match row presence = %v, want %v:\n%s", got, tt.wantNoMatch, output)
+			}
+		})
+	}
+}
+
 func TestTreeSearchRetainsProjectedHierarchyContext(t *testing.T) {
 	parent := model.Issue{ID: "other-repo-parent", Title: "Parent outside scope", IssueType: model.TypeEpic}
 	child := model.Issue{
