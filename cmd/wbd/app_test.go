@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -277,6 +278,9 @@ func TestReplaceCopiesOpenBlockingContinuityThenCloses(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls[2].Args[len(calls[2].Args)-2:], []string{"--reason", "Superseded by new-1"}) {
 		t.Fatalf("close args = %#v", calls[2].Args)
+	}
+	if !slices.Contains(calls[2].Args, "--force") {
+		t.Fatalf("correction close did not force the prevalidated transition: %#v", calls[2].Args)
 	}
 	var plan graphPlan
 	if err := json.Unmarshal(calls[1].Plan, &plan); err != nil {

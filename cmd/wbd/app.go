@@ -410,7 +410,7 @@ func (a *app) replace(request request) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	_, closeErr := a.runBDCapture(a.dir, "--json", "close", original.ID, "--reason", "Superseded by "+replacementID)
+	_, closeErr := a.runBDCapture(a.dir, "--json", "close", original.ID, "--force", "--reason", "Superseded by "+replacementID)
 	if closeErr != nil {
 		return a.fail(fmt.Errorf("replacement %s was created but closing original %s failed: %w", replacementID, original.ID, closeErr))
 	}
