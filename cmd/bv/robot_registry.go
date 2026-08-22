@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/baseline"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
@@ -59,6 +58,7 @@ type RobotContext struct {
 	Diff                  *analysis.SnapshotDiff
 	DiffHistoricalIssues  []model.Issue
 	DiffResolvedRevision  string
+	HubProjection         *hubScopeProjection
 }
 
 type RobotRegistry struct {
@@ -301,6 +301,13 @@ func (r *RobotRegistry) DispatchFlag(flagName string, ctx RobotContext) (bool, e
 		}
 		if cmd.Handler == nil {
 			return true, fmt.Errorf("robot command %q has no handler", cmd.Name)
+		}
+		if ctx.HubProjection != nil {
+			ctx.Encoder = hubScopeRobotEncoder{
+				base:       ctx.EncoderOrDefault(),
+				command:    cmd.Name,
+				projection: ctx.HubProjection,
+			}
 		}
 		return true, cmd.Handler(ctx)
 	}
@@ -831,6 +838,10 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
 			stats := analyzer.Analyze()
+			exportIssues := ctx.Issues
+			if ctx.HubProjection != nil {
+				exportIssues = ctx.HubProjection.issuesInScope(ctx.Issues)
+			}
 
 			format := export.GraphFormatJSON
 			if cfg.GraphFormat != nil {
@@ -854,10 +865,11 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				config.Depth = *cfg.GraphDepth
 			}
 
-			result, err := export.ExportGraph(ctx.Issues, &stats, config)
+			result, err := export.ExportGraph(exportIssues, &stats, config)
 			if err != nil {
 				return fmt.Errorf("exporting graph: %w", err)
 			}
+			result.DataHash = ctx.DataHash
 			if err := ctx.EncoderOrDefault().Encode(result); err != nil {
 				return fmt.Errorf("encoding graph: %w", err)
 			}
@@ -1213,6 +1225,10 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			forecastTarget := ""
 			if cfg.RobotForecastFlag != nil {
 				forecastTarget = *cfg.RobotForecastFlag
+			}
+			if forecastTarget != "all" && ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[forecastTarget] {
+				fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in Hub scope: %s\n", forecastTarget)
+				return newReportedRobotHandlerExit(1)
 			}
 
 			forecasts := make([]analysis.ETAEstimate, 0)
@@ -2895,16 +2911,11 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 }
 
 func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	workDir, err := ctx.WorkDirOrDefault()
-	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
+	if ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[*cfg.RobotBlockerChainFlag] {
+		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in Hub scope: %s\n", *cfg.RobotBlockerChainFlag)
+		return newReportedRobotHandlerExit(1)
 	}
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
-
-	result := analysis.NewAnalyzer(issues).GetBlockerChain(*cfg.RobotBlockerChainFlag)
+	result := analysis.NewAnalyzer(ctx.Issues).GetBlockerChain(*cfg.RobotBlockerChainFlag)
 	if result == nil {
 		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found: %s\n", *cfg.RobotBlockerChainFlag)
 		return newReportedRobotHandlerExit(1)
@@ -2914,7 +2925,7 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 		RobotEnvelope
 		Result *analysis.BlockerChainResult `json:"result"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(issues)),
+		RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
 		Result:        result,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
