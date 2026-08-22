@@ -5,7 +5,7 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 
 # Beads Hub Contract
 
-## Rules
+## Safety
 
 - Use `wbd` for Hub issue operations. Never run raw `bd`, `bv`, or `br`.
 - The user owns setup. If the store or todo support is missing, ask them to run `wbd bootstrap`; agents must not call `bootstrap`, `configure`, or `register`.
