@@ -51,6 +51,12 @@ wbd bootstrap
 wbd bootstrap --prefix team
 ```
 
+For a missing store, bootstrap performs the one-time initialization above. For
+an existing store, the same command never reinitializes or cleans the store; it
+adds `todo` to the installed client's existing custom issue types only when
+needed, preserves the other configured types, and ensures the Viewer Hub config
+exists. Repeating it is safe and reports that todo support is already enabled.
+
 The fixed paths are:
 
 - Store: `~/.local/share/beads/hub/.beads`
@@ -67,7 +73,10 @@ or use `--contextless` for a contextless `todo`; neither form registers or adds
 the current checkout. Todos accept zero or more contexts, epics one or more,
 and `task`, `bug`, `feature`, and `chore` exactly one. A `decision` retains only
 the default-current creation form. Context labels are immutable after creation,
-and issue type is not an update field.
+and issue type is not an update field. Todo creation first checks the store's
+custom-type capability without registering or creating an issue. If unavailable,
+run `wbd bootstrap` explicitly to enable it; creation never aliases todo to task
+or performs setup automatically.
 
 `wbd create <title> --from-todo <todo-id>` atomically creates ordinary project
 work and its native `discovered-from` continuity relation. Todo close and reopen
