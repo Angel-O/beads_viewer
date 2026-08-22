@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 type optionSpec struct {
@@ -402,6 +403,8 @@ func validateCreateOption(flag, value string, seen map[string]bool) error {
 		return validatePriority(value)
 	case "--labels":
 		return validateLabels(value, true)
+	case "--assignee":
+		return validateAssignee(value)
 	}
 	return nil
 }
@@ -665,8 +668,16 @@ func safeOptionValue(option optionSpec, value string) error {
 }
 
 func validateAssignee(value string) error {
-	if strings.ContainsAny(value, "\n\r\t") {
-		return errors.New("invalid control character in assignee")
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) == "" {
+		return errors.New("assignee must contain non-whitespace characters")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return errors.New("invalid control character in assignee")
+		}
 	}
 	return nil
 }

@@ -1108,6 +1108,48 @@ func TestRejectsWrapperOwnedLabelsAndUnsafeValues(t *testing.T) {
 	}
 }
 
+func TestAssigneeValidationRejectsPseudoIdentitiesBeforeDelegation(t *testing.T) {
+	invalid := []struct {
+		name  string
+		value string
+	}{
+		{name: "spaces", value: "   "},
+		{name: "unicode whitespace", value: "\u2003\u00a0"},
+		{name: "escape", value: "agent\x1b[31m"},
+		{name: "delete", value: "agent\x7f"},
+	}
+	for _, command := range []string{"create", "update"} {
+		for _, testCase := range invalid {
+			t.Run(command+"_"+testCase.name, func(t *testing.T) {
+				arguments := []string{command, "work-1", "--assignee", testCase.value}
+				if command == "create" {
+					arguments[1] = "Title"
+				}
+				if _, err := parse(arguments); err == nil {
+					t.Fatalf("parse accepted assignee %q", testCase.value)
+				}
+
+				test := newAppTest(t, true)
+				code, _, stderr := test.run(arguments...)
+				if code != 1 || stderr == "" {
+					t.Fatalf("code = %d, stderr = %q", code, stderr)
+				}
+				if calls := test.calls(); len(calls) != 0 {
+					t.Fatalf("invalid assignee delegated to child: %#v", calls)
+				}
+			})
+		}
+	}
+
+	request, err := parse([]string{"update", "work-1", "--assignee="})
+	if err != nil {
+		t.Fatalf("clear assignee rejected: %v", err)
+	}
+	if !reflect.DeepEqual(request.args, []string{"--assignee", ""}) {
+		t.Fatalf("clear assignee args = %#v", request.args)
+	}
+}
+
 func TestChildExitCodeIsPropagated(t *testing.T) {
 	test := newAppTest(t, true)
 	t.Setenv("WBD_CHILD_EXIT", "37")
