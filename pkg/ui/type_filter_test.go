@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -43,6 +44,26 @@ func TestTypePickerAppliesExactMultiSelectionAndShowsActiveState(t *testing.T) {
 	if footer := m.renderFooter(); !strings.Contains(footer, "TYPE bug,decision") {
 		t.Fatalf("active type badge missing: %q", footer)
 	}
+}
+
+func TestTypePickerLeavesBlankRowBeforeWrappedHints(t *testing.T) {
+	picker := NewTypePickerModel([]model.IssueType{model.TypeBug, model.TypeTask, "decision"}, nil, DefaultTheme(lipgloss.NewRenderer(nil)))
+	picker.SetSize(70, 20)
+
+	lines := strings.Split(picker.View(), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, string(model.TypeTask)) {
+			blankRow := ""
+			if i+1 < len(lines) {
+				blankRow = strings.Trim(strings.TrimSpace(ansi.Strip(lines[i+1])), "│ ")
+			}
+			if i+2 >= len(lines) || blankRow != "" || !strings.Contains(ansi.Strip(lines[i+2]), "j/k: navigate") {
+				t.Fatalf("type picker lacks blank row before hints:\n%s", picker.View())
+			}
+			return
+		}
+	}
+	t.Fatalf("type picker did not render task option:\n%s", picker.View())
 }
 
 func TestTypeFilterComposesWithStatusLabelRepositoryRecipeAndText(t *testing.T) {

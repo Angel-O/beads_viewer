@@ -185,12 +185,16 @@ func (m *TypePickerModel) View() string {
 			hintLines = append(hintLines[:maxHintRows-1], truncateRunesHelper("…", contentWidth, "…"))
 		}
 	}
+	showHintSpacer := contentRows-3-len(hintLines) >= 1
 
 	if len(m.types) == 0 {
 		empty := truncateRunesHelper("No issue types loaded.", contentWidth, "...")
 		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(m.theme.Secondary).Italic(true).Render(empty))
 	} else {
 		maxVisible := contentRows - 2 - len(hintLines)
+		if showHintSpacer {
+			maxVisible--
+		}
 		if maxVisible < 1 {
 			maxVisible = 1
 		}
@@ -215,6 +219,9 @@ func (m *TypePickerModel) View() string {
 		}
 	}
 
+	if showHintSpacer {
+		lines = append(lines, "")
+	}
 	for _, line := range hintLines {
 		lines = append(lines, m.theme.Renderer.NewStyle().Foreground(ColorFooterHint).Italic(true).Render(line))
 	}
