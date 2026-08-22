@@ -104,6 +104,10 @@ func newApp(stdin io.Reader, stdout, stderr io.Writer) (*app, error) {
 }
 
 func (a *app) run(arguments []string) int {
+	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
+		a.printHelp()
+		return 0
+	}
 	a.jsonFailure = containsArgument(arguments, "--json")
 	command, err := commandName(arguments)
 	if err != nil {
@@ -270,6 +274,33 @@ func (a *app) run(arguments []string) int {
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
+}
+
+func (a *app) printHelp() {
+	fmt.Fprint(a.stdout, `Usage: wbd <command> [options]
+
+wbd is the safe command boundary for the private Beads Hub.
+
+Choose an issue type:
+  todo      Capture something not yet concrete project work. It may be
+            contextless or span contexts and cannot own commit correlations.
+  epic      Coordinate related project work across one or more contexts.
+  task, bug, feature, chore
+            Track concrete work in exactly one context.
+  decision  Record a decision in the current context.
+
+Creation targeting:
+  (omitted)              Use the current repository context.
+  --context <ctx-id>     Supply the complete target set; repeat for todo/epic.
+  --contextless          Create a todo without repository context.
+  --from-todo <todo-id>  Create concrete work discovered from a todo.
+
+Commands:
+  bootstrap, configure, register, context, create, new, replace,
+  compatibility, list, show, update, dep, close, reopen, link
+
+Use --json for queries and mutations except context and link.
+`)
 }
 
 func validateReactivation(issue bdIssue) error {

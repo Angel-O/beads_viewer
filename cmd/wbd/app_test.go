@@ -856,6 +856,26 @@ func TestTodoCreateRequiresCapabilityBeforeTargetResolution(t *testing.T) {
 	}
 }
 
+func TestHelpExplainsIssueTypesAndTargetingWithoutStore(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		t.Run(flag, func(t *testing.T) {
+			test := newAppTestWithoutStore(t)
+			code, stdout, stderr := test.run(flag)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			for _, want := range []string{"Capture something not yet concrete project work", "--contextless", "--from-todo", "cannot own commit correlations", "link"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("help does not contain %q:\n%s", want, stdout)
+				}
+			}
+			if calls := test.calls(); len(calls) != 0 {
+				t.Fatalf("help invoked child commands: %#v", calls)
+			}
+		})
+	}
+}
+
 func TestRejectsRoutingOverridesBeforeDelegation(t *testing.T) {
 	tests := [][]string{
 		{"create", "title", "--db", "/tmp/other"},
