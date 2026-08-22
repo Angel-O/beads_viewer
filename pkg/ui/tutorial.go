@@ -1438,9 +1438,10 @@ The **Graph view** visualizes these relationships:
 |-----|--------|
 | **j/k** | Move between nodes vertically |
 | **h/l** | Move between siblings |
-| **f** | Focus on selected subgraph |
+| **/** | Search bead ID or title |
+| **n/N** | Next/previous search match |
 | **Enter** | View selected issue |
-| **Esc** | Return to list |
+| **Esc** | Cancel/clear search, then return to list |
 
 ### Why This Matters
 
@@ -1697,9 +1698,10 @@ Press **g** to visualize issue dependencies as a graph.
 |-----|--------|
 | **j/k** | Navigate between connected nodes |
 | **h/l** | Navigate siblings |
+| **/** | Search bead ID or title |
+| **n/N** | Next/previous search match |
 | **Enter** | Select node and view details |
-| **f** | Focus: show only this node's subgraph |
-| **Esc** | Exit focus / return to list |
+| **Esc** | Cancel/clear search, then return to list |
 
 ### When to Use Graph View
 

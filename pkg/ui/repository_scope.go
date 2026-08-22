@@ -113,7 +113,7 @@ func hubContextNames(issue model.Issue, catalog model.RepositoryCatalog) []strin
 	}
 	sort.Strings(contexts)
 	if len(contexts) == 0 {
-		return []string{"contextless"}
+		return []string{contextlessRepositoryID}
 	}
 	return contexts
 }

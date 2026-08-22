@@ -471,8 +471,10 @@ func structuredTutorialPages() []StructuredTutorialPage {
 				KeyTable{Bindings: []KeyHint{
 					{Key: "j / k", Desc: "Navigate between nodes"},
 					{Key: "h / l", Desc: "Navigate siblings"},
-					{Key: "f", Desc: "Focus on subgraph"},
+					{Key: "/", Desc: "Search bead ID or title"},
+					{Key: "n / N", Desc: "Next / previous search match"},
 					{Key: "Enter", Desc: "View selected issue"},
+					{Key: "Esc", Desc: "Cancel / clear search, then exit"},
 				}},
 				Spacer{Lines: 1},
 				Section{Title: "Use Cases"},

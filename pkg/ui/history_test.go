@@ -1050,6 +1050,40 @@ func TestHistoryModel_GetFilteredCommitList(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_GitSearchZeroMatchesBeforeAndAfterRefresh(t *testing.T) {
+	h := NewHistoryModel(createTestHistoryReport(), testTheme())
+	h.ToggleViewMode()
+	h.StartSearchWithMode(searchModeCommit)
+	h.searchInput.SetValue("no matching commit")
+	h.applySearchFilter()
+	h.FinishSearch()
+
+	if h.filteredCommits == nil {
+		t.Fatal("active zero-match query was represented as an unfiltered commit list")
+	}
+	if commits := h.GetFilteredCommitList(); len(commits) != 0 {
+		t.Fatalf("zero-match Git search returned %d commits, want 0", len(commits))
+	}
+	if commit := h.SelectedGitCommit(); commit != nil {
+		t.Fatalf("zero-match Git search retained a selected commit: %#v", commit)
+	}
+
+	h.SetReport(createTestHistoryReport())
+
+	if h.SearchQuery() != "no matching commit" || h.searchMode != searchModeCommit || h.IsSearchActive() {
+		t.Fatalf("refresh changed submitted Git query state: query=%q mode=%v active=%v", h.SearchQuery(), h.searchMode, h.IsSearchActive())
+	}
+	if h.filteredCommits == nil {
+		t.Fatal("refresh collapsed zero-match Git results into the unfiltered state")
+	}
+	if commits := h.GetFilteredCommitList(); len(commits) != 0 {
+		t.Fatalf("zero-match Git search returned %d commits after refresh, want 0", len(commits))
+	}
+	if commit := h.SelectedGitCommit(); commit != nil {
+		t.Fatalf("zero-match Git search selected a commit after refresh: %#v", commit)
+	}
+}
+
 func TestHistoryModel_ToggleViewModePreservesFinishedSearch(t *testing.T) {
 	report := createTestHistoryReport()
 	theme := testTheme()
@@ -1078,6 +1112,57 @@ func TestHistoryModel_ToggleViewModePreservesFinishedSearch(t *testing.T) {
 	}
 	if filteredCommits[0].Message != "refactor: db indexes" {
 		t.Fatalf("filtered commit after mode toggle = %q, want %q", filteredCommits[0].Message, "refactor: db indexes")
+	}
+}
+
+func TestHistoryModel_ZeroResultSearchKeepsQueryAndSearchBarVisible(t *testing.T) {
+	h := NewHistoryModel(createTestHistoryReport(), testTheme())
+	h.SetSize(120, 30)
+	normalHeaderHeight := lipgloss.Height(h.renderHeader())
+
+	h.StartSearch()
+	h.searchInput.SetValue("no matching history")
+	h.applySearchFilter()
+	activeHeaderHeight := lipgloss.Height(h.renderHeader())
+	h.FinishSearch()
+
+	view := h.View()
+	if !strings.Contains(view, "no matching history") {
+		t.Fatalf("zero-result view did not retain submitted query: %q", view)
+	}
+	if !strings.Contains(view, "esc:clear") {
+		t.Fatalf("zero-result view did not retain submitted search controls: %q", view)
+	}
+	if !strings.Contains(view, "No beads with commit correlations found") {
+		t.Fatalf("zero-result view did not render empty state: %q", view)
+	}
+	if normalHeaderHeight != activeHeaderHeight || activeHeaderHeight != lipgloss.Height(h.renderHeader()) {
+		t.Fatalf("History header height jumped across search states: normal=%d active=%d submitted=%d", normalHeaderHeight, activeHeaderHeight, lipgloss.Height(h.renderHeader()))
+	}
+}
+
+func TestHistoryModel_HeaderHintsAndWidthStayStableAcrossSearch(t *testing.T) {
+	for _, width := range []int{80, 120, 160} {
+		h := NewHistoryModel(createTestHistoryReport(), testTheme())
+		h.SetSize(width, 30)
+		normal := h.renderHeader()
+		if !strings.Contains(normal, "[v] mode") || !strings.Contains(normal, "[h] close") {
+			t.Fatalf("width %d normal History hints = %q", width, normal)
+		}
+
+		h.StartSearch()
+		h.searchInput.SetValue("auth")
+		active := h.renderHeader()
+		h.FinishSearch()
+		submitted := h.renderHeader()
+		for state, header := range map[string]string{"normal": normal, "active": active, "submitted": submitted} {
+			if got := lipgloss.Width(header); got > width {
+				t.Fatalf("width %d %s header display width = %d", width, state, got)
+			}
+			if got := lipgloss.Height(header); got != 4 {
+				t.Fatalf("width %d %s header height = %d, want 4", width, state, got)
+			}
+		}
 	}
 }
 
@@ -1212,7 +1297,7 @@ func TestHistoryModel_ListHeight(t *testing.T) {
 	h := NewHistoryModel(report, theme)
 
 	h.SetSize(100, 40)
-	expected := 40 - 7 // outer header plus panel header, separator, and borders
+	expected := 40 - 9 // four-line outer header plus panel header, separator, and borders
 	if intsDiffer(h.listHeight(), expected) {
 		t.Errorf("listHeight() = %d, want %d", h.listHeight(), expected)
 	}

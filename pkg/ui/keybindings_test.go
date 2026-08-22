@@ -420,6 +420,95 @@ func TestKeyDispatch_GraphNavigation(t *testing.T) {
 	}
 }
 
+func TestKeyDispatch_GraphSearchConsumesInputAndSelectsMatches(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "search-a", Title: "Board query first", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "search-b", Title: "Board query second", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "search-c", Title: "Other", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	for _, key := range []string{"b", "o", "a", "r", "d", "?", ";", "q", "u", "e", "r", "y"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	if m.focused != focusGraph || !m.isGraphView || m.isBoardView || m.showHelp || m.showShortcutsSidebar {
+		t.Fatalf("Graph search input leaked into global routing: focus=%v graph=%v board=%v help=%v sidebar=%v", m.focused, m.isGraphView, m.isBoardView, m.showHelp, m.showShortcutsSidebar)
+	}
+	if got := m.graphView.SearchQuery(); got != "board?;query" {
+		t.Fatalf("Graph search query = %q, want %q", got, "board?;query")
+	}
+
+	// Replace the punctuation-heavy routing query with a matching title query.
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("Board query"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusGraph {
+		t.Fatalf("Enter while searching changed focus to %v", m.focused)
+	}
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "search-a" {
+		t.Fatalf("first Graph search match = %#v, want search-a", selected)
+	}
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "search-b" {
+		t.Fatalf("next Graph search match = %#v, want search-b", selected)
+	}
+	updated, _ = m.Update(keyMsg("N"))
+	m = updated.(Model)
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "search-a" {
+		t.Fatalf("previous Graph search match = %#v, want search-a", selected)
+	}
+}
+
+func TestKeyDispatch_GraphSearchEscapeClearsBeforeExit(t *testing.T) {
+	m := setupTestModel(t)
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	m.graphView.SelectByID("kd-2")
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("kd-1"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusGraph || m.graphView.HasSearchQuery() {
+		t.Fatalf("cancelled Graph search should stay in Graph with no query: focus=%v query=%q", m.focused, m.graphView.SearchQuery())
+	}
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "kd-2" {
+		t.Fatalf("cancelled Graph search selection = %#v, want kd-2", selected)
+	}
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("kd"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusGraph || m.graphView.HasSearchQuery() {
+		t.Fatalf("first Escape should clear accepted query: focus=%v query=%q", m.focused, m.graphView.SearchQuery())
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusList || m.isGraphView {
+		t.Fatalf("second Escape should exit Graph: focus=%v graph=%v", m.focused, m.isGraphView)
+	}
+}
+
 // TestKeyDispatch_GInBoardStartsCombo verifies that 'g' in board view
 // starts the gg-combo timer (doesn't immediately toggle to graph).
 // The actual graph toggle happens asynchronously via comboTickMsg.
@@ -568,6 +657,72 @@ func TestKeyDispatch_Regression_EscInTreeReturnsList(t *testing.T) {
 	t.Logf("focus=tree key=esc expected=return_to_list actual=focused:%v", m.focused)
 }
 
+func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
+	m := setupTestModel(t)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	for _, key := range []string{"?", "`", ";", "E"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	if m.focused != focusTree || m.tree.SearchQuery() != "?`;E" {
+		t.Fatalf("printable shortcuts escaped Tree search: focus=%v query=%q", m.focused, m.tree.SearchQuery())
+	}
+	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
+		t.Fatalf("Tree search opened global UI: help=%v tutorial=%v sidebar=%v", m.showHelp, m.showTutorial, m.showShortcutsSidebar)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(Model)
+	if !m.lastForceRefresh.IsZero() || !m.tree.IsSearchActive() {
+		t.Fatalf("Tree search leaked Ctrl+R: refreshed=%v active=%v", !m.lastForceRefresh.IsZero(), m.tree.IsSearchActive())
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.tree.IsSearchActive() {
+		t.Fatal("Enter should select the current result and finish Tree input")
+	}
+	if got := m.tree.SearchQuery(); got != "?`;E" {
+		t.Fatalf("Enter changed Tree search query to %q", got)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusTree || m.tree.SearchQuery() != "" {
+		t.Fatalf("first Escape should clear search in Tree: focus=%v query=%q", m.focused, m.tree.SearchQuery())
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.focused != focusList {
+		t.Fatalf("second Escape should exit Tree, got focus=%v", m.focused)
+	}
+}
+
+func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
+	docs := GetKeyBindingDocs()
+	wants := map[string]bool{
+		"E|list,detail|Enter Tree (uppercase)": false,
+		"/|tree|Search Tree":                   false,
+		"n|tree|Next search match":             false,
+		"N|tree|Previous search match":         false,
+		"E|tree|Exit Tree":                     false,
+		"esc|tree|Clear search or exit Tree":   false,
+	}
+	for _, doc := range docs {
+		key := doc.Key + "|" + doc.Context + "|" + doc.Desc
+		if _, ok := wants[key]; ok {
+			wants[key] = true
+		}
+	}
+	for binding, found := range wants {
+		if !found {
+			t.Errorf("authoritative key docs missing %q", binding)
+		}
+	}
+}
+
 // TestKeyDispatch_Regression_FInHistoryTogglesFileTree verifies that 'f' in history view
 // toggles the file tree within history.
 func TestKeyDispatch_Regression_FInHistoryTogglesFileTree(t *testing.T) {
@@ -646,13 +801,23 @@ func TestKeyDispatch_Regression_HistorySearchConsumesGlobalKeys(t *testing.T) {
 		t.Fatal("expected history search mode after '/'")
 	}
 
-	updated, _ = m.Update(keyMsg("q"))
-	m = updated.(Model)
-	if got := m.historyView.SearchQuery(); got != "q" {
-		t.Fatalf("expected history search query %q, got %q", "q", got)
+	for _, key := range []string{"?", "`", ";", "q"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	if got := m.historyView.SearchQuery(); got != "?`;q" {
+		t.Fatalf("expected history search query %q, got %q", "?`;q", got)
 	}
 	if m.focused != focusHistory || !m.isHistoryView {
 		t.Fatalf("expected history search input to stay in history view, got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
+	}
+	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
+		t.Fatalf("History search opened global UI: help=%v tutorial=%v sidebar=%v", m.showHelp, m.showTutorial, m.showShortcutsSidebar)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(Model)
+	if !m.lastForceRefresh.IsZero() || !m.historyView.IsSearchActive() {
+		t.Fatalf("History search leaked Ctrl+R: refreshed=%v active=%v", !m.lastForceRefresh.IsZero(), m.historyView.IsSearchActive())
 	}
 
 	updated, _ = m.Update(keyMsg("esc"))
@@ -730,6 +895,63 @@ func TestKeyDispatch_Regression_HistorySearchEnterKeepsFilter(t *testing.T) {
 	}
 	if m.focused != focusHistory || !m.isHistoryView {
 		t.Fatalf("expected enter to remain in history view, got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
+	}
+}
+
+func TestKeyDispatch_Regression_HistoryLowercaseHAndSubmittedSearchEscape(t *testing.T) {
+	m := setupTestModel(t)
+	updated, _ := m.Update(keyMsg("h"))
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if got := m.historyView.SearchQuery(); got != "h" || !m.historyView.IsSearchActive() {
+		t.Fatalf("focused h should remain search text: query=%q active=%v", got, m.historyView.IsSearchActive())
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.historyView.HasSearchQuery() || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("first esc should clear submitted search without leaving History: query=%q view=%v focus=%v", m.historyView.SearchQuery(), m.isHistoryView, m.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if m.isHistoryView || m.focused != focusList {
+		t.Fatalf("unfocused lowercase h should close History: view=%v focus=%v", m.isHistoryView, m.focused)
+	}
+}
+
+func TestKeyDispatch_Regression_HistoryGitZeroMatchEscapeRestoresCommits(t *testing.T) {
+	m := setupTestModel(t)
+	m.isHistoryView = true
+	m.focused = focusHistory
+	m.historyView = NewHistoryModel(createTestHistoryReport(), testTheme())
+	m.historyView.ToggleViewMode()
+
+	updated, _ := m.Update(keyMsg("/"))
+	m = updated.(Model)
+	for _, key := range []string{"z", "z", "z"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if commits := m.historyView.GetFilteredCommitList(); len(commits) != 0 {
+		t.Fatalf("submitted zero-match Git query returned %d commits, want 0", len(commits))
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.historyView.HasSearchQuery() || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("Escape did not clear Git query in place: query=%q view=%v focus=%v", m.historyView.SearchQuery(), m.isHistoryView, m.focused)
+	}
+	if got, want := len(m.historyView.GetFilteredCommitList()), len(m.historyView.commitList); got != want || got == 0 {
+		t.Fatalf("Escape did not restore unfiltered commits: got=%d want=%d", got, want)
 	}
 }
 

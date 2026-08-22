@@ -19,6 +19,7 @@ const (
 	ContextTimeTravelInput    Context = "time-travel-input"
 	ContextAlerts             Context = "alerts"
 	ContextRepoPicker         Context = "repo-picker"
+	ContextTypePicker         Context = "type-picker"
 	ContextAgentPrompt        Context = "agent-prompt"
 	ContextCassSession        Context = "cass-session"
 
@@ -26,6 +27,7 @@ const (
 	ContextInsights       Context = "insights"
 	ContextFlowMatrix     Context = "flow-matrix"
 	ContextGraph          Context = "graph"
+	ContextTree           Context = "tree"
 	ContextBoard          Context = "board"
 	ContextActionable     Context = "actionable"
 	ContextHistory        Context = "history"
@@ -110,6 +112,9 @@ func (m Model) CurrentContext() Context {
 	if m.showRepoPicker {
 		return ContextRepoPicker
 	}
+	if m.showTypePicker {
+		return ContextTypePicker
+	}
 
 	// === Views (based on focus or view flags) ===
 
@@ -135,6 +140,11 @@ func (m Model) CurrentContext() Context {
 	// Graph view
 	if m.isGraphView {
 		return ContextGraph
+	}
+
+	// Hierarchical Tree view
+	if m.focused == focusTree {
+		return ContextTree
 	}
 
 	// Board view
@@ -199,11 +209,13 @@ func (c Context) Description() string {
 		ContextTimeTravelInput:    "Time-travel input",
 		ContextAlerts:             "Alerts panel",
 		ContextRepoPicker:         "Repo picker",
+		ContextTypePicker:         "Issue type picker",
 		ContextAgentPrompt:        "Agent prompt",
 		ContextCassSession:        "Cass session preview",
 		ContextInsights:           "Insights panel",
 		ContextFlowMatrix:         "Flow matrix",
 		ContextGraph:              "Dependency graph",
+		ContextTree:               "Issue tree",
 		ContextBoard:              "Kanban board",
 		ContextActionable:         "Actionable view",
 		ContextHistory:            "History view",
@@ -227,7 +239,7 @@ func (c Context) IsOverlay() bool {
 	switch c {
 	case ContextLabelPicker, ContextRecipePicker, ContextHelp, ContextQuitConfirm,
 		ContextLabelHealthDetail, ContextLabelDrilldown, ContextLabelGraphAnalysis,
-		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextAgentPrompt,
+		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextTypePicker, ContextAgentPrompt,
 		ContextCassSession:
 		return true
 	}
@@ -237,7 +249,7 @@ func (c Context) IsOverlay() bool {
 // IsView returns true if the context is a full view (not overlay or default list)
 func (c Context) IsView() bool {
 	switch c {
-	case ContextInsights, ContextFlowMatrix, ContextGraph, ContextBoard,
+	case ContextInsights, ContextFlowMatrix, ContextGraph, ContextTree, ContextBoard,
 		ContextActionable, ContextHistory, ContextSprint, ContextLabelDashboard,
 		ContextAttention, ContextSplit, ContextDetail, ContextTimeTravel:
 		return true
@@ -256,6 +268,7 @@ func (c Context) TutorialPages() []int {
 		ContextSplit:              {4, 2},    // Detail View, List View
 		ContextBoard:              {5},       // Board View
 		ContextGraph:              {6},       // Graph View
+		ContextTree:               {1, 2},    // Navigation, List View
 		ContextInsights:           {7},       // Insights
 		ContextHistory:            {8},       // History View
 		ContextActionable:         {9},       // Actionable View
@@ -269,6 +282,7 @@ func (c Context) TutorialPages() []int {
 		ContextLabelPicker:        {11, 3},   // Labels, Filtering
 		ContextRecipePicker:       {3, 12},   // Filtering, Advanced
 		ContextRepoPicker:         {12},      // Advanced (workspace)
+		ContextTypePicker:         {3},       // Filtering
 		ContextAgentPrompt:        {16},      // AI Agent Integration
 		ContextLabelHealthDetail:  {11},      // Labels
 		ContextLabelDrilldown:     {11},      // Labels
