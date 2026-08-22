@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"golang.org/x/term"
 )
 
@@ -52,6 +54,13 @@ var sanitizedEnvironment = map[string]bool{
 	"BV_ROBOT_HISTORY_TIMEOUT_MS": true,
 	"BV_INSIGHTS_MAP_LIMIT":       true,
 	"BV_HUB_CHANGE_SIGNAL":        true,
+	"BV_WBV_HUB_SCOPE":            true,
+}
+
+type hubScopeRequest struct {
+	contexts    []string
+	contextless bool
+	explicit    bool
 }
 
 type runner struct {
@@ -60,6 +69,7 @@ type runner struct {
 	stderr      io.Writer
 	directory   string
 	interactive func() bool
+	hubContext  func(string) (string, error)
 }
 
 func main() {
@@ -89,6 +99,10 @@ func (r runner) run(arguments []string) int {
 		r.printHelp()
 		return 0
 	}
+	scopeRequest, arguments, err := parseHubScopeRequest(arguments)
+	if err != nil {
+		return r.die(err)
+	}
 
 	gitRoot := resolveGitRoot(r.directory)
 	localMarker := ""
@@ -107,6 +121,9 @@ func (r runner) run(arguments []string) int {
 		if localStore {
 			selectedMode = modeLocal
 		}
+	}
+	if scopeRequest.explicit && selectedMode != modeHub {
+		return r.die(errors.New("--context and --contextless are available only with Hub mode"))
 	}
 
 	paths := hub.Paths{}
@@ -152,6 +169,9 @@ func (r runner) run(arguments []string) int {
 	if !robot && !r.interactive() {
 		return r.die(errors.New("bare wbv requires an interactive terminal"))
 	}
+	if scopeRequest.explicit && !robot {
+		return r.die(errors.New("Hub scope options require a Viewer robot invocation"))
+	}
 
 	environment := viewerEnvironment(os.Environ())
 	viewerDirectory := r.directory
@@ -159,6 +179,13 @@ func (r runner) run(arguments []string) int {
 	if selectedMode == modeLocal {
 		viewerDirectory = gitRoot
 	} else {
+		var hubScope model.HubScope
+		if scopeRequest.explicit {
+			hubScope, err = r.resolveHubScope(paths.Config, scopeRequest)
+			if err != nil {
+				return r.die(err)
+			}
+		}
 		configure := exec.Command("wbd", "configure")
 		configure.Dir = r.directory
 		configure.Stdin = r.stdin
@@ -170,7 +197,20 @@ func (r runner) run(arguments []string) int {
 			}
 			return r.die(fmt.Errorf("running wbd configure: %w", runErr))
 		}
+		if !scopeRequest.explicit {
+			hubScope, err = r.resolveHubScope(paths.Config, scopeRequest)
+			if err != nil {
+				return r.die(err)
+			}
+		}
 		environment = append(environment, "BEADS_DIR="+paths.Store)
+		if robot {
+			scopeJSON, marshalErr := json.Marshal(hubScope)
+			if marshalErr != nil {
+				return r.die(fmt.Errorf("encoding Hub scope: %w", marshalErr))
+			}
+			environment = append(environment, "BV_WBV_HUB_SCOPE="+string(scopeJSON))
+		}
 		if !robot && hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
 			environment = append(environment, "BV_HUB_CHANGE_SIGNAL="+hub.ChangeSignalPath(paths))
 		}
@@ -194,6 +234,84 @@ func (r runner) run(arguments []string) int {
 		return r.die(fmt.Errorf("running bv: %w", runErr))
 	}
 	return 0
+}
+
+func parseHubScopeRequest(arguments []string) (hubScopeRequest, []string, error) {
+	request := hubScopeRequest{}
+	remaining := make([]string, 0, len(arguments))
+	for i := 0; i < len(arguments); i++ {
+		switch arguments[i] {
+		case "--context":
+			request.explicit = true
+			if request.contextless {
+				return hubScopeRequest{}, nil, errors.New("--context and --contextless are mutually exclusive")
+			}
+			if i+1 >= len(arguments) {
+				return hubScopeRequest{}, nil, errors.New("missing value for --context")
+			}
+			i++
+			contextID := arguments[i]
+			if err := safeValue("--context", contextID); err != nil {
+				return hubScopeRequest{}, nil, err
+			}
+			request.contexts = append(request.contexts, contextID)
+		case "--contextless":
+			request.explicit = true
+			if request.contextless {
+				return hubScopeRequest{}, nil, errors.New("duplicate Viewer option: --contextless")
+			}
+			if len(request.contexts) > 0 {
+				return hubScopeRequest{}, nil, errors.New("--context and --contextless are mutually exclusive")
+			}
+			request.contextless = true
+		default:
+			if strings.HasPrefix(arguments[i], "--context=") || strings.HasPrefix(arguments[i], "--contextless=") {
+				return hubScopeRequest{}, nil, fmt.Errorf("Hub scope option must not use '=' syntax: %s", strings.SplitN(arguments[i], "=", 2)[0])
+			}
+			remaining = append(remaining, arguments[i])
+		}
+	}
+	return request, remaining, nil
+}
+
+func (r runner) resolveHubScope(configPath string, request hubScopeRequest) (model.HubScope, error) {
+	if request.contextless {
+		return model.NewContextlessHubScope(), nil
+	}
+	config, err := hub.Resolve(configPath)
+	if len(request.contexts) > 0 {
+		if err != nil {
+			return model.HubScope{}, fmt.Errorf("loading registered Hub contexts: %w", err)
+		}
+		scope, scopeErr := model.NewSelectedContextsHubScope(request.contexts)
+		if scopeErr != nil {
+			return model.HubScope{}, scopeErr
+		}
+		for _, contextID := range scope.Contexts {
+			if _, registered := config.Repositories[contextID]; !registered {
+				return model.HubScope{}, fmt.Errorf("Hub context is not registered: %s", contextID)
+			}
+		}
+		return scope, nil
+	}
+	if request.explicit {
+		return model.HubScope{}, errors.New("at least one --context value is required")
+	}
+	if err != nil {
+		return model.NewAllItemsHubScope(), nil
+	}
+	resolveContext := r.hubContext
+	if resolveContext == nil {
+		resolveContext = hub.Context
+	}
+	current, contextErr := resolveContext(r.directory)
+	if contextErr != nil {
+		return model.NewAllItemsHubScope(), nil
+	}
+	if _, registered := config.Repositories[current]; !registered {
+		return model.NewAllItemsHubScope(), nil
+	}
+	return model.NewSelectedContextsHubScope([]string{current})
 }
 
 func hubAutoRefreshEnabled(value string) bool {
@@ -640,6 +758,10 @@ available for explicit refresh.
 
   --local  Require a valid local store and use Git history.
   --hub    Always use the private Hub and external history.
+  --context <registered-context>
+           Select a registered Hub context for robot candidates (repeatable).
+  --contextless
+           Select Hub items without any ctx-prefixed label for robot candidates.
   -h, --help
            Show this help.
 `)

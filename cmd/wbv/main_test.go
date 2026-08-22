@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 )
 
 type childRecord struct {
@@ -198,6 +200,143 @@ func TestAutoUsesHubWithoutValidLocalStore(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(fixture.records, "wbd.json")); err != nil {
 				t.Fatalf("auto Hub mode did not configure wbd: %v", err)
+			}
+		})
+	}
+}
+
+func TestHubRobotScopeRouting(t *testing.T) {
+	contextPrefix := "ctx:"
+	first := contextPrefix + "alpha"
+	second := contextPrefix + "beta"
+	fixture := newFixture(t, "git", "bd", "bv", "wbd")
+	fixture.makeHubStore(t)
+	fixture.makeHubConfig(t, first, second)
+
+	code, stderr := fixture.run("--hub", "--context", second, "--context", first, "--context", second, "--robot-plan")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	record := fixture.record(t, "bv")
+	for _, argument := range record.Args {
+		if argument == "--context" || argument == "--contextless" || argument == "--repo" {
+			t.Fatalf("public scope flag leaked into bv arguments: %#v", record.Args)
+		}
+	}
+	var scope struct {
+		Mode     string   `json:"mode"`
+		Contexts []string `json:"contexts"`
+	}
+	if err := json.Unmarshal([]byte(record.Env["BV_WBV_HUB_SCOPE"]), &scope); err != nil {
+		t.Fatalf("scope environment is not JSON: %v", err)
+	}
+	if scope.Mode != "contexts" || !reflect.DeepEqual(scope.Contexts, []string{first, second}) {
+		t.Fatalf("scope = %#v", scope)
+	}
+}
+
+func TestHubRobotScopeDefaultsAndContextless(t *testing.T) {
+	contextID := "ctx:" + "current"
+	t.Run("registered current", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		fixture.makeHubStore(t)
+		fixture.makeHubConfig(t, contextID)
+		t.Setenv("WBV_TEST_CONTEXT", contextID)
+		if code, stderr := fixture.run("--hub", "--robot-insights"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if got := fixture.record(t, "bv").Env["BV_WBV_HUB_SCOPE"]; !strings.Contains(got, `"mode":"contexts"`) || !strings.Contains(got, contextID) {
+			t.Fatalf("scope = %q", got)
+		}
+	})
+
+	t.Run("unavailable current falls back to all items", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		fixture.makeHubStore(t)
+		fixture.makeHubConfig(t, contextID)
+		t.Setenv("WBV_TEST_CONTEXT", "ctx:"+"unregistered")
+		if code, stderr := fixture.run("--hub", "--robot-plan"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if got := fixture.record(t, "bv").Env["BV_WBV_HUB_SCOPE"]; got != `{"mode":"all_items","contexts":[]}` {
+			t.Fatalf("scope = %q", got)
+		}
+	})
+
+	t.Run("contextless", func(t *testing.T) {
+		fixture := newFixture(t, "git", "bd", "bv", "wbd")
+		fixture.makeHubStore(t)
+		if code, stderr := fixture.run("--hub", "--contextless", "--robot-plan"); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if got := fixture.record(t, "bv").Env["BV_WBV_HUB_SCOPE"]; got != `{"mode":"contextless","contexts":[]}` {
+			t.Fatalf("scope = %q", got)
+		}
+	})
+}
+
+func TestHubRobotScopeRejectsInvalidSelections(t *testing.T) {
+	registered := "ctx:" + "registered"
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "mutual exclusion", args: []string{"--hub", "--context", registered, "--contextless", "--robot-plan"}, want: "mutually exclusive"},
+		{name: "unregistered", args: []string{"--hub", "--context", "ctx:" + "missing", "--robot-plan"}, want: "not registered"},
+		{name: "missing", args: []string{"--hub", "--robot-plan", "--context"}, want: "missing value for --context"},
+		{name: "unsafe", args: []string{"--hub", "--context", "-unsafe", "--robot-plan"}, want: "invalid value"},
+		{name: "local", args: []string{"--local", "--context", registered, "--robot-plan"}, want: "only with Hub mode"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, "git", "bd", "bv", "wbd")
+			fixture.makeHubStore(t)
+			fixture.makeHubConfig(t, registered)
+			if test.name == "local" {
+				repository := filepath.Join(fixture.root, "repository")
+				fixture.makeLocalStore(t, repository)
+				t.Setenv("WBV_GIT_ROOT", repository)
+			}
+			code, stderr := fixture.run(test.args...)
+			if code != 1 || !strings.Contains(stderr, test.want) {
+				t.Fatalf("code = %d, stderr = %q, want %q", code, stderr, test.want)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.records, "bv.json")); !os.IsNotExist(err) {
+				t.Fatal("rejected scope invoked bv")
+			}
+		})
+	}
+}
+
+func TestHubScopeRoutesAcrossEverySupportedRobotCommand(t *testing.T) {
+	invocations := [][]string{
+		{"--robot-plan"},
+		{"--robot-priority"},
+		{"--robot-insights"},
+		{"--robot-graph"},
+		{"--robot-label-health"},
+		{"--robot-label-flow"},
+		{"--robot-label-attention"},
+		{"--robot-blocker-chain", "issue"},
+		{"--robot-sprint-list"},
+		{"--robot-sprint-show", "sprint"},
+		{"--robot-forecast", "all"},
+		{"--robot-capacity"},
+		{"--robot-triage", "--brief"},
+	}
+	for _, invocation := range invocations {
+		name := strings.TrimPrefix(invocation[0], "--")
+		t.Run(name, func(t *testing.T) {
+			fixture := newFixture(t, "git", "bd", "bv", "wbd")
+			fixture.makeHubStore(t)
+			arguments := append([]string{"--hub", "--contextless"}, invocation...)
+			if code, stderr := fixture.run(arguments...); code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			record := fixture.record(t, "bv")
+			if record.Env["BV_WBV_HUB_SCOPE"] != `{"mode":"contextless","contexts":[]}` {
+				t.Fatalf("scope transport = %q", record.Env["BV_WBV_HUB_SCOPE"])
 			}
 		})
 	}
@@ -564,6 +703,31 @@ func (f fixture) makeHubStore(t *testing.T) {
 	}
 }
 
+func (f fixture) makeHubConfig(t *testing.T, contexts ...string) {
+	t.Helper()
+	repositories := make(map[string]hub.Repository, len(contexts))
+	for index, contextID := range contexts {
+		repositories[contextID] = hub.Repository{Path: filepath.Join(f.root, fmt.Sprintf("repository-%d", index))}
+	}
+	config := hub.Config{
+		Version:      hub.ConfigVersion,
+		Store:        filepath.Join(f.home, ".local/share/beads/hub/.beads"),
+		Ledger:       filepath.Join(f.home, ".local/share/beads/hub/correlations.jsonl"),
+		Repositories: repositories,
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(f.home, ".config/bv/hub.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f fixture) makeLocalStore(t *testing.T, repository string) {
 	t.Helper()
 	makeLocalStore(t, repository)
@@ -603,6 +767,12 @@ func (f fixture) runWithOutput(arguments ...string) (int, string, string) {
 		stderr:      &stderr,
 		directory:   f.root,
 		interactive: func() bool { return false },
+		hubContext: func(string) (string, error) {
+			if contextID := os.Getenv("WBV_TEST_CONTEXT"); contextID != "" {
+				return contextID, nil
+			}
+			return "", fmt.Errorf("test context unavailable")
+		},
 	}
 	return r.run(arguments), stdout.String(), stderr.String()
 }
@@ -616,6 +786,9 @@ func (f fixture) runInteractive(arguments ...string) (int, string) {
 		stderr:      &stderr,
 		directory:   f.root,
 		interactive: func() bool { return true },
+		hubContext: func(string) (string, error) {
+			return "", fmt.Errorf("test context unavailable")
+		},
 	}
 	return r.run(arguments), stderr.String()
 }
