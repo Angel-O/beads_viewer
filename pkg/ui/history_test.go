@@ -1136,6 +1136,12 @@ func TestHistoryModel_ZeroResultSearchKeepsQueryAndSearchBarVisible(t *testing.T
 	if !strings.Contains(view, "No beads with commit correlations found") {
 		t.Fatalf("zero-result view did not render empty state: %q", view)
 	}
+	if strings.Contains(view, "Press h to close") {
+		t.Fatalf("zero-match history search view showed a close hint that interferes with typed search input: %q", view)
+	}
+	if !strings.Contains(view, "Esc/q to close") {
+		t.Fatalf("zero-result history search view lost non-printable close hint: %q", view)
+	}
 	if normalHeaderHeight != activeHeaderHeight || activeHeaderHeight != lipgloss.Height(h.renderHeader()) {
 		t.Fatalf("History header height jumped across search states: normal=%d active=%d submitted=%d", normalHeaderHeight, activeHeaderHeight, lipgloss.Height(h.renderHeader()))
 	}

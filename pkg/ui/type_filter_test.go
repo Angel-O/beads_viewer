@@ -192,3 +192,22 @@ func TestTypePickerRenderingFitsTinyAndBoundaryAllocations(t *testing.T) {
 		t.Fatalf("rendering changed exact selection: %#v", selected)
 	}
 }
+
+func TestTypePickerFooterHintsDoNotTruncateAtWideModalWidth(t *testing.T) {
+	picker := NewTypePickerModel(
+		[]model.IssueType{model.TypeBug, model.TypeTask, model.TypeFeature},
+		map[model.IssueType]bool{model.TypeBug: true, model.TypeTask: true, model.TypeFeature: true},
+		DefaultTheme(lipgloss.NewRenderer(nil)),
+	)
+	picker.SetSize(100, 20)
+
+	view := picker.View()
+	for _, hint := range []string{"j/k: navigate", "space: toggle", "a: all", "n: reset", "enter: apply", "esc: cancel"} {
+		if !strings.Contains(view, hint) {
+			t.Fatalf("expected wrapped footer to include control hint %q in picker view", hint)
+		}
+	}
+	if strings.Count(view, "…") > 1 {
+		t.Fatalf("footer appears truncated in modal width=100; view=%q", view)
+	}
+}
