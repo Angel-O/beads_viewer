@@ -664,16 +664,29 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 
 	updated, _ = m.Update(keyMsg("/"))
 	m = updated.(Model)
-	updated, _ = m.Update(keyMsg("E"))
+	for _, key := range []string{"?", "`", ";", "E"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	if m.focused != focusTree || m.tree.SearchQuery() != "?`;E" {
+		t.Fatalf("printable shortcuts escaped Tree search: focus=%v query=%q", m.focused, m.tree.SearchQuery())
+	}
+	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
+		t.Fatalf("Tree search opened global UI: help=%v tutorial=%v sidebar=%v", m.showHelp, m.showTutorial, m.showShortcutsSidebar)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	m = updated.(Model)
-	if m.focused != focusTree || m.tree.SearchQuery() != "E" {
-		t.Fatalf("uppercase input escaped Tree search: focus=%v query=%q", m.focused, m.tree.SearchQuery())
+	if !m.lastForceRefresh.IsZero() || !m.tree.IsSearchActive() {
+		t.Fatalf("Tree search leaked Ctrl+R: refreshed=%v active=%v", !m.lastForceRefresh.IsZero(), m.tree.IsSearchActive())
 	}
 
 	updated, _ = m.Update(keyMsg("enter"))
 	m = updated.(Model)
 	if m.tree.IsSearchActive() {
 		t.Fatal("Enter should select the current result and finish Tree input")
+	}
+	if got := m.tree.SearchQuery(); got != "?`;E" {
+		t.Fatalf("Enter changed Tree search query to %q", got)
 	}
 	updated, _ = m.Update(keyMsg("esc"))
 	m = updated.(Model)
@@ -788,13 +801,23 @@ func TestKeyDispatch_Regression_HistorySearchConsumesGlobalKeys(t *testing.T) {
 		t.Fatal("expected history search mode after '/'")
 	}
 
-	updated, _ = m.Update(keyMsg("q"))
-	m = updated.(Model)
-	if got := m.historyView.SearchQuery(); got != "q" {
-		t.Fatalf("expected history search query %q, got %q", "q", got)
+	for _, key := range []string{"?", "`", ";", "q"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+	}
+	if got := m.historyView.SearchQuery(); got != "?`;q" {
+		t.Fatalf("expected history search query %q, got %q", "?`;q", got)
 	}
 	if m.focused != focusHistory || !m.isHistoryView {
 		t.Fatalf("expected history search input to stay in history view, got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
+	}
+	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
+		t.Fatalf("History search opened global UI: help=%v tutorial=%v sidebar=%v", m.showHelp, m.showTutorial, m.showShortcutsSidebar)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(Model)
+	if !m.lastForceRefresh.IsZero() || !m.historyView.IsSearchActive() {
+		t.Fatalf("History search leaked Ctrl+R: refreshed=%v active=%v", !m.lastForceRefresh.IsZero(), m.historyView.IsSearchActive())
 	}
 
 	updated, _ = m.Update(keyMsg("esc"))

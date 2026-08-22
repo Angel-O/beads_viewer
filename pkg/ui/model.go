@@ -3222,13 +3222,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Graph search owns every key while editing so printable query text cannot
-		// leak into global help, tutorial, refresh, sidebar, or view shortcuts.
+		// View-local search owns every key while editing so printable query text
+		// and control keys cannot leak into global overlays, refresh, or shortcuts.
 		if m.focused == focusGraph && m.graphView.IsSearchInputActive() {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
 			m = m.handleGraphKeys(msg)
+			return m, nil
+		}
+		if m.focused == focusHistory && m.historyView.IsSearchActive() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m = m.handleHistoryKeys(msg)
+			return m, nil
+		}
+		if m.focused == focusTree && m.tree.IsSearchActive() {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m = m.handleTreeKeys(msg)
 			return m, nil
 		}
 
@@ -3460,18 +3474,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.handleGraphKeys(msg)
 			return m, nil
 		}
-		if m.focused == focusHistory && (m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus()) {
+		if m.focused == focusHistory && m.historyView.FileTreeHasFocus() {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
 			m = m.handleHistoryKeys(msg)
-			return m, nil
-		}
-		if m.focused == focusTree && m.tree.IsSearchActive() {
-			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
-			}
-			m = m.handleTreeKeys(msg)
 			return m, nil
 		}
 		// The label picker overlay has an always-focused text input. Like the
