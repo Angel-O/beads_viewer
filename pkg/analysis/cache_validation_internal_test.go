@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	json "github.com/goccy/go-json"
+
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -68,9 +70,9 @@ func TestBeadsTreeModTime_OnlyConsultsTopLevelFiles(t *testing.T) {
 	}
 }
 
-// Issue #192: a plain cache miss (key absent, nothing expired) must be a pure
-// read — it must not rewrite and fsync the whole cache file. The subsequent
-// put after recompute is the only write on that path.
+// Issue #192: a plain cache miss (key absent) must be a pure read — it must
+// not touch other entries, create files, or fsync anything. The put after the
+// upcoming recompute is the only write on that path.
 func TestRobotDiskCache_MissWithoutPruneDoesNotRewriteFile(t *testing.T) {
 	t.Setenv("BV_ROBOT", "1")
 	cacheDir := t.TempDir()
@@ -92,14 +94,21 @@ func TestRobotDiskCache_MissWithoutPruneDoesNotRewriteFile(t *testing.T) {
 	stats := an.AnalyzeAsyncWithConfig(context.Background(), config)
 	stats.WaitForPhase2()
 
-	cachePath := filepath.Join(cacheDir, robotAnalysisDiskCacheFileName)
-	before, err := os.Stat(cachePath)
+	key := an.DataHash() + "|" + ComputeConfigHash(&config)
+	entryDir := filepath.Join(cacheDir, robotAnalysisDiskCacheSubdirName)
+	entryPath := filepath.Join(entryDir, robotAnalysisEntryFileName(key))
+	before, err := os.Stat(entryPath)
 	if err != nil {
-		t.Fatalf("expected cache file after first analysis: %v", err)
+		t.Fatalf("expected cache entry file after first analysis: %v", err)
 	}
-	// Pin the file's mtime in the past so any rewrite is unambiguous.
+	// Pin the entry file's mtime in the past so any rewrite is unambiguous.
+	// (Recent enough that the mtime-based max-age prune cannot reap it.)
 	pinned := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
-	if err := os.Chtimes(cachePath, pinned, pinned); err != nil {
+	if err := os.Chtimes(entryPath, pinned, pinned); err != nil {
+		t.Fatal(err)
+	}
+	filesBefore, err := os.ReadDir(entryDir)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,24 +116,31 @@ func TestRobotDiskCache_MissWithoutPruneDoesNotRewriteFile(t *testing.T) {
 		t.Fatal("unexpected hit for an absent key")
 	}
 
-	after, err := os.Stat(cachePath)
+	after, err := os.Stat(entryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !after.ModTime().Equal(pinned) || after.Size() != before.Size() {
-		t.Fatalf("plain miss rewrote the cache file: mtime %v→%v size %d→%d", pinned, after.ModTime(), before.Size(), after.Size())
+		t.Fatalf("plain miss disturbed the existing entry: mtime %v→%v size %d→%d", pinned, after.ModTime(), before.Size(), after.Size())
+	}
+	filesAfter, err := os.ReadDir(entryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filesAfter) != len(filesBefore) {
+		t.Fatalf("plain miss changed the cache dir: %d files → %d files", len(filesBefore), len(filesAfter))
 	}
 
 	// The genuine entry still hits (the miss above did not disturb it).
-	key := an.DataHash() + "|" + ComputeConfigHash(&config)
 	if cached, _, hit := getRobotDiskCachedStats(key); !hit || cached == nil {
 		t.Fatalf("expected hit for %q after a miss on another key", key)
 	}
 }
 
-// Expired entries must still be pruned from disk on the miss path, otherwise a
-// repo that never gets a fresh put would carry them until max-entries eviction.
-func TestRobotDiskCache_MissWithPruneRewritesFile(t *testing.T) {
+// Expired entry files are reaped by the write path's prune (any repo's put
+// clears the shared dir), the legacy v2 single-file cache is retired, and a
+// direct lookup of an expired key reaps its own file.
+func TestRobotDiskCache_PutPrunesExpiredEntriesAndLegacyFile(t *testing.T) {
 	t.Setenv("BV_ROBOT", "1")
 	cacheDir := t.TempDir()
 	t.Setenv("BV_CACHE_DIR", cacheDir)
@@ -134,35 +150,57 @@ func TestRobotDiskCache_MissWithPruneRewritesFile(t *testing.T) {
 	}
 	t.Setenv("BEADS_DB", beadsDir)
 
-	cachePath := filepath.Join(cacheDir, robotAnalysisDiskCacheFileName)
-	f, err := os.OpenFile(cachePath, os.O_CREATE|os.O_RDWR, 0o644)
+	entryDir, err := robotAnalysisDiskCacheDir(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expired := robotAnalysisDiskCacheFile{
-		Version: robotAnalysisDiskCacheVersion,
-		Entries: map[string]robotAnalysisDiskCacheEntry{
-			"old|key": {CreatedAt: time.Now().Add(-2 * robotAnalysisDiskCacheMaxAge), Result: graphStatsCacheBlob{Status: MetricStatus{}}},
-		},
-	}
-	if err := writeRobotDiskCacheLocked(f, expired); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
 
-	if _, _, hit := getRobotDiskCachedStats("other|key"); hit {
-		t.Fatal("unexpected hit")
+	// An expired entry (valid v3 body; both body CreatedAt and file mtime old)
+	// and a legacy v2 single-file cache.
+	const oldKey = "old|key"
+	oldPath := filepath.Join(entryDir, robotAnalysisEntryFileName(oldKey))
+	oldEntry := robotAnalysisDiskCacheEntry{
+		Version:   robotAnalysisDiskCacheVersion,
+		Key:       oldKey,
+		CreatedAt: time.Now().Add(-2 * robotAnalysisDiskCacheMaxAge).UTC(),
 	}
-
-	g, err := os.Open(cachePath)
+	raw, err := json.Marshal(oldEntry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
-	cf := readRobotDiskCacheLocked(g)
-	if len(cf.Entries) != 0 {
-		t.Fatalf("expired entry should have been pruned and persisted, got %d entries", len(cf.Entries))
+	if err := os.WriteFile(oldPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ancient := time.Now().Add(-2 * robotAnalysisDiskCacheMaxAge)
+	if err := os.Chtimes(oldPath, ancient, ancient); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(cacheDir, robotAnalysisLegacyCacheFileName)
+	if err := os.WriteFile(legacyPath, []byte(`{"version":2,"entries":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A put for unrelated data prunes the expired entry and retires the legacy file.
+	issues := []model.Issue{{ID: "FRESH", Status: model.StatusOpen}}
+	an := NewAnalyzer(issues)
+	stats := an.AnalyzeAsyncWithConfig(context.Background(), ConfigForSize(1, 0))
+	stats.WaitForPhase2()
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expired entry file should be pruned on put, stat err = %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy analysis_cache.json should be retired on put, stat err = %v", err)
+	}
+
+	// A direct lookup of an expired key reaps its own file too.
+	if err := os.WriteFile(oldPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, hit := getRobotDiskCachedStats(oldKey); hit {
+		t.Fatal("expired entry must not hit")
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expired entry file should be reaped on lookup, stat err = %v", err)
 	}
 }

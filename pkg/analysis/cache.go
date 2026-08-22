@@ -21,8 +21,15 @@ import (
 )
 
 const (
-	robotAnalysisDiskCacheVersion      = 2
-	robotAnalysisDiskCacheFileName     = "analysis_cache.json"
+	robotAnalysisDiskCacheVersion = 3
+	// robotAnalysisDiskCacheSubdirName holds one file per cache entry. The
+	// pre-v3 layout kept every entry in a single analysis_cache.json, which
+	// made each lookup decode — and each store rewrite + fsync — the entire
+	// multi-MB, multi-repo cache just to touch one entry (issue #192).
+	robotAnalysisDiskCacheSubdirName = "analysis_cache"
+	// robotAnalysisLegacyCacheFileName is the retired single-file layout,
+	// removed opportunistically on the write path.
+	robotAnalysisLegacyCacheFileName   = "analysis_cache.json"
 	robotAnalysisDiskCacheDirName      = "bv"
 	robotAnalysisDiskCacheMaxEntries   = 10
 	robotAnalysisDiskCacheMaxAge       = 24 * time.Hour
@@ -656,14 +663,14 @@ func (ca *CachedAnalyzer) WasCacheHit() bool {
 	return ca.cacheHit
 }
 
-type robotAnalysisDiskCacheFile struct {
-	Version int                                    `json:"version"`
-	Entries map[string]robotAnalysisDiskCacheEntry `json:"entries"`
-}
-
+// robotAnalysisDiskCacheEntry is the on-disk unit of the v3 per-entry cache
+// layout: one JSON file per (dataHash, configHash) key under the
+// analysis_cache/ directory. Key is stored inside the file so a filename
+// collision or foreign file can never satisfy a lookup.
 type robotAnalysisDiskCacheEntry struct {
+	Version         int                 `json:"version"`
+	Key             string              `json:"key"`
 	CreatedAt       time.Time           `json:"created_at"`
-	AccessedAt      time.Time           `json:"accessed_at"`
 	DataHash        string              `json:"data_hash"`
 	ConfigHash      string              `json:"config_hash"`
 	ComputeDuration time.Duration       `json:"compute_duration"` // For XFetch probabilistic refresh
@@ -1099,7 +1106,9 @@ func beadsTreeModTime(beadsDir string) time.Time {
 	return latest
 }
 
-func robotAnalysisDiskCachePath(create bool) (string, error) {
+// robotAnalysisDiskCacheDir resolves (and optionally creates) the directory
+// holding the per-entry cache files.
+func robotAnalysisDiskCacheDir(create bool) (string, error) {
 	base := os.Getenv("BV_CACHE_DIR")
 	if base == "" {
 		dir, err := os.UserCacheDir()
@@ -1108,90 +1117,74 @@ func robotAnalysisDiskCachePath(create bool) (string, error) {
 		}
 		base = filepath.Join(dir, robotAnalysisDiskCacheDirName)
 	}
+	dir := filepath.Join(base, robotAnalysisDiskCacheSubdirName)
 	if create {
-		if err := os.MkdirAll(base, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", fmt.Errorf("creating cache dir: %w", err)
 		}
 	}
-	return filepath.Join(base, robotAnalysisDiskCacheFileName), nil
+	return dir, nil
 }
 
-func readRobotDiskCacheLocked(f *os.File) robotAnalysisDiskCacheFile {
-	if _, err := f.Seek(0, 0); err != nil {
-		return robotAnalysisDiskCacheFile{Version: robotAnalysisDiskCacheVersion, Entries: map[string]robotAnalysisDiskCacheEntry{}}
-	}
-
-	// Stream-decode directly from the file via goccy/go-json's buffered decoder,
-	// avoiding a full ReadAll + Unmarshal of the (potentially multi-MB) cache.
-	// This is the hot read path: it runs on EVERY `bv --robot-*` invocation.
-	var cf robotAnalysisDiskCacheFile
-	if err := json.NewDecoder(f).Decode(&cf); err != nil || cf.Version != robotAnalysisDiskCacheVersion {
-		return robotAnalysisDiskCacheFile{Version: robotAnalysisDiskCacheVersion, Entries: map[string]robotAnalysisDiskCacheEntry{}}
-	}
-	if cf.Entries == nil {
-		cf.Entries = map[string]robotAnalysisDiskCacheEntry{}
-	}
-	return cf
+// robotAnalysisEntryFileName maps a cache key to its entry file. The key (a
+// dataHash|configHash pair of hex digests) is itself hashed so the filename is
+// fixed-length and free of separator characters; the full key is verified
+// against the entry body on read.
+func robotAnalysisEntryFileName(fullKey string) string {
+	sum := sha256.Sum256([]byte(fullKey))
+	return hex.EncodeToString(sum[:16]) + ".json"
 }
 
-func writeRobotDiskCacheLocked(f *os.File, cf robotAnalysisDiskCacheFile) error {
-	if cf.Entries == nil {
-		cf.Entries = map[string]robotAnalysisDiskCacheEntry{}
-	}
-	if err := f.Truncate(0); err != nil {
-		return err
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return err
-	}
-	// Compact (no SetIndent): this cache is never read by humans, so compact
-	// JSON is smaller on disk and faster to encode/decode. goccy/go-json's
-	// streaming encoder writes directly to the file.
-	if err := json.NewEncoder(f).Encode(cf); err != nil {
-		return err
-	}
-	return f.Sync()
-}
-
-// pruneRobotDiskCacheEntries drops entries older than robotAnalysisDiskCacheMaxAge
-// and reports how many were removed, so callers can skip rewriting the cache
-// file when nothing changed.
-func pruneRobotDiskCacheEntries(now time.Time, entries map[string]robotAnalysisDiskCacheEntry) int {
-	removed := 0
-	for k, e := range entries {
-		if e.CreatedAt.IsZero() || now.Sub(e.CreatedAt) > robotAnalysisDiskCacheMaxAge {
-			delete(entries, k)
-			removed++
-		}
-	}
-	return removed
-}
-
-func evictRobotDiskCacheLRU(entries map[string]robotAnalysisDiskCacheEntry) {
-	if len(entries) <= robotAnalysisDiskCacheMaxEntries {
+// pruneAndEvictRobotDiskCacheDir removes expired entry files (older than
+// robotAnalysisDiskCacheMaxAge) and, if more than
+// robotAnalysisDiskCacheMaxEntries remain, the oldest extras. File mtime is
+// the recency signal: entries are written once and never touched on read, so
+// mtime equals creation time and eviction is effectively FIFO by CreatedAt —
+// the same approximation the v2 layout used once read-hits stopped persisting
+// AccessedAt. Stale tmp-* files from crashed writers are reaped on the same
+// schedule. Runs only on the write path, under the writer lock.
+func pruneAndEvictRobotDiskCacheDir(dir string, now time.Time) {
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
 		return
 	}
 	type item struct {
-		key string
-		t   time.Time
+		name  string
+		mtime time.Time
 	}
-	items := make([]item, 0, len(entries))
-	for k, e := range entries {
-		t := e.AccessedAt
-		if t.IsZero() {
-			t = e.CreatedAt
+	var files []item
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
 		}
-		items = append(items, item{key: k, t: t})
+		name := de.Name()
+		info, err := de.Info()
+		if err != nil {
+			continue
+		}
+		if !strings.HasSuffix(name, ".json") {
+			if strings.HasPrefix(name, "tmp-") && now.Sub(info.ModTime()) > robotAnalysisDiskCacheMaxAge {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+			continue
+		}
+		if now.Sub(info.ModTime()) > robotAnalysisDiskCacheMaxAge {
+			_ = os.Remove(filepath.Join(dir, name))
+			continue
+		}
+		files = append(files, item{name: name, mtime: info.ModTime()})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].t.Equal(items[j].t) {
-			return items[i].key < items[j].key
+	if len(files) <= robotAnalysisDiskCacheMaxEntries {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].mtime.Equal(files[j].mtime) {
+			return files[i].name < files[j].name
 		}
-		return items[i].t.Before(items[j].t)
+		return files[i].mtime.Before(files[j].mtime)
 	})
-	for len(entries) > robotAnalysisDiskCacheMaxEntries && len(items) > 0 {
-		delete(entries, items[0].key)
-		items = items[1:]
+	for i := 0; i < len(files)-robotAnalysisDiskCacheMaxEntries; i++ {
+		_ = os.Remove(filepath.Join(dir, files[i].name))
 	}
 }
 
@@ -1203,36 +1196,35 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 		return nil, false, false
 	}
 
-	path, err := robotAnalysisDiskCachePath(false)
+	dir, err := robotAnalysisDiskCacheDir(false)
+	if err != nil {
+		return nil, false, false
+	}
+	path := filepath.Join(dir, robotAnalysisEntryFileName(fullKey))
+
+	// Lock-free read: entries are written atomically (temp file + rename), so
+	// a reader sees either the old complete entry or the new complete entry,
+	// never a torn write. Decoding touches exactly one entry — the whole point
+	// of the v3 layout (issue #192): the v2 single file made every lookup
+	// decode every entry for every repo this user runs bv in.
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false, false
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
+	var entry robotAnalysisDiskCacheEntry
+	if err := json.Unmarshal(raw, &entry); err != nil ||
+		entry.Version != robotAnalysisDiskCacheVersion ||
+		entry.Key != fullKey {
+		// Corrupt, foreign, or filename-collision content can never satisfy a
+		// lookup; drop the regenerable file so it stops costing reads.
+		_ = os.Remove(path)
 		return nil, false, false
 	}
-	defer f.Close()
-
-	if err := lockFile(f); err != nil {
-		return nil, false, false
-	}
-	defer func() { _ = unlockFile(f) }()
 
 	now := time.Now()
-	cf := readRobotDiskCacheLocked(f)
-	pruned := pruneRobotDiskCacheEntries(now, cf.Entries)
-
-	entry, ok := cf.Entries[fullKey]
-	if !ok {
-		// A plain miss must not rewrite (and fsync) the whole multi-MB cache
-		// file: the write path after the upcoming recompute persists the new
-		// entry anyway (issue #192). Only persist when pruning actually
-		// removed something, so expired entries don't linger forever on a
-		// repo that never gets a fresh put.
-		if pruned > 0 {
-			_ = writeRobotDiskCacheLocked(f, cf)
-		}
+	if entry.CreatedAt.IsZero() || now.Sub(entry.CreatedAt) > robotAnalysisDiskCacheMaxAge {
+		_ = os.Remove(path)
 		return nil, false, false
 	}
 
@@ -1242,8 +1234,7 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 	// case the cached GraphStats are stale and must be recomputed.
 	dirMtime := beadsDirModTime()
 	if !dirMtime.IsZero() && dirMtime.After(entry.CreatedAt) {
-		delete(cf.Entries, fullKey)
-		_ = writeRobotDiskCacheLocked(f, cf)
+		_ = os.Remove(path)
 		return nil, false, false
 	}
 
@@ -1254,18 +1245,6 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 		!now.Before(entry.CreatedAt.Add(entry.ComputeDuration)) &&
 		xfetch.ShouldRefresh(entry.CreatedAt, entry.ComputeDuration, 1.0, now)
 
-	// Pure read-hit: do NOT rewrite the entire cache file just to bump the LRU
-	// AccessedAt timestamp. Rewriting the full (multi-MB) file with encoding/json
-	// on every robot invocation dominates the cost of a cache hit, and the
-	// bookkeeping it persists is not load-bearing for correctness:
-	//   - Staleness uses beadsDirModTime vs entry.CreatedAt, never AccessedAt.
-	//   - Pruning (maxAge) and LRU eviction (maxEntries) are re-applied, and
-	//     persisted, on the write path (putRobotDiskCachedStats) that runs after
-	//     every real recompute, plus on the miss/stale branches above when the
-	//     entry set actually changes.
-	// Skipping the write here means a frequently-read-but-never-recomputed entry
-	// won't have its LRU recency persisted; eviction falls back to CreatedAt for
-	// such entries, which is an acceptable LRU approximation.
 	return entry.Result.toGraphStats(), shouldXFetchRefresh, true
 }
 
@@ -1307,43 +1286,68 @@ func putRobotDiskCachedStats(fullKey, dataHash, configHash string, stats *GraphS
 	}
 	stats.mu.RUnlock()
 
-	if b, err := json.Marshal(blob); err != nil || len(b) > robotAnalysisDiskCacheMaxEntrySize {
-		return
-	}
-
-	path, err := robotAnalysisDiskCachePath(true)
-	if err != nil {
-		return
-	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	if err := lockFile(f); err != nil {
-		return
-	}
-	defer func() { _ = unlockFile(f) }()
-
 	now := time.Now().UTC()
-	cf := readRobotDiskCacheLocked(f)
-	pruneRobotDiskCacheEntries(now, cf.Entries)
-
-	if cf.Entries == nil {
-		cf.Entries = map[string]robotAnalysisDiskCacheEntry{}
-	}
-
-	cf.Entries[fullKey] = robotAnalysisDiskCacheEntry{
+	entry := robotAnalysisDiskCacheEntry{
+		Version:         robotAnalysisDiskCacheVersion,
+		Key:             fullKey,
 		CreatedAt:       now,
-		AccessedAt:      now,
 		DataHash:        dataHash,
 		ConfigHash:      configHash,
 		ComputeDuration: computeDuration,
 		Result:          blob,
 	}
+	raw, err := json.Marshal(entry)
+	if err != nil || len(raw) > robotAnalysisDiskCacheMaxEntrySize {
+		return
+	}
 
-	evictRobotDiskCacheLRU(cf.Entries)
-	_ = writeRobotDiskCacheLocked(f, cf)
+	dir, err := robotAnalysisDiskCacheDir(true)
+	if err != nil {
+		return
+	}
+
+	// Serialize writers and evictions across processes with a directory-level
+	// lock file; readers stay lock-free (atomic rename gives them a complete
+	// entry either way). This bounds the cost of a store to this one entry —
+	// under v2 every store rewrote and fsynced the entire multi-entry file.
+	lockPath := filepath.Join(dir, ".lock")
+	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return
+	}
+	defer lf.Close()
+	if err := lockFile(lf); err != nil {
+		return
+	}
+	defer func() { _ = unlockFile(lf) }()
+
+	tmp, err := os.CreateTemp(dir, "tmp-")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(raw)
+	serr := tmp.Sync()
+	cerr := tmp.Close()
+	if werr != nil || serr != nil || cerr != nil {
+		_ = os.Remove(tmpName)
+		return
+	}
+	final := filepath.Join(dir, robotAnalysisEntryFileName(fullKey))
+	if err := os.Rename(tmpName, final); err != nil {
+		// Windows cannot rename onto a file another process holds open; retry
+		// once after removing the destination, then give up — the cache is
+		// best-effort.
+		_ = os.Remove(final)
+		if err := os.Rename(tmpName, final); err != nil {
+			_ = os.Remove(tmpName)
+			return
+		}
+	}
+
+	pruneAndEvictRobotDiskCacheDir(dir, time.Now())
+
+	// Retire the pre-v3 single-file layout once a v3 entry exists, so the
+	// obsolete multi-MB blob doesn't linger in the cache dir indefinitely.
+	_ = os.Remove(filepath.Join(filepath.Dir(dir), robotAnalysisLegacyCacheFileName))
 }
