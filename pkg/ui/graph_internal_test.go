@@ -161,14 +161,16 @@ func TestGraphModelSearchZeroResultsAndClearing(t *testing.T) {
 
 func TestGraphModelSearchStatusStaysWithinOneDisplayLine(t *testing.T) {
 	tests := []struct {
-		name  string
-		width int
-		query string
+		name      string
+		width     int
+		query     string
+		forbidden []rune
 	}{
 		{name: "long ASCII", width: 24, query: strings.Repeat("long-query-", 20)},
 		{name: "wide CJK", width: 17, query: strings.Repeat("検索", 20)},
 		{name: "narrow", width: 1, query: "検索"},
-		{name: "control characters", width: 20, query: "first\tsecond\nthird"},
+		{name: "C0 control characters", width: 20, query: "first\tsecond\nthird", forbidden: []rune{'\t', '\n'}},
+		{name: "C1 control characters", width: 30, query: "first\u0085second\u009bthird", forbidden: []rune{'\u0085', '\u009b'}},
 		{name: "zero width", width: 0, query: "hidden"},
 	}
 
@@ -193,6 +195,11 @@ func TestGraphModelSearchStatusStaysWithinOneDisplayLine(t *testing.T) {
 			}
 			if width := lipgloss.Width(status); width > tt.width {
 				t.Fatalf("status width = %d, want <= %d: %q", width, tt.width, status)
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.ContainsRune(status, forbidden) {
+					t.Fatalf("rendered status contains control rune U+%04X: %q", forbidden, status)
+				}
 			}
 		})
 	}

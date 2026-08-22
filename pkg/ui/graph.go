@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -534,7 +535,7 @@ func (g *GraphModel) renderSearchStatus(width int, t Theme) string {
 		}
 	}
 	status = strings.Map(func(r rune) rune {
-		if r < ' ' || r == '\x7f' {
+		if unicode.IsControl(r) {
 			return ' '
 		}
 		return r
