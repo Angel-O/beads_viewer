@@ -4001,6 +4001,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isBoardView = false
 				m.isActionableView = false
 				if m.isHistoryView {
+					m.showShortcutsSidebar = false
 					// Ensure history model has latest sizing
 					bodyHeight := m.height - 1
 					if bodyHeight < 5 {

@@ -648,29 +648,44 @@ func TestKeyDispatch_HistoryIgnoresShortcutsSidebarToggle(t *testing.T) {
 	m.historyView.StartSearchWithMode(searchModeCommit)
 	m.historyView.UpdateSearchInput(keyMsg("needle"))
 	m.historyView.FinishSearch()
-	m.historyView.SetFileTreeFocus(true)
-	m.historyView.MoveDownFileTree()
+	m.historyView.SetFileTreeFocus(false)
 	before := m.historyView.View()
 	beforeMode := m.historyView.IsGitMode()
 	beforeFocus := m.historyView.focused
 	beforeSearch := m.historyView.SearchQuery()
 	beforeFileTreeFocus := m.historyView.FileTreeHasFocus()
+	beforeSelectedBead := m.historyView.selectedBead
+	beforeSelectedCommit := m.historyView.selectedCommit
+	beforeScrollOffset := m.historyView.scrollOffset
+	beforeGitScrollOffset := m.historyView.gitScrollOffset
+	beforeMiddleScrollOffset := m.historyView.middleScrollOffset
+	beforeTimelineScrollOffset := m.historyView.timelineScrollOffset
+	beforeSelectedGitCommit := m.historyView.selectedGitCommit
+	beforeSelectedRelatedBead := m.historyView.selectedRelatedBead
 
 	updated, _ = m.Update(keyMsg(";"))
 	m = updated.(Model)
 	if m.showShortcutsSidebar || !m.isHistoryView || m.focused != focusHistory {
 		t.Fatalf("semicolon changed normal History routing: sidebar=%v view=%v focus=%v", m.showShortcutsSidebar, m.isHistoryView, m.focused)
 	}
-	if m.historyView.View() != before || m.historyView.IsGitMode() != beforeMode || m.historyView.focused != beforeFocus || m.historyView.SearchQuery() != beforeSearch || m.historyView.FileTreeHasFocus() != beforeFileTreeFocus {
+	if m.historyView.View() != before || m.historyView.IsGitMode() != beforeMode || m.historyView.focused != beforeFocus || m.historyView.SearchQuery() != beforeSearch || m.historyView.FileTreeHasFocus() != beforeFileTreeFocus || m.historyView.selectedBead != beforeSelectedBead || m.historyView.selectedCommit != beforeSelectedCommit || m.historyView.scrollOffset != beforeScrollOffset || m.historyView.gitScrollOffset != beforeGitScrollOffset || m.historyView.middleScrollOffset != beforeMiddleScrollOffset || m.historyView.timelineScrollOffset != beforeTimelineScrollOffset || m.historyView.selectedGitCommit != beforeSelectedGitCommit || m.historyView.selectedRelatedBead != beforeSelectedRelatedBead {
 		t.Fatal("semicolon changed History state or rendering")
 	}
 
-	m.isHistoryView = false
-	m.focused = focusList
+	m = setupTestModel(t)
+	m.width, m.height = 200, 40
 	updated, _ = m.Update(keyMsg(";"))
 	m = updated.(Model)
 	if !m.showShortcutsSidebar {
-		t.Fatal("semicolon stopped toggling the supported list sidebar")
+		t.Fatal("semicolon did not open the supported list sidebar")
+	}
+	updated, _ = m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if !m.isHistoryView || m.focused != focusHistory || m.showShortcutsSidebar {
+		t.Fatalf("entering History retained the unsupported sidebar: view=%v focus=%v sidebar=%v", m.isHistoryView, m.focused, m.showShortcutsSidebar)
+	}
+	if strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("History View rendered the shortcuts sidebar after entering from List")
 	}
 }
 
