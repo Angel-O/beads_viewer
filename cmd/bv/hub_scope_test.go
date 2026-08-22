@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
@@ -487,6 +488,96 @@ func TestHubGraphTraversalCrossesHiddenIntermediary(t *testing.T) {
 	}
 	if len(dot.Adjacency.Nodes) != 2 || len(dot.Adjacency.Nodes[0].BoundaryRefs)+len(dot.Adjacency.Nodes[1].BoundaryRefs) != 2 {
 		t.Fatalf("DOT boundary evidence = %#v", dot.Adjacency)
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live map[string]any
+	if err := json.Unmarshal(data, &live); err != nil {
+		t.Fatal(err)
+	}
+	liveNode := live["adjacency"].(map[string]any)["nodes"].([]any)[0].(map[string]any)
+	liveBoundary := liveNode["boundary_refs"].([]any)[0].(map[string]any)
+	graphSchema := generateRobotSchemas().Commands["robot-graph"]
+	graphProperties := graphSchema["properties"].(map[string]interface{})
+	adjacencyProperties := graphProperties["adjacency"].(map[string]interface{})["properties"].(map[string]interface{})
+	nodeSchema := adjacencyProperties["nodes"].(map[string]interface{})["items"].(map[string]interface{})
+	nodeProperties := nodeSchema["properties"].(map[string]interface{})
+	boundarySchema := nodeProperties["boundary_refs"].(map[string]interface{})
+	boundaryItem := boundarySchema["items"].(map[string]interface{})
+	boundaryProperties := boundaryItem["properties"].(map[string]interface{})
+	for key := range liveBoundary {
+		if boundaryProperties[key] == nil {
+			t.Fatalf("live boundary field %q missing from graph schema", key)
+		}
+	}
+	required := boundaryItem["required"].([]string)
+	for _, key := range []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope", "from", "to"} {
+		if !slices.Contains(required, key) {
+			t.Fatalf("graph boundary schema does not require %q", key)
+		}
+	}
+	if got := boundaryProperties["in_scope"].(map[string]interface{})["const"]; got != false {
+		t.Fatalf("in_scope schema const = %#v", got)
+	}
+}
+
+func TestHubCapacityPreservesCanonicalCriticalPath(t *testing.T) {
+	selected := "ctx:" + "selected"
+	issues := []model.Issue{
+		{ID: "visible-a", Title: "Visible A", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{selected}},
+		{ID: "hidden", Title: "Hidden", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:" + "other"}, Dependencies: []*model.Dependency{{DependsOnID: "visible-a", Type: model.DepBlocks}}},
+		{ID: "visible-b", Title: "Visible B", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{selected}, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},
+	}
+	scope, err := model.NewSelectedContextsHubScope([]string{selected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := newHubScopeProjection(scope, issues, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	ctx := RobotContext{
+		Issues:        issues,
+		DataHash:      analysis.ComputeDataHash(issues),
+		HubProjection: projection,
+		Encoder: hubScopeRobotEncoder{
+			base:       newJSONRobotEncoder(&encoded),
+			command:    "robot-capacity",
+			projection: projection,
+		},
+	}
+	if err := handleRobotCapacity(ctx, phaseThreeRobotHandlerConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	path := output["critical_path"].([]any)
+	if !reflect.DeepEqual(path, []any{"visible-a", "hidden", "visible-b"}) {
+		t.Fatalf("critical path = %#v", path)
+	}
+	if int(output["critical_path_length"].(float64)) != len(path) {
+		t.Fatalf("critical path length = %v, path = %#v", output["critical_path_length"], path)
+	}
+	stats := analysis.NewAnalyzer(issues).Analyze()
+	wantSerialMinutes := 0
+	for _, id := range []string{"visible-a", "hidden", "visible-b"} {
+		eta, err := analysis.EstimateETAForIssue(issues, &stats, id, 1, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantSerialMinutes += eta.EstimatedMinutes
+	}
+	if int(output["serial_minutes"].(float64)) != wantSerialMinutes {
+		t.Fatalf("serial minutes = %v, want %d", output["serial_minutes"], wantSerialMinutes)
+	}
+	if output["parallel_minutes"].(float64) != output["total_minutes"].(float64)-output["serial_minutes"].(float64) {
+		t.Fatalf("path-derived minute summaries disagree: %#v", output)
 	}
 }
 

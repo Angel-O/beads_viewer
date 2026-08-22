@@ -3259,14 +3259,6 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 			}
 		}
 		actionable = visibleActionable
-
-		visibleCriticalPath := longestChain[:0]
-		for _, id := range longestChain {
-			if ctx.HubProjection.inScopeID[id] {
-				visibleCriticalPath = append(visibleCriticalPath, id)
-			}
-		}
-		longestChain = visibleCriticalPath
 	}
 	if len(bottlenecks) > 5 {
 		bottlenecks = bottlenecks[:5]

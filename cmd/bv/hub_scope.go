@@ -279,12 +279,8 @@ func (p *hubScopeProjection) project(command string, output map[string]any) {
 	case "robot-capacity":
 		p.filterStringArray(output, "actionable")
 		p.filterObjectArray(output, "bottlenecks", false, "id")
-		p.filterStringArray(output, "critical_path")
 		if actionable, ok := output["actionable"].([]any); ok {
 			output["actionable_count"] = len(actionable)
-		}
-		if criticalPath, ok := output["critical_path"].([]any); ok {
-			output["critical_path_length"] = len(criticalPath)
 		}
 	case "robot-label-health":
 		p.projectLabelHealth(output)

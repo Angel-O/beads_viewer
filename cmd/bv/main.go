@@ -9496,8 +9496,15 @@ func generateRobotSchemas() RobotSchemas {
 							"items": map[string]interface{}{
 								"type": "object",
 								"properties": map[string]interface{}{
-									"id": map[string]interface{}{"type": "string"},
+									"id":            map[string]interface{}{"type": "string"},
+									"title":         map[string]interface{}{"type": "string"},
+									"status":        map[string]interface{}{"type": "string"},
+									"priority":      map[string]interface{}{"type": "integer"},
+									"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+									"pagerank":      map[string]interface{}{"type": "number"},
+									"boundary_refs": graphBoundaryReferencesSchema(),
 								},
+								"required": []string{"id", "title", "status", "priority"},
 							},
 						},
 						"edges": map[string]interface{}{"type": "array"},
@@ -9887,6 +9894,31 @@ func hubBoundaryReferencesSchema() map[string]interface{} {
 				"to":       map[string]interface{}{"type": "string"},
 			},
 			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope"},
+		},
+	}
+}
+
+func graphBoundaryReferencesSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "array",
+		"description": "Deterministically ordered focused graph edges from a visible node to a hidden endpoint",
+		"items": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"relation_type": map[string]interface{}{"type": "string", "description": "Canonical dependency relation type"},
+				"endpoint_id":   map[string]interface{}{"type": "string", "description": "Deterministic identity of the hidden endpoint"},
+				"issue_type":    map[string]interface{}{"type": "string", "description": "Hidden endpoint issue type"},
+				"status":        map[string]interface{}{"type": "string", "description": "Hidden endpoint status"},
+				"contexts": map[string]interface{}{
+					"type":        "array",
+					"description": "Sorted Hub contexts of the hidden endpoint",
+					"items":       map[string]interface{}{"type": "string"},
+				},
+				"in_scope": map[string]interface{}{"type": "boolean", "const": false, "description": "Hidden endpoint is outside candidate scope"},
+				"from":     map[string]interface{}{"type": "string", "description": "Canonical directed edge source"},
+				"to":       map[string]interface{}{"type": "string", "description": "Canonical directed edge target"},
+			},
+			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope", "from", "to"},
 		},
 	}
 }
