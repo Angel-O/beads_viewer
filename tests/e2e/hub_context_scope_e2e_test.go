@@ -8,61 +8,117 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 )
 
-// requirementEvidence keeps the accepted 37-requirement baseline auditable
-// without duplicating parser and renderer permutations already covered by the
-// focused package tests named below.
-var requirementEvidence = map[string]string{
-	"HCS-INV-001": "TestRealHubCreationLifecycleAndCorrection; TestCreateTargetingAndAdmission",
-	"HCS-INV-002": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-INV-003": "TestRealHubCreationLifecycleAndCorrection; TestReplaceCopiesOpenBlockingContinuityThenCloses",
-	"HCS-INV-004": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-INV-005": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-INV-006": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-INV-007": "TestRealHubScopedRobotReads; TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences",
-	"HCS-INV-008": "TestRealHubScopedRobotReads; TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences",
-	"HCS-CRE-001": "TestRealHubCreationLifecycleAndCorrection; TestCreateRegistersAndForwardsExactArgumentsAndEnvironment",
-	"HCS-CRE-002": "TestRealHubCreationLifecycleAndCorrection; TestCreateTargetingAndAdmission",
-	"HCS-CRE-003": "TestRealHubCreationLifecycleAndCorrection; TestCreateTargetingAndAdmission",
-	"HCS-CRE-004": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-CRE-005": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-CRE-006": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-CRE-007": "TestRealHubCreationLifecycleAndCorrection; TestAdmitIssue",
-	"HCS-CRE-008": "TestRealHubCreationLifecycleAndCorrection; TestCreateTargetingAndAdmission",
-	"HCS-CRE-009": "TestRealHubCreationLifecycleAndCorrection; TestCreateTargetingAndAdmission",
-	"HCS-LIF-001": "TestRealHubCreationLifecycleAndCorrection; TestCreateFromTodoUsesOneGraphMutation",
-	"HCS-LIF-002": "TestRealHubCreationLifecycleAndCorrection; TestValidateTodoResult",
-	"HCS-LIF-003": "TestRealHubCreationLifecycleAndCorrection; TestValidateSupersession",
-	"HCS-LIF-004": "TestRealHubCreationLifecycleAndCorrection; TestReplaceCopiesOpenBlockingContinuityThenCloses",
-	"HCS-LIF-005": "TestRealHubCreationLifecycleAndCorrection; TestReplaceCopiesOpenBlockingContinuityThenCloses",
-	"HCS-LIF-006": "TestRealHubCreationLifecycleAndCorrection; TestReplaceCloseFailureNamesPersistedReplacement",
-	"HCS-LIF-007": "TestRealHubCreationLifecycleAndCorrection; TestValidateSupersession",
-	"HCS-LIF-008": "TestRealHubCreationLifecycleAndCorrection; TestEpicParentAndSupersededReopenPrevalidation",
-	"HCS-SCP-001": "TestRealHubScopedRobotReads; TestHubRobotScopeDefaultsAndContextless",
-	"HCS-SCP-002": "TestRealHubScopedRobotReads; TestHubRobotScopeRouting",
-	"HCS-SCP-003": "TestRealHubScopedRobotReads; TestHubScopeProjectionVariantsAndCanonicalHash",
-	"HCS-SCP-004": "TestRealHubScopedRobotReads; TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences",
-	"HCS-SCP-005": "TestRealHubScopedRobotReads; TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences",
-	"HCS-COR-001": "TestRealHubCorrelationAndLocalParity; TestAddExternalCorrelation",
-	"HCS-COR-002": "TestRealHubCorrelationAndLocalParity; TestExternalCorrelationEligibility",
-	"HCS-COR-003": "TestRealHubCorrelationAndLocalParity; TestExternalCorrelationEligibility",
-	"HCS-COR-004": "TestRealHubCorrelationAndLocalParity; TestExternalCorrelationEligibility",
-	"HCS-COR-005": "TestRealHubCorrelationAndLocalParity; TestAddExternalCorrelation",
-	"HCS-COR-006": "TestRealHubCreationLifecycleAndCorrection; TestReplaceCopiesOpenBlockingContinuityThenCloses",
-	"HCS-COR-007": "TestRealHubCorrelationAndLocalParity; TestLinkRejectsTodoBeforeCorrelation",
+type verticalAssertion uint8
+
+const (
+	assertMembershipAdmission verticalAssertion = iota + 1
+	assertCreationTargets
+	assertRejectedCreationNoWrite
+	assertTodoContinuity
+	assertEpicCoordination
+	assertOrderedCorrection
+	assertOriginalLifecycleAttribution
+	assertCorrectionCorrelationAttribution
+	assertScopeVariants
+	assertCanonicalScopeHash
+	assertMultiContextDedupe
+	assertHiddenBlockerTruth
+	assertMultipleEligibleCommits
+	assertRejectedCorrelationNoAppend
+)
+
+type evidenceEntry struct {
+	journey    func(*testing.T)
+	assertions []verticalAssertion
+}
+
+func evidence(journey func(*testing.T), assertions ...verticalAssertion) evidenceEntry {
+	return evidenceEntry{journey: journey, assertions: assertions}
+}
+
+// requirementEvidence compile-links every requirement to the exact vertical
+// journey and typed assertions that exercise it. Renaming a cited journey or
+// adding an unknown assertion breaks compilation or this matrix test.
+var requirementEvidence = map[string]evidenceEntry{
+	"HCS-INV-001": evidence(TestRealHubCreationLifecycleAndCorrection, assertMembershipAdmission),
+	"HCS-INV-002": evidence(TestRealHubCreationLifecycleAndCorrection, assertMembershipAdmission),
+	"HCS-INV-003": evidence(TestRealHubCreationLifecycleAndCorrection, assertOrderedCorrection),
+	"HCS-INV-004": evidence(TestRealHubCreationLifecycleAndCorrection, assertMembershipAdmission),
+	"HCS-INV-005": evidence(TestRealHubCreationLifecycleAndCorrection, assertMembershipAdmission),
+	"HCS-INV-006": evidence(TestRealHubCreationLifecycleAndCorrection, assertMembershipAdmission),
+	"HCS-INV-007": evidence(TestRealHubScopedRobotReads, assertHiddenBlockerTruth),
+	"HCS-INV-008": evidence(TestRealHubScopedRobotReads, assertHiddenBlockerTruth),
+	"HCS-CRE-001": evidence(TestRealHubCreationLifecycleAndCorrection, assertCreationTargets),
+	"HCS-CRE-002": evidence(TestRealHubCreationLifecycleAndCorrection, assertCreationTargets),
+	"HCS-CRE-003": evidence(TestRealHubCreationLifecycleAndCorrection, assertCreationTargets),
+	"HCS-CRE-004": evidence(TestRealHubCreationLifecycleAndCorrection, assertCreationTargets),
+	"HCS-CRE-005": evidence(TestRealHubCreationLifecycleAndCorrection, assertCreationTargets),
+	"HCS-CRE-006": evidence(TestRealHubCreationLifecycleAndCorrection, assertCreationTargets),
+	"HCS-CRE-007": evidence(TestRealHubCreationLifecycleAndCorrection, assertRejectedCreationNoWrite),
+	"HCS-CRE-008": evidence(TestRealHubCreationLifecycleAndCorrection, assertRejectedCreationNoWrite),
+	"HCS-CRE-009": evidence(TestRealHubCreationLifecycleAndCorrection, assertRejectedCreationNoWrite),
+	"HCS-LIF-001": evidence(TestRealHubCreationLifecycleAndCorrection, assertTodoContinuity),
+	"HCS-LIF-002": evidence(TestRealHubCreationLifecycleAndCorrection, assertTodoContinuity),
+	"HCS-LIF-003": evidence(TestRealHubCreationLifecycleAndCorrection, assertOrderedCorrection),
+	"HCS-LIF-004": evidence(TestRealHubCreationLifecycleAndCorrection, assertOrderedCorrection),
+	"HCS-LIF-005": evidence(TestRealHubCreationLifecycleAndCorrection, assertOriginalLifecycleAttribution),
+	"HCS-LIF-006": evidence(TestRealHubCreationLifecycleAndCorrection, assertOrderedCorrection),
+	"HCS-LIF-007": evidence(TestRealHubCreationLifecycleAndCorrection, assertOrderedCorrection),
+	"HCS-LIF-008": evidence(TestRealHubCreationLifecycleAndCorrection, assertEpicCoordination),
+	"HCS-SCP-001": evidence(TestRealHubScopedRobotReads, assertScopeVariants, assertCanonicalScopeHash),
+	"HCS-SCP-002": evidence(TestRealHubScopedRobotReads, assertScopeVariants),
+	"HCS-SCP-003": evidence(TestRealHubScopedRobotReads, assertScopeVariants),
+	"HCS-SCP-004": evidence(TestRealHubScopedRobotReads, assertScopeVariants),
+	"HCS-SCP-005": evidence(TestRealHubScopedRobotReads, assertMultiContextDedupe),
+	"HCS-COR-001": evidence(TestRealHubCorrelationAndLocalParity, assertMultipleEligibleCommits),
+	"HCS-COR-002": evidence(TestRealHubCorrelationAndLocalParity, assertMultipleEligibleCommits, assertRejectedCorrelationNoAppend),
+	"HCS-COR-003": evidence(TestRealHubCorrelationAndLocalParity, assertRejectedCorrelationNoAppend),
+	"HCS-COR-004": evidence(TestRealHubCorrelationAndLocalParity, assertRejectedCorrelationNoAppend),
+	"HCS-COR-005": evidence(TestRealHubCorrelationAndLocalParity, assertMultipleEligibleCommits),
+	"HCS-COR-006": evidence(TestRealHubCreationLifecycleAndCorrection, assertCorrectionCorrelationAttribution),
+	"HCS-COR-007": evidence(TestRealHubCorrelationAndLocalParity, assertRejectedCorrelationNoAppend),
 }
 
 func TestHubContextScopeRequirementEvidence(t *testing.T) {
-	if len(requirementEvidence) != 37 {
-		t.Fatalf("requirement evidence entries = %d, want 37", len(requirementEvidence))
+	expected := []string{
+		"HCS-INV-001", "HCS-INV-002", "HCS-INV-003", "HCS-INV-004", "HCS-INV-005", "HCS-INV-006", "HCS-INV-007", "HCS-INV-008",
+		"HCS-CRE-001", "HCS-CRE-002", "HCS-CRE-003", "HCS-CRE-004", "HCS-CRE-005", "HCS-CRE-006", "HCS-CRE-007", "HCS-CRE-008", "HCS-CRE-009",
+		"HCS-LIF-001", "HCS-LIF-002", "HCS-LIF-003", "HCS-LIF-004", "HCS-LIF-005", "HCS-LIF-006", "HCS-LIF-007", "HCS-LIF-008",
+		"HCS-SCP-001", "HCS-SCP-002", "HCS-SCP-003", "HCS-SCP-004", "HCS-SCP-005",
+		"HCS-COR-001", "HCS-COR-002", "HCS-COR-003", "HCS-COR-004", "HCS-COR-005", "HCS-COR-006", "HCS-COR-007",
 	}
-	for id, evidence := range requirementEvidence {
-		if evidence == "" {
-			t.Errorf("%s has no evidence", id)
+	if len(requirementEvidence) != len(expected) {
+		t.Fatalf("requirement evidence entries = %d, want %d", len(requirementEvidence), len(expected))
+	}
+	seen := make(map[string]bool, len(expected))
+	for _, id := range expected {
+		if seen[id] {
+			t.Fatalf("stable requirement ID is duplicated: %s", id)
+		}
+		seen[id] = true
+		entry, ok := requirementEvidence[id]
+		if !ok {
+			t.Errorf("%s is missing evidence", id)
+			continue
+		}
+		if entry.journey == nil || len(entry.assertions) == 0 {
+			t.Errorf("%s has incomplete vertical evidence", id)
+		}
+		for _, assertion := range entry.assertions {
+			if assertion < assertMembershipAdmission || assertion > assertRejectedCorrelationNoAppend {
+				t.Errorf("%s cites unknown assertion %d", id, assertion)
+			}
+		}
+	}
+	for id := range requirementEvidence {
+		if !seen[id] {
+			t.Errorf("evidence matrix contains unknown requirement ID: %s", id)
 		}
 	}
 }
@@ -105,10 +161,11 @@ func TestRealHubCreationLifecycleAndCorrection(t *testing.T) {
 	fixture.assertNoRelation(t, outsideChild, multiEpic, "parent-child")
 
 	blocker := fixture.create(t, fixture.repositories[0], "Open blocker", "--type", "task")
-	original := fixture.create(t, fixture.repositories[0], "Misplaced work", "--type", "task")
+	original := fixture.create(t, fixture.repositories[0], "Misplaced work", "--type", "task", "--description", "Original audit detail")
 	dependent := fixture.create(t, fixture.repositories[0], "Dependent work", "--type", "task")
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", original, blocker)
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", dependent, original)
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "update", original, "--status", "in_progress")
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "link", original, "HEAD")
 	replacement := fixture.replace(t, fixture.repositories[0], original, contexts[1])
 	if replacement == original {
@@ -126,6 +183,16 @@ func TestRealHubCreationLifecycleAndCorrection(t *testing.T) {
 	correlations := fixture.ledger(t)
 	if len(correlations) != 1 || correlations[0].BeadID != original {
 		t.Fatalf("correction transferred original correlation: %#v", correlations)
+	}
+	originalEvents := fixture.historyEventTypes(t, original)
+	for _, eventType := range []string{"created", "claimed", "closed"} {
+		if !slices.Contains(originalEvents, eventType) {
+			t.Fatalf("original history lost %q lifecycle event: %v", eventType, originalEvents)
+		}
+	}
+	replacementEvents := fixture.historyEventTypes(t, replacement)
+	if slices.Contains(replacementEvents, "claimed") || slices.Contains(replacementEvents, "closed") {
+		t.Fatalf("original lifecycle events were rewritten onto replacement: %v", replacementEvents)
 	}
 
 	fixture.createLegacyInvalid(t)
@@ -183,9 +250,23 @@ func TestRealHubCorrelationAndLocalParity(t *testing.T) {
 	work := fixture.create(t, fixture.repositories[0], "Correlated work", "--type", "task")
 	todo := fixture.create(t, fixture.repositories[0], "Uncorrelatable todo", "--type", "todo")
 
-	fixture.runSuccess(t, fixture.repositories[0], "wbd", "link", work, "HEAD")
+	firstSHA := gitOutputCommand(t, fixture.repositories[0], "rev-parse", "HEAD")
+	gitCommand(t, fixture.repositories[0], "commit", "--allow-empty", "-m", "second source revision")
+	secondSHA := gitOutputCommand(t, fixture.repositories[0], "rev-parse", "HEAD")
+	if firstSHA == secondSHA {
+		t.Fatal("source commits are not distinct")
+	}
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "link", work, firstSHA)
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "link", work, secondSHA)
 	records := fixture.ledger(t)
-	if len(records) != 1 || records[0].BeadID != work || records[0].Context != contexts[0] {
+	commits := make(map[string]bool)
+	for _, record := range records {
+		if record.BeadID != work || record.Context != contexts[0] || len(record.Commit) != 40 && len(record.Commit) != 64 {
+			t.Fatalf("invalid eligible correlation record: %#v", record)
+		}
+		commits[record.Commit] = true
+	}
+	if len(records) != 2 || !commits[firstSHA] || !commits[secondSHA] {
 		t.Fatalf("eligible correlation records = %#v", records)
 	}
 	fixture.runFailure(t, fixture.repositories[0], "wbd", "link", todo, "HEAD")
@@ -397,6 +478,37 @@ func (f *realHubFixture) robot(t *testing.T, directory, command string, argument
 		t.Fatalf("decode %s robot output: %v\n%s", command, err, output)
 	}
 	return result
+}
+
+func (f *realHubFixture) historyEventTypes(t *testing.T, id string) []string {
+	t.Helper()
+	config := filepath.Join(f.home, ".config", "bv", "hub.yaml")
+	output := f.robot(t, f.outside, "bv", "--bead-history", id, "--history-mode", "external", "--hub-config", config)
+	histories, ok := output["histories"].(map[string]any)
+	if !ok {
+		t.Fatalf("history output lacks histories: %#v", output)
+	}
+	history, ok := histories[id].(map[string]any)
+	if !ok {
+		t.Fatalf("history output lacks original identity %s: %#v", id, histories)
+	}
+	events, ok := history["events"].([]any)
+	if !ok {
+		t.Fatalf("history for %s lacks events: %#v", id, history)
+	}
+	types := make([]string, 0, len(events))
+	for _, raw := range events {
+		event, ok := raw.(map[string]any)
+		if !ok || event["bead_id"] != id {
+			t.Fatalf("history event is not attributed to %s: %#v", id, raw)
+		}
+		eventType, ok := event["event_type"].(string)
+		if !ok || eventType == "" {
+			t.Fatalf("history event lacks type: %#v", event)
+		}
+		types = append(types, eventType)
+	}
+	return types
 }
 
 func (f *realHubFixture) newLocalRepository(t *testing.T) string {
@@ -613,4 +725,16 @@ func gitCommand(t *testing.T, directory string, arguments ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
 	}
+}
+
+func gitOutputCommand(t *testing.T, directory string, arguments ...string) string {
+	t.Helper()
+	command := exec.Command("git", arguments...)
+	command.Dir = directory
+	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(arguments, " "), err)
+	}
+	return strings.TrimSpace(string(output))
 }

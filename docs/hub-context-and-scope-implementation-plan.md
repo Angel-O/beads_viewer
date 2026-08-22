@@ -259,7 +259,7 @@ with one precise remediation; it never aliases todo or creates partial data.
 | Viewer | Explicit Hub scope variants and lifecycle/boundary presentation | `pkg/model`, `pkg/ui`, focused tests |
 | Robot | `wbv` routing plus canonical post-analysis `bv` projection | `cmd/wbv`, `cmd/bv`, focused tests |
 | Correlation | Repository-aware eligibility and todo rejection without append | `pkg/correlation`, `cmd/wbd`, E2E tests |
-| Integration | Real compiled clients, installed `bd`, isolated stores, local parity, 37-requirement map | `tests/e2e/hub_context_scope_e2e_test.go` |
+| Integration | Real compiled clients, installed `bd`, isolated stores, local parity, compile-linked 37-requirement evidence matrix | `tests/e2e/hub_context_scope_e2e_test.go` |
 | Documentation | Public behavior and implemented correction boundary | this plan, `docs/external-history.md` |
 
 ## Verification
