@@ -1,12 +1,12 @@
-package ui_test
+package ui
 
 import (
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestRenderSparkline(t *testing.T) {
@@ -34,7 +34,7 @@ func TestRenderSparkline(t *testing.T) {
 					t.Errorf("RenderSparkline panicked: %v", r)
 				}
 			}()
-			got := ui.RenderSparkline(tt.val, tt.width)
+			got := RenderSparkline(tt.val, tt.width)
 			if len([]rune(got)) != tt.width {
 				if tt.width > 0 { // Allow 0 length for 0 width
 					t.Errorf("RenderSparkline length mismatch. Want %d, got %d ('%s')", tt.width, len([]rune(got)), got)
@@ -54,16 +54,12 @@ func TestRenderSparkline(t *testing.T) {
 }
 
 func TestHeatGradientHighEndContrastPreservesLowMidMappings(t *testing.T) {
-	previousProfile := ui.TermProfile
-	ui.TermProfile = colorprofile.TrueColor
-	t.Cleanup(func() { ui.TermProfile = previousProfile })
-
-	hotBg, hotFg := ui.GetHeatGradientColorBg(0.8)
-	maxBg, maxFg := ui.GetHeatGradientColorBg(1.0)
+	hotBg, hotFg := getHeatGradientColorBg(0.8, colorprofile.TrueColor)
+	maxBg, maxFg := getHeatGradientColorBg(1.0, colorprofile.TrueColor)
 	if reflect.DeepEqual(hotBg, maxBg) {
 		t.Fatalf("hot and max backgrounds are identical: %v", hotBg)
 	}
-	if !reflect.DeepEqual(hotFg, ui.ThemeFg("#ffffff")) || !reflect.DeepEqual(maxFg, ui.ThemeFg("#ffffff")) {
+	if !reflect.DeepEqual(hotFg, lipgloss.Color("#ffffff")) || !reflect.DeepEqual(maxFg, lipgloss.Color("#ffffff")) {
 		t.Fatalf("high-end foreground contrast changed: hot=%v max=%v", hotFg, maxFg)
 	}
 
@@ -74,12 +70,24 @@ func TestHeatGradientHighEndContrastPreservesLowMidMappings(t *testing.T) {
 		{0.1, "#16213e"},
 		{0.2, "#3282b8"},
 		{0.4, "#f7dc6f"},
-		{0.6, "#e94560"},
+		{0.6, "#f97316"},
 		{0.8, "#ff2e63"},
 	} {
-		bg, _ := ui.GetHeatGradientColorBg(testCase.intensity)
-		if !reflect.DeepEqual(bg, ui.ThemeBg(testCase.bg)) {
+		bg, _ := getHeatGradientColorBg(testCase.intensity, colorprofile.TrueColor)
+		if !reflect.DeepEqual(bg, lipgloss.Color(testCase.bg)) {
 			t.Errorf("intensity %.1f background = %v, want %s", testCase.intensity, bg, testCase.bg)
+		}
+	}
+
+	for _, profile := range []colorprofile.Profile{colorprofile.ANSI256, colorprofile.ANSI} {
+		hotBg, _ := getHeatGradientColorBg(0.8, profile)
+		maxBg, _ := getHeatGradientColorBg(1.0, profile)
+		manyBg, manyFg := getHeatGradientColorBg(0.6, profile)
+		if reflect.DeepEqual(hotBg, maxBg) || reflect.DeepEqual(manyBg, hotBg) || reflect.DeepEqual(manyBg, maxBg) {
+			t.Fatalf("profile %s collapsed high-end backgrounds: many=%v hot=%v max=%v", profile, manyBg, hotBg, maxBg)
+		}
+		if manyFg == nil {
+			t.Fatalf("profile %s returned nil orange foreground", profile)
 		}
 	}
 }

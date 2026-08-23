@@ -593,6 +593,7 @@ func (m *InsightsModel) rebuildHeatmapGrid() {
 	if len(m.topPicks) == 0 || m.insights.Stats == nil {
 		m.heatmapGrid = nil
 		m.heatmapIssueMap = nil
+		m.HeatmapBack()
 		return
 	}
 
@@ -616,6 +617,30 @@ func (m *InsightsModel) rebuildHeatmapGrid() {
 		m.heatmapGrid[depthBucket][scoreBucket]++
 		m.heatmapIssueMap[depthBucket][scoreBucket] = append(
 			m.heatmapIssueMap[depthBucket][scoreBucket], pick.ID)
+	}
+	m.refreshHeatmapDrill()
+}
+
+func (m *InsightsModel) refreshHeatmapDrill() {
+	if !m.heatmapDrill {
+		return
+	}
+	if m.heatmapRow < 0 || m.heatmapRow >= len(m.heatmapIssueMap) ||
+		m.heatmapCol < 0 || m.heatmapCol >= len(m.heatmapIssueMap[m.heatmapRow]) {
+		m.HeatmapBack()
+		return
+	}
+	issues := m.heatmapIssueMap[m.heatmapRow][m.heatmapCol]
+	if len(issues) == 0 {
+		m.HeatmapBack()
+		return
+	}
+	m.heatmapIssues = append(m.heatmapIssues[:0], issues...)
+	if m.heatmapDrillIdx >= len(m.heatmapIssues) {
+		m.heatmapDrillIdx = len(m.heatmapIssues) - 1
+	}
+	if m.heatmapDrillIdx < 0 {
+		m.heatmapDrillIdx = 0
 	}
 }
 
@@ -1782,6 +1807,11 @@ func (m *InsightsModel) renderCycleChain(cycle []string, maxWidth int, t Theme) 
 	if len(cycle) == 0 {
 		return ""
 	}
+	for _, id := range cycle {
+		if !m.allowsIssue(id) {
+			return ""
+		}
+	}
 
 	// Build chain: A → B → C → A
 	var parts []string
@@ -1889,12 +1919,15 @@ func (m *InsightsModel) buildDetailMarkdown(selectedID string) string {
 	}
 
 	// === Dependencies ===
-	if len(issue.Dependencies) > 0 {
-		sb.WriteString(fmt.Sprintf("### Dependencies (%d)\n\n", len(issue.Dependencies)))
-		for _, dep := range issue.Dependencies {
-			if dep == nil {
-				continue
-			}
+	allowedDependencies := make([]*model.Dependency, 0, len(issue.Dependencies))
+	for _, dep := range issue.Dependencies {
+		if dep != nil && m.allowsIssue(dep.DependsOnID) {
+			allowedDependencies = append(allowedDependencies, dep)
+		}
+	}
+	if len(allowedDependencies) > 0 {
+		sb.WriteString(fmt.Sprintf("### Dependencies (%d)\n\n", len(allowedDependencies)))
+		for _, dep := range allowedDependencies {
 			depIssue := m.issueMap[dep.DependsOnID]
 			if depIssue != nil {
 				sb.WriteString(fmt.Sprintf("- **%s:** %s\n", dep.Type, depIssue.Title))
@@ -2124,17 +2157,24 @@ type scoredItem struct {
 
 // getBeadTitle returns a truncated title for a bead ID
 func (m *InsightsModel) getBeadTitle(id string, maxWidth int) string {
+	if !m.allowsIssue(id) {
+		return ""
+	}
 	if issue, ok := m.issueMap[id]; ok && issue != nil {
 		return truncateRunesHelper(issue.Title, maxWidth, "…")
 	}
 	return truncateRunesHelper(id, maxWidth, "…")
 }
 
+func (m *InsightsModel) allowsIssue(id string) bool {
+	return m.activeIssueIDs == nil || m.activeIssueIDs[id]
+}
+
 // findDependents returns IDs of beads that depend on the given bead (sorted for consistent order)
 func (m *InsightsModel) findDependents(targetID string) []string {
 	var dependents []string
 	for id, issue := range m.issueMap {
-		if issue == nil {
+		if issue == nil || !m.allowsIssue(id) || !m.allowsIssue(targetID) {
 			continue
 		}
 		for _, dep := range issue.Dependencies {
@@ -2158,7 +2198,7 @@ func (m *InsightsModel) findDependents(targetID string) []string {
 // findDependencies returns IDs of beads that the given bead depends on
 func (m *InsightsModel) findDependencies(targetID string) []string {
 	issue := m.issueMap[targetID]
-	if issue == nil {
+	if issue == nil || !m.allowsIssue(targetID) {
 		return nil
 	}
 	var deps []string
@@ -2166,7 +2206,9 @@ func (m *InsightsModel) findDependencies(targetID string) []string {
 		if dep == nil {
 			continue
 		}
-		deps = append(deps, dep.DependsOnID)
+		if m.allowsIssue(dep.DependsOnID) {
+			deps = append(deps, dep.DependsOnID)
+		}
 	}
 	return deps
 }

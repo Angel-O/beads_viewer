@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -111,25 +112,46 @@ func GetHeatGradientColor(intensity float64, t Theme) lipgloss.TerminalColor {
 // Returns both the background color and appropriate foreground for contrast.
 // On 16-color terminals, backgrounds are transparent and foreground uses ANSI-safe colors.
 func GetHeatGradientColorBg(intensity float64) (bg lipgloss.TerminalColor, fg lipgloss.TerminalColor) {
+	return getHeatGradientColorBg(intensity, TermProfile)
+}
+
+func getHeatGradientColorBg(intensity float64, profile colorprofile.Profile) (bg lipgloss.TerminalColor, fg lipgloss.TerminalColor) {
 	if intensity <= 0 {
-		return ThemeBg("#1a1a2e"), ThemeFg("#6272a4") // Dark bg, muted fg
+		return heatmapBackground(profile, "#1a1a2e", 17, 0), heatmapForeground(profile, "#6272a4", 7)
 	}
 
 	// Select background color based on intensity
 	switch {
 	case intensity >= 1.0:
-		return ThemeBg("#8b123f"), ThemeFg("#ffffff") // Deep crimson, white text
+		return heatmapBackground(profile, "#8b123f", 52, 1), heatmapForeground(profile, "#ffffff", 15) // Deep crimson, white text
 	case intensity >= 0.8:
-		return ThemeBg("#ff2e63"), ThemeFg("#ffffff") // Hot pink, white text
+		return heatmapBackground(profile, "#ff2e63", 201, 13), heatmapForeground(profile, "#ffffff", 15) // Hot pink, white text
 	case intensity >= 0.6:
-		return ThemeBg("#e94560"), ThemeFg("#ffffff") // Coral, white text
+		return heatmapBackground(profile, "#f97316", 208, 3), heatmapForeground(profile, "#1a1a2e", 0) // Orange, dark text
 	case intensity >= 0.4:
-		return ThemeBg("#f7dc6f"), ThemeFg("#1a1a2e") // Gold, dark text
+		return heatmapBackground(profile, "#f7dc6f", 220, 11), heatmapForeground(profile, "#1a1a2e", 0) // Gold, dark text
 	case intensity >= 0.2:
-		return ThemeBg("#3282b8"), ThemeFg("#ffffff") // Blue, white text
+		return heatmapBackground(profile, "#3282b8", 25, 6), heatmapForeground(profile, "#ffffff", 15) // Blue, white text
 	default:
-		return ThemeBg("#16213e"), ThemeFg("#bbe1fa") // Navy, light text
+		return heatmapBackground(profile, "#16213e", 18, 4), heatmapForeground(profile, "#bbe1fa", 15) // Navy, light text
 	}
+}
+
+func heatmapBackground(profile colorprofile.Profile, trueColor string, ansi256, ansi16 uint) lipgloss.TerminalColor {
+	if profile >= colorprofile.TrueColor {
+		return lipgloss.Color(trueColor)
+	}
+	if profile >= colorprofile.ANSI256 {
+		return lipgloss.ANSIColor(ansi256)
+	}
+	return lipgloss.ANSIColor(ansi16)
+}
+
+func heatmapForeground(profile colorprofile.Profile, trueColor string, ansi16 uint) lipgloss.TerminalColor {
+	if profile >= colorprofile.ANSI256 {
+		return lipgloss.Color(trueColor)
+	}
+	return lipgloss.ANSIColor(ansi16)
 }
 
 // RepoColors maps repo prefixes to distinctive colors for visual differentiation

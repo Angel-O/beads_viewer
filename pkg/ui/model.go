@@ -3147,6 +3147,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case s == "esc" || s == "q" || s == "d" || s == "]" || s == "f4":
 				m.closeAttentionView()
 				return m, nil
+			case s == "o" || s == "r" || s == "c":
+				return m, nil
 			case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
 				if len(m.attentionCache.Labels) == 0 {
 					return m, nil

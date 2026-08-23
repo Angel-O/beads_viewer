@@ -661,9 +661,15 @@ func projectInsights(ins analysis.Insights, ids map[string]bool) analysis.Insigh
 	ins.Orphans = projectStrings(ins.Orphans, ids)
 	cycles := make([][]string, 0, len(ins.Cycles))
 	for _, cycle := range ins.Cycles {
-		projectedCycle := projectStrings(cycle, ids)
-		if len(projectedCycle) > 0 {
-			cycles = append(cycles, projectedCycle)
+		allowed := true
+		for _, id := range cycle {
+			if !ids[id] {
+				allowed = false
+				break
+			}
+		}
+		if allowed && len(cycle) > 0 {
+			cycles = append(cycles, cycle)
 		}
 	}
 	ins.Cycles = cycles
@@ -975,10 +981,6 @@ func scopedTopPicks(recommendations []analysis.Recommendation, parentsWithOpenCh
 		}
 	}
 	return result
-}
-
-func filterRecommendations(items []analysis.Recommendation, ids map[string]bool) []analysis.Recommendation {
-	return projectRecommendations(items, ids)
 }
 
 func (m *Model) refreshRepositoryDerivedViews() {

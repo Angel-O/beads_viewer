@@ -471,6 +471,24 @@ func TestAttentionViewToggleCloseFromSplitView(t *testing.T) {
 	}
 }
 
+func TestAttentionViewConsumesInsightsStatusKeys(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.currentFilter = "label:keep"
+	m.statusFilter = "closed"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	m = updated.(Model)
+	if !m.showAttentionView || m.focused != focusInsights {
+		t.Fatalf("Attention did not open: shown=%v focus=%v", m.showAttentionView, m.focused)
+	}
+	for _, key := range []string{"o", "r", "c"} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = updated.(Model)
+		if m.currentFilter != "label:keep" || m.statusFilter != "closed" || !m.showAttentionView || m.focused != focusInsights {
+			t.Fatalf("Attention key %q changed shared state: filter=%q status=%q shown=%v focus=%v", key, m.currentFilter, m.statusFilter, m.showAttentionView, m.focused)
+		}
+	}
+}
+
 func TestAttentionViewEscapeAndQRestoreOrigin(t *testing.T) {
 	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}
 	origins := []struct {

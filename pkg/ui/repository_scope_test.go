@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1131,7 +1132,7 @@ func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	stats := analysis.NewGraphStatsForTest(
 		nil, nil, nil, nil, nil,
-		map[string]float64{"active": 1, "closed": 2, "tombstone": 3},
+		map[string]float64{"active": 0, "closed": 2, "tombstone": 3},
 		nil, nil, nil, 0, nil,
 	)
 	m.insightsPanel.SetInsights(analysis.Insights{
@@ -1144,7 +1145,7 @@ func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
 		Articulation: []string{"active", "tombstone"},
 		Slack:        []analysis.InsightItem{{ID: "active"}, {ID: "closed"}},
 		Orphans:      []string{"active", "tombstone"},
-		Cycles:       [][]string{{"active", "closed", "tombstone"}},
+		Cycles:       [][]string{{"active", "closed", "active"}, {"active", "active"}},
 		Stats:        stats,
 	})
 	m.insightsPanel.SetTopPicks([]analysis.TopPick{{ID: "active"}, {ID: "closed"}, {ID: "tombstone"}})
@@ -1155,6 +1156,7 @@ func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
 	}, "test")
 	m.insightsPanel.heatmapIssues = []string{"closed", "active"}
 	m.insightsPanel.heatmapDrill = true
+	m.insightsPanel.heatmapRow = 0
 	m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
 	if got := m.insightsPanel.HeatmapSelectedIssueID(); got != "active" {
 		t.Fatalf("selection projection = %q, want active", got)
@@ -1179,6 +1181,9 @@ func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
 				t.Fatalf("projected metric retained %q", item.ID)
 			}
 		}
+	}
+	if len(m.insightsPanel.insights.Cycles) != 1 || !reflect.DeepEqual(m.insightsPanel.insights.Cycles[0], []string{"active", "active"}) {
+		t.Fatalf("projected cycles = %v", m.insightsPanel.insights.Cycles)
 	}
 	for _, id := range append(append(append([]string{}, m.insightsPanel.insights.Articulation...), m.insightsPanel.insights.Orphans...), m.insightsPanel.insights.Cycles[0]...) {
 		if id != "active" {
