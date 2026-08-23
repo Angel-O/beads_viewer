@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
@@ -52,14 +53,17 @@ func TestIssueDetailsRenderTypeImmediatelyAfterID(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 	view := updated.(ui.Model).View()
 
-	columnOrder := []string{"ID", "Type", "Status", "Priority", "Assignee", "Created"}
-	previous := -1
-	for _, column := range columnOrder {
-		position := strings.Index(view, column)
-		if position <= previous {
-			t.Fatalf("detail columns are not in order %v (missing or out of order %q):\n%s", columnOrder, column, view)
+	wantHeader := "ID Type Status Priority Assignee Created"
+	headerFound := false
+	for _, line := range strings.Split(ansi.Strip(view), "\n") {
+		header := strings.Join(strings.Fields(strings.ReplaceAll(line, "│", " ")), " ")
+		if header == wantHeader {
+			headerFound = true
+			break
 		}
-		previous = position
+	}
+	if !headerFound {
+		t.Fatalf("detail view missing table header %q:\n%s", wantHeader, view)
 	}
 	if !strings.Contains(view, "bug") {
 		t.Fatalf("detail view should render issue type textually:\n%s", view)
