@@ -1012,6 +1012,60 @@ func TestKeyDispatch_HelpConsumesSidebarToggleWithoutBannerOrMutation(t *testing
 	}
 }
 
+func TestKeyDispatch_TutorialConsumesSidebarToggleAndRestoresTreeState(t *testing.T) {
+	issues := mouseTestIssues(40)
+	issues[1].Dependencies = []*model.Dependency{{IssueID: issues[1].ID, DependsOnID: issues[0].ID, Type: model.DepParentChild}}
+	m := sizedModel(t, issues, 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	var expandedNode *IssueTreeNode
+	for _, node := range m.tree.roots {
+		if len(node.Children) > 0 {
+			expandedNode = node
+			break
+		}
+	}
+	if expandedNode == nil {
+		t.Fatal("test Tree did not build a parent-child node")
+	}
+	expandedNode.Expanded = false
+	m.tree.rebuildFlatList()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("Issue"))
+	m.tree.FinishSearch()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+	searchQuery := m.tree.SearchQuery()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg(" "))
+	m = updated.(Model)
+	if !m.showTutorial || !m.showShortcutsSidebar || m.focused != focusTutorial {
+		t.Fatalf("expected Tutorial with sidebar state retained: tutorial=%v sidebar=%v focus=%v", m.showTutorial, m.showShortcutsSidebar, m.focused)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll") {
+		t.Fatal("Tutorial was interleaved with the underlying shortcuts sidebar")
+	}
+
+	for _, key := range []string{";", "f2"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+		if !m.showTutorial || !m.showShortcutsSidebar {
+			t.Fatalf("Tutorial key %q changed hidden sidebar state: tutorial=%v sidebar=%v", key, m.showTutorial, m.showShortcutsSidebar)
+		}
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.showTutorial || !m.showShortcutsSidebar || m.focused != focusTree || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset || m.tree.SearchQuery() != searchQuery || m.tree.issueMap[expandedNode.Issue.ID].Expanded {
+		t.Fatalf("closing Tutorial changed Tree/sidebar state: tutorial=%v sidebar=%v focus=%v selected=%q offset=%d query=%q expanded=%v", m.showTutorial, m.showShortcutsSidebar, m.focused, m.tree.GetSelectedID(), m.tree.GetViewportOffset(), m.tree.SearchQuery(), m.tree.issueMap[expandedNode.Issue.ID].Expanded)
+	}
+}
+
 func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{

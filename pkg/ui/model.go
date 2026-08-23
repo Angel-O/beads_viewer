@@ -3301,7 +3301,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle shortcuts sidebar toggle (; or F2) - bv-3qi5
-		if (msg.String() == ";" || msg.String() == "f2") && !m.showHelp && m.list.FilterState() != list.Filtering {
+		if (msg.String() == ";" || msg.String() == "f2") && !m.showHelp && !m.showTutorial && m.list.FilterState() != list.Filtering {
 			m.showShortcutsSidebar = !m.showShortcutsSidebar
 			// Reflow the main panes for the new content width so the sidebar
 			// reserves its own column instead of overflowing/wrapping into the
@@ -3445,7 +3445,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check if tutorial wants to close
 			if m.tutorialModel.ShouldClose() {
 				m.showTutorial = false
-				m.focused = focusList
+				m.focused = m.restoreFocusFromHelp()
 				m.tutorialModel = NewTutorialModel(m.theme) // Reset for next time
 			}
 			return m, tutorialCmd
@@ -5687,7 +5687,7 @@ func (m Model) View() string {
 	}
 
 	// Add shortcuts sidebar if enabled (bv-3qi5)
-	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp {
+	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
 		m.shortcutsSidebar.SetFocus(m.focused)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
