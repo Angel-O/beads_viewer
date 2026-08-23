@@ -1579,7 +1579,7 @@ Press **Enter** on any issue to see its full details.
 | **O** | Open/edit in external editor |
 | **C** | Copy issue ID to clipboard |
 | **j/k** | Scroll content up/down |
-| **Esc** | Return to list |
+| **Esc** | Return to previous view |
 
 ### Markdown Rendering
 

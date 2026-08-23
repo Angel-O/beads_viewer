@@ -553,6 +553,7 @@ type Model struct {
 	isActionableView         bool
 	isHistoryView            bool
 	showDetails              bool
+	insightsDetailID         string // Direct detail binding for Insights items absent from the filtered List.
 	showHelp                 bool
 	helpScroll               int // Scroll offset for help overlay
 	showQuitConfirm          bool
@@ -3560,6 +3561,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "q":
 				// q closes current view or quits if at top level
+				if m.insightsDetailID != "" {
+					m.insightsDetailID = ""
+					m.showDetails = false
+					m.focused = focusInsights
+					return m, nil
+				}
 				if m.showDetails && !m.isSplitView {
 					m.showDetails = false
 					m.focused = focusList
@@ -3618,6 +3625,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "esc":
 				// Escape closes modals and goes back
+				if m.insightsDetailID != "" {
+					m.insightsDetailID = ""
+					m.showDetails = false
+					m.focused = focusInsights
+					return m, nil
+				}
 				if m.focused == focusTree {
 					if m.tree.SearchQuery() != "" {
 						m.tree.ClearSearch()
@@ -5402,8 +5415,17 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 				}
 			}
 			if !found {
+				if !m.insightsIssueIDs()[selectedID] {
+					return m
+				}
+				m.insightsDetailID = selectedID
+				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
+				m.updateViewportContent()
 				return m
 			}
+			m.insightsDetailID = ""
 			m.focused = focusList
 			if m.isSplitView {
 				m.focused = focusDetail
@@ -8375,19 +8397,32 @@ func (m Model) handleLeftClick(x, y int) Model {
 }
 
 func (m *Model) updateViewportContent() {
-	selectedItem := m.list.SelectedItem()
-	if selectedItem == nil {
-		m.viewport.SetContent("No issues selected")
-		return
-	}
+	var item model.Issue
+	var issueItem IssueItem
+	if m.insightsDetailID != "" {
+		issue := m.issueMap[m.insightsDetailID]
+		if issue == nil {
+			m.viewport.SetContent("No issues selected")
+			return
+		}
+		item = *issue
+		issueItem.Issue = item
+	} else {
+		selectedItem := m.list.SelectedItem()
+		if selectedItem == nil {
+			m.viewport.SetContent("No issues selected")
+			return
+		}
 
-	// Safe type assertion
-	issueItem, ok := selectedItem.(IssueItem)
-	if !ok {
-		m.viewport.SetContent("Error: invalid item type")
-		return
+		// Safe type assertion
+		var ok bool
+		issueItem, ok = selectedItem.(IssueItem)
+		if !ok {
+			m.viewport.SetContent("Error: invalid item type")
+			return
+		}
+		item = issueItem.Issue
 	}
-	item := issueItem.Issue
 
 	var sb strings.Builder
 

@@ -920,17 +920,7 @@ func (m *Model) scopedTriage() analysis.TriageResult {
 		BlockerN:  len(m.issues),
 	}, time.Now())
 	insightsIDs := m.insightsIssueIDs()
-	parentsWithOpenChildren := make(map[string]bool)
-	for _, issue := range m.issues {
-		if !insightsIDs[issue.ID] {
-			continue
-		}
-		for _, dependency := range issue.Dependencies {
-			if dependency != nil && dependency.Type == model.DepParentChild {
-				parentsWithOpenChildren[dependency.DependsOnID] = true
-			}
-		}
-	}
+	parentsWithOpenChildren := m.analyzer.ParentsWithOpenChildren()
 	globalTopPicks := scopedTopPicks(triage.Recommendations, parentsWithOpenChildren, insightsIDs, 3)
 	triage = projectTriageResult(triage, insightsIDs)
 	triage.QuickRef.TopPicks = projectTopPicks(globalTopPicks, insightsIDs)

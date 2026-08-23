@@ -490,7 +490,7 @@ func TestAttentionViewConsumesInsightsStatusKeys(t *testing.T) {
 	}
 }
 
-func TestInsightsEnterDoesNotShowStaleDetailFromClosedFilter(t *testing.T) {
+func TestInsightsEnterShowsDirectDetailAndPreservesClosedFilter(t *testing.T) {
 	m := NewModel([]model.Issue{
 		{ID: "active", Title: "Active", Status: model.StatusOpen},
 		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
@@ -508,8 +508,16 @@ func TestInsightsEnterDoesNotShowStaleDetailFromClosedFilter(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-	if m.focused != focusInsights || m.showDetails {
-		t.Fatalf("Enter showed stale detail for unavailable active ID: focus=%v details=%v", m.focused, m.showDetails)
+	if m.focused != focusDetail || !m.showDetails || m.insightsDetailID != "active" {
+		t.Fatalf("Enter did not bind direct Insights detail: focus=%v details=%v id=%q", m.focused, m.showDetails, m.insightsDetailID)
+	}
+	if !strings.Contains(m.viewport.View(), "Active") {
+		t.Fatalf("direct Insights detail omitted active issue: %s", m.viewport.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.focused != focusInsights || m.showDetails || m.insightsDetailID != "" || m.currentFilter != "closed" {
+		t.Fatalf("leaving direct detail did not preserve Insights/filter state: focus=%v details=%v id=%q filter=%q", m.focused, m.showDetails, m.insightsDetailID, m.currentFilter)
 	}
 }
 

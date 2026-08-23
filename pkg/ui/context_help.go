@@ -224,7 +224,7 @@ const contextHelpInsights = `## Insights Panel
 • Priority inversions: Low blocking high
 
   Enter     View selected issue
-  Esc       Return to list`
+  Esc       Return to previous view`
 
 const contextHelpHistory = `## History View
 
@@ -254,7 +254,7 @@ const contextHelpDetail = `## Detail View
 
 **Navigation**
   j/k       Scroll content
-  Esc       Return to list
+  Esc       Return to previous view
   Tab       Switch to split view
 
 **Actions (from list view)**

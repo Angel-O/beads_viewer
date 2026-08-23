@@ -1146,6 +1146,26 @@ func TestRepositoryScopeTriageKeepsExternalBlockerForTopPickEligibility(t *testi
 	}
 }
 
+func TestRepositoryScopeTriageKeepsParentBlockedByExternalOpenChild(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha-parent", Title: "Alpha parent", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta-child", Title: "Beta child", Status: model.StatusOpen, Labels: []string{"ctx:beta"}, Dependencies: []*model.Dependency{
+			{DependsOnID: "alpha-parent", Type: model.DepParentChild},
+		}},
+	}
+	m := NewModel(issues, nil, "")
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
+
+	triage := m.scopedTriage()
+	if len(triage.Recommendations) != 1 || triage.Recommendations[0].ID != "alpha-parent" {
+		t.Fatalf("scoped recommendations = %+v, want alpha-parent", triage.Recommendations)
+	}
+	if len(triage.QuickRef.TopPicks) != 0 {
+		t.Fatalf("parent with external open child became a top pick: %+v", triage.QuickRef.TopPicks)
+	}
+}
+
 func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "active", Title: "Active", Status: model.StatusOpen},
