@@ -867,7 +867,7 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 		loadedCount = len(issues)
 		return nil, nil
 	}
-	_, err = worker.buildRepositoryCatalog(&DataSnapshot{
+	_, contextlessCount, countReady, err := worker.buildRepositoryCatalog(&DataSnapshot{
 		Issues:         []model.Issue{{ID: "OPEN"}},
 		LoadedOpenOnly: true,
 	})
@@ -876,6 +876,26 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 	}
 	if loadedCount != 2 {
 		t.Fatalf("catalog issue count = %d, want complete set of 2", loadedCount)
+	}
+	if contextlessCount != 2 {
+		t.Fatalf("catalog contextless count = %d, want complete set of 2", contextlessCount)
+	}
+	if !countReady {
+		t.Fatal("catalog contextless count was not marked ready")
+	}
+
+	worker.catalogLoader = func(_ string, _ []model.Issue) (model.RepositoryCatalog, error) {
+		return nil, errors.New("catalog unavailable")
+	}
+	_, contextlessCount, countReady, err = worker.buildRepositoryCatalog(&DataSnapshot{
+		Issues:         []model.Issue{{ID: "OPEN"}},
+		LoadedOpenOnly: true,
+	})
+	if err == nil {
+		t.Fatal("catalog failure was not returned")
+	}
+	if contextlessCount != 2 || !countReady {
+		t.Fatalf("catalog failure lost valid contextless count: count=%d ready=%v", contextlessCount, countReady)
 	}
 }
 
@@ -937,7 +957,13 @@ func waitForCatalogReady(t *testing.T, messages <-chan tea.Msg) RepositoryCatalo
 				return ready
 			}
 			if ready, ok := message.(SnapshotReadyMsg); ok && (ready.CatalogChanged || ready.CatalogRecovered) {
-				return RepositoryCatalogReadyMsg{Catalog: ready.Catalog, Generation: ready.CatalogGeneration, Recovered: ready.CatalogRecovered}
+				return RepositoryCatalogReadyMsg{
+					Catalog:               ready.Catalog,
+					ContextlessBeadCount:  ready.ContextlessBeadCount,
+					ContextlessCountReady: ready.ContextlessCountReady,
+					Generation:            ready.CatalogGeneration,
+					Recovered:             ready.CatalogRecovered,
+				}
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for repository catalog")
@@ -956,7 +982,12 @@ func waitForCatalogError(t *testing.T, messages <-chan tea.Msg) RepositoryCatalo
 				return loadError
 			}
 			if update, ok := message.(SnapshotReadyMsg); ok && update.CatalogError != nil {
-				return RepositoryCatalogErrorMsg{Err: update.CatalogError, Generation: update.CatalogGeneration}
+				return RepositoryCatalogErrorMsg{
+					Err:                   update.CatalogError,
+					ContextlessBeadCount:  update.ContextlessBeadCount,
+					ContextlessCountReady: update.ContextlessCountReady,
+					Generation:            update.CatalogGeneration,
+				}
 			}
 		case <-timer.C:
 			t.Fatal("timed out waiting for repository catalog error")

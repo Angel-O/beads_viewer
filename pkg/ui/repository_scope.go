@@ -30,6 +30,17 @@ func isHubContextLabel(label string) bool {
 	return strings.HasPrefix(label, "ctx:")
 }
 
+func contextlessIssueCount(issues []model.Issue) int {
+	scope := model.NewContextlessHubScope()
+	count := 0
+	for _, issue := range issues {
+		if scope.MatchesLabels(issue.Labels) {
+			count++
+		}
+	}
+	return count
+}
+
 func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool, preferredRepositories map[string]bool) issueRepositoryPresentation {
 	presentation := issueRepositoryPresentation{Labels: issue.Labels}
 	if !hubMode {

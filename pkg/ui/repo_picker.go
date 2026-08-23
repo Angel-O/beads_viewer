@@ -14,19 +14,20 @@ import (
 
 // RepoPickerModel represents the repository scope picker overlay.
 type RepoPickerModel struct {
-	catalog             model.RepositoryCatalog
-	filtered            model.RepositoryCatalog
-	selectedIndex       int
-	selected            map[string]bool // exact repository ID -> selected
-	selectFuture        bool
-	showContextless     bool
-	contextlessSelected bool
-	contextlessMatch    bool
-	searching           bool
-	searchInput         textinput.Model
-	width               int
-	height              int
-	theme               Theme
+	catalog              model.RepositoryCatalog
+	filtered             model.RepositoryCatalog
+	selectedIndex        int
+	selected             map[string]bool // exact repository ID -> selected
+	selectFuture         bool
+	showContextless      bool
+	contextlessBeadCount int
+	contextlessSelected  bool
+	contextlessMatch     bool
+	searching            bool
+	searchInput          textinput.Model
+	width                int
+	height               int
+	theme                Theme
 }
 
 // NewRepoPickerModel creates a repository picker with all entries selected.
@@ -109,6 +110,14 @@ func (m *RepoPickerModel) SetHubScope(scope model.HubScope) {
 	}
 	m.contextlessSelected = contextlessSelected
 	m.filterCatalog("")
+}
+
+// SetContextlessBeadCount updates the count shown for the no-context choice.
+func (m *RepoPickerModel) SetContextlessBeadCount(count int) {
+	if count < 0 {
+		count = 0
+	}
+	m.contextlessBeadCount = count
 }
 
 // SetCatalog refreshes picker options while preserving draft selection and the
@@ -443,7 +452,9 @@ func (m *RepoPickerModel) View() string {
 				if m.contextlessSelected {
 					check = "[x]"
 				}
-				line := prefix + check + " no-context"
+				count := fmt.Sprintf(" (%d)", m.contextlessBeadCount)
+				nameWidth := max(1, contentWidth-lipgloss.Width(prefix+check+count)-3)
+				line := prefix + check + " " + truncateRunesHelper("no-context", nameWidth, "...") + count
 				lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
 				if showDetails {
 					detailStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
