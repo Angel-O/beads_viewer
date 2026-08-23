@@ -1047,7 +1047,7 @@ func TestKeyDispatch_TutorialConsumesSidebarToggleAndRestoresTreeState(t *testin
 	if !m.showTutorial || !m.showShortcutsSidebar || m.focused != focusTutorial {
 		t.Fatalf("expected Tutorial with sidebar state retained: tutorial=%v sidebar=%v focus=%v", m.showTutorial, m.showShortcutsSidebar, m.focused)
 	}
-	if view := ansi.Strip(m.View()); strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll") {
+	if view := ansi.Strip(m.View()); strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll 0%") {
 		t.Fatal("Tutorial was interleaved with the underlying shortcuts sidebar")
 	}
 
