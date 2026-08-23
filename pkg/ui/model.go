@@ -8356,9 +8356,10 @@ func (m *Model) updateViewportContent() {
 	if item.Assignee != "" {
 		assignee = "@" + item.Assignee
 	}
-	sb.WriteString("| ID | Status | Priority | Assignee | Created |\n|---|---|---|---|---|\n")
-	sb.WriteString(fmt.Sprintf("| **%s** | **%s** | %s | %s | %s |\n\n",
+	sb.WriteString("| ID | Type | Status | Priority | Assignee | Created |\n|---|---|---|---|---|---|\n")
+	sb.WriteString(fmt.Sprintf("| **%s** | %s | **%s** | %s | %s | %s |\n\n",
 		item.ID,
+		item.IssueType,
 		strings.ToUpper(string(item.Status)),
 		GetPriorityIcon(item.Priority),
 		assignee,
