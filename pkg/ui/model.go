@@ -5522,6 +5522,9 @@ func (m Model) restoreFocusFromHelp() focus {
 	if m.focusBeforeHelp == focusTimeTravelInput {
 		return focusTimeTravelInput
 	}
+	if m.focusBeforeHelp == focusTree {
+		return focusTree
+	}
 	// Default: return to list
 	return focusList
 }
@@ -5682,7 +5685,7 @@ func (m Model) View() string {
 	}
 
 	// Add shortcuts sidebar if enabled (bv-3qi5)
-	if m.showShortcutsSidebar && !m.showQuitConfirm {
+	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
 		m.shortcutsSidebar.SetFocus(m.focused)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)

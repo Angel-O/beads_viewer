@@ -927,6 +927,59 @@ func TestKeyDispatch_QuitConfirmWithTreeSidebarKeepsModalAndStateCoherent(t *tes
 	}
 }
 
+func TestKeyDispatch_HelpWithTreeSidebarKeepsOverlayAndStateCoherent(t *testing.T) {
+	issues := mouseTestIssues(40)
+	issues[1].Dependencies = []*model.Dependency{{IssueID: issues[1].ID, DependsOnID: issues[0].ID, Type: model.DepParentChild}}
+	m := sizedModel(t, issues, 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	var expandedNode *IssueTreeNode
+	for _, node := range m.tree.roots {
+		if len(node.Children) > 0 {
+			expandedNode = node
+			break
+		}
+	}
+	if expandedNode == nil {
+		t.Fatal("test Tree did not build a parent-child node")
+	}
+	expandedNode.Expanded = false
+	m.tree.rebuildFlatList()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("Issue"))
+	m.tree.FinishSearch()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+	searchQuery := m.tree.SearchQuery()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if !m.showHelp || !m.showShortcutsSidebar || m.focused != focusHelp {
+		t.Fatalf("expected Help with sidebar state retained: help=%v sidebar=%v focus=%v", m.showHelp, m.showShortcutsSidebar, m.focused)
+	}
+	view := ansi.Strip(m.View())
+	if strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll") || !strings.Contains(view, "Keyboard Shortcuts") {
+		t.Fatal("Help was interleaved with the underlying shortcuts sidebar")
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("Help line exceeds terminal width %d: %d", m.width, lipgloss.Width(line))
+		}
+	}
+
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if m.showHelp || !m.showShortcutsSidebar || m.focused != focusTree || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset || m.tree.SearchQuery() != searchQuery || m.tree.issueMap[expandedNode.Issue.ID].Expanded {
+		t.Fatalf("closing Help changed Tree/sidebar state: help=%v sidebar=%v focus=%v selected=%q offset=%d query=%q expanded=%v", m.showHelp, m.showShortcutsSidebar, m.focused, m.tree.GetSelectedID(), m.tree.GetViewportOffset(), m.tree.SearchQuery(), m.tree.issueMap[expandedNode.Issue.ID].Expanded)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Shortcuts") {
+		t.Fatal("closing Help did not restore the shortcuts sidebar")
+	}
+}
+
 func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{
