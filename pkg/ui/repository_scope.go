@@ -931,11 +931,13 @@ func (m *Model) rebuildRepositoryTree() {
 	}
 	searchQuery := m.tree.searchQuery
 	searchActive := m.tree.searchActive
+	searchSubtrees := m.tree.searchSubtrees
 	viewportOffset := m.tree.viewportOffset
+	filteredIssues := m.filteredIssuesForActiveView()
 	if m.usesHubScope() {
-		m.tree.BuildProjected(m.repositoryIssues, m.issueMap)
+		m.tree.BuildProjected(filteredIssues, m.issueMap)
 	} else {
-		m.tree.Build(m.repositoryIssues)
+		m.tree.Build(filteredIssues)
 	}
 	for id, isExpanded := range expanded {
 		if node := m.tree.issueMap[id]; node != nil {
@@ -944,18 +946,17 @@ func (m *Model) rebuildRepositoryTree() {
 	}
 	m.tree.searchQuery = searchQuery
 	m.tree.searchActive = searchActive
+	m.tree.searchSubtrees = searchSubtrees
 	m.tree.rebuildFlatList()
 	m.tree.viewportOffset = viewportOffset
-	if selectedID == "" {
+	if selectedID != "" && m.tree.SelectByID(selectedID) {
 		m.tree.ensureCursorVisible()
 		return
 	}
-	for i, node := range m.tree.flatList {
-		if node != nil && node.Issue != nil && node.Issue.ID == selectedID {
-			m.tree.cursor = i
-			m.tree.ensureCursorVisible()
-			return
-		}
+	if strings.TrimSpace(searchQuery) != "" && len(m.tree.searchMatches) > 0 {
+		m.tree.selectSearchMatch(0)
+	} else {
+		m.tree.ensureCursorVisible()
 	}
 }
 

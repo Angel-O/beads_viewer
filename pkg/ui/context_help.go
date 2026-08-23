@@ -151,7 +151,10 @@ const contextHelpTree = `## Tree View
   Enter     Toggle expansion; select during search
   Space     Toggle expansion
   g/G       Jump to top/bottom
-  o/O       Expand/collapse all
+  +/-       Expand/collapse all
+
+**Filtering**
+  o/c/r     Open/closed/ready status filter
 
 **Search**
   /         Search this Tree by ID or title

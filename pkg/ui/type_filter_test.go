@@ -267,6 +267,148 @@ func TestStatusTogglePreservesRecipeAndBoardContract(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "api-bug", "api-custom", "api-task", "web-bug", "api-closed")
 }
 
+func treeStatusIssues() []model.Issue {
+	return []model.Issue{
+		{ID: "tree-root", Title: "Tree root", Status: model.StatusClosed, Priority: 0, IssueType: model.TypeEpic},
+		{ID: "tree-open-child", Title: "Open child", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "tree-open-child", DependsOnID: "tree-root", Type: model.DepParentChild}}},
+		{ID: "tree-closed-child", Title: "Closed child", Status: model.StatusClosed, Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "tree-closed-child", DependsOnID: "tree-root", Type: model.DepParentChild}}},
+		{ID: "tree-ready", Title: "Ready issue", Status: model.StatusInProgress, Priority: 3, IssueType: model.TypeTask},
+	}
+}
+
+func TestTreeStatusKeysRebuildAndToggleOff(t *testing.T) {
+	m := NewModel(treeStatusIssues(), nil, "")
+	m.width, m.height = 120, 30
+	m.tree.SetBeadsDir(t.TempDir())
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("Tree entry focus = %v, want Tree", m.focused)
+	}
+	if got := treeRowIDs(&m.tree); len(got) != 4 {
+		t.Fatalf("initial Tree rows = %v, want all issues", got)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("-")})
+	m = updated.(Model)
+	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"tree-root", "tree-ready"}) {
+		t.Fatalf("Collapse All Tree rows = %v, want collapsed roots", got)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	m = updated.(Model)
+	if got := treeRowIDs(&m.tree); len(got) != 4 {
+		t.Fatalf("Expand All Tree rows = %v, want all issues", got)
+	}
+
+	for _, testCase := range []struct {
+		key      string
+		filter   string
+		wantRows []string
+	}{
+		{key: "o", filter: "open", wantRows: []string{"tree-open-child", "tree-ready"}},
+		{key: "c", filter: "closed", wantRows: []string{"tree-root", "tree-closed-child"}},
+		{key: "c", filter: "", wantRows: []string{"tree-root", "tree-open-child", "tree-closed-child", "tree-ready"}},
+		{key: "r", filter: "ready", wantRows: []string{"tree-open-child", "tree-ready"}},
+		{key: "r", filter: "", wantRows: []string{"tree-root", "tree-open-child", "tree-closed-child", "tree-ready"}},
+	} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
+		m = updated.(Model)
+		if got := m.activeStatusFilter(); got != testCase.filter {
+			t.Fatalf("key %q active status = %q, want %q", testCase.key, got, testCase.filter)
+		}
+		if got := treeRowIDs(&m.tree); !equalStrings(got, testCase.wantRows) {
+			t.Fatalf("key %q Tree rows = %v, want %v", testCase.key, got, testCase.wantRows)
+		}
+	}
+}
+
+func TestTreeStatusKeysComposeWithScopeAndTypeFilters(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+	m.SetRepositoryScope(map[string]bool{"api": true})
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.currentFilter = "label:urgent"
+	m.applyFilter()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
+	m = updated.(Model)
+	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"api-bug", "api-closed"}) {
+		t.Fatalf("composed Tree rows = %v, want scoped/type/label rows", got)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"api-closed"}) {
+		t.Fatalf("composed closed Tree rows = %v, want api-closed", got)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"api-bug", "api-closed"}) {
+		t.Fatalf("toggle-off composed Tree rows = %v, want both scoped rows", got)
+	}
+}
+
+func TestTreeSearchOwnsStatusKeysAndStatusRebuildPreservesState(t *testing.T) {
+	m := NewModel(treeStatusIssues(), nil, "")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
+	m = updated.(Model)
+	m.tree.issueMap["tree-root"].Expanded = true
+	m.tree.rebuildFlatList()
+	if !m.tree.SelectByID("tree-open-child") {
+		t.Fatal("failed to select open child")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = updated.(Model)
+	for _, key := range []string{"o", "c", "r"} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = updated.(Model)
+	}
+	if got := m.tree.SearchQuery(); got != "ocr" {
+		t.Fatalf("active Tree search query = %q, want ocr", got)
+	}
+	if m.statusFilter != "" || m.currentFilter != "all" {
+		t.Fatalf("active Tree search changed global status filters: base=%q status=%q", m.currentFilter, m.statusFilter)
+	}
+
+	// Re-enter a useful query, submit it, and select a row that will be filtered out.
+	m.tree.ClearSearch()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("child")})
+	m.tree.FinishSearch()
+	m.tree.ToggleSearchScope()
+	if !m.tree.SelectByID("tree-open-child") {
+		t.Fatal("failed to select searched open child")
+	}
+	m.tree.viewportOffset = 50
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if m.tree.SearchQuery() != "child" || !m.tree.searchSubtrees {
+		t.Fatalf("status rebuild changed search state: query=%q subtrees=%v", m.tree.SearchQuery(), m.tree.searchSubtrees)
+	}
+	if got := m.tree.GetSelectedID(); got != "tree-closed-child" {
+		t.Fatalf("filtered selection fallback = %q, want first remaining direct match", got)
+	}
+	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"tree-root", "tree-closed-child"}) {
+		t.Fatalf("filtered search rows = %v, want no invalid rows", got)
+	}
+	if m.tree.GetViewportOffset() < 0 || m.tree.GetViewportOffset() >= m.tree.NodeCount() {
+		t.Fatalf("invalid viewport offset after rebuild: offset=%d rows=%d", m.tree.GetViewportOffset(), m.tree.NodeCount())
+	}
+	if !m.tree.issueMap["tree-root"].Expanded {
+		t.Fatal("status rebuild lost expansion by issue ID")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if got := m.tree.GetSelectedID(); got != "tree-closed-child" {
+		t.Fatalf("toggle-off changed surviving selection: %q", got)
+	}
+	if got := m.activeStatusFilter(); got != "" {
+		t.Fatalf("toggle-off active status = %q, want none", got)
+	}
+}
+
 func TestTypeFilterResetPreservesUnrelatedScopeAndSearch(t *testing.T) {
 	m := NewModel(typeFilterIssues(), nil, "")
 	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})

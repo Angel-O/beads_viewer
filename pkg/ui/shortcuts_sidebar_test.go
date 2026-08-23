@@ -135,6 +135,19 @@ func TestShortcutsSidebarContextFiltering(t *testing.T) {
 	}
 }
 
+func TestShortcutsSidebarTreeDocumentsStatusAndAllActions(t *testing.T) {
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 40)
+	sidebar.SetFocus(focusTree)
+
+	view := sidebar.View()
+	for _, expected := range []string{"+/-", "o/c/r", "E"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("Tree sidebar missing %q: %s", expected, view)
+		}
+	}
+}
+
 func TestContextFromFocus(t *testing.T) {
 	tests := []struct {
 		focus    focus

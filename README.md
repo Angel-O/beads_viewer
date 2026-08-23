@@ -1553,8 +1553,9 @@ The tree construction uses a **parent-child only** filter with intelligent root 
 | `Enter` / `Space` | Toggle expand/collapse on current node |
 | `l` / `→` | Expand node, or move to first child if already expanded |
 | `h` / `←` | Collapse node, or jump to parent if already collapsed |
-| `o` | Expand all nodes in the tree |
-| `O` | Collapse all nodes in the tree |
+| `+` | Expand all nodes in the tree |
+| `-` | Collapse all nodes in the tree |
+| `o` / `c` / `r` | Toggle open / closed / ready status filter |
 | **Integration** | |
 | `Tab` | Sync selection to detail panel (in split view) |
 | `E` / `Esc` | Exit tree view, return to list |
@@ -3677,7 +3678,7 @@ bv has a comprehensive built-in help system:
 | **Tree View** | `j` / `k` | Move cursor down / up |
 | | `h` / `l` | Collapse/parent or Expand/child |
 | | `Enter` / `Space` | Toggle expand/collapse |
-| | `o` / `O` | Expand all / Collapse all |
+| | `+` / `-` | Expand all / Collapse all |
 | | `g` / `G` | Jump to top / bottom |
 | **Time-Travel & Analysis** | `t` | Time-Travel Mode (custom revision) |
 | | `T` | Quick Time-Travel (HEAD~5) |
