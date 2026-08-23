@@ -5654,9 +5654,7 @@ func (m Model) View() string {
 	} else if m.focused == focusTree {
 		// Hierarchical tree view (bv-gllx)
 		m.tree.SetSize(m.mainContentWidth(), m.height-1)
-		// Tree rows have natural widths, so fill the reserved body column before
-		// appending the sidebar. Other full-screen views already do this internally.
-		body = m.theme.Renderer.NewStyle().Width(m.mainContentWidth()).Render(m.tree.View())
+		body = m.renderTreeBody()
 	} else if m.isGraphView {
 		body = m.graphView.View(m.mainContentWidth(), m.height-1)
 	} else if m.isBoardView {
@@ -5702,6 +5700,18 @@ func (m Model) View() string {
 		MaxHeight(m.height)
 
 	return finalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, body, footer))
+}
+
+// renderTreeBody bounds each natural-width Tree row before filling the
+// reserved composition column. Width() alone can wrap an overlong row into
+// extra terminal lines, breaking Tree's one-node-per-row viewport math.
+func (m Model) renderTreeBody() string {
+	width := m.mainContentWidth()
+	lines := strings.Split(m.tree.View(), "\n")
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, width, "…")
+	}
+	return m.theme.Renderer.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) renderQuitConfirm() string {

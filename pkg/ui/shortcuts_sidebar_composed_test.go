@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TestShortcutsSidebarComposedWidthFitsTerminal is a stronger companion to
@@ -147,7 +150,7 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 			wantWidth := m.mainContentWidth()
 			switch tc.name {
 			case "tree":
-				treeBody := m.theme.Renderer.NewStyle().Width(wantWidth).Render(m.tree.View())
+				treeBody := m.renderTreeBody()
 				if got := maxLineWidth(treeBody); got != wantWidth {
 					t.Fatalf("Tree width = %d, want reserved content width %d", got, wantWidth)
 				}
@@ -159,6 +162,106 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 				if m.historyView.width != wantWidth {
 					t.Fatalf("History width = %d, want reserved content width %d", m.historyView.width, wantWidth)
 				}
+			}
+		})
+	}
+}
+
+func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
+	maxLineWidth := func(s string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(s, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	for _, width := range []int{110, 120} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			issues := make([]model.Issue, 0, 40)
+			for i := 0; i < 39; i++ {
+				issues = append(issues, model.Issue{
+					ID:     fmt.Sprintf("repository-item-with-a-realistically-long-id-%02d", i),
+					Title:  "A title with enough realistic detail to exceed the Tree row width",
+					Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask,
+					Dependencies: []*model.Dependency{{
+						IssueID:     fmt.Sprintf("repository-item-with-a-realistically-long-id-%02d", i),
+						DependsOnID: "external-parent-with-a-long-id", Type: model.DepParentChild,
+					}},
+				})
+			}
+			issues = append(issues, model.Issue{
+				ID:     "bottom-selected-item-with-a-realistically-long-id",
+				Title:  "Bottom selected issue with a long explanatory title",
+				Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask,
+				Dependencies: []*model.Dependency{{
+					IssueID:     "bottom-selected-item-with-a-realistically-long-id",
+					DependsOnID: "external-parent-with-a-long-id", Type: model.DepParentChild,
+				}},
+			})
+
+			m := sizedModel(t, issues, width, 30)
+			m.tree.BuildProjected(m.repositoryIssues, map[string]*model.Issue{
+				"external-parent-with-a-long-id": {ID: "external-parent-with-a-long-id", Title: "External parent"},
+			})
+			m.focused = focusTree
+			m.applyContentSizing()
+			m.tree.JumpToBottom()
+			selectedID := m.tree.GetSelectedID()
+			if selectedID != "bottom-selected-item-with-a-realistically-long-id" {
+				t.Fatalf("bottom selection = %q", selectedID)
+			}
+			if !strings.Contains(ansi.Strip(m.tree.View()), "[parent out of scope]") {
+				t.Fatal("projected-parent marker missing from Tree rows")
+			}
+
+			before := m.renderTreeBody()
+			beforeLines := strings.Split(m.tree.View(), "\n")
+			if got := len(strings.Split(before, "\n")); got != len(beforeLines) {
+				t.Fatalf("Tree rows wrapped before toggle: got %d rendered lines, want %d", got, len(beforeLines))
+			}
+			if !strings.Contains(ansi.Strip(before), "Bottom selected") {
+				t.Fatal("bottom Tree selection is not visible before toggle")
+			}
+
+			updated, _ := m.Update(keyMsg(";"))
+			m = updated.(Model)
+			if !m.showShortcutsSidebar {
+				t.Fatal("semicolon did not open Tree sidebar")
+			}
+			after := m.renderTreeBody()
+			if got := len(strings.Split(after, "\n")); got != len(beforeLines) {
+				t.Fatalf("Tree rows wrapped after toggle: got %d rendered lines, want %d", got, len(beforeLines))
+			}
+			plainAfter := ansi.Strip(after)
+			if m.tree.GetSelectedID() != selectedID || !strings.Contains(plainAfter, "┃") || !strings.Contains(plainAfter, "bottom-selected-item") {
+				t.Fatalf("bottom Tree selection changed or became invisible after toggle: selected=%q\n%s", m.tree.GetSelectedID(), plainAfter)
+			}
+			for _, line := range strings.Split(after, "\n") {
+				if lipgloss.Width(line) > m.mainContentWidth() {
+					t.Fatalf("Tree line exceeds content width %d: %d", m.mainContentWidth(), lipgloss.Width(line))
+				}
+			}
+
+			m.shortcutsSidebar.SetFocus(m.focused)
+			m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
+			composed := lipgloss.JoinHorizontal(lipgloss.Top, after, m.shortcutsSidebar.View())
+			if got := maxLineWidth(composed); got != m.width {
+				t.Fatalf("Tree/sidebar composition width = %d, want terminal width %d", got, m.width)
+			}
+			plainComposed := ansi.Strip(composed)
+			for _, line := range strings.Split(plainComposed, "\n") {
+				if index := strings.Index(line, "Shortcuts"); index >= 0 && index < m.mainContentWidth() {
+					t.Fatalf("sidebar starts before reserved Tree width %d: %d", m.mainContentWidth(), index)
+				}
+			}
+
+			updated, _ = m.Update(keyMsg(";"))
+			m = updated.(Model)
+			if m.showShortcutsSidebar || m.tree.GetSelectedID() != selectedID || !strings.Contains(ansi.Strip(m.renderTreeBody()), "Bottom selected") {
+				t.Fatal("closing sidebar changed or hid bottom Tree selection")
 			}
 		})
 	}
