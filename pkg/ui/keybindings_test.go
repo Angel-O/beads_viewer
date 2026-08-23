@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -319,6 +321,8 @@ func keyMsg(key string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "f2":
+		return tea.KeyMsg{Type: tea.KeyF2}
 	case "up":
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
@@ -799,6 +803,92 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 	m = updated.(Model)
 	if m.focused != focusList {
 		t.Fatalf("second Escape should exit Tree, got focus=%v", m.focused)
+	}
+}
+
+func TestKeyDispatch_TreeShortcutsSidebarPreservesState(t *testing.T) {
+	maxLineWidth := func(view string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(view, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	issues := []model.Issue{
+		{ID: "tree-root", Title: "Root", Status: model.StatusOpen, IssueType: model.TypeEpic},
+		{
+			ID: "tree-child", Title: "Child", Status: model.StatusOpen, IssueType: model.TypeTask,
+			Dependencies: []*model.Dependency{{IssueID: "tree-child", DependsOnID: "tree-root", Type: model.DepParentChild}},
+		},
+		{ID: "tree-other", Title: "Other", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	for i := 0; i < 45; i++ {
+		issues = append(issues, model.Issue{
+			ID: fmt.Sprintf("tree-extra-%02d", i), Title: "Extra", Status: model.StatusOpen, IssueType: model.TypeTask,
+		})
+	}
+	m := sizedModel(t, issues, 200, 40)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("expected Tree focus, got %v", m.focused)
+	}
+
+	m.tree.roots[0].Expanded = false
+	m.tree.rebuildFlatList()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("Extra"))
+	m.tree.FinishSearch()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	beforeOffset := m.tree.GetViewportOffset()
+	beforeExpanded := m.tree.roots[0].Expanded
+	beforeSearch := m.tree.SearchQuery()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open the Tree sidebar")
+	}
+	if got, want := m.tree.width, m.mainContentWidth(); got != want {
+		t.Fatalf("Tree width with sidebar = %d, want reserved content width %d", got, want)
+	}
+	treeBody := m.theme.Renderer.NewStyle().Width(m.mainContentWidth()).Render(m.tree.View())
+	if got, want := maxLineWidth(treeBody), m.mainContentWidth(); got != want {
+		t.Fatalf("Tree rendering width with sidebar = %d, want reserved content width %d", got, want)
+	}
+	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
+		t.Fatal("opening the sidebar changed Tree state")
+	}
+
+	updated, _ = m.Update(keyMsg("f2"))
+	m = updated.(Model)
+	if m.showShortcutsSidebar {
+		t.Fatal("F2 did not close the Tree sidebar")
+	}
+	if got, want := m.tree.width, m.width; got != want {
+		t.Fatalf("Tree width after closing sidebar = %d, want terminal width %d", got, want)
+	}
+	treeBody = m.theme.Renderer.NewStyle().Width(m.width).Render(m.tree.View())
+	if got, want := maxLineWidth(treeBody), m.width; got != want {
+		t.Fatalf("Tree rendering width after closing sidebar = %d, want terminal width %d", got, want)
+	}
+	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
+		t.Fatal("closing the sidebar changed Tree state")
+	}
+
+	updated, _ = m.Update(keyMsg("b"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("expected Tree after supported-view transition, got %v", m.focused)
+	}
+	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
+		t.Fatalf("supported-view transition changed Tree state: selected=%q/%q offset=%d/%d expanded=%v/%v search=%q/%q", m.tree.GetSelectedID(), selectedID, m.tree.GetViewportOffset(), beforeOffset, m.tree.roots[0].Expanded, beforeExpanded, m.tree.SearchQuery(), beforeSearch)
 	}
 }
 

@@ -2363,7 +2363,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// user state (selection + persisted expand/collapse) (bv-6n4c).
 		if m.focused == focusTree {
 			m.tree.BuildFromSnapshot(m.snapshot)
-			m.tree.SetSize(m.width, m.height-2)
+			m.tree.SetSize(m.mainContentWidth(), m.height-1)
 		}
 
 		// Refresh detail pane if visible
@@ -3956,7 +3956,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.isActionableView = false
 					m.isHistoryView = false
 					m.rebuildRepositoryTree()
-					m.tree.SetSize(m.width, m.height-2)
+					m.tree.SetSize(m.mainContentWidth(), m.height-1)
 					m.focused = focusTree
 				}
 				return m, nil
@@ -5654,7 +5654,9 @@ func (m Model) View() string {
 	} else if m.focused == focusTree {
 		// Hierarchical tree view (bv-gllx)
 		m.tree.SetSize(m.mainContentWidth(), m.height-1)
-		body = m.tree.View()
+		// Tree rows have natural widths, so fill the reserved body column before
+		// appending the sidebar. Other full-screen views already do this internally.
+		body = m.theme.Renderer.NewStyle().Width(m.mainContentWidth()).Render(m.tree.View())
 	} else if m.isGraphView {
 		body = m.graphView.View(m.mainContentWidth(), m.height-1)
 	} else if m.isBoardView {
@@ -8020,6 +8022,7 @@ func (m *Model) applyContentSizing() {
 	// when it is open (#168) so the body never overflows once the sidebar is
 	// appended in View().
 	contentWidth := m.mainContentWidth()
+	m.tree.SetSize(contentWidth, m.height-1)
 
 	if m.isSplitView {
 		// Calculate dimensions accounting for 2 panels with borders(2)+padding(2) = 4 overhead each

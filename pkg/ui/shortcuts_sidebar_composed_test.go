@@ -120,6 +120,13 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 				m.focused = focusHistory
 			},
 		},
+		{
+			name: "tree",
+			setup: func(m *Model) {
+				m.tree.Build(m.repositoryIssues)
+				m.focused = focusTree
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -139,6 +146,11 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 
 			wantWidth := m.mainContentWidth()
 			switch tc.name {
+			case "tree":
+				treeBody := m.theme.Renderer.NewStyle().Width(wantWidth).Render(m.tree.View())
+				if got := maxLineWidth(treeBody); got != wantWidth {
+					t.Fatalf("Tree width = %d, want reserved content width %d", got, wantWidth)
+				}
 			case "insights":
 				if m.insightsPanel.width != wantWidth {
 					t.Fatalf("Insights width = %d, want reserved content width %d", m.insightsPanel.width, wantWidth)

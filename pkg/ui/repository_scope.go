@@ -912,12 +912,31 @@ func (m *Model) rebuildRepositoryTree() {
 	if selected := m.tree.SelectedIssue(); selected != nil {
 		selectedID = selected.ID
 	}
+	expanded := make(map[string]bool)
+	for id, node := range m.tree.issueMap {
+		if node != nil {
+			expanded[id] = node.Expanded
+		}
+	}
+	searchQuery := m.tree.searchQuery
+	searchActive := m.tree.searchActive
+	viewportOffset := m.tree.viewportOffset
 	if m.usesHubScope() {
 		m.tree.BuildProjected(m.repositoryIssues, m.issueMap)
 	} else {
 		m.tree.Build(m.repositoryIssues)
 	}
+	for id, isExpanded := range expanded {
+		if node := m.tree.issueMap[id]; node != nil {
+			node.Expanded = isExpanded
+		}
+	}
+	m.tree.searchQuery = searchQuery
+	m.tree.searchActive = searchActive
+	m.tree.rebuildFlatList()
+	m.tree.viewportOffset = viewportOffset
 	if selectedID == "" {
+		m.tree.ensureCursorVisible()
 		return
 	}
 	for i, node := range m.tree.flatList {
