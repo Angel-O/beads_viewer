@@ -771,11 +771,11 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 
 	updated, _ = m.Update(keyMsg("/"))
 	m = updated.(Model)
-	for _, key := range []string{"?", "`", ";", "E"} {
+	for _, key := range []string{"?", "`", ";", "E", "v"} {
 		updated, _ = m.Update(keyMsg(key))
 		m = updated.(Model)
 	}
-	if m.focused != focusTree || m.tree.SearchQuery() != "?`;E" {
+	if m.focused != focusTree || m.tree.SearchQuery() != "?`;Ev" {
 		t.Fatalf("printable shortcuts escaped Tree search: focus=%v query=%q", m.focused, m.tree.SearchQuery())
 	}
 	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
@@ -792,8 +792,13 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 	if m.tree.IsSearchActive() {
 		t.Fatal("Enter should select the current result and finish Tree input")
 	}
-	if got := m.tree.SearchQuery(); got != "?`;E" {
+	if got := m.tree.SearchQuery(); got != "?`;Ev" {
 		t.Fatalf("Enter changed Tree search query to %q", got)
+	}
+	updated, _ = m.Update(keyMsg("v"))
+	m = updated.(Model)
+	if !m.tree.searchSubtrees {
+		t.Fatal("submitted Tree search did not toggle to subtrees")
 	}
 	updated, _ = m.Update(keyMsg("esc"))
 	m = updated.(Model)
@@ -804,6 +809,31 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 	m = updated.(Model)
 	if m.focused != focusList {
 		t.Fatalf("second Escape should exit Tree, got focus=%v", m.focused)
+	}
+}
+
+func TestTreeSearchFooterScopeGuidanceFollowsInputState(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(2), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("Issue"))
+	m = updated.(Model)
+
+	editingFooter := ansi.Strip(m.renderFooter())
+	if !strings.Contains(editingFooter, "Enter:done") || strings.Contains(editingFooter, "v:subtrees") {
+		t.Fatalf("editing Tree footer has incorrect scope guidance: %q", editingFooter)
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	submittedFooter := ansi.Strip(m.renderFooter())
+	if !strings.Contains(submittedFooter, "minimal • v:subtrees") {
+		t.Fatalf("submitted Tree footer is missing early scope guidance: %q", submittedFooter)
+	}
+	if strings.Index(submittedFooter, "minimal • v:subtrees") > strings.Index(submittedFooter, "n/N:match") {
+		t.Fatalf("submitted Tree scope guidance appears too late: %q", submittedFooter)
 	}
 }
 
@@ -1098,6 +1128,7 @@ func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 		"/|tree|Search Tree":                   false,
 		"n|tree|Next search match":             false,
 		"N|tree|Previous search match":         false,
+		"v|tree|Toggle search scope":           false,
 		"E|tree|Exit Tree":                     false,
 		"esc|tree|Clear search or exit Tree":   false,
 	}

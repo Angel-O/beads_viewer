@@ -230,6 +230,7 @@ type TreeModel struct {
 	viewportOffset int                       // Index of first visible node (bv-r4ng)
 	searchQuery    string
 	searchActive   bool
+	searchSubtrees bool
 	searchMatches  []*IssueTreeNode
 
 	// Build state
@@ -594,14 +595,21 @@ func (t *TreeModel) renderHeader() string {
 		if len(t.searchMatches) > 0 {
 			position = fmt.Sprintf("%d/%d", t.SearchCursorPos(), len(t.searchMatches))
 		}
-		return style.Render(t.fitSearchChrome(fmt.Sprintf("Tree View  /%s  [%s]", t.searchQuery, position)))
+		return style.Render(t.fitSearchChrome(fmt.Sprintf("Tree View  /%s  [%s] %s", t.searchQuery, position, t.searchScopeLabel())))
 	}
 	return style.Render(t.fitSearchChrome("Tree View"))
 }
 
 func (t *TreeModel) renderNoMatches() string {
 	return t.theme.Renderer.NewStyle().Foreground(t.theme.Muted).
-		Render(t.fitSearchChrome(fmt.Sprintf("No Tree matches for %q. Escape clears search.", t.searchQuery)))
+		Render(t.fitSearchChrome(fmt.Sprintf("No Tree matches for %q [%s]. Escape clears search.", t.searchQuery, t.searchScopeLabel())))
+}
+
+func (t *TreeModel) searchScopeLabel() string {
+	if t.searchSubtrees {
+		return "subtrees"
+	}
+	return "minimal"
 }
 
 func (t *TreeModel) fitSearchChrome(text string) string {
@@ -1125,11 +1133,32 @@ func (t *TreeModel) FinishSearch() {
 	t.searchActive = false
 }
 
+// ToggleSearchScope switches between matching rows only and full matched subtrees.
+func (t *TreeModel) ToggleSearchScope() {
+	if t.searchActive || strings.TrimSpace(t.searchQuery) == "" {
+		return
+	}
+
+	selectedID := t.GetSelectedID()
+	t.searchSubtrees = !t.searchSubtrees
+	t.rebuildFlatList()
+	if selectedID != "" && t.SelectByID(selectedID) {
+		t.ensureCursorVisible()
+		return
+	}
+	if len(t.searchMatches) > 0 {
+		t.selectSearchMatch(0)
+	} else {
+		t.ensureCursorVisible()
+	}
+}
+
 // ClearSearch clears the query and restores the user's normal expansion view.
 func (t *TreeModel) ClearSearch() {
 	selectedID := t.GetSelectedID()
 	t.searchActive = false
 	t.searchQuery = ""
+	t.searchSubtrees = false
 	t.rebuildFlatList()
 	if selectedID != "" {
 		t.SelectByID(selectedID)
@@ -1155,6 +1184,9 @@ func (t *TreeModel) UpdateSearchInput(msg tea.KeyMsg) {
 		return
 	}
 	t.searchQuery = query
+	if strings.TrimSpace(query) == "" {
+		t.searchSubtrees = false
+	}
 	t.rebuildFlatList()
 	if len(t.searchMatches) > 0 {
 		t.selectSearchMatch(0)
@@ -1233,8 +1265,9 @@ func (t *TreeModel) rebuildFlatList() {
 	t.flatList = t.flatList[:0]
 	t.searchMatches = t.searchMatches[:0]
 	if strings.TrimSpace(t.searchQuery) != "" {
+		seenIDs := make(map[string]bool)
 		for _, root := range t.roots {
-			t.flatList = append(t.flatList, t.searchBranch(root)...)
+			t.flatList = append(t.flatList, t.searchBranch(root, seenIDs)...)
 		}
 	} else {
 		for _, root := range t.roots {
@@ -1253,24 +1286,62 @@ func (t *TreeModel) rebuildFlatList() {
 // searchBranch returns matching nodes plus the ancestors needed to retain
 // hierarchy context. It deliberately ignores Expanded without modifying it,
 // so clearing search restores the exact expansion choices the user had made.
-func (t *TreeModel) searchBranch(node *IssueTreeNode) []*IssueTreeNode {
+func (t *TreeModel) searchBranch(node *IssueTreeNode, seenIDs map[string]bool) []*IssueTreeNode {
 	if node == nil || node.Issue == nil {
 		return nil
 	}
-	query := strings.ToLower(strings.TrimSpace(t.searchQuery))
-	matches := strings.Contains(strings.ToLower(node.Issue.ID), query) ||
-		strings.Contains(strings.ToLower(node.Issue.Title), query)
+	if seenIDs[node.Issue.ID] {
+		return nil
+	}
+	matches := t.searchNodeMatches(node)
 	if matches {
+		seenIDs[node.Issue.ID] = true
 		t.searchMatches = append(t.searchMatches, node)
 	}
+	if matches && t.searchSubtrees {
+		rows := []*IssueTreeNode{node}
+		for _, child := range node.Children {
+			rows = append(rows, t.appendSearchSubtree(child, seenIDs)...)
+		}
+		return rows
+	}
+
 	var descendants []*IssueTreeNode
 	for _, child := range node.Children {
-		descendants = append(descendants, t.searchBranch(child)...)
+		descendants = append(descendants, t.searchBranch(child, seenIDs)...)
 	}
 	if !matches && len(descendants) == 0 {
 		return nil
 	}
+	seenIDs[node.Issue.ID] = true
 	return append([]*IssueTreeNode{node}, descendants...)
+}
+
+func (t *TreeModel) searchNodeMatches(node *IssueTreeNode) bool {
+	if node == nil || node.Issue == nil {
+		return false
+	}
+	query := strings.ToLower(strings.TrimSpace(t.searchQuery))
+	return strings.Contains(strings.ToLower(node.Issue.ID), query) ||
+		strings.Contains(strings.ToLower(node.Issue.Title), query)
+}
+
+func (t *TreeModel) appendSearchSubtree(node *IssueTreeNode, seenIDs map[string]bool) []*IssueTreeNode {
+	if node == nil || node.Issue == nil {
+		return nil
+	}
+	if seenIDs[node.Issue.ID] {
+		return nil
+	}
+	seenIDs[node.Issue.ID] = true
+	if t.searchNodeMatches(node) {
+		t.searchMatches = append(t.searchMatches, node)
+	}
+	rows := []*IssueTreeNode{node}
+	for _, child := range node.Children {
+		rows = append(rows, t.appendSearchSubtree(child, seenIDs)...)
+	}
+	return rows
 }
 
 // appendVisible adds a node and its visible descendants to flatList.
