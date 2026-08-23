@@ -8386,10 +8386,14 @@ func (m Model) handleLeftClick(x, y int) Model {
 		// 1-cell rounded border on each side => listInnerWidth+4 total.
 		listPanelWidth := m.list.Width() + 4
 		if x < listPanelWidth {
+			wasInsightsDetail := m.insightsDetailID != ""
 			m.insightsDetailID = ""
 			m.focused = focusList
 			// Lines above the first row: border + header + list filter bar.
 			selectListRow(y - m.listChromeLines())
+			if wasInsightsDetail {
+				m.updateViewportContent()
+			}
 		} else {
 			m.focused = focusDetail
 		}

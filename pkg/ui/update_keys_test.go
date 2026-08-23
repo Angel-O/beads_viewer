@@ -560,6 +560,16 @@ func TestInsightsDirectDetailClearsOnSplitListInteraction(t *testing.T) {
 	if m.focused != focusList || m.insightsDetailID != "" {
 		t.Fatalf("list click leaked direct detail: focus=%v id=%q", m.focused, m.insightsDetailID)
 	}
+
+	m.insightsDetailID = "active"
+	m.focused = focusDetail
+	m = m.handleLeftClick(5, 1) // Header chrome, not a selectable row.
+	if m.focused != focusList || m.insightsDetailID != "" {
+		t.Fatalf("header click leaked direct detail: focus=%v id=%q", m.focused, m.insightsDetailID)
+	}
+	if !strings.Contains(m.viewport.View(), "Closed") {
+		t.Fatalf("header click left stale direct detail visible: %s", m.viewport.View())
+	}
 }
 
 func TestInsightsDirectDetailClearsWhenIssueClosesOnRefresh(t *testing.T) {
