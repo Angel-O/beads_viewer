@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -889,6 +890,40 @@ func TestKeyDispatch_TreeShortcutsSidebarPreservesState(t *testing.T) {
 	}
 	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
 		t.Fatalf("supported-view transition changed Tree state: selected=%q/%q offset=%d/%d expanded=%v/%v search=%q/%q", m.tree.GetSelectedID(), selectedID, m.tree.GetViewportOffset(), beforeOffset, m.tree.roots[0].Expanded, beforeExpanded, m.tree.SearchQuery(), beforeSearch)
+	}
+}
+
+func TestKeyDispatch_QuitConfirmWithTreeSidebarKeepsModalAndStateCoherent(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(40), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if !m.showQuitConfirm || !m.showShortcutsSidebar {
+		t.Fatalf("expected quit confirmation with sidebar state retained: quit=%v sidebar=%v", m.showQuitConfirm, m.showShortcutsSidebar)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "Shortcuts") {
+		t.Fatal("quit confirmation appended the underlying shortcuts sidebar")
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Quit bv?") {
+		t.Fatal("quit confirmation is missing from the composed view")
+	}
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	if m.showQuitConfirm || !m.showShortcutsSidebar || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset {
+		t.Fatalf("cancel changed prompt/sidebar/Tree state: quit=%v sidebar=%v selected=%q offset=%d", m.showQuitConfirm, m.showShortcutsSidebar, m.tree.GetSelectedID(), m.tree.GetViewportOffset())
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Shortcuts") {
+		t.Fatal("cancel did not restore the underlying shortcuts sidebar")
 	}
 }
 

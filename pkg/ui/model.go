@@ -5682,7 +5682,7 @@ func (m Model) View() string {
 	}
 
 	// Add shortcuts sidebar if enabled (bv-3qi5)
-	if m.showShortcutsSidebar {
+	if m.showShortcutsSidebar && !m.showQuitConfirm {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
 		m.shortcutsSidebar.SetFocus(m.focused)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
