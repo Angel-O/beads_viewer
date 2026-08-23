@@ -5707,11 +5707,8 @@ func (m Model) View() string {
 // extra terminal lines, breaking Tree's one-node-per-row viewport math.
 func (m Model) renderTreeBody() string {
 	width := m.mainContentWidth()
-	lines := strings.Split(m.tree.View(), "\n")
-	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, width, "…")
-	}
-	return m.theme.Renderer.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
+	tree := m.theme.Renderer.NewStyle().MaxWidth(width).Render(m.tree.View())
+	return m.theme.Renderer.PlaceHorizontal(width, lipgloss.Left, tree)
 }
 
 func (m Model) renderQuitConfirm() string {
