@@ -1125,10 +1125,15 @@ func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{
 		"E|list,detail|Enter Tree (uppercase)": false,
+		"o|list,board,tree|Open issues only":   false,
+		"c|list,board,tree|Closed issues only": false,
+		"r|list,board,tree|Ready (unblocked)":  false,
 		"/|tree|Search Tree":                   false,
 		"n|tree|Next search match":             false,
 		"N|tree|Previous search match":         false,
 		"v|tree|Toggle search scope":           false,
+		"+|tree|Expand all":                    false,
+		"-|tree|Collapse all":                  false,
 		"E|tree|Exit Tree":                     false,
 		"esc|tree|Clear search or exit Tree":   false,
 	}

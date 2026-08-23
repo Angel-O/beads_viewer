@@ -232,7 +232,7 @@ func TestContextHelpTreeDocumentsExactEntryAndExitKeys(t *testing.T) {
 		t.Fatal("List help must document uppercase E Tree entry")
 	}
 	tree := GetContextHelp(ContextTree)
-	for _, expected := range []string{"E / Escape  Exit Tree (uppercase E)", "Enter     Toggle expansion; select during search", "Matches retain their hierarchy ancestors"} {
+	for _, expected := range []string{"E / Escape  Exit Tree (uppercase E)", "Enter     Toggle expansion; select during search", "+/-       Expand/collapse all", "o/c/r     Open/closed/ready status filter", "Matches retain their hierarchy ancestors"} {
 		if !strings.Contains(tree, expected) {
 			t.Errorf("Tree help missing %q", expected)
 		}

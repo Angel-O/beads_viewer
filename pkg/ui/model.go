@@ -3854,7 +3854,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
-					"G", "o", "O", "E", "esc", "/", "n", "N", "v",
+					"G", "+", "-", "E", "esc", "/", "n", "N", "v", "o", "c", "r",
 					"enter", " ", "tab",
 					"ctrl+d", "ctrl+u", "pgup", "pgdown":
 					// Cancel any pending combo when pressing other keys
@@ -4617,10 +4617,16 @@ func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
 		m.tree.ExpandOrMoveToChild()
 	case "G":
 		m.tree.JumpToBottom()
-	case "o":
+	case "+":
 		m.tree.ExpandAll()
-	case "O":
+	case "-":
 		m.tree.CollapseAll()
+	case "o":
+		m.toggleStatusFilter("open")
+	case "c":
+		m.toggleStatusFilter("closed")
+	case "r":
+		m.toggleStatusFilter("ready")
 	case "ctrl+d", "pgdown":
 		m.tree.PageDown()
 	case "ctrl+u", "pgup":
@@ -6103,6 +6109,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"I", "Exact issue-type picker"},
 		{"s", "Cycle sort"},
 		{"S", "Triage sort"},
+		{"+/-", "Tree expand/collapse all"},
 	}
 
 	graphSection := []struct{ key, desc string }{
@@ -6929,7 +6936,7 @@ func (m *Model) renderFooter() string {
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).
 				Padding(0, 1).
-				Render("j/k:move • h/l:fold • /:search • E:exit • ?:help")
+				Render("j/k:move • h/l:fold • o/c/r:filter • +/-:all • /:search • E:exit • ?:help")
 		}
 	}
 
@@ -7677,6 +7684,9 @@ func (m *Model) applyFilter() {
 		m.list.Select(0)
 	}
 	m.updateViewportContent()
+	if m.focused == focusTree {
+		m.rebuildRepositoryTree()
+	}
 }
 
 // refreshListItemsPhase2 updates visible items with Phase 2 scores and triage data
@@ -8035,6 +8045,9 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 		m.list.Select(0)
 	}
 	m.updateViewportContent()
+	if m.focused == focusTree {
+		m.rebuildRepositoryTree()
+	}
 }
 
 // shortcutsSidebarGap is the number of extra columns the rendered shortcuts

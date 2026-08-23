@@ -1378,6 +1378,7 @@ func (t *TreeModel) RootCount() int {
 // the viewport scrolls just enough to keep the cursor visible.
 func (t *TreeModel) ensureCursorVisible() {
 	if len(t.flatList) == 0 {
+		t.viewportOffset = 0
 		return
 	}
 

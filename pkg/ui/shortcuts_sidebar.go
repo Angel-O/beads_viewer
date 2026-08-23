@@ -115,7 +115,7 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryOrder := []string{} // Preserve order of first appearance
 
 	for _, b := range bindings {
-		if s.focusHint == focusTree && b.Category != "Tree" && b.Category != "Views" {
+		if s.focusHint == focusTree && b.Category != "Tree" && b.Category != "Views" && b.Category != "Filters" {
 			continue
 		}
 		cat := b.Category
@@ -236,6 +236,21 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 				{"y", "Copy ID"},
 				{"^j/^k", "Scroll detail"},
 				{"Enter", "Full view"},
+			},
+		},
+		{
+			title:    "Tree",
+			contexts: []string{"tree"},
+			items: []shortcutItem{
+				{"j/k", "Move ↓/↑"},
+				{"h/l", "Fold/visit parent/child"},
+				{"Enter/Space", "Toggle expansion"},
+				{"+/-", "Expand/collapse all"},
+				{"o/c/r", "Open/closed/ready"},
+				{"/", "Search"},
+				{"n/N", "Next/prev match"},
+				{"v", "Search scope"},
+				{"E", "Exit Tree"},
 			},
 		},
 		{

@@ -310,9 +310,9 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"p", "Priority hints", "Views", "list,detail"},
 
 		// Filters
-		{"o", "Open issues only", "Filters", "list"},
-		{"c", "Closed issues only", "Filters", "list"},
-		{"r", "Ready (unblocked)", "Filters", "list"},
+		{"o", "Open issues only", "Filters", "list,board,tree"},
+		{"c", "Closed issues only", "Filters", "list,board,tree"},
+		{"r", "Ready (unblocked)", "Filters", "list,board,tree"},
 		{"l", "Label picker", "Filters", "list"},
 		{"I", "Exact issue-type picker", "Filters", "list"},
 		{"w", "Repository scope picker", "Filters", "list"},
@@ -348,8 +348,8 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"n", "Next search match", "Tree", "tree"},
 		{"N", "Previous search match", "Tree", "tree"},
 		{"v", "Toggle search scope", "Tree", "tree"},
-		{"o", "Expand all", "Tree", "tree"},
-		{"O", "Collapse all", "Tree", "tree"},
+		{"+", "Expand all", "Tree", "tree"},
+		{"-", "Collapse all", "Tree", "tree"},
 		{"E", "Exit Tree", "Tree", "tree"},
 		{"esc", "Clear search or exit Tree", "Tree", "tree"},
 
