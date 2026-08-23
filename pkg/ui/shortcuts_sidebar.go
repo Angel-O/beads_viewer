@@ -204,6 +204,8 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			items: []shortcutItem{
 				{"h/l", "Switch panel"},
 				{"j/k", "Select item"},
+				{"o", "Active work"},
+				{"r", "Ready-only"},
 				{"^j/^k", "Scroll detail"},
 				{"e", "Explanations"},
 				{"x", "Calc proof"},

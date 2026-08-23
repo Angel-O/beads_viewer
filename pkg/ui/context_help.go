@@ -205,6 +205,10 @@ const contextHelpInsights = `## Insights Panel
   Ctrl+j/k  Scroll detail section
   Tab       Next panel
 
+**Filtering**
+  o         Active work (default)
+  r         Ready-only; toggle off for active work
+
 **Heatmap** (Priority × Depth grid)
   m         Toggle heatmap view
   Arrows    Navigate cells
@@ -220,7 +224,7 @@ const contextHelpInsights = `## Insights Panel
 • Priority inversions: Low blocking high
 
   Enter     View selected issue
-  Esc       Return to list`
+  Esc       Return to previous view`
 
 const contextHelpHistory = `## History View
 
@@ -250,7 +254,7 @@ const contextHelpDetail = `## Detail View
 
 **Navigation**
   j/k       Scroll content
-  Esc       Return to list
+  Esc       Return to previous view
   Tab       Switch to split view
 
 **Actions (from list view)**

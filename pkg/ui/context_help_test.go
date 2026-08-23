@@ -239,6 +239,18 @@ func TestContextHelpTreeDocumentsExactEntryAndExitKeys(t *testing.T) {
 	}
 }
 
+func TestContextHelpInsightsDocumentsOnlyActiveStatusControls(t *testing.T) {
+	content := GetContextHelp(ContextInsights)
+	for _, expected := range []string{"o         Active work (default)", "r         Ready-only; toggle off for active work"} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("Insights help missing %q", expected)
+		}
+	}
+	if strings.Contains(content, "c         ") {
+		t.Fatal("Insights help advertises a closed status control")
+	}
+}
+
 func TestContextHelpAttentionMatchesRuntime(t *testing.T) {
 	content := GetContextHelp(ContextAttention)
 	for _, expected := range []string{"Ranked Labels", "Dependency centrality", "PageRank contribution", "Stale-to-open issue ratio", "Downstream block impact", "Recent closure velocity", "lower increases attention", "1-9", "Filter List by ranked label", "filter persists across views", "] / F4", "Esc / q"} {

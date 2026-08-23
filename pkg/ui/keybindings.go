@@ -363,6 +363,8 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// Insights View
 		{"h", "Previous panel", "Insights", "insights"},
 		{"l", "Next panel", "Insights", "insights"},
+		{"o", "Active work", "Filters", "insights"},
+		{"r", "Ready-only toggle", "Filters", "insights"},
 		{"e", "Toggle explanations", "Insights", "insights"},
 		{"x", "Calculation proof", "Insights", "insights"},
 		{"m", "Heatmap toggle", "Insights", "insights"},

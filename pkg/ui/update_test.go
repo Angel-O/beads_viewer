@@ -243,6 +243,45 @@ func TestInsightsItemNavigationWhileHeatmapEnabled(t *testing.T) {
 	}
 }
 
+func TestInsightsHeatmapDrillRefreshesWithScoreAndCellChanges(t *testing.T) {
+	stats := analysis.NewGraphStatsForTest(
+		nil, nil, nil, nil, nil,
+		map[string]float64{"A": 0, "B": 5},
+		nil, nil, nil, 0, nil,
+	)
+	m := NewInsightsModel(analysis.Insights{Stats: stats}, map[string]*model.Issue{
+		"A": {ID: "A", Title: "A", Status: model.StatusOpen},
+		"B": {ID: "B", Title: "B", Status: model.StatusOpen},
+	}, DefaultTheme(nil))
+	m.SetActiveIssueIDs(map[string]bool{"A": true, "B": true})
+	m.SetTopPicks([]analysis.TopPick{{ID: "A", Score: 0.6}, {ID: "B", Score: 0.8}})
+	m.ToggleHeatmap()
+	m.heatmapCol = 3
+	m.HeatmapEnter()
+	if got := m.HeatmapSelectedIssueID(); got != "A" {
+		t.Fatalf("initial drill issue = %q, want A", got)
+	}
+
+	// Moving A to another score bucket invalidates the selected cell and exits
+	// drill-down rather than retaining the old cell's issue list.
+	m.SetTopPicks([]analysis.TopPick{{ID: "A", Score: 0.9}, {ID: "B", Score: 0.8}})
+	if m.IsHeatmapDrillDown() || m.HeatmapSelectedIssueID() != "" {
+		t.Fatalf("stale drill-down survived score change: drill=%v issue=%q", m.IsHeatmapDrillDown(), m.HeatmapSelectedIssueID())
+	}
+	m.HeatmapMoveRight()
+	m.HeatmapEnter()
+	if got := m.HeatmapSelectedIssueID(); got != "A" {
+		t.Fatalf("moved-cell drill issue = %q, want A", got)
+	}
+
+	// A same-bucket score update repopulates the active drill list and keeps its
+	// index valid.
+	m.SetTopPicks([]analysis.TopPick{{ID: "A", Score: 0.95}, {ID: "B", Score: 0.8}})
+	if !m.IsHeatmapDrillDown() || m.HeatmapSelectedIssueID() != "A" {
+		t.Fatalf("same-cell drill list was not refreshed: drill=%v issue=%q", m.IsHeatmapDrillDown(), m.HeatmapSelectedIssueID())
+	}
+}
+
 func TestUpdateFileChangedReloadsSelection(t *testing.T) {
 	data := `{"id":"ONE","title":"One","status":"open"}`
 	tmp := t.TempDir()

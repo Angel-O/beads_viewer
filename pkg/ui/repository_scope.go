@@ -661,15 +661,126 @@ func projectInsights(ins analysis.Insights, ids map[string]bool) analysis.Insigh
 	ins.Orphans = projectStrings(ins.Orphans, ids)
 	cycles := make([][]string, 0, len(ins.Cycles))
 	for _, cycle := range ins.Cycles {
+		allowed := true
 		for _, id := range cycle {
-			if ids[id] {
-				cycles = append(cycles, cycle)
+			if !ids[id] {
+				allowed = false
 				break
 			}
+		}
+		if allowed && len(cycle) > 0 {
+			cycles = append(cycles, cycle)
 		}
 	}
 	ins.Cycles = cycles
 	return ins
+}
+
+func projectTopPicks(items []analysis.TopPick, ids map[string]bool) []analysis.TopPick {
+	projected := make([]analysis.TopPick, 0, len(items))
+	for _, item := range items {
+		if ids[item.ID] {
+			projected = append(projected, item)
+		}
+	}
+	return projected
+}
+
+func projectRecommendations(items []analysis.Recommendation, ids map[string]bool) []analysis.Recommendation {
+	projected := make([]analysis.Recommendation, 0, len(items))
+	for _, item := range items {
+		if !ids[item.ID] {
+			continue
+		}
+		item.UnblocksIDs = projectStrings(item.UnblocksIDs, ids)
+		item.BlockedBy = projectStrings(item.BlockedBy, ids)
+		projected = append(projected, item)
+	}
+	return projected
+}
+
+func projectQuickWins(items []analysis.QuickWin, ids map[string]bool) []analysis.QuickWin {
+	projected := make([]analysis.QuickWin, 0, len(items))
+	for _, item := range items {
+		if ids[item.ID] {
+			item.UnblocksIDs = projectStrings(item.UnblocksIDs, ids)
+			projected = append(projected, item)
+		}
+	}
+	return projected
+}
+
+func projectBlockers(items []analysis.BlockerItem, ids map[string]bool) []analysis.BlockerItem {
+	projected := make([]analysis.BlockerItem, 0, len(items))
+	for _, item := range items {
+		if ids[item.ID] {
+			item.UnblocksIDs = projectStrings(item.UnblocksIDs, ids)
+			item.BlockedBy = projectStrings(item.BlockedBy, ids)
+			projected = append(projected, item)
+		}
+	}
+	return projected
+}
+
+func projectTrackRecommendationGroups(groups []analysis.TrackRecommendationGroup, ids map[string]bool) []analysis.TrackRecommendationGroup {
+	projected := make([]analysis.TrackRecommendationGroup, 0, len(groups))
+	for _, group := range groups {
+		group.Recommendations = projectRecommendations(group.Recommendations, ids)
+		if group.TopPick != nil && ids[group.TopPick.ID] {
+			topPick := *group.TopPick
+			group.TopPick = &topPick
+		} else {
+			group.TopPick = nil
+		}
+		projected = append(projected, group)
+	}
+	return projected
+}
+
+func projectLabelRecommendationGroups(groups []analysis.LabelRecommendationGroup, ids map[string]bool) []analysis.LabelRecommendationGroup {
+	projected := make([]analysis.LabelRecommendationGroup, 0, len(groups))
+	for _, group := range groups {
+		group.Recommendations = projectRecommendations(group.Recommendations, ids)
+		if group.TopPick != nil && ids[group.TopPick.ID] {
+			topPick := *group.TopPick
+			group.TopPick = &topPick
+		} else {
+			group.TopPick = nil
+		}
+		projected = append(projected, group)
+	}
+	return projected
+}
+
+func projectTriageResult(triage analysis.TriageResult, ids map[string]bool) analysis.TriageResult {
+	triage.Recommendations = projectRecommendations(triage.Recommendations, ids)
+	triage.QuickWins = projectQuickWins(triage.QuickWins, ids)
+	triage.BlockersToClear = projectBlockers(triage.BlockersToClear, ids)
+	triage.QuickRef.TopPicks = projectTopPicks(triage.QuickRef.TopPicks, ids)
+	triage.RecommendationsByTrack = projectTrackRecommendationGroups(triage.RecommendationsByTrack, ids)
+	triage.RecommendationsByLabel = projectLabelRecommendationGroups(triage.RecommendationsByLabel, ids)
+	return triage
+}
+
+func (m *Model) insightsIssueIDs() map[string]bool {
+	ids := make(map[string]bool)
+	issues := m.repositoryIssues
+	if issues == nil {
+		issues = m.issues
+	}
+	for _, issue := range issues {
+		if m.repositoryIssueIDs != nil && !m.repositoryIssueIDs[issue.ID] {
+			continue
+		}
+		if isClosedLikeStatus(issue.Status) {
+			continue
+		}
+		if m.insightsStatusFilter == "ready" && !m.matchesFilter(issue, "ready") {
+			continue
+		}
+		ids[issue.ID] = true
+	}
+	return ids
 }
 
 func projectLabelPageRank(result analysis.LabelPageRankResult, ids map[string]bool) analysis.LabelPageRankResult {
@@ -808,19 +919,11 @@ func (m *Model) scopedTriage() analysis.TriageResult {
 		QuickWinN: len(m.issues),
 		BlockerN:  len(m.issues),
 	}, time.Now())
-	triage.Recommendations = filterRecommendations(triage.Recommendations, m.repositoryIssueIDs)
-	parentsWithOpenChildren := make(map[string]bool)
-	for _, issue := range m.issues {
-		if isClosedLikeStatus(issue.Status) {
-			continue
-		}
-		for _, dependency := range issue.Dependencies {
-			if dependency != nil && dependency.Type == model.DepParentChild {
-				parentsWithOpenChildren[dependency.DependsOnID] = true
-			}
-		}
-	}
-	triage.QuickRef.TopPicks = scopedTopPicks(triage.Recommendations, parentsWithOpenChildren, 3)
+	insightsIDs := m.insightsIssueIDs()
+	parentsWithOpenChildren := m.analyzer.ParentsWithOpenChildren()
+	globalTopPicks := scopedTopPicks(triage.Recommendations, parentsWithOpenChildren, insightsIDs, 3)
+	triage = projectTriageResult(triage, insightsIDs)
+	triage.QuickRef.TopPicks = projectTopPicks(globalTopPicks, insightsIDs)
 	if len(triage.Recommendations) > 10 {
 		triage.Recommendations = triage.Recommendations[:10]
 	}
@@ -853,9 +956,12 @@ func (m *Model) scopedTriage() analysis.TriageResult {
 	return triage
 }
 
-func scopedTopPicks(recommendations []analysis.Recommendation, parentsWithOpenChildren map[string]bool, limit int) []analysis.TopPick {
+func scopedTopPicks(recommendations []analysis.Recommendation, parentsWithOpenChildren, candidateIDs map[string]bool, limit int) []analysis.TopPick {
 	result := make([]analysis.TopPick, 0, limit)
 	for _, recommendation := range recommendations {
+		if !candidateIDs[recommendation.ID] {
+			continue
+		}
 		if recommendation.Status != string(model.StatusOpen) || recommendation.Type == string(model.TypeEpic) ||
 			recommendation.Assignee != "" || len(recommendation.BlockedBy) > 0 || parentsWithOpenChildren[recommendation.ID] {
 			continue
@@ -871,20 +977,11 @@ func scopedTopPicks(recommendations []analysis.Recommendation, parentsWithOpenCh
 	return result
 }
 
-func filterRecommendations(items []analysis.Recommendation, ids map[string]bool) []analysis.Recommendation {
-	result := make([]analysis.Recommendation, 0, len(items))
-	for _, item := range items {
-		if ids[item.ID] {
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
 func (m *Model) refreshRepositoryDerivedViews() {
 	if m.analyzer == nil || m.analysis == nil {
 		return
 	}
+	m.revalidateInsightsDetail(m.insightsIssueIDs())
 	if m.isActionableView {
 		plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.repositoryIssueIDs, m.repositoryIssues)
 		m.actionableView = NewActionableModel(plan, m.theme)
@@ -896,6 +993,8 @@ func (m *Model) refreshRepositoryDerivedViews() {
 	}
 	if m.focused == focusInsights && !m.showAttentionView {
 		m.rebuildInsightsPanel()
+	} else if !m.showAttentionView {
+		m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
 	}
 	if m.focused == focusLabelDashboard {
 		cfg := analysis.DefaultLabelHealthConfig()

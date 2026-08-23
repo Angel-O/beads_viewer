@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
@@ -468,6 +469,131 @@ func TestAttentionViewToggleCloseFromSplitView(t *testing.T) {
 				t.Fatalf("expected split view after closing with %s, got %q", tt.name, view)
 			}
 		})
+	}
+}
+
+func TestAttentionViewConsumesInsightsStatusKeys(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.currentFilter = "label:keep"
+	m.statusFilter = "closed"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
+	m = updated.(Model)
+	if !m.showAttentionView || m.focused != focusInsights {
+		t.Fatalf("Attention did not open: shown=%v focus=%v", m.showAttentionView, m.focused)
+	}
+	for _, key := range []string{"o", "r", "c"} {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = updated.(Model)
+		if m.currentFilter != "label:keep" || m.statusFilter != "closed" || !m.showAttentionView || m.focused != focusInsights {
+			t.Fatalf("Attention key %q changed shared state: filter=%q status=%q shown=%v focus=%v", key, m.currentFilter, m.statusFilter, m.showAttentionView, m.focused)
+		}
+	}
+}
+
+func TestInsightsEnterShowsDirectDetailAndPreservesClosedFilter(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+	}, nil, "")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	if m.focused != focusInsights || m.currentFilter != "closed" {
+		t.Fatalf("closed-filter Insights entry failed: focus=%v filter=%q", m.focused, m.currentFilter)
+	}
+	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
+	m.insightsPanel.focusedPanel = PanelBottlenecks
+	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.focused != focusDetail || !m.showDetails || m.insightsDetailID != "active" {
+		t.Fatalf("Enter did not bind direct Insights detail: focus=%v details=%v id=%q", m.focused, m.showDetails, m.insightsDetailID)
+	}
+	if !strings.Contains(m.viewport.View(), "Active") {
+		t.Fatalf("direct Insights detail omitted active issue: %s", m.viewport.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.focused != focusInsights || m.showDetails || m.insightsDetailID != "" || m.currentFilter != "closed" {
+		t.Fatalf("leaving direct detail did not preserve Insights/filter state: focus=%v details=%v id=%q filter=%q", m.focused, m.showDetails, m.insightsDetailID, m.currentFilter)
+	}
+}
+
+func TestInsightsDirectDetailClearsOnSplitListInteraction(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+	}, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
+	m.insightsPanel.focusedPanel = PanelBottlenecks
+	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.isSplitView || m.insightsDetailID != "active" {
+		t.Fatalf("split direct detail setup failed: split=%v id=%q", m.isSplitView, m.insightsDetailID)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focused != focusList || m.insightsDetailID != "" {
+		t.Fatalf("Tab leaked direct detail into List: focus=%v id=%q", m.focused, m.insightsDetailID)
+	}
+
+	m.insightsDetailID = "active"
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+	if m.insightsDetailID != "" {
+		t.Fatal("List selection retained direct Insights detail binding")
+	}
+
+	m.insightsDetailID = "active"
+	m.focused = focusDetail
+	m = m.handleLeftClick(5, m.listChromeLines())
+	if m.focused != focusList || m.insightsDetailID != "" {
+		t.Fatalf("list click leaked direct detail: focus=%v id=%q", m.focused, m.insightsDetailID)
+	}
+
+	m.insightsDetailID = "active"
+	m.focused = focusDetail
+	m = m.handleLeftClick(5, 1) // Header chrome, not a selectable row.
+	if m.focused != focusList || m.insightsDetailID != "" {
+		t.Fatalf("header click leaked direct detail: focus=%v id=%q", m.focused, m.insightsDetailID)
+	}
+	if !strings.Contains(m.viewport.View(), "Closed") {
+		t.Fatalf("header click left stale direct detail visible: %s", m.viewport.View())
+	}
+}
+
+func TestInsightsDirectDetailClearsWhenIssueClosesOnRefresh(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+	}, nil, "")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
+	m.insightsPanel.focusedPanel = PanelBottlenecks
+	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.insightsDetailID != "active" {
+		t.Fatalf("direct detail setup failed: %q", m.insightsDetailID)
+	}
+
+	m.issues[0].Status = model.StatusClosed
+	m.refreshRepositoryCandidates()
+	if m.insightsDetailID != "" || m.showDetails || m.focused != focusInsights {
+		t.Fatalf("closed refresh retained direct detail: id=%q details=%v focus=%v", m.insightsDetailID, m.showDetails, m.focused)
 	}
 }
 

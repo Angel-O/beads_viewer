@@ -112,6 +112,28 @@ command name.
 - [ ] Verify `+` expands all Tree nodes and `-` collapses all, with matching
       footer, Help, and shortcuts-sidebar guidance.
 
+### Insights
+
+- [ ] Enter Insights from unfiltered, closed-only, and ready-only List/Board
+      states; verify Insights always defaults to broad active work and never
+      displays closed or tombstoned issues.
+- [ ] Inspect Bottlenecks, other metric panels, cycles, recommendations,
+      relationships, heat-map cells, drill-down, and detail content; verify no
+      closed, tombstoned, or repository-excluded issue is reachable.
+- [ ] Press `o` twice and verify OPEN toggles back to ACTIVE; press `r` twice
+      and verify READY toggles back to ACTIVE. Switch directly between OPEN and
+      READY, verify `c` does not enable a closed view, and confirm Help and
+      shortcut chrome advertise only `o/r`.
+- [ ] With a closed List filter preserved, open an active Insights issue using
+      Enter in narrow and split layouts, then return with Escape or interact
+      with List via Tab, keys, row clicks, header clicks, and empty padding;
+      verify no stale detail remains and List/Board filters are unchanged.
+- [ ] Refresh while a directly opened Insights issue closes, leaves scope, or
+      disappears; verify the view returns to Insights without stale detail.
+- [ ] Open the heat-map legend and verify `some` is gold/yellow, `many` is
+      orange, `hot` is bright pink, and `max` is dark red/burgundy, with clear
+      adjacent contrast and readable text.
+
 ### History
 
 - [ ] Press lowercase `h` to open History.
@@ -343,3 +365,4 @@ Record manual QA feedback here as it is reported.
 | Resolved | Tree search result scope | Submit a Tree query and press `v` | Users can toggle minimal hierarchy context or full matched subtrees while direct-match navigation remains stable | Tree search only showed direct matches and required ancestors | Manually verified and merged in PR #39 |
 | Resolved | Tree status-filter routing | Open Tree, then toggle `o`, `c`, and `r` | Tree rows and status chrome immediately reflect the same composable status filters as List and Board | Tree remained stale after status changes and `o` was consumed by Expand All | Manually verified and merged in PR #42 |
 | Resolved | List detail issue type | Open List details for issues with different classifications | Summary columns read ID, Type, Status, Priority, Assignee, Created, with canonical textual type values | Detail title showed only a type icon and the summary omitted textual classification | Manually verified and merged in PR #43 |
+| Resolved | Active-only Insights and heat-map contrast | Enter Insights from closed-filtered work and inspect metric panels and heat-map legend | Insights exposes only active work with independent `o/r` controls; high heat levels use distinct gold, orange, pink, and burgundy colors | Closed issues appeared in operational rankings and high-end heat colors were difficult to distinguish | Manually verified; approved for merge in PR #45 |

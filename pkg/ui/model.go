@@ -553,6 +553,7 @@ type Model struct {
 	isActionableView         bool
 	isHistoryView            bool
 	showDetails              bool
+	insightsDetailID         string // Direct detail binding for Insights items absent from the filtered List.
 	showHelp                 bool
 	helpScroll               int // Scroll offset for help overlay
 	showQuitConfirm          bool
@@ -594,6 +595,7 @@ type Model struct {
 	// Filter and sort state
 	currentFilter          string
 	statusFilter           string
+	insightsStatusFilter   string   // Insights-local: empty=active, ready=ready-only
 	sortMode               SortMode // bv-3ita: current sort mode
 	semanticSearchEnabled  bool
 	semanticIndexBuilding  bool
@@ -1415,6 +1417,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 
 	m.registerKeyBindings()
 	m.refreshRepositoryCandidates()
+	m.rebuildInsightsPanel()
 	return m
 }
 
@@ -1566,11 +1569,14 @@ func (m *Model) rebuildInsightsPanel() {
 	case m.analysis != nil:
 		ins = m.analysis.GenerateInsights(len(m.issues))
 	}
-	ins = projectInsights(ins, m.repositoryIssueIDs)
+	insightsIDs := m.insightsIssueIDs()
+	m.revalidateInsightsDetail(insightsIDs)
+	ins = projectInsights(ins, insightsIDs)
 
 	prev := m.insightsPanel
 	panel := NewInsightsModel(ins, m.issueMap, m.theme)
 	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
+	panel.SetActiveIssueIDs(insightsIDs)
 	panel.focusedPanel = prev.focusedPanel
 	panel.selectedIndex = prev.selectedIndex
 	panel.scrollOffset = prev.scrollOffset
@@ -1578,10 +1584,13 @@ func (m *Model) rebuildInsightsPanel() {
 	panel.heatmapCol = prev.heatmapCol
 	panel.heatmapDrill = prev.heatmapDrill
 	panel.heatmapDrillIdx = prev.heatmapDrillIdx
+	panel.heatmapIssues = projectStrings(prev.heatmapIssues, insightsIDs)
 	panel.showExplanations = prev.showExplanations
 	panel.showCalculation = prev.showCalculation
 	panel.showDetailPanel = prev.showDetailPanel
 	panel.showHeatmap = prev.showHeatmap
+	panel.clampSelection()
+	panel.updateDetailContent()
 
 	if m.analyzer != nil && m.analysis != nil {
 		triage := m.scopedTriage()
@@ -1913,7 +1922,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Update UI components with Phase 2 insights
-		m.insightsPanel.SetInsights(projectInsights(ins, m.repositoryIssueIDs))
+		m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
+		m.insightsPanel.SetInsights(ins)
 		m.insightsPanel.issueMap = m.issueMap
 		bodyHeight := m.height - 1
 		if bodyHeight < 5 {
@@ -2199,6 +2209,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.issueMap = msg.Snapshot.IssueMap
 		m.analyzer = msg.Snapshot.Analyzer
 		m.analysis = msg.Snapshot.Analysis
+		m.syncRepositoryCandidates()
+		m.revalidateInsightsDetail(m.insightsIssueIDs())
 		m.countOpen = msg.Snapshot.CountOpen
 		m.countReady = msg.Snapshot.CountReady
 		m.countBlocked = msg.Snapshot.CountBlocked
@@ -2241,6 +2253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Regenerate sub-views (Phase 1 data; Phase 2 will update via Phase2ReadyMsg)
+		m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
 		m.insightsPanel.SetInsights(m.snapshot.GetInsights())
 		m.insightsPanel.issueMap = m.issueMap
 		bodyHeight := m.height - 1
@@ -2672,6 +2685,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.issues {
 			m.issueMap[m.issues[i].ID] = &m.issues[i]
 		}
+		m.syncRepositoryCandidates()
+		m.revalidateInsightsDetail(m.insightsIssueIDs())
 		if profileRefresh {
 			recordTiming("issue_map", time.Since(mapStart))
 		}
@@ -2804,6 +2819,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.insightsPanel.recommendations = oldRecs
 			m.insightsPanel.recommendationMap = oldRecMap
 			m.insightsPanel.triageDataHash = oldHash
+			m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
 			bodyHeight := m.height - 1
 			if bodyHeight < 5 {
 				bodyHeight = 5
@@ -3136,6 +3152,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case s == "esc" || s == "q" || s == "d" || s == "]" || s == "f4":
 				m.closeAttentionView()
+				return m, nil
+			case s == "o" || s == "r" || s == "c":
 				return m, nil
 			case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
 				if len(m.attentionCache.Labels) == 0 {
@@ -3548,6 +3566,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "q":
 				// q closes current view or quits if at top level
+				if m.insightsDetailID != "" {
+					m.insightsDetailID = ""
+					m.showDetails = false
+					m.focused = focusInsights
+					return m, nil
+				}
 				if m.showDetails && !m.isSplitView {
 					m.showDetails = false
 					m.focused = focusList
@@ -3606,6 +3630,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "esc":
 				// Escape closes modals and goes back
+				if m.insightsDetailID != "" {
+					m.insightsDetailID = ""
+					m.showDetails = false
+					m.focused = focusInsights
+					return m, nil
+				}
 				if m.focused == focusTree {
 					if m.tree.SearchQuery() != "" {
 						m.tree.ClearSearch()
@@ -3683,6 +3713,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.focused == focusList {
 						m.focused = focusDetail
 					} else {
+						m.insightsDetailID = ""
 						m.focused = focusList
 					}
 				}
@@ -3741,13 +3772,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case focusInsights:
 				// Insights uses h/l for panel nav — intercept those.
 				// Let other view-toggle keys (b/g/a/E/f/etc.) fall through.
-				switch keyStr {
-				case "h", "l",
-					"j", "k", "up", "down", "left", "right",
-					"ctrl+j", "ctrl+k", "tab",
-					"e", "x", "m", "enter", "esc":
-					m = m.handleInsightsKeys(msg)
-					viewToggleHandled = true
+				if !m.showAttentionView {
+					switch keyStr {
+					case "h", "l",
+						"j", "k", "up", "down", "left", "right",
+						"ctrl+j", "ctrl+k", "tab",
+						"e", "x", "m", "enter", "esc", "o", "r", "c":
+						m = m.handleInsightsKeys(msg)
+						viewToggleHandled = true
+					}
 				}
 
 			case focusBoard:
@@ -4220,6 +4253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Scroll up based on current focus
 			switch m.focused {
 			case focusList:
+				m.insightsDetailID = ""
 				if m.list.Index() > 0 {
 					m.list.Select(m.list.Index() - 1)
 					// Sync detail panel in split view mode
@@ -4249,6 +4283,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Scroll down based on current focus
 			switch m.focused {
 			case focusList:
+				m.insightsDetailID = ""
 				if m.list.Index() < len(m.list.Items())-1 {
 					m.list.Select(m.list.Index() + 1)
 					// Sync detail panel in split view mode
@@ -4299,6 +4334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Only forward keyboard messages to list when list has focus (bv-hmkz fix)
 	// This prevents j/k keys in detail view from changing list selection
 	if m.focused == focusList {
+		m.insightsDetailID = ""
 		if _, isWindowSize := msg.(tea.WindowSizeMsg); !isWindowSize {
 			m.list, cmd = m.list.Update(msg)
 			cmds = append(cmds, cmd)
@@ -5362,6 +5398,12 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 			m.statusMsg = "Insights priority list enabled"
 		}
 		m.statusIsError = false
+	case "o":
+		m.toggleInsightsStatusFilter("open")
+	case "r":
+		m.toggleInsightsStatusFilter("ready")
+	case "c":
+		// Insights is always active-only; closed status has no view here.
 	case "enter":
 		if heatmapFocused && !m.insightsPanel.IsHeatmapDrillDown() {
 			m.insightsPanel.HeatmapEnter()
@@ -5373,12 +5415,26 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 			selectedID = m.insightsPanel.HeatmapSelectedIssueID()
 		}
 		if selectedID != "" {
+			found := false
 			for i, item := range m.list.Items() {
 				if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selectedID {
 					m.list.Select(i)
+					found = true
 					break
 				}
 			}
+			if !found {
+				if !m.insightsIssueIDs()[selectedID] {
+					return m
+				}
+				m.insightsDetailID = selectedID
+				m.showDetails = true
+				m.focused = focusDetail
+				m.viewport.GotoTop()
+				m.updateViewportContent()
+				return m
+			}
+			m.insightsDetailID = ""
 			m.focused = focusList
 			if m.isSplitView {
 				m.focused = focusDetail
@@ -5391,6 +5447,24 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 		}
 	}
 	return m
+}
+
+func (m *Model) toggleInsightsStatusFilter(filter string) {
+	switch filter {
+	case "open":
+		if m.insightsStatusFilter == "open" {
+			m.insightsStatusFilter = ""
+		} else {
+			m.insightsStatusFilter = "open"
+		}
+	case "ready":
+		if m.insightsStatusFilter == "ready" {
+			m.insightsStatusFilter = ""
+		} else {
+			m.insightsStatusFilter = "ready"
+		}
+	}
+	m.rebuildInsightsPanel()
 }
 
 // handleListKeys handles keyboard input when the list is focused
@@ -6802,6 +6876,18 @@ func (m *Model) renderFooter() string {
 	} else if m.showLabelDrilldown && m.labelDrilldownLabel != "" {
 		filterTxt = fmt.Sprintf("LABEL %s: enter filter • g graph • esc/q/d close", m.labelDrilldownLabel)
 		filterIcon = "🏷️"
+	} else if m.focused == focusInsights {
+		switch m.insightsStatusFilter {
+		case "open":
+			filterTxt = "OPEN"
+			filterIcon = "📂"
+		case "ready":
+			filterTxt = "READY"
+			filterIcon = "🚀"
+		default:
+			filterTxt = "ACTIVE"
+			filterIcon = "📂"
+		}
 	} else {
 		filter := m.currentFilter
 		if status := m.activeStatusFilter(); status != "" {
@@ -7263,7 +7349,7 @@ func (m *Model) renderFooter() string {
 	} else if m.focused == focusLabelDashboard {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+" close")
 	} else if m.focused == focusInsights {
-		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
+		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("o")+" active", keyStyle.Render("r")+" ready", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
 		keyHints = append(keyHints, keyStyle.Render("A")+" attention", keyStyle.Render("F")+" flow")
 	} else if m.focused == focusFlowMatrix {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("tab")+" panel", keyStyle.Render("⏎")+" drill", keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")
@@ -8308,9 +8394,14 @@ func (m Model) handleLeftClick(x, y int) Model {
 		// 1-cell rounded border on each side => listInnerWidth+4 total.
 		listPanelWidth := m.list.Width() + 4
 		if x < listPanelWidth {
+			wasInsightsDetail := m.insightsDetailID != ""
+			m.insightsDetailID = ""
 			m.focused = focusList
 			// Lines above the first row: border + header + list filter bar.
 			selectListRow(y - m.listChromeLines())
+			if wasInsightsDetail {
+				m.updateViewportContent()
+			}
 		} else {
 			m.focused = focusDetail
 		}
@@ -8327,20 +8418,44 @@ func (m Model) handleLeftClick(x, y int) Model {
 	return m
 }
 
-func (m *Model) updateViewportContent() {
-	selectedItem := m.list.SelectedItem()
-	if selectedItem == nil {
-		m.viewport.SetContent("No issues selected")
+func (m *Model) revalidateInsightsDetail(ids map[string]bool) {
+	if m.insightsDetailID == "" || ids[m.insightsDetailID] {
 		return
 	}
+	m.insightsDetailID = ""
+	m.showDetails = false
+	if m.focused == focusDetail {
+		m.focused = focusInsights
+	}
+}
 
-	// Safe type assertion
-	issueItem, ok := selectedItem.(IssueItem)
-	if !ok {
-		m.viewport.SetContent("Error: invalid item type")
-		return
+func (m *Model) updateViewportContent() {
+	var item model.Issue
+	var issueItem IssueItem
+	if m.insightsDetailID != "" {
+		issue := m.issueMap[m.insightsDetailID]
+		if issue == nil {
+			m.viewport.SetContent("No issues selected")
+			return
+		}
+		item = *issue
+		issueItem.Issue = item
+	} else {
+		selectedItem := m.list.SelectedItem()
+		if selectedItem == nil {
+			m.viewport.SetContent("No issues selected")
+			return
+		}
+
+		// Safe type assertion
+		var ok bool
+		issueItem, ok = selectedItem.(IssueItem)
+		if !ok {
+			m.viewport.SetContent("Error: invalid item type")
+			return
+		}
+		item = issueItem.Issue
 	}
-	item := issueItem.Issue
 
 	var sb strings.Builder
 
