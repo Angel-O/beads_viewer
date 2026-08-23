@@ -980,6 +980,38 @@ func TestKeyDispatch_HelpWithTreeSidebarKeepsOverlayAndStateCoherent(t *testing.
 	}
 }
 
+func TestKeyDispatch_HelpConsumesSidebarToggleWithoutBannerOrMutation(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(40), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	statusBeforeHelp := m.statusMsg
+	if !m.showShortcutsSidebar || !strings.HasPrefix(statusBeforeHelp, "Shortcuts sidebar:") {
+		t.Fatalf("sidebar setup failed: visible=%v status=%q", m.showShortcutsSidebar, statusBeforeHelp)
+	}
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showHelp || !m.showShortcutsSidebar || m.statusMsg != "" || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset {
+		t.Fatalf("Help semicolon changed hidden state: help=%v sidebar=%v focus=%v status=%q before=%q selected=%q offset=%d", m.showHelp, m.showShortcutsSidebar, m.focused, m.statusMsg, statusBeforeHelp, m.tree.GetSelectedID(), m.tree.GetViewportOffset())
+	}
+	if footer := ansi.Strip(m.renderFooter()); strings.Contains(footer, "Shortcuts sidebar:") {
+		t.Fatal("Help rendered the underlying sidebar status banner")
+	}
+
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if m.showHelp || !m.showShortcutsSidebar || m.statusMsg != "" || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset {
+		t.Fatal("closing Help did not restore sidebar or Tree state")
+	}
+}
+
 func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{

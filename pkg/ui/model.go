@@ -3301,7 +3301,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle shortcuts sidebar toggle (; or F2) - bv-3qi5
-		if (msg.String() == ";" || msg.String() == "f2") && m.list.FilterState() != list.Filtering {
+		if (msg.String() == ";" || msg.String() == "f2") && !m.showHelp && m.list.FilterState() != list.Filtering {
 			m.showShortcutsSidebar = !m.showShortcutsSidebar
 			// Reflow the main panes for the new content width so the sidebar
 			// reserves its own column instead of overflowing/wrapping into the
@@ -5550,6 +5550,8 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 	case "G", "end":
 		// Will be clamped in render
 		m.helpScroll = 999
+	case ";", "f2":
+		// Keep the underlying sidebar untouched while Help owns the terminal.
 	case "q", "esc", "?", "f1":
 		// Close help overlay and restore previous focus
 		m.showHelp = false
