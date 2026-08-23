@@ -2363,7 +2363,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// user state (selection + persisted expand/collapse) (bv-6n4c).
 		if m.focused == focusTree {
 			m.tree.BuildFromSnapshot(m.snapshot)
-			m.tree.SetSize(m.width, m.height-2)
+			m.tree.SetSize(m.mainContentWidth(), m.height-1)
 		}
 
 		// Refresh detail pane if visible
@@ -3264,6 +3264,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "`" && m.list.FilterState() != list.Filtering {
 			m.showTutorial = !m.showTutorial
 			if m.showTutorial {
+				m.focusBeforeHelp = focusList
 				m.showHelp = false // Close help if open
 				m.tutorialModel.SetSize(m.width, m.height)
 				m.focused = focusTutorial
@@ -3301,7 +3302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle shortcuts sidebar toggle (; or F2) - bv-3qi5
-		if (msg.String() == ";" || msg.String() == "f2") && m.list.FilterState() != list.Filtering {
+		if (msg.String() == ";" || msg.String() == "f2") && !m.showHelp && !m.showTutorial && m.list.FilterState() != list.Filtering {
 			m.showShortcutsSidebar = !m.showShortcutsSidebar
 			// Reflow the main panes for the new content width so the sidebar
 			// reserves its own column instead of overflowing/wrapping into the
@@ -3445,7 +3446,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check if tutorial wants to close
 			if m.tutorialModel.ShouldClose() {
 				m.showTutorial = false
-				m.focused = focusList
+				m.focused = m.restoreFocusFromHelp()
 				m.tutorialModel = NewTutorialModel(m.theme) // Reset for next time
 			}
 			return m, tutorialCmd
@@ -3956,7 +3957,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.isActionableView = false
 					m.isHistoryView = false
 					m.rebuildRepositoryTree()
-					m.tree.SetSize(m.width, m.height-2)
+					m.tree.SetSize(m.mainContentWidth(), m.height-1)
 					m.focused = focusTree
 				}
 				return m, nil
@@ -5522,6 +5523,9 @@ func (m Model) restoreFocusFromHelp() focus {
 	if m.focusBeforeHelp == focusTimeTravelInput {
 		return focusTimeTravelInput
 	}
+	if m.focusBeforeHelp == focusTree {
+		return focusTree
+	}
 	// Default: return to list
 	return focusList
 }
@@ -5547,6 +5551,8 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
 	case "G", "end":
 		// Will be clamped in render
 		m.helpScroll = 999
+	case ";", "f2":
+		// Keep the underlying sidebar untouched while Help owns the terminal.
 	case "q", "esc", "?", "f1":
 		// Close help overlay and restore previous focus
 		m.showHelp = false
@@ -5654,7 +5660,7 @@ func (m Model) View() string {
 	} else if m.focused == focusTree {
 		// Hierarchical tree view (bv-gllx)
 		m.tree.SetSize(m.mainContentWidth(), m.height-1)
-		body = m.tree.View()
+		body = m.renderTreeBody()
 	} else if m.isGraphView {
 		body = m.graphView.View(m.mainContentWidth(), m.height-1)
 	} else if m.isBoardView {
@@ -5682,7 +5688,7 @@ func (m Model) View() string {
 	}
 
 	// Add shortcuts sidebar if enabled (bv-3qi5)
-	if m.showShortcutsSidebar {
+	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
 		m.shortcutsSidebar.SetFocus(m.focused)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
@@ -5700,6 +5706,15 @@ func (m Model) View() string {
 		MaxHeight(m.height)
 
 	return finalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, body, footer))
+}
+
+// renderTreeBody bounds each natural-width Tree row before filling the
+// reserved composition column. Width() alone can wrap an overlong row into
+// extra terminal lines, breaking Tree's one-node-per-row viewport math.
+func (m Model) renderTreeBody() string {
+	width := m.mainContentWidth()
+	tree := m.theme.Renderer.NewStyle().MaxWidth(width).Render(m.tree.View())
+	return m.theme.Renderer.PlaceHorizontal(width, lipgloss.Left, tree)
 }
 
 func (m Model) renderQuitConfirm() string {
@@ -8020,6 +8035,7 @@ func (m *Model) applyContentSizing() {
 	// when it is open (#168) so the body never overflows once the sidebar is
 	// appended in View().
 	contentWidth := m.mainContentWidth()
+	m.tree.SetSize(contentWidth, m.height-1)
 
 	if m.isSplitView {
 		// Calculate dimensions accounting for 2 panels with borders(2)+padding(2) = 4 overhead each

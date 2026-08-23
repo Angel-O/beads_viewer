@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -319,6 +322,8 @@ func keyMsg(key string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "f2":
+		return tea.KeyMsg{Type: tea.KeyF2}
 	case "up":
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
@@ -799,6 +804,290 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 	m = updated.(Model)
 	if m.focused != focusList {
 		t.Fatalf("second Escape should exit Tree, got focus=%v", m.focused)
+	}
+}
+
+func TestKeyDispatch_TreeShortcutsSidebarPreservesState(t *testing.T) {
+	maxLineWidth := func(view string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(view, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	issues := []model.Issue{
+		{ID: "tree-root", Title: "Root", Status: model.StatusOpen, IssueType: model.TypeEpic},
+		{
+			ID: "tree-child", Title: "Child", Status: model.StatusOpen, IssueType: model.TypeTask,
+			Dependencies: []*model.Dependency{{IssueID: "tree-child", DependsOnID: "tree-root", Type: model.DepParentChild}},
+		},
+		{ID: "tree-other", Title: "Other", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	for i := 0; i < 45; i++ {
+		issues = append(issues, model.Issue{
+			ID: fmt.Sprintf("tree-extra-%02d", i), Title: "Extra", Status: model.StatusOpen, IssueType: model.TypeTask,
+		})
+	}
+	m := sizedModel(t, issues, 200, 40)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("expected Tree focus, got %v", m.focused)
+	}
+
+	m.tree.roots[0].Expanded = false
+	m.tree.rebuildFlatList()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("Extra"))
+	m.tree.FinishSearch()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	beforeOffset := m.tree.GetViewportOffset()
+	beforeExpanded := m.tree.roots[0].Expanded
+	beforeSearch := m.tree.SearchQuery()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open the Tree sidebar")
+	}
+	if got, want := m.tree.width, m.mainContentWidth(); got != want {
+		t.Fatalf("Tree width with sidebar = %d, want reserved content width %d", got, want)
+	}
+	treeBody := m.theme.Renderer.NewStyle().Width(m.mainContentWidth()).Render(m.tree.View())
+	if got, want := maxLineWidth(treeBody), m.mainContentWidth(); got != want {
+		t.Fatalf("Tree rendering width with sidebar = %d, want reserved content width %d", got, want)
+	}
+	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
+		t.Fatal("opening the sidebar changed Tree state")
+	}
+
+	updated, _ = m.Update(keyMsg("f2"))
+	m = updated.(Model)
+	if m.showShortcutsSidebar {
+		t.Fatal("F2 did not close the Tree sidebar")
+	}
+	if got, want := m.tree.width, m.width; got != want {
+		t.Fatalf("Tree width after closing sidebar = %d, want terminal width %d", got, want)
+	}
+	treeBody = m.theme.Renderer.NewStyle().Width(m.width).Render(m.tree.View())
+	if got, want := maxLineWidth(treeBody), m.width; got != want {
+		t.Fatalf("Tree rendering width after closing sidebar = %d, want terminal width %d", got, want)
+	}
+	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
+		t.Fatal("closing the sidebar changed Tree state")
+	}
+
+	updated, _ = m.Update(keyMsg("b"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("expected Tree after supported-view transition, got %v", m.focused)
+	}
+	if m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != beforeOffset || m.tree.roots[0].Expanded != beforeExpanded || m.tree.SearchQuery() != beforeSearch {
+		t.Fatalf("supported-view transition changed Tree state: selected=%q/%q offset=%d/%d expanded=%v/%v search=%q/%q", m.tree.GetSelectedID(), selectedID, m.tree.GetViewportOffset(), beforeOffset, m.tree.roots[0].Expanded, beforeExpanded, m.tree.SearchQuery(), beforeSearch)
+	}
+}
+
+func TestKeyDispatch_QuitConfirmWithTreeSidebarKeepsModalAndStateCoherent(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(40), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if !m.showQuitConfirm || !m.showShortcutsSidebar {
+		t.Fatalf("expected quit confirmation with sidebar state retained: quit=%v sidebar=%v", m.showQuitConfirm, m.showShortcutsSidebar)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "Shortcuts") {
+		t.Fatal("quit confirmation appended the underlying shortcuts sidebar")
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Quit bv?") {
+		t.Fatal("quit confirmation is missing from the composed view")
+	}
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	if m.showQuitConfirm || !m.showShortcutsSidebar || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset {
+		t.Fatalf("cancel changed prompt/sidebar/Tree state: quit=%v sidebar=%v selected=%q offset=%d", m.showQuitConfirm, m.showShortcutsSidebar, m.tree.GetSelectedID(), m.tree.GetViewportOffset())
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Shortcuts") {
+		t.Fatal("cancel did not restore the underlying shortcuts sidebar")
+	}
+}
+
+func TestKeyDispatch_HelpWithTreeSidebarKeepsOverlayAndStateCoherent(t *testing.T) {
+	issues := mouseTestIssues(40)
+	issues[1].Dependencies = []*model.Dependency{{IssueID: issues[1].ID, DependsOnID: issues[0].ID, Type: model.DepParentChild}}
+	m := sizedModel(t, issues, 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	var expandedNode *IssueTreeNode
+	for _, node := range m.tree.roots {
+		if len(node.Children) > 0 {
+			expandedNode = node
+			break
+		}
+	}
+	if expandedNode == nil {
+		t.Fatal("test Tree did not build a parent-child node")
+	}
+	expandedNode.Expanded = false
+	m.tree.rebuildFlatList()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("Issue"))
+	m.tree.FinishSearch()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+	searchQuery := m.tree.SearchQuery()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if !m.showHelp || !m.showShortcutsSidebar || m.focused != focusHelp {
+		t.Fatalf("expected Help with sidebar state retained: help=%v sidebar=%v focus=%v", m.showHelp, m.showShortcutsSidebar, m.focused)
+	}
+	view := ansi.Strip(m.View())
+	if strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll") || !strings.Contains(view, "Keyboard Shortcuts") {
+		t.Fatal("Help was interleaved with the underlying shortcuts sidebar")
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("Help line exceeds terminal width %d: %d", m.width, lipgloss.Width(line))
+		}
+	}
+
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if m.showHelp || !m.showShortcutsSidebar || m.focused != focusTree || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset || m.tree.SearchQuery() != searchQuery || m.tree.issueMap[expandedNode.Issue.ID].Expanded {
+		t.Fatalf("closing Help changed Tree/sidebar state: help=%v sidebar=%v focus=%v selected=%q offset=%d query=%q expanded=%v", m.showHelp, m.showShortcutsSidebar, m.focused, m.tree.GetSelectedID(), m.tree.GetViewportOffset(), m.tree.SearchQuery(), m.tree.issueMap[expandedNode.Issue.ID].Expanded)
+	}
+	if !strings.Contains(ansi.Strip(m.View()), "Shortcuts") {
+		t.Fatal("closing Help did not restore the shortcuts sidebar")
+	}
+}
+
+func TestKeyDispatch_HelpConsumesSidebarToggleWithoutBannerOrMutation(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(40), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	statusBeforeHelp := m.statusMsg
+	if !m.showShortcutsSidebar || !strings.HasPrefix(statusBeforeHelp, "Shortcuts sidebar:") {
+		t.Fatalf("sidebar setup failed: visible=%v status=%q", m.showShortcutsSidebar, statusBeforeHelp)
+	}
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showHelp || !m.showShortcutsSidebar || m.statusMsg != "" || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset {
+		t.Fatalf("Help semicolon changed hidden state: help=%v sidebar=%v focus=%v status=%q before=%q selected=%q offset=%d", m.showHelp, m.showShortcutsSidebar, m.focused, m.statusMsg, statusBeforeHelp, m.tree.GetSelectedID(), m.tree.GetViewportOffset())
+	}
+	if footer := ansi.Strip(m.renderFooter()); strings.Contains(footer, "Shortcuts sidebar:") {
+		t.Fatal("Help rendered the underlying sidebar status banner")
+	}
+
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if m.showHelp || !m.showShortcutsSidebar || m.statusMsg != "" || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset {
+		t.Fatal("closing Help did not restore sidebar or Tree state")
+	}
+}
+
+func TestKeyDispatch_TutorialConsumesSidebarToggleAndRestoresTreeState(t *testing.T) {
+	issues := mouseTestIssues(40)
+	issues[1].Dependencies = []*model.Dependency{{IssueID: issues[1].ID, DependsOnID: issues[0].ID, Type: model.DepParentChild}}
+	m := sizedModel(t, issues, 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	var expandedNode *IssueTreeNode
+	for _, node := range m.tree.roots {
+		if len(node.Children) > 0 {
+			expandedNode = node
+			break
+		}
+	}
+	if expandedNode == nil {
+		t.Fatal("test Tree did not build a parent-child node")
+	}
+	expandedNode.Expanded = false
+	m.tree.rebuildFlatList()
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("Issue"))
+	m.tree.FinishSearch()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	viewportOffset := m.tree.GetViewportOffset()
+	searchQuery := m.tree.SearchQuery()
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg(" "))
+	m = updated.(Model)
+	if !m.showTutorial || !m.showShortcutsSidebar || m.focused != focusTutorial {
+		t.Fatalf("expected Tutorial with sidebar state retained: tutorial=%v sidebar=%v focus=%v", m.showTutorial, m.showShortcutsSidebar, m.focused)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll") {
+		t.Fatal("Tutorial was interleaved with the underlying shortcuts sidebar")
+	}
+
+	for _, key := range []string{";", "f2"} {
+		updated, _ = m.Update(keyMsg(key))
+		m = updated.(Model)
+		if !m.showTutorial || !m.showShortcutsSidebar {
+			t.Fatalf("Tutorial key %q changed hidden sidebar state: tutorial=%v sidebar=%v", key, m.showTutorial, m.showShortcutsSidebar)
+		}
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.showTutorial || !m.showShortcutsSidebar || m.focused != focusTree || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != viewportOffset || m.tree.SearchQuery() != searchQuery || m.tree.issueMap[expandedNode.Issue.ID].Expanded {
+		t.Fatalf("closing Tutorial changed Tree/sidebar state: tutorial=%v sidebar=%v focus=%v selected=%q offset=%d query=%q expanded=%v", m.showTutorial, m.showShortcutsSidebar, m.focused, m.tree.GetSelectedID(), m.tree.GetViewportOffset(), m.tree.SearchQuery(), m.tree.issueMap[expandedNode.Issue.ID].Expanded)
+	}
+}
+
+func TestKeyDispatch_DirectTutorialEntryClearsStaleHelpFocus(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(2), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("closing Help did not restore Tree focus: %v", m.focused)
+	}
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("`"))
+	m = updated.(Model)
+	if !m.showTutorial || m.focused != focusTutorial {
+		t.Fatalf("direct Tutorial entry failed: tutorial=%v focus=%v", m.showTutorial, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.showTutorial || m.focused != focusList {
+		t.Fatalf("direct Tutorial close restored stale focus: tutorial=%v focus=%v", m.showTutorial, m.focused)
 	}
 }
 

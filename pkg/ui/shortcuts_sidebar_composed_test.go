@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // TestShortcutsSidebarComposedWidthFitsTerminal is a stronger companion to
@@ -120,6 +123,13 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 				m.focused = focusHistory
 			},
 		},
+		{
+			name: "tree",
+			setup: func(m *Model) {
+				m.tree.Build(m.repositoryIssues)
+				m.focused = focusTree
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -139,6 +149,11 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 
 			wantWidth := m.mainContentWidth()
 			switch tc.name {
+			case "tree":
+				treeBody := m.renderTreeBody()
+				if got := maxLineWidth(treeBody); got != wantWidth {
+					t.Fatalf("Tree width = %d, want reserved content width %d", got, wantWidth)
+				}
 			case "insights":
 				if m.insightsPanel.width != wantWidth {
 					t.Fatalf("Insights width = %d, want reserved content width %d", m.insightsPanel.width, wantWidth)
@@ -149,5 +164,91 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
+	maxLineWidth := func(s string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(s, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	width := 120
+	issues := make([]model.Issue, 0, 40)
+	for i := 0; i < 39; i++ {
+		id := fmt.Sprintf("repository-item-with-a-realistically-long-id-%02d", i)
+		issues = append(issues, model.Issue{
+			ID: id, Title: "A title with enough realistic detail to exceed the Tree row width",
+			Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask,
+			Dependencies: []*model.Dependency{{IssueID: id, DependsOnID: "external-parent-with-a-long-id", Type: model.DepParentChild}},
+		})
+	}
+	issues = append(issues, model.Issue{
+		ID: "bottom-selected-item-with-a-realistically-long-id", Title: "Bottom selected issue with a long explanatory title",
+		Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask,
+		Dependencies: []*model.Dependency{{IssueID: "bottom-selected-item-with-a-realistically-long-id", DependsOnID: "external-parent-with-a-long-id", Type: model.DepParentChild}},
+	})
+
+	m := sizedModel(t, issues, width, 30)
+	m.tree.BuildProjected(m.repositoryIssues, map[string]*model.Issue{
+		"external-parent-with-a-long-id": {ID: "external-parent-with-a-long-id", Title: "External parent"},
+	})
+	m.focused = focusTree
+	m.applyContentSizing()
+	m.tree.JumpToBottom()
+	selectedID := m.tree.GetSelectedID()
+	if selectedID != "bottom-selected-item-with-a-realistically-long-id" {
+		t.Fatalf("bottom selection = %q", selectedID)
+	}
+	if !strings.Contains(ansi.Strip(m.tree.View()), "[parent out of scope]") {
+		t.Fatal("projected-parent marker missing from Tree rows")
+	}
+
+	assertTreeBody := func(m Model) string {
+		body := m.renderTreeBody()
+		if got, want := len(strings.Split(body, "\n")), len(strings.Split(m.tree.View(), "\n")); got != want {
+			t.Fatalf("Tree rows wrapped: got %d rendered lines, want %d", got, want)
+		}
+		for _, line := range strings.Split(body, "\n") {
+			if lipgloss.Width(line) > m.mainContentWidth() {
+				t.Fatalf("Tree line exceeds content width %d: %d", m.mainContentWidth(), lipgloss.Width(line))
+			}
+		}
+		return body
+	}
+	assertTreeBody(m)
+
+	updated, _ := m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open Tree sidebar")
+	}
+	after := assertTreeBody(m)
+	plainAfter := ansi.Strip(after)
+	if m.tree.GetSelectedID() != selectedID || !strings.Contains(plainAfter, "┃") || !strings.Contains(plainAfter, "bottom-selected-item") {
+		t.Fatalf("bottom Tree selection changed or became invisible after toggle: selected=%q", m.tree.GetSelectedID())
+	}
+
+	m.shortcutsSidebar.SetFocus(m.focused)
+	m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
+	composed := lipgloss.JoinHorizontal(lipgloss.Top, after, m.shortcutsSidebar.View())
+	if got := maxLineWidth(composed); got != m.width {
+		t.Fatalf("Tree/sidebar composition width = %d, want terminal width %d", got, m.width)
+	}
+	for _, line := range strings.Split(ansi.Strip(composed), "\n") {
+		if index := strings.Index(line, "Shortcuts"); index >= 0 && index < m.mainContentWidth() {
+			t.Fatalf("sidebar starts before reserved Tree width %d: %d", m.mainContentWidth(), index)
+		}
+	}
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if m.showShortcutsSidebar || m.tree.GetSelectedID() != selectedID || !strings.Contains(ansi.Strip(assertTreeBody(m)), "┃") {
+		t.Fatal("closing sidebar changed or hid bottom Tree selection")
 	}
 }
