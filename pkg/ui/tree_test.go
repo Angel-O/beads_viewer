@@ -28,6 +28,27 @@ func treeSearchIssues() []model.Issue {
 	}
 }
 
+func treeSearchScopeIssues() []model.Issue {
+	return []model.Issue{
+		{ID: "root", Title: "Planning", Priority: 0, IssueType: model.TypeEpic},
+		{ID: "matched-parent", Title: "Needle parent", Priority: 1, IssueType: model.TypeFeature, Dependencies: []*model.Dependency{{IssueID: "matched-parent", DependsOnID: "root", Type: model.DepParentChild}}},
+		{ID: "matched-child", Title: "Needle child", Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "matched-child", DependsOnID: "matched-parent", Type: model.DepParentChild}}},
+		{ID: "descendant", Title: "Unmatched descendant", Priority: 3, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "descendant", DependsOnID: "matched-child", Type: model.DepParentChild}}},
+		{ID: "sibling", Title: "Unrelated sibling", Priority: 4, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "sibling", DependsOnID: "matched-parent", Type: model.DepParentChild}}},
+		{ID: "other-match", Title: "Needle elsewhere", Priority: 5, IssueType: model.TypeTask},
+	}
+}
+
+func treeRowIDs(tree *TreeModel) []string {
+	ids := make([]string, 0, len(tree.flatList))
+	for _, node := range tree.flatList {
+		if node != nil && node.Issue != nil {
+			ids = append(ids, node.Issue.ID)
+		}
+	}
+	return ids
+}
+
 func TestTreeSearchRevealsAncestorsAndRestoresExpansion(t *testing.T) {
 	tree := NewTreeModel(newTreeTestTheme())
 	tree.Build(treeSearchIssues())
@@ -91,6 +112,122 @@ func TestTreeSearchNavigationAndZeroResultState(t *testing.T) {
 			t.Errorf("zero-result Tree view missing %q", expected)
 		}
 	}
+}
+
+func TestTreeSearchScopeToggle(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchScopeIssues())
+	tree.roots[0].Expanded = false
+	tree.roots[0].Children[0].Expanded = false
+	tree.rebuildFlatList()
+
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+	if got, want := treeRowIDs(&tree), []string{"root", "matched-parent", "matched-child", "other-match"}; !equalStrings(got, want) {
+		t.Fatalf("minimal rows = %v, want %v", got, want)
+	}
+	if got := tree.SearchMatchCount(); got != 3 {
+		t.Fatalf("minimal direct match count = %d, want 3", got)
+	}
+	if !strings.Contains(tree.View(), "minimal") {
+		t.Fatal("minimal search chrome did not identify its scope")
+	}
+	selectedID := tree.GetSelectedID()
+	tree.FinishSearch()
+	tree.ToggleSearchScope()
+
+	if got, want := treeRowIDs(&tree), []string{"root", "matched-parent", "matched-child", "descendant", "sibling", "other-match"}; !equalStrings(got, want) {
+		t.Fatalf("subtree rows = %v, want %v", got, want)
+	}
+	if tree.GetSelectedID() != selectedID {
+		t.Fatalf("toggle changed visible selection from %q to %q", selectedID, tree.GetSelectedID())
+	}
+	if got := tree.SearchMatchCount(); got != 3 {
+		t.Fatalf("subtree direct match count = %d, want 3", got)
+	}
+	if !strings.Contains(tree.View(), "subtrees") {
+		t.Fatal("subtree search chrome did not identify its scope")
+	}
+
+	tree.NextSearchMatch()
+	if tree.GetSelectedID() != "matched-child" {
+		t.Fatalf("next match selected %q, want matched-child", tree.GetSelectedID())
+	}
+	tree.NextSearchMatch()
+	if tree.GetSelectedID() != "other-match" {
+		t.Fatalf("second next match selected %q, want other-match", tree.GetSelectedID())
+	}
+	if got := len(treeRowIDs(&tree)); got != len(uniqueStrings(treeRowIDs(&tree))) {
+		t.Fatalf("overlapping matched subtrees produced duplicate rows: %v", treeRowIDs(&tree))
+	}
+
+	tree.ToggleSearchScope()
+	if got, want := treeRowIDs(&tree), []string{"root", "matched-parent", "matched-child", "other-match"}; !equalStrings(got, want) {
+		t.Fatalf("minimal rows after toggle = %v, want %v", got, want)
+	}
+	if tree.GetSelectedID() != "other-match" {
+		t.Fatalf("toggle did not preserve visible direct selection, got %q", tree.GetSelectedID())
+	}
+	tree.ToggleSearchScope()
+	if !tree.SelectByID("descendant") {
+		t.Fatal("failed to select subtree-only descendant")
+	}
+	tree.ToggleSearchScope()
+	if tree.GetSelectedID() != "matched-parent" {
+		t.Fatalf("hidden selection did not fall back to first direct match, got %q", tree.GetSelectedID())
+	}
+	tree.ClearSearch()
+	if tree.roots[0].Expanded || tree.roots[0].Children[0].Expanded {
+		t.Fatal("search scope toggles changed expansion choices")
+	}
+}
+
+func TestTreeSearchInputOwnsVUntilSubmit(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchScopeIssues())
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+
+	if tree.SearchQuery() != "needlev" {
+		t.Fatalf("active search did not retain printable v: query=%q", tree.SearchQuery())
+	}
+	if tree.searchSubtrees {
+		t.Fatal("active search toggled subtree scope")
+	}
+
+	tree.ClearSearch()
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+	tree.FinishSearch()
+	tree.ToggleSearchScope()
+	if !tree.searchSubtrees {
+		t.Fatal("submitted search did not toggle subtree scope")
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			unique = append(unique, value)
+		}
+	}
+	return unique
 }
 
 func TestTreeSearchZeroResultChromeRespectsBounds(t *testing.T) {
@@ -162,6 +299,11 @@ func TestTreeSearchRetainsProjectedHierarchyContext(t *testing.T) {
 	}
 	if view := tree.View(); !strings.Contains(view, "[parent out of scope]") {
 		t.Fatal("projected Tree search lost omitted-parent hierarchy context")
+	}
+	tree.FinishSearch()
+	tree.ToggleSearchScope()
+	if tree.RootCount() != 1 || tree.SearchMatchCount() != 1 || !strings.Contains(tree.View(), "[parent out of scope]") {
+		t.Fatal("subtree Tree search changed projected scope or omitted-parent context")
 	}
 }
 

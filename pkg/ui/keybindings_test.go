@@ -771,11 +771,11 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 
 	updated, _ = m.Update(keyMsg("/"))
 	m = updated.(Model)
-	for _, key := range []string{"?", "`", ";", "E"} {
+	for _, key := range []string{"?", "`", ";", "E", "v"} {
 		updated, _ = m.Update(keyMsg(key))
 		m = updated.(Model)
 	}
-	if m.focused != focusTree || m.tree.SearchQuery() != "?`;E" {
+	if m.focused != focusTree || m.tree.SearchQuery() != "?`;Ev" {
 		t.Fatalf("printable shortcuts escaped Tree search: focus=%v query=%q", m.focused, m.tree.SearchQuery())
 	}
 	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
@@ -792,8 +792,13 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 	if m.tree.IsSearchActive() {
 		t.Fatal("Enter should select the current result and finish Tree input")
 	}
-	if got := m.tree.SearchQuery(); got != "?`;E" {
+	if got := m.tree.SearchQuery(); got != "?`;Ev" {
 		t.Fatalf("Enter changed Tree search query to %q", got)
+	}
+	updated, _ = m.Update(keyMsg("v"))
+	m = updated.(Model)
+	if !m.tree.searchSubtrees {
+		t.Fatal("submitted Tree search did not toggle to subtrees")
 	}
 	updated, _ = m.Update(keyMsg("esc"))
 	m = updated.(Model)
@@ -1098,6 +1103,7 @@ func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 		"/|tree|Search Tree":                   false,
 		"n|tree|Next search match":             false,
 		"N|tree|Previous search match":         false,
+		"v|tree|Toggle search scope":           false,
 		"E|tree|Exit Tree":                     false,
 		"esc|tree|Clear search or exit Tree":   false,
 	}

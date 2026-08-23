@@ -3815,7 +3815,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
-					"G", "o", "O", "E", "esc", "/", "n", "N",
+					"G", "o", "O", "E", "esc", "/", "n", "N", "v",
 					"enter", " ", "tab",
 					"ctrl+d", "ctrl+u", "pgup", "pgdown":
 					// Cancel any pending combo when pressing other keys
@@ -4591,6 +4591,8 @@ func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
 		m.tree.NextSearchMatch()
 	case "N":
 		m.tree.PreviousSearchMatch()
+	case "v":
+		m.tree.ToggleSearchScope()
 	case "E", "esc":
 		// Return to list view
 		m.focused = focusList
@@ -6870,10 +6872,14 @@ func (m *Model) renderFooter() string {
 	}
 	if m.focused == focusTree {
 		if m.tree.IsSearchActive() || m.tree.SearchQuery() != "" {
+			scopeHint := "scope:minimal • v:subtrees"
+			if m.tree.searchSubtrees {
+				scopeHint = "scope:subtrees • v:minimal"
+			}
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).
 				Padding(0, 1).
-				Render("type:search • Enter:select • n/N:match • Escape:clear")
+				Render(fmt.Sprintf("type:search • Enter:select • n/N:match • %s • Escape:clear", scopeHint))
 		} else {
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).

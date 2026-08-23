@@ -243,7 +243,7 @@ func TestShortcutsSidebarTreeCoverageIsCompact(t *testing.T) {
 	sidebar.SetFocus(focusTree)
 	view := sidebar.View()
 
-	for _, expected := range []string{"Search Tree", "Next search match", "Previous search match", "Exit Tree", "Help overlay"} {
+	for _, expected := range []string{"Search Tree", "Next search match", "Previous search match", "Toggle search scope", "Exit Tree", "Help overlay"} {
 		if !strings.Contains(view, expected) {
 			t.Errorf("Tree shortcuts sidebar missing %q", expected)
 		}

@@ -347,6 +347,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"/", "Search Tree", "Tree", "tree"},
 		{"n", "Next search match", "Tree", "tree"},
 		{"N", "Previous search match", "Tree", "tree"},
+		{"v", "Toggle search scope", "Tree", "tree"},
 		{"o", "Expand all", "Tree", "tree"},
 		{"O", "Collapse all", "Tree", "tree"},
 		{"E", "Exit Tree", "Tree", "tree"},
