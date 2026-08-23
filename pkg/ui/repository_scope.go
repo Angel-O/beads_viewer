@@ -920,7 +920,6 @@ func (m *Model) scopedTriage() analysis.TriageResult {
 		BlockerN:  len(m.issues),
 	}, time.Now())
 	insightsIDs := m.insightsIssueIDs()
-	triage = projectTriageResult(triage, insightsIDs)
 	parentsWithOpenChildren := make(map[string]bool)
 	for _, issue := range m.issues {
 		if !insightsIDs[issue.ID] {
@@ -932,7 +931,9 @@ func (m *Model) scopedTriage() analysis.TriageResult {
 			}
 		}
 	}
-	triage.QuickRef.TopPicks = projectTopPicks(scopedTopPicks(triage.Recommendations, parentsWithOpenChildren, 3), insightsIDs)
+	globalTopPicks := scopedTopPicks(triage.Recommendations, parentsWithOpenChildren, insightsIDs, 3)
+	triage = projectTriageResult(triage, insightsIDs)
+	triage.QuickRef.TopPicks = projectTopPicks(globalTopPicks, insightsIDs)
 	if len(triage.Recommendations) > 10 {
 		triage.Recommendations = triage.Recommendations[:10]
 	}
@@ -962,12 +963,15 @@ func (m *Model) scopedTriage() analysis.TriageResult {
 		}
 	}
 	triage.QuickRef.NotActionableCount = triage.QuickRef.NotClosedCount - triage.QuickRef.ActionableCount
-	return projectTriageResult(triage, insightsIDs)
+	return triage
 }
 
-func scopedTopPicks(recommendations []analysis.Recommendation, parentsWithOpenChildren map[string]bool, limit int) []analysis.TopPick {
+func scopedTopPicks(recommendations []analysis.Recommendation, parentsWithOpenChildren, candidateIDs map[string]bool, limit int) []analysis.TopPick {
 	result := make([]analysis.TopPick, 0, limit)
 	for _, recommendation := range recommendations {
+		if !candidateIDs[recommendation.ID] {
+			continue
+		}
 		if recommendation.Status != string(model.StatusOpen) || recommendation.Type == string(model.TypeEpic) ||
 			recommendation.Assignee != "" || len(recommendation.BlockedBy) > 0 || parentsWithOpenChildren[recommendation.ID] {
 			continue

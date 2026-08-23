@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
@@ -486,6 +487,29 @@ func TestAttentionViewConsumesInsightsStatusKeys(t *testing.T) {
 		if m.currentFilter != "label:keep" || m.statusFilter != "closed" || !m.showAttentionView || m.focused != focusInsights {
 			t.Fatalf("Attention key %q changed shared state: filter=%q status=%q shown=%v focus=%v", key, m.currentFilter, m.statusFilter, m.showAttentionView, m.focused)
 		}
+	}
+}
+
+func TestInsightsEnterDoesNotShowStaleDetailFromClosedFilter(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+	}, nil, "")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	if m.focused != focusInsights || m.currentFilter != "closed" {
+		t.Fatalf("closed-filter Insights entry failed: focus=%v filter=%q", m.focused, m.currentFilter)
+	}
+	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
+	m.insightsPanel.focusedPanel = PanelBottlenecks
+	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.focused != focusInsights || m.showDetails {
+		t.Fatalf("Enter showed stale detail for unavailable active ID: focus=%v details=%v", m.focused, m.showDetails)
 	}
 }
 

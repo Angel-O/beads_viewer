@@ -59,7 +59,7 @@ func TestHeatGradientHighEndContrastPreservesLowMidMappings(t *testing.T) {
 	if reflect.DeepEqual(hotBg, maxBg) {
 		t.Fatalf("hot and max backgrounds are identical: %v", hotBg)
 	}
-	if !reflect.DeepEqual(hotFg, lipgloss.Color("#ffffff")) || !reflect.DeepEqual(maxFg, lipgloss.Color("#ffffff")) {
+	if !reflect.DeepEqual(hotFg, lipgloss.Color("#1a1a2e")) || !reflect.DeepEqual(maxFg, lipgloss.Color("#ffffff")) {
 		t.Fatalf("high-end foreground contrast changed: hot=%v max=%v", hotFg, maxFg)
 	}
 
@@ -80,7 +80,7 @@ func TestHeatGradientHighEndContrastPreservesLowMidMappings(t *testing.T) {
 	}
 
 	for _, profile := range []colorprofile.Profile{colorprofile.ANSI256, colorprofile.ANSI} {
-		hotBg, _ := getHeatGradientColorBg(0.8, profile)
+		hotBg, hotFg := getHeatGradientColorBg(0.8, profile)
 		maxBg, _ := getHeatGradientColorBg(1.0, profile)
 		manyBg, manyFg := getHeatGradientColorBg(0.6, profile)
 		if reflect.DeepEqual(hotBg, maxBg) || reflect.DeepEqual(manyBg, hotBg) || reflect.DeepEqual(manyBg, maxBg) {
@@ -88,6 +88,13 @@ func TestHeatGradientHighEndContrastPreservesLowMidMappings(t *testing.T) {
 		}
 		if manyFg == nil {
 			t.Fatalf("profile %s returned nil orange foreground", profile)
+		}
+		var wantHotFg lipgloss.TerminalColor = lipgloss.Color("#1a1a2e")
+		if profile == colorprofile.ANSI {
+			wantHotFg = lipgloss.ANSIColor(0)
+		}
+		if !reflect.DeepEqual(hotFg, wantHotFg) {
+			t.Fatalf("profile %s hot foreground = %v, want %v", profile, hotFg, wantHotFg)
 		}
 	}
 }

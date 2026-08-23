@@ -5393,11 +5393,16 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 			selectedID = m.insightsPanel.HeatmapSelectedIssueID()
 		}
 		if selectedID != "" {
+			found := false
 			for i, item := range m.list.Items() {
 				if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selectedID {
 					m.list.Select(i)
+					found = true
 					break
 				}
+			}
+			if !found {
+				return m
 			}
 			m.focused = focusList
 			if m.isSplitView {

@@ -125,7 +125,7 @@ func getHeatGradientColorBg(intensity float64, profile colorprofile.Profile) (bg
 	case intensity >= 1.0:
 		return heatmapBackground(profile, "#8b123f", 52, 1), heatmapForeground(profile, "#ffffff", 15) // Deep crimson, white text
 	case intensity >= 0.8:
-		return heatmapBackground(profile, "#ff2e63", 201, 13), heatmapForeground(profile, "#ffffff", 15) // Hot pink, white text
+		return heatmapBackground(profile, "#ff2e63", 201, 13), heatmapForeground(profile, "#1a1a2e", 0) // Hot pink, dark text
 	case intensity >= 0.6:
 		return heatmapBackground(profile, "#f97316", 208, 3), heatmapForeground(profile, "#1a1a2e", 0) // Orange, dark text
 	case intensity >= 0.4:

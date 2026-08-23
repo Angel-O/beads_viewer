@@ -1123,6 +1123,29 @@ func TestRepositoryScopeTriageRanksWithinSelectedCandidates(t *testing.T) {
 	}
 }
 
+func TestRepositoryScopeTriageKeepsExternalBlockerForTopPickEligibility(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha-work", Title: "Alpha work", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}, Dependencies: []*model.Dependency{
+			{DependsOnID: "beta-blocker", Type: model.DepBlocks},
+		}},
+		{ID: "beta-blocker", Title: "Beta blocker", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
+
+	triage := m.scopedTriage()
+	if len(triage.Recommendations) != 1 || triage.Recommendations[0].ID != "alpha-work" {
+		t.Fatalf("scoped recommendations = %+v, want alpha-work", triage.Recommendations)
+	}
+	if len(triage.Recommendations[0].BlockedBy) != 0 {
+		t.Fatalf("display projection retained external blocker: %v", triage.Recommendations[0].BlockedBy)
+	}
+	if len(triage.QuickRef.TopPicks) != 0 {
+		t.Fatalf("externally blocked issue became a top pick: %+v", triage.QuickRef.TopPicks)
+	}
+}
+
 func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "active", Title: "Active", Status: model.StatusOpen},
