@@ -101,6 +101,16 @@ command name.
       submission, verify footer and search chrome expose the scope toggle clearly.
 - [ ] Clear the search and verify the pre-search expansion state and repository
       projection return unchanged.
+- [ ] With Tree already open, toggle `o`, `c`, and `r` on and off; verify rows,
+      status badges, and footer update immediately for open/closed/ready filters.
+- [ ] Combine Tree status toggles with repository, label, and issue-type filters;
+      verify all filters intersect and omitted-parent hierarchy remains coherent.
+- [ ] Submit a Tree search, select minimal or subtree scope with `v`, then change
+      status; verify query, scope, valid selection, expansion, and scroll persist.
+- [ ] While entering Tree search text, type `o`, `c`, and `r`; verify they become
+      query text rather than changing status.
+- [ ] Verify `+` expands all Tree nodes and `-` collapses all, with matching
+      footer, Help, and shortcuts-sidebar guidance.
 
 ### History
 
@@ -331,3 +341,5 @@ Record manual QA feedback here as it is reported.
 | Resolved | Tree shortcuts sidebar composition | Open Tree with `E`, press `;`, then open Help, Tutorial, or navigate to quit confirmation | Tree fills the region left of a right-aligned sidebar; full-terminal modes exclude the sidebar and restore state when closed | The sidebar followed Tree's natural content width, then interleaved with Help and Tutorial and displaced quit confirmation | Manually verified and merged in PR #37 |
 | Resolved | Tree and Tutorial terminal bounds | Open short-content Tree and Tutorial at normal tall/wide terminal sizes | Global status remains bottom-anchored and Tutorial's bordered container spans the available width | Status moved directly below short content and Tutorial left a large unused strip on the right | Manually verified and merged in PR #38 |
 | Resolved | Tree search result scope | Submit a Tree query and press `v` | Users can toggle minimal hierarchy context or full matched subtrees while direct-match navigation remains stable | Tree search only showed direct matches and required ancestors | Manually verified and merged in PR #39 |
+| Resolved | Tree status-filter routing | Open Tree, then toggle `o`, `c`, and `r` | Tree rows and status chrome immediately reflect the same composable status filters as List and Board | Tree remained stale after status changes and `o` was consumed by Expand All | Manually verified and merged in PR #42 |
+| Resolved | List detail issue type | Open List details for issues with different classifications | Summary columns read ID, Type, Status, Priority, Assignee, Created, with canonical textual type values | Detail title showed only a type icon and the summary omitted textual classification | Manually verified and merged in PR #43 |
