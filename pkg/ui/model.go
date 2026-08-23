@@ -594,6 +594,7 @@ type Model struct {
 	// Filter and sort state
 	currentFilter          string
 	statusFilter           string
+	insightsStatusFilter   string   // Insights-local: empty=active, ready=ready-only
 	sortMode               SortMode // bv-3ita: current sort mode
 	semanticSearchEnabled  bool
 	semanticIndexBuilding  bool
@@ -1415,6 +1416,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 
 	m.registerKeyBindings()
 	m.refreshRepositoryCandidates()
+	m.rebuildInsightsPanel()
 	return m
 }
 
@@ -1566,11 +1568,13 @@ func (m *Model) rebuildInsightsPanel() {
 	case m.analysis != nil:
 		ins = m.analysis.GenerateInsights(len(m.issues))
 	}
-	ins = projectInsights(ins, m.repositoryIssueIDs)
+	insightsIDs := m.insightsIssueIDs()
+	ins = projectInsights(ins, insightsIDs)
 
 	prev := m.insightsPanel
 	panel := NewInsightsModel(ins, m.issueMap, m.theme)
 	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
+	panel.SetActiveIssueIDs(insightsIDs)
 	panel.focusedPanel = prev.focusedPanel
 	panel.selectedIndex = prev.selectedIndex
 	panel.scrollOffset = prev.scrollOffset
@@ -1578,10 +1582,13 @@ func (m *Model) rebuildInsightsPanel() {
 	panel.heatmapCol = prev.heatmapCol
 	panel.heatmapDrill = prev.heatmapDrill
 	panel.heatmapDrillIdx = prev.heatmapDrillIdx
+	panel.heatmapIssues = projectStrings(prev.heatmapIssues, insightsIDs)
 	panel.showExplanations = prev.showExplanations
 	panel.showCalculation = prev.showCalculation
 	panel.showDetailPanel = prev.showDetailPanel
 	panel.showHeatmap = prev.showHeatmap
+	panel.clampSelection()
+	panel.updateDetailContent()
 
 	if m.analyzer != nil && m.analysis != nil {
 		triage := m.scopedTriage()
@@ -1913,7 +1920,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Update UI components with Phase 2 insights
-		m.insightsPanel.SetInsights(projectInsights(ins, m.repositoryIssueIDs))
+		m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
+		m.insightsPanel.SetInsights(ins)
 		m.insightsPanel.issueMap = m.issueMap
 		bodyHeight := m.height - 1
 		if bodyHeight < 5 {
@@ -2241,6 +2249,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Regenerate sub-views (Phase 1 data; Phase 2 will update via Phase2ReadyMsg)
+		m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
 		m.insightsPanel.SetInsights(m.snapshot.GetInsights())
 		m.insightsPanel.issueMap = m.issueMap
 		bodyHeight := m.height - 1
@@ -2804,6 +2813,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.insightsPanel.recommendations = oldRecs
 			m.insightsPanel.recommendationMap = oldRecMap
 			m.insightsPanel.triageDataHash = oldHash
+			m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
 			bodyHeight := m.height - 1
 			if bodyHeight < 5 {
 				bodyHeight = 5
@@ -3741,13 +3751,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case focusInsights:
 				// Insights uses h/l for panel nav — intercept those.
 				// Let other view-toggle keys (b/g/a/E/f/etc.) fall through.
-				switch keyStr {
-				case "h", "l",
-					"j", "k", "up", "down", "left", "right",
-					"ctrl+j", "ctrl+k", "tab",
-					"e", "x", "m", "enter", "esc":
-					m = m.handleInsightsKeys(msg)
-					viewToggleHandled = true
+				if !m.showAttentionView {
+					switch keyStr {
+					case "h", "l",
+						"j", "k", "up", "down", "left", "right",
+						"ctrl+j", "ctrl+k", "tab",
+						"e", "x", "m", "enter", "esc", "o", "r", "c":
+						m = m.handleInsightsKeys(msg)
+						viewToggleHandled = true
+					}
 				}
 
 			case focusBoard:
@@ -5362,6 +5374,12 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 			m.statusMsg = "Insights priority list enabled"
 		}
 		m.statusIsError = false
+	case "o":
+		m.toggleInsightsStatusFilter("open")
+	case "r":
+		m.toggleInsightsStatusFilter("ready")
+	case "c":
+		// Insights is always active-only; closed status has no view here.
 	case "enter":
 		if heatmapFocused && !m.insightsPanel.IsHeatmapDrillDown() {
 			m.insightsPanel.HeatmapEnter()
@@ -5391,6 +5409,20 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 		}
 	}
 	return m
+}
+
+func (m *Model) toggleInsightsStatusFilter(filter string) {
+	switch filter {
+	case "open":
+		m.insightsStatusFilter = ""
+	case "ready":
+		if m.insightsStatusFilter == "ready" {
+			m.insightsStatusFilter = ""
+		} else {
+			m.insightsStatusFilter = "ready"
+		}
+	}
+	m.rebuildInsightsPanel()
 }
 
 // handleListKeys handles keyboard input when the list is focused
@@ -6802,6 +6834,14 @@ func (m *Model) renderFooter() string {
 	} else if m.showLabelDrilldown && m.labelDrilldownLabel != "" {
 		filterTxt = fmt.Sprintf("LABEL %s: enter filter • g graph • esc/q/d close", m.labelDrilldownLabel)
 		filterIcon = "🏷️"
+	} else if m.focused == focusInsights {
+		if m.insightsStatusFilter == "ready" {
+			filterTxt = "READY"
+			filterIcon = "🚀"
+		} else {
+			filterTxt = "ACTIVE"
+			filterIcon = "📂"
+		}
 	} else {
 		filter := m.currentFilter
 		if status := m.activeStatusFilter(); status != "" {
@@ -7263,7 +7303,7 @@ func (m *Model) renderFooter() string {
 	} else if m.focused == focusLabelDashboard {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+" close")
 	} else if m.focused == focusInsights {
-		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
+		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("o")+" active", keyStyle.Render("r")+" ready", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
 		keyHints = append(keyHints, keyStyle.Render("A")+" attention", keyStyle.Render("F")+" flow")
 	} else if m.focused == focusFlowMatrix {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("tab")+" panel", keyStyle.Render("⏎")+" drill", keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")

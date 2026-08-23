@@ -688,12 +688,12 @@ func TestSnapshotSwap_UsesSnapshotInsights(t *testing.T) {
 	m := NewModel(issues, nil, "")
 
 	snapshot := NewSnapshotBuilder(issues).Build()
-	snapshot.insights.Bottlenecks = []analysis.InsightItem{{ID: "sentinel", Value: 1}}
+	snapshot.insights.Bottlenecks = []analysis.InsightItem{{ID: "test-1", Value: 1}}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
 	m = newM.(Model)
 
-	if len(m.insightsPanel.insights.Bottlenecks) == 0 || m.insightsPanel.insights.Bottlenecks[0].ID != "sentinel" {
+	if len(m.insightsPanel.insights.Bottlenecks) == 0 || m.insightsPanel.insights.Bottlenecks[0].ID != "test-1" {
 		t.Fatalf("expected insights to come from snapshot")
 	}
 }

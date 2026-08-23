@@ -1122,6 +1122,184 @@ func TestRepositoryScopeTriageRanksWithinSelectedCandidates(t *testing.T) {
 	}
 }
 
+func TestInsightsProjectionDropsClosedAndTombstonedIssues(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+		{ID: "tombstone", Title: "Tombstone", Status: model.StatusTombstone},
+	}
+	m := NewModel(issues, nil, "")
+	stats := analysis.NewGraphStatsForTest(
+		nil, nil, nil, nil, nil,
+		map[string]float64{"active": 1, "closed": 2, "tombstone": 3},
+		nil, nil, nil, 0, nil,
+	)
+	m.insightsPanel.SetInsights(analysis.Insights{
+		Bottlenecks:  []analysis.InsightItem{{ID: "active"}, {ID: "closed"}, {ID: "tombstone"}},
+		Keystones:    []analysis.InsightItem{{ID: "active"}, {ID: "closed"}},
+		Influencers:  []analysis.InsightItem{{ID: "active"}, {ID: "tombstone"}},
+		Hubs:         []analysis.InsightItem{{ID: "active"}, {ID: "closed"}},
+		Authorities:  []analysis.InsightItem{{ID: "active"}, {ID: "tombstone"}},
+		Cores:        []analysis.InsightItem{{ID: "active"}, {ID: "closed"}},
+		Articulation: []string{"active", "tombstone"},
+		Slack:        []analysis.InsightItem{{ID: "active"}, {ID: "closed"}},
+		Orphans:      []string{"active", "tombstone"},
+		Cycles:       [][]string{{"active", "closed", "tombstone"}},
+		Stats:        stats,
+	})
+	m.insightsPanel.SetTopPicks([]analysis.TopPick{{ID: "active"}, {ID: "closed"}, {ID: "tombstone"}})
+	m.insightsPanel.SetRecommendations([]analysis.Recommendation{
+		{ID: "active", UnblocksIDs: []string{"closed", "active"}, BlockedBy: []string{"tombstone"}},
+		{ID: "closed"},
+		{ID: "tombstone"},
+	}, "test")
+	m.insightsPanel.heatmapIssues = []string{"closed", "active"}
+	m.insightsPanel.heatmapDrill = true
+	m.insightsPanel.SetActiveIssueIDs(m.insightsIssueIDs())
+	if got := m.insightsPanel.HeatmapSelectedIssueID(); got != "active" {
+		t.Fatalf("selection projection = %q, want active", got)
+	}
+	m.insightsPanel.ToggleHeatmap()
+
+	for _, item := range m.insightsPanel.insights.Bottlenecks {
+		if item.ID != "active" {
+			t.Fatalf("projected bottlenecks retained %q", item.ID)
+		}
+	}
+	for _, items := range [][]analysis.InsightItem{
+		m.insightsPanel.insights.Keystones,
+		m.insightsPanel.insights.Influencers,
+		m.insightsPanel.insights.Hubs,
+		m.insightsPanel.insights.Authorities,
+		m.insightsPanel.insights.Cores,
+		m.insightsPanel.insights.Slack,
+	} {
+		for _, item := range items {
+			if item.ID != "active" {
+				t.Fatalf("projected metric retained %q", item.ID)
+			}
+		}
+	}
+	for _, id := range append(append(append([]string{}, m.insightsPanel.insights.Articulation...), m.insightsPanel.insights.Orphans...), m.insightsPanel.insights.Cycles[0]...) {
+		if id != "active" {
+			t.Fatalf("projected string insight retained %q", id)
+		}
+	}
+	if len(m.insightsPanel.topPicks) != 1 || m.insightsPanel.topPicks[0].ID != "active" {
+		t.Fatalf("projected top picks = %+v", m.insightsPanel.topPicks)
+	}
+	if len(m.insightsPanel.recommendations) != 1 || m.insightsPanel.recommendations[0].ID != "active" {
+		t.Fatalf("projected recommendations = %+v", m.insightsPanel.recommendations)
+	}
+	if got := m.insightsPanel.recommendations[0].UnblocksIDs; len(got) != 1 || got[0] != "active" {
+		t.Fatalf("projected recommendation unblocks = %v", got)
+	}
+	if len(m.insightsPanel.heatmapIssueMap) == 0 {
+		t.Fatal("expected heat-map cache")
+	}
+	for _, row := range m.insightsPanel.heatmapIssueMap {
+		for _, ids := range row {
+			for _, id := range ids {
+				if id != "active" {
+					t.Fatalf("heat-map cache retained %q", id)
+				}
+			}
+		}
+	}
+}
+
+func TestInsightsStatusScopeIsIndependentFromListAndBoard(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "ready", Title: "Ready", Status: model.StatusOpen},
+		{ID: "blocked", Title: "Blocked", Status: model.StatusBlocked},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+		{ID: "tombstone", Title: "Tombstone", Status: model.StatusTombstone},
+	}
+	m := NewModel(issues, nil, "")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if m.currentFilter != "closed" {
+		t.Fatalf("list did not enter closed filter: %q", m.currentFilter)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	if m.focused != focusInsights || m.insightsStatusFilter != "" {
+		t.Fatalf("Insights inherited List state: focus=%v status=%q", m.focused, m.insightsStatusFilter)
+	}
+	if len(m.insightsPanel.insights.Bottlenecks) > 0 && m.insightsPanel.insights.Bottlenecks[0].ID == "closed" {
+		t.Fatal("Insights inherited closed selection")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "ready" || len(m.insightsIssueIDs()) != 1 || !m.insightsIssueIDs()["ready"] {
+		t.Fatalf("ready scope = %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "" || len(m.insightsIssueIDs()) != 2 {
+		t.Fatalf("active scope after ready toggle = %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "" || len(m.insightsIssueIDs()) != 2 {
+		t.Fatalf("o changed broad active scope: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "" || m.currentFilter != "closed" {
+		t.Fatalf("Insights c disturbed state: insights=%q list=%q", m.insightsStatusFilter, m.currentFilter)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
+	m = updated.(Model)
+	if m.focused != focusList {
+		t.Fatalf("Insights escape focus = %v, want list", m.focused)
+	}
+	if got := visibleIssueIDs(m); len(got) != 2 || got[0] != "closed" || got[1] != "tombstone" {
+		t.Fatalf("List filter was not preserved: %v", got)
+	}
+
+	boardModel := NewModel(issues, nil, "")
+	updated, _ = boardModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	boardModel = updated.(Model)
+	updated, _ = boardModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	boardModel = updated.(Model)
+	updated, _ = boardModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	boardModel = updated.(Model)
+	if boardModel.focused != focusInsights || len(boardModel.insightsIssueIDs()) != 2 {
+		t.Fatalf("Insights from closed Board was not broad active: focus=%v ids=%v", boardModel.focused, boardModel.insightsIssueIDs())
+	}
+}
+
+func TestInsightsProjectionSurvivesPhaseAndSnapshotRefresh(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "active", Status: model.StatusOpen},
+		{ID: "closed", Status: model.StatusClosed},
+		{ID: "tombstone", Status: model.StatusTombstone},
+	}
+	m := NewModel(issues, nil, "")
+	m.focused = focusInsights
+	m.insightsStatusFilter = "ready"
+	m.analysis.WaitForPhase2()
+	updated, _ := m.Update(Phase2ReadyMsg{Stats: m.analysis, Insights: m.analysis.GenerateInsights(len(m.issues))})
+	m = updated.(Model)
+	if len(m.insightsPanel.topPicks) > 0 && m.insightsPanel.topPicks[0].ID != "active" {
+		t.Fatalf("phase refresh top pick = %+v", m.insightsPanel.topPicks)
+	}
+	snapshot := NewSnapshotBuilder(issues).Build()
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
+	m = updated.(Model)
+	for _, pick := range m.insightsPanel.topPicks {
+		if pick.ID == "closed" || pick.ID == "tombstone" {
+			t.Fatalf("snapshot refresh reintroduced closed top pick %q", pick.ID)
+		}
+	}
+	if m.insightsStatusFilter != "ready" {
+		t.Fatalf("snapshot refresh changed Insights status scope: %q", m.insightsStatusFilter)
+	}
+}
+
 func TestRepositoryScopeEmptySnapshotClearsHistory(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "alpha", Status: model.StatusOpen}}, nil, "")
 	m.historyReport = &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{

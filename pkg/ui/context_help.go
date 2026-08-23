@@ -205,6 +205,10 @@ const contextHelpInsights = `## Insights Panel
   Ctrl+j/k  Scroll detail section
   Tab       Next panel
 
+**Filtering**
+  o         Active work (default)
+  r         Ready-only; toggle off for active work
+
 **Heatmap** (Priority × Depth grid)
   m         Toggle heatmap view
   Arrows    Navigate cells

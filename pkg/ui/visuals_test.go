@@ -1,10 +1,12 @@
 package ui_test
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
+	"github.com/charmbracelet/colorprofile"
 )
 
 func TestRenderSparkline(t *testing.T) {
@@ -48,5 +50,36 @@ func TestRenderSparkline(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHeatGradientHighEndContrastPreservesLowMidMappings(t *testing.T) {
+	previousProfile := ui.TermProfile
+	ui.TermProfile = colorprofile.TrueColor
+	t.Cleanup(func() { ui.TermProfile = previousProfile })
+
+	hotBg, hotFg := ui.GetHeatGradientColorBg(0.8)
+	maxBg, maxFg := ui.GetHeatGradientColorBg(1.0)
+	if reflect.DeepEqual(hotBg, maxBg) {
+		t.Fatalf("hot and max backgrounds are identical: %v", hotBg)
+	}
+	if !reflect.DeepEqual(hotFg, ui.ThemeFg("#ffffff")) || !reflect.DeepEqual(maxFg, ui.ThemeFg("#ffffff")) {
+		t.Fatalf("high-end foreground contrast changed: hot=%v max=%v", hotFg, maxFg)
+	}
+
+	for _, testCase := range []struct {
+		intensity float64
+		bg        string
+	}{
+		{0.1, "#16213e"},
+		{0.2, "#3282b8"},
+		{0.4, "#f7dc6f"},
+		{0.6, "#e94560"},
+		{0.8, "#ff2e63"},
+	} {
+		bg, _ := ui.GetHeatGradientColorBg(testCase.intensity)
+		if !reflect.DeepEqual(bg, ui.ThemeBg(testCase.bg)) {
+			t.Errorf("intensity %.1f background = %v, want %s", testCase.intensity, bg, testCase.bg)
+		}
 	}
 }

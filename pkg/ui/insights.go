@@ -136,6 +136,7 @@ var metricDescriptions = map[MetricPanel]MetricInfo{
 type InsightsModel struct {
 	insights          analysis.Insights
 	issueMap          map[string]*model.Issue
+	activeIssueIDs    map[string]bool
 	theme             Theme
 	extraText         string
 	labelAttention    []analysis.LabelAttentionScore
@@ -231,22 +232,92 @@ func (m *InsightsModel) SetSize(w, h int) {
 }
 
 func (m *InsightsModel) SetInsights(ins analysis.Insights) {
+	if m.activeIssueIDs != nil {
+		ins = projectInsights(ins, m.activeIssueIDs)
+		m.heatmapIssues = projectStrings(m.heatmapIssues, m.activeIssueIDs)
+	}
 	m.insights = ins
+	m.rebuildHeatmapGrid()
+	m.clampSelection()
+	m.updateDetailContent()
 }
 
 // SetTopPicks sets the priority triage recommendations (bv-91)
 func (m *InsightsModel) SetTopPicks(picks []analysis.TopPick) {
+	if m.activeIssueIDs != nil {
+		picks = projectTopPicks(picks, m.activeIssueIDs)
+		m.heatmapIssues = projectStrings(m.heatmapIssues, m.activeIssueIDs)
+	}
 	m.topPicks = picks
+	m.rebuildHeatmapGrid()
+	m.clampSelection()
+	m.updateDetailContent()
 }
 
 // SetRecommendations sets the full recommendations with breakdown data (bv-93)
 func (m *InsightsModel) SetRecommendations(recs []analysis.Recommendation, dataHash string) {
+	if m.activeIssueIDs != nil {
+		recs = projectRecommendations(recs, m.activeIssueIDs)
+	}
 	m.recommendations = recs
 	m.triageDataHash = dataHash
 	// Build lookup map
 	m.recommendationMap = make(map[string]*analysis.Recommendation, len(recs))
 	for i := range recs {
 		m.recommendationMap[recs[i].ID] = &recs[i]
+	}
+}
+
+// SetActiveIssueIDs projects every issue-ranked Insights surface to the current
+// repository/status scope and drops stale selection and heat-map state.
+func (m *InsightsModel) SetActiveIssueIDs(ids map[string]bool) {
+	m.activeIssueIDs = make(map[string]bool, len(ids))
+	for id, active := range ids {
+		if active {
+			m.activeIssueIDs[id] = true
+		}
+	}
+	m.insights = projectInsights(m.insights, m.activeIssueIDs)
+	m.topPicks = projectTopPicks(m.topPicks, m.activeIssueIDs)
+	m.recommendations = projectRecommendations(m.recommendations, m.activeIssueIDs)
+	m.recommendationMap = make(map[string]*analysis.Recommendation, len(m.recommendations))
+	for i := range m.recommendations {
+		m.recommendationMap[m.recommendations[i].ID] = &m.recommendations[i]
+	}
+	m.heatmapIssues = projectStrings(m.heatmapIssues, m.activeIssueIDs)
+	m.rebuildHeatmapGrid()
+	m.clampSelection()
+	m.updateDetailContent()
+}
+
+func (m *InsightsModel) clampSelection() {
+	for panel := MetricPanel(0); panel < PanelCount; panel++ {
+		count := m.currentPanelItemCountFor(panel)
+		if count == 0 {
+			m.selectedIndex[panel] = 0
+			m.scrollOffset[panel] = 0
+			continue
+		}
+		if m.selectedIndex[panel] >= count {
+			m.selectedIndex[panel] = count - 1
+		}
+		if m.selectedIndex[panel] < 0 {
+			m.selectedIndex[panel] = 0
+		}
+		if m.scrollOffset[panel] >= count {
+			m.scrollOffset[panel] = count - 1
+		}
+		if m.scrollOffset[panel] < 0 {
+			m.scrollOffset[panel] = 0
+		}
+	}
+	if len(m.heatmapIssues) == 0 {
+		m.heatmapDrill = false
+		m.heatmapDrillIdx = 0
+	} else if m.heatmapDrillIdx >= len(m.heatmapIssues) {
+		m.heatmapDrillIdx = len(m.heatmapIssues) - 1
+	} else if m.heatmapDrillIdx < 0 {
+		m.heatmapDrillIdx = 0
 	}
 }
 
@@ -565,7 +636,11 @@ func getDepthBucket(depth float64) int {
 
 // currentPanelItemCount returns the number of items in the focused panel (including cycles)
 func (m *InsightsModel) currentPanelItemCount() int {
-	switch m.focusedPanel {
+	return m.currentPanelItemCountFor(m.focusedPanel)
+}
+
+func (m *InsightsModel) currentPanelItemCountFor(panel MetricPanel) int {
+	switch panel {
 	case PanelBottlenecks:
 		return len(m.insights.Bottlenecks)
 	case PanelKeystones:

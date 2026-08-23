@@ -117,6 +117,8 @@ func GetHeatGradientColorBg(intensity float64) (bg lipgloss.TerminalColor, fg li
 
 	// Select background color based on intensity
 	switch {
+	case intensity >= 1.0:
+		return ThemeBg("#8b123f"), ThemeFg("#ffffff") // Deep crimson, white text
 	case intensity >= 0.8:
 		return ThemeBg("#ff2e63"), ThemeFg("#ffffff") // Hot pink, white text
 	case intensity >= 0.6:
