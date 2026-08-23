@@ -5648,7 +5648,8 @@ func (m Model) View() string {
 		body = m.renderHelpOverlay()
 	} else if m.showTutorial {
 		// Interactive tutorial (bv-8y31) - full screen overlay
-		body = m.tutorialModel.View()
+		m.tutorialModel.SetSize(m.width, m.height-1)
+		body = lipgloss.Place(m.width, m.height-1, lipgloss.Left, lipgloss.Top, m.tutorialModel.View())
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
 	} else if m.focused == focusInsights {
@@ -5714,7 +5715,7 @@ func (m Model) View() string {
 func (m Model) renderTreeBody() string {
 	width := m.mainContentWidth()
 	tree := m.theme.Renderer.NewStyle().MaxWidth(width).Render(m.tree.View())
-	return m.theme.Renderer.PlaceHorizontal(width, lipgloss.Left, tree)
+	return lipgloss.Place(width, m.height-1, lipgloss.Left, lipgloss.Top, tree)
 }
 
 func (m Model) renderQuitConfirm() string {

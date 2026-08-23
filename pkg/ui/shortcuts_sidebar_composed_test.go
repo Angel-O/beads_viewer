@@ -252,3 +252,54 @@ func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
 		t.Fatal("closing sidebar changed or hid bottom Tree selection")
 	}
 }
+
+func TestFullScreenTreeAndTutorialLayoutAtNormalSize(t *testing.T) {
+	lastLine := func(view string) string {
+		lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+		return lines[len(lines)-1]
+	}
+
+	for _, size := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "120x40", width: 120, height: 40},
+		{name: "180x50", width: 180, height: 50},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(2), size.width, size.height)
+			updated, _ := m.Update(keyMsg("E"))
+			m = updated.(Model)
+			treeView := m.View()
+			if got := lipgloss.Height(treeView); got != size.height {
+				t.Fatalf("Tree view height = %d, want %d", got, size.height)
+			}
+			if !strings.Contains(ansi.Strip(lastLine(treeView)), "issues") {
+				t.Fatalf("global status line was not anchored to the last row in Tree view:\n%s", treeView)
+			}
+
+			updated, _ = m.Update(keyMsg(";"))
+			m = updated.(Model)
+			updated, _ = m.Update(keyMsg("?"))
+			m = updated.(Model)
+			updated, _ = m.Update(keyMsg(" "))
+			m = updated.(Model)
+			tutorialView := m.View()
+			if !m.showTutorial || !m.showShortcutsSidebar {
+				t.Fatalf("Help-to-Tutorial did not preserve full-screen/sidebar state: tutorial=%v sidebar=%v", m.showTutorial, m.showShortcutsSidebar)
+			}
+			if got := lipgloss.Height(tutorialView); got != size.height {
+				t.Fatalf("Tutorial view height = %d, want %d", got, size.height)
+			}
+			if !strings.Contains(ansi.Strip(lastLine(tutorialView)), "issues") {
+				t.Fatalf("global status line was not anchored to the last row in Tutorial view:\n%s", tutorialView)
+			}
+
+			lines := strings.Split(strings.TrimRight(tutorialView, "\n"), "\n")
+			if got := lipgloss.Width(lines[0]); got != size.width || !strings.HasSuffix(ansi.Strip(lines[0]), "╮") {
+				t.Fatalf("Tutorial top border did not span the terminal width: width=%d want=%d line=%q", got, size.width, lines[0])
+			}
+		})
+	}
+}

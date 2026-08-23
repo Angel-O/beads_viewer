@@ -284,7 +284,7 @@ func (m TutorialModel) View() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.theme.Primary).
 		Padding(1, 2).
-		Width(m.width).
+		Width(m.width - 2).
 		MaxHeight(m.height)
 
 	return modalStyle.Render(b.String())
