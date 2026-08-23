@@ -83,3 +83,71 @@ func TestShortcutsSidebarComposedWidthFitsTerminal(t *testing.T) {
 		})
 	}
 }
+
+func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
+	maxLineWidth := func(s string) int {
+		mx := 0
+		for _, ln := range strings.Split(s, "\n") {
+			if w := lipgloss.Width(ln); w > mx {
+				mx = w
+			}
+		}
+		return mx
+	}
+
+	cases := []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{
+			name: "board",
+			setup: func(m *Model) {
+				m.isBoardView = true
+				m.focused = focusBoard
+			},
+		},
+		{
+			name: "insights",
+			setup: func(m *Model) {
+				m.focused = focusInsights
+			},
+		},
+		{
+			name: "history",
+			setup: func(m *Model) {
+				m.historyView = NewHistoryModel(createTestHistoryReport(), testTheme())
+				m.isHistoryView = true
+				m.focused = focusHistory
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(40), 200, 40)
+			m.showShortcutsSidebar = true
+			tc.setup(&m)
+			m.applyContentSizing()
+
+			view := m.View()
+			if maxLineWidth(view) > m.width {
+				t.Fatalf("%s view exceeds terminal width", tc.name)
+			}
+			if !strings.Contains(view, "Shortcuts") {
+				t.Fatalf("%s view clipped the open shortcuts sidebar", tc.name)
+			}
+
+			wantWidth := m.mainContentWidth()
+			switch tc.name {
+			case "insights":
+				if m.insightsPanel.width != wantWidth {
+					t.Fatalf("Insights width = %d, want reserved content width %d", m.insightsPanel.width, wantWidth)
+				}
+			case "history":
+				if m.historyView.width != wantWidth {
+					t.Fatalf("History width = %d, want reserved content width %d", m.historyView.width, wantWidth)
+				}
+			}
+		})
+	}
+}
