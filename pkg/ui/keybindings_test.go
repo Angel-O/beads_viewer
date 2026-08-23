@@ -1066,6 +1066,31 @@ func TestKeyDispatch_TutorialConsumesSidebarToggleAndRestoresTreeState(t *testin
 	}
 }
 
+func TestKeyDispatch_DirectTutorialEntryClearsStaleHelpFocus(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(2), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("closing Help did not restore Tree focus: %v", m.focused)
+	}
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("`"))
+	m = updated.(Model)
+	if !m.showTutorial || m.focused != focusTutorial {
+		t.Fatalf("direct Tutorial entry failed: tutorial=%v focus=%v", m.showTutorial, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	if m.showTutorial || m.focused != focusList {
+		t.Fatalf("direct Tutorial close restored stale focus: tutorial=%v focus=%v", m.showTutorial, m.focused)
+	}
+}
+
 func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{

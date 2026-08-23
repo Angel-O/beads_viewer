@@ -3264,6 +3264,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "`" && m.list.FilterState() != list.Filtering {
 			m.showTutorial = !m.showTutorial
 			if m.showTutorial {
+				m.focusBeforeHelp = focusList
 				m.showHelp = false // Close help if open
 				m.tutorialModel.SetSize(m.width, m.height)
 				m.focused = focusTutorial
