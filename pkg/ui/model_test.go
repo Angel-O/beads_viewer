@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
@@ -15,16 +16,18 @@ func TestIssueDetailsRenderAssignedAndUnassignedAssignees(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
 		assignee   string
+		issueType  model.IssueType
 		want       string
 		notContain string
 	}{
-		{name: "assigned", assignee: "agent-7", want: "@agent-7"},
-		{name: "unassigned", want: "Unassigned", notContain: "| @ |"},
+		{name: "assigned task", assignee: "agent-7", issueType: model.TypeTask, want: "@agent-7"},
+		{name: "unassigned epic", issueType: model.TypeEpic, want: "Unassigned", notContain: "| @ |"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			m := ui.NewModel([]model.Issue{{
 				ID: "work-1", Title: "Work", Status: model.StatusOpen, Priority: 2,
-				Assignee: testCase.assignee, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+				IssueType: testCase.issueType,
+				Assignee:  testCase.assignee, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 			}}, nil, "")
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 			view := updated.(ui.Model).View()
@@ -34,7 +37,36 @@ func TestIssueDetailsRenderAssignedAndUnassignedAssignees(t *testing.T) {
 			if testCase.notContain != "" && strings.Contains(view, testCase.notContain) {
 				t.Fatalf("detail view retained bare assignee marker:\n%s", view)
 			}
+			if !strings.Contains(view, string(testCase.issueType)) {
+				t.Fatalf("detail view missing textual issue type %q:\n%s", testCase.issueType, view)
+			}
 		})
+	}
+}
+
+func TestIssueDetailsRenderTypeImmediatelyAfterID(t *testing.T) {
+	m := ui.NewModel([]model.Issue{{
+		ID: "work-1", Title: "Work", Status: model.StatusOpen, Priority: 2,
+		IssueType: model.TypeBug, Assignee: "agent-7",
+		CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+	}}, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	view := updated.(ui.Model).View()
+
+	wantHeader := "ID Type Status Priority Assignee Created"
+	headerFound := false
+	for _, line := range strings.Split(ansi.Strip(view), "\n") {
+		header := strings.Join(strings.Fields(strings.ReplaceAll(line, "│", " ")), " ")
+		if header == wantHeader {
+			headerFound = true
+			break
+		}
+	}
+	if !headerFound {
+		t.Fatalf("detail view missing table header %q:\n%s", wantHeader, view)
+	}
+	if !strings.Contains(view, "bug") {
+		t.Fatalf("detail view should render issue type textually:\n%s", view)
 	}
 }
 
