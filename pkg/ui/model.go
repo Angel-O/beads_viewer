@@ -1739,8 +1739,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 			m.list.SetSize(m.width, m.height-3)
 			m.viewport = viewport.New(m.width, m.height-2)
-			m.insightsPanel.SetSize(m.width, m.height-1)
-			m.labelDashboard.SetSize(m.width, m.height-1)
+			m.insightsPanel.SetSize(m.mainContentWidth(), m.height-1)
+			m.labelDashboard.SetSize(m.mainContentWidth(), m.height-1)
 		}
 
 	case SemanticIndexReadyMsg:
@@ -1903,7 +1903,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if bodyHeight < 5 {
 			bodyHeight = 5
 		}
-		m.insightsPanel.SetSize(m.width, bodyHeight)
+		m.insightsPanel.SetSize(m.mainContentWidth(), bodyHeight)
 		m.refreshBoardAndGraphForCurrentFilter()
 
 		// Compute triage for insights panel (separate from snapshot triage for UI-specific features)
@@ -2023,7 +2023,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyLoadFailed = false
 			m.historyReport = msg.Report
 			m.historyView.SetReport(m.repositoryHistoryReport(msg.Report))
-			m.historyView.SetSize(m.width, m.height-1)
+			m.historyView.SetSize(m.mainContentWidth(), m.height-1)
 			// Refresh detail pane if visible
 			if m.isSplitView || m.showDetails {
 				m.updateViewportContent()
@@ -2208,7 +2208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if bodyHeight < 5 {
 			bodyHeight = 5
 		}
-		m.insightsPanel.SetSize(m.width, bodyHeight)
+		m.insightsPanel.SetSize(m.mainContentWidth(), bodyHeight)
 
 		// Update list/board/graph views while preserving the current recipe/filter state.
 		if m.activeRecipe != nil {
@@ -2769,7 +2769,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if bodyHeight < 5 {
 				bodyHeight = 5
 			}
-			m.insightsPanel.SetSize(m.width, bodyHeight)
+			m.insightsPanel.SetSize(m.mainContentWidth(), bodyHeight)
 		}
 		if m.showAttentionView {
 			var attentionStart time.Time
@@ -2787,7 +2787,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if panelHeight < 3 {
 				panelHeight = 3
 			}
-			m.insightsPanel.SetSize(m.width, panelHeight)
+			m.insightsPanel.SetSize(m.mainContentWidth(), panelHeight)
 			if profileRefresh {
 				recordTiming("attention_view", time.Since(attentionStart))
 			}
@@ -4006,7 +4006,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if bodyHeight < 5 {
 						bodyHeight = 5
 					}
-					m.historyView.SetSize(m.width, bodyHeight)
+					m.historyView.SetSize(m.mainContentWidth(), bodyHeight)
 					m.focused = focusHistory
 				} else {
 					m.focused = focusList
@@ -4030,7 +4030,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.labelHealthCached = true
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
-				m.labelDashboard.SetSize(m.width, m.height-1)
+				m.labelDashboard.SetSize(m.mainContentWidth(), m.height-1)
 				return m, nil
 
 			case "]", "f4":
@@ -4056,7 +4056,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if panelHeight < 3 {
 					panelHeight = 3
 				}
-				m.insightsPanel.SetSize(m.width, panelHeight)
+				m.insightsPanel.SetSize(m.mainContentWidth(), panelHeight)
 				return m, nil
 
 			case "f":
@@ -5646,29 +5646,29 @@ func (m Model) View() string {
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
 	} else if m.focused == focusInsights {
-		m.insightsPanel.SetSize(m.width, m.height-1)
+		m.insightsPanel.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.insightsPanel.View()
 	} else if m.focused == focusFlowMatrix {
-		m.flowMatrix.SetSize(m.width, m.height-1)
+		m.flowMatrix.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.flowMatrix.View()
 	} else if m.focused == focusTree {
 		// Hierarchical tree view (bv-gllx)
-		m.tree.SetSize(m.width, m.height-1)
+		m.tree.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.tree.View()
 	} else if m.isGraphView {
-		body = m.graphView.View(m.width, m.height-1)
+		body = m.graphView.View(m.mainContentWidth(), m.height-1)
 	} else if m.isBoardView {
-		body = m.board.View(m.width, m.height-1)
+		body = m.board.View(m.mainContentWidth(), m.height-1)
 	} else if m.isActionableView {
-		m.actionableView.SetSize(m.width, m.height-2)
+		m.actionableView.SetSize(m.mainContentWidth(), m.height-2)
 		body = m.actionableView.Render()
 	} else if m.isHistoryView {
-		m.historyView.SetSize(m.width, m.height-1)
+		m.historyView.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.historyView.View()
 	} else if m.isSprintView {
 		body = m.sprintViewText
 	} else if m.focused == focusLabelDashboard {
-		m.labelDashboard.SetSize(m.width, m.height-1)
+		m.labelDashboard.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.labelDashboard.View()
 	} else if m.isSplitView {
 		body = m.renderSplitView()
@@ -8057,11 +8057,12 @@ func (m *Model) applyContentSizing() {
 
 	m.updateListDelegate()
 
-	// Resize label dashboard table and modal overlay sizing. These full-screen
-	// panels are drawn at full m.width (the sidebar does not currently overlay
-	// them), so they keep using m.width rather than the reserved content width.
-	m.labelDashboard.SetSize(m.width, bodyHeight)
-	m.insightsPanel.SetSize(m.width, bodyHeight)
+	// Resize full-screen panels using the same reserved width as View().
+	m.labelDashboard.SetSize(contentWidth, bodyHeight)
+	m.insightsPanel.SetSize(contentWidth, bodyHeight)
+	if m.isHistoryView {
+		m.historyView.SetSize(contentWidth, bodyHeight)
+	}
 	if m.showRepoPicker {
 		m.repoPicker.SetSize(m.width, bodyHeight)
 	}
@@ -8633,7 +8634,7 @@ func (m *Model) enterHistoryView() {
 	m.historyReport = report
 	projectedReport := m.repositoryHistoryReport(report)
 	m.historyView = NewHistoryModel(projectedReport, m.theme)
-	m.historyView.SetSize(m.width, m.height-1)
+	m.historyView.SetSize(m.mainContentWidth(), m.height-1)
 	m.isHistoryView = true
 	m.focused = focusHistory
 

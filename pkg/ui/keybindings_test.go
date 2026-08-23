@@ -635,6 +635,108 @@ func TestKeyDispatch_Regression_QInHistoryClosesHistory(t *testing.T) {
 	t.Logf("focus=history key=q expected=close_history actual=isHistoryView:%v focused:%v", m.isHistoryView, m.focused)
 }
 
+func TestKeyDispatch_HistoryTogglesShortcutsSidebar(t *testing.T) {
+	m := setupTestModel(t)
+	m.width, m.height = 200, 40
+	updated, _ := m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("expected wide History view, got view=%v focus=%v", m.isHistoryView, m.focused)
+	}
+
+	m.historyView.ToggleViewMode()
+	m.historyView.StartSearchWithMode(searchModeCommit)
+	m.historyView.UpdateSearchInput(keyMsg("needle"))
+	m.historyView.FinishSearch()
+	m.historyView.SetFileTreeFocus(false)
+	beforeMode := m.historyView.IsGitMode()
+	beforeFocus := m.historyView.focused
+	beforeSearch := m.historyView.SearchQuery()
+	beforeFileTreeFocus := m.historyView.FileTreeHasFocus()
+	beforeSelectedBead := m.historyView.selectedBead
+	beforeSelectedCommit := m.historyView.selectedCommit
+	beforeScrollOffset := m.historyView.scrollOffset
+	beforeGitScrollOffset := m.historyView.gitScrollOffset
+	beforeMiddleScrollOffset := m.historyView.middleScrollOffset
+	beforeTimelineScrollOffset := m.historyView.timelineScrollOffset
+	beforeSelectedGitCommit := m.historyView.selectedGitCommit
+	beforeSelectedRelatedBead := m.historyView.selectedRelatedBead
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("semicolon did not open the History sidebar: sidebar=%v view=%v focus=%v", m.showShortcutsSidebar, m.isHistoryView, m.focused)
+	}
+	if m.historyView.IsGitMode() != beforeMode || m.historyView.focused != beforeFocus || m.historyView.SearchQuery() != beforeSearch || m.historyView.FileTreeHasFocus() != beforeFileTreeFocus || m.historyView.selectedBead != beforeSelectedBead || m.historyView.selectedCommit != beforeSelectedCommit || m.historyView.scrollOffset != beforeScrollOffset || m.historyView.gitScrollOffset != beforeGitScrollOffset || m.historyView.middleScrollOffset != beforeMiddleScrollOffset || m.historyView.timelineScrollOffset != beforeTimelineScrollOffset || m.historyView.selectedGitCommit != beforeSelectedGitCommit || m.historyView.selectedRelatedBead != beforeSelectedRelatedBead {
+		t.Fatal("semicolon changed History state")
+	}
+	if got, want := m.historyView.width, m.mainContentWidth(); got != want {
+		t.Fatalf("History width with sidebar = %d, want reserved content width %d", got, want)
+	}
+
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if m.showShortcutsSidebar {
+		t.Fatal("second semicolon did not close the History sidebar")
+	}
+	if got, want := m.historyView.width, m.width; got != want {
+		t.Fatalf("History width after closing sidebar = %d, want terminal width %d", got, want)
+	}
+
+	m = setupTestModel(t)
+	m.width, m.height = 200, 40
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open the supported list sidebar")
+	}
+	updated, _ = m.Update(keyMsg("h"))
+	m = updated.(Model)
+	if !m.isHistoryView || m.focused != focusHistory || !m.showShortcutsSidebar {
+		t.Fatalf("entering History lost the open sidebar: view=%v focus=%v sidebar=%v", m.isHistoryView, m.focused, m.showShortcutsSidebar)
+	}
+	if !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("History View did not render the shortcuts sidebar after entering from List")
+	}
+}
+
+func TestKeyDispatch_ShortcutsSidebarTogglesInBoardAndInsights(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		want focus
+	}{
+		{name: "board", key: "b", want: focusBoard},
+		{name: "insights", key: "i", want: focusInsights},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupTestModel(t)
+			m.width, m.height = 200, 40
+
+			updated, _ := m.Update(keyMsg(tc.key))
+			m = updated.(Model)
+			if m.focused != tc.want {
+				t.Fatalf("view key %q set focus=%v, want %v", tc.key, m.focused, tc.want)
+			}
+
+			updated, _ = m.Update(keyMsg(";"))
+			m = updated.(Model)
+			if !m.showShortcutsSidebar {
+				t.Fatal("semicolon did not open the shortcuts sidebar")
+			}
+			if !strings.Contains(m.View(), "Shortcuts") {
+				t.Fatalf("%s view clipped the open shortcuts sidebar", tc.name)
+			}
+
+			updated, _ = m.Update(keyMsg(";"))
+			m = updated.(Model)
+			if m.showShortcutsSidebar {
+				t.Fatal("second semicolon did not close the shortcuts sidebar")
+			}
+		})
+	}
+}
+
 // TestKeyDispatch_Regression_EscInTreeReturnsList verifies that ESC in tree view
 // returns to list.
 func TestKeyDispatch_Regression_EscInTreeReturnsList(t *testing.T) {
@@ -795,6 +897,12 @@ func TestKeyDispatch_Regression_HistorySearchConsumesGlobalKeys(t *testing.T) {
 		t.Fatalf("Expected history view after 'h', got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
 	}
 
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open the shortcuts sidebar before History search")
+	}
+
 	updated, _ = m.Update(keyMsg("/"))
 	m = updated.(Model)
 	if !m.historyView.IsSearchActive() {
@@ -811,8 +919,8 @@ func TestKeyDispatch_Regression_HistorySearchConsumesGlobalKeys(t *testing.T) {
 	if m.focused != focusHistory || !m.isHistoryView {
 		t.Fatalf("expected history search input to stay in history view, got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
 	}
-	if m.showHelp || m.showTutorial || m.showShortcutsSidebar {
-		t.Fatalf("History search opened global UI: help=%v tutorial=%v sidebar=%v", m.showHelp, m.showTutorial, m.showShortcutsSidebar)
+	if m.showHelp || m.showTutorial || !m.showShortcutsSidebar {
+		t.Fatalf("History search changed global UI: help=%v tutorial=%v sidebar=%v", m.showHelp, m.showTutorial, m.showShortcutsSidebar)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	m = updated.(Model)
