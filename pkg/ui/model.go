@@ -5452,7 +5452,11 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 func (m *Model) toggleInsightsStatusFilter(filter string) {
 	switch filter {
 	case "open":
-		m.insightsStatusFilter = ""
+		if m.insightsStatusFilter == "open" {
+			m.insightsStatusFilter = ""
+		} else {
+			m.insightsStatusFilter = "open"
+		}
 	case "ready":
 		if m.insightsStatusFilter == "ready" {
 			m.insightsStatusFilter = ""
@@ -6873,10 +6877,14 @@ func (m *Model) renderFooter() string {
 		filterTxt = fmt.Sprintf("LABEL %s: enter filter • g graph • esc/q/d close", m.labelDrilldownLabel)
 		filterIcon = "🏷️"
 	} else if m.focused == focusInsights {
-		if m.insightsStatusFilter == "ready" {
+		switch m.insightsStatusFilter {
+		case "open":
+			filterTxt = "OPEN"
+			filterIcon = "📂"
+		case "ready":
 			filterTxt = "READY"
 			filterIcon = "🚀"
-		} else {
+		default:
 			filterTxt = "ACTIVE"
 			filterIcon = "📂"
 		}

@@ -1291,12 +1291,32 @@ func TestInsightsStatusScopeIsIndependentFromListAndBoard(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
 	m = updated.(Model)
-	if m.insightsStatusFilter != "" || len(m.insightsIssueIDs()) != 2 {
-		t.Fatalf("o changed broad active scope: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	if m.insightsStatusFilter != "open" || len(m.insightsIssueIDs()) != 2 || !strings.Contains(m.renderFooter(), "OPEN") {
+		t.Fatalf("o did not enable open scope: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "" || len(m.insightsIssueIDs()) != 2 || !strings.Contains(m.renderFooter(), "ACTIVE") {
+		t.Fatalf("o did not clear to broad active scope: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "ready" || len(m.insightsIssueIDs()) != 1 {
+		t.Fatalf("r did not enable ready scope after open toggle: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "open" || len(m.insightsIssueIDs()) != 2 || !strings.Contains(m.renderFooter(), "OPEN") {
+		t.Fatalf("o did not switch ready scope to open: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(Model)
+	if m.insightsStatusFilter != "ready" || len(m.insightsIssueIDs()) != 1 {
+		t.Fatalf("r did not switch open scope to ready: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
-	if m.insightsStatusFilter != "" || m.currentFilter != "closed" {
+	if m.insightsStatusFilter != "ready" || m.currentFilter != "closed" {
 		t.Fatalf("Insights c disturbed state: insights=%q list=%q", m.insightsStatusFilter, m.currentFilter)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
