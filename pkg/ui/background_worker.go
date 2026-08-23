@@ -1299,7 +1299,7 @@ func (w *BackgroundWorker) process() {
 	// Load and build snapshot
 	// Returns nil if content unchanged (dedup) or on error
 	snapshot := w.buildSnapshot(forceNext, refreshBDExport)
-	catalog, catalogErr := w.buildRepositoryCatalog(snapshot)
+	catalog, contextlessBeadCount, contextlessCountReady, catalogErr := w.buildRepositoryCatalog(snapshot)
 	if refreshBDExport {
 		if w.LastError() != nil {
 			w.scheduleSourceRetry()
@@ -1403,18 +1403,20 @@ func (w *BackgroundWorker) process() {
 			"queue_depth": queueDepth,
 		})
 		w.send(SnapshotReadyMsg{
-			Snapshot:          snapshot,
-			FileChangeAt:      fileChangeAt,
-			SentAt:            readyAt,
-			SnapshotVer:       version,
-			QueueDepth:        queueDepth,
-			CoalesceCount:     coalesced,
-			Catalog:           catalog,
-			CatalogGeneration: catalogGeneration,
-			CatalogAvailable:  !catalogStale && catalogErr == nil && w.hubConfigPath != "",
-			CatalogChanged:    !catalogStale && catalogChanged,
-			CatalogRecovered:  !catalogStale && catalogRecovered,
-			CatalogError:      deliveredCatalogErr,
+			Snapshot:              snapshot,
+			FileChangeAt:          fileChangeAt,
+			SentAt:                readyAt,
+			SnapshotVer:           version,
+			QueueDepth:            queueDepth,
+			CoalesceCount:         coalesced,
+			Catalog:               catalog,
+			ContextlessBeadCount:  contextlessBeadCount,
+			ContextlessCountReady: contextlessCountReady,
+			CatalogGeneration:     catalogGeneration,
+			CatalogAvailable:      !catalogStale && catalogErr == nil && w.hubConfigPath != "",
+			CatalogChanged:        !catalogStale && catalogChanged,
+			CatalogRecovered:      !catalogStale && catalogRecovered,
+			CatalogError:          deliveredCatalogErr,
 		})
 	} else if sourceRefreshUnchanged {
 		w.send(HubSourceRefreshCompleteMsg{})
@@ -1427,9 +1429,20 @@ func (w *BackgroundWorker) process() {
 		}
 		if snapshot == nil {
 			if catalogErr != nil {
-				w.send(RepositoryCatalogErrorMsg{Err: catalogErr, Generation: catalogGeneration})
+				w.send(RepositoryCatalogErrorMsg{
+					Err:                   catalogErr,
+					ContextlessBeadCount:  contextlessBeadCount,
+					ContextlessCountReady: contextlessCountReady,
+					Generation:            catalogGeneration,
+				})
 			} else if catalogChanged || catalogRecovered {
-				w.send(RepositoryCatalogReadyMsg{Catalog: catalog, Generation: catalogGeneration, Recovered: catalogRecovered})
+				w.send(RepositoryCatalogReadyMsg{
+					Catalog:               catalog,
+					ContextlessBeadCount:  contextlessBeadCount,
+					ContextlessCountReady: w.hubConfigPath != "",
+					Generation:            catalogGeneration,
+					Recovered:             catalogRecovered,
+				})
 			}
 		}
 	}
@@ -1526,13 +1539,13 @@ func (w *BackgroundWorker) scheduleSourceRetry() {
 	w.mu.Unlock()
 }
 
-func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (model.RepositoryCatalog, error) {
+func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (model.RepositoryCatalog, int, bool, error) {
 	w.mu.RLock()
 	path := w.hubConfigPath
 	current := w.snapshot
 	w.mu.RUnlock()
 	if path == "" {
-		return nil, nil
+		return nil, 0, false, nil
 	}
 	var issues []model.Issue
 	if snapshot != nil {
@@ -1540,19 +1553,20 @@ func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (model
 	} else if current != nil {
 		issues = current.Issues
 	}
-	if snapshot != nil && snapshot.LoadedOpenOnly {
+	if (snapshot != nil && snapshot.LoadedOpenOnly) || (snapshot == nil && current != nil && current.LoadedOpenOnly) {
 		loaded, err := loadIssuesForReload(w.beadsPath, loader.ParseOptions{BufferSize: envMaxLineSizeBytes()})
 		if err != nil {
-			return nil, &WorkerError{Phase: "catalog", Cause: fmt.Errorf("loading complete issue set: %w", err), Time: time.Now()}
+			return nil, 0, false, &WorkerError{Phase: "catalog", Cause: fmt.Errorf("loading complete issue set: %w", err), Time: time.Now()}
 		}
 		issues = loaded.Issues
 		defer loader.ReturnIssuePtrsToPool(loaded.PoolRefs)
 	}
+	contextlessBeadCount := contextlessIssueCount(issues)
 	catalog, err := w.catalogLoader(path, issues)
 	if err != nil {
-		return nil, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
+		return nil, contextlessBeadCount, true, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
 	}
-	return catalog, nil
+	return catalog, contextlessBeadCount, true, nil
 }
 
 func (w *BackgroundWorker) cancelCatalogRetry() {
@@ -2197,18 +2211,20 @@ func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHas
 
 // SnapshotReadyMsg is sent to the UI when a new snapshot is ready.
 type SnapshotReadyMsg struct {
-	Snapshot          *DataSnapshot
-	FileChangeAt      time.Time
-	SentAt            time.Time
-	SnapshotVer       uint64
-	QueueDepth        int64
-	CoalesceCount     int64
-	Catalog           model.RepositoryCatalog
-	CatalogGeneration uint64
-	CatalogAvailable  bool
-	CatalogChanged    bool
-	CatalogRecovered  bool
-	CatalogError      error
+	Snapshot              *DataSnapshot
+	FileChangeAt          time.Time
+	SentAt                time.Time
+	SnapshotVer           uint64
+	QueueDepth            int64
+	CoalesceCount         int64
+	Catalog               model.RepositoryCatalog
+	ContextlessBeadCount  int
+	ContextlessCountReady bool
+	CatalogGeneration     uint64
+	CatalogAvailable      bool
+	CatalogChanged        bool
+	CatalogRecovered      bool
+	CatalogError          error
 }
 
 // WorkerProcessingMsg notifies the UI that active refresh feedback should start.
@@ -2229,16 +2245,20 @@ type HubSourceRefreshCompleteMsg struct{}
 
 // RepositoryCatalogReadyMsg carries independently refreshed Hub metadata.
 type RepositoryCatalogReadyMsg struct {
-	Catalog    model.RepositoryCatalog
-	Generation uint64
-	Recovered  bool
+	Catalog               model.RepositoryCatalog
+	ContextlessBeadCount  int
+	ContextlessCountReady bool
+	Generation            uint64
+	Recovered             bool
 }
 
 // RepositoryCatalogErrorMsg reports a transient catalog load failure. The UI
 // retains its last valid catalog while the worker retries.
 type RepositoryCatalogErrorMsg struct {
-	Err        error
-	Generation uint64
+	Err                   error
+	ContextlessBeadCount  int
+	ContextlessCountReady bool
+	Generation            uint64
 }
 
 // Phase2UpdateMsg is sent when Phase 2 analysis completes.
@@ -2323,6 +2343,8 @@ func (w *BackgroundWorker) mergeCatalogReadyIntoSnapshot(messages []tea.Msg) int
 			switch {
 			case catalog.Generation > snapshot.CatalogGeneration:
 				snapshot.Catalog = catalog.Catalog
+				snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
+				snapshot.ContextlessCountReady = catalog.ContextlessCountReady
 				snapshot.CatalogGeneration = catalog.Generation
 				snapshot.CatalogAvailable = true
 				snapshot.CatalogChanged = true
@@ -2330,6 +2352,8 @@ func (w *BackgroundWorker) mergeCatalogReadyIntoSnapshot(messages []tea.Msg) int
 				snapshot.CatalogError = nil
 			case catalog.Generation == snapshot.CatalogGeneration && !snapshot.CatalogAvailable:
 				snapshot.Catalog = catalog.Catalog
+				snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
+				snapshot.ContextlessCountReady = catalog.ContextlessCountReady
 				snapshot.CatalogAvailable = true
 				snapshot.CatalogChanged = true
 				snapshot.CatalogRecovered = catalog.Recovered
@@ -2338,6 +2362,10 @@ func (w *BackgroundWorker) mergeCatalogReadyIntoSnapshot(messages []tea.Msg) int
 				// Equal generations describe the same catalog state. Keep the
 				// snapshot payload while preserving standalone delivery/recovery.
 				snapshot.CatalogChanged = true
+				if catalog.ContextlessCountReady {
+					snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
+					snapshot.ContextlessCountReady = true
+				}
 				snapshot.CatalogRecovered = snapshot.CatalogRecovered || catalog.Recovered
 				snapshot.CatalogError = nil
 			}

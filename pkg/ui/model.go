@@ -481,27 +481,29 @@ func cloneIssuesForAsync(issues []model.Issue) []model.Issue {
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues                  []model.Issue
-	pooledIssues            []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
-	issueMap                map[string]*model.Issue
-	analyzer                *analysis.Analyzer
-	analysis                *analysis.GraphStats
-	beadsPath               string // Path to beads.jsonl for reloading
-	semanticPath            string // Stable repository or dataset identity for semantic caching
-	hubConfigPath           string
-	historyMode             correlation.HistoryMode
-	hubRepositoryMode       bool
-	repositoryCatalog       model.RepositoryCatalog
-	hubScope                model.HubScope
-	repositoryCatalogIssues []model.Issue
-	repositoryIssues        []model.Issue
-	repositoryIssueIDs      map[string]bool
-	repositoryCatalogReady  bool
-	defaultRepositoryID     string
-	defaultRepositorySet    bool
-	catalogGeneration       uint64
-	watcher                 *watcher.Watcher // File watcher for live reload
-	instanceLock            *instance.Lock   // Multi-instance coordination lock
+	issues                    []model.Issue
+	pooledIssues              []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
+	issueMap                  map[string]*model.Issue
+	analyzer                  *analysis.Analyzer
+	analysis                  *analysis.GraphStats
+	beadsPath                 string // Path to beads.jsonl for reloading
+	semanticPath              string // Stable repository or dataset identity for semantic caching
+	hubConfigPath             string
+	historyMode               correlation.HistoryMode
+	hubRepositoryMode         bool
+	repositoryCatalog         model.RepositoryCatalog
+	hubScope                  model.HubScope
+	repositoryCatalogIssues   []model.Issue
+	contextlessBeadCountValue int
+	contextlessCountReady     bool
+	repositoryIssues          []model.Issue
+	repositoryIssueIDs        map[string]bool
+	repositoryCatalogReady    bool
+	defaultRepositoryID       string
+	defaultRepositorySet      bool
+	catalogGeneration         uint64
+	watcher                   *watcher.Watcher // File watcher for live reload
+	instanceLock              *instance.Lock   // Multi-instance coordination lock
 
 	// Background Worker (Phase 2 architecture - bv-m7v8)
 	// snapshot is the current immutable data snapshot from BackgroundWorker.
@@ -1464,6 +1466,18 @@ func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 // stable total counts when the initial TUI view is recipe-filtered.
 func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
 	m.repositoryCatalogIssues = cloneIssuesForAsync(issues)
+	m.contextlessCountReady = false
+}
+
+func (m Model) contextlessBeadCount() int {
+	if m.contextlessCountReady {
+		return m.contextlessBeadCountValue
+	}
+	issues := m.repositoryCatalogIssues
+	if issues == nil {
+		issues = m.issues
+	}
+	return contextlessIssueCount(issues)
 }
 
 func (m *Model) reloadRepositoryCatalog() error {
@@ -1493,6 +1507,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	m.repositoryCatalogReady = true
 	if m.showRepoPicker {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
+		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
 	}
 	m.board.SetRepositoryPresentation(catalog, true)
 	m.insightsPanel.SetRepositoryPresentation(catalog, true)
@@ -1521,6 +1536,7 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		m.repositoryCatalogReady = true
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
+			m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
 		}
 		m.refreshRepositoryPresentation()
 		defaultApplied := m.applyDefaultRepositoryScope()
@@ -2050,6 +2066,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case RepositoryCatalogReadyMsg:
+		if msg.ContextlessCountReady && !m.workspaceMode && msg.Generation >= m.catalogGeneration {
+			m.contextlessBeadCountValue = msg.ContextlessBeadCount
+			m.contextlessCountReady = true
+		}
 		m.applyRepositoryCatalogUpdate(msg.Catalog, msg.Generation, true, msg.Recovered, nil)
 		if m.backgroundWorker != nil {
 			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
@@ -2057,6 +2077,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case RepositoryCatalogErrorMsg:
+		if msg.ContextlessCountReady && !m.workspaceMode && msg.Generation >= m.catalogGeneration {
+			m.contextlessBeadCountValue = msg.ContextlessBeadCount
+			m.contextlessCountReady = true
+			if m.showRepoPicker {
+				m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+			}
+		}
 		m.applyRepositoryCatalogUpdate(nil, msg.Generation, false, false, msg.Err)
 		if m.backgroundWorker != nil {
 			return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
@@ -2146,6 +2173,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update legacy fields for backwards compatibility during migration
 		// Eventually these will be removed when all code reads from snapshot
 		m.issues = msg.Snapshot.Issues
+		acceptSnapshotCatalogState := !m.usesHubScope() || msg.CatalogGeneration >= m.catalogGeneration
+		if !msg.Snapshot.LoadedOpenOnly && acceptSnapshotCatalogState {
+			m.repositoryCatalogIssues = cloneIssuesForAsync(m.issues)
+			m.contextlessCountReady = false
+		}
+		if msg.ContextlessCountReady && acceptSnapshotCatalogState {
+			m.contextlessBeadCountValue = msg.ContextlessBeadCount
+			m.contextlessCountReady = true
+			if m.showRepoPicker {
+				m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+			}
+		}
 		m.historyGeneration++
 		m.historyLoading = len(m.issues) > 0
 		if m.historyLoading {
@@ -2604,7 +2643,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyReport = nil
 			m.historyView.SetReport(nil)
 		}
-		m.repositoryCatalogIssues = cloneIssuesForAsync(newIssues)
+		m.SetRepositoryCatalogIssues(newIssues)
 		if err := m.reloadRepositoryCatalog(); err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog reload failed: %v", err)
 			m.statusIsError = true
@@ -4130,6 +4169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.repoPicker.SetActiveRepos(m.activeRepos)
 					}
+					m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
 					m.repoPicker.SetSize(m.width, m.height-1)
 					m.focused = focusRepoPicker
 				} else {

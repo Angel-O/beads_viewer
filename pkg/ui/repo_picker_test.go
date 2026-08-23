@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -52,6 +53,164 @@ func TestRepoPickerViewContainsRepos(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in view, got:\n%s", want, out)
 		}
+	}
+}
+
+func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "contextless-1"},
+		{ID: "contextless-2", Labels: []string{"backend"}},
+		{ID: "alpha", Labels: []string{"ctx:alpha"}},
+		{ID: "unknown", Labels: []string{"ctx:unknown"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.ready = true
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = updated.(Model)
+	if !m.showRepoPicker {
+		t.Fatal("repository picker did not open")
+	}
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (2)") {
+		t.Fatalf("contextless picker row missing bead count:\n%s", picker)
+	}
+}
+
+func TestHubRepositoryPickerRefreshesContextlessBeadCountWithSnapshot(t *testing.T) {
+	initial := []model.Issue{{ID: "item", Labels: []string{"ctx:alpha"}}}
+	m := NewModel(initial, nil, "")
+	m.SetRepositoryCatalogIssues(initial)
+	m.ready = true
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = updated.(Model)
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (0)") {
+		t.Fatalf("initial contextless picker row = %q", picker)
+	}
+
+	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "item"}}).Build()
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:          snapshot,
+		SnapshotVer:       1,
+		Catalog:           model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		CatalogGeneration: 1,
+		CatalogAvailable:  true,
+	})
+	m = updated.(Model)
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (1)") {
+		t.Fatalf("refreshed contextless picker row = %q", picker)
+	}
+}
+
+func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
+	initial := []model.Issue{{ID: "item", Labels: []string{"ctx:alpha"}}}
+	m := NewModel(initial, nil, "")
+	m.SetRepositoryCatalogIssues(initial)
+	m.ready = true
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = updated.(Model)
+
+	completeIssues := []model.Issue{
+		{ID: "open", Labels: []string{}},
+		{ID: "closed", Status: model.StatusClosed, Labels: []string{}},
+	}
+	snapshot := NewSnapshotBuilder(completeIssues[:1]).Build()
+	snapshot.LoadedOpenOnly = true
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:              snapshot,
+		SnapshotVer:           1,
+		Catalog:               model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		ContextlessBeadCount:  contextlessIssueCount(completeIssues),
+		ContextlessCountReady: true,
+		CatalogGeneration:     1,
+		CatalogAvailable:      true,
+	})
+	m = updated.(Model)
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (2)") {
+		t.Fatalf("open-only picker row omitted closed contextless bead:\n%s", picker)
+	}
+}
+
+func TestHubRepositoryPickerCatalogFailurePreservesFreshContextlessCount(t *testing.T) {
+	initial := []model.Issue{{ID: "item", Labels: []string{"ctx:alpha"}}}
+	m := NewModel(initial, nil, "")
+	m.SetRepositoryCatalogIssues(initial)
+	m.ready = true
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = updated.(Model)
+	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "open"}}).Build()
+	snapshot.LoadedOpenOnly = true
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:              snapshot,
+		SnapshotVer:           1,
+		ContextlessBeadCount:  2,
+		ContextlessCountReady: true,
+		CatalogGeneration:     1,
+		CatalogError:          errors.New("catalog unavailable"),
+	})
+	m = updated.(Model)
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (2)") {
+		t.Fatalf("catalog failure lost fresh contextless count:\n%s", picker)
+	}
+	if !m.statusIsError {
+		t.Fatal("catalog failure did not retain error state")
+	}
+
+	updated, _ = m.Update(RepositoryCatalogReadyMsg{
+		Catalog:               model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		ContextlessCountReady: true,
+		Generation:            2,
+		Recovered:             true,
+	})
+	m = updated.(Model)
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (0)") {
+		t.Fatalf("catalog recovery did not propagate valid zero:\n%s", picker)
+	}
+	if m.statusIsError {
+		t.Fatal("catalog recovery retained error state")
+	}
+}
+
+func TestHubRepositoryPickerIgnoresStaleSnapshotContextlessCount(t *testing.T) {
+	initial := []model.Issue{{ID: "item", Labels: []string{"ctx:alpha"}}}
+	m := NewModel(initial, nil, "")
+	m.SetRepositoryCatalogIssues(initial)
+	m.ready = true
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = updated.(Model)
+	updated, _ = m.Update(RepositoryCatalogReadyMsg{
+		Catalog:               model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		ContextlessCountReady: true,
+		Generation:            2,
+	})
+	m = updated.(Model)
+
+	staleSnapshot := NewSnapshotBuilder([]model.Issue{{ID: "old"}}).Build()
+	staleSnapshot.LoadedOpenOnly = true
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:              staleSnapshot,
+		SnapshotVer:           1,
+		ContextlessBeadCount:  7,
+		ContextlessCountReady: true,
+		CatalogGeneration:     1,
+		CatalogAvailable:      true,
+	})
+	m = updated.(Model)
+	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (0)") {
+		t.Fatalf("stale snapshot overwrote newer zero contextless count:\n%s", picker)
 	}
 }
 
