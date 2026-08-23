@@ -981,6 +981,7 @@ func (m *Model) refreshRepositoryDerivedViews() {
 	if m.analyzer == nil || m.analysis == nil {
 		return
 	}
+	m.revalidateInsightsDetail(m.insightsIssueIDs())
 	if m.isActionableView {
 		plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.repositoryIssueIDs, m.repositoryIssues)
 		m.actionableView = NewActionableModel(plan, m.theme)

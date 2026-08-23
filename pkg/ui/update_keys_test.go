@@ -521,6 +521,72 @@ func TestInsightsEnterShowsDirectDetailAndPreservesClosedFilter(t *testing.T) {
 	}
 }
 
+func TestInsightsDirectDetailClearsOnSplitListInteraction(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+	}, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
+	m.insightsPanel.focusedPanel = PanelBottlenecks
+	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.isSplitView || m.insightsDetailID != "active" {
+		t.Fatalf("split direct detail setup failed: split=%v id=%q", m.isSplitView, m.insightsDetailID)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focused != focusList || m.insightsDetailID != "" {
+		t.Fatalf("Tab leaked direct detail into List: focus=%v id=%q", m.focused, m.insightsDetailID)
+	}
+
+	m.insightsDetailID = "active"
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+	if m.insightsDetailID != "" {
+		t.Fatal("List selection retained direct Insights detail binding")
+	}
+
+	m.insightsDetailID = "active"
+	m.focused = focusDetail
+	m = m.handleLeftClick(5, m.listChromeLines())
+	if m.focused != focusList || m.insightsDetailID != "" {
+		t.Fatalf("list click leaked direct detail: focus=%v id=%q", m.focused, m.insightsDetailID)
+	}
+}
+
+func TestInsightsDirectDetailClearsWhenIssueClosesOnRefresh(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "active", Title: "Active", Status: model.StatusOpen},
+		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
+	}, nil, "")
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = updated.(Model)
+	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
+	m.insightsPanel.focusedPanel = PanelBottlenecks
+	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.insightsDetailID != "active" {
+		t.Fatalf("direct detail setup failed: %q", m.insightsDetailID)
+	}
+
+	m.issues[0].Status = model.StatusClosed
+	m.refreshRepositoryCandidates()
+	if m.insightsDetailID != "" || m.showDetails || m.focused != focusInsights {
+		t.Fatalf("closed refresh retained direct detail: id=%q details=%v focus=%v", m.insightsDetailID, m.showDetails, m.focused)
+	}
+}
+
 func TestAttentionViewEscapeAndQRestoreOrigin(t *testing.T) {
 	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}
 	origins := []struct {

@@ -1570,6 +1570,7 @@ func (m *Model) rebuildInsightsPanel() {
 		ins = m.analysis.GenerateInsights(len(m.issues))
 	}
 	insightsIDs := m.insightsIssueIDs()
+	m.revalidateInsightsDetail(insightsIDs)
 	ins = projectInsights(ins, insightsIDs)
 
 	prev := m.insightsPanel
@@ -2208,6 +2209,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.issueMap = msg.Snapshot.IssueMap
 		m.analyzer = msg.Snapshot.Analyzer
 		m.analysis = msg.Snapshot.Analysis
+		m.syncRepositoryCandidates()
+		m.revalidateInsightsDetail(m.insightsIssueIDs())
 		m.countOpen = msg.Snapshot.CountOpen
 		m.countReady = msg.Snapshot.CountReady
 		m.countBlocked = msg.Snapshot.CountBlocked
@@ -2682,6 +2685,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.issues {
 			m.issueMap[m.issues[i].ID] = &m.issues[i]
 		}
+		m.syncRepositoryCandidates()
+		m.revalidateInsightsDetail(m.insightsIssueIDs())
 		if profileRefresh {
 			recordTiming("issue_map", time.Since(mapStart))
 		}
@@ -3708,6 +3713,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.focused == focusList {
 						m.focused = focusDetail
 					} else {
+						m.insightsDetailID = ""
 						m.focused = focusList
 					}
 				}
@@ -4247,6 +4253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Scroll up based on current focus
 			switch m.focused {
 			case focusList:
+				m.insightsDetailID = ""
 				if m.list.Index() > 0 {
 					m.list.Select(m.list.Index() - 1)
 					// Sync detail panel in split view mode
@@ -4276,6 +4283,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Scroll down based on current focus
 			switch m.focused {
 			case focusList:
+				m.insightsDetailID = ""
 				if m.list.Index() < len(m.list.Items())-1 {
 					m.list.Select(m.list.Index() + 1)
 					// Sync detail panel in split view mode
@@ -4326,6 +4334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Only forward keyboard messages to list when list has focus (bv-hmkz fix)
 	// This prevents j/k keys in detail view from changing list selection
 	if m.focused == focusList {
+		m.insightsDetailID = ""
 		if _, isWindowSize := msg.(tea.WindowSizeMsg); !isWindowSize {
 			m.list, cmd = m.list.Update(msg)
 			cmds = append(cmds, cmd)
@@ -8377,6 +8386,7 @@ func (m Model) handleLeftClick(x, y int) Model {
 		// 1-cell rounded border on each side => listInnerWidth+4 total.
 		listPanelWidth := m.list.Width() + 4
 		if x < listPanelWidth {
+			m.insightsDetailID = ""
 			m.focused = focusList
 			// Lines above the first row: border + header + list filter bar.
 			selectListRow(y - m.listChromeLines())
@@ -8394,6 +8404,17 @@ func (m Model) handleLeftClick(x, y int) Model {
 		selectListRow(y - m.listChromeLines())
 	}
 	return m
+}
+
+func (m *Model) revalidateInsightsDetail(ids map[string]bool) {
+	if m.insightsDetailID == "" || ids[m.insightsDetailID] {
+		return
+	}
+	m.insightsDetailID = ""
+	m.showDetails = false
+	if m.focused == focusDetail {
+		m.focused = focusInsights
+	}
 }
 
 func (m *Model) updateViewportContent() {
