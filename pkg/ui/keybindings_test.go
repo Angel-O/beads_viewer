@@ -812,6 +812,31 @@ func TestKeyDispatch_TreeSearchProtectsInputAndClearsBeforeExit(t *testing.T) {
 	}
 }
 
+func TestTreeSearchFooterScopeGuidanceFollowsInputState(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(2), 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("Issue"))
+	m = updated.(Model)
+
+	editingFooter := ansi.Strip(m.renderFooter())
+	if !strings.Contains(editingFooter, "Enter:done") || strings.Contains(editingFooter, "v:subtrees") {
+		t.Fatalf("editing Tree footer has incorrect scope guidance: %q", editingFooter)
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	submittedFooter := ansi.Strip(m.renderFooter())
+	if !strings.Contains(submittedFooter, "minimal • v:subtrees") {
+		t.Fatalf("submitted Tree footer is missing early scope guidance: %q", submittedFooter)
+	}
+	if strings.Index(submittedFooter, "minimal • v:subtrees") > strings.Index(submittedFooter, "n/N:match") {
+		t.Fatalf("submitted Tree scope guidance appears too late: %q", submittedFooter)
+	}
+}
+
 func TestKeyDispatch_TreeShortcutsSidebarPreservesState(t *testing.T) {
 	maxLineWidth := func(view string) int {
 		maxWidth := 0

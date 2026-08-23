@@ -39,6 +39,19 @@ func treeSearchScopeIssues() []model.Issue {
 	}
 }
 
+func treeSearchSharedDescendantIssues() []model.Issue {
+	return []model.Issue{
+		{ID: "parent-a", Title: "Needle alpha", Priority: 1, IssueType: model.TypeEpic},
+		{ID: "parent-b", Title: "Needle beta", Priority: 2, IssueType: model.TypeEpic},
+		{ID: "shared-match", Title: "Needle shared", Priority: 3, IssueType: model.TypeTask, Dependencies: []*model.Dependency{
+			{IssueID: "shared-match", DependsOnID: "parent-a", Type: model.DepParentChild},
+			{IssueID: "shared-match", DependsOnID: "parent-b", Type: model.DepParentChild},
+		}},
+		{ID: "shared-descendant", Title: "Unmatched shared descendant", Priority: 4, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "shared-descendant", DependsOnID: "shared-match", Type: model.DepParentChild}}},
+		{ID: "unrelated-root", Title: "Unrelated branch", Priority: 0, IssueType: model.TypeEpic},
+	}
+}
+
 func treeRowIDs(tree *TreeModel) []string {
 	ids := make([]string, 0, len(tree.flatList))
 	for _, node := range tree.flatList {
@@ -179,6 +192,42 @@ func TestTreeSearchScopeToggle(t *testing.T) {
 	tree.ClearSearch()
 	if tree.roots[0].Expanded || tree.roots[0].Children[0].Expanded {
 		t.Fatal("search scope toggles changed expansion choices")
+	}
+}
+
+func TestTreeSearchSubtreesDeduplicateSharedDescendants(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build(treeSearchSharedDescendantIssues())
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+	tree.FinishSearch()
+	tree.ToggleSearchScope()
+
+	got := treeRowIDs(&tree)
+	want := []string{"parent-a", "shared-match", "shared-descendant", "parent-b"}
+	if !equalStrings(got, want) {
+		t.Fatalf("shared subtree rows = %v, want %v", got, want)
+	}
+	if len(got) != len(uniqueStrings(got)) {
+		t.Fatalf("shared subtree rows contain duplicate IDs: %v", got)
+	}
+	if tree.flatList[1].Parent == nil || tree.flatList[1].Parent.Issue.ID != "parent-a" {
+		t.Fatal("shared descendant did not retain its first traversal hierarchy context")
+	}
+	if got := tree.SearchMatchCount(); got != 3 {
+		t.Fatalf("shared subtree direct match count = %d, want 3", got)
+	}
+	if tree.GetSelectedID() != "parent-a" {
+		t.Fatalf("initial direct match selected %q, want parent-a", tree.GetSelectedID())
+	}
+	for _, wantID := range []string{"shared-match", "parent-b", "parent-a"} {
+		tree.NextSearchMatch()
+		if gotID := tree.GetSelectedID(); gotID != wantID {
+			t.Fatalf("next direct match selected %q, want %q", gotID, wantID)
+		}
+	}
+	if strings.Contains(strings.Join(got, "\n"), "unrelated-root") {
+		t.Fatal("subtree search included an unrelated root branch")
 	}
 }
 

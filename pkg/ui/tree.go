@@ -1265,8 +1265,9 @@ func (t *TreeModel) rebuildFlatList() {
 	t.flatList = t.flatList[:0]
 	t.searchMatches = t.searchMatches[:0]
 	if strings.TrimSpace(t.searchQuery) != "" {
+		seenIDs := make(map[string]bool)
 		for _, root := range t.roots {
-			t.flatList = append(t.flatList, t.searchBranch(root)...)
+			t.flatList = append(t.flatList, t.searchBranch(root, seenIDs)...)
 		}
 	} else {
 		for _, root := range t.roots {
@@ -1285,29 +1286,34 @@ func (t *TreeModel) rebuildFlatList() {
 // searchBranch returns matching nodes plus the ancestors needed to retain
 // hierarchy context. It deliberately ignores Expanded without modifying it,
 // so clearing search restores the exact expansion choices the user had made.
-func (t *TreeModel) searchBranch(node *IssueTreeNode) []*IssueTreeNode {
+func (t *TreeModel) searchBranch(node *IssueTreeNode, seenIDs map[string]bool) []*IssueTreeNode {
 	if node == nil || node.Issue == nil {
+		return nil
+	}
+	if seenIDs[node.Issue.ID] {
 		return nil
 	}
 	matches := t.searchNodeMatches(node)
 	if matches {
+		seenIDs[node.Issue.ID] = true
 		t.searchMatches = append(t.searchMatches, node)
 	}
 	if matches && t.searchSubtrees {
 		rows := []*IssueTreeNode{node}
 		for _, child := range node.Children {
-			rows = append(rows, t.appendSearchSubtree(child)...)
+			rows = append(rows, t.appendSearchSubtree(child, seenIDs)...)
 		}
 		return rows
 	}
 
 	var descendants []*IssueTreeNode
 	for _, child := range node.Children {
-		descendants = append(descendants, t.searchBranch(child)...)
+		descendants = append(descendants, t.searchBranch(child, seenIDs)...)
 	}
 	if !matches && len(descendants) == 0 {
 		return nil
 	}
+	seenIDs[node.Issue.ID] = true
 	return append([]*IssueTreeNode{node}, descendants...)
 }
 
@@ -1320,16 +1326,20 @@ func (t *TreeModel) searchNodeMatches(node *IssueTreeNode) bool {
 		strings.Contains(strings.ToLower(node.Issue.Title), query)
 }
 
-func (t *TreeModel) appendSearchSubtree(node *IssueTreeNode) []*IssueTreeNode {
+func (t *TreeModel) appendSearchSubtree(node *IssueTreeNode, seenIDs map[string]bool) []*IssueTreeNode {
 	if node == nil || node.Issue == nil {
 		return nil
 	}
+	if seenIDs[node.Issue.ID] {
+		return nil
+	}
+	seenIDs[node.Issue.ID] = true
 	if t.searchNodeMatches(node) {
 		t.searchMatches = append(t.searchMatches, node)
 	}
 	rows := []*IssueTreeNode{node}
 	for _, child := range node.Children {
-		rows = append(rows, t.appendSearchSubtree(child)...)
+		rows = append(rows, t.appendSearchSubtree(child, seenIDs)...)
 	}
 	return rows
 }

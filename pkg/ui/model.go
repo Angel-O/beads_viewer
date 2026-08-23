@@ -6871,15 +6871,20 @@ func (m *Model) renderFooter() string {
 		}
 	}
 	if m.focused == focusTree {
-		if m.tree.IsSearchActive() || m.tree.SearchQuery() != "" {
-			scopeHint := "scope:minimal • v:subtrees"
+		if m.tree.IsSearchActive() {
+			labelHint = lipgloss.NewStyle().
+				Foreground(ColorFooterHint).
+				Padding(0, 1).
+				Render("type:search • Enter:done • Escape:clear")
+		} else if m.tree.SearchQuery() != "" {
+			scopeHint := "minimal • v:subtrees"
 			if m.tree.searchSubtrees {
-				scopeHint = "scope:subtrees • v:minimal"
+				scopeHint = "subtrees • v:minimal"
 			}
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).
 				Padding(0, 1).
-				Render(fmt.Sprintf("type:search • Enter:select • n/N:match • %s • Escape:clear", scopeHint))
+				Render(fmt.Sprintf("%s • n/N:match • Esc:clear", scopeHint))
 		} else {
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).
