@@ -799,3 +799,17 @@ It therefore stopped before a product cohort. Evidence root:
 
 No runtime bytes changed. The remaining accepted campaign result is still only
 the Pass-1 blob-buffer CPU/GC improvement; Pass 28 adds no speedup claim.
+
+## 2026-08-24 pass-29 byte-native JSON rejection
+
+Pass 27's direct-event candidate was the control, isolating only removal of its
+changed-record `[]byte -> string -> []byte` round trip. The live byte path passed
+the 1,776-event differential and a one-byte input mutation changed a closed
+event into created. It reduced bytes/op 14.79% and allocations/op 2.77%, but
+eight seed-29029 pairs were user-CPU flat (-0.15% regression), regressed total
+CPU about 4.57%, and regressed wall 4.23%. Evidence root:
+`/data/tmp/bv-p29-20260824.byte-native-json`; TSV SHA-256
+`a5bafb28050b23c294e687dfa29f40c098e7d0bfc3d8b8fd4a4bb6be45d019a2`.
+
+The allocator signal is real but non-causal for speed on this workload. No
+runtime bytes changed and no product improvement is claimed.
