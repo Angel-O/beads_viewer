@@ -583,3 +583,22 @@ cleanup—dropping `Title` from the returned snapshot while still decoding it—
 saves a 16-byte temporary header but no backing allocation or parser work.
 Implementation is rejected at the profile/dependency-source gate; no speedup is
 claimed.
+
+## Pass 18 recommendation — transposed blob arena
+
+Pass 6 proved that a 64 KiB `blobReader` transport buffer removes copy work
+(`memmove` -45.8%) but also removes heap-goal runway (GC cycles +28.65%). The
+current exact profile still assigns 17.05% to blob reads, 13.36% to `readFull`,
+6.91% flat to `memmove`, and 5.99% flat to `memclr`, satisfying that retry.
+
+The candidate transposes capacity rather than deleting it. With old reader
+capacity `O=10 MiB`, new reader `N=64 KiB`, and first valid payload `S`, reserve
+`O-N` extra capacity in that already recycled payload arena. Requested live
+capacity remains `O+S = N+(S+O-N)`, while reads larger than `N` can bypass
+bufio's copy. This is the region/arena lifetime idea from canonical
+`/dp/alien_cs_graveyard` section 5.10 applied to Go heap pacing.
+
+Keep only with exact behavior; a mutation-sensitive capacity/missing-object
+proof; >=30% lower merged `memmove`; non-increasing GC cycles; and a balanced
+50-pair lower confidence bound >=3% for both user and total CPU with stable
+system CPU, wall tails, RSS, and syscall counts. A screen is not a claim.
