@@ -243,11 +243,29 @@ type WhatIfEntry struct {
 
 // TopWhatIfDeltas returns the top N issues with highest downstream impact (bv-83)
 func (a *Analyzer) TopWhatIfDeltas(n int) []WhatIfEntry {
-	return a.TopWhatIfDeltasForCandidates(n, nil)
+	stats := a.Analyze()
+	return a.TopWhatIfDeltasFromStats(&stats, n)
 }
 
 // TopWhatIfDeltasForCandidates applies candidate admission before truncation.
 func (a *Analyzer) TopWhatIfDeltasForCandidates(n int, predicate CandidatePredicate) []WhatIfEntry {
+	return a.TopWhatIfDeltasFromStats(nil, n, predicate)
+}
+
+// TopWhatIfDeltasFromStats returns the top N issues with highest downstream
+// impact using graph statistics already computed by the caller. A nil stats
+// pointer falls back to one synchronous analysis for the whole batch. An
+// optional candidate predicate is applied before the presentation cap.
+func (a *Analyzer) TopWhatIfDeltasFromStats(stats *GraphStats, n int, predicates ...CandidatePredicate) []WhatIfEntry {
+	if stats == nil {
+		analyzed := a.Analyze()
+		stats = &analyzed
+	}
+	var predicate CandidatePredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
+	}
+
 	if n <= 0 {
 		n = 10
 	}
@@ -261,7 +279,7 @@ func (a *Analyzer) TopWhatIfDeltasForCandidates(n int, predicate CandidatePredic
 		if !candidateAllowed(predicate, id) {
 			continue
 		}
-		delta := a.computeWhatIfDelta(id)
+		delta := a.computeWhatIfDeltaFromStats(id, stats)
 		if delta == nil {
 			continue
 		}

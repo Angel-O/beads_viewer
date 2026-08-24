@@ -1911,18 +1911,30 @@ func main() {
 		}
 
 		// CPU profiling support
+		var stopCPUProfile func()
 		if *cpuProfile != "" {
 			f, err := os.Create(*cpuProfile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Could not create CPU profile: %v\n", err)
 				os.Exit(1)
 			}
-			defer f.Close()
 			if err := pprof.StartCPUProfile(f); err != nil {
+				_ = f.Close()
 				fmt.Fprintf(os.Stderr, "Could not start CPU profile: %v\n", err)
 				os.Exit(1)
 			}
-			defer pprof.StopCPUProfile()
+			profileActive := true
+			stopCPUProfile = func() {
+				if !profileActive {
+					return
+				}
+				pprof.StopCPUProfile()
+				profileActive = false
+				if err := f.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "Could not close CPU profile: %v\n", err)
+				}
+			}
+			defer stopCPUProfile()
 		}
 
 		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
@@ -2043,9 +2055,10 @@ func main() {
 		}
 
 		robotDispatchContext := RobotContext{
-			Stdout:  os.Stdout,
-			Stderr:  os.Stderr,
-			Encoder: newRobotEncoder(os.Stdout),
+			Stdout:             os.Stdout,
+			Stderr:             os.Stderr,
+			Encoder:            newRobotEncoder(os.Stdout),
+			FinalizeBeforeExit: stopCPUProfile,
 		}
 		dispatchRobotFlagOrExit(&phaseOneRobotRegistry, "robot-help", robotDispatchContext)
 		dispatchRobotFlagOrExit(&phaseOneRobotRegistry, "version", robotDispatchContext)
@@ -3287,12 +3300,14 @@ func main() {
 			output := struct {
 				GeneratedAt string                     `json:"generated_at"`
 				DataHash    string                     `json:"data_hash"`
+				LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 				Flow        analysis.CrossLabelFlow    `json:"flow"`
 				Config      analysis.LabelHealthConfig `json:"analysis_config"`
 				UsageHints  []string                   `json:"usage_hints"`
 			}{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				DataHash:    dataHash,
+				LoadStats:   robotLoadStatsFromLastLoad(),
 				Flow:        flow,
 				Config:      cfg,
 				UsageHints: []string{
@@ -3325,10 +3340,11 @@ func main() {
 
 			// Build limited output
 			type AttentionOutput struct {
-				GeneratedAt string `json:"generated_at"`
-				DataHash    string `json:"data_hash"`
-				Limit       int    `json:"limit"`
-				TotalLabels int    `json:"total_labels"`
+				GeneratedAt string          `json:"generated_at"`
+				DataHash    string          `json:"data_hash"`
+				LoadStats   *RobotLoadStats `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
+				Limit       int             `json:"limit"`
+				TotalLabels int             `json:"total_labels"`
 				Labels      []struct {
 					Rank            int     `json:"rank"`
 					Label           string  `json:"label"`
@@ -3347,6 +3363,7 @@ func main() {
 			output := AttentionOutput{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				DataHash:    dataHash,
+				LoadStats:   robotLoadStatsFromLastLoad(),
 				Limit:       limit,
 				TotalLabels: result.TotalLabels,
 				UsageHints: []string{
@@ -3791,6 +3808,7 @@ func main() {
 			output := struct {
 				GeneratedAt    string                  `json:"generated_at"`
 				DataHash       string                  `json:"data_hash"`
+				LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"`   // Present when records were dropped during load (#190)
 				AsOf           string                  `json:"as_of,omitempty"`        // Historical snapshot ref
 				AsOfCommit     string                  `json:"as_of_commit,omitempty"` // Resolved commit SHA
 				AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
@@ -3805,6 +3823,7 @@ func main() {
 			}{
 				GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 				DataHash:         dataHash,
+				LoadStats:        robotLoadStatsFromLastLoad(),
 				AsOf:             *asOf,
 				AsOfCommit:       asOfResolved,
 				AnalysisConfig:   stats.Config,
@@ -3932,6 +3951,7 @@ func main() {
 			output := struct {
 				GeneratedAt string                 `json:"generated_at"`
 				DataHash    string                 `json:"data_hash"`
+				LoadStats   *RobotLoadStats        `json:"load_stats,omitempty"`   // Present when records were dropped during load (#190)
 				AsOf        string                 `json:"as_of,omitempty"`        // Historical snapshot ref (e.g., HEAD~30)
 				AsOfCommit  string                 `json:"as_of_commit,omitempty"` // Resolved commit SHA
 				Triage      analysis.TriageResult  `json:"triage"`
@@ -3940,6 +3960,7 @@ func main() {
 			}{
 				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 				DataHash:    dataHash,
+				LoadStats:   robotLoadStatsFromLastLoad(),
 				AsOf:        *asOf,
 				AsOfCommit:  asOfResolved,
 				Triage:      triage,
@@ -6173,8 +6194,13 @@ func applyRecipeFilters(issues []model.Issue, r *recipe.Recipe) []model.Issue {
 			}
 		}
 
-		// Actionable filter (no open blockers)
+		// Actionable filter (no open blockers, not scheduler-deferred).
+		// A future defer_until withholds the bead exactly as `br ready` does
+		// (issue #191); the deferral lapses on its own once the instant passes.
 		if f.Actionable != nil && *f.Actionable {
+			if issue.IsDeferredAt(now) {
+				continue
+			}
 			hasOpenBlockers := false
 			for _, dep := range issue.Dependencies {
 				if dep != nil && dep.Type.IsBlocking() && openBlockers[dep.DependsOnID] {
@@ -8453,16 +8479,26 @@ func NewRobotEnvelope(dataHash string) RobotEnvelope {
 		OutputFormat: robotOutputFormat,
 		Version:      version.Version,
 	}
-	if rep := datasource.LastLoadReport(); rep != nil && rep.Errors > 0 {
-		env.LoadStats = &RobotLoadStats{
-			SourcePath: rep.Path,
-			Valid:      rep.Valid,
-			Errors:     rep.Errors,
-			Skipped:    rep.Skipped,
-			Warnings:   rep.Warnings,
-		}
-	}
+	env.LoadStats = robotLoadStatsFromLastLoad()
 	return env
+}
+
+// robotLoadStatsFromLastLoad returns a load_stats block when the most recent
+// JSONL load dropped records (malformed JSON or failed validation), nil
+// otherwise. Hand-rolled robot output structs that do not embed RobotEnvelope
+// use this directly so every robot surface reports drops consistently (#190).
+func robotLoadStatsFromLastLoad() *RobotLoadStats {
+	rep := datasource.LastLoadReport()
+	if rep == nil || rep.Errors == 0 {
+		return nil
+	}
+	return &RobotLoadStats{
+		SourcePath: rep.Path,
+		Valid:      rep.Valid,
+		Errors:     rep.Errors,
+		Skipped:    rep.Skipped,
+		Warnings:   rep.Warnings,
+	}
 }
 
 type robotEncoder interface {
