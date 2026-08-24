@@ -480,7 +480,7 @@ func (m *RepoPickerModel) View() string {
 					check = "[x]"
 				}
 				count := fmt.Sprintf(" (%d)", m.contextlessBeadCount)
-				nameWidth := max(1, contentWidth-lipgloss.Width(prefix+check+count)-3)
+				nameWidth := max(0, contentWidth-lipgloss.Width(prefix+check+" "+count))
 				line := prefix + check + " " + truncateRunesHelper("no-context", nameWidth, "...") + count
 				lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
 				if showDetails {

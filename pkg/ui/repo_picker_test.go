@@ -169,6 +169,27 @@ func TestRepoPickerCurrentMarkerTruncatesPlainRowBeforeStyling(t *testing.T) {
 	}
 }
 
+func TestRepoPickerContextlessRowPreservesCountAtNarrowWidth(t *testing.T) {
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetSize(20, 8)
+
+	view := m.View()
+	var row string
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "(0)") {
+			row = strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
+			break
+		}
+	}
+	if want := "▸ [x]  (0)"; row != want {
+		t.Fatalf("narrow contextless row = %q, want %q; full view:\n%s", row, want, view)
+	}
+	if strings.Contains(row, "...") || lipgloss.Width(view) > 20 {
+		t.Fatalf("narrow contextless row lost fixed fields or overflowed: %q", row)
+	}
+}
+
 func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetHubScope(model.NewAllItemsHubScope())
