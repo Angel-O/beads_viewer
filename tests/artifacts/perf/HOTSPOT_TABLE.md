@@ -673,3 +673,25 @@ trigger, so no 50-pair cohort ran. Evidence root:
 The campaign rejects the performance claim. A shared workflow had already
 committed and pushed source/test commits `a161788e` and `2105763f`, so their
 operational bytes remain peer-owned; that retention is not an accepted speedup.
+
+## 2026-08-24 pass-20 PGO cold-triage rejection
+
+The current eight-profile cold-triage corpus merged reproducibly to SHA-256
+`68e226f6...` with 2.01 s sampled Go CPU. Exact Go 1.25.5 diagnostics proved
+real activation: the PGO build selected 63 hot-budget inlining decisions while
+the `-pgo=off` control selected zero. Duplicate clean-cache binaries were
+byte-identical per arm (`c4791ef2...` off, `5e48afc6...` PGO); PGO increased
+the binary by only 37,699 bytes (+0.070%).
+
+Focused ordinary/race correlation, the 1,776-event differential, and vet
+passed. The aggregate PGO suite remains honestly red because root invalidated a
+permission-denied test and a UI worker exceeded a two-second wait under compile
+load; unaffected packages and E2E passed.
+
+The seed-20020 12-pair screen kept all normalized outputs exact. User CPU
+improved 2.59% with interval [-3.55%, +8.28%], total CPU 4.75% with interval
+[-0.21%, +9.84%], and wall 3.22% with interval [-2.15%, +8.67%]; RSS regressed
+0.048%. The frozen confirmation trigger required both user and total point
+estimates >=3%; user CPU failed, so no 50-pair cohort ran and no build/release
+change was made. Evidence root: `/data/tmp/bv-p20-20260824.pgo-cold-triage`;
+TSV SHA-256 `3c576c0e8807dee9e00edb81ab1a7c2985a9fdf7c2aa5f99a77e7f3050be46ba`.
