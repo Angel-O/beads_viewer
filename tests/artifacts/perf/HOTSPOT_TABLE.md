@@ -865,3 +865,17 @@ Swapping in `io.ReadFull` only changes wrapper branches and short-read errors.
 
 Neither pass changed source. These are profile attribution corrections, not
 performance claims.
+
+## 2026-08-24 pass-35 Linux response-pipe rejection
+
+An isolated 1 MiB stdout pipe retained the 64 KiB request pipe and exact
+498-object/384,364,934-byte framing. Eight direct pairs improved user/total/wall
+7.98%/11.68%/11.95%, and strace proved the source candidate's
+`F_SETPIPE_SZ(1048576)` succeeded. The 12-pair product screen kept every output
+exact and improved user/wall 4.91%/4.15%, but system CPU regressed 17.41%, total
+CPU 2.96%, and RSS 0.063%. Evidence roots:
+`/data/tmp/bv-p35-20260824.pipe-capacity` and
+`/data/tmp/bv-p35-20260824.pipe-source`.
+
+No platform helper entered production. Producer-seam latency does not offset
+the measured system/total-CPU regression.
