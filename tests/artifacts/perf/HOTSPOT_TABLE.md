@@ -891,3 +891,14 @@ Evidence roots: `/data/tmp/bv-p36-20260824.stripped-link` and
 
 No build or release default changed. Binary size is not reported as runtime
 speed, and neither codegen screen cleared the CPU gate.
+
+## 2026-08-24 pass-38 static no-CGO rejection
+
+Duplicate CGO-disabled binaries were byte-identical and statically linked, but
+12 paired exact robot runs regressed user CPU 1.43%, total CPU 0.43%, wall
+1.63%, and RSS 0.025%. Evidence root:
+`/data/tmp/bv-p38-20260824.static-nocgo`; TSV SHA-256
+`14b59957f76809f9816b609844761062968ede980a76277608dca3795f434adf`.
+
+No build/release default changed. Static linking is not a startup win for this
+workload.
