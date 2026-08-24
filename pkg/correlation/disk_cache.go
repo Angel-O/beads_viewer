@@ -66,12 +66,24 @@ type correlationDiskCacheFile struct {
 }
 
 type correlationDiskCacheEntry struct {
-	CreatedAt  time.Time      `json:"created_at"`
-	AccessedAt time.Time      `json:"accessed_at"`
-	HeadSHA    string         `json:"head_sha"`
-	BeadsHash  string         `json:"beads_hash"`
-	OptsHash   string         `json:"opts_hash"`
-	Report     *HistoryReport `json:"report"`
+	CreatedAt  time.Time       `json:"created_at"`
+	AccessedAt time.Time       `json:"accessed_at"`
+	HeadSHA    string          `json:"head_sha"`
+	BeadsHash  string          `json:"beads_hash"`
+	OptsHash   string          `json:"opts_hash"`
+	Report     json.RawMessage `json:"report"`
+}
+
+// marshalCorrelationCachePayload performs the entry-size check and returns the
+// exact JSON payload that the enclosing cache file will persist. Keeping this
+// as RawMessage avoids traversing and allocating the multi-MB artifact/report a
+// second time when the cache envelope is marshaled.
+func marshalCorrelationCachePayload(value any, maxSize int) (json.RawMessage, bool) {
+	data, err := json.Marshal(value)
+	if err != nil || len(data) > maxSize {
+		return nil, false
+	}
+	return json.RawMessage(data), true
 }
 
 // correlationDiskCacheEnabled reports whether the persistent report cache is
@@ -213,25 +225,33 @@ func getCorrelationDiskCachedReport(headSHA, beadsHash, optsHash string) (*Histo
 	cf := readCorrelationDiskCacheLocked(f)
 	key := correlationDiskCacheKey(headSHA, beadsHash, optsHash)
 	entry, ok := cf.Entries[key]
-	if !ok || entry.Report == nil {
+	if !ok || len(entry.Report) == 0 {
 		return nil, false
 	}
 	if entry.CreatedAt.IsZero() || time.Since(entry.CreatedAt) > correlationDiskCacheMaxAge {
 		return nil, false
 	}
-	return entry.Report, true
+	var report *HistoryReport
+	if err := json.Unmarshal(entry.Report, &report); err != nil || report == nil {
+		return nil, false
+	}
+	return report, true
 }
 
 // putCorrelationDiskCachedReport persists a freshly computed report. This runs
 // only after a real recompute (a cache miss), so the full rewrite cost is
 // amortized against the expensive git extraction it just avoided next time.
 func putCorrelationDiskCachedReport(headSHA, beadsHash, optsHash string, report *HistoryReport) {
+	putCorrelationDiskCachedReportWithMaxEntrySize(headSHA, beadsHash, optsHash, report, correlationDiskCacheMaxEntrySize)
+}
+
+func putCorrelationDiskCachedReportWithMaxEntrySize(headSHA, beadsHash, optsHash string, report *HistoryReport, maxEntrySize int) {
 	if !correlationDiskCacheEnabled() || report == nil {
 		return
 	}
 	// Bound the serialized size: do not persist pathologically large reports.
-	data, err := json.Marshal(report)
-	if err != nil || len(data) > correlationDiskCacheMaxEntrySize {
+	data, ok := marshalCorrelationCachePayload(report, maxEntrySize)
+	if !ok {
 		return
 	}
 
@@ -261,7 +281,7 @@ func putCorrelationDiskCachedReport(headSHA, beadsHash, optsHash string, report 
 		HeadSHA:    headSHA,
 		BeadsHash:  beadsHash,
 		OptsHash:   optsHash,
-		Report:     report,
+		Report:     data,
 	}
 	evictCorrelationDiskCacheLRU(cf.Entries)
 	_ = writeCorrelationDiskCacheLocked(f, cf)
