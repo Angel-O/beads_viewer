@@ -902,3 +902,14 @@ Duplicate CGO-disabled binaries were byte-identical and statically linked, but
 
 No build/release default changed. Static linking is not a startup win for this
 workload.
+
+## 2026-08-24 pass-39 async-preemption rejection
+
+Disabling async preemption reduced traced SIGURG records from 238 to eight, but
+12 exact product pairs improved total CPU only 0.60% while system CPU and RSS
+regressed. Wall's 5.71% point gain came with 13-27% CV and only 7/12 wins.
+Evidence root `/data/tmp/bv-p39-20260824.asyncpreemptoff`; TSV SHA-256
+`02f8721a1fc8e101d04bfd7f309c0733f16f89e4c46e77f699877f7123ff7fdb`.
+
+No runtime default changed; fewer preemption signals are not sufficient product
+evidence and would trade away liveness responsiveness.
