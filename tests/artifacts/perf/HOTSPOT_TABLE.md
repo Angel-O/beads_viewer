@@ -842,3 +842,15 @@ rejected before adding a second codec implementation.
 
 No runtime or cache bytes changed; this is an Amdahl/materiality rejection, not
 an optimization claim.
+
+## 2026-08-24 pass-32 GOMAXPROCS sweep rejection
+
+The same exact binary was swept at 1, 2, and 4 Ps with schedtrace activation.
+Only P2 cleared a six-pair exploratory selector, but its independent 12-pair
+seed regressed system CPU 27.62%, total CPU 9.39%, and wall 6.53%; CVs reached
+90.23%. All normalized outputs remained exact and RSS was flat. Evidence root:
+`/data/tmp/bv-p32-20260824.gomaxprocs-sweep`; credited screen TSV SHA-256
+`101c80a374c19fa4d99f74cc35caedf9ef76bbf2dd80b705a0de5e3a1b837d1f`.
+
+No runtime default, environment, or source changed. The exploratory P2 result
+is selection noise, not an accepted improvement.
