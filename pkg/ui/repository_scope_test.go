@@ -840,6 +840,84 @@ func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
 	}
 }
 
+func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "long", Title: "Long repository", Status: model.StatusOpen, Labels: []string{"ctx:long"}},
+		{ID: "short", Title: "Short repository", Status: model.StatusClosed, Labels: []string{"ctx:s"}},
+	}
+	catalog := model.RepositoryCatalog{
+		{ID: "ctx:long", Name: "long-repository", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:s", Name: "s", Kind: model.RepositoryIdentityHubContext},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = catalog
+	m.list.SetSize(160, 10)
+	m.refreshRepositoryPresentation()
+
+	delegateWidth := func() int {
+		t.Helper()
+		nameWidth, _ := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
+		return nameWidth
+	}
+	renderRows := func() {
+		t.Helper()
+		for _, row := range strings.Split(m.list.View(), "\n") {
+			if width := lipgloss.Width(row); width > m.list.Width() {
+				t.Fatalf("rendered row width = %d, terminal width = %d: %q", width, m.list.Width(), row)
+			}
+		}
+	}
+
+	stableWidth := delegateWidth()
+	if stableWidth != lipgloss.Width("long-repository") {
+		t.Fatalf("initial repository width = %d, want full width %d", stableWidth, lipgloss.Width("long-repository"))
+	}
+	renderRows()
+
+	transitions := []struct {
+		key       rune
+		wantIDs   []string
+		wantLabel string
+	}{
+		{key: 'o', wantIDs: []string{"long"}, wantLabel: "long-repository"},
+		{key: 'o', wantIDs: []string{"long", "short"}, wantLabel: "long-repository"},
+		{key: 'c', wantIDs: []string{"short"}, wantLabel: "s"},
+		{key: 'c', wantIDs: []string{"long", "short"}, wantLabel: "long-repository"},
+		{key: 'r', wantIDs: []string{"long"}, wantLabel: "long-repository"},
+		{key: 'r', wantIDs: []string{"long", "short"}, wantLabel: "long-repository"},
+	}
+	for _, transition := range transitions {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{transition.key}})
+		m = updated.(Model)
+		if got := visibleIssueIDs(m); !reflect.DeepEqual(got, transition.wantIDs) {
+			t.Fatalf("key %q visible IDs = %v, want %v", transition.key, got, transition.wantIDs)
+		}
+		if got := delegateWidth(); got != stableWidth {
+			t.Fatalf("key %q changed repository width from %d to %d", transition.key, stableWidth, got)
+		}
+		renderRows()
+		if transition.wantLabel != "" && !strings.Contains(m.list.View(), "["+transition.wantLabel+"]") {
+			t.Fatalf("key %q list omitted repository label %q:\n%s", transition.key, transition.wantLabel, m.list.View())
+		}
+	}
+
+	narrow := NewModel(issues, nil, "")
+	narrow.hubConfigPath = "hub.yaml"
+	narrow.repositoryCatalog = catalog
+	narrow.list.SetSize(55, 10)
+	narrow.refreshRepositoryPresentation()
+	narrowWidth, _ := narrow.repositoryListColumnWidths(IssueDelegate{Theme: narrow.theme})
+	if got := narrowWidth; got > stableWidth {
+		t.Fatalf("narrow terminal widened repository column to %d from %d", got, stableWidth)
+	}
+	for _, row := range strings.Split(narrow.list.View(), "\n") {
+		if width := lipgloss.Width(row); width > narrow.list.Width() {
+			t.Fatalf("narrow rendered row width = %d, terminal width = %d: %q", width, narrow.list.Width(), row)
+		}
+	}
+}
+
 func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
 	issue := model.Issue{ID: "todo-1", Title: "Inbox", Status: model.StatusOpen, IssueType: "todo"}
 	m := NewModel([]model.Issue{issue}, nil, "")

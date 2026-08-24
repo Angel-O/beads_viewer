@@ -868,11 +868,17 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 	extraWidth := 0
 	rowReserve := 0
 	rowWidth := m.list.Width() - 1
-	for _, listItem := range m.list.VisibleItems() {
-		item, ok := listItem.(IssueItem)
-		if !ok {
-			continue
+	for _, issue := range m.repositoryCandidates() {
+		item := IssueItem{
+			Issue:          issue,
+			DiffStatus:     m.getDiffStatus(issue.ID),
+			RepoPrefix:     issueRepoKey(issue),
+			SearchScoreSet: delegate.ShowSearchScores,
 		}
+		m.decorateIssueItem(&item)
+		item.IsQuickWin = m.quickWinSet[issue.ID]
+		item.IsBlocker = m.blockerSet[issue.ID]
+		item.UnblocksCount = len(m.unblocksMap[issue.ID])
 		rowReserve = max(rowReserve, delegate.rowWidthWithoutRepository(item, rowWidth))
 		if item.RepositoryExtra > 0 {
 			extraWidth = max(extraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
