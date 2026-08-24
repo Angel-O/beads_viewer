@@ -53,6 +53,22 @@ command name.
 - [ ] Reopen, change the draft selection, press `Esc`, and verify the previously
       applied filter remains unchanged.
 
+### Selector Navigation Toggles
+
+- [ ] From List, Board, and Insights, press `'` to open the recipe selector,
+      change the draft recipe, then press `'` again; verify the selector closes,
+      the originating view and its state return, and the applied recipe is
+      unchanged.
+- [ ] Repeat recipe cancellation with `Esc` and verify the same origin and draft
+      behavior.
+- [ ] From Insights, press `w` to open the repository selector, change its draft
+      scope, then press `w` again; verify Insights returns with its selection and
+      state intact and the applied repository scope unchanged.
+- [ ] Repeat repository cancellation from Insights with `Esc` and `q`, then
+      spot-check `w` cancellation from List and Board.
+- [ ] While selector search input is active, type `'` or `w` as applicable;
+      verify the character enters the query instead of closing the selector.
+
 ### Graph Search
 
 - [ ] Press `g` to enter Graph.
@@ -373,3 +389,4 @@ Record manual QA feedback here as it is reported.
 | Resolved | List detail issue type | Open List details for issues with different classifications | Summary columns read ID, Type, Status, Priority, Assignee, Created, with canonical textual type values | Detail title showed only a type icon and the summary omitted textual classification | Manually verified and merged in PR #43 |
 | Resolved | Active-only Insights and heat-map contrast | Enter Insights from closed-filtered work and inspect metric panels and heat-map legend | Insights exposes only active work with independent `o/r` controls; high heat levels use distinct gold, orange, pink, and burgundy colors | Closed issues appeared in operational rankings and high-end heat colors were difficult to distinguish | Manually verified; approved for merge in PR #45 |
 | Resolved | Cross-view statusline alignment | Open sparse Actionable and Sprint views at a normal tall terminal size, then toggle the Actionable shortcuts sidebar | View content stays top-anchored while the global statusline remains on the final terminal row across views and sidebar states | Global statusline position and top padding changed between views instead of remaining flush with the terminal bottom | Manually verified; approved for merge in PR #46 |
+| Awaiting QA | Recipe and repository selector toggles | Open the recipe selector from List, Board, or Insights and press `'` again; open the repository selector from Insights and press `w` again | Each opening key cancels its selector, discards draft changes, and returns to the exact originating view while active search retains key ownership | Recipe did not toggle closed, and the repository selector did not return to Insights | Verify the unmerged selector-navigation PR |
