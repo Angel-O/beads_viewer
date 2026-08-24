@@ -52,11 +52,11 @@ type headArtifactCacheFile struct {
 }
 
 type headArtifactCacheEntry struct {
-	CreatedAt  time.Time       `json:"created_at"`
-	AccessedAt time.Time       `json:"accessed_at"`
-	HeadSHA    string          `json:"head_sha"`
-	OptsHash   string          `json:"opts_hash"`
-	Artifact   json.RawMessage `json:"artifact"`
+	CreatedAt  time.Time        `json:"created_at"`
+	AccessedAt time.Time        `json:"accessed_at"`
+	HeadSHA    string           `json:"head_sha"`
+	OptsHash   string           `json:"opts_hash"`
+	Artifact   *historyArtifact `json:"artifact"`
 }
 
 // headArtifactCachePath resolves the cache file location, honoring the same
@@ -186,32 +186,24 @@ func getHeadArtifactCached(headSHA, optsHash string) (*historyArtifact, bool) {
 
 	cf := readHeadArtifactCacheLocked(f)
 	entry, ok := cf.Entries[headArtifactCacheKey(headSHA, optsHash)]
-	if !ok || len(entry.Artifact) == 0 {
+	if !ok || entry.Artifact == nil {
 		return nil, false
 	}
 	if entry.CreatedAt.IsZero() || time.Since(entry.CreatedAt) > headArtifactCacheMaxAge {
 		return nil, false
 	}
-	var art *historyArtifact
-	if err := json.Unmarshal(entry.Artifact, &art); err != nil || art == nil {
-		return nil, false
-	}
-	return art, true
+	return entry.Artifact, true
 }
 
 // putHeadArtifactCached persists a freshly extracted artifact. Runs only after a
 // real extraction (a miss), so the rewrite cost is amortized against the
 // expensive git extraction it lets future bead-edit invocations skip.
 func putHeadArtifactCached(headSHA, optsHash string, art *historyArtifact) {
-	putHeadArtifactCachedWithMaxEntrySize(headSHA, optsHash, art, headArtifactCacheMaxEntrySize)
-}
-
-func putHeadArtifactCachedWithMaxEntrySize(headSHA, optsHash string, art *historyArtifact, maxEntrySize int) {
 	if !correlationDiskCacheEnabled() || art == nil {
 		return
 	}
-	data, ok := marshalCorrelationCachePayload(art, maxEntrySize)
-	if !ok {
+	data, err := json.Marshal(art)
+	if err != nil || len(data) > headArtifactCacheMaxEntrySize {
 		return
 	}
 
@@ -240,7 +232,7 @@ func putHeadArtifactCachedWithMaxEntrySize(headSHA, optsHash string, art *histor
 		AccessedAt: now,
 		HeadSHA:    headSHA,
 		OptsHash:   optsHash,
-		Artifact:   data,
+		Artifact:   art,
 	}
 	evictHeadArtifactCacheLRU(cf.Entries)
 	_ = writeHeadArtifactCacheLocked(f, cf)

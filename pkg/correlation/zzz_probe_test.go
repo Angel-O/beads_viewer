@@ -23,9 +23,9 @@ func TestProbeCacheEntryRoundTrip(t *testing.T) {
 		t.Errorf("preflight marshal did NOT route through custom codec (no commit_bead_ids): %s", pre)
 	}
 
-	// Now the full cache file with the precomputed raw payload.
+	// Now the full cache file with pointer entry
 	cf := headArtifactCacheFile{Version: 1, Entries: map[string]headArtifactCacheEntry{
-		"k": {HeadSHA: "h", OptsHash: "o", Artifact: pre},
+		"k": {HeadSHA: "h", OptsHash: "o", Artifact: art},
 	}}
 	data, err := json.Marshal(cf)
 	if err != nil {
@@ -39,15 +39,11 @@ func TestProbeCacheEntryRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := back.Entries["k"]
-	if len(e.Artifact) == 0 {
+	if e.Artifact == nil {
 		t.Fatal("artifact nil after roundtrip")
 	}
-	var decoded historyArtifact
-	if err := json.Unmarshal(e.Artifact, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Commits[0].BeadID != "bv-9" || decoded.Commits[1].BeadID != "" {
-		t.Errorf("BeadID lost: %+v", decoded.Commits)
+	if e.Artifact.Commits[0].BeadID != "bv-9" || e.Artifact.Commits[1].BeadID != "" {
+		t.Errorf("BeadID lost: %+v", e.Artifact.Commits)
 	}
 }
 
