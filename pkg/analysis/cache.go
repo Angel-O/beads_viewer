@@ -594,6 +594,11 @@ func (ca *CachedAnalyzer) SetConfig(config *AnalysisConfig) {
 
 // AnalyzeAsync returns cached stats if available, otherwise computes and caches.
 func (ca *CachedAnalyzer) AnalyzeAsync(ctx context.Context) *GraphStats {
+	if ca.Analyzer.config != nil && ca.Analyzer.config.DisableCache {
+		ca.cacheHit = false
+		return ca.Analyzer.AnalyzeAsync(ctx)
+	}
+
 	// Combined key: dataHash|configHash
 	fullHash := ca.dataHash + "|" + ca.configHash
 
