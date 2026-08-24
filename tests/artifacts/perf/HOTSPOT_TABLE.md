@@ -695,3 +695,23 @@ improved 2.59% with interval [-3.55%, +8.28%], total CPU 4.75% with interval
 estimates >=3%; user CPU failed, so no 50-pair cohort ran and no build/release
 change was made. Evidence root: `/data/tmp/bv-p20-20260824.pgo-cold-triage`;
 TSV SHA-256 `3c576c0e8807dee9e00edb81ab1a7c2985a9fdf7c2aa5f99a77e7f3050be46ba`.
+
+## 2026-08-24 pass-21 Git delta-base-cache rejection
+
+A same-binary environment A/B tested Git's `core.deltaBaseCacheLimit=32m`
+before any source wiring. The injected candidate config was independently read
+back as `32m`; a malformed-assignment plant failed before execution. This
+isolated cache policy from compiler or source differences.
+
+The cache bound substantially lowered memory: across 12 seed-21021 pairs mean
+maximum RSS moved 110,216 to 75,202 KiB (-31.77%), won all 12 pairs, and had an
+improvement interval of [+28.32%, +35.50%]. But user CPU regressed 2.82%, total
+CPU improved only 0.99%, and wall improved 1.69%; all CPU/wall intervals crossed
+zero, CVs reached 46.80%, and candidate total/wall p95 and worst regressed. All
+24 normalized outputs remained exact.
+
+The frozen gate requires >=3% point gains in both user and total CPU with stable
+tails before confirmation. It fails, so no 50-pair cohort and no source override
+were made. Evidence root: `/data/tmp/bv-p21-20260824.git-delta-cache`; TSV
+SHA-256 `01314f3ae8325fc0a4c99cff382107a394e91e4168d783992c768567098974e0`.
+The RSS reduction is real evidence, not an accepted overall performance win.
