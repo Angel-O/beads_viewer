@@ -559,3 +559,27 @@ therefore rejected before mutation. Retry requires either an independently
 approved switch to exact-line identity or a construction that preserves digest
 counts and first representatives without hashing canceled records. No speedup
 is claimed.
+
+## 2026-08-24 pass-17 title-validation-sink rejection
+
+Correlation decodes `title` only to retain the current JSON acceptance boundary;
+the value is not used to choose an event. A custom zero-sized sink looks
+attractive, but pinned goccy/go-json v0.10.6 invokes `UnmarshalJSON` only after
+`skipValue`, allocating and copying the complete value first. The sink must
+rescan that copy to validate escapes. Normal string decoding instead validates
+in place and aliases the existing top-level record copy. `TextUnmarshaler` is
+also inexact because the decoder presents boolean `true` and string `"true"`
+identically, and dropping the typed field exposes a laxer unknown-field skip.
+
+The exact 2.17 s merged profile assigns the entire `parseBeadJSON` frame only
+0.08 s / 3.69%. The corpus has 5,230 title fields and only 208 with escapes, so
+the hook would add allocation/copy/interface work to 5,022 plain titles. Even a
+physically free removal of the whole frame barely exceeds a 3% point estimate.
+
+The designed oracle covers invalid numeric/boolean titles, invalid escapes and
+Unicode hex, an invalid duplicate after a valid field, and accepted null,
+surrogate, raw-invalid-UTF-8, and control-byte behavior. The only small exact
+cleanup—dropping `Title` from the returned snapshot while still decoding it—
+saves a 16-byte temporary header but no backing allocation or parser work.
+Implementation is rejected at the profile/dependency-source gate; no speedup is
+claimed.
