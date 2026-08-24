@@ -785,3 +785,17 @@ retained. Evidence root:
 
 These passes prove two mechanisms and reject two product claims. They do not
 increase the campaign's accepted measured improvement.
+
+## 2026-08-24 pass-28 single-ID fusion rejection
+
+The zero-map specialization of Pass 27 was mutation-sensitive and exact on the
+focused suite plus the 1,776-event history differential. It reduced direct
+benchmark bytes/op 7.82%, but its conservative multi-ID fallback forfeited most
+of the general fusion's allocation reduction. Across eight seed-28028 pairs,
+user CPU, system CPU, and wall time each regressed about 1.3%; RSS rose 0.088%.
+It therefore stopped before a product cohort. Evidence root:
+`/data/tmp/bv-p28-20260824.single-id-fusion`; credited TSV SHA-256
+`634746e0300c99ab2e49b029d52aefc8ccdf14a03c9acc4d3c22d19729b954d1`.
+
+No runtime bytes changed. The remaining accepted campaign result is still only
+the Pass-1 blob-buffer CPU/GC improvement; Pass 28 adds no speedup claim.
