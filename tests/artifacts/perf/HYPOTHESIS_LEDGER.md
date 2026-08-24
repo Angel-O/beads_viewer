@@ -138,6 +138,8 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
 | NE-20260824-06 | Blob-buffer reuse lowers peak RSS. | Twenty untraced matched runs measured 109,397.8 KiB baseline versus 109,513.6 KiB candidate mean maximum RSS, a small 0.106% increase. The one-spare design is bounded, but no footprint win was observed. | Retry with an allocation/heap profile or a history whose blob-size distribution makes peak live storage sensitive to reuse; do not infer RSS from fewer GC cycles. |
 | NE-20260824-07 | A naive RCH `go test ./...` result is a valid continuation full-suite gate. | The changed correlation package passed, but the aggregate run failed from RCH-specific current-directory discovery, privileged permission semantics, missing Git/VCS metadata, and timing-sensitive shared-worker tests. On direct low-load execution every package except the Git-requiring loader case passed, including E2E; the loader package passed after placing the exact candidate bytes in a new Git-backed tree. | Credit a future aggregate RCH run only with stable cwd/TMPDIR, non-root execution, Git semantics accounted for, and acceptable worker load; otherwise compose explicit per-environment package results without relabeling the failed aggregate green. |
 | NE-20260824-08 | Inline record-line entries plus exact collision buckets improve the measured cold history path. | Although all semantic and build gates passed and normalized output was exact, 20 low-load interleaved pairs regressed mean wall 5.62%, median 4.62%, p95 8.11%, worst 6.97%, and mean user CPU 6.69%. Pre-sizing and exact comparison added about two full-history memory passes. The candidate was fully restored. | Retry only with a design that removes per-entry allocation without a separate line-count scan or ordinary-path full-line comparison; require lower CPU/allocation and non-regressing median/p95/worst on the same fixture. |
+| NE-20260824-09 | Correlation report-cache codec/layout is a material next cold-triage optimization. | The accepted 2.06 s merged profile has a 103 ms 5% threshold and names no report-cache/codec function at that level or at 1 ms/invocation. The cache already uses goccy JSON, avoids hit rewrites, and is bounded; preserved one-entry files were 772,000 and 673,954 bytes. A double serialization exists on misses but lacks material attribution. | Retry when a representative cold or multi-entry-cache profile attributes at least 5% sampled CPU or 1 ms/invocation to a specific cache read/write/codec lever. |
+| NE-20260824-10 | The continuation has a clean full aggregate race result. | Correlation race passed. In full race attempts, RCH lacked a GUI editor for two UI tests, a copied low-load source tree lacked repository-root Git/Beads discovery for one loader test, and the exact local tree ran at load 39.38 and hit one five-second CLI timeout. All unaffected packages passed, but no aggregate run was clean. | Retry on a low-load non-root full Git checkout with GUI/editor expectations satisfied, canonical temp-path semantics, and no mirrored-cwd contamination; require one clean aggregate command. |
 
 ### 2026-08-24 accepted profile anchor
 
@@ -168,3 +170,17 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   restored exactly. Its normalized behavior hash was
   `32aaadc67dd872e359d903863c36dc48cbc9ad7f113487129f3ce3b8b0aad10f`,
   but exact behavior does not offset the observed wall and CPU regressions.
+
+### 2026-08-24 independent final replay
+
+- Ten fresh low-load interleaved pairs independently reproduced mean user CPU
+  0.647 s to 0.573 s (-11.44%, 10/10 wins, p=0.00098). Five traced pairs
+  reproduced mean GC cycles 25.8 to 13.0 (-49.61%).
+- Wall -2.26% missed paired significance (8/10, p=0.0547); peak RSS increased
+  0.177%. These corroborate the ledger's no-latency and no-RSS claims.
+- All 20 normalized outputs matched at SHA-256
+  `5992ff99901b1c5abf8ccf3b1a9e3d2490a6f0eda1742cad938e7b3ff9809918`.
+- Runtime `22305d12` is accepted for approximately 11-15% lower user CPU and
+  about 50% fewer GC cycles on this workload. The final verifier's frozen HEAD
+  predated the committed pass-3 disposition, so its convergence verdict was
+  partial even though the pass-3 agent independently returned zero change.
