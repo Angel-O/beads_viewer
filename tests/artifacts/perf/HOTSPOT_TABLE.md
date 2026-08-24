@@ -232,3 +232,27 @@ Findings:
 
 VERDICT: no candidate clears Impact×Confidence/Effort ≥ 2.0. After 14 passes + the 6-bug
 fresh-eyes review, the robot path is at its practical floor. Stop optimizing; cut a release.
+
+## 2026-08-24 fresh cold-triage profile and pass-4 rejection
+
+Fresh Go 1.25.5 profiling on the accepted blob-reuse runtime used a new
+application cache per `--robot-triage` invocation and the exact 540-issue
+Git-backed fixture. Twenty runs established mean user CPU 0.485 s (CV 8.68%)
+and mean RSS 109,128.8 KiB (CV 0.14%); wall CV 10.79% remains non-claimable.
+Five merged CPU profiles totaled 2.63 s of samples:
+
+| Path | Cumulative samples | Share |
+|---|---:|---:|
+| `GenerateReportCached` | 1.87 s | 71.10% |
+| `extractViaSnapshots` | 1.64 s | 62.36% |
+| `blobReader.read` | 0.73 s | 27.76% |
+| `newRecordLineSet` | 0.42 s | 15.97% |
+| background GC | 0.42 s | 15.97% |
+| correlation cache put/write focus | 0.19 s | 7.22% |
+
+The cache focus satisfied the prior retry predicate, so pass 4 tested raw JSON
+payload reuse. It was rejected: 20 low-load alternating pairs found no
+significant user-CPU improvement (-0.85%, p=0.3238), RSS rose 0.129%, and five
+merged target profiles worsened the cache focus from 4.00% to 4.97%. Exact
+normalized behavior held across all 50 outputs. Runtime bytes were restored to
+`19fb9f06`; the retry condition is now the narrower NE-20260824-11 predicate.
