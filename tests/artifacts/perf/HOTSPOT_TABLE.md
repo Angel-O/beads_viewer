@@ -356,3 +356,28 @@ credited pair was rebuilt only after copying the exact snapshot source and
 verifying identical build commands. Future passes now require a tracked-blob
 comparison plus hashes for every campaign-modified production file before
 binary reuse.
+
+## 2026-08-24 pass-10 runtime heap-pacing rejection
+
+The separately requested heap-pacing experiment did not rescue the smaller-
+buffer candidates. An unset-runtime versus explicit `GOGC=100` control over
+50 high-resolution pairs was equivalent: explicit 100 moved mean user CPU by
+only +0.44% with a 95% paired-bootstrap interval of -1.87% to +2.68%, while
+wall moved -0.77% with an interval of -3.17% to +1.52%. This validated that
+the harness was not manufacturing an effect merely by setting the variable.
+
+Against that control, `GOGC=400` reduced mean user CPU from 0.359487 s to
+0.341266 s (+5.07%), but its lower confidence bound was only +2.82%, below the
+campaign's +3% gate. More importantly, mean system CPU increased 16.72% and
+mean wall regressed 3.90% (34/50 losses; 95% improvement interval -6.68% to
+-1.20%). Wall p95 worsened from 0.561465 s to 0.621039 s and the worst sample
+from 0.858843 s to 0.872717 s. All 100 normalized outputs were identical.
+The deliberately hostile `GOGC=50` arm lost all 12 coarse user-CPU pairs, so
+the expected direction was mutation-sensitive. No runtime default, source,
+or test was changed; fixed GC tuning is rejected as a product optimization.
+
+The restored profile still activates snapshot record-set representation.
+Pass 11 therefore tests only a pointer-free packed blob-offset entry, retaining
+the exact first-representative/collision semantics and the accepted buffer-
+reuse lifetime. It does not combine GC policy, direct event fusion, or Git
+protocol pipelining.
