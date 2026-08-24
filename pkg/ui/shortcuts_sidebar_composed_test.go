@@ -303,3 +303,73 @@ func TestFullScreenTreeAndTutorialLayoutAtNormalSize(t *testing.T) {
 		})
 	}
 }
+
+func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
+	lastLine := func(view string) string {
+		lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+		return lines[len(lines)-1]
+	}
+
+	cases := []struct {
+		name        string
+		withSidebar bool
+		setup       func(*Model)
+		want        string
+		wantFirst   string
+	}{
+		{
+			name: "actionable",
+			setup: func(m *Model) {
+				m.isActionableView = true
+				m.focused = focusActionable
+			},
+			want:      "ACTIONABLE ITEMS",
+			wantFirst: "ACTIONABLE ITEMS",
+		},
+		{
+			name:        "actionable_with_shortcuts_sidebar",
+			withSidebar: true,
+			setup: func(m *Model) {
+				m.isActionableView = true
+				m.focused = focusActionable
+			},
+			want:      "ACTIONABLE ITEMS",
+			wantFirst: "ACTIONABLE ITEMS",
+		},
+		{
+			name: "sprint",
+			setup: func(m *Model) {
+				m.isSprintView = true
+				m.focused = focusSprint
+				m.sprintViewText = "Sprint content"
+			},
+			want: "Sprint content",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(2), 120, 30)
+			tc.setup(&m)
+			m.showShortcutsSidebar = tc.withSidebar
+			m.applyContentSizing()
+
+			view := m.View()
+			if got := lipgloss.Height(view); got != m.height {
+				t.Fatalf("view height = %d, want %d", got, m.height)
+			}
+			if !strings.Contains(ansi.Strip(lastLine(view)), "issues") {
+				t.Fatalf("global status line was not anchored to the last row:\n%s", view)
+			}
+			if tc.wantFirst != "" && !strings.Contains(ansi.Strip(strings.Split(view, "\n")[0]), tc.wantFirst) {
+				t.Fatalf("view content %q did not start on the first row:\n%s", tc.wantFirst, view)
+			}
+			if !strings.Contains(ansi.Strip(view), tc.want) {
+				t.Fatalf("view lost established content %q:\n%s", tc.want, view)
+			}
+			if tc.withSidebar && !strings.Contains(ansi.Strip(view), "Shortcuts") {
+				t.Fatalf("shortcuts sidebar was not composed with the view:\n%s", view)
+			}
+		})
+	}
+}

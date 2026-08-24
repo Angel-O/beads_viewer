@@ -5819,6 +5819,10 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, sidebar)
 	}
 
+	body = lipgloss.NewStyle().
+		Height(m.height - 1).
+		MaxHeight(m.height - 1).
+		Render(body)
 	footer := m.renderFooter()
 
 	// Ensure the final output fits exactly in the terminal height
