@@ -507,9 +507,11 @@ func (m *RepoPickerModel) View() string {
 				marker = " current"
 				markerStyle = markerStyle.Bold(true)
 			}
-			nameWidth := max(1, contentWidth-lipgloss.Width(prefix+check+" "+marker+count))
+			nameWidth := max(0, contentWidth-lipgloss.Width(prefix+check+" "+marker+count))
 			plainLine := prefix + check + " " + truncateRunesHelper(repository.Name, nameWidth, "...") + marker + count
-			plainLine = truncateRunesHelper(plainLine, contentWidth, "...")
+			if lipgloss.Width(plainLine) > contentWidth {
+				plainLine = truncateRunesHelper(plainLine, contentWidth, "...")
+			}
 			if marker != "" {
 				if markerIndex := strings.LastIndex(plainLine, marker); markerIndex >= 0 {
 					plainLine = plainLine[:markerIndex] + markerStyle.Render(marker) + plainLine[markerIndex+len(marker):]
