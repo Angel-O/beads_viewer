@@ -76,6 +76,12 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   serialization. On low-load `hz2`, fresh full analysis measured
   36.63-39.96 ms/op rather than the contaminated 0.565-0.742 ms/op; a
   mutation-sensitive test proves default reuse and fresh recomputation.
+- **NE-20260823-03 satisfied:** analyzer construction, hash seeding, and context
+  cancellation now occur outside the cache read-hit benchmark timer. On the
+  same low-load worker, measured allocations fell from about 92.5k to 56.7k
+  per operation and bytes from about 16.35 MB to 11.5 MB. The remaining
+  25.89-29.71 ms/op is the read/decode/reconstruction target, not a claimed
+  product improvement.
 
 ### Current CPU attribution
 

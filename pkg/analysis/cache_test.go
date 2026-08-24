@@ -705,19 +705,18 @@ func TestRobotDiskCache_EvictsToMaxEntries(t *testing.T) {
 }
 
 // BenchmarkRobotDiskCache_ReadHit measures the steady-state read-hit path: a
-// large graph's stats are already cached, the context is cancelled (so XFetch
-// never forces a recompute), and the entry count stays at 1 (so LRU eviction is
-// a no-op on both baseline and candidate). This isolates the cost the
-// DiskCache-NoRewriteOnHit optimization targets: rewriting the whole multi-MB
-// cache file on every hit just to bump the LRU AccessedAt timestamp. Run on
-// baseline vs candidate to compare.
+// large graph's stats are already cached and analyzer/key/context setup is
+// complete before the timer starts. The cancelled context guarantees XFetch
+// cannot turn a hit into a recompute. The timed region therefore measures the
+// entry read, JSON decode, and GraphStats reconstruction rather than rebuilding
+// and hashing the 4,000-issue analyzer on every iteration.
 func BenchmarkRobotDiskCache_ReadHit(b *testing.B) {
 	b.Setenv("BV_ROBOT", "1")
 	cacheDir := b.TempDir()
 	b.Setenv("BV_CACHE_DIR", cacheDir)
 
 	// A large dependency graph so the cached GraphStats payload (PageRank,
-	// betweenness, etc. maps) is multi-MB, like the real cache.
+	// betweenness, etc. maps) is hundreds of KB, like a large real cache entry.
 	const n = 4000
 	issues := make([]model.Issue, 0, n)
 	for i := 0; i < n; i++ {
@@ -742,15 +741,32 @@ func BenchmarkRobotDiskCache_ReadHit(b *testing.B) {
 		b.Logf("cache entry size: %d bytes", fi.Size())
 	}
 
+	// Prepare the read-side analyzer, key, and context outside the timed region.
+	// Seeding uses the same hash that names the populated cache entry.
+	readAnalyzer := analysis.NewAnalyzer(issues)
+	readAnalyzer.SeedDataHash(dataHash)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	const sampleID = "ISSUE-02000"
+	wantPageRank := stats1.GetPageRankScore(sampleID)
+	wantBetweenness := stats1.GetBetweennessScore(sampleID)
+	if wantPageRank == 0 || wantBetweenness == 0 {
+		b.Fatalf("benchmark setup produced empty sample scores: pagerank=%v betweenness=%v", wantPageRank, wantBetweenness)
+	}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // cancelled ctx => XFetch never triggers recompute: pure read-hit
-		an2 := analysis.NewAnalyzer(issues)
-		s := an2.AnalyzeAsyncWithConfig(ctx, config)
+		s := readAnalyzer.AnalyzeAsyncWithConfig(ctx, config)
 		s.WaitForPhase2()
-		if !s.IsPhase2Ready() {
-			b.Fatal("expected phase2 ready on cache hit")
+		if !s.IsPhase2Ready() || s.NodeCount != n || s.EdgeCount != n-1 {
+			b.Fatalf("invalid cache result: ready=%v nodes=%d edges=%d", s.IsPhase2Ready(), s.NodeCount, s.EdgeCount)
+		}
+		if got := s.GetPageRankScore(sampleID); got != wantPageRank {
+			b.Fatalf("cached pagerank[%s] = %v, want %v", sampleID, got, wantPageRank)
+		}
+		if got := s.GetBetweennessScore(sampleID); got != wantBetweenness {
+			b.Fatalf("cached betweenness[%s] = %v, want %v", sampleID, got, wantBetweenness)
 		}
 	}
 }
