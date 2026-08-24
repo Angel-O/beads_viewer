@@ -443,3 +443,41 @@ Pass 13 therefore attacks the producer/consumer serialization boundary rather
 than JSON framing again: bounded one-object-ahead `git cat-file --batch`
 prefetch may overlap Git inflation with current-blob parsing without changing
 object count, order, or representation.
+
+## 2026-08-24 pass-13 one-ahead-prefetch rejection
+
+The exact frozen baseline profile supported the experiment: eight merged
+cold-cache runs attributed 0.37 s / 17.05% cumulatively to `blobReader.read`,
+0.29 s / 13.36% to `readFull`, and 0.35 s / 16.13% to
+`newRecordLineSet`. The candidate precomputed the unchanged unique first-use
+OID order and allowed exactly one response future. It synchronously claimed
+the recycled spare before launching the reader, joined any in-flight response
+on close, and retained the synchronous test API. A delayed-start mutation
+blocked before `await` and failed the planted proof; the restored path passed.
+Focused protocol/lifetime tests, the 1,776-event real Git differential, full
+correlation and race suites, build, vet, non-vendor formatting, whitespace,
+and exact-file UBS passed. Full-tree `gofmt -l .` remained red only for the
+repository's pre-existing vendored files.
+
+The first 12 pairs were a false positive: wall improved 17.97% with 12/12
+wins, but CPU and wall variability were high. The predeclared seed-13013
+balanced randomized 50-pair cohort instead measured user CPU 0.395735 s to
+0.421655 s (+6.55% regression, paired-bootstrap improvement interval -9.79%
+to -3.78%), total CPU 0.617503 s to 0.658907 s (+6.70%, interval -10.87% to
+-3.11%), and wall 0.534044 s to 0.538772 s (+0.89%, interval -3.68% to
++1.62%). Candidate wall p95 rose from 0.636483 s to 0.655170 s, and worst wall
+rose from 0.755022 s to 0.985104 s. Mean/p95/worst RSS all improved by less
+than 0.1%, too small to offset the regressions. All 100 outputs shared the
+exact normalized SHA-256
+`f8f098b09e0a34b5257ae2f5cfc15da85a99ccc311cb348f6ec1dd9165a75853`.
+
+The causal candidate profile placed 0.32 s beneath the new prefetch goroutine;
+sampled `newRecordLineSet` rose from 0.35 s to 0.45 s, while `memmove` rose
+0.15 s to 0.19 s. A goroutine/channel per object perturbed scheduling and cache
+locality rather than hiding the read. The candidate is rejected and restored.
+Evidence root: `/data/tmp/bv-p13-20260824.prefetch`; confirm TSV SHA-256
+`daedb0c1e08222b6e667c57989ff4e2aa746d75a197f34253e4fc6338a59985a`.
+
+Pass 14 tests the independently designed Go 1.25 Green Tea collector build.
+It changes no source and must beat the same combined CPU/tail gates; a GC
+experiment is not accepted merely because one synthetic heap regime likes it.
