@@ -813,3 +813,32 @@ CPU about 4.57%, and regressed wall 4.23%. Evidence root:
 
 The allocator signal is real but non-causal for speed on this workload. No
 runtime bytes changed and no product improvement is claimed.
+
+## 2026-08-24 pass-30 reused diff-arena rejection
+
+Reusing one reset `bytes.Buffer` across synthesized per-commit record diffs
+targeted the profile's 0.09 s / 4.48% grow frame. Omitting the reset expanded
+the exact history from 1,776 to 130,343 events, while restored code passed.
+Eight direct pairs improved user/system/wall 8.05%/9.70%/7.03% and cut bytes/op
+12.77%. The 12-pair product screen was positive, but the predeclared 50-pair
+cohort settled at only 2.39% user, 0.93% total, and 0.44% wall improvement, all
+with intervals crossing zero; system CPU and several worst tails regressed.
+Evidence root: `/data/tmp/bv-p30-20260824.reused-diff-arena`; confirmation TSV
+SHA-256 `e546b98b59a814c1e921164e090fa4fc5115c5aaea96c3b9cee55d4f8958b6ef`.
+
+No runtime bytes changed. The direct mechanism is real but too diluted and
+unstable for an accepted product claim.
+
+## 2026-08-24 pass-31 raw-splice cache-writer no-go
+
+Cold cache payloads are real and moderately large (673,954-byte HEAD artifact,
+772,000-byte report), but the exact profile places all goccy marshaling at
+7.96% and the removable second normalization/compaction traversal at no more
+than about 4.48%. Raw payload creation plus final copying, writing, locking, and
+sync remain. The prior exact RawMessage candidate made the focused cache path
+worse (4.00% to 4.97%), and Pass 30 demonstrated that a 4.48%-sized seam win is
+not enough product margin. A bespoke segmented JSON encoder was therefore
+rejected before adding a second codec implementation.
+
+No runtime or cache bytes changed; this is an Amdahl/materiality rejection, not
+an optimization claim.
