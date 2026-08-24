@@ -508,3 +508,30 @@ Green Tea is rejected with no runtime/source change and no speedup claim.
 Evidence root: `/data/tmp/bv-p14-20260824.greenteagc`; confirmation TSV
 SHA-256:
 `05a318b670fad7ab1c8c6d75ae767ec3372aa09d34425003e1764464cec19902`.
+
+## 2026-08-24 pass-15 flat-record-table preimplementation rejection
+
+The exact Pass 13 merged baseline provides the decision: out of 2.17 s total,
+`newRecordLineSet` holds 0.35 s. Its line-by-line listing assigns 0.19 s to
+mandatory `maphash.Bytes`/`aeshashbody`, 0.08 s to mandatory newline search,
+0.01 s to map lookup, and 0.07 s to insertion/entry creation. The entire
+replaceable residual is therefore only 0.08 s / 3.69%; named map assignment,
+access, and overlapping grow/rehash frames are 1.84%, 0.46%, and 0.92%.
+
+A perfect zero-cost replacement would have to erase more than 81% of that
+residual to reach a 3% point estimate, leaving no credible room for its own
+probing, allocation, zeroing, or resizing. Pass 11 is the empirical control:
+removing 96.95% of target allocations improved the seam 4.40% but product user
+CPU only 1.22%, with confidence crossing zero and slightly worse wall/RSS p95.
+
+Canonical `/dp/alien_cs_graveyard` section 7.7 recommends Swiss-table layout
+only when probe/layout/resize profiles support it. Go 1.25 already reports
+Swiss-style control-group and rehash frames here; the dominant record-byte hash
+would remain. A future exact table must aggregate solely by full 64-bit digest,
+preserve the first representative, treat hash zero as occupied, and survive
+wraparound/resize. Exact-line collision buckets would change current behavior.
+
+The mutation gate therefore rejects implementation. No source, test, build, or
+benchmark changed, and no speedup is claimed. Retry only after the profile
+attributes at least 5% exclusive command CPU beyond hashing/newline scanning to
+the container and a target prototype removes at least 20% of the full function.
