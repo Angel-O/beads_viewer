@@ -602,3 +602,31 @@ Keep only with exact behavior; a mutation-sensitive capacity/missing-object
 proof; >=30% lower merged `memmove`; non-increasing GC cycles; and a balanced
 50-pair lower confidence bound >=3% for both user and total CPU with stable
 system CPU, wall tails, RSS, and syscall counts. A screen is not a claim.
+
+## 2026-08-24 pass-18 transposed-blob-arena rejection
+
+The mechanism worked. The 64 KiB transport plus 10,420,224-byte first-payload
+runway passed its capacity/missing/recycle/alias oracle; zeroing the production
+runway failed `got 0, want 10420224`. Exact behavior held through the
+1,776/1,776 real-history differential, correlation ordinary/race, build, vet,
+formatting, and scoped UBS.
+
+Eight merged profiles moved total samples from 2.14 s to 2.03 s (-5.14%),
+`memmove` 0.26 s to 0.10 s (-61.54%), `readFull` 0.32 s to 0.25 s (-21.88%),
+and `blobReader.read` 0.35 s to 0.30 s (-14.29%). Fifteen traced pairs moved
+mean GC cycles 12.27 to 11.47 (-6.52%; ten wins, five ties, zero losses), so
+the arena transposition genuinely fixed Pass 6's GC-pacing regression.
+
+It still failed the frozen product conjunction. A first 50-pair cohort was
+excluded whole after unrelated system spikes drove total/wall CV over 50%.
+The fresh seed-18019 cohort improved user CPU 5.61% with a +3.47% to +7.66%
+interval, but baseline user CV was 11.62%. Total CPU improved 3.14% with a
+-1.66% to +7.58% interval and CV 41.44%/31.58%; wall improved 3.29% with a
+-0.47% to +6.83% interval and CV 31.83%/24.13%. RSS regressed 0.061%, with its
+entire interval on the wrong side; mean reads increased 0.76% across two traces
+per arm. All measured product/GC outputs remained normalized-exact.
+
+The candidate is rejected and restored despite the real seam/user-CPU signal.
+Evidence root: `/data/tmp/bv-p18-20260824.transposed-blob-arena`; credited TSV
+SHA-256:
+`3d028ca8cc06cc4bd8f69f2afea209221925c8077426e3bdd971d5de46fa5f5c`.
