@@ -291,3 +291,20 @@ therefore exposes about 31.1 MiB of transient scanner capacity, before scanner
 token and string conversions. Pass 7 tests a bounded direct byte parser under
 an executable old/new differential contract; it does not combine heap pacing,
 blob buffering, or Git protocol changes.
+
+## 2026-08-24 pass-7 parser rejection and loader-buffer activation
+
+The direct raw-diff parser proved a 46.3x target median and removed 99.66% of
+bytes/op, but the old parser occupied only 20 ms cumulative across eight merged
+profiles. One hundred quiet-host cold pairs then measured just 1.41% lower mean
+user CPU with a 95% interval spanning -1.17% to +4.22%; median/p95 and wall were
+unchanged. GC cycles fell 16.95%, but neither time nor peak memory converted
+that mechanism into a product win. The 94-line production rewrite was restored.
+
+The next allocation experiment moves to the loader, where the same 10 MiB
+constant is a transport buffer rather than merely a token ceiling. Today's
+1,367,658-byte serial fixture has a 10,881-byte maximum line, so the retained
+buffer is 7.67x the file and about 964x its longest line. This source-level
+signal is not yet a speed claim: Pass 8 first measures the loader seam, then
+tests a stat-informed transport buffer plus exceptional long-line assembly so
+it does not blindly repeat Pass 6's smaller-heap-goal regression.
