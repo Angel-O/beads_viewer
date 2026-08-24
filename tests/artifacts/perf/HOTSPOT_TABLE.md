@@ -715,3 +715,28 @@ tails before confirmation. It fails, so no 50-pair cohort and no source override
 were made. Evidence root: `/data/tmp/bv-p21-20260824.git-delta-cache`; TSV
 SHA-256 `01314f3ae8325fc0a4c99cff382107a394e91e4168d783992c768567098974e0`.
 The RSS reduction is real evidence, not an accepted overall performance win.
+
+## 2026-08-24 pass-22 two-request window rejection
+
+The current profile and fixture justified a bounded AMAC-style experiment:
+`blobReader.read` held 0.26 s, post-receive indexing held about 0.33 s, and 496
+of 498 unique blobs exceeded the 65,536-byte pipe. A two-scalar cursor submitted
+response N+1 before indexing payload N without goroutines, channels, request
+arrays, queues, or a second Go payload. Removing the just-received SHA guard
+caused the exact duplicate request `[a b b e f g]`; restoration passed, as did
+FIFO/framing/lifetime tests, the 1,776-event differential, correlation
+ordinary/race, build, vet, format, diff, and scoped zero-critical UBS gates.
+
+The direct seam was genuinely faster: eight randomized three-extraction pairs
+moved mean wall 2.689640 to 1.813798 s (-32.56%, 8/8 wins) and total CPU
+3.951964 to 2.757087 s (-30.24%). It did not survive the whole-product boundary.
+Twelve seed-22022 cold-triage pairs kept all outputs at normalized SHA-256
+`f8f098b0...`, but user CPU improved only 1.93%, total CPU regressed 0.48%, and
+wall improved 2.19%; every interval crossed zero.
+
+The frozen screen required >=3% user and total point gains before confirmation.
+It fails, so no 50-pair cohort or source integration followed. Evidence root:
+`/data/tmp/bv-p22-20260824.two-request-window`; direct/product TSV SHA-256
+`b3c28666e787a17e7f1ee3ee4f7f234d1f2095baa639efb1368f3c736f2fd495` /
+`c62698add43c9b34415e4cc8a2e8c80eab6abbc43c623e248c3aa5824d0625e2`.
+The direct overlap is real evidence, not an accepted product improvement.
