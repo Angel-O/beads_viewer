@@ -57,28 +57,33 @@ func TestRepoPickerViewContainsRepos(t *testing.T) {
 }
 
 func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
-	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m, _ := newANSIRepoPickerModel(testRepositoryCatalog())
 	m.SetHubScope(model.NewAllItemsHubScope())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SetSize(120, 24)
 
 	out := m.View()
-	if strings.Count(out, "current (3)") != 1 {
-		t.Fatalf("current repository marker count = %d, want one:\n%s", strings.Count(out, "current (3)"), out)
+	if strings.Contains(out, " current (") {
+		t.Fatalf("picker retained textual current marker:\n%s", out)
 	}
-	if strings.Contains(out, "no-context current") {
-		t.Fatalf("no-context row was marked current:\n%s", out)
+	if line := repoPickerRenderedLine(out, "beta (3)"); line == "" || !repoPickerLineHasUnderline(line) {
+		t.Fatalf("authoritative current repository was not underlined:\n%s", out)
 	}
 
 	m.MoveDown()
-	if !strings.Contains(m.View(), "beta current (3)") || strings.Contains(m.View(), "alpha current") {
-		t.Fatalf("marker moved with cursor:\n%s", m.View())
+	out = m.View()
+	if beta := repoPickerRenderedLine(out, "beta (3)"); beta == "" || !repoPickerLineHasUnderline(beta) {
+		t.Fatalf("current repository styling moved with cursor:\n%s", out)
+	}
+	if alpha := repoPickerRenderedLine(out, "alpha (12)"); alpha == "" || repoPickerLineHasUnderline(alpha) {
+		t.Fatalf("cursor repository unexpectedly received current styling:\n%s", out)
 	}
 
 	m.BeginSearch()
 	m.UpdateSearch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
-	if !strings.Contains(m.View(), "beta current (3)") {
-		t.Fatalf("current marker was lost in filtered result:\n%s", m.View())
+	out = m.View()
+	if beta := repoPickerRenderedLine(out, "beta (3)"); beta == "" || !repoPickerLineHasUnderline(beta) {
+		t.Fatalf("current repository styling was lost when filtering made it the cursor:\n%s", out)
 	}
 }
 
@@ -154,13 +159,25 @@ func TestRepoPickerCurrentOnlyRemainsSearchText(t *testing.T) {
 	}
 }
 
-func TestRepoPickerCurrentOnlyHintFitsNormalWidth(t *testing.T) {
+func TestRepoPickerFooterFitsReducedModalWidth(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetSize(120, 24)
-	footer := "j/k: navigate | space: toggle | a: all | n: clear | c: current only | /: search | enter: apply | esc: cancel"
+	m.SetSize(112, 24)
+	footer := "j/k: navigate | space: toggle | a: all/none | c: current only | /: search | enter: apply | esc: cancel"
 	if out := m.View(); !strings.Contains(out, footer) {
-		t.Fatalf("normal picker footer was truncated:\n%s", out)
+		t.Fatalf("picker footer was truncated at the reduced modal width:\n%s", out)
 	}
+
+	m.SetSize(160, 24)
+	for _, line := range strings.Split(m.View(), "\n") {
+		if !strings.Contains(line, "╭") {
+			continue
+		}
+		if width := lipgloss.Width(strings.TrimSpace(line)); width != 108 {
+			t.Fatalf("capped modal width = %d, want 108", width)
+		}
+		return
+	}
+	t.Fatal("picker modal border was not rendered")
 }
 
 func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
@@ -413,13 +430,13 @@ func TestRepoPickerContextlessChoiceTogglesIndependently(t *testing.T) {
 	if !m.ContextlessSelected() || len(m.SelectedRepos()) != 2 {
 		t.Fatalf("contextless did not compose with subset: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
 	}
-	m.SelectAll()
+	m.ToggleAll()
 	if !m.ContextlessSelected() || len(m.SelectedRepos()) != len(testRepositoryCatalog()) {
-		t.Fatalf("SelectAll did not select every checkbox: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+		t.Fatalf("ToggleAll did not select every checkbox: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
 	}
-	m.ClearSelection()
+	m.ToggleAll()
 	if m.ContextlessSelected() || len(m.SelectedRepos()) != 0 {
-		t.Fatalf("ClearSelection did not clear every checkbox: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
+		t.Fatalf("second ToggleAll did not clear every checkbox: contextless=%v repos=%v", m.ContextlessSelected(), m.SelectedRepos())
 	}
 
 	m.BeginSearch()
@@ -528,7 +545,21 @@ func TestRepoPickerRequiredKeyBindings(t *testing.T) {
 	if len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
 		t.Fatal("a did not select all repositories")
 	}
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if len(m.repoPicker.SelectedRepos()) != 0 {
+		t.Fatal("second a did not clear all repositories")
+	}
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
+		t.Fatal("n unexpectedly remains reserved outside search mode")
+	}
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if query := m.repoPicker.SearchValue(); query != "n" {
+		t.Fatalf("n was not routed to search input: %q", query)
+	}
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyBackspace})
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyDown})
 	if m.repoPicker.selectedIndex != 1 {
 		t.Fatal("arrow navigation did not work while searching")
@@ -565,9 +596,9 @@ func TestRepoPickerKeyFlowSearchEscapeAndEmptyApply(t *testing.T) {
 	m.showRepoPicker = true
 	m.focused = focusRepoPicker
 
-	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if len(m.repoPicker.SelectedRepos()) != 0 {
-		t.Fatal("n did not clear draft selection")
+		t.Fatal("a did not clear an all-selected draft")
 	}
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
@@ -619,7 +650,7 @@ func TestWorkspaceRepositoryPickerUsesCatalogAndAppliesPrefixScope(t *testing.T)
 		t.Fatalf("workspace path search matched %d at %q", m.repoPicker.FilteredCount(), m.repoPicker.currentRepositoryID())
 	}
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEsc})
-	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	m.repoPicker.ToggleSelected()
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(m.RepositoryScope()) != 1 || !m.RepositoryScope()["api"] {

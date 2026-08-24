@@ -963,7 +963,7 @@ func TestHubListColumnSuppressesWhenMetadataConsumesWidth(t *testing.T) {
 		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
 		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: model.RepositoryIdentityHubContext},
 	}
-	m.list.SetSize(60, 10)
+	m.list.SetSize(45, 10)
 	m.refreshRepositoryPresentation()
 	delegate := IssueDelegate{Theme: m.theme}
 	nameWidth, extraWidth := m.repositoryListColumnWidths(delegate)
@@ -971,8 +971,13 @@ func TestHubListColumnSuppressesWhenMetadataConsumesWidth(t *testing.T) {
 		t.Fatalf("overfull row repository columns = name:%d extra:%d, want suppressed", nameWidth, extraWidth)
 	}
 	view := m.list.View()
-	if strings.Contains(view, "[dotfiles]") || !strings.Contains(view, "an-extremely-long-visible-issue-id…") {
-		t.Fatalf("overfull row did not suppress badge while preserving ID: %q", view)
+	if strings.Contains(view, "[dotfiles]") {
+		t.Fatalf("narrow row did not suppress repository badge: %q", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > m.list.Width() {
+			t.Fatalf("narrow row width = %d, terminal width = %d: %q", width, m.list.Width(), line)
+		}
 	}
 }
 

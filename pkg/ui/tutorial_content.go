@@ -685,7 +685,7 @@ func structuredTutorialPages() []StructuredTutorialPage {
 					{Key: "w", Desc: "Open repository scope picker"},
 					{Key: "j/k, arrows", Desc: "Navigate repositories"},
 					{Key: "Space", Desc: "Toggle repository"},
-					{Key: "a / n", Desc: "Select all / clear draft"},
+					{Key: "a", Desc: "Toggle all / none"},
 					{Key: "c", Desc: "Select current repository only"},
 					{Key: "/", Desc: "Search name, path, or exact ID"},
 					{Key: "Enter", Desc: "Apply (empty means all)"},

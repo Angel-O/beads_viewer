@@ -333,8 +333,7 @@ const contextHelpRepoPicker = `## Repository Scope
   Esc       Cancel
 
 **Actions**
-  a         Select all repositories
-  n         Clear draft (apply means all)
+  a         Toggle all / none
   c         Select current repository only
   /         Search name, path, or exact ID
 

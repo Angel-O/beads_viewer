@@ -850,42 +850,6 @@ func (m *Model) updateListDelegate() {
 	m.list.SetDelegate(delegate)
 }
 
-func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
-	if !m.hubRepositoryPresentation() || m.list.Width() <= 45 {
-		return 0, 0
-	}
-	const nameWidthCap = 16
-	nameWidth := 0
-	for _, repository := range m.repositoryCatalog {
-		if repository.Kind != model.RepositoryIdentityHubContext {
-			continue
-		}
-		nameWidth = max(nameWidth, lipgloss.Width(repository.Name))
-	}
-	nameWidth = max(nameWidth, lipgloss.Width(contextlessRepositoryID))
-	nameWidth = min(nameWidth, nameWidthCap)
-
-	extraWidth := 0
-	rowReserve := 0
-	rowWidth := m.list.Width() - 1
-	for _, listItem := range m.list.VisibleItems() {
-		item, ok := listItem.(IssueItem)
-		if !ok {
-			continue
-		}
-		rowReserve = max(rowReserve, delegate.rowWidthWithoutRepository(item, rowWidth))
-		if item.RepositoryExtra > 0 {
-			extraWidth = max(extraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
-		}
-	}
-	availableNameWidth := rowWidth - rowReserve - extraWidth - 3
-	if availableNameWidth < 1 {
-		return 0, 0
-	}
-	nameWidth = min(nameWidth, availableNameWidth)
-	return nameWidth, extraWidth
-}
-
 func (m *Model) setListItemsPreservingFilter(items []list.Item) {
 	defer m.updateListDelegate()
 	filterState := m.list.FilterState()
@@ -5224,9 +5188,7 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 	case " ", "space":
 		m.repoPicker.ToggleSelected()
 	case "a":
-		m.repoPicker.SelectAll()
-	case "n":
-		m.repoPicker.ClearSelection()
+		m.repoPicker.ToggleAll()
 	case "c":
 		m.repoPicker.SelectCurrent()
 	case "/":
@@ -7364,7 +7326,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showRecipePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a/n")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all", keyStyle.Render("n")+" reset", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
