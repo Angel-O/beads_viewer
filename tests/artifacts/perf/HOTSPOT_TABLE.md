@@ -879,3 +879,15 @@ CPU 2.96%, and RSS 0.063%. Evidence roots:
 
 No platform helper entered production. Producer-seam latency does not offset
 the measured system/total-CPU regression.
+
+## 2026-08-24 passes 36-37 build-shape rejections
+
+Pass 36 reproducibly stripped the unchanged binary from 54.05 MB to 42.41 MB
+(-21.53%), but 12 exact product pairs improved total CPU only 1.36% and wall
+0.25%, with several worse tails. Pass 37's reproducible GOAMD64=v2 binary
+improved user/total/wall only 0.51%/2.19%/1.85% and slightly regressed RSS.
+Evidence roots: `/data/tmp/bv-p36-20260824.stripped-link` and
+`/data/tmp/bv-p37-20260824.goamd64v2`.
+
+No build or release default changed. Binary size is not reported as runtime
+speed, and neither codegen screen cleared the CPU gate.
