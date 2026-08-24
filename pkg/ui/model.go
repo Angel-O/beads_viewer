@@ -499,6 +499,7 @@ type Model struct {
 	repositoryIssues          []model.Issue
 	repositoryIssueIDs        map[string]bool
 	repositoryCatalogReady    bool
+	currentRepositoryID       string
 	defaultRepositoryID       string
 	defaultRepositorySet      bool
 	catalogGeneration         uint64
@@ -4196,6 +4197,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.repoPickerOrigin = m.focused
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
 				if m.hubRepositoryMode {
 					m.repoPicker.SetHubScope(m.hubScope)
 				} else {
@@ -5225,6 +5227,8 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 		m.repoPicker.SelectAll()
 	case "n":
 		m.repoPicker.ClearSelection()
+	case "c":
+		m.repoPicker.SelectCurrent()
 	case "/":
 		m.repoPicker.BeginSearch()
 	case "esc", "q", "w":

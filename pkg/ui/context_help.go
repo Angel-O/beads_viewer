@@ -335,6 +335,7 @@ const contextHelpRepoPicker = `## Repository Scope
 **Actions**
   a         Select all repositories
   n         Clear draft (apply means all)
+  c         Select current repository only
   /         Search name, path, or exact ID
 
 While searching, Esc clears search first.`
