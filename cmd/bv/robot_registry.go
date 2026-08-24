@@ -1696,7 +1696,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		Insights:         insights,
 		FullStats:        fullStats,
 		TopWhatIfs:       analyzer.TopWhatIfDeltasFromStats(&stats, 10),
-		AdvancedInsights: analyzer.GenerateAdvancedInsights(analysis.DefaultAdvancedInsightsConfig()),
+		AdvancedInsights: analyzer.GenerateAdvancedInsightsFromStats(&stats, analysis.DefaultAdvancedInsightsConfig()),
 		UsageHints: []string{
 			"jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
 			"jq '.CriticalPath[:3]' - Top 3 critical path items",
