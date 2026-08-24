@@ -52,6 +52,9 @@ The live-profile source snapshot was transferred by RCH as
 | NE-20260823-09 | The current analysis disk cache is always a win. | Commit `f9487866` records a 3.1k-issue result of 0.41 s cached versus 0.30 s uncached even after the v3 per-entry redesign. This is commit evidence, not a live reproduction on the present 540-issue dataset. | Reproduce cache-on/cache-off on the same low-load host and representative large graph before changing cache policy. |
 | NE-20260823-10 | The historical verification scripts are acceptable gauntlet evidence as-is. | `tests/artifacts/perf/verify.sh` suppresses stderr; `scripts/verify_isomorphic.sh` uses checkout/stash and recursive deletion; `scripts/capture_baseline.sh` targets the obsolete `BEADS_FILE` variable. | Repair a harness under independent review, or use direct non-destructive commands with preserved stderr. |
 | NE-20260823-11 | Session-history search found no other failed attempts. | `cass health` reported a stale lexical index last updated 2026-08-18; broad matches were noisy and exact probes were incomplete. | Re-run after a healthy current index; until then, absence claims are forbidden. |
+| NE-20260823-12 | Per-candidate transitive-unblock simulation is the next material robot-insights bottleneck. | The exact 540-issue registry profile contained no named transitive-simulation frame. An isolated batch measured about 6.96 ms/op, while the counter itself was about 1.45% of sampled CPU and roughly 85 us per batch; that benchmark also overstates the registry path because completed stats are already supplied. | Retry if a low-load target profile attributes at least 5% CPU or 1 ms/invocation to this work, or a representative larger/deeper graph promotes it into the top five frames. |
+| NE-20260823-13 | Replacing full metric-map copy/sort with top-k selection is presently a material 540-issue improvement. | Full-stats assembly does eight 540-entry copies and sorts plus eight 200-entry result maps, with about 104 KB in sortable slices, but accepted profiles do not identify it as a material frame. The fresh execution gate failed at 1-minute load 14.01, so no timing was invented. | Retry when a low-load registry profile attributes the path to at least 5% CPU or 1 ms/invocation, or a representative 5,000+ issue workload attributes at least 5% of command time or allocations to it. |
+| NE-20260823-14 | A naive full-suite run in the RCH mirror is a valid repository gate. | RCH places its default test temp root below the mirrored repository, intentionally omits `.git`, and may run as root. The first runs therefore discovered the mirror's real `.beads`, failed VCS stamping, and invalidated permission-denied behavior; those runs are red and receive no credit. | Use an external `TMPDIR`, disable VCS stamping only for the Git-less mirror, and select a non-root worker; then require both ordinary and race suites to pass. |
 
 Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
 
@@ -114,3 +117,11 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   decoded analysis again only to read the completed cycle list. Passing the
   handler's existing stats preserved normalized robot output exactly; the next
   low-load profile contained no advanced-insights analysis/cache-decode frame.
+- **Convergence accepted after two zero-change passes:** transitive simulation
+  and bounded metric-map assembly were both real, bounded costs, but neither
+  cleared the campaign's measured materiality threshold. The repeated-skill
+  rule therefore stops the loop after pass 8 rather than treating the 50-pass
+  cap as a mutation quota.
+- **NE-20260823-14 satisfied:** on non-root `hz1`, both the full ordinary and
+  race suites passed with `TMPDIR=/tmp` and `GOFLAGS=-buildvcs=false`. These are
+  functional gates for the exact mirrored source, not performance measurements.
