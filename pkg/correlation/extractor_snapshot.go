@@ -482,12 +482,24 @@ func (e *Extractor) readBlobs(ids []string) (map[string][]byte, error) {
 // no writer/reader deadlock of the kind readBlobs' concurrent-writer path guards
 // against.
 type blobReader struct {
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	w     *bufio.Writer
-	out   *bufio.Reader
-	spare []byte
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	w           *bufio.Writer
+	out         *bufio.Reader
+	spare       []byte
+	arenaRunway int
 }
+
+const (
+	// blobReaderBufferSize is deliberately small enough that large blob payloads
+	// bypass bufio.Reader's transport buffer and read directly into their owned
+	// arena. The capacity removed from the old 10 MiB transport buffer is moved,
+	// byte-for-byte, to the first valid payload arena below. That preserves the
+	// heap-goal runway which reduced GC frequency while avoiding an extra copy of
+	// each multi-megabyte blob through bufio's buffer.
+	blobReaderBufferSize  = 64 * 1024
+	blobReaderArenaRunway = gitLogMaxScanTokenSize - blobReaderBufferSize
+)
 
 // newBlobReader starts the streaming cat-file process for the extractor's repo.
 func (e *Extractor) newBlobReader() (*blobReader, error) {
@@ -505,10 +517,11 @@ func (e *Extractor) newBlobReader() (*blobReader, error) {
 		return nil, fmt.Errorf("starting git cat-file: %w", err)
 	}
 	return &blobReader{
-		cmd:   cmd,
-		stdin: stdin,
-		w:     bufio.NewWriter(stdin),
-		out:   bufio.NewReaderSize(stdout, gitLogMaxScanTokenSize),
+		cmd:         cmd,
+		stdin:       stdin,
+		w:           bufio.NewWriter(stdin),
+		out:         bufio.NewReaderSize(stdout, blobReaderBufferSize),
+		arenaRunway: blobReaderArenaRunway,
 	}, nil
 }
 
@@ -539,13 +552,23 @@ func (b *blobReader) read(sha string) ([]byte, error) {
 	if _, err := fmt.Sscanf(parts[2], "%d", &size); err != nil {
 		return nil, fmt.Errorf("parsing cat-file size %q: %w", parts[2], err)
 	}
+	// A missing response returns above without consuming arenaRunway. Move the
+	// capacity removed from the transport buffer to exactly the first real blob
+	// allocation; that arena then remains in the existing one-spare recycle
+	// lifecycle. Limiting the full-slice capacity also makes the byte-for-byte
+	// capacity invariant explicit when a sufficiently large spare is supplied.
+	runway := b.arenaRunway
+	capacity := size + runway
 	content := b.spare
 	b.spare = nil
-	if cap(content) < size {
-		content = make([]byte, size)
+	if cap(content) < capacity {
+		content = make([]byte, size, capacity)
+	} else if runway > 0 {
+		content = content[:size:capacity]
 	} else {
 		content = content[:size]
 	}
+	b.arenaRunway = 0
 	if _, err := readFull(b.out, content); err != nil {
 		return nil, fmt.Errorf("reading cat-file content for %q: %w", sha, err)
 	}

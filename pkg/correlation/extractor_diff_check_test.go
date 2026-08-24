@@ -66,22 +66,44 @@ func TestBlobReaderReusesOnlyRecycledBuffers(t *testing.T) {
 	nextContent := contentForStatus("closed")
 
 	var protocol bytes.Buffer
+	protocol.WriteString("missing-before-first-valid missing\n")
 	for i, content := range [][]byte{oldContent, currentContent, nextContent} {
 		fmt.Fprintf(&protocol, "oid-%d blob %d\n", i, len(content))
 		protocol.Write(content)
 		protocol.WriteByte('\n')
 	}
-	protocol.WriteString("missing-oid missing\n")
+	protocol.WriteString("missing-after-recycle missing\n")
 
 	var requests bytes.Buffer
 	reader := &blobReader{
-		w:   bufio.NewWriter(&requests),
-		out: bufio.NewReader(&protocol),
+		w:           bufio.NewWriter(&requests),
+		out:         bufio.NewReaderSize(&protocol, blobReaderBufferSize),
+		arenaRunway: blobReaderArenaRunway,
+	}
+
+	missing, err := reader.read("missing-before-first-valid")
+	if err != nil {
+		t.Fatalf("read missing blob before first valid blob: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("missing blob before first valid blob = %q, want nil", missing)
+	}
+	if reader.arenaRunway != blobReaderArenaRunway {
+		t.Fatalf("missing blob consumed arena runway: got %d, want %d", reader.arenaRunway, blobReaderArenaRunway)
 	}
 
 	oldBlob, err := reader.read("oid-0")
 	if err != nil {
 		t.Fatalf("read old blob: %v", err)
+	}
+	if got, want := cap(oldBlob), len(oldBlob)+blobReaderArenaRunway; got != want {
+		t.Fatalf("first valid blob capacity = %d, want payload %d + runway %d = %d", got, len(oldBlob), blobReaderArenaRunway, want)
+	}
+	if got, want := reader.out.Size()+cap(oldBlob), gitLogMaxScanTokenSize+len(oldBlob); got != want {
+		t.Fatalf("transport + first arena capacity = %d, want prior transport + payload = %d", got, want)
+	}
+	if reader.arenaRunway != 0 {
+		t.Fatalf("first valid blob left arena runway = %d, want 0", reader.arenaRunway)
 	}
 	oldSet := newRecordLineSet(oldBlob)
 	currentBlob, err := reader.read("oid-1")
@@ -108,6 +130,9 @@ func TestBlobReaderReusesOnlyRecycledBuffers(t *testing.T) {
 	if &nextBlob[0] != &oldBlob[0] {
 		t.Fatal("reader did not reuse the explicitly recycled buffer")
 	}
+	if cap(nextBlob) != cap(oldBlob) {
+		t.Fatalf("reused buffer capacity = %d, want preserved arena capacity %d", cap(nextBlob), cap(oldBlob))
+	}
 	if !bytes.Equal(currentBlob, currentBefore) {
 		t.Fatal("reusing the old buffer overwrote the still-live current blob")
 	}
@@ -119,7 +144,7 @@ func TestBlobReaderReusesOnlyRecycledBuffers(t *testing.T) {
 	}
 
 	reader.recycle(nextBlob)
-	missing, err := reader.read("missing-oid")
+	missing, err = reader.read("missing-after-recycle")
 	if err != nil {
 		t.Fatalf("read missing blob: %v", err)
 	}
@@ -161,6 +186,20 @@ func TestSnapshotBufferReusePreservesOverlappingHistory(t *testing.T) {
 	writeState("open", "reopen bead")
 
 	e := NewExtractor(repo)
+	configuredReader, err := e.newBlobReader()
+	if err != nil {
+		t.Fatalf("create configured blob reader: %v", err)
+	}
+	if got := configuredReader.out.Size(); got != blobReaderBufferSize {
+		t.Errorf("configured blob reader transport capacity = %d, want %d", got, blobReaderBufferSize)
+	}
+	if got := configuredReader.arenaRunway; got != blobReaderArenaRunway {
+		t.Errorf("configured blob reader arena runway = %d, want %d", got, blobReaderArenaRunway)
+	}
+	if err := configuredReader.Close(); err != nil {
+		t.Fatalf("close configured blob reader: %v", err)
+	}
+
 	opts := ExtractOptions{Limit: 10}
 	legacy, err := e.extractViaGitLogPatch(opts)
 	if err != nil {
