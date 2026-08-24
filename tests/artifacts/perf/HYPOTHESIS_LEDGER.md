@@ -106,3 +106,11 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   at the wrong level, so the command exercised old nested source and later
   mixed packages during vet. Those results receive no credit; the corrected
   relative-copy tree and exact hashes produced the accepted comparison.
+- **Repeated structural hashing in registry insights rejected:** robot mode
+  selects the data-hash/disk-cache branch, and an exact-source low-load profile
+  had zero `graphStructureHash` samples. Retry only after a control-flow change
+  or an admissible profile shows at least 5% CPU or 1 ms/invocation there.
+- **Advanced-insights reanalysis accepted and repaired:** cycle-break generation
+  decoded analysis again only to read the completed cycle list. Passing the
+  handler's existing stats preserved normalized robot output exactly; the next
+  low-load profile contained no advanced-insights analysis/cache-decode frame.
