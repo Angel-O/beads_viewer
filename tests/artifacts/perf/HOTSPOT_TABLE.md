@@ -535,3 +535,27 @@ The mutation gate therefore rejects implementation. No source, test, build, or
 benchmark changed, and no speedup is claimed. Retry only after the profile
 attributes at least 5% exclusive command CPU beyond hashing/newline scanning to
 the container and a target prototype removes at least 20% of the full function.
+
+## 2026-08-24 pass-16 strict-delta-cancellation counterexample
+
+The corpus strongly activates a delta idea: 498 usable adjacent snapshot pairs
+contain 174,428 record lines and hash 384,364,934 bytes. Canceling equal
+whole-line prefixes/suffixes first would leave 152,056,507 bytes (-60.44%) and
+remove 61.17% of hash calls. This maps directly to incremental computation and
+view maintenance in canonical `/dp/alien_cs_graveyard` sections 6.1 and 8.15.
+It also requires 768,686,298 bytes of equality comparison, roughly twice the
+current hash input.
+
+The rewrite nevertheless fails formally under current semantics. Choose
+distinct record lines `A` and `B` with the same 64-bit digest. Old `[A]` and
+new `[A,B]` produce digest counts one and two; both buckets retain first
+representative `A`, so baseline synthesis adds `A`. Prefix cancellation removes
+the shared `A`, leaving new `[B]`, so the candidate adds `B`. Hashing canceled
+`A` to detect the collision gives up the advertised reduction.
+
+This is a semantic counterexample, not a probabilistic collision concern: the
+campaign's exactness oracle must cover forced hashes. Implementation was
+therefore rejected before mutation. Retry requires either an independently
+approved switch to exact-line identity or a construction that preserves digest
+counts and first representatives without hashing canceled records. No speedup
+is claimed.
