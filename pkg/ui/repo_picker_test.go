@@ -551,3 +551,34 @@ func TestWorkspaceRepositoryPickerWCancelPreservesAppliedScopeAndSearchInput(t *
 		t.Fatalf("search did not own printable w: shown=%v searching=%v query=%q", m.showRepoPicker, m.repoPicker.IsSearching(), m.repoPicker.SearchValue())
 	}
 }
+
+func TestWorkspaceRepositoryPickerWCancelRestoresInsights(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "api-1", SourceRepo: "api", Title: "API"},
+		{ID: "web-1", SourceRepo: "web", Title: "Web"},
+	}, nil, "")
+	m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+	m.SetRepositoryScope(map[string]bool{"api": true})
+	m.focused = focusInsights
+	m.insightsPanel.focusedPanel = PanelKeystones
+	m.insightsPanel.selectedIndex[PanelKeystones] = 1
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(Model)
+	if !m.showRepoPicker || m.repoPickerOrigin != focusInsights {
+		t.Fatalf("workspace picker did not open from Insights: shown=%v origin=%v", m.showRepoPicker, m.repoPickerOrigin)
+	}
+	m.repoPicker.ClearSelection()
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(Model)
+	if m.showRepoPicker || m.focused != focusInsights {
+		t.Fatalf("w cancel did not restore Insights: shown=%v focus=%v", m.showRepoPicker, m.focused)
+	}
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["api"] {
+		t.Fatalf("w cancel applied draft repository scope: %#v", scope)
+	}
+	if m.insightsPanel.focusedPanel != PanelKeystones || m.insightsPanel.selectedIndex[PanelKeystones] != 1 {
+		t.Fatalf("w cancel changed Insights selection: panel=%v index=%d", m.insightsPanel.focusedPanel, m.insightsPanel.selectedIndex[PanelKeystones])
+	}
+}
