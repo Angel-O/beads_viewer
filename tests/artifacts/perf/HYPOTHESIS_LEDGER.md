@@ -125,3 +125,25 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
 - **NE-20260823-14 satisfied:** on non-root `hz1`, both the full ordinary and
   race suites passed with `TMPDIR=/tmp` and `GOFLAGS=-buildvcs=false`. These are
   functional gates for the exact mirrored source, not performance measurements.
+
+## 2026-08-24 continuation negative evidence
+
+| ID | Rejected or deferred claim | Evidence | Retry predicate |
+|---|---|---|---|
+| NE-20260824-01 | Default auto-discovery in the public checkout exercises triage correlation. | The default command loaded 682 issues with zero open items and left `history_status` absent, while explicit `.beads/issues.jsonl` loaded 540 issues with 19 open and `history_status=ok`. The default run is excluded from correlation profiling. | Retry only after source selection is pinned to a verified open-issue dataset, or after a separate datasource investigation explains and intentionally validates the 682-issue source. |
+| NE-20260824-02 | Current warm triage and robot-next timings support a precise latency comparison. | One hundred warm samples produced CV 17.12% for triage and 22.09% for robot-next, above the 10% publication gate. | Retry on a quieter/pinned host with interleaved sides and CV below 10%; until then these values are advisory boundaries only. |
+| NE-20260824-03 | Raw deterministic triage JSON hashes match without normalization. | With `SOURCE_DATE_EPOCH` pinned, diffs still contained per-metric `status.*.ms` values (for example PageRank and betweenness timing). Product fields were stable in the inspected diff. | Normalize only `generated_at`, `compute_time_ms`, `elapsed_ms`, and per-metric `ms`, then require byte-identical hashes and inspect any remaining diff. |
+| NE-20260824-04 | Cold history cost is primarily graph analysis or final encoding. | A valid 540-issue/19-open CPU profile put 67.92% cumulative CPU in `GenerateReportCached`, 62.26% in history extraction, and 58.49% in snapshot extraction. `/usr/bin/time` showed 0.86 s wall and 109,144 KiB RSS; `strace` observed eight process executions and heavy pipe traffic. | Reconsider only if a same-fixture post-change profile moves correlation below graph/encoding or a different representative workload ranks another subsystem first. |
+
+### 2026-08-24 accepted profile anchor
+
+- Exact runtime source: `1632071f34a05b17208f66799077f2777c05340d`
+  (runtime-identical to current `07bd43eb`), Go 1.25.5, Linux/amd64.
+- Fixture SHA-256:
+  `17b9bf86204f3f637072635bc78e5cb6435a7c14512d3a6210416c28d5216aa9`.
+- Cold application-cache triage, N=20: p50 0.781806 s, p95 0.842383 s,
+  worst observed 0.871028 s, CV 8.62%.
+- Top actionable allocation signal beneath cold snapshot extraction: 100 ms
+  large allocation, 70 ms memory clearing, and 70 ms background GC. The first
+  pass may target buffer reuse only if differential history/robot output and
+  cold same-host measurements remain green.
