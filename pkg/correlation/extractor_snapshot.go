@@ -137,22 +137,27 @@ func (e *Extractor) extractViaSnapshots(opts ExtractOptions) ([]BeadEvent, error
 	defer reader.Close()
 
 	// sets is the live window of record-line multisets, keyed by blob OID. Each
-	// entry aliases the blob bytes it was built from, so deleting a set here frees
-	// the underlying blob for GC — the whole point of the streaming window.
-	sets := make(map[string]recordLineSet)
+	// entry retains the blob bytes its line slices alias. At last-use eviction the
+	// set becomes unreachable before its buffer is handed back to the reader for
+	// a later blob, so live line slices are never overwritten.
+	type liveRecordLineSet struct {
+		lines recordLineSet
+		blob  []byte
+	}
+	sets := make(map[string]liveRecordLineSet)
 	getSet := func(sha string) (recordLineSet, error) {
 		if sha == "" {
 			return nil, nil
 		}
 		if s, ok := sets[sha]; ok {
-			return s, nil
+			return s.lines, nil
 		}
 		blob, err := reader.read(sha)
 		if err != nil {
 			return nil, err
 		}
 		s := newRecordLineSet(blob)
-		sets[sha] = s
+		sets[sha] = liveRecordLineSet{lines: s, blob: blob}
 		return s, nil
 	}
 
@@ -192,9 +197,10 @@ func (e *Extractor) extractViaSnapshots(opts ExtractOptions) ([]BeadEvent, error
 		// never be needed again (lastUse indices are all uncached-commit indices,
 		// so this iteration is the last chance to free them), and its bytes — plus
 		// the record-line set aliasing them — are released now rather than at end.
-		for sha := range sets {
+		for sha, live := range sets {
 			if lastUse[sha] <= i {
 				delete(sets, sha)
+				reader.recycle(live.blob)
 			}
 		}
 	}
@@ -480,6 +486,7 @@ type blobReader struct {
 	stdin io.WriteCloser
 	w     *bufio.Writer
 	out   *bufio.Reader
+	spare []byte
 }
 
 // newBlobReader starts the streaming cat-file process for the extractor's repo.
@@ -532,7 +539,13 @@ func (b *blobReader) read(sha string) ([]byte, error) {
 	if _, err := fmt.Sscanf(parts[2], "%d", &size); err != nil {
 		return nil, fmt.Errorf("parsing cat-file size %q: %w", parts[2], err)
 	}
-	content := make([]byte, size)
+	content := b.spare
+	b.spare = nil
+	if cap(content) < size {
+		content = make([]byte, size)
+	} else {
+		content = content[:size]
+	}
 	if _, err := readFull(b.out, content); err != nil {
 		return nil, fmt.Errorf("reading cat-file content for %q: %w", sha, err)
 	}
@@ -541,6 +554,16 @@ func (b *blobReader) read(sha string) ([]byte, error) {
 		return nil, fmt.Errorf("discarding cat-file trailer for %q: %w", sha, err)
 	}
 	return content, nil
+}
+
+// recycle retains at most one no-longer-live blob buffer for the next read.
+// Callers must first remove every recordLineSet whose entries alias content.
+// Keeping only the largest returned capacity bounds idle retained memory to one
+// blob while avoiding allocation and zeroing for the usual rewrite history.
+func (b *blobReader) recycle(content []byte) {
+	if cap(content) > cap(b.spare) {
+		b.spare = content[:0]
+	}
 }
 
 // Close flushes and closes stdin (signalling EOF to git) then waits for exit. It
