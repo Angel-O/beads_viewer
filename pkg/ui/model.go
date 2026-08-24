@@ -5826,7 +5826,8 @@ func (m Model) View() string {
 	finalStyle := lipgloss.NewStyle().
 		Width(m.width).
 		Height(m.height).
-		MaxHeight(m.height)
+		MaxHeight(m.height).
+		AlignVertical(lipgloss.Bottom)
 
 	return finalStyle.Render(lipgloss.JoinVertical(lipgloss.Left, body, footer))
 }
