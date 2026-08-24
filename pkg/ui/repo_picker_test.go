@@ -119,6 +119,42 @@ func TestRepoPickerCurrentMarkerIsBoldWithoutChangingPlainText(t *testing.T) {
 	}
 }
 
+func TestRepoPickerCurrentMarkerTruncatesPlainRowBeforeStyling(t *testing.T) {
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.ANSI)
+	m := NewRepoPickerModel(model.RepositoryCatalog{{
+		ID: "ctx:long", Name: "repository-long-name", BeadCount: 42,
+	}}, DefaultTheme(renderer))
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:long"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetHubScope(scope)
+	m.SetCurrentRepository("ctx:long")
+	m.SetSize(50, 10)
+	m.MoveDown()
+
+	view := m.View()
+	plainView := ansi.Strip(view)
+	wantRow := "▸ [x] repository-long-name current (42)"
+	var plainRow string
+	for _, line := range strings.Split(plainView, "\n") {
+		if strings.Contains(line, "repository-long-name") {
+			plainRow = strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
+			break
+		}
+	}
+	if plainRow != wantRow {
+		t.Fatalf("ANSI-stripped current row = %q, want %q; full view:\n%s", plainRow, wantRow, plainView)
+	}
+	if strings.Contains(plainRow, "...") || strings.Contains(plainRow, "…") {
+		t.Fatalf("current row gained unintended ellipsis: %q", plainRow)
+	}
+	if !strings.Contains(view, "\x1b[1m current\x1b[0m") {
+		t.Fatalf("current marker lost bold styling: %q", view)
+	}
+}
+
 func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetHubScope(model.NewAllItemsHubScope())
