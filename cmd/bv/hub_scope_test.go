@@ -89,6 +89,79 @@ func TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences(t *testing.T)
 	}
 }
 
+func TestHubRobotInsightsFiltersCandidatesBeforeTopKCap(t *testing.T) {
+	selectedContext := "ctx:alpha"
+	otherContext := "ctx:beta"
+	issues := []model.Issue{{
+		ID:        "visible",
+		Title:     "Visible candidate",
+		Status:    model.StatusOpen,
+		IssueType: model.TypeTask,
+		Labels:    []string{selectedContext},
+	}}
+	for hubIndex := 0; hubIndex < 6; hubIndex++ {
+		hubID := "hidden-hub-" + string(rune('a'+hubIndex))
+		issues = append(issues, model.Issue{
+			ID:        hubID,
+			Status:    model.StatusOpen,
+			IssueType: model.TypeTask,
+			Labels:    []string{otherContext},
+		})
+		for dependentIndex := 0; dependentIndex < 2; dependentIndex++ {
+			dependentID := hubID + "-dependent-" + string(rune('a'+dependentIndex))
+			issues = append(issues, model.Issue{
+				ID:        dependentID,
+				Status:    model.StatusOpen,
+				IssueType: model.TypeTask,
+				Labels:    []string{otherContext},
+				Dependencies: []*model.Dependency{{
+					IssueID:     dependentID,
+					DependsOnID: hubID,
+					Type:        model.DepBlocks,
+				}},
+			})
+		}
+	}
+
+	scope, err := model.NewSelectedContextsHubScope([]string{selectedContext})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := newHubScopeProjection(scope, issues, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var encoded bytes.Buffer
+	ctx := RobotContext{
+		Issues:                issues,
+		DataHash:              analysis.ComputeDataHash(issues),
+		DataHashMatchesIssues: true,
+		Encoder:               newJSONRobotEncoder(&encoded),
+		Stdout:                &encoded,
+		HubProjection:         projection,
+	}
+	if err := handleRobotInsights(ctx, phaseThreeRobotHandlerConfig{}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output struct {
+		AdvancedInsights struct {
+			TopKSet struct {
+				Items []struct {
+					ID string `json:"id"`
+				} `json:"items"`
+			} `json:"topk_set"`
+		} `json:"advanced_insights"`
+	}
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatalf("decode robot-insights output: %v\n%s", err, encoded.Bytes())
+	}
+	if len(output.AdvancedInsights.TopKSet.Items) != 1 || output.AdvancedInsights.TopKSet.Items[0].ID != "visible" {
+		t.Fatalf("Hub-scoped top-k candidates = %#v, want only visible", output.AdvancedInsights.TopKSet.Items)
+	}
+}
+
 func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 	root := t.TempDir()
 	beadsDir := filepath.Join(root, ".beads")
