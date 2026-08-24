@@ -3594,14 +3594,18 @@ For Nix users, `bv` provides a flake for reproducible builds and development env
 
 ```bash
 # Run directly
-nix run github:Dicklesworthstone/beads_viewer
+NIXPKGS_ALLOW_UNFREE=1 nix run --impure github:Dicklesworthstone/beads_viewer
 
 # Install to profile
-nix profile install github:Dicklesworthstone/beads_viewer
+NIXPKGS_ALLOW_UNFREE=1 nix profile install --impure github:Dicklesworthstone/beads_viewer
 
 # Development shell with Go toolchain
-nix develop github:Dicklesworthstone/beads_viewer
+NIXPKGS_ALLOW_UNFREE=1 nix develop --impure github:Dicklesworthstone/beads_viewer
 ```
+
+The opt-in is required because Nix correctly treats the OpenAI/Anthropic rider as nonfree. When
+adding `bv` as a flake input, configure the consuming `nixpkgs` import with `allowUnfree = true`
+or a narrow `allowUnfreePredicate` for `bv`.
 
 Or add to your flake inputs:
 ```nix

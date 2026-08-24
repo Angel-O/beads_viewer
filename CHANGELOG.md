@@ -8,7 +8,17 @@ All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are
 
 ---
 
-## [v0.21.1] -- 2026-08-24 (Release)
+## [v0.21.2] -- 2026-08-24 (Release)
+
+### Fixed
+
+- Document the explicit Nix unfree-package opt-in required by the project's
+  OpenAI/Anthropic license rider, keeping the published flake instructions consistent with its
+  corrected nonfree metadata.
+
+---
+
+## [v0.21.1] -- 2026-08-24 (Tag only)
 
 Profile-driven performance patch for the cold robot-triage path, with expanded differential
 coverage and an explicit negative-evidence ledger for rejected optimizations.
@@ -927,7 +937,8 @@ Initial release of Beads Viewer -- a keyboard-driven terminal interface for the 
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.2...HEAD
+[v0.21.2]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.1...v0.21.2
 [v0.21.1]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.0...v0.21.1
 [v0.21.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.20.0...v0.21.0
 [v0.17.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.16.4...v0.17.0
