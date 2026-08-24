@@ -332,3 +332,27 @@ than guessing from relative allocation shares. Over 1,000 loads at 7.865 ms/op,
 while `Comment.UnmarshalJSON` accumulated only 0.32 s (3.44%). Pass 9 therefore
 tests only dependency decoding, with the comment compatibility path held fixed
 and a differential error/alias/precedence certificate required before timing.
+
+## 2026-08-24 pass-9 nested-codec rejection and harness correction
+
+The one-lever dependency decoder passed its semantic certificate. The oracle
+caught goccy's invalid-UTF-8 behavior, so invalid bytes and all decode errors
+were replayed through stdlib; a planted first-key-wins mutation failed four
+duplicate/error-atomicity cases. On the direct loader, 30 alternating pairs
+improved mean time 13.00% with a 95% interval of 9.84% to 16.12%, and reduced
+allocations from 14,211.77 to 9,432.57 per load (-33.63%).
+
+That local win did not reach the profiled product. The full loader runs once,
+whereas correlation's dominant snapshot path decodes only ID/status/title and
+never invokes `Dependency.UnmarshalJSON`. Thirty exact-source cold-triage pairs
+regressed mean user CPU 2.12% (95% improvement interval -7.21% to +2.84%),
+wall 0.58%, and RSS 0.055%; GC cycles rose from 10.47 to 10.67 (+1.91%). All
+60 normalized outputs matched. The candidate was restored exactly.
+
+Two earlier product cohorts receive no credit. A Git blob-index comparison
+proved that the quiet host's tracked snapshot extractor had drifted from the
+accepted local runtime, even though its path set and loader bytes matched. The
+credited pair was rebuilt only after copying the exact snapshot source and
+verifying identical build commands. Future passes now require a tracked-blob
+comparison plus hashes for every campaign-modified production file before
+binary reuse.
