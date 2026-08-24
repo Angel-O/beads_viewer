@@ -913,3 +913,89 @@ Evidence root `/data/tmp/bv-p39-20260824.asyncpreemptoff`; TSV SHA-256
 
 No runtime default changed; fewer preemption signals are not sufficient product
 evidence and would trade away liveness responsiveness.
+
+## 2026-08-24 passes 40-42 direct-event representation rejections
+
+The 16-entry stack vector (Pass 40) preserved all 1,776 events and cut
+bytes/op 38.25%, but regressed direct benchmark time 31.82%, total CPU 28.95%,
+and wall 28.07%. Retuning the promotion threshold to four (Pass 42) preserved
+behavior but still regressed total CPU 3.76% and wall 3.90% against the
+16-entry candidate. Comparator-reversal plants failed both multi-ID and
+promotion-order oracles. Evidence roots:
+`/tmp/bv-p40-independent-20260824` and
+`/tmp/bv-p42-independent-20260824`.
+
+The specialized JSON-parser proposal (Pass 41) did not cross the mutation
+gate: `parseBeadJSON` is only 0.06/2.01 s cumulative, or 2.985%. Even a free
+parser cannot clear the 3% end-to-end gate, while exact goccy semantics and
+buffer ownership create a broad correctness surface. No source change or
+speedup is credited for any of these passes.
+
+## 2026-08-24 passes 43-44 storage and residence no-gos
+
+The exact history workload is 99.60% delta-backed: 496 of 498 requested
+objects expand 2,453,578 stored bytes into 384,364,934 logical bytes. The pack
+contains 11,238 deltas with mean depth 5.39 and maximum depth 38. A causal
+negative proved that a 28-byte inflated delta instruction stream is not its
+7,979-byte logical blob. A direct mmap/zlib path therefore requires a complete,
+security-sensitive Git delta/object engine for at most the 12.94% cumulative
+`blobReader.read` envelope. Pass 43 rejected it before implementation.
+
+Pass 44 rejected second-hit cache admission because report put/write is only
+0.06/2.01 s and deferral likely makes the second request worse. Persistent
+residence has a 69.8% startup-amortization proxy ceiling (98 ms warm triage
+versus 29.6 ms startup), but it is a new execution contract with no exact
+resident-history profile. A caller-owned stdio worker is the bounded future
+experiment; no daemon or performance claim entered production.
+
+## 2026-08-24 passes 45-48 runtime and memory-policy rejections
+
+| Pass | Activated lever | Exact screen result | Binding rejection |
+|---:|---|---|---|
+| 45 | Go 1.25.5 Green Tea GC experiment | user/total/wall regressed 6.06%/15.26%/12.71% | Direct performance loss |
+| 46 | `madvdontneed=0` / `MADV_FREE` | 50-pair gains: user 0.51%, total 4.70%, wall 3.74% | All primary 95% intervals cross zero; only 24-26/50 wins |
+| 47 | `GOGC=400` plus `MADV_FREE` | user/total/wall improved 13.73%/12.56%/7.23% | RSS regressed 6.08%, losing 12/12 pairs |
+| 48 | Git delta-base cache 96 MiB to 256 MiB | user/total/wall improved 4.38%/11.35%/9.01% | RSS regressed 16.51%, losing 12/12 pairs |
+
+All outputs were exact and all activation controls were live. Pass 46's
+promising 12-pair screen was explicitly overturned by its 50-pair confirmation;
+Passes 47-48 stopped at their preregistered hard resource gates. Evidence
+roots: `/tmp/bv-p45-independent-20260824` through
+`/tmp/bv-p48-independent-20260824`. No runtime, environment, Git, build, or
+release default changed.
+
+## 2026-08-24 passes 49-50 final profile and counterfactual
+
+The fresh eight-run merged profile contains 6.29 s sampled CPU over 12.26 s.
+Its strongest frames remain syscall/read transport and mandatory materialization:
+`syscall.Syscall6` 22.42% flat, `FD.Read` 19.08% cumulative,
+`buildRecordLineSnapshot` 17.97% cumulative, `mallocgc` 12.08% cumulative,
+and `synthesizeRecordDiff` 6.68% cumulative. Profile SHA-256:
+`e7acf8b2077877008074322a8692038cb0d8dbff6f7f5dd0ba27c8ff80b304a0`;
+evidence root `/tmp/bv-p49-independent-20260824`.
+
+The resulting Pass 50 historical full-hash-snapshot counterfactual passed the
+1,776-event differential, lifetime/frontier/collision tests, and a mutation
+that otherwise reduced events to zero. Yet 12 exact product pairs regressed
+user/total/wall 2.35%/3.77%/6.48%. Evidence root
+`/tmp/bv-p50-independent-20260824`; TSV SHA-256
+`d45463415ba8b272a1eacecf77923b58e5f79c4266e8e505e047f651bdef2a01`.
+The current implementation wins; no source change was retained.
+
+## 2026-08-24 fifty-pass performance closure
+
+All 50 required passes are complete. The only accepted result in this active
+campaign remains approximately 11-15% lower user CPU and about 50% fewer GC
+cycles from Pass 1's buffer reuse. Independent replay measured 11.44% and
+49.61%, respectively. Wall and peak RSS did not clear acceptance and are not
+claimed. Later screen-only CPU/wall gains are rejected evidence, especially
+where confidence intervals crossed zero or RSS regressed 6-17%.
+
+Final source SHA-256 values are
+`2faf6679fa1d90fc52e201554834831a33d9c263e831989d5ce7d5e7147c3548`
+for `extractor_snapshot.go` and
+`314b2ffd468cab000fb0c9928afa0520c8b683679555e8e6553a4863228237d9`
+for the differential test. Exact-Go-1.25.5 build, vet, ordinary, and race gates
+passed in a fresh complete Git-backed clone under non-root `ubuntu`, including
+E2E. Formatting still names a pre-existing peer-owned differential test; this
+documentation-only closeout did not mutate it.
