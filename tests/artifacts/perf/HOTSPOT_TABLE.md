@@ -381,3 +381,29 @@ Pass 11 therefore tests only a pointer-free packed blob-offset entry, retaining
 the exact first-representative/collision semantics and the accepted buffer-
 reuse lifetime. It does not combine GC policy, direct event fusion, or Git
 protocol pipelining.
+
+## 2026-08-24 pass-11 packed-record rejection
+
+The pointer-free representation worked at its target seam. Packed blob offsets
+plus a lazy duplicate-count map reduced `newRecordLineSet` from 557 to 17
+allocations per representative load (-96.95%), from 54,800 to 37,520 B/op
+(-31.53%), and from 207.660 to 198.518 us/op (+4.40%). The executable reference
+oracle covered LF, CRLF, unterminated records, multiplicity, forced hash
+collisions, first-representative behavior, and recycled-buffer lifetime. A
+planted missing-repeat-marker mutation failed and the live legacy/snapshot
+differential remained exact.
+
+The seam win again failed to become a product win. The first 50-pair cohort was
+invalidated by variability above 10% and a short host disturbance that struck
+two adjacent candidate slots; its artifacts remain negative harness evidence.
+A fresh, seed-11011 randomized balanced 50-pair cohort stayed below the 10% CV
+gate for user, total CPU, and wall. Mean user CPU improved only 1.22% (95%
+paired-bootstrap interval -0.86% to +3.27%), total CPU 0.58% (-1.92% to
++2.98%), and wall 1.07% (-0.95% to +3.06%). Wall and RSS p95 both regressed
+slightly. All 100 normalized outputs shared one exact hash. The candidate was
+rejected and the production/test bytes were restored exactly.
+
+Pass 12 moves to the larger named avoidable path rather than varying this
+container again: direct record-delta-to-event fusion removes synthesized diff
+buffers and Scanner framing while retaining the same semantic finalizer and a
+deterministic conservative fallback.
