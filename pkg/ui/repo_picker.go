@@ -480,9 +480,7 @@ func (m *RepoPickerModel) View() string {
 					check = "[x]"
 				}
 				count := fmt.Sprintf(" (%d)", m.contextlessBeadCount)
-				nameWidth := max(0, contentWidth-lipgloss.Width(prefix+check+" "+count))
-				line := prefix + check + " " + truncateRunesHelper("no-context", nameWidth, "...") + count
-				lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
+				lines = append(lines, renderRepoPickerRow(t, nameStyle, contentWidth, prefix, check, "no-context", "", count))
 				if showDetails {
 					detailStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
 					lines = append(lines, detailStyle.Render("      No repository context"))
@@ -502,22 +500,10 @@ func (m *RepoPickerModel) View() string {
 
 			count := fmt.Sprintf(" (%d)", repository.BeadCount)
 			marker := ""
-			markerStyle := t.Renderer.NewStyle()
 			if repository.ID == m.currentID && repository.ID != contextlessRepositoryID {
 				marker = " current"
-				markerStyle = markerStyle.Bold(true)
 			}
-			nameWidth := max(0, contentWidth-lipgloss.Width(prefix+check+" "+marker+count))
-			plainLine := prefix + check + " " + truncateRunesHelper(repository.Name, nameWidth, "...") + marker + count
-			if lipgloss.Width(plainLine) > contentWidth {
-				plainLine = truncateRunesHelper(plainLine, contentWidth, "...")
-			}
-			if marker != "" {
-				if markerIndex := strings.LastIndex(plainLine, marker); markerIndex >= 0 {
-					plainLine = plainLine[:markerIndex] + markerStyle.Render(marker) + plainLine[markerIndex+len(marker):]
-				}
-			}
-			lines = append(lines, nameStyle.Render(plainLine))
+			lines = append(lines, renderRepoPickerRow(t, nameStyle, contentWidth, prefix, check, repository.Name, marker, count))
 
 			if showDetails {
 				detail := repository.ID
