@@ -481,3 +481,30 @@ Evidence root: `/data/tmp/bv-p13-20260824.prefetch`; confirm TSV SHA-256
 Pass 14 tests the independently designed Go 1.25 Green Tea collector build.
 It changes no source and must beat the same combined CPU/tail gates; a GC
 experiment is not accepted merely because one synthetic heap regime likes it.
+
+## 2026-08-24 pass-14 Green Tea GC rejection
+
+The exact accepted source was built with the direct Go 1.25.5 toolchain and
+`GOEXPERIMENT=greenteagc`; build metadata records `go1.25.5 X:greenteagc` and
+the binary SHA-256 is
+`fe50a53d9408fbfe175f56ab3680e79a13f40d4cbf0fad3e7e946bbf230fed24`.
+An initial attempt through the host's older Go launcher panicked in its FIPS
+toolchain-selection path and received zero credit. The direct pinned build used
+pass-private caches, then passed ordinary/race correlation, build, and vet.
+
+The 12-pair screen suggested user CPU -3.54%, total CPU -3.49%, and wall
+-1.78%, so it advanced rather than being mistaken for a result. In the
+balanced seed-14014 50-pair confirmation, mean user CPU moved from 0.384338 s
+to 0.379151 s (-1.35%; paired-bootstrap 95% improvement interval -1.87% to
++4.61%). Total CPU moved 0.610030 s to 0.593323 s (-2.74%; interval -1.48% to
++7.24%), and wall moved 0.522907 s to 0.515039 s (-1.50%; interval -2.03% to
++5.06%). Candidate user/wall p95 regressed 3.55%/6.48%; mean RSS improved only
+0.048%. All 100 confirmation outputs shared normalized SHA-256
+`f8f098b09e0a34b5257ae2f5cfc15da85a99ccc311cb348f6ec1dd9165a75853`.
+
+The predeclared keep gate required both user- and total-CPU lower confidence
+bounds of at least 3%, plus non-regressing tails/RSS. It fails decisively.
+Green Tea is rejected with no runtime/source change and no speedup claim.
+Evidence root: `/data/tmp/bv-p14-20260824.greenteagc`; confirmation TSV
+SHA-256:
+`05a318b670fad7ab1c8c6d75ae767ec3372aa09d34425003e1764464cec19902`.
