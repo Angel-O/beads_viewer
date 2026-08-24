@@ -844,16 +844,28 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "long", Title: "Long repository", Status: model.StatusOpen, Labels: []string{"ctx:long"}},
 		{ID: "short", Title: "Short repository", Status: model.StatusClosed, Labels: []string{"ctx:s"}},
+		{
+			ID:        strings.Repeat("very-long-id-", 5),
+			Title:     "Badge-heavy hidden row",
+			Status:    model.StatusClosed,
+			Labels:    []string{"ctx:s"},
+			Comments:  []*model.Comment{{ID: "comment", Text: "comment"}},
+			IssueType: model.TypeTask,
+		},
 	}
 	catalog := model.RepositoryCatalog{
-		{ID: "ctx:long", Name: "long-repository", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:long", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
 		{ID: "ctx:s", Name: "s", Kind: model.RepositoryIdentityHubContext},
 	}
 	m := NewModel(issues, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = catalog
-	m.list.SetSize(160, 10)
+	m.list.SetSize(80, 10)
+	m.quickWinSet = map[string]bool{issues[2].ID: true}
+	m.unblocksMap = map[string][]string{issues[2].ID: {"hidden-a", "hidden-b"}}
 	m.refreshRepositoryPresentation()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	m = updated.(Model)
 
 	delegateWidth := func() int {
 		t.Helper()
@@ -870,8 +882,11 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 	}
 
 	stableWidth := delegateWidth()
-	if stableWidth != lipgloss.Width("long-repository") {
-		t.Fatalf("initial repository width = %d, want full width %d", stableWidth, lipgloss.Width("long-repository"))
+	if stableWidth != lipgloss.Width("beads_viewer") {
+		t.Fatalf("initial repository width = %d, want full width %d", stableWidth, lipgloss.Width("beads_viewer"))
+	}
+	if !strings.Contains(m.list.View(), "[beads_viewer]") {
+		t.Fatalf("normal list omitted full repository label:\n%s", m.list.View())
 	}
 	renderRows()
 
@@ -880,12 +895,12 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 		wantIDs   []string
 		wantLabel string
 	}{
-		{key: 'o', wantIDs: []string{"long"}, wantLabel: "long-repository"},
-		{key: 'o', wantIDs: []string{"long", "short"}, wantLabel: "long-repository"},
-		{key: 'c', wantIDs: []string{"short"}, wantLabel: "s"},
-		{key: 'c', wantIDs: []string{"long", "short"}, wantLabel: "long-repository"},
-		{key: 'r', wantIDs: []string{"long"}, wantLabel: "long-repository"},
-		{key: 'r', wantIDs: []string{"long", "short"}, wantLabel: "long-repository"},
+		{key: 'o', wantIDs: []string{"long", "short", issues[2].ID}, wantLabel: "beads_viewer"},
+		{key: 'o', wantIDs: []string{"long"}, wantLabel: "beads_viewer"},
+		{key: 'c', wantIDs: []string{"short", issues[2].ID}, wantLabel: "s"},
+		{key: 'c', wantIDs: []string{"long", "short", issues[2].ID}, wantLabel: "beads_viewer"},
+		{key: 'r', wantIDs: []string{"long"}, wantLabel: "beads_viewer"},
+		{key: 'r', wantIDs: []string{"long", "short", issues[2].ID}, wantLabel: "beads_viewer"},
 	}
 	for _, transition := range transitions {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{transition.key}})
@@ -915,6 +930,48 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 		if width := lipgloss.Width(row); width > narrow.list.Width() {
 			t.Fatalf("narrow rendered row width = %d, terminal width = %d: %q", width, narrow.list.Width(), row)
 		}
+	}
+}
+
+func TestHubListRepositoryWidthUsesActiveScopeOnly(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "short", Title: "Short repository", Status: model.StatusOpen, Labels: []string{"ctx:s"}},
+		{ID: "inbox", Title: "Contextless", Status: model.StatusOpen},
+	}
+	catalog := model.RepositoryCatalog{
+		{ID: "ctx:s", Name: "s", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:inactive", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
+	}
+
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = catalog
+	m.list.SetSize(120, 10)
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	nameWidth, _ := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
+	if nameWidth != lipgloss.Width("s") {
+		t.Fatalf("active short-scope repository width = %d, want %d", nameWidth, lipgloss.Width("s"))
+	}
+	if strings.Contains(m.list.View(), "beads_viewer") {
+		t.Fatalf("inactive repository widened or leaked into short scope:\n%s", m.list.View())
+	}
+
+	contextless := NewModel(issues, nil, "")
+	contextless.hubConfigPath = "hub.yaml"
+	contextless.repositoryCatalog = catalog
+	contextless.list.SetSize(120, 10)
+	if err := contextless.SetHubScope(model.NewContextlessHubScope()); err != nil {
+		t.Fatal(err)
+	}
+	nameWidth, _ = contextless.repositoryListColumnWidths(IssueDelegate{Theme: contextless.theme})
+	if nameWidth != lipgloss.Width(contextlessRepositoryID) {
+		t.Fatalf("contextless repository width = %d, want %d", nameWidth, lipgloss.Width(contextlessRepositoryID))
 	}
 }
 
@@ -1041,7 +1098,7 @@ func TestHubListColumnSuppressesWhenMetadataConsumesWidth(t *testing.T) {
 		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
 		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: model.RepositoryIdentityHubContext},
 	}
-	m.list.SetSize(60, 10)
+	m.list.SetSize(45, 10)
 	m.refreshRepositoryPresentation()
 	delegate := IssueDelegate{Theme: m.theme}
 	nameWidth, extraWidth := m.repositoryListColumnWidths(delegate)
@@ -1049,8 +1106,13 @@ func TestHubListColumnSuppressesWhenMetadataConsumesWidth(t *testing.T) {
 		t.Fatalf("overfull row repository columns = name:%d extra:%d, want suppressed", nameWidth, extraWidth)
 	}
 	view := m.list.View()
-	if strings.Contains(view, "[dotfiles]") || !strings.Contains(view, "an-extremely-long-visible-issue-id…") {
-		t.Fatalf("overfull row did not suppress badge while preserving ID: %q", view)
+	if strings.Contains(view, "[dotfiles]") {
+		t.Fatalf("narrow row did not suppress repository badge: %q", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > m.list.Width() {
+			t.Fatalf("narrow row width = %d, terminal width = %d: %q", width, m.list.Width(), line)
+		}
 	}
 }
 

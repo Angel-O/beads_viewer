@@ -850,48 +850,6 @@ func (m *Model) updateListDelegate() {
 	m.list.SetDelegate(delegate)
 }
 
-func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
-	if !m.hubRepositoryPresentation() || m.list.Width() <= 45 {
-		return 0, 0
-	}
-	const nameWidthCap = 16
-	nameWidth := 0
-	for _, repository := range m.repositoryCatalog {
-		if repository.Kind != model.RepositoryIdentityHubContext {
-			continue
-		}
-		nameWidth = max(nameWidth, lipgloss.Width(repository.Name))
-	}
-	nameWidth = max(nameWidth, lipgloss.Width(contextlessRepositoryID))
-	nameWidth = min(nameWidth, nameWidthCap)
-
-	extraWidth := 0
-	rowReserve := 0
-	rowWidth := m.list.Width() - 1
-	for _, issue := range m.repositoryCandidates() {
-		item := IssueItem{
-			Issue:          issue,
-			DiffStatus:     m.getDiffStatus(issue.ID),
-			RepoPrefix:     issueRepoKey(issue),
-			SearchScoreSet: delegate.ShowSearchScores,
-		}
-		m.decorateIssueItem(&item)
-		item.IsQuickWin = m.quickWinSet[issue.ID]
-		item.IsBlocker = m.blockerSet[issue.ID]
-		item.UnblocksCount = len(m.unblocksMap[issue.ID])
-		rowReserve = max(rowReserve, delegate.rowWidthWithoutRepository(item, rowWidth))
-		if item.RepositoryExtra > 0 {
-			extraWidth = max(extraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
-		}
-	}
-	availableNameWidth := rowWidth - rowReserve - extraWidth - 3
-	if availableNameWidth < 1 {
-		return 0, 0
-	}
-	nameWidth = min(nameWidth, availableNameWidth)
-	return nameWidth, extraWidth
-}
-
 func (m *Model) setListItemsPreservingFilter(items []list.Item) {
 	defer m.updateListDelegate()
 	filterState := m.list.FilterState()
