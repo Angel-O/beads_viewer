@@ -663,6 +663,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				config.CyclesSkipReason = skipReason
 			}
 
+			analyzer.SetNow(robotNow())
 			plan := analyzer.GetExecutionPlan()
 			stats := analyzer.AnalyzeAsyncWithConfig(context.Background(), config)
 			stats.WaitForPhase2()

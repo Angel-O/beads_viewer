@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,77 @@ func TestRobotCommandsHonourDeferUntilEndToEnd(t *testing.T) {
 	for _, want := range []string{"ELAPSED-1", "READY-1"} {
 		if !got[want] {
 			t.Fatalf("--recipe actionable dropped %s:\n%s", want, filteredOut)
+		}
+	}
+}
+
+func TestRobotPlanUsesPinnedClockForDeferredIssue(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads: %v", err)
+	}
+
+	wallNow := time.Now().UTC()
+	deferUntil := wallNow.Add(-time.Minute)
+	pinnedNow := wallNow.Add(-time.Hour)
+	if !pinnedNow.Before(deferUntil) || !deferUntil.Before(wallNow) {
+		t.Fatalf("invalid clock arrangement: pinned=%v defer_until=%v wall=%v", pinnedNow, deferUntil, wallNow)
+	}
+	beads := `{"id":"PINNED-PLAN","title":"Pinned plan deferral","status":"open","priority":0,"issue_type":"task","defer_until":"` + deferUntil.Format(time.RFC3339Nano) + `"}` + "\n"
+	if err := os.WriteFile(filepath.Join(beadsDir, "beads.jsonl"), []byte(beads), 0o644); err != nil {
+		t.Fatalf("write beads: %v", err)
+	}
+
+	exe := buildTestBinary(t)
+	run := func() []byte {
+		t.Helper()
+		cmd := exec.Command(exe, "--robot-plan", "--format=json")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"SOURCE_DATE_EPOCH="+strconv.FormatInt(pinnedNow.Unix(), 10),
+			"BV_NO_CACHE=1",
+		)
+		out, err := cmd.Output()
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				t.Fatalf("robot-plan failed: %v\nstderr:\n%s", err, ee.Stderr)
+			}
+			t.Fatalf("robot-plan failed: %v", err)
+		}
+		return out
+	}
+	type planPayload struct {
+		Plan struct {
+			TotalActionable int `json:"total_actionable"`
+			Tracks          []struct {
+				Items []struct {
+					ID string `json:"id"`
+				} `json:"items"`
+			} `json:"tracks"`
+		} `json:"plan"`
+	}
+	decode := func(raw []byte) planPayload {
+		t.Helper()
+		var payload planPayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("robot-plan JSON: %v\n%s", err, raw)
+		}
+		return payload
+	}
+
+	first := decode(run())
+	second := decode(run())
+	for runNumber, payload := range []planPayload{first, second} {
+		if payload.Plan.TotalActionable != 0 {
+			t.Fatalf("run %d total_actionable = %d, want 0 at pinned clock", runNumber+1, payload.Plan.TotalActionable)
+		}
+		for _, track := range payload.Plan.Tracks {
+			for _, item := range track.Items {
+				if item.ID == "PINNED-PLAN" {
+					t.Fatalf("run %d admitted deferred issue despite pinned clock: %#v", runNumber+1, payload)
+				}
+			}
 		}
 	}
 }
