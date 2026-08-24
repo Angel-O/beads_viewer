@@ -54,14 +54,7 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		return 0, 0
 	}
 
-	extraWidth := 0
-	activeRepositoryCount := len(repositories)
-	if includeContextless {
-		activeRepositoryCount++
-	}
-	if activeRepositoryCount > 1 {
-		extraWidth = lipgloss.Width(fmt.Sprintf("+%d", activeRepositoryCount-1))
-	}
+	extraWidth := m.repositoryListExtraWidth()
 
 	// Variable row metadata must not steal width from an active repository
 	// label. Only the fixed minimum row determines when a narrow terminal
@@ -74,6 +67,33 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		return 0, 0
 	}
 	return min(nameWidth, availableNameWidth), extraWidth
+}
+
+func (m Model) repositoryListExtraWidth() int {
+	knownContexts := make(map[string]struct{}, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind == model.RepositoryIdentityHubContext {
+			knownContexts[repository.ID] = struct{}{}
+		}
+	}
+
+	maxExtra := 0
+	for _, issue := range m.repositoryIssues {
+		seen := make(map[string]struct{})
+		for _, label := range issue.Labels {
+			if _, known := knownContexts[label]; !known {
+				continue
+			}
+			seen[label] = struct{}{}
+		}
+		if extra := len(seen) - 1; extra > maxExtra {
+			maxExtra = extra
+		}
+	}
+	if maxExtra == 0 {
+		return 0
+	}
+	return lipgloss.Width(fmt.Sprintf("+%d", maxExtra))
 }
 
 func (m Model) repositoryListScopeCatalog() (model.RepositoryCatalog, bool) {

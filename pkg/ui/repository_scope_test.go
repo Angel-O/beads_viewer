@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1084,6 +1085,80 @@ func TestHubListRowsAlignSharedRepositoryColumn(t *testing.T) {
 		} else if prefixWidth != wantPrefixWidth {
 			t.Fatalf("post-badge priority column drift for %s: got %d, want %d; row %q", id, prefixWidth, wantPrefixWidth, row)
 		}
+	}
+}
+
+func TestHubListExtraWidthUsesRenderedInactiveContexts(t *testing.T) {
+	const activeID = "ctx:active"
+	issues := []model.Issue{
+		{ID: "multi-1", Title: "Multi-context", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{activeID}},
+		{ID: "single1", Title: "Single-context", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{activeID}},
+	}
+	catalog := model.RepositoryCatalog{{ID: activeID, Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext}}
+	for index := 0; index < 12; index++ {
+		contextID := fmt.Sprintf("ctx:inactive-%02d", index)
+		catalog = append(catalog, model.RepositoryCatalogEntry{
+			ID: contextID, Name: fmt.Sprintf("repo-%02d", index), Kind: model.RepositoryIdentityHubContext,
+		})
+		issues[0].Labels = append(issues[0].Labels, contextID)
+	}
+
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = catalog
+	m.list.SetSize(120, 10)
+	scope, err := model.NewSelectedContextsHubScope([]string{activeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+
+	nameWidth, extraWidth := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
+	if nameWidth != lipgloss.Width("beads_viewer") || extraWidth != lipgloss.Width("+12") {
+		t.Fatalf("selected scope columns = name:%d extra:%d, want name:%d extra:%d", nameWidth, extraWidth, lipgloss.Width("beads_viewer"), lipgloss.Width("+12"))
+	}
+	view := m.list.View()
+	if !strings.Contains(view, "[beads_viewer]") || !strings.Contains(view, "+12") {
+		t.Fatalf("multi-context row omitted rendered repository metadata:\n%s", view)
+	}
+	wantPrefixWidth := -1
+	for _, id := range []string{"multi-1", "single1"} {
+		var row string
+		for _, line := range strings.Split(view, "\n") {
+			if strings.Contains(line, id) {
+				row = line
+				break
+			}
+		}
+		if row == "" {
+			t.Fatalf("missing rendered row for %s:\n%s", id, view)
+		}
+		priorityIndex := strings.Index(row, "P0")
+		if priorityIndex < 0 {
+			t.Fatalf("missing priority column for %s: %q", id, row)
+		}
+		prefixWidth := lipgloss.Width(row[:priorityIndex])
+		if wantPrefixWidth < 0 {
+			wantPrefixWidth = prefixWidth
+		} else if prefixWidth != wantPrefixWidth {
+			t.Fatalf("repository columns drifted for %s: got %d, want %d; row %q", id, prefixWidth, wantPrefixWidth, row)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > m.list.Width() {
+			t.Fatalf("rendered row width = %d, terminal width = %d: %q", width, m.list.Width(), line)
+		}
+	}
+
+	allItems := NewModel([]model.Issue{{ID: "only-active", Title: "Only active", Status: model.StatusOpen, Labels: []string{activeID}}}, nil, "")
+	allItems.hubConfigPath = "hub.yaml"
+	allItems.repositoryCatalog = catalog
+	allItems.list.SetSize(120, 10)
+	allNameWidth, allExtraWidth := allItems.repositoryListColumnWidths(IssueDelegate{Theme: allItems.theme})
+	if allNameWidth != lipgloss.Width("beads_viewer") || allExtraWidth != 0 {
+		t.Fatalf("all-items unused extra reservation = name:%d extra:%d, want name:%d extra:0", allNameWidth, allExtraWidth, lipgloss.Width("beads_viewer"))
 	}
 }
 
