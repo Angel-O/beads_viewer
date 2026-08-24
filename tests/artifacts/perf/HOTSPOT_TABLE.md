@@ -763,3 +763,25 @@ set. Current ordering is the fastest bounded choice on this pack; evidence root
 
 No runtime bytes changed in these three passes. Their positive evidence is
 activation and negative bounds, not accepted performance improvement.
+
+## 2026-08-24 passes 26-27 request-train and fusion rejections
+
+Pass 26 batched seven SHA requests into a <=455-byte train and reduced
+handshakes without a goroutine or payload queue. The order/width mutation and
+focused lifetime gates passed, but eight direct pairs improved wall only 7.66%,
+left user/total CPU flat, and slightly regressed RSS. It stopped before product
+measurement. Evidence root:
+`/data/tmp/bv-p26-20260824.catfile-request-trains`.
+
+Pass 27 revisited the strongest prior near-miss against the current runtime.
+Direct event fusion removed synthesized diff/Scanner allocation, cut benchmark
+bytes/op 38.21%, and improved direct user/total CPU 6.12%/5.65%. The 50-pair
+product cohort kept all outputs exact and improved point user/total/wall by
+5.34%/4.10%/2.97%, with every measured p95/worst tail lower. Nevertheless its
+lower-95% user/total gains were only 2.78%/1.51%, baseline total/wall CVs exceeded
+10%, and RSS moved 0.035% higher. The frozen conjunction fails, so no source was
+retained. Evidence root:
+`/data/tmp/bv-p27-20260824.direct-event-fusion-v2`.
+
+These passes prove two mechanisms and reject two product claims. They do not
+increase the campaign's accepted measured improvement.
