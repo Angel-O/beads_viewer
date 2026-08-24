@@ -137,6 +137,7 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
 | NE-20260824-05 | Reusing evicted blob buffers produces a defensible cold-triage latency win. | On low-load `ovh-b`, a 20-pair high-resolution run improved mean wall by only 0.85% (14/20 faster, one-sided sign p=0.0577) while p95 and worst were slightly worse. A fresh 40-pair run improved mean by 0.83%, split pairs 20/20 (p=0.5627), and regressed median, p95, and worst. | Retry only if a materially different representative history or storage regime makes allocation/GC dominate wall, then require interleaved CV below 10%, significant paired results, and non-regressing tails. |
 | NE-20260824-06 | Blob-buffer reuse lowers peak RSS. | Twenty untraced matched runs measured 109,397.8 KiB baseline versus 109,513.6 KiB candidate mean maximum RSS, a small 0.106% increase. The one-spare design is bounded, but no footprint win was observed. | Retry with an allocation/heap profile or a history whose blob-size distribution makes peak live storage sensitive to reuse; do not infer RSS from fewer GC cycles. |
 | NE-20260824-07 | A naive RCH `go test ./...` result is a valid continuation full-suite gate. | The changed correlation package passed, but the aggregate run failed from RCH-specific current-directory discovery, privileged permission semantics, missing Git/VCS metadata, and timing-sensitive shared-worker tests. On direct low-load execution every package except the Git-requiring loader case passed, including E2E; the loader package passed after placing the exact candidate bytes in a new Git-backed tree. | Credit a future aggregate RCH run only with stable cwd/TMPDIR, non-root execution, Git semantics accounted for, and acceptable worker load; otherwise compose explicit per-environment package results without relabeling the failed aggregate green. |
+| NE-20260824-08 | Inline record-line entries plus exact collision buckets improve the measured cold history path. | Although all semantic and build gates passed and normalized output was exact, 20 low-load interleaved pairs regressed mean wall 5.62%, median 4.62%, p95 8.11%, worst 6.97%, and mean user CPU 6.69%. Pre-sizing and exact comparison added about two full-history memory passes. The candidate was fully restored. | Retry only with a design that removes per-entry allocation without a separate line-count scan or ordinary-path full-line comparison; require lower CPU/allocation and non-regressing median/p95/worst on the same fixture. |
 
 ### 2026-08-24 accepted profile anchor
 
@@ -163,3 +164,7 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   to `newRecordLineSet` and 12.6% flat samples to AES-backed map hashing. That
   residual promotes record-line-set hashing/allocation to the next pass; it is
   an investigation target, not a promised win.
+- The first inline-entry/collision-safe formulation was rejected at pass 2 and
+  restored exactly. Its normalized behavior hash was
+  `32aaadc67dd872e359d903863c36dc48cbc9ad7f113487129f3ce3b8b0aad10f`,
+  but exact behavior does not offset the observed wall and CPU regressions.
