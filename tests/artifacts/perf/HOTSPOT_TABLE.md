@@ -407,3 +407,39 @@ Pass 12 moves to the larger named avoidable path rather than varying this
 container again: direct record-delta-to-event fusion removes synthesized diff
 buffers and Scanner framing while retaining the same semantic finalizer and a
 deterministic conservative fallback.
+
+## 2026-08-24 pass-12 direct-event-fusion rejection
+
+The candidate accumulated positive old/new record multiplicities directly
+into the shared event finalizer, bypassing synthesized diff text and Scanner
+framing on certified inputs. It retained the complete legacy pipeline for
+records near the 10 MiB token ceiling and for conflicting same-ID snapshots.
+The synthetic matrix covered CRLF, malformed records, filters, duplicates,
+dense 726-record snapshots, and buffer lifetime. The real Git oracle matched
+all 1,776 events in order and across all seven compared fields. A planted
+`>` to `>=` multiplicity mutation made identical sets emit one event and was
+caught before restoration.
+
+The 12-pair screen was positive, so the candidate advanced to the declared
+seed-12012 balanced randomized 50-pair cohort on the quiet exact-source host.
+All 100 normalized outputs shared SHA-256
+`f8f098b09e0a34b5257ae2f5cfc15da85a99ccc311cb348f6ec1dd9165a75853`.
+Mean user CPU fell from 0.386278 s to 0.362202 s (-6.23%, paired-bootstrap 95%
+interval +4.21% to +8.18%), but total CPU fell only from 0.588110 s to
+0.570598 s (-2.98%, interval +0.21% to +5.64%). System CPU instead rose from
+0.201832 s to 0.208397 s (+3.25%), and its p95 rose 4.55%. Mean wall improved
+3.83%, but baseline wall CV was 11.11%; baseline total-CPU CV was 10.97%.
+Mean RSS differed by only 0.24 KiB, while candidate worst RSS was 228 KiB
+higher.
+
+The decision card required lower-95% gains of at least 3% for both user and
+total CPU, sub-10% CV, and non-regressing system CPU/tails/RSS. User CPU alone
+passed; total CPU, variability, and system CPU did not. The source/test
+candidate is rejected and restored. Preserved remote evidence root:
+`/data/tmp/bv-p12-20260824.fusion`; confirm TSV SHA-256
+`468be0e186489e690e0f3de924d857d31d10c8c0ee2f88fffd7ab70d47dc934d`.
+
+Pass 13 therefore attacks the producer/consumer serialization boundary rather
+than JSON framing again: bounded one-object-ahead `git cat-file --batch`
+prefetch may overlap Git inflation with current-blob parsing without changing
+object count, order, or representation.
