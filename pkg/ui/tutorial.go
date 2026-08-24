@@ -2072,6 +2072,7 @@ Press **w** to open the repo picker, then:
 | **Enter** | Apply filter |
 | **a** | Select all repos |
 | **n** | Clear draft selection |
+| **c** | Select current repository only |
 | **/** | Search friendly name, path, or exact ID |
 | **Esc** | Clear search first, then cancel |
 

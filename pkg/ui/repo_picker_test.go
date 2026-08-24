@@ -56,6 +56,113 @@ func TestRepoPickerViewContainsRepos(t *testing.T) {
 	}
 }
 
+func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetCurrentRepository("ctx:beta-456")
+	m.SetSize(120, 24)
+
+	out := m.View()
+	if strings.Count(out, "current (3)") != 1 {
+		t.Fatalf("current repository marker count = %d, want one:\n%s", strings.Count(out, "current (3)"), out)
+	}
+	if strings.Contains(out, "no-context current") {
+		t.Fatalf("no-context row was marked current:\n%s", out)
+	}
+
+	m.MoveDown()
+	if !strings.Contains(m.View(), "beta current (3)") || strings.Contains(m.View(), "alpha current") {
+		t.Fatalf("marker moved with cursor:\n%s", m.View())
+	}
+
+	m.BeginSearch()
+	m.UpdateSearch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
+	if !strings.Contains(m.View(), "beta current (3)") {
+		t.Fatalf("current marker was lost in filtered result:\n%s", m.View())
+	}
+}
+
+func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetCurrentRepository("ctx:beta-456")
+	m.SelectCurrent()
+
+	selected := m.SelectedRepos()
+	if len(selected) != 1 || !selected["ctx:beta-456"] || m.ContextlessSelected() || m.selectFuture {
+		t.Fatalf("current-only draft = repos=%v contextless=%v future=%v", selected, m.ContextlessSelected(), m.selectFuture)
+	}
+}
+
+func TestRepoPickerCurrentOnlyAbsentIsNoOp(t *testing.T) {
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetCurrentRepository("ctx:missing")
+	before := m.SelectedRepos()
+	beforeContextless := m.ContextlessSelected()
+	m.SelectCurrent()
+
+	if got := m.SelectedRepos(); len(got) != len(before) || !got["ctx:alpha-123"] || !got["ctx:beta-456"] || !got["ctx:gamma-789"] || m.ContextlessSelected() != beforeContextless {
+		t.Fatalf("absent current changed draft: repos=%v contextless=%v", got, m.ContextlessSelected())
+	}
+}
+
+func TestRepoPickerCurrentOnlyCancelAndApply(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha-123", "ctx:beta-456", "ctx:gamma-789")
+	m.currentRepositoryID = "ctx:beta-456"
+	if err := m.SetHubScope(model.NewAllItemsHubScope()); err != nil {
+		t.Fatal(err)
+	}
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
+	m.repoPicker.SetHubScope(model.NewAllItemsHubScope())
+	m.showRepoPicker = true
+	m.focused = focusRepoPicker
+
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.HubScope().Mode != model.HubScopeAllItems {
+		t.Fatalf("cancel applied current-only draft: %#v", m.HubScope())
+	}
+
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
+	m.repoPicker.SetHubScope(model.NewAllItemsHubScope())
+	m.showRepoPicker = true
+	m.focused = focusRepoPicker
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	scope := m.HubScope()
+	if scope.Mode != model.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:beta-456" || scope.IncludeContextless {
+		t.Fatalf("apply current-only scope = %#v", scope)
+	}
+}
+
+func TestRepoPickerCurrentOnlyRemainsSearchText(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.repositoryCatalog = testRepositoryCatalog()
+	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+	m.repoPicker.SetCurrentRepository("ctx:beta-456")
+	m.repoPicker.BeginSearch()
+	m.showRepoPicker = true
+
+	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if m.repoPicker.SearchValue() != "c" || len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
+		t.Fatalf("search input did not own c: query=%q selected=%v", m.repoPicker.SearchValue(), m.repoPicker.SelectedRepos())
+	}
+}
+
+func TestRepoPickerCurrentOnlyHintFitsNormalWidth(t *testing.T) {
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
+	m.SetSize(120, 24)
+	footer := "j/k: navigate | space: toggle | a: all | n: clear | c: current only | /: search | enter: apply | esc: cancel"
+	if out := m.View(); !strings.Contains(out, footer) {
+		t.Fatalf("normal picker footer was truncated:\n%s", out)
+	}
+}
+
 func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "contextless-1"},

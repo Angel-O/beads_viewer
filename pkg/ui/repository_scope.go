@@ -430,7 +430,11 @@ func (m *Model) reconcileHubScopeCatalog() {
 // repository catalog is available. A single-entry catalog remains an explicit
 // selection so repositories registered later do not silently join the scope.
 func (m *Model) SetDefaultRepositoryScope(repositoryID string) bool {
-	if repositoryID == "" || m.workspaceMode || !m.hubRepositoryMode || m.defaultRepositorySet {
+	if repositoryID == "" || m.workspaceMode || !m.hubRepositoryMode {
+		return false
+	}
+	m.currentRepositoryID = repositoryID
+	if m.defaultRepositorySet {
 		return false
 	}
 	m.defaultRepositoryID = repositoryID

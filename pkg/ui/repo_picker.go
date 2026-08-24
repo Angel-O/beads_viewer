@@ -16,6 +16,7 @@ import (
 type RepoPickerModel struct {
 	catalog              model.RepositoryCatalog
 	filtered             model.RepositoryCatalog
+	currentID            string
 	selectedIndex        int
 	selected             map[string]bool // exact repository ID -> selected
 	selectFuture         bool
@@ -120,6 +121,11 @@ func (m *RepoPickerModel) SetContextlessBeadCount(count int) {
 	m.contextlessBeadCount = count
 }
 
+// SetCurrentRepository identifies the authoritative repository for the picker.
+func (m *RepoPickerModel) SetCurrentRepository(repositoryID string) {
+	m.currentID = repositoryID
+}
+
 // SetCatalog refreshes picker options while preserving draft selection and the
 // cursor by exact repository ID. New entries join only an all-repositories draft.
 func (m *RepoPickerModel) SetCatalog(catalog model.RepositoryCatalog) {
@@ -199,6 +205,27 @@ func (m *RepoPickerModel) ClearSelection() {
 	m.contextlessSelected = false
 	m.selected = make(map[string]bool)
 	m.selectFuture = false
+}
+
+// SelectCurrent selects only the current repository in the draft.
+func (m *RepoPickerModel) SelectCurrent() {
+	if m.currentID == "" || m.currentID == contextlessRepositoryID {
+		return
+	}
+	available := false
+	for _, repository := range m.catalog {
+		if repository.ID == m.currentID {
+			available = true
+			break
+		}
+	}
+	if !available {
+		return
+	}
+
+	m.selected = map[string]bool{m.currentID: true}
+	m.selectFuture = false
+	m.contextlessSelected = false
 }
 
 // SelectedRepos returns the selected repos as a map (repo -> true).
@@ -346,7 +373,7 @@ func (m *RepoPickerModel) View() string {
 	t := m.theme
 
 	// Calculate box dimensions
-	boxWidth := 70
+	boxWidth := 112
 	if maximum := m.width - 6; boxWidth > maximum {
 		boxWidth = maximum
 	}
@@ -474,8 +501,12 @@ func (m *RepoPickerModel) View() string {
 			}
 
 			count := fmt.Sprintf(" (%d)", repository.BeadCount)
-			nameWidth := max(1, contentWidth-lipgloss.Width(prefix+check+count)-3)
-			line := prefix + check + " " + truncateRunesHelper(repository.Name, nameWidth, "...") + count
+			marker := ""
+			if repository.ID == m.currentID && repository.ID != contextlessRepositoryID {
+				marker = " current"
+			}
+			nameWidth := max(1, contentWidth-lipgloss.Width(prefix+check+" "+marker+count))
+			line := prefix + check + " " + truncateRunesHelper(repository.Name, nameWidth, "...") + marker + count
 			lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
 
 			if showDetails {
@@ -503,7 +534,7 @@ func (m *RepoPickerModel) View() string {
 		footerStyle := t.Renderer.NewStyle().
 			Foreground(ColorFooterHint).
 			Italic(true)
-		footer := "j/k: navigate | space: toggle | a: all | n: clear | /: search | enter: apply | esc: cancel"
+		footer := "j/k: navigate | space: toggle | a: all | n: clear | c: current only | /: search | enter: apply | esc: cancel"
 		if m.searching {
 			footer = "type: search | up/down: navigate | enter: apply | esc: clear search"
 		}
