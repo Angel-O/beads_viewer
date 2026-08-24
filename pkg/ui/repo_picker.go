@@ -502,11 +502,13 @@ func (m *RepoPickerModel) View() string {
 
 			count := fmt.Sprintf(" (%d)", repository.BeadCount)
 			marker := ""
+			markerStyle := t.Renderer.NewStyle()
 			if repository.ID == m.currentID && repository.ID != contextlessRepositoryID {
 				marker = " current"
+				markerStyle = markerStyle.Bold(true)
 			}
 			nameWidth := max(1, contentWidth-lipgloss.Width(prefix+check+" "+marker+count))
-			line := prefix + check + " " + truncateRunesHelper(repository.Name, nameWidth, "...") + marker + count
+			line := prefix + check + " " + truncateRunesHelper(repository.Name, nameWidth, "...") + markerStyle.Render(marker) + count
 			lines = append(lines, nameStyle.Render(truncateRunesHelper(line, contentWidth, "...")))
 
 			if showDetails {

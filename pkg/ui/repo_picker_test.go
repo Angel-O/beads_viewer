@@ -2,11 +2,14 @@ package ui
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -79,6 +82,40 @@ func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
 	m.UpdateSearch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("beta")})
 	if !strings.Contains(m.View(), "beta current (3)") {
 		t.Fatalf("current marker was lost in filtered result:\n%s", m.View())
+	}
+}
+
+func TestRepoPickerCurrentMarkerIsBoldWithoutChangingPlainText(t *testing.T) {
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.ANSI)
+	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(renderer))
+	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetCurrentRepository("ctx:beta-456")
+	m.SetSize(120, 24)
+
+	view := m.View()
+	var currentLine, nonCurrentLine string
+	for _, line := range strings.Split(view, "\n") {
+		plain := ansi.Strip(line)
+		switch {
+		case strings.Contains(plain, "beta current (3)"):
+			currentLine = line
+		case strings.Contains(plain, "gamma (0)"):
+			nonCurrentLine = line
+		}
+	}
+	if currentLine == "" || nonCurrentLine == "" {
+		t.Fatalf("picker rows missing from view:\n%s", ansi.Strip(view))
+	}
+	if !strings.Contains(currentLine, "\x1b[1m current\x1b[0m") {
+		t.Fatalf("current marker was not rendered bold: %q", currentLine)
+	}
+	if strings.Contains(nonCurrentLine, "\x1b[1m") {
+		t.Fatalf("non-current repository row unexpectedly contains bold styling: %q", nonCurrentLine)
+	}
+	plain := ansi.Strip(view)
+	if !strings.Contains(plain, "beta current (3)") || strings.Contains(plain, "*") {
+		t.Fatalf("plain picker content changed: %q", plain)
 	}
 }
 
