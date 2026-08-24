@@ -740,3 +740,26 @@ It fails, so no 50-pair cohort or source integration followed. Evidence root:
 `b3c28666e787a17e7f1ee3ee4f7f234d1f2095baa639efb1368f3c736f2fd495` /
 `c62698add43c9b34415e4cc8a2e8c80eab6abbc43c623e248c3aa5824d0625e2`.
 The direct overlap is real evidence, not an accepted product improvement.
+
+## 2026-08-24 passes 23-25 bounded rejections
+
+Pass 23 activated reproducible Go 1.25.5 `GOAMD64=v3` codegen on an AVX2 EPYC
+worker, but 12 exact product pairs regressed user/total/wall by
+2.71%/2.91%/2.26% and worsened tails. The build-only lever is rejected; evidence
+root `/data/tmp/bv-p23-20260824.goamd64v3`.
+
+Pass 24 found a hard fusion ceiling. Descriptor scanning and exact record
+hashing overlap by at most 0.04 s / 2.01 s = 1.99%; the current binary already
+uses SSE/AVX newline search and AES hashing. A different fused hash would change
+collision semantics. No implementation can clear the 3% gate under the current
+profile; disassembly is preserved at
+`/data/tmp/bv-p24-20260824.fused-scan-hash`.
+
+Pass 25 measured rather than guessed pack locality. For the same 498 OIDs,
+newest-first averaged 0.10000 s, reverse 0.14625 s, and pack-offset 0.10125 s.
+Pack order also needs payload reassociation that widens the 384 MB logical live
+set. Current ordering is the fastest bounded choice on this pack; evidence root
+`/data/tmp/bv-p25-20260824.pack-order`.
+
+No runtime bytes changed in these three passes. Their positive evidence is
+activation and negative bounds, not accepted performance improvement.
