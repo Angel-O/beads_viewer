@@ -624,10 +624,11 @@ type Model struct {
 	blockerSet    map[string]bool                   // issueID -> true if significant blocker
 
 	// Recipe picker
-	showRecipePicker bool
-	recipePicker     RecipePickerModel
-	activeRecipe     *recipe.Recipe
-	recipeLoader     *recipe.Loader
+	showRecipePicker   bool
+	recipePicker       RecipePickerModel
+	recipePickerOrigin focus
+	activeRecipe       *recipe.Recipe
+	recipeLoader       *recipe.Loader
 
 	// Label picker (bv-126)
 	showLabelPicker bool
@@ -639,8 +640,9 @@ type Model struct {
 	activeIssueTypes map[model.IssueType]bool
 
 	// Repository scope picker (Hub or workspace mode)
-	showRepoPicker bool
-	repoPicker     RepoPickerModel
+	showRepoPicker   bool
+	repoPicker       RepoPickerModel
+	repoPickerOrigin focus
 
 	// Time-travel mode
 	timeTravelMode   bool
@@ -4163,13 +4165,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "'":
 				// Toggle recipe picker overlay
-				m.showRecipePicker = !m.showRecipePicker
-				if m.showRecipePicker {
-					m.recipePicker.SetSize(m.width, m.height-1)
-					m.focused = focusRecipePicker
-				} else {
-					m.focused = focusList
-				}
+				m.recipePickerOrigin = m.focused
+				m.resetRecipePicker()
+				m.showRecipePicker = true
+				m.recipePicker.SetSize(m.width, m.height-1)
+				m.focused = focusRecipePicker
 				return m, nil
 
 			case "I":
@@ -4194,20 +4194,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusIsError = false
 					return m, nil
 				}
-				m.showRepoPicker = !m.showRepoPicker
-				if m.showRepoPicker {
-					m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-					if m.hubRepositoryMode {
-						m.repoPicker.SetHubScope(m.hubScope)
-					} else {
-						m.repoPicker.SetActiveRepos(m.activeRepos)
-					}
-					m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
-					m.repoPicker.SetSize(m.width, m.height-1)
-					m.focused = focusRepoPicker
+				m.repoPickerOrigin = m.focused
+				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
+				if m.hubRepositoryMode {
+					m.repoPicker.SetHubScope(m.hubScope)
 				} else {
-					m.focused = focusList
+					m.repoPicker.SetActiveRepos(m.activeRepos)
 				}
+				m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+				m.repoPicker.SetSize(m.width, m.height-1)
+				m.showRepoPicker = true
+				m.focused = focusRepoPicker
 				return m, nil
 
 			case "x":
@@ -5184,9 +5181,10 @@ func (m Model) handleRecipePickerKeys(msg tea.KeyMsg) Model {
 		m.recipePicker.MoveDown()
 	case "k", "up":
 		m.recipePicker.MoveUp()
-	case "esc":
+	case "esc", "'":
+		m.resetRecipePicker()
 		m.showRecipePicker = false
-		m.focused = focusList
+		m.focused = m.recipePickerOrigin
 	case "enter":
 		// Apply selected recipe
 		if selected := m.recipePicker.SelectedRecipe(); selected != nil {
@@ -5231,7 +5229,7 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 		m.repoPicker.BeginSearch()
 	case "esc", "q", "w":
 		m.showRepoPicker = false
-		m.focused = focusList
+		m.focused = m.repoPickerOrigin
 	case "enter":
 		return m.applyRepositoryPickerSelection()
 	}
@@ -5272,6 +5270,25 @@ func (m Model) handleTypePickerKeys(msg tea.KeyMsg) Model {
 		m.focused = focusList
 	}
 	return m
+}
+
+func (m *Model) resetRecipePicker() {
+	if m.recipeLoader == nil {
+		m.recipePicker.selectedIndex = 0
+		return
+	}
+
+	recipes := m.recipeLoader.List()
+	m.recipePicker = NewRecipePickerModel(recipes, m.theme)
+	if m.activeRecipe == nil {
+		return
+	}
+	for i, candidate := range recipes {
+		if candidate.Name == m.activeRecipe.Name {
+			m.recipePicker.selectedIndex = i
+			return
+		}
+	}
 }
 
 func (m Model) applyRepositoryPickerSelection() Model {

@@ -658,6 +658,77 @@ func TestAttentionViewEscapeAndQRestoreOrigin(t *testing.T) {
 	}
 }
 
+func TestRecipePickerToggleCancelRestoresOriginAndDraft(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Title: "One", Status: model.StatusOpen},
+		{ID: "two", Title: "Two", Status: model.StatusInProgress},
+	}
+	origins := []struct {
+		name  string
+		focus focus
+		board bool
+	}{
+		{name: "list", focus: focusList},
+		{name: "board", focus: focusBoard, board: true},
+		{name: "insights", focus: focusInsights},
+	}
+
+	for _, origin := range origins {
+		t.Run(origin.name, func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			active := m.recipeLoader.Get("default")
+			m.setActiveRecipe(active)
+			m.applyRecipe(active)
+			m.focused = origin.focus
+			m.isBoardView = origin.board
+			m.list.Select(1)
+			appliedIndex := func() int {
+				m.resetRecipePicker()
+				return m.recipePicker.SelectedIndex()
+			}()
+			appliedFilter := m.currentFilter
+			appliedListIndex := m.list.Index()
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
+			m = updated.(Model)
+			if !m.showRecipePicker || m.focused != focusRecipePicker || m.recipePickerOrigin != origin.focus {
+				t.Fatalf("recipe picker open state: shown=%v focus=%v origin=%v", m.showRecipePicker, m.focused, m.recipePickerOrigin)
+			}
+			m = m.handleRecipePickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			if m.recipePicker.SelectedIndex() == appliedIndex {
+				t.Fatal("recipe draft did not move before cancel")
+			}
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
+			m = updated.(Model)
+			if m.showRecipePicker || m.focused != origin.focus || m.isBoardView != origin.board {
+				t.Fatalf("recipe cancel did not restore origin: shown=%v focus=%v board=%v", m.showRecipePicker, m.focused, m.isBoardView)
+			}
+			if m.activeRecipe == nil || m.activeRecipe.Name != "default" || m.currentFilter != appliedFilter || m.list.Index() != appliedListIndex {
+				t.Fatalf("recipe cancel changed applied state: recipe=%v filter=%q index=%d", m.activeRecipe, m.currentFilter, m.list.Index())
+			}
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
+			m = updated.(Model)
+			if m.recipePicker.SelectedIndex() != appliedIndex {
+				t.Fatalf("recipe draft survived cancel: got index %d, want %d", m.recipePicker.SelectedIndex(), appliedIndex)
+			}
+		})
+	}
+}
+
+func TestRecipeShortcutRemainsListSearchInput(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "one", Title: "One", Status: model.StatusOpen}}, nil, "")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
+	m = updated.(Model)
+	if m.showRecipePicker || m.list.FilterInput.Value() != "'" {
+		t.Fatalf("recipe shortcut escaped active list search: shown=%v query=%q", m.showRecipePicker, m.list.FilterInput.Value())
+	}
+}
+
 func TestAttentionViewNumericKeyFiltersAndTransitionsToList(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "bv-1", Title: "Backend one", Status: model.StatusOpen, Labels: []string{"backend"}},
