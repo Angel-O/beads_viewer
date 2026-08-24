@@ -69,6 +69,24 @@ command name.
 - [ ] While selector search input is active, type `'` or `w` as applicable;
       verify the character enters the query instead of closing the selector.
 
+### Current Repository Scope
+
+- [ ] Open Repository Scope and verify exactly the repository from which `wbv`
+      was launched has a clear `current` marker; verify `no-context` is never
+      marked current.
+- [ ] Navigate and search for other repositories, then clear search; verify the
+      marker stays attached to the authoritative current repository.
+- [ ] Press `c` and verify the draft selects only the current repository,
+      clearing other repositories and `no-context`; cancel and verify the
+      previously applied scope remains unchanged.
+- [ ] Repeat `c`, press `Enter`, and verify current-only scope is applied.
+- [ ] While repository search input is active, type `c`; verify it becomes query
+      text instead of changing the draft selection.
+- [ ] Refresh the repository catalog and verify the current marker remains
+      correct. At normal width, verify the complete controls line is visible;
+      at approximately 80 columns and a very narrow width, verify the modal
+      remains bounded and usable while repository paths may truncate.
+
 ### Graph Search
 
 - [ ] Press `g` to enter Graph.
@@ -390,3 +408,4 @@ Record manual QA feedback here as it is reported.
 | Resolved | Active-only Insights and heat-map contrast | Enter Insights from closed-filtered work and inspect metric panels and heat-map legend | Insights exposes only active work with independent `o/r` controls; high heat levels use distinct gold, orange, pink, and burgundy colors | Closed issues appeared in operational rankings and high-end heat colors were difficult to distinguish | Manually verified; approved for merge in PR #45 |
 | Resolved | Cross-view statusline alignment | Open sparse Actionable and Sprint views at a normal tall terminal size, then toggle the Actionable shortcuts sidebar | View content stays top-anchored while the global statusline remains on the final terminal row across views and sidebar states | Global statusline position and top padding changed between views instead of remaining flush with the terminal bottom | Manually verified; approved for merge in PR #46 |
 | Resolved | Recipe and repository selector toggles | Open the recipe selector from List, Board, or Insights and press `'` again; open the repository selector from Insights and press `w` again | Each opening key cancels its selector, discards draft changes, and returns to the exact originating view while active search retains key ownership | Recipe did not toggle closed, and the repository selector did not return to Insights | Manually verified; approved for merge in PR #47 |
+| Awaiting QA | Current repository scope picker | Open Repository Scope, inspect the current marker and controls, then press `c` | The launch repository is clearly marked; `c` selects only it as draft state; full controls fit at normal width while narrow layouts remain bounded | Users had to infer the current repository from IDs or paths, had no current-only shortcut, and the controls line was truncated | Verify the unmerged current-repository picker PR |
