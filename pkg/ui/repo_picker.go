@@ -200,6 +200,22 @@ func (m *RepoPickerModel) SelectAll() {
 	m.selectFuture = true
 }
 
+// ToggleAll switches between every available choice and an empty draft.
+func (m *RepoPickerModel) ToggleAll() {
+	allSelected := !m.showContextless || m.contextlessSelected
+	for _, repository := range m.catalog {
+		if !m.selected[repository.ID] {
+			allSelected = false
+			break
+		}
+	}
+	if allSelected {
+		m.ClearSelection()
+		return
+	}
+	m.SelectAll()
+}
+
 // ClearSelection clears every visible checkbox. Applying an empty draft means all.
 func (m *RepoPickerModel) ClearSelection() {
 	m.contextlessSelected = false
@@ -373,7 +389,7 @@ func (m *RepoPickerModel) View() string {
 	t := m.theme
 
 	// Calculate box dimensions
-	boxWidth := 112
+	boxWidth := 106
 	if maximum := m.width - 6; boxWidth > maximum {
 		boxWidth = maximum
 	}
@@ -480,7 +496,7 @@ func (m *RepoPickerModel) View() string {
 					check = "[x]"
 				}
 				count := fmt.Sprintf(" (%d)", m.contextlessBeadCount)
-				lines = append(lines, renderRepoPickerRow(t, nameStyle, contentWidth, prefix, check, "no-context", "", count))
+				lines = append(lines, renderRepoPickerRow(t, nameStyle, contentWidth, prefix, check, "no-context", count, false))
 				if showDetails {
 					detailStyle := t.Renderer.NewStyle().Foreground(t.Secondary)
 					lines = append(lines, detailStyle.Render("      No repository context"))
@@ -499,11 +515,8 @@ func (m *RepoPickerModel) View() string {
 			}
 
 			count := fmt.Sprintf(" (%d)", repository.BeadCount)
-			marker := ""
-			if repository.ID == m.currentID && repository.ID != contextlessRepositoryID {
-				marker = " current"
-			}
-			lines = append(lines, renderRepoPickerRow(t, nameStyle, contentWidth, prefix, check, repository.Name, marker, count))
+			current := repository.ID == m.currentID && repository.ID != contextlessRepositoryID
+			lines = append(lines, renderRepoPickerRow(t, nameStyle, contentWidth, prefix, check, repository.Name, count, current))
 
 			if showDetails {
 				detail := repository.ID
@@ -530,7 +543,7 @@ func (m *RepoPickerModel) View() string {
 		footerStyle := t.Renderer.NewStyle().
 			Foreground(ColorFooterHint).
 			Italic(true)
-		footer := "j/k: navigate | space: toggle | a: all | n: clear | c: current only | /: search | enter: apply | esc: cancel"
+		footer := "j/k: navigate | space: toggle | a: all/none | c: current only | /: search | enter: apply | esc: cancel"
 		if m.searching {
 			footer = "type: search | up/down: navigate | enter: apply | esc: clear search"
 		}

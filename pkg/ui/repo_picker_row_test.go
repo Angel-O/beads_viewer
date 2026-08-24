@@ -2,6 +2,7 @@ package ui
 
 import (
 	"io"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -12,46 +13,65 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
-func TestRepoPickerCurrentMarkerIsBoldWithoutChangingPlainText(t *testing.T) {
+var repoPickerSGRPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func newANSIRepoPickerModel(catalog model.RepositoryCatalog) (RepoPickerModel, Theme) {
 	renderer := lipgloss.NewRenderer(io.Discard)
 	renderer.SetColorProfile(termenv.ANSI)
-	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(renderer))
+	theme := DefaultTheme(renderer)
+	return NewRepoPickerModel(catalog, theme), theme
+}
+
+func repoPickerRenderedLine(view, plainContent string) string {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(ansi.Strip(line), plainContent) {
+			return line
+		}
+	}
+	return ""
+}
+
+func repoPickerLineHasUnderline(line string) bool {
+	for _, sequence := range repoPickerSGRPattern.FindAllString(line, -1) {
+		parameters := strings.TrimSuffix(strings.TrimPrefix(sequence, "\x1b["), "m")
+		for _, parameter := range strings.Split(parameters, ";") {
+			if parameter == "4" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestRepoPickerCurrentNameIsAccentedAndUnderlinedWithoutChangingPlainText(t *testing.T) {
+	m, theme := newANSIRepoPickerModel(testRepositoryCatalog())
 	m.SetHubScope(model.NewAllItemsHubScope())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SetSize(120, 24)
 
 	view := m.View()
-	var currentLine, nonCurrentLine string
-	for _, line := range strings.Split(view, "\n") {
-		plain := ansi.Strip(line)
-		switch {
-		case strings.Contains(plain, "beta current (3)"):
-			currentLine = line
-		case strings.Contains(plain, "gamma (0)"):
-			nonCurrentLine = line
-		}
-	}
+	currentLine := repoPickerRenderedLine(view, "beta (3)")
+	nonCurrentLine := repoPickerRenderedLine(view, "gamma (0)")
 	if currentLine == "" || nonCurrentLine == "" {
 		t.Fatalf("picker rows missing from view:\n%s", ansi.Strip(view))
 	}
-	if !strings.Contains(currentLine, "\x1b[1m current\x1b[0m") {
-		t.Fatalf("current marker was not rendered bold: %q", currentLine)
+	wantCurrentName := theme.Renderer.NewStyle().Foreground(theme.Primary).Underline(true).Render("beta")
+	if !strings.Contains(currentLine, wantCurrentName) {
+		t.Fatalf("current repository name was not accented and underlined: %q", currentLine)
 	}
-	if strings.Contains(nonCurrentLine, "\x1b[1m") {
-		t.Fatalf("non-current repository row unexpectedly contains bold styling: %q", nonCurrentLine)
+	if repoPickerLineHasUnderline(nonCurrentLine) {
+		t.Fatalf("non-current repository row unexpectedly contains underline styling: %q", nonCurrentLine)
 	}
 	plain := ansi.Strip(view)
-	if !strings.Contains(plain, "beta current (3)") || strings.Contains(plain, "*") {
+	if !strings.Contains(plain, "beta (3)") || strings.Contains(plain, " current (") {
 		t.Fatalf("plain picker content changed: %q", plain)
 	}
 }
 
-func TestRepoPickerCurrentMarkerTruncatesPlainRowBeforeStyling(t *testing.T) {
-	renderer := lipgloss.NewRenderer(io.Discard)
-	renderer.SetColorProfile(termenv.ANSI)
-	m := NewRepoPickerModel(model.RepositoryCatalog{{
+func TestRepoPickerCurrentNameTruncatesBeforeStyling(t *testing.T) {
+	m, theme := newANSIRepoPickerModel(model.RepositoryCatalog{{
 		ID: "ctx:long", Name: ".", BeadCount: 42,
-	}}, DefaultTheme(renderer))
+	}})
 	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:long"})
 	if err != nil {
 		t.Fatal(err)
@@ -66,8 +86,8 @@ func TestRepoPickerCurrentMarkerTruncatesPlainRowBeforeStyling(t *testing.T) {
 		wantRow      string
 		contentWidth int
 	}{
-		{name: "fixed fields consume content", width: 29, wantRow: "▸ [x]  current (42)", contentWidth: 19},
-		{name: "one-cell name fits", width: 30, wantRow: "▸ [x] . current (42)", contentWidth: 20},
+		{name: "fixed fields consume content", width: 21, wantRow: "▸ [x]  (42)", contentWidth: 11},
+		{name: "one-cell name fits", width: 22, wantRow: "▸ [x] . (42)", contentWidth: 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m.SetSize(tc.width, 10)
@@ -75,7 +95,7 @@ func TestRepoPickerCurrentMarkerTruncatesPlainRowBeforeStyling(t *testing.T) {
 			plainView := ansi.Strip(view)
 			var plainRow string
 			for _, line := range strings.Split(plainView, "\n") {
-				if strings.Contains(line, "current (42)") {
+				if strings.Contains(line, "(42)") {
 					plainRow = strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
 					break
 				}
@@ -89,8 +109,12 @@ func TestRepoPickerCurrentMarkerTruncatesPlainRowBeforeStyling(t *testing.T) {
 			if strings.Contains(plainRow, "...") || strings.Contains(plainRow, "…") {
 				t.Fatalf("current row gained unintended ellipsis: %q", plainRow)
 			}
-			if !strings.Contains(view, "\x1b[1m current\x1b[0m") {
-				t.Fatalf("current marker lost bold styling: %q", view)
+			wantStyledName := theme.Renderer.NewStyle().Foreground(theme.Primary).Underline(true).Render(".")
+			if tc.width == 21 && strings.Contains(view, wantStyledName) {
+				t.Fatalf("current styling survived after the name was omitted: %q", view)
+			}
+			if tc.width == 22 && !strings.Contains(view, wantStyledName) {
+				t.Fatalf("current repository name lost accent and underline styling: %q", view)
 			}
 		})
 	}

@@ -1,25 +1,20 @@
 package ui
 
-import (
-	"strings"
-
-	"github.com/charmbracelet/lipgloss"
-)
+import "github.com/charmbracelet/lipgloss"
 
 // renderRepoPickerRow allocates space to the name only after reserving the
-// fixed row metadata, then applies marker styling to the already bounded row.
-func renderRepoPickerRow(theme Theme, nameStyle lipgloss.Style, contentWidth int, prefix, check, name, marker, count string) string {
-	fixed := prefix + check + " " + marker + count
+// fixed row metadata, then styles the already bounded current repository name.
+func renderRepoPickerRow(theme Theme, nameStyle lipgloss.Style, contentWidth int, prefix, check, name, count string, current bool) string {
+	fixed := prefix + check + " " + count
 	nameWidth := max(0, contentWidth-lipgloss.Width(fixed))
-	plainLine := prefix + check + " " + truncateRunesHelper(name, nameWidth, "...") + marker + count
+	displayName := truncateRunesHelper(name, nameWidth, "...")
+	plainLine := prefix + check + " " + displayName + count
 	if lipgloss.Width(plainLine) > contentWidth {
-		plainLine = truncateRunesHelper(fixed, contentWidth, "...")
+		return nameStyle.Render(truncateRunesHelper(fixed, contentWidth, "..."))
 	}
-	if marker != "" {
-		if markerIndex := strings.LastIndex(plainLine, marker); markerIndex >= 0 {
-			markerStyle := theme.Renderer.NewStyle().Bold(true)
-			plainLine = plainLine[:markerIndex] + markerStyle.Render(marker) + plainLine[markerIndex+len(marker):]
-		}
+	if current && displayName != "" {
+		currentStyle := theme.Renderer.NewStyle().Foreground(theme.Primary).Underline(true)
+		plainLine = prefix + check + " " + currentStyle.Render(displayName) + count
 	}
 	return nameStyle.Render(plainLine)
 }

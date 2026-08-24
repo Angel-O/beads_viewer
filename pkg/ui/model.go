@@ -5188,9 +5188,7 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 	case " ", "space":
 		m.repoPicker.ToggleSelected()
 	case "a":
-		m.repoPicker.SelectAll()
-	case "n":
-		m.repoPicker.ClearSelection()
+		m.repoPicker.ToggleAll()
 	case "c":
 		m.repoPicker.SelectCurrent()
 	case "/":
@@ -7328,7 +7326,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showRecipePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a/n")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all", keyStyle.Render("n")+" reset", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
