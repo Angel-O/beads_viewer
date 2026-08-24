@@ -1695,7 +1695,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		LabelContext:     ctx.LabelContext,
 		Insights:         insights,
 		FullStats:        fullStats,
-		TopWhatIfs:       analyzer.TopWhatIfDeltas(10),
+		TopWhatIfs:       analyzer.TopWhatIfDeltasFromStats(&stats, 10),
 		AdvancedInsights: analyzer.GenerateAdvancedInsights(analysis.DefaultAdvancedInsightsConfig()),
 		UsageHints: []string{
 			"jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",

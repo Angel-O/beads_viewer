@@ -93,3 +93,16 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   beneath `TopWhatIfDeltas` accounted for about 70 ms cumulative, and robot
   disk-cache read/decode accounted for about 70 ms cumulative. These are
   attribution anchors, not yet speedup claims.
+
+### Runtime dispositions
+
+- **TopWhat repeated analysis accepted and repaired:** the planted pre-fix
+  540-issue batch took 4.4108 s and allocated 1.648 GB because each issue
+  decoded completed stats again. Reusing caller stats reduced same-worker
+  iterations to 3.203-16.564 ms and 1.444-4.931 MB, preserved normalized robot
+  output exactly, and removed TopWhat/cache-decode frames from the next CPU
+  profile. The remaining advanced-insights analysis is a separate candidate.
+- **Flat-copy post result rejected:** an intermediate remote copy placed files
+  at the wrong level, so the command exercised old nested source and later
+  mixed packages during vet. Those results receive no credit; the corrected
+  relative-copy tree and exact hashes produced the accepted comparison.
