@@ -272,3 +272,22 @@ fresh accepted profile). Its constructor gives `bufio.Reader` a 10 MiB buffer,
 larger than the representative 1.37 MiB historical blobs. A smaller reader lets
 Go's large-destination `Read` path bypass the intermediate buffer, potentially
 removing a full payload copy while leaving the Git object protocol unchanged.
+
+## 2026-08-24 pass-6 direct-payload rejection and next allocation target
+
+The 64 KiB reader proved the direct-read mechanism but failed the system-level
+gate. Across eight merged profiles, `memmove` fell 45.8% (0.48 s to 0.26 s) and
+reader construction fell 0.08 s to 0.01 s. Removing the retained 10 MiB buffer
+also reduced Go's heap-growth cushion: 15 traced pairs increased GC cycles from
+12.33 to 15.87 (+28.65%) with candidate losses in every pair, and background-GC
+samples rose from 0.45 s to 0.62 s. Thirty low-load alternating pairs could not
+establish a user-CPU win (95% improvement interval -2.17% to +11.50%), while
+wall and RSS remained effectively flat. The candidate was restored exactly.
+
+The next independent measured allocation lever is `parseRawDiffLines`: it
+creates a 64 KiB scanner buffer for every followed commit even though its input
+is already resident in a byte slice. The representative 498-commit history
+therefore exposes about 31.1 MiB of transient scanner capacity, before scanner
+token and string conversions. Pass 7 tests a bounded direct byte parser under
+an executable old/new differential contract; it does not combine heap pacing,
+blob buffering, or Git protocol changes.
