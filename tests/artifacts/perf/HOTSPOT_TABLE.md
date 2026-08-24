@@ -854,3 +854,14 @@ seed regressed system CPU 27.62%, total CPU 9.39%, and wall 6.53%; CVs reached
 
 No runtime default, environment, or source changed. The exploratory P2 result
 is selection noise, not an accepted improvement.
+
+## 2026-08-24 passes 33-34 framing and cumulative-I/O no-gos
+
+Pass 33 bounded all cat-file header `ReadString`/`ReadSlice` work to 0.03 s /
+1.49% despite 498 live responses; a manual byte parser cannot clear the product
+gate. Pass 34 separated `readFull`'s 0.21 s cumulative ownership from its zero
+flat CPU: the time is the same mandatory 384,364,934-byte reader/syscall path.
+Swapping in `io.ReadFull` only changes wrapper branches and short-read errors.
+
+Neither pass changed source. These are profile attribution corrections, not
+performance claims.
