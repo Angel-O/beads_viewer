@@ -50,6 +50,7 @@ type RobotContext struct {
 	LabelContext          *analysis.LabelHealth
 	Stdout                io.Writer
 	Stderr                io.Writer
+	FinalizeBeforeExit    func()
 	WorkDir               string
 	ProjectDir            string
 	BaselinePath          string
@@ -361,6 +362,9 @@ func dispatchRobotFlagOrExit(registry *RobotRegistry, flagName string, ctx Robot
 		} else {
 			fmt.Fprintf(ctx.StderrOrDefault(), "Error handling %s\n", formatRobotFlag(flagName))
 		}
+	}
+	if ctx.FinalizeBeforeExit != nil {
+		ctx.FinalizeBeforeExit()
 	}
 
 	os.Exit(result.ExitCode)
@@ -1477,12 +1481,14 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 	output := struct {
 		GeneratedAt string                     `json:"generated_at"`
 		DataHash    string                     `json:"data_hash"`
+		LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		Flow        analysis.CrossLabelFlow    `json:"flow"`
 		Config      analysis.LabelHealthConfig `json:"analysis_config"`
 		UsageHints  []string                   `json:"usage_hints"`
 	}{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
+		LoadStats:   robotLoadStatsFromLastLoad(),
 		Flow:        flow,
 		Config:      cfg,
 		UsageHints: []string{
@@ -1526,6 +1532,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 	type attentionOutput struct {
 		GeneratedAt string           `json:"generated_at"`
 		DataHash    string           `json:"data_hash"`
+		LoadStats   *RobotLoadStats  `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		Limit       int              `json:"limit"`
 		TotalLabels int              `json:"total_labels"`
 		Labels      []attentionLabel `json:"labels"`
@@ -1535,6 +1542,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 	output := attentionOutput{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
+		LoadStats:   robotLoadStatsFromLastLoad(),
 		Limit:       limit,
 		TotalLabels: result.TotalLabels,
 		UsageHints: []string{
@@ -1711,6 +1719,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	output := struct {
 		GeneratedAt    string                  `json:"generated_at"`
 		DataHash       string                  `json:"data_hash"`
+		LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		AsOf           string                  `json:"as_of,omitempty"`
 		AsOfCommit     string                  `json:"as_of_commit,omitempty"`
 		AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
@@ -1723,17 +1732,19 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"`
 		UsageHints       []string                   `json:"usage_hints"`
 	}{
-		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
-		DataHash:       ctx.DataHash,
-		AsOf:           ctx.AsOf,
-		AsOfCommit:     ctx.AsOfCommit,
-		AnalysisConfig: stats.Config,
-		Status:         stats.Status(),
-		LabelScope:     ctx.LabelScope,
-		LabelContext:   ctx.LabelContext,
-		Insights:       insights,
-		FullStats:      fullStats,
-		TopWhatIfs:     analyzer.TopWhatIfDeltasForCandidates(10, predicate),
+		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		DataHash:         ctx.DataHash,
+		LoadStats:        robotLoadStatsFromLastLoad(),
+		AsOf:             ctx.AsOf,
+		AsOfCommit:       ctx.AsOfCommit,
+		AnalysisConfig:   stats.Config,
+		Status:           stats.Status(),
+		LabelScope:       ctx.LabelScope,
+		LabelContext:     ctx.LabelContext,
+		Insights:         insights,
+		FullStats:        fullStats,
+		TopWhatIfs:       analyzer.TopWhatIfDeltasFromStats(&stats, 10, predicate),
+		AdvancedInsights: analyzer.GenerateAdvancedInsightsFromStats(&stats, analysis.DefaultAdvancedInsightsConfig()),
 		UsageHints: []string{
 			"jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
 			"jq '.CriticalPath[:3]' - Top 3 critical path items",
@@ -1749,7 +1760,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	}
 	advancedConfig := analysis.DefaultAdvancedInsightsConfig()
 	advancedConfig.CandidateFilter = predicate
-	output.AdvancedInsights = analyzer.GenerateAdvancedInsights(advancedConfig)
+	output.AdvancedInsights = analyzer.GenerateAdvancedInsightsFromStats(&stats, advancedConfig)
 
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding insights: %w", err)
@@ -1937,6 +1948,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	output := struct {
 		GeneratedAt string                 `json:"generated_at"`
 		DataHash    string                 `json:"data_hash"`
+		LoadStats   *RobotLoadStats        `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 		AsOf        string                 `json:"as_of,omitempty"`
 		AsOfCommit  string                 `json:"as_of_commit,omitempty"`
 		Triage      analysis.TriageResult  `json:"triage"`
@@ -1945,6 +1957,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}{
 		GeneratedAt: now.Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
+		LoadStats:   robotLoadStatsFromLastLoad(),
 		AsOf:        ctx.AsOf,
 		AsOfCommit:  ctx.AsOfCommit,
 		Triage:      triage,
@@ -1992,6 +2005,7 @@ type briefTriageRecommendation struct {
 type briefTriageOutput struct {
 	GeneratedAt     string                       `json:"generated_at"`
 	DataHash        string                       `json:"data_hash"`
+	LoadStats       *RobotLoadStats              `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
 	AsOf            string                       `json:"as_of,omitempty"`
 	AsOfCommit      string                       `json:"as_of_commit,omitempty"`
 	Brief           bool                         `json:"brief"`
@@ -2019,6 +2033,7 @@ func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.
 	output := briefTriageOutput{
 		GeneratedAt:     now.Format(time.RFC3339),
 		DataHash:        ctx.DataHash,
+		LoadStats:       robotLoadStatsFromLastLoad(),
 		AsOf:            ctx.AsOf,
 		AsOfCommit:      ctx.AsOfCommit,
 		Brief:           true,
@@ -2078,7 +2093,7 @@ func robotNextIssueIndex(issues []model.Issue) map[string]model.Issue {
 	return issueByID
 }
 
-func robotNextClaimabilityReasons(pick analysis.TopPick, issueByID map[string]model.Issue) []string {
+func robotNextClaimabilityReasons(pick analysis.TopPick, issueByID map[string]model.Issue, now time.Time) []string {
 	issue, ok := issueByID[pick.ID]
 	if !ok {
 		return []string{fmt.Sprintf("%s is absent from loaded Beads records", pick.ID)}
@@ -2093,6 +2108,11 @@ func robotNextClaimabilityReasons(pick analysis.TopPick, issueByID map[string]mo
 	}
 	if assignee := strings.TrimSpace(issue.Assignee); assignee != "" {
 		reasons = append(reasons, fmt.Sprintf("%s is already assigned to %s", pick.ID, assignee))
+	}
+	// Scheduler deferral (issue #191): a future defer_until withholds the bead
+	// from claiming, exactly as `br ready` hides it.
+	if issue.IsDeferredAt(now) {
+		reasons = append(reasons, fmt.Sprintf("%s is deferred until %s", pick.ID, issue.DeferUntil.UTC().Format(time.RFC3339)))
 	}
 
 	var openBlockers []string
@@ -2132,7 +2152,7 @@ func robotNextDiagnosticFromPick(pick analysis.TopPick) robotNextDiagnosticPick 
 	}
 }
 
-func robotNextClaimablePick(picks []analysis.TopPick, issues []model.Issue) (analysis.TopPick, *robotNextDiagnosticPick, []string, bool) {
+func robotNextClaimablePick(picks []analysis.TopPick, issues []model.Issue, now time.Time) (analysis.TopPick, *robotNextDiagnosticPick, []string, bool) {
 	if len(picks) == 0 {
 		return analysis.TopPick{}, nil, nil, false
 	}
@@ -2141,7 +2161,7 @@ func robotNextClaimablePick(picks []analysis.TopPick, issues []model.Issue) (ana
 	firstDiagnostic := robotNextDiagnosticFromPick(picks[0])
 	var firstUnsafeReasons []string
 	for _, pick := range picks {
-		reasons := robotNextClaimabilityReasons(pick, issueByID)
+		reasons := robotNextClaimabilityReasons(pick, issueByID, now)
 		if len(reasons) == 0 {
 			return pick, &firstDiagnostic, nil, true
 		}
@@ -2195,7 +2215,7 @@ func handleRobotNext(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 		return nil
 	}
 
-	top, diagnostic, unsafePickReasons, ok := robotNextClaimablePick(triage.QuickRef.TopPicks, ctx.Issues)
+	top, diagnostic, unsafePickReasons, ok := robotNextClaimablePick(triage.QuickRef.TopPicks, ctx.Issues, now)
 	if !ok {
 		output.Message = "No claim command emitted because the top recommendation was not claim-safe"
 		output.DiagnosticTopPick = diagnostic

@@ -590,6 +590,37 @@ func TestHubCapacityPreservesCanonicalCriticalPath(t *testing.T) {
 	}
 }
 
+func TestHubRobotDecorationPreservesLoadStats(t *testing.T) {
+	scope := model.NewAllItemsHubScope()
+	projection, err := newHubScopeProjection(scope, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	encoder := hubScopeRobotEncoder{
+		base:       newJSONRobotEncoder(&encoded),
+		command:    "robot-insights",
+		projection: projection,
+	}
+	if err := encoder.Encode(map[string]any{
+		"data_hash": "hash",
+		"load_stats": map[string]any{
+			"errors": 2,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output map[string]any
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	loadStats, ok := output["load_stats"].(map[string]any)
+	if !ok || loadStats["errors"] != float64(2) {
+		t.Fatalf("Hub decoration dropped load_stats: %#v", output)
+	}
+}
+
 func objectIDs(items []any) []string {
 	ids := make([]string, 0, len(items))
 	for _, raw := range items {
