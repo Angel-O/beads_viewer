@@ -256,3 +256,19 @@ significant user-CPU improvement (-0.85%, p=0.3238), RSS rose 0.129%, and five
 merged target profiles worsened the cache focus from 4.00% to 4.97%. Exact
 normalized behavior held across all 50 outputs. Runtime bytes were restored to
 `19fb9f06`; the retry condition is now the narrower NE-20260824-11 predicate.
+
+## 2026-08-24 pass-5 representation rewrite and shifted target
+
+The retry-predicate-safe inline-value formulation was also rejected. Thirty
+alternating cold-cache pairs on `vmi1156319` (all pre-run one-minute loads
+3.24-6.79) found only 0.71% lower mean user CPU with a 95% paired-bootstrap
+interval spanning -7.33% to +7.99%; wall and RSS were flat. Fifteen traced
+pairs found a non-significant 4.79% GC-cycle reduction. Eight merged profiles
+did lower `newRecordLineSet` from 0.65 s to 0.57 s cumulative, but map
+assignment/access and `memclr` grew. Runtime and tests were restored exactly.
+
+The next measured lever is `blobReader.read` (0.73 s / 27.76% cumulative in the
+fresh accepted profile). Its constructor gives `bufio.Reader` a 10 MiB buffer,
+larger than the representative 1.37 MiB historical blobs. A smaller reader lets
+Go's large-destination `Read` path bypass the intermediate buffer, potentially
+removing a full payload copy while leaving the Git object protocol unchanged.
