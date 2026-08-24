@@ -626,7 +626,20 @@ interval, but baseline user CV was 11.62%. Total CPU improved 3.14% with a
 entire interval on the wrong side; mean reads increased 0.76% across two traces
 per arm. All measured product/GC outputs remained normalized-exact.
 
-The candidate is rejected and restored despite the real seam/user-CPU signal.
+The candidate is rejected by the campaign gate despite the real seam/user-CPU signal.
 Evidence root: `/data/tmp/bv-p18-20260824.transposed-blob-arena`; credited TSV
 SHA-256:
 `3d028ca8cc06cc4bd8f69f2afea209221925c8077426e3bdd971d5de46fa5f5c`.
+
+An independent 50-pair replay on `vmi1167313` began at load 0.67 with exact
+binary and fixture hashes. User CPU improved 3.78%, but its interval crossed
+zero and both CVs exceeded 14%. Total CPU regressed 5.08%, system CPU 10.14%,
+and wall 5.14%; candidate wall p95 regressed 11.29%. All outputs remained
+exact. Independent TSV SHA-256:
+`940f79b1358ae55beabf47b5197a6f48a27be604c187744b0eb4dc801046994e`.
+
+The earlier restoration sentence is superseded by shared-tree state: a
+concurrent workflow committed and pushed the candidate as `66eafd5a` before
+the restoration agent ran. The agent correctly preserved peer-owned HEAD.
+Pass 18 remains rejected as a measured product claim even though its runtime
+bytes are now externally retained; subsequent passes profile that actual HEAD.
