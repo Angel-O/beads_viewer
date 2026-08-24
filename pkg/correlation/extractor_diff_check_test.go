@@ -261,12 +261,12 @@ func TestRecordLineSnapshotFrontierMatchesFullBuild(t *testing.T) {
 			wantReused: 3,
 		},
 		{
-			name:          "non records CRLF and no final LF",
-			reference:     "metadata\r\n{\"id\":\"a\"}\r\nskip\n{\"id\":\"middle\",\"v\":1}\n{\"id\":\"z\"}",
-			target:        "different metadata\r\n{\"id\":\"a\"}\r\nskip again\n{\"id\":\"middle\",\"v\":2}\n{\"id\":\"z\"}",
-			wantHashed:    1,
-			wantReused:    2,
-			wantHashBytes: len("{\"id\":\"middle\",\"v\":2}"),
+			name:           "non records CRLF and no final LF",
+			reference:      "metadata\r\n{\"id\":\"a\"}\r\nskip\n{\"id\":\"middle\",\"v\":1}\n{\"id\":\"z\"}",
+			target:         "different metadata\r\n{\"id\":\"a\"}\r\nskip again\n{\"id\":\"middle\",\"v\":2}\n{\"id\":\"z\"}",
+			wantHashed:     1,
+			wantReused:     2,
+			wantHashBytes:  len("{\"id\":\"middle\",\"v\":2}"),
 			wantReuseBytes: len("{\"id\":\"a\"}\r") + len("{\"id\":\"z\"}"),
 		},
 	}

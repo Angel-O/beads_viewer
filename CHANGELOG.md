@@ -6,6 +6,37 @@ All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are
 
 ## [Unreleased]
 
+---
+
+## [v0.21.1] -- 2026-08-24 (Release)
+
+Profile-driven performance patch for the cold robot-triage path, with expanded differential
+coverage and an explicit negative-evidence ledger for rejected optimizations.
+
+### Performance
+
+- **Correlation snapshot extraction:** reuse evicted Git blob buffers and tighten snapshot arena
+  allocation and slice bounds. An independent low-load replay on the documented 540-issue
+  workload reproduced **11.44% lower mean user CPU** and **49.61% fewer mean GC cycles**. Wall
+  time and peak RSS did not improve significantly and are not claimed as release wins.
+- **Graph insights:** reuse already-computed graph statistics for cycle-break and what-if batches
+  instead of decoding or recomputing the same analysis repeatedly.
+- **JSON loading:** accelerate valid dependency records with `goccy/go-json` while preserving the
+  standard library's malformed-input and invalid-UTF-8 behavior.
+
+### Fixed
+
+- Finalize CPU profiles before registry-backed robot commands exit, so `--cpu-profile` reliably
+  produces a complete profile rather than a zero-byte or truncated file.
+- Make analysis-cache benchmarks exercise fresh computation explicitly and extend mutation-sensitive
+  differential coverage for correlation history extraction.
+- Correct Nix, Homebrew, Scoop, and README license metadata so the OpenAI/Anthropic rider is no
+  longer misrepresented as plain MIT.
+
+---
+
+## [v0.21.0] -- 2026-08-23 (Release)
+
 ### Changed — **BREAKING (robot JSON semantics)**
 
 - **Strict count semantics in triage output (#165).** `quick_ref.open_count` /
@@ -896,7 +927,9 @@ Initial release of Beads Viewer -- a keyboard-driven terminal interface for the 
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.1...HEAD
+[v0.21.1]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.0...v0.21.1
+[v0.21.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.20.0...v0.21.0
 [v0.17.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.16.4...v0.17.0
 [v0.16.2]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.16.1...v0.16.2
 [v0.16.1]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.16.0...v0.16.1
