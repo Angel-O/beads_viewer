@@ -62,3 +62,12 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   graph construction 0.333-0.373 ms and 358 KB/op; TUI layered-1k rebuild
   1.23-1.33 ms; export layered-1k layout 1.26-1.51 ms.
 - These anchors rank investigation targets. They are not before/after speedup claims.
+
+### Retry dispositions
+
+- **NE-20260823-07 satisfied for registry-backed robot commands:** the planted
+  pre-fix case produced a zero-byte profile, while the repaired path produced
+  valid robot JSON and a non-empty profile readable by `go tool pprof`. The
+  invalid-destination path still failed nonzero before success output. This
+  enables CPU attribution for registry robot commands only; direct legacy
+  `os.Exit` branches remain unproven.

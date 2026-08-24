@@ -1831,18 +1831,30 @@ func main() {
 		}
 
 		// CPU profiling support
+		var stopCPUProfile func()
 		if *cpuProfile != "" {
 			f, err := os.Create(*cpuProfile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Could not create CPU profile: %v\n", err)
 				os.Exit(1)
 			}
-			defer f.Close()
 			if err := pprof.StartCPUProfile(f); err != nil {
+				_ = f.Close()
 				fmt.Fprintf(os.Stderr, "Could not start CPU profile: %v\n", err)
 				os.Exit(1)
 			}
-			defer pprof.StopCPUProfile()
+			profileActive := true
+			stopCPUProfile = func() {
+				if !profileActive {
+					return
+				}
+				pprof.StopCPUProfile()
+				profileActive = false
+				if err := f.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "Could not close CPU profile: %v\n", err)
+				}
+			}
+			defer stopCPUProfile()
 		}
 
 		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
@@ -1948,9 +1960,10 @@ func main() {
 		}
 
 		robotDispatchContext := RobotContext{
-			Stdout:  os.Stdout,
-			Stderr:  os.Stderr,
-			Encoder: newRobotEncoder(os.Stdout),
+			Stdout:             os.Stdout,
+			Stderr:             os.Stderr,
+			Encoder:            newRobotEncoder(os.Stdout),
+			FinalizeBeforeExit: stopCPUProfile,
 		}
 		dispatchRobotFlagOrExit(&phaseOneRobotRegistry, "robot-help", robotDispatchContext)
 		dispatchRobotFlagOrExit(&phaseOneRobotRegistry, "version", robotDispatchContext)

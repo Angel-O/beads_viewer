@@ -51,6 +51,7 @@ type RobotContext struct {
 	LabelContext          *analysis.LabelHealth
 	Stdout                io.Writer
 	Stderr                io.Writer
+	FinalizeBeforeExit    func()
 	WorkDir               string
 	ProjectDir            string
 	BaselinePath          string
@@ -354,6 +355,9 @@ func dispatchRobotFlagOrExit(registry *RobotRegistry, flagName string, ctx Robot
 		} else {
 			fmt.Fprintf(ctx.StderrOrDefault(), "Error handling %s\n", formatRobotFlag(flagName))
 		}
+	}
+	if ctx.FinalizeBeforeExit != nil {
+		ctx.FinalizeBeforeExit()
 	}
 
 	os.Exit(result.ExitCode)
