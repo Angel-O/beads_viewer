@@ -71,18 +71,18 @@ command name.
 
 ### Current Repository Scope
 
-- [ ] Open Repository Scope and verify exactly the repository from which `wbv`
+- [x] Open Repository Scope and verify exactly the repository from which `wbv`
       was launched has a clear `current` marker; verify `no-context` is never
       marked current.
-- [ ] Navigate and search for other repositories, then clear search; verify the
+- [x] Navigate and search for other repositories, then clear search; verify the
       marker stays attached to the authoritative current repository.
-- [ ] Press `c` and verify the draft selects only the current repository,
+- [x] Press `c` and verify the draft selects only the current repository,
       clearing other repositories and `no-context`; cancel and verify the
       previously applied scope remains unchanged.
-- [ ] Repeat `c`, press `Enter`, and verify current-only scope is applied.
-- [ ] While repository search input is active, type `c`; verify it becomes query
+- [x] Repeat `c`, press `Enter`, and verify current-only scope is applied.
+- [x] While repository search input is active, type `c`; verify it becomes query
       text instead of changing the draft selection.
-- [ ] Refresh the repository catalog and verify the current marker remains
+- [x] Refresh the repository catalog and verify the current marker remains
       correct. At normal width, verify the complete controls line is visible;
       at approximately 80 columns and a very narrow width, verify the modal
       remains bounded and usable while repository paths may truncate.
