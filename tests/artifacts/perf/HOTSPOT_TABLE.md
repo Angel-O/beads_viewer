@@ -308,3 +308,27 @@ buffer is 7.67x the file and about 964x its longest line. This source-level
 signal is not yet a speed claim: Pass 8 first measures the loader seam, then
 tests a stat-informed transport buffer plus exceptional long-line assembly so
 it does not blindly repeat Pass 6's smaller-heap-goal regression.
+
+## 2026-08-24 pass-8 adaptive-loader rejection and nested-codec activation
+
+The loader allocation profile validated the target: the original
+`bufio.NewReaderSize` accounted for 1,034,240 KiB, or 79.76%, of allocation
+space across 100 representative loads. The stat-sized/64 KiB candidate reduced
+mean allocation from 13,110,564 to 3,995,973 B/op (-69.52%) while preserving
+the exact legacy LF, CRLF, unterminated-line, warning, error, and pool behavior.
+Its planted terminated-boundary mutation failed as required.
+
+The resource reduction did not survive the product gate. Thirty alternating
+direct-loader pairs regressed mean time 12.11% with 26/30 losses and a 95%
+paired-bootstrap improvement interval wholly below zero (-17.44% to -7.46%).
+Thirty cold-triage pairs regressed mean user CPU 17.00% and wall 6.50%, while
+all 60 normalized outputs matched and peak RSS was flat. Fifteen traced pairs
+showed the cause: mean GC cycles rose from 10.60 to 25.07 (+136.48%). The
+candidate was restored byte-for-byte; reduced B/op is not counted as speed.
+
+A fresh clean CPU profile of the restored loader now activates Pass 9 rather
+than guessing from relative allocation shares. Over 1,000 loads at 7.865 ms/op,
+`Dependency.UnmarshalJSON` accumulated 1.62 s (17.44%, about 1.62 ms/load),
+while `Comment.UnmarshalJSON` accumulated only 0.32 s (3.44%). Pass 9 therefore
+tests only dependency decoding, with the comment compatibility path held fixed
+and a differential error/alias/precedence certificate required before timing.
