@@ -1431,30 +1431,29 @@ func (a *Analyzer) AnalyzeAsyncWithConfig(ctx context.Context, config AnalysisCo
 	nodeCount := len(a.issueMap)
 	edgeCount := a.g.Edges().Len()
 
-	configHash := ComputeConfigHash(&config)
-	incCacheKey := ""
-	if !robotDiskCacheEnabled() {
-		incCacheKey = a.graphStructureHash() + "|" + configHash
-		if cached, ok := getIncrementalGraphStatsCache(incCacheKey); ok {
-			return cached
-		}
-	}
+	var configHash, incCacheKey, robotCacheKey, dataHash string
+	if !config.DisableCache {
+		configHash = ComputeConfigHash(&config)
+		if robotDiskCacheEnabled() {
+			// Reuse the analyzer-scoped memoized hash instead of rebuilding a slice
+			// from issueMap and re-running the SHA256 on every analysis. Identical
+			// value (ComputeDataHash sorts by ID), one computation per analyzer.
+			dataHash = a.DataHash()
+			robotCacheKey = dataHash + "|" + configHash
 
-	var robotCacheKey, dataHash string
-	if robotDiskCacheEnabled() {
-		// Reuse the analyzer-scoped memoized hash instead of rebuilding a slice
-		// from issueMap and re-running the SHA256 on every analysis. Identical
-		// value (ComputeDataHash sorts by ID), one computation per analyzer.
-		dataHash = a.DataHash()
-		robotCacheKey = dataHash + "|" + configHash
-
-		if cached, xfetchRefresh, ok := getRobotDiskCachedStats(robotCacheKey); ok {
-			if !xfetchRefresh || ctx.Err() != nil {
+			if cached, xfetchRefresh, ok := getRobotDiskCachedStats(robotCacheKey); ok {
+				if !xfetchRefresh || ctx.Err() != nil {
+					return cached
+				}
+				// XFetch selected this caller to refresh early. Fall through and
+				// recompute now so the cache is actually renewed instead of serving
+				// the stale entry forever.
+			}
+		} else {
+			incCacheKey = a.graphStructureHash() + "|" + configHash
+			if cached, ok := getIncrementalGraphStatsCache(incCacheKey); ok {
 				return cached
 			}
-			// XFetch selected this caller to refresh early. Fall through and
-			// recompute now so the cache is actually renewed instead of serving
-			// the stale entry forever.
 		}
 	}
 

@@ -71,3 +71,19 @@ Current positive profile anchors, all on low-load `hz1` unless stated otherwise:
   invalid-destination path still failed nonzero before success output. This
   enables CPU attribution for registry robot commands only; direct legacy
   `os.Exit` branches remain unproven.
+- **NE-20260823-02 satisfied:** an explicit disable-cache analysis mode now
+  bypasses all three analysis-cache layers and remains absent from robot
+  serialization. On low-load `hz2`, fresh full analysis measured
+  36.63-39.96 ms/op rather than the contaminated 0.565-0.742 ms/op; a
+  mutation-sensitive test proves default reuse and fresh recomputation.
+
+### Current CPU attribution
+
+- A first repaired profile on `hz1` was rejected because the 1-minute load was
+  11.50 immediately before execution; its samples receive no campaign credit.
+- The exact same Linux binary and 540-issue JSONL were copied to a worker whose
+  fresh 1-minute load was 1.16. The warm-cache `--robot-insights` profile was
+  readable and collected 390 ms of CPU samples: repeated `Analyze()` calls
+  beneath `TopWhatIfDeltas` accounted for about 70 ms cumulative, and robot
+  disk-cache read/decode accounted for about 70 ms cumulative. These are
+  attribution anchors, not yet speedup claims.
