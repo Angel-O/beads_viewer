@@ -220,6 +220,12 @@ approximately `80x24`, `100x30`, and one very narrow terminal size.
 - [ ] At the same sizes, open Tutorial directly and through Help; verify its
       bordered container spans the available terminal width and its global
       status line remains anchored to the bottom when page content is short.
+- [ ] At a normal tall terminal size, open sparse Actionable and Sprint views;
+      verify content remains anchored at the top and the global status line is
+      on the final terminal row.
+- [ ] Toggle the shortcuts sidebar in sparse Actionable, then spot-check one
+      split view and one centered modal; verify content does not jump and the
+      global status line remains on the final row where applicable.
 
 ## CLI QA
 
@@ -366,3 +372,4 @@ Record manual QA feedback here as it is reported.
 | Resolved | Tree status-filter routing | Open Tree, then toggle `o`, `c`, and `r` | Tree rows and status chrome immediately reflect the same composable status filters as List and Board | Tree remained stale after status changes and `o` was consumed by Expand All | Manually verified and merged in PR #42 |
 | Resolved | List detail issue type | Open List details for issues with different classifications | Summary columns read ID, Type, Status, Priority, Assignee, Created, with canonical textual type values | Detail title showed only a type icon and the summary omitted textual classification | Manually verified and merged in PR #43 |
 | Resolved | Active-only Insights and heat-map contrast | Enter Insights from closed-filtered work and inspect metric panels and heat-map legend | Insights exposes only active work with independent `o/r` controls; high heat levels use distinct gold, orange, pink, and burgundy colors | Closed issues appeared in operational rankings and high-end heat colors were difficult to distinguish | Manually verified; approved for merge in PR #45 |
+| Awaiting QA | Cross-view statusline alignment | Open sparse Actionable and Sprint views at a normal tall terminal size, then toggle the Actionable shortcuts sidebar | View content stays top-anchored while the global statusline remains on the final terminal row across views and sidebar states | Global statusline position and top padding changed between views instead of remaining flush with the terminal bottom | Verify the unmerged statusline alignment PR |
