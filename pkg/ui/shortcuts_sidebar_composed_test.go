@@ -315,6 +315,7 @@ func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
 		withSidebar bool
 		setup       func(*Model)
 		want        string
+		wantFirst   string
 	}{
 		{
 			name: "actionable",
@@ -322,7 +323,8 @@ func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
 				m.isActionableView = true
 				m.focused = focusActionable
 			},
-			want: "ACTIONABLE ITEMS",
+			want:      "ACTIONABLE ITEMS",
+			wantFirst: "ACTIONABLE ITEMS",
 		},
 		{
 			name:        "actionable_with_shortcuts_sidebar",
@@ -331,7 +333,8 @@ func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
 				m.isActionableView = true
 				m.focused = focusActionable
 			},
-			want: "ACTIONABLE ITEMS",
+			want:      "ACTIONABLE ITEMS",
+			wantFirst: "ACTIONABLE ITEMS",
 		},
 		{
 			name: "sprint",
@@ -357,6 +360,9 @@ func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
 			}
 			if !strings.Contains(ansi.Strip(lastLine(view)), "issues") {
 				t.Fatalf("global status line was not anchored to the last row:\n%s", view)
+			}
+			if tc.wantFirst != "" && !strings.Contains(ansi.Strip(strings.Split(view, "\n")[0]), tc.wantFirst) {
+				t.Fatalf("view content %q did not start on the first row:\n%s", tc.wantFirst, view)
 			}
 			if !strings.Contains(ansi.Strip(view), tc.want) {
 				t.Fatalf("view lost established content %q:\n%s", tc.want, view)
