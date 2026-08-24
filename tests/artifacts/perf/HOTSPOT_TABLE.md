@@ -643,3 +643,33 @@ concurrent workflow committed and pushed the candidate as `66eafd5a` before
 the restoration agent ran. The agent correctly preserved peer-owned HEAD.
 Pass 18 remains rejected as a measured product claim even though its runtime
 bytes are now externally retained; subsequent passes profile that actual HEAD.
+
+## 2026-08-24 pass-19 collision-exact frontier rejection
+
+Pass 19 refined the inexact Pass 16 cancellation idea into an exact incremental
+index: byte-equal prefix/suffix records reuse their prior digest, while every
+target record is still aggregated in target order from target bytes. Forced
+collisions therefore retain both multiplicity and first-representative behavior.
+The planted skipped-prefix mutation failed `count 1 text B` instead of the
+required `count 2 text A`; exact restoration passed, as did the 1,776-event
+differential and ordinary/race/build/vet/UBS gates.
+
+The mechanism removed hash work but not enough total work. On Go 1.25.5 the
+direct benchmark cut hashed bytes 2,334,720 to 4,560 (-99.80%) yet retained
+8,244 allocations/op and improved median time only 0.54%, far below the 25%
+seam gate. Eight correctly rooted profiles moved AES hashing 0.16 to 0.06 s,
+but added 0.14 s of `memeqbody`; the whole builder moved only 0.36 to 0.33 s
+and total samples 2.03 to 2.01 s. An initial wrongly rooted profile set did not
+engage Git history and receives zero credit.
+
+The seed-19019 12-pair product screen kept all normalized outputs exact. Mean
+user CPU improved 2.31% with interval [-0.66%, +5.37%], total CPU 0.97% with
+interval [-4.61%, +6.97%], and wall 1.48% with interval [-3.57%, +6.71%];
+system CPU regressed 1.37%. Both CPU point estimates missed the 3% confirmation
+trigger, so no 50-pair cohort ran. Evidence root:
+`/data/tmp/bv-p19-20260824.collision-exact-frontier`; TSV SHA-256
+`2c678a4e4cbb6950c619bbffcf3c6fd086843e4486aec18c1462f5047154b819`.
+
+The campaign rejects the performance claim. A shared workflow had already
+committed and pushed source/test commits `a161788e` and `2105763f`, so their
+operational bytes remain peer-owned; that retention is not an accepted speedup.
