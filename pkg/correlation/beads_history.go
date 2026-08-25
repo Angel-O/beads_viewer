@@ -3,6 +3,7 @@ package correlation
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -36,7 +37,36 @@ const (
 	beadsBulkHistorySchemaVersion = 1
 	beadsBulkHistoryMaxIDs        = 1000
 	beadsBulkHistoryMaxIDLength   = 255
+	// Bulk history can contain many full issue snapshots, but provider output
+	// must remain bounded so one malformed response cannot exhaust Viewer memory.
+	beadsBulkHistoryMaxResponseBytes = 64 << 20
+	beadsBulkHistoryMaxStderrBytes   = 64 << 10
 )
+
+type boundedDiagnostic struct {
+	data      []byte
+	limit     int
+	truncated bool
+}
+
+func (b *boundedDiagnostic) Write(p []byte) (int, error) {
+	remaining := b.limit - len(b.data)
+	if remaining > 0 {
+		b.data = append(b.data, p[:min(remaining, len(p))]...)
+	}
+	if len(p) > remaining {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *boundedDiagnostic) String() string {
+	diagnostic := strings.TrimSpace(string(b.data))
+	if b.truncated {
+		return diagnostic + " [stderr truncated]"
+	}
+	return diagnostic
+}
 
 type beadsIssue struct {
 	ID        string   `json:"id"`
@@ -98,19 +128,22 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 	}
 	cmd := exec.CommandContext(commandContext, "bd", "--db", store, "--readonly", "history", "--ids-file", "-", "--json")
 	cmd.Stdin = strings.NewReader(strings.Join(ids, "\n") + "\n")
-	out, err := cmd.Output()
+	out, diagnostic, err := runBulkHistoryCommand(cmd)
 	if err != nil {
 		if commandContext.Err() != nil {
 			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: %w", store, commandContext.Err())
 		}
-		diagnostic := ""
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			diagnostic = strings.TrimSpace(string(exitErr.Stderr))
+		var executableErr *exec.Error
+		if errors.As(err, &executableErr) {
+			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: Beads executable unavailable: %w", store, err)
 		}
-		if diagnostic != "" {
+		if isBulkHistoryCapabilityDiagnostic(diagnostic) {
 			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history --ids-file - --json': %w: %s", store, err, diagnostic)
 		}
-		return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history --ids-file - --json': %w", store, err)
+		if diagnostic != "" {
+			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: %w: %s", store, err, diagnostic)
+		}
+		return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: %w", store, err)
 	}
 
 	groups, err := parseBulkBeadsHistory(out, ids, store)
@@ -128,6 +161,49 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Timestamp.Before(events[j].Timestamp) })
 	return events, nil
+}
+
+func runBulkHistoryCommand(cmd *exec.Cmd) ([]byte, string, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, "", fmt.Errorf("opening bulk History stdout: %w", err)
+	}
+	stderr := boundedDiagnostic{limit: beadsBulkHistoryMaxStderrBytes}
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, stderr.String(), err
+	}
+
+	output, readErr := io.ReadAll(io.LimitReader(stdout, beadsBulkHistoryMaxResponseBytes+1))
+	if len(output) > beadsBulkHistoryMaxResponseBytes {
+		_ = cmd.Process.Kill()
+		_ = stdout.Close()
+		_ = cmd.Wait()
+		return nil, stderr.String(), fmt.Errorf("bulk History response too large: exceeds %d bytes", beadsBulkHistoryMaxResponseBytes)
+	}
+	if readErr != nil {
+		_ = cmd.Process.Kill()
+		_ = stdout.Close()
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			return nil, stderr.String(), fmt.Errorf("reading bulk History response: %w (process: %v)", readErr, waitErr)
+		}
+		return nil, stderr.String(), fmt.Errorf("reading bulk History response: %w", readErr)
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, stderr.String(), err
+	}
+	// Decode only after Wait so malformed JSON cannot leave a provider process
+	// running or holding a pipe while validation returns an error.
+	return output, stderr.String(), nil
+}
+
+func isBulkHistoryCapabilityDiagnostic(diagnostic string) bool {
+	diagnostic = strings.ToLower(diagnostic)
+	return strings.Contains(diagnostic, "unknown flag: --ids-file") ||
+		strings.Contains(diagnostic, "unknown command \"history\"") ||
+		strings.Contains(diagnostic, "does not support bulk history") ||
+		strings.Contains(diagnostic, "bulk history is not supported")
 }
 
 func validateBulkHistoryRequestIDs(ids []string) error {

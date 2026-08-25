@@ -305,6 +305,10 @@ envelope with one snapshot group per requested ID. Older CLIs and storage
 backends without bulk History support fail with an upgrade/capability error;
 Viewer never falls back to one subprocess per ID.
 
+This capability is currently unreleased. External History requires a Beads
+build containing bulk `history --ids-file` support until an upstream release
+includes it.
+
 Each group contains Dolt snapshots with `CommitHash`, `Committer`, `CommitDate`,
 and nested `Issue` state. `bv` orders those snapshots chronologically and
 derives created, claimed, closed, reopened, and modified lifecycle events from

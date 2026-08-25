@@ -1,16 +1,20 @@
 package correlation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -20,6 +24,9 @@ const beadsHistoryHelperEnv = "BV_BEADS_HISTORY_HELPER"
 func TestBeadsHistoryHelperProcess(t *testing.T) {
 	if os.Getenv(beadsHistoryHelperEnv) == "" {
 		return
+	}
+	if err := os.WriteFile(os.Getenv("BV_BEADS_HISTORY_PID"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		os.Exit(91)
 	}
 	stdin, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -34,6 +41,14 @@ func TestBeadsHistoryHelperProcess(t *testing.T) {
 		os.Exit(2)
 	case "block":
 		time.Sleep(time.Hour)
+	case "oversized":
+		chunk := strings.Repeat("x", 64<<10)
+		for written := 0; written <= beadsBulkHistoryMaxResponseBytes; written += len(chunk) {
+			if _, err := os.Stdout.WriteString(chunk); err != nil {
+				os.Exit(0)
+			}
+		}
+		time.Sleep(time.Hour)
 	default:
 		_, _ = os.Stdout.WriteString(os.Getenv("BV_BEADS_HISTORY_RESPONSE"))
 		os.Exit(0)
@@ -42,7 +57,9 @@ func TestBeadsHistoryHelperProcess(t *testing.T) {
 
 type beadsHistoryProcessFixture struct {
 	invocations string
+	args        string
 	stdin       string
+	pid         string
 }
 
 func installBeadsHistoryHelper(t *testing.T, mode, response, stderr string) beadsHistoryProcessFixture {
@@ -55,18 +72,22 @@ func installBeadsHistoryHelper(t *testing.T, mode, response, stderr string) bead
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	wrapper := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BV_BEADS_HISTORY_INVOCATIONS\"\nexec \"$BV_BEADS_HISTORY_TEST_BINARY\" -test.run=^TestBeadsHistoryHelperProcess$\n"
+	wrapper := "#!/bin/sh\nprintf '1\\n' >> \"$BV_BEADS_HISTORY_INVOCATIONS\"\n: > \"$BV_BEADS_HISTORY_ARGS\"\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> \"$BV_BEADS_HISTORY_ARGS\"; done\nexec \"$BV_BEADS_HISTORY_TEST_BINARY\" -test.run=^TestBeadsHistoryHelperProcess$\n"
 	if err := os.WriteFile(filepath.Join(bin, "bd"), []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	fixture := beadsHistoryProcessFixture{
 		invocations: filepath.Join(dir, "invocations"),
+		args:        filepath.Join(dir, "args"),
 		stdin:       filepath.Join(dir, "stdin"),
+		pid:         filepath.Join(dir, "pid"),
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(beadsHistoryHelperEnv, "1")
 	t.Setenv("BV_BEADS_HISTORY_INVOCATIONS", fixture.invocations)
+	t.Setenv("BV_BEADS_HISTORY_ARGS", fixture.args)
 	t.Setenv("BV_BEADS_HISTORY_STDIN", fixture.stdin)
+	t.Setenv("BV_BEADS_HISTORY_PID", fixture.pid)
 	t.Setenv("BV_BEADS_HISTORY_TEST_BINARY", os.Args[0])
 	t.Setenv("BV_BEADS_HISTORY_MODE", mode)
 	t.Setenv("BV_BEADS_HISTORY_RESPONSE", response)
@@ -113,7 +134,7 @@ func TestLoadBeadsLifecycleUsesOneBulkProcessAndPreservesEvents(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("bulk lifecycle events differ from repeated single-ID semantics:\ngot:  %#v\nwant: %#v", got, want)
 	}
-	assertBeadsHistoryProcess(t, fixture, "--db /fixture/store --readonly history --ids-file - --json\n", "alpha\nmissing\nzeta\n")
+	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store"), "alpha\nmissing\nzeta\n")
 }
 
 func TestLoadBeadsLifecycle76IDsStartsOneProcess(t *testing.T) {
@@ -132,17 +153,29 @@ func TestLoadBeadsLifecycle76IDsStartsOneProcess(t *testing.T) {
 	} else if len(events) != 0 {
 		t.Fatalf("events = %d, want 0", len(events))
 	}
-	assertBeadsHistoryProcess(t, fixture, "--db /fixture/store --readonly history --ids-file - --json\n", strings.Join(ids, "\n")+"\n")
+	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store"), strings.Join(ids, "\n")+"\n")
 }
 
-func assertBeadsHistoryProcess(t *testing.T, fixture beadsHistoryProcessFixture, wantInvocation, wantStdin string) {
+func bulkHistoryArgs(store string) []string {
+	return []string{"--db", store, "--readonly", "history", "--ids-file", "-", "--json"}
+}
+
+func assertBeadsHistoryProcess(t *testing.T, fixture beadsHistoryProcessFixture, wantArgs []string, wantStdin string) {
 	t.Helper()
 	invocations, err := os.ReadFile(fixture.invocations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(invocations) != wantInvocation {
-		t.Fatalf("invocations = %q, want exactly one %q", invocations, wantInvocation)
+	if string(invocations) != "1\n" {
+		t.Fatalf("invocations = %q, want exactly one", invocations)
+	}
+	args, err := os.ReadFile(fixture.args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgBytes := append([]byte(strings.Join(wantArgs, "\x00")), 0)
+	if !bytes.Equal(args, wantArgBytes) {
+		t.Fatalf("argument boundaries = %q, want %q", args, wantArgBytes)
 	}
 	stdin, err := os.ReadFile(fixture.stdin)
 	if err != nil {
@@ -192,21 +225,79 @@ func TestParseBulkBeadsHistoryRejectsInvalidResponses(t *testing.T) {
 }
 
 func TestLoadBeadsLifecycleRequiresBulkCapabilityWithoutFallback(t *testing.T) {
-	fixture := installBeadsHistoryHelper(t, "failure", "", "unknown flag: --ids-file")
-	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}, {ID: "beta"}}, CorrelatorOptions{})
-	if err == nil || !strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), "unknown flag: --ids-file") {
-		t.Fatalf("error = %v", err)
+	for _, diagnostic := range []string{
+		"unknown flag: --ids-file",
+		"unknown command \"history\" for \"bd\"",
+		"the active storage backend does not support bulk history",
+	} {
+		t.Run(diagnostic, func(t *testing.T) {
+			fixture := installBeadsHistoryHelper(t, "failure", "", diagnostic)
+			_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}, {ID: "beta"}}, CorrelatorOptions{})
+			if err == nil || !strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), diagnostic) {
+				t.Fatalf("error = %v", err)
+			}
+			assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store"), "alpha\nbeta\n")
+		})
 	}
-	assertBeadsHistoryProcess(t, fixture, "--db /fixture/store --readonly history --ids-file - --json\n", "alpha\nbeta\n")
 }
 
-func TestLoadBeadsLifecycleReportsCommandStderrWithoutFallback(t *testing.T) {
-	fixture := installBeadsHistoryHelper(t, "failure", "", "the active storage backend does not support bulk history")
+func TestLoadBeadsLifecycleReportsProviderFailureWithoutCapabilityGuidance(t *testing.T) {
+	fixture := installBeadsHistoryHelper(t, "failure", "", "failed to get bulk history: store query failed")
 	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
-	if err == nil || !strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), "active storage backend") {
+	if err == nil || strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), "store query failed") {
 		t.Fatalf("error = %v", err)
 	}
-	assertBeadsHistoryProcess(t, fixture, "--db /fixture/store --readonly history --ids-file - --json\n", "alpha\n")
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("error does not wrap process failure: %v", err)
+	}
+	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store"), "alpha\n")
+}
+
+func TestLoadBeadsLifecycleReportsMissingExecutableWithoutCapabilityGuidance(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
+	if err == nil || strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), "Beads executable unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+	var executableErr *exec.Error
+	if !errors.As(err, &executableErr) {
+		t.Fatalf("error does not wrap executable lookup failure: %v", err)
+	}
+}
+
+func TestLoadBeadsLifecycleRejectsOversizedResponseAndReapsProcess(t *testing.T) {
+	fixture := installBeadsHistoryHelper(t, "oversized", "", "")
+	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
+	if err == nil || !strings.Contains(err.Error(), "bulk History response too large") || !strings.Contains(err.Error(), strconv.Itoa(beadsBulkHistoryMaxResponseBytes)) {
+		t.Fatalf("error = %v", err)
+	}
+	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store"), "alpha\n")
+	pidData, readErr := os.ReadFile(fixture.pid)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	pid, parseErr := strconv.Atoi(string(pidData))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	process, findErr := os.FindProcess(pid)
+	if findErr != nil {
+		t.Fatal(findErr)
+	}
+	if signalErr := process.Signal(syscall.Signal(0)); !errors.Is(signalErr, os.ErrProcessDone) {
+		t.Fatalf("oversized response process %d was not reaped: %v", pid, signalErr)
+	}
+}
+
+func TestBoundedDiagnosticTruncatesWithoutShortWrite(t *testing.T) {
+	diagnostic := boundedDiagnostic{limit: 4}
+	if written, err := diagnostic.Write([]byte("abcdef")); err != nil || written != 6 {
+		t.Fatalf("Write() = %d, %v, want 6, nil", written, err)
+	}
+	if got := diagnostic.String(); got != "abcd [stderr truncated]" {
+		t.Fatalf("String() = %q", got)
+	}
 }
 
 func TestLoadBeadsLifecycleCancelsBulkProcess(t *testing.T) {
