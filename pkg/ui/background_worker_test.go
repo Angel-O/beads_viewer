@@ -1985,6 +1985,41 @@ func TestBackgroundWorker_MaybeIdleGC_TriggersAfterThreshold(t *testing.T) {
 	}
 }
 
+func TestModelUpdate_RecordsUserInputForIdleGC(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath: "",
+		IdleGC:    &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	tests := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{name: "key", msg: tea.KeyMsg{Type: tea.KeyDown}},
+		{name: "mouse", msg: tea.MouseMsg{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldActivity := time.Now().Add(-time.Hour)
+			worker.recordActivityAt(oldActivity)
+
+			m := NewModel(nil, nil, "")
+			m.backgroundWorker = worker
+			m.Update(tc.msg)
+
+			got := time.Unix(0, worker.lastActivityUnixNano.Load())
+			if !got.After(oldActivity) {
+				t.Fatalf("user input did not advance activity time: got=%v old=%v", got, oldActivity)
+			}
+		})
+	}
+}
+
 func TestBackgroundWorker_MaybeIdleGC_DoesNotRunWhenProcessing(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath: "",
