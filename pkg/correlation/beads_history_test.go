@@ -42,6 +42,7 @@ func TestBeadsHistoryHelperProcess(t *testing.T) {
 	case "block":
 		time.Sleep(time.Hour)
 	case "oversized":
+		_, _ = fmt.Fprintln(os.Stderr, os.Getenv("BV_BEADS_HISTORY_STDERR"))
 		chunk := strings.Repeat("x", 64<<10)
 		for written := 0; written <= beadsBulkHistoryMaxResponseBytes; written += len(chunk) {
 			if _, err := os.Stdout.WriteString(chunk); err != nil {
@@ -267,9 +268,9 @@ func TestLoadBeadsLifecycleReportsMissingExecutableWithoutCapabilityGuidance(t *
 }
 
 func TestLoadBeadsLifecycleRejectsOversizedResponseAndReapsProcess(t *testing.T) {
-	fixture := installBeadsHistoryHelper(t, "oversized", "", "")
+	fixture := installBeadsHistoryHelper(t, "oversized", "", "unknown flag: --ids-file")
 	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
-	if err == nil || !strings.Contains(err.Error(), "bulk History response too large") || !strings.Contains(err.Error(), strconv.Itoa(beadsBulkHistoryMaxResponseBytes)) {
+	if err == nil || !strings.Contains(err.Error(), "bulk History response too large") || !strings.Contains(err.Error(), strconv.Itoa(beadsBulkHistoryMaxResponseBytes)) || strings.Contains(err.Error(), "bulk History support is required") {
 		t.Fatalf("error = %v", err)
 	}
 	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store"), "alpha\n")

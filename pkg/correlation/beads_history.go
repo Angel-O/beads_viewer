@@ -137,7 +137,8 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 		if errors.As(err, &executableErr) {
 			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: Beads executable unavailable: %w", store, err)
 		}
-		if isBulkHistoryCapabilityDiagnostic(diagnostic) {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && isBulkHistoryCapabilityDiagnostic(diagnostic) {
 			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history --ids-file - --json': %w: %s", store, err, diagnostic)
 		}
 		if diagnostic != "" {
