@@ -17,6 +17,13 @@ retained below.
 
 ## [Unreleased]
 
+### Added
+
+- **Copy graph node descriptions without mutating Beads.** The exported interactive graph's
+  right-click menu can now copy either a node ID or its raw description. Both actions share a
+  clipboard fallback for local/offline dashboards and report empty descriptions or copy failures
+  instead of silently doing nothing.
+
 ---
 
 ## [v0.21.2] -- 2026-08-24 (Release)
