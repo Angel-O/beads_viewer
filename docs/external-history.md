@@ -296,19 +296,26 @@ tuple is a successful idempotent no-op with deterministic JSON:
 External history invokes the installed Beads CLI as:
 
 ```text
-bd --db <store> --readonly history <bead-id> --json
+bd --db <store> --readonly history --ids-file - --json
 ```
 
-The current Beads response is a sequence of Dolt snapshots containing
-`CommitHash`, `Committer`, `CommitDate`, and nested `Issue` state. `bv` orders
-those snapshots chronologically and derives created, claimed, closed, reopened,
-and modified lifecycle events from status transitions. Dolt commit hashes stay
-on lifecycle events; they are never treated as source Git commits.
+Viewer sends the selected exact IDs as newline-delimited stdin and requires the
+Beads bulk History capability. The response is the schema-versioned grouped
+envelope with one snapshot group per requested ID. Older CLIs and storage
+backends without bulk History support fail with an upgrade/capability error;
+Viewer never falls back to one subprocess per ID.
 
-For an unfiltered report, lifecycle history is requested only for unique beads
-that have validated ledger correlations. A selected `--bead-history` still
+Each group contains Dolt snapshots with `CommitHash`, `Committer`, `CommitDate`,
+and nested `Issue` state. `bv` orders those snapshots chronologically and
+derives created, claimed, closed, reopened, and modified lifecycle events from
+status transitions. Dolt commit hashes stay on lifecycle events; they are never
+treated as source Git commits.
+
+For an unfiltered report, lifecycle history is requested in one bulk call only
+for unique beads that have validated ledger correlations. A selected
+`--bead-history` still
 loads that bead's lifecycle even when it has no source correlation. This avoids
-one `bd` subprocess for every unrelated issue in a global store.
+both unrelated issue reads and one `bd` subprocess per selected issue.
 
 Repository context plus full commit SHA is the authoritative immutable source
 identity. Branch names are deliberately not persisted: a commit may be

@@ -24,6 +24,7 @@ type externalHistoryFixture struct {
 	renameSHA  string
 	pathEnv    string
 	bdLog      string
+	bdStdin    string
 }
 
 type externalHistoryPayload struct {
@@ -197,14 +198,25 @@ case " $* " in
     exit 0
     ;;
 esac
-cat <<JSON
-[{"CommitHash":"dolt-closed-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"$bead","status":"in_progress","issue_type":"task"}},{"CommitHash":"dolt-created-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"$bead","status":"open","issue_type":"task"}}]
-JSON
+ids=$(cat)
+if [ -n "$BV_FAKE_BD_STDIN_LOG" ]; then
+  printf '%s\n' "$ids" >> "$BV_FAKE_BD_STDIN_LOG"
+fi
+printf '{"schema_version":1,"issues":['
+separator=
+while IFS= read -r bead; do
+  [ -n "$bead" ] || continue
+  printf '%s{"issue_id":"%s","snapshots":[{"CommitHash":"dolt-closed-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"%s","status":"in_progress","issue_type":"task"}},{"CommitHash":"dolt-created-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"%s","status":"open","issue_type":"task"}}]}' "$separator" "$bead" "$bead" "$bead" "$bead" "$bead"
+  separator=,
+done <<EOF
+$ids
+EOF
+printf ']}\n'
 `
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(bdScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return externalHistoryFixture{root: root, storeRoot: storeRoot, configPath: configPath, ledgerPath: ledgerPath, repoA: repoA, repoB: repoB, shaA: shaA, shaB: shaB, sharedSHA: sharedSHA, renameSHA: renameSHA, pathEnv: binDir + string(os.PathListSeparator) + os.Getenv("PATH"), bdLog: bdLog}
+	return externalHistoryFixture{root: root, storeRoot: storeRoot, configPath: configPath, ledgerPath: ledgerPath, repoA: repoA, repoB: repoB, shaA: shaA, shaB: shaB, sharedSHA: sharedSHA, renameSHA: renameSHA, pathEnv: binDir + string(os.PathListSeparator) + os.Getenv("PATH"), bdLog: bdLog, bdStdin: filepath.Join(root, "bd-stdin.log")}
 }
 
 func (f externalHistoryFixture) command(t *testing.T, bv string, args ...string) ([]byte, error) {
@@ -221,7 +233,7 @@ func (f externalHistoryFixture) commandFromEnv(t *testing.T, bv, dir string, ext
 	t.Helper()
 	cmd := exec.Command(bv, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "PATH="+f.pathEnv, "BV_NO_CACHE=1", "BV_FAKE_BD_LOG="+f.bdLog)
+	cmd.Env = append(os.Environ(), "PATH="+f.pathEnv, "BV_NO_CACHE=1", "BV_FAKE_BD_LOG="+f.bdLog, "BV_FAKE_BD_STDIN_LOG="+f.bdStdin)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	return cmd.CombinedOutput()
 }
@@ -686,10 +698,21 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(logData), "history work-3") || !strings.Contains(string(logData), "history work-1") || !strings.Contains(string(logData), "history work-2") {
+	bulkInvocation := fmt.Sprintf("--db %s --readonly history --ids-file - --json", filepath.Join(fixture.storeRoot, ".beads"))
+	if strings.Count(string(logData), bulkInvocation) != 1 || strings.Contains(string(logData), "history work-") {
 		t.Fatalf("lifecycle provider queried the wrong beads: %s", logData)
 	}
+	stdinData, err := os.ReadFile(fixture.bdStdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdinData) != "work-1\nwork-2\n" {
+		t.Fatalf("bulk lifecycle stdin = %q, want exact selected IDs", stdinData)
+	}
 	if err := os.WriteFile(fixture.bdLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.bdStdin, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, err = fixture.command(t, bv, "--bead-history", "work-3", "--history-mode", "external", "--hub-config", fixture.configPath)
@@ -700,8 +723,15 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "history work-3") || strings.Contains(string(logData), "history work-1") || strings.Contains(string(logData), "history work-2") {
+	if strings.Count(string(logData), bulkInvocation) != 1 || strings.Contains(string(logData), "history work-") {
 		t.Fatalf("selected lifecycle-only bead query was not scoped: %s", logData)
+	}
+	stdinData, err = os.ReadFile(fixture.bdStdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdinData) != "work-3\n" {
+		t.Fatalf("selected lifecycle stdin = %q, want work-3", stdinData)
 	}
 }
 
