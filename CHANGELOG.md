@@ -2,6 +2,17 @@
 
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first. Each entry links to the tagged commit on GitHub. Where a version was published as a GitHub Release (with binaries), it is marked accordingly; tag-only versions are noted as such.
 
+Scope window: this update reconstructs `v0.21.0` through `v0.21.2`; the earlier version history is
+retained below.
+
+## Release Timeline
+
+| Version | Date | Publication | Orientation |
+|---|---|---|---|
+| [`v0.21.2`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.21.2) | 2026-08-24 | GitHub Release | Publishes the 50-pass performance campaign, verified binaries, checksums, SBOM, and corrected Nix guidance. |
+| [`v0.21.1`](https://github.com/Dicklesworthstone/beads_viewer/tree/v0.21.1) | 2026-08-24 | Tag only | Staged the performance and license work; superseded before binary publication. |
+| [`v0.21.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.21.0) | 2026-08-23 | GitHub Release | Strict robot-count semantics, bounded history liveness, theme selection, and cache-path repairs. |
+
 ---
 
 ## [Unreleased]
@@ -16,7 +27,7 @@ final Nix packaging correction. The campaign completed all 50 requested iteratio
 only improvements that survived command-level measurement, output-equivalence checks, focused
 causal tests, and the full Go verification suite.
 
-### Performance — How Cold Robot Triage Became Faster
+### Delivered capability: Faster Cold Robot Triage
 
 - **Profile the real bottleneck first.** On the pinned 540-issue / 19-open Git fixture, history
   correlation accounted for 62.26% of command CPU and snapshot extraction for 58.49%. Within that
@@ -44,7 +55,7 @@ causal tests, and the full Go verification suite.
   significance (`p=0.0547`), while peak RSS increased 0.177%; therefore this release claims lower
   CPU and GC work, **not** lower wall latency or memory usage.
 
-### Performance — Reuse Completed Graph Analysis
+### Delivered capability: Reused Graph Analysis
 
 - **What-if batches:** [`4b685960`](https://github.com/Dicklesworthstone/beads_viewer/commit/4b685960)
   added a stats-consuming path so `--robot-insights` can pass the completed `GraphStats` it already
@@ -61,7 +72,7 @@ causal tests, and the full Go verification suite.
   and invalid-UTF-8 inputs through the standard library for exact behavior. It did not improve the
   dominant cold-correlation command path, so it is not included in the 11.44% release claim.
 
-### Performance Evidence and Rejected Work
+### Closed workstreams: Measurement and Negative Evidence
 
 - Fixed registry-backed CPU-profile shutdown in
   [`854a8070`](https://github.com/Dicklesworthstone/beads_viewer/commit/854a8070) and
@@ -77,6 +88,18 @@ causal tests, and the full Go verification suite.
 - Retained snapshot frontier/allocation refinements have differential coverage, but no additional
   release-wide percentage is assigned to them. The only accepted cold-triage result from this
   campaign is buffer reuse's 11.44% user-CPU and 49.61% GC-cycle reduction.
+
+### Representative commits
+
+- [`22305d12`](https://github.com/Dicklesworthstone/beads_viewer/commit/22305d1208d2d17671f34beb480b68489fcb4a1c)
+  — recycle evicted Git blob buffers on the measured cold-correlation path.
+- [`4b685960`](https://github.com/Dicklesworthstone/beads_viewer/commit/4b685960) — consume
+  completed graph statistics across what-if batches.
+- [`5b73a6b6`](https://github.com/Dicklesworthstone/beads_viewer/commit/5b73a6b6) — reuse
+  completed cycle data in advanced insights.
+- [`854a8070`](https://github.com/Dicklesworthstone/beads_viewer/commit/854a8070) and
+  [`0a0838ec`](https://github.com/Dicklesworthstone/beads_viewer/commit/0a0838ec) — make robot
+  CPU profiles complete and trustworthy.
 
 ### Fixed and Packaged
 
