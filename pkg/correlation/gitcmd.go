@@ -75,6 +75,7 @@ func runGitOutputBounded(cmd *exec.Cmd) ([]byte, error) {
 	stderr := &boundedGitStderr{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
 		return nil, err
 	}
 	output, readErr := io.ReadAll(io.LimitReader(stdout, gitBatchMaxOutputBytes+1))

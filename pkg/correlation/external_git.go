@@ -381,19 +381,26 @@ func (c *Correlator) batchExternalCommitMetadata(repoPath string, shas []string)
 		}
 		return metadata, fmt.Errorf("loading commit metadata from repository %q: %w", repoPath, err)
 	}
-	tokens := bytes.Split(out, []byte{0})
-	for i := 0; i < len(tokens); {
-		for i < len(tokens) && len(bytes.TrimSpace(tokens[i])) == 0 {
-			i++
-		}
-		if i == len(tokens) {
-			break
-		}
-		if i+5 >= len(tokens) || !validExternalSHA(tokens[i]) {
+	for offset := 0; offset < len(out); {
+		if out[offset] != 0 {
 			return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
 		}
-		sha := string(tokens[i])
-		timestamp, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(string(tokens[i+1])))
+		offset++
+		fields := make([][]byte, 5)
+		for i := range fields {
+			end := bytes.IndexByte(out[offset:], 0)
+			if end < 0 {
+				return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+			}
+			end += offset
+			fields[i] = out[offset:end]
+			offset = end + 1
+		}
+		if !validExternalSHA(fields[0]) {
+			return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+		}
+		sha := string(fields[0])
+		timestamp, parseErr := time.Parse(time.RFC3339, string(fields[1]))
 		if parseErr != nil {
 			return metadata, fmt.Errorf("parsing commit %q timestamp from repository %q: %w", sha, repoPath, parseErr)
 		}
@@ -402,12 +409,18 @@ func (c *Correlator) batchExternalCommitMetadata(repoPath string, shas []string)
 		}
 		metadata[sha] = externalCommitMetadata{
 			sha:        sha,
-			author:     string(tokens[i+2]),
-			authorMail: string(tokens[i+3]),
+			author:     string(fields[2]),
+			authorMail: string(fields[3]),
 			timestamp:  timestamp,
-			message:    strings.TrimSpace(string(tokens[i+4])),
+			message:    strings.TrimSpace(string(fields[4])),
 		}
-		i += 5
+		if offset == len(out) {
+			break
+		}
+		if out[offset] != '\n' {
+			return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+		}
+		offset++
 	}
 	if len(metadata) != len(shas) {
 		return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output: got %d records for %d commits", repoPath, len(metadata), len(shas))

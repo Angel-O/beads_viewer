@@ -154,18 +154,29 @@ func TestExternalBatchReportsGitStderr(t *testing.T) {
 	}
 }
 
-func TestBatchExternalMetadataRejectsTrailingOutput(t *testing.T) {
-	correlator := &Correlator{ctx: context.Background()}
-	sha := strings.Repeat("a", 40)
-	bin := t.TempDir()
-	wrapper := fmt.Sprintf("#!/bin/sh\nprintf '\\\\000%%s\\\\0002026-01-01T00:00:00Z\\\\000Author\\\\000author@example.invalid\\\\000message\\\\000trailing' %q\n", sha)
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	_, err := correlator.batchExternalCommitMetadata(t.TempDir(), []string{sha})
-	if err == nil || !strings.Contains(err.Error(), "unexpected Git output") {
-		t.Fatalf("trailing metadata error = %v", err)
+func TestBatchExternalMetadataRejectsMalformedFraming(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		format string
+	}{
+		{name: "missing leading sentinel", format: "%s\\0002026-01-01T00:00:00Z\\000Author\\000author@example.invalid\\000message\\000\\n"},
+		{name: "extra NUL separator", format: "\\000%s\\0002026-01-01T00:00:00Z\\000Author\\000author@example.invalid\\000message\\000\\000\\n"},
+		{name: "trailing whitespace", format: "\\000%s\\0002026-01-01T00:00:00Z\\000Author\\000author@example.invalid\\000message\\000\\n   "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			correlator := &Correlator{ctx: context.Background()}
+			sha := strings.Repeat("a", 40)
+			bin := t.TempDir()
+			wrapper := fmt.Sprintf("#!/bin/sh\nprintf '%s' %q\n", test.format, sha)
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			_, err := correlator.batchExternalCommitMetadata(t.TempDir(), []string{sha})
+			if err == nil || !strings.Contains(err.Error(), "unexpected Git output") {
+				t.Fatalf("malformed framing error = %v", err)
+			}
+		})
 	}
 }
 
@@ -195,21 +206,24 @@ func TestExternalBatchSupportsSHA256Repositories(t *testing.T) {
 		t.Fatalf("SHA-256 repository HEAD length = %d, want 64", len(sha))
 	}
 
-	extractor := NewCoCommitExtractor(repoPath)
-	files, err := extractor.batchFilesChanged([]string{sha})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := files[sha]; !ok {
-		t.Fatalf("SHA-256 commit missing from changed-path batch: %s", sha)
-	}
 	correlator := &Correlator{ctx: context.Background()}
-	metadata, err := correlator.batchExternalCommitMetadata(repoPath, []string{sha})
+	results, err := correlator.loadExternalCommits("ctx:sha256", repoPath, []string{sha})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metadata[sha].sha != sha {
-		t.Fatalf("SHA-256 metadata SHA = %q, want %q", metadata[sha].sha, sha)
+	result := results[strings.ToLower(sha)]
+	if result.err != nil {
+		t.Fatalf("SHA-256 hydration error = %v", result.err)
+	}
+	if result.commit.SHA != sha {
+		t.Fatalf("SHA-256 hydrated SHA = %q, want %q", result.commit.SHA, sha)
+	}
+	if len(result.commit.Files) != 1 {
+		t.Fatalf("SHA-256 hydrated files = %#v, want one file", result.commit.Files)
+	}
+	file := result.commit.Files[0]
+	if file.Path != "file.go" || file.Action != "A" || file.Insertions != 1 {
+		t.Fatalf("SHA-256 hydrated file = %#v, want file.go/A/+1", file)
 	}
 }
 
