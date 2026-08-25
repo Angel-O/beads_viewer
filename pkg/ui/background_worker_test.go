@@ -1425,6 +1425,42 @@ func TestBackgroundWorker_Phase2UpdateMsgDelivered(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "root", Title: "Root", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "child", Title: "Child", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask,
+			Dependencies: []*model.Dependency{{DependsOnID: "root", Type: model.DepBlocks}}},
+	}
+	snapshot := NewSnapshotBuilder(issues).Build()
+	snapshot.Analysis.WaitForPhase2()
+	snapshot.DataHash = "phase2-signal-test"
+	snapshot.phase2Ready = false
+
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.snapshot = snapshot
+
+	go worker.runPhase2Analysis(snapshot.Analysis, snapshot.DataHash)
+	msg := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(Phase2UpdateMsg)
+		return ok
+	}).(Phase2UpdateMsg)
+	if msg.DataHash != snapshot.DataHash {
+		t.Fatalf("Phase2UpdateMsg hash=%q, want %q", msg.DataHash, snapshot.DataHash)
+	}
+
+	m := NewModel(issues, nil, "")
+	m.snapshot = snapshot
+	newM, _ := m.Update(msg)
+	m = newM.(Model)
+	if !m.snapshot.phase2Ready {
+		t.Fatal("matching Phase2UpdateMsg did not mark current snapshot ready")
+	}
+}
+
 func TestBackgroundWorker_Phase2NoSendAfterStop(t *testing.T) {
 	// Test that runPhase2Analysis doesn't send if worker is stopped (bv-e3ub)
 	tmpDir := t.TempDir()
