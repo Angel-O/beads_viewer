@@ -271,6 +271,13 @@ func TestBackgroundWorker_RefreshRequestMsg(t *testing.T) {
 	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
 	waitForSnapshotVersion(t, worker, 1)
 	first := worker.GetSnapshot()
+	firstMsg := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(SnapshotReadyMsg)
+		return ok
+	}).(SnapshotReadyMsg)
+	if firstMsg.Snapshot != first {
+		t.Fatal("RefreshRequestMsg snapshot was not delivered through worker message channel")
+	}
 
 	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
 	waitForSnapshotVersion(t, worker, 2)
