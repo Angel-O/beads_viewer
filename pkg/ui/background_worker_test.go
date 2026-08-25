@@ -1267,6 +1267,155 @@ func TestBackgroundWorker_ConcurrentTrigger(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_RapidWritesKeepUIResponsive(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
+	const (
+		initialIssues = 100
+		rapidWrites   = 50
+	)
+	if err := writeStressIssuesFile(beadsPath, initialIssues, 0, "initial"); err != nil {
+		t.Fatalf("write initial issues: %v", err)
+	}
+
+	issues, err := loader.LoadIssuesFromFile(beadsPath)
+	if err != nil {
+		t.Fatalf("load initial issues: %v", err)
+	}
+	m := NewModel(issues, nil, "")
+
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:     beadsPath,
+		DebounceDelay: 25 * time.Millisecond,
+		MessageBuffer: 16,
+		IdleGC:        &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	m.backgroundWorker = worker
+	if err := worker.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	worker.TriggerRefresh()
+
+	writerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < rapidWrites; i++ {
+			f, openErr := os.OpenFile(beadsPath, os.O_APPEND|os.O_WRONLY, 0o644)
+			if openErr != nil {
+				writerDone <- openErr
+				return
+			}
+			_, writeErr := fmt.Fprintf(f,
+				`{"id":"rapid-%d","title":"Rapid %d","status":"open","priority":2,"issue_type":"task"}`+"\n",
+				i, i,
+			)
+			closeErr := f.Close()
+			if writeErr != nil {
+				writerDone <- writeErr
+				return
+			}
+			if closeErr != nil {
+				writerDone <- closeErr
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		writerDone <- nil
+	}()
+
+	var (
+		updateTotal    time.Duration
+		maxUpdate      time.Duration
+		renderTotal    time.Duration
+		maxRender      time.Duration
+		sampleCount    int
+		updatesOver50  int
+		snapshotCount  int
+		errorCount     int
+		latestCount    int
+		writerErr      error
+		writerFinished bool
+	)
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(2 * time.Millisecond)
+	defer tick.Stop()
+
+	for !writerFinished || latestCount != initialIssues+rapidWrites {
+		select {
+		case writerErr = <-writerDone:
+			writerFinished = true
+		case msg := <-worker.Messages():
+			switch typed := msg.(type) {
+			case SnapshotReadyMsg:
+				snapshotCount++
+				latestCount = len(typed.Snapshot.Issues)
+			case SnapshotErrorMsg:
+				errorCount++
+			}
+			updated, _ := m.Update(msg)
+			m = updated.(Model)
+		case <-tick.C:
+			start := time.Now()
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			m = updated.(Model)
+			updateLatency := time.Since(start)
+			renderStart := time.Now()
+			if view := m.View(); view == "" {
+				t.Fatal("View returned empty output during rapid writes")
+			}
+			renderLatency := time.Since(renderStart)
+			updateTotal += updateLatency
+			renderTotal += renderLatency
+			sampleCount++
+			if updateLatency > maxUpdate {
+				maxUpdate = updateLatency
+			}
+			if renderLatency > maxRender {
+				maxRender = renderLatency
+			}
+			if updateLatency > 50*time.Millisecond {
+				updatesOver50++
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for final snapshot: writer_finished=%v latest_count=%d snapshots=%d errors=%d",
+				writerFinished, latestCount, snapshotCount, errorCount)
+		}
+	}
+
+	if writerErr != nil {
+		t.Fatalf("rapid writer failed: %v", writerErr)
+	}
+	if sampleCount == 0 {
+		t.Fatal("expected UI latency samples")
+	}
+	if snapshotCount >= rapidWrites {
+		t.Fatalf("expected rapid writes to coalesce: snapshots=%d writes=%d", snapshotCount, rapidWrites)
+	}
+	if errorCount != 0 {
+		t.Fatalf("unexpected background worker errors: %d", errorCount)
+	}
+
+	averageUpdate := updateTotal / time.Duration(sampleCount)
+	averageRender := renderTotal / time.Duration(sampleCount)
+	over50Ratio := float64(updatesOver50) / float64(sampleCount)
+	t.Logf("rapid-write UI latency: update_avg=%v update_max=%v update_over50ms=%d/%d (%.2f%%), render_avg=%v render_max=%v, snapshots=%d writes=%d",
+		averageUpdate, maxUpdate, updatesOver50, sampleCount, over50Ratio*100,
+		averageRender, maxRender, snapshotCount, rapidWrites)
+	if averageUpdate >= 50*time.Millisecond {
+		t.Fatalf("average UI update latency=%v, want <50ms", averageUpdate)
+	}
+	if over50Ratio >= 0.05 {
+		t.Fatalf("UI update samples over 50ms=%.2f%%, want <5%%", over50Ratio*100)
+	}
+	if averageRender >= 50*time.Millisecond {
+		t.Fatalf("average UI render latency=%v, want <50ms", averageRender)
+	}
+}
+
 func TestBackgroundWorker_TriggerRefreshCoalescesWhileProcessScheduled(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: ""})
 	if err != nil {
