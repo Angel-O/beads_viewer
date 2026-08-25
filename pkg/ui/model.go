@@ -1813,8 +1813,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.priorityHints = make(map[string]*analysis.PriorityRecommendation)
 		m.labelDrilldownCache = make(map[string][]model.Issue)
 
-		// Recompute alerts for refreshed dataset
-		m.alerts, m.alertsCritical, m.alertsWarning, m.alertsInfo = computeAlerts(m.issues, m.analysis, m.analyzer)
+		// Alerts are derived while the immutable snapshot is built, off the UI loop.
+		m.alerts = msg.Snapshot.alerts
+		m.alertsCritical = msg.Snapshot.alertsCritical
+		m.alertsWarning = msg.Snapshot.alertsWarning
+		m.alertsInfo = msg.Snapshot.alertsInfo
 		m.dismissedAlerts = make(map[string]bool)
 		m.showAlertsPanel = false
 
@@ -1881,94 +1884,113 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.applyRecipe(m.activeRecipe)
 			}
 		} else {
-			var filteredItems []list.Item
-			var filteredIssues []model.Issue
-
-			filteredItems = make([]list.Item, 0, len(msg.Snapshot.ListItems))
-			filteredIssues = make([]model.Issue, 0, len(msg.Snapshot.ListItems))
-
-			for _, item := range msg.Snapshot.ListItems {
-				issue := item.Issue
-
-				// Workspace repo filter (nil = all repos)
-				if m.workspaceMode && m.activeRepos != nil {
-					repoKey := strings.ToLower(item.RepoPrefix)
-					if repoKey != "" && !m.activeRepos[repoKey] {
-						continue
+			fastDefaultView := (m.currentFilter == "" || m.currentFilter == "all") &&
+				m.sortMode == SortDefault &&
+				(!m.workspaceMode || m.activeRepos == nil) &&
+				len(msg.Snapshot.listModelItems) == len(msg.Snapshot.ListItems) &&
+				msg.Snapshot.BoardState != nil && msg.Snapshot.GetGraphLayout() != nil
+			if fastDefaultView {
+				m.list.SetItems(msg.Snapshot.listModelItems)
+				if m.semanticSearch != nil {
+					m.semanticSearch.setSnapshotDocuments(msg.Snapshot.semanticIDs, msg.Snapshot.semanticDocs)
+				}
+				m.board.SetSnapshot(msg.Snapshot)
+				m.graphView.SetSnapshot(msg.Snapshot)
+				if selectedID != "" {
+					if index, ok := msg.Snapshot.listIndexByID[selectedID]; ok {
+						m.list.Select(index)
 					}
 				}
+			} else {
+				var filteredItems []list.Item
+				var filteredIssues []model.Issue
 
-				include := false
-				switch m.currentFilter {
-				case "all":
-					include = true
-				case "open":
-					include = !isClosedLikeStatus(issue.Status)
-				case "closed":
-					include = isClosedLikeStatus(issue.Status)
-				case "ready":
-					// Ready = Open/InProgress AND NO Open Blockers
-					// Exclude draft/deferred - not ready for execution
-					if !isClosedLikeStatus(issue.Status) && issue.Status != model.StatusBlocked &&
-						issue.Status != model.StatusDraft && issue.Status != model.StatusDeferred {
-						isBlocked := false
-						for _, dep := range issue.Dependencies {
-							if dep == nil || !dep.Type.IsBlocking() {
-								continue
-							}
-							if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-								isBlocked = true
-								break
-							}
-						}
-						include = !isBlocked
-					}
-				default:
-					if strings.HasPrefix(m.currentFilter, "label:") {
-						label := strings.TrimPrefix(m.currentFilter, "label:")
-						for _, l := range issue.Labels {
-							if l == label {
-								include = true
-								break
-							}
+				filteredItems = make([]list.Item, 0, len(msg.Snapshot.ListItems))
+				filteredIssues = make([]model.Issue, 0, len(msg.Snapshot.ListItems))
+
+				for _, item := range msg.Snapshot.ListItems {
+					issue := item.Issue
+
+					// Workspace repo filter (nil = all repos)
+					if m.workspaceMode && m.activeRepos != nil {
+						repoKey := strings.ToLower(item.RepoPrefix)
+						if repoKey != "" && !m.activeRepos[repoKey] {
+							continue
 						}
 					}
-				}
 
-				if include {
-					filteredItems = append(filteredItems, item)
-					filteredIssues = append(filteredIssues, issue)
-				}
-			}
+					include := false
+					switch m.currentFilter {
+					case "all":
+						include = true
+					case "open":
+						include = !isClosedLikeStatus(issue.Status)
+					case "closed":
+						include = isClosedLikeStatus(issue.Status)
+					case "ready":
+						// Ready = Open/InProgress AND NO Open Blockers
+						// Exclude draft/deferred - not ready for execution
+						if !isClosedLikeStatus(issue.Status) && issue.Status != model.StatusBlocked &&
+							issue.Status != model.StatusDraft && issue.Status != model.StatusDeferred {
+							isBlocked := false
+							for _, dep := range issue.Dependencies {
+								if dep == nil || !dep.Type.IsBlocking() {
+									continue
+								}
+								if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
+									isBlocked = true
+									break
+								}
+							}
+							include = !isBlocked
+						}
+					default:
+						if strings.HasPrefix(m.currentFilter, "label:") {
+							label := strings.TrimPrefix(m.currentFilter, "label:")
+							for _, l := range issue.Labels {
+								if l == label {
+									include = true
+									break
+								}
+							}
+						}
+					}
 
-			m.sortFilteredItems(filteredItems, filteredIssues)
-			m.list.SetItems(filteredItems)
-			m.updateSemanticIDs(filteredItems)
-			if m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
-				m.board.SetSnapshot(m.snapshot)
-			} else {
-				m.board.SetIssues(filteredIssues)
-			}
-			if m.snapshot != nil && m.snapshot.GetGraphLayout() != nil && len(filteredIssues) == len(m.snapshot.Issues) {
-				m.graphView.SetSnapshot(m.snapshot)
-			} else {
-				ins := m.snapshot.GetInsights()
-				m.graphView.SetIssues(filteredIssues, &ins)
-			}
-
-			// Restore selection if possible
-			if selectedID != "" {
-				for i, it := range filteredItems {
-					if item, ok := it.(IssueItem); ok && item.Issue.ID == selectedID {
-						m.list.Select(i)
-						break
+					if include {
+						filteredItems = append(filteredItems, item)
+						filteredIssues = append(filteredIssues, issue)
 					}
 				}
-			}
 
-			// Keep selection in bounds
-			if len(filteredItems) > 0 && m.list.Index() >= len(filteredItems) {
-				m.list.Select(0)
+				m.sortFilteredItems(filteredItems, filteredIssues)
+				m.list.SetItems(filteredItems)
+				m.updateSemanticIDs(filteredItems)
+				if m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
+					m.board.SetSnapshot(m.snapshot)
+				} else {
+					m.board.SetIssues(filteredIssues)
+				}
+				if m.snapshot != nil && m.snapshot.GetGraphLayout() != nil && len(filteredIssues) == len(m.snapshot.Issues) {
+					m.graphView.SetSnapshot(m.snapshot)
+				} else {
+					ins := m.snapshot.GetInsights()
+					m.graphView.SetIssues(filteredIssues, &ins)
+				}
+
+				// Restore selection if possible
+				if selectedID != "" {
+					for i, it := range filteredItems {
+						if item, ok := it.(IssueItem); ok && item.Issue.ID == selectedID {
+							m.list.Select(i)
+							break
+						}
+					}
+				}
+
+				// Keep selection in bounds
+				if len(filteredItems) > 0 && m.list.Index() >= len(filteredItems) {
+					m.list.Select(0)
+				}
 			}
 		}
 

@@ -698,6 +698,26 @@ func TestSnapshotSwap_UsesSnapshotInsights(t *testing.T) {
 	}
 }
 
+func TestSnapshotSwap_InstallsPrecomputedSearchDocuments(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "test-1", Title: "Issue 1", Status: model.StatusOpen, Priority: 1},
+	}
+	m := NewModel(issues, nil, "")
+	m.currentFilter = "all"
+
+	snapshot := NewSnapshotBuilder(issues).Build()
+	const sentinel = "prepared off the UI thread"
+	snapshot.semanticDocs["test-1"] = sentinel
+
+	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+	m = newM.(Model)
+
+	got := m.semanticSearch.Snapshot()
+	if got.Docs["test-1"] != sentinel {
+		t.Fatalf("expected precomputed search document, got %q", got.Docs["test-1"])
+	}
+}
+
 func TestSnapshotSwap_UsesSnapshotGraphLayoutWhenUnfiltered(t *testing.T) {
 	issues := []model.Issue{
 		{

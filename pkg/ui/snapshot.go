@@ -9,8 +9,11 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
+	"github.com/charmbracelet/bubbles/list"
 )
 
 type datasetTier int
@@ -145,14 +148,23 @@ type DataSnapshot struct {
 	CountBlocked int
 	CountClosed  int
 
-	// Pre-computed UI data (Phase 3 will populate these)
-	// For now, they're nil and the UI computes on demand
-	ListItems     []IssueItem // Pre-built list items with scores
-	TriageScores  map[string]float64
-	TriageReasons map[string]analysis.TriageReasons
-	QuickWinSet   map[string]bool
-	BlockerSet    map[string]bool
-	UnblocksMap   map[string][]string
+	// Pre-computed UI data. The unexported adapter/cache fields let the UI install
+	// the common unfiltered view without rebuilding interface slices, search
+	// documents, alert state, or selection indexes on the event loop.
+	ListItems      []IssueItem // Pre-built list items with scores
+	listModelItems []list.Item
+	listIndexByID  map[string]int
+	semanticIDs    []string
+	semanticDocs   map[string]string
+	alerts         []drift.Alert
+	alertsCritical int
+	alertsWarning  int
+	alertsInfo     int
+	TriageScores   map[string]float64
+	TriageReasons  map[string]analysis.TriageReasons
+	QuickWinSet    map[string]bool
+	BlockerSet     map[string]bool
+	UnblocksMap    map[string][]string
 	// TreeRoots and TreeNodeMap contain a pre-built parent/child tree for the Tree view.
 	// These are computed off-thread by SnapshotBuilder to avoid UI-thread work when
 	// entering the tree view for large datasets.
@@ -513,30 +525,53 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		graphLayout = buildGraphLayout(issues, graphStats)
 	}
 
+	listModelItems := make([]list.Item, len(listItems))
+	listIndexByID := make(map[string]int, len(listItems))
+	semanticIDs := make([]string, len(listItems))
+	semanticDocs := make(map[string]string, len(listItems))
+	for i := range listItems {
+		item := listItems[i]
+		listModelItems[i] = item
+		id := item.Issue.ID
+		listIndexByID[id] = i
+		semanticIDs[i] = id
+		semanticDocs[id] = search.IssueDocument(item.Issue)
+	}
+
+	alerts, alertsCritical, alertsWarning, alertsInfo := computeAlerts(issues, graphStats, b.analyzer)
+
 	return &DataSnapshot{
-		Issues:        issues,
-		IssueMap:      issueMap,
-		ViewIssues:    viewIssues,
-		Analyzer:      b.analyzer,
-		Analysis:      graphStats,
-		insights:      insights,
-		CountOpen:     cOpen,
-		CountReady:    cReady,
-		CountBlocked:  cBlocked,
-		CountClosed:   cClosed,
-		ListItems:     listItems,
-		TriageScores:  triageScores,
-		TriageReasons: triageReasons,
-		QuickWinSet:   quickWinSet,
-		BlockerSet:    blockerSet,
-		UnblocksMap:   unblocksMap,
-		TreeRoots:     treeRoots,
-		TreeNodeMap:   treeNodeMap,
-		BoardState:    boardState,
-		graphLayout:   graphLayout,
-		CreatedAt:     time.Now(),
-		phase2Ready:   graphStats.IsPhase2Ready(),
-		IssueDiff:     b.diff,
+		Issues:         issues,
+		IssueMap:       issueMap,
+		ViewIssues:     viewIssues,
+		Analyzer:       b.analyzer,
+		Analysis:       graphStats,
+		insights:       insights,
+		CountOpen:      cOpen,
+		CountReady:     cReady,
+		CountBlocked:   cBlocked,
+		CountClosed:    cClosed,
+		ListItems:      listItems,
+		listModelItems: listModelItems,
+		listIndexByID:  listIndexByID,
+		semanticIDs:    semanticIDs,
+		semanticDocs:   semanticDocs,
+		alerts:         alerts,
+		alertsCritical: alertsCritical,
+		alertsWarning:  alertsWarning,
+		alertsInfo:     alertsInfo,
+		TriageScores:   triageScores,
+		TriageReasons:  triageReasons,
+		QuickWinSet:    quickWinSet,
+		BlockerSet:     blockerSet,
+		UnblocksMap:    unblocksMap,
+		TreeRoots:      treeRoots,
+		TreeNodeMap:    treeNodeMap,
+		BoardState:     boardState,
+		graphLayout:    graphLayout,
+		CreatedAt:      time.Now(),
+		phase2Ready:    graphStats.IsPhase2Ready(),
+		IssueDiff:      b.diff,
 		IssueDiffStats: IssueDiffStats{
 			Changed: b.diffStats.Changed,
 			Total:   b.diffStats.Total,
@@ -1164,18 +1199,34 @@ func (s *DataSnapshot) WithPhase2(stats *analysis.GraphStats, insights analysis.
 	// Rebind tree nodes to cloned issues so the new snapshot stays detached from
 	// legacy m.issues sorting and pointer churn.
 	treeRoots, treeNodeMap := deepCopyTree(s.TreeRoots, s.TreeNodeMap, clonedIssueMap)
+	listItems := deepCopyListItems(s.ListItems)
+	listModelItems := make([]list.Item, len(listItems))
+	listIndexByID := make(map[string]int, len(listItems))
+	for i := range listItems {
+		listModelItems[i] = listItems[i]
+		listIndexByID[listItems[i].Issue.ID] = i
+	}
+	alerts, alertsCritical, alertsWarning, alertsInfo := computeAlerts(issuesClone, stats, analyzer)
 
 	return &DataSnapshot{
 		// Clone mutable Phase 1 data so the new snapshot stays immutable even if
 		// legacy UI state continues mutating its own slices or maps.
-		Issues:       issuesClone,
-		IssueMap:     clonedIssueMap,
-		pooledIssues: s.pooledIssues,
-		ViewIssues:   s.ViewIssues,
-		ListItems:    deepCopyListItems(s.ListItems),   // Deep copy - contains mutable SearchComponents/TriageReasons
-		TreeRoots:    treeRoots,                        // Deep copy - tree view mutates these
-		TreeNodeMap:  treeNodeMap,                      // Deep copy - tree view mutates these
-		BoardState:   deepCopyBoardState(s.BoardState), // Deep copy - contains mutable [4][]model.Issue arrays
+		Issues:         issuesClone,
+		IssueMap:       clonedIssueMap,
+		pooledIssues:   s.pooledIssues,
+		ViewIssues:     s.ViewIssues,
+		ListItems:      listItems, // Deep copy - contains mutable SearchComponents/TriageReasons
+		listModelItems: listModelItems,
+		listIndexByID:  listIndexByID,
+		semanticIDs:    s.semanticIDs,
+		semanticDocs:   s.semanticDocs,
+		alerts:         alerts,
+		alertsCritical: alertsCritical,
+		alertsWarning:  alertsWarning,
+		alertsInfo:     alertsInfo,
+		TreeRoots:      treeRoots,                        // Deep copy - tree view mutates these
+		TreeNodeMap:    treeNodeMap,                      // Deep copy - tree view mutates these
+		BoardState:     deepCopyBoardState(s.BoardState), // Deep copy - contains mutable [4][]model.Issue arrays
 
 		// Updated with Phase 2 data
 		Analyzer:      analyzer,
