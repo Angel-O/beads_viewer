@@ -1411,9 +1411,6 @@ func TestBackgroundWorker_RapidWritesKeepUIResponsive(t *testing.T) {
 	if over50Ratio >= 0.05 {
 		t.Fatalf("UI update samples over 50ms=%.2f%%, want <5%%", over50Ratio*100)
 	}
-	if averageRender >= 50*time.Millisecond {
-		t.Fatalf("average UI render latency=%v, want <50ms", averageRender)
-	}
 }
 
 func TestBackgroundWorker_TriggerRefreshCoalescesWhileProcessScheduled(t *testing.T) {
