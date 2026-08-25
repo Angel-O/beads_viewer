@@ -137,6 +137,26 @@ func TestBackgroundWorker_StartStop(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_StopCompletesWithinOneSecondWhenLoopStuck(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+
+	// Simulate an unresponsive processing loop. Stop must still honor its public
+	// sub-second shutdown contract rather than waiting indefinitely.
+	worker.mu.Lock()
+	worker.started = true
+	worker.done = make(chan struct{})
+	worker.mu.Unlock()
+
+	start := time.Now()
+	worker.Stop()
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("Stop took %v; want less than 1s", elapsed)
+	}
+}
+
 func TestBackgroundWorker_StopReturnsSnapshotPooledIssues(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")

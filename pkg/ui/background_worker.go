@@ -40,6 +40,8 @@ const (
 	WorkerStopped
 )
 
+const backgroundWorkerShutdownTimeout = 500 * time.Millisecond
+
 // WorkerLogLevel controls background worker log verbosity.
 type WorkerLogLevel int
 
@@ -637,9 +639,11 @@ func (w *BackgroundWorker) Stop() {
 
 	// Only wait for done if Start() was called
 	if wasStarted {
+		timer := time.NewTimer(backgroundWorkerShutdownTimeout)
+		defer timer.Stop()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-timer.C:
 			w.logEvent(LogLevelWarn, "shutdown_timeout", nil)
 		}
 	}
