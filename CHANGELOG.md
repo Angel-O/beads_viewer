@@ -10,38 +10,91 @@ All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are
 
 ## [v0.21.2] -- 2026-08-24 (Release)
 
-### Fixed
+Published release: [GitHub Release v0.21.2](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.21.2).
+This release publishes the profile-driven work staged under the tag-only `v0.21.1`, plus the
+final Nix packaging correction. The campaign completed all 50 requested iterations, but credits
+only improvements that survived command-level measurement, output-equivalence checks, focused
+causal tests, and the full Go verification suite.
 
-- Document the explicit Nix unfree-package opt-in required by the project's
-  OpenAI/Anthropic license rider, keeping the published flake instructions consistent with its
-  corrected nonfree metadata.
+### Performance — How Cold Robot Triage Became Faster
+
+- **Profile the real bottleneck first.** On the pinned 540-issue / 19-open Git fixture, history
+  correlation accounted for 62.26% of command CPU and snapshot extraction for 58.49%. Within that
+  path, profiles attributed roughly 100 ms to large allocations, 70 ms to clearing memory, and
+  70 ms to background garbage collection. This ruled out speculative graph and JSON tuning as the
+  first lever.
+- **Recycle a blob only after its last reader is gone.** Snapshot record sets contain slices that
+  point directly into their Git blob buffer, so reusing a live buffer would silently corrupt
+  history. The extractor already knew each blob's last use. Commit
+  [`22305d12`](https://github.com/Dicklesworthstone/beads_viewer/commit/22305d1208d2d17671f34beb480b68489fcb4a1c)
+  made that lifetime explicit: evict the record set first, then place its backing buffer in a
+  one-slot, largest-capacity spare owned by the streaming `git cat-file --batch` reader. The next
+  blob re-slices that storage when it fits instead of allocating and zeroing another large byte
+  array. Only one spare is retained, so reuse stays bounded rather than becoming a memory cache.
+- **Preserve the algorithm, remove allocation churn.** Git object order, the one-response-at-a-time
+  protocol, line identity, event ordering, and the existing two-to-three-snapshot live window from
+  [#182](https://github.com/Dicklesworthstone/beads_viewer/issues/182) did not change. Four-snapshot
+  lifetime tests prove that two live blobs never alias and that only an
+  explicitly recycled buffer is reused. A real-history differential reproduced all 1,776 legacy
+  events, and 20 independently normalized robot outputs were identical at SHA-256
+  `5992ff99901b1c5abf8ccf3b1a9e3d2490a6f0eda1742cad938e7b3ff9809918`.
+- **Measured result:** ten independent low-load, interleaved cold-cache pairs reduced mean user CPU
+  from **0.647 s to 0.573 s (11.44%)**, with 10/10 wins and exact sign `p=0.00098`. Five traced
+  pairs reduced mean GC cycles from **25.8 to 13.0 (49.61%)**. Wall time improved 2.26% but missed
+  significance (`p=0.0547`), while peak RSS increased 0.177%; therefore this release claims lower
+  CPU and GC work, **not** lower wall latency or memory usage.
+
+### Performance — Reuse Completed Graph Analysis
+
+- **What-if batches:** [`4b685960`](https://github.com/Dicklesworthstone/beads_viewer/commit/4b685960)
+  added a stats-consuming path so `--robot-insights` can pass the completed `GraphStats` it already
+  owns. Previously a planted 540-issue batch performed 540 redundant analysis-cache decodes through
+  `TopWhatIfDeltas -> computeWhatIfDelta -> Analyze`. The focused same-worker benchmark moved from
+  **4.4108 s / 1.648 GB / 8,530,586 allocations** to **3.203–16.564 ms / 1.444–4.931 MB /
+  8,504–26,341 allocations**. This is a scoped batch benchmark, not a whole-command latency claim.
+- **Cycle-break insights:** [`5b73a6b6`](https://github.com/Dicklesworthstone/beads_viewer/commit/5b73a6b6)
+  routes the handler's completed statistics into advanced-insight generation instead of launching
+  another analysis merely to recover the same cycle list. Sentinel-cycle tests prove the supplied
+  statistics control the result, while nil callers retain the ordinary analyze-on-demand fallback.
+- **Direct dependency decoding:** [`a83bf01c`](https://github.com/Dicklesworthstone/beads_viewer/commit/a83bf01c)
+  reduced a direct-loader benchmark by 13.00% and allocations by 33.63% while replaying malformed
+  and invalid-UTF-8 inputs through the standard library for exact behavior. It did not improve the
+  dominant cold-correlation command path, so it is not included in the 11.44% release claim.
+
+### Performance Evidence and Rejected Work
+
+- Fixed registry-backed CPU-profile shutdown in
+  [`854a8070`](https://github.com/Dicklesworthstone/beads_viewer/commit/854a8070) and
+  [`0a0838ec`](https://github.com/Dicklesworthstone/beads_viewer/commit/0a0838ec), ensuring profiling
+  completes before robot dispatch exits instead of leaving zero-byte or truncated profiles.
+- Ran 50 bounded optimization passes. PGO, `GOAMD64=v3`, fixed GC pacing, smaller transport
+  buffers, direct event fusion, prefetch windows, alternate record tables, and other promising
+  candidates were rejected when end-to-end confidence intervals crossed zero, system CPU or tails
+  regressed, memory worsened, or the active profile placed too little cost in the proposed seam.
+  These results and retry conditions remain in the pinned
+  [hotspot table](https://github.com/Dicklesworthstone/beads_viewer/blob/v0.21.2/tests/artifacts/perf/HOTSPOT_TABLE.md)
+  and [negative-evidence ledger](https://github.com/Dicklesworthstone/beads_viewer/blob/v0.21.2/tests/artifacts/perf/HYPOTHESIS_LEDGER.md).
+- Retained snapshot frontier/allocation refinements have differential coverage, but no additional
+  release-wide percentage is assigned to them. The only accepted cold-triage result from this
+  campaign is buffer reuse's 11.44% user-CPU and 49.61% GC-cycle reduction.
+
+### Fixed and Packaged
+
+- Document the explicit Nix unfree-package opt-in required by the project's OpenAI/Anthropic
+  license rider, keeping the published flake instructions consistent with its corrected nonfree
+  metadata.
+- Publish five platform archives with individual SHA-256 sidecars, aggregate checksums, an SPDX
+  SBOM, and the DSR build manifest. Publicly downloaded macOS and Windows binaries reported
+  `bv v0.21.2`; the Go module proxy resolved `v0.21.2` to the tagged source commit.
 
 ---
 
 ## [v0.21.1] -- 2026-08-24 (Tag only)
 
-Profile-driven performance patch for the cold robot-triage path, with expanded differential
-coverage and an explicit negative-evidence ledger for rejected optimizations.
-
-### Performance
-
-- **Correlation snapshot extraction:** reuse evicted Git blob buffers and tighten snapshot arena
-  allocation and slice bounds. An independent low-load replay on the documented 540-issue
-  workload reproduced **11.44% lower mean user CPU** and **49.61% fewer mean GC cycles**. Wall
-  time and peak RSS did not improve significantly and are not claimed as release wins.
-- **Graph insights:** reuse already-computed graph statistics for cycle-break and what-if batches
-  instead of decoding or recomputing the same analysis repeatedly.
-- **JSON loading:** accelerate valid dependency records with `goccy/go-json` while preserving the
-  standard library's malformed-input and invalid-UTF-8 behavior.
-
-### Fixed
-
-- Finalize CPU profiles before registry-backed robot commands exit, so `--cpu-profile` reliably
-  produces a complete profile rather than a zero-byte or truncated file.
-- Make analysis-cache benchmarks exercise fresh computation explicitly and extend mutation-sensitive
-  differential coverage for correlation history extraction.
-- Correct Nix, Homebrew, Scoop, and README license metadata so the OpenAI/Anthropic rider is no
-  longer misrepresented as plain MIT.
+Staging tag only; no GitHub Release or binary assets were published for `v0.21.1`. Its performance,
+profiling, differential-test, and license-metadata changes were published immediately afterward as
+the `v0.21.2` release and are documented above. The version bump was necessary because the
+`v0.21.1` tag was already immutable when the final Nix usage correction landed.
 
 ---
 
@@ -939,7 +992,7 @@ Initial release of Beads Viewer -- a keyboard-driven terminal interface for the 
 
 [Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.2...HEAD
 [v0.21.2]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.1...v0.21.2
-[v0.21.1]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.0...v0.21.1
+[v0.21.1]: https://github.com/Dicklesworthstone/beads_viewer/tree/v0.21.1
 [v0.21.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.20.0...v0.21.0
 [v0.17.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.16.4...v0.17.0
 [v0.16.2]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.16.1...v0.16.2
