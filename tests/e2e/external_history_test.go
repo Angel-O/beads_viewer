@@ -698,7 +698,7 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bulkInvocation := fmt.Sprintf("--db %s --readonly history --ids-file - --json", filepath.Join(fixture.storeRoot, ".beads"))
+	bulkInvocation := fmt.Sprintf("--db %s --readonly history --ids-stdin --json", filepath.Join(fixture.storeRoot, ".beads"))
 	if strings.Count(string(logData), bulkInvocation) != 1 || strings.Contains(string(logData), "history work-") {
 		t.Fatalf("lifecycle provider queried the wrong beads: %s", logData)
 	}

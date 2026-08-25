@@ -158,7 +158,7 @@ func TestLoadBeadsLifecycle76IDsStartsOneProcess(t *testing.T) {
 }
 
 func bulkHistoryArgs(store string) []string {
-	return []string{"--db", store, "--readonly", "history", "--ids-file", "-", "--json"}
+	return []string{"--db", store, "--readonly", "history", "--ids-stdin", "--json"}
 }
 
 func assertBeadsHistoryProcess(t *testing.T, fixture beadsHistoryProcessFixture, wantArgs []string, wantStdin string) {
@@ -227,7 +227,7 @@ func TestParseBulkBeadsHistoryRejectsInvalidResponses(t *testing.T) {
 
 func TestLoadBeadsLifecycleRequiresBulkCapabilityWithoutFallback(t *testing.T) {
 	for _, diagnostic := range []string{
-		"unknown flag: --ids-file",
+		"unknown flag: --ids-stdin",
 		"unknown command \"history\" for \"bd\"",
 		"the active storage backend does not support bulk history",
 	} {
@@ -268,7 +268,7 @@ func TestLoadBeadsLifecycleReportsMissingExecutableWithoutCapabilityGuidance(t *
 }
 
 func TestLoadBeadsLifecycleRejectsOversizedResponseAndReapsProcess(t *testing.T) {
-	fixture := installBeadsHistoryHelper(t, "oversized", "", "unknown flag: --ids-file")
+	fixture := installBeadsHistoryHelper(t, "oversized", "", "unknown flag: --ids-stdin")
 	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
 	if err == nil || !strings.Contains(err.Error(), "bulk History response too large") || !strings.Contains(err.Error(), strconv.Itoa(beadsBulkHistoryMaxResponseBytes)) || strings.Contains(err.Error(), "bulk History support is required") {
 		t.Fatalf("error = %v", err)

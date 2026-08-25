@@ -126,7 +126,7 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 	if commandContext == nil {
 		commandContext = context.Background()
 	}
-	cmd := exec.CommandContext(commandContext, "bd", "--db", store, "--readonly", "history", "--ids-file", "-", "--json")
+	cmd := exec.CommandContext(commandContext, "bd", "--db", store, "--readonly", "history", "--ids-stdin", "--json")
 	cmd.Stdin = strings.NewReader(strings.Join(ids, "\n") + "\n")
 	out, diagnostic, err := runBulkHistoryCommand(cmd)
 	if err != nil {
@@ -139,7 +139,7 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && isBulkHistoryCapabilityDiagnostic(diagnostic) {
-			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history --ids-file - --json': %w: %s", store, err, diagnostic)
+			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history --ids-stdin --json': %w: %s", store, err, diagnostic)
 		}
 		if diagnostic != "" {
 			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: %w: %s", store, err, diagnostic)
@@ -201,7 +201,7 @@ func runBulkHistoryCommand(cmd *exec.Cmd) ([]byte, string, error) {
 
 func isBulkHistoryCapabilityDiagnostic(diagnostic string) bool {
 	diagnostic = strings.ToLower(diagnostic)
-	return strings.Contains(diagnostic, "unknown flag: --ids-file") ||
+	return strings.Contains(diagnostic, "unknown flag: --ids-stdin") ||
 		strings.Contains(diagnostic, "unknown command \"history\"") ||
 		strings.Contains(diagnostic, "does not support bulk history") ||
 		strings.Contains(diagnostic, "bulk history is not supported")
