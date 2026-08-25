@@ -1269,7 +1269,14 @@ func TestGetBeadsDir_EmptyRepoPath_UsesCwd(t *testing.T) {
 	}
 	defer os.Chdir(oldCwd)
 
-	expected := filepath.Join(tmpDir, ".beads")
+	// os.Getwd canonicalizes macOS's /var symlink to /private/var, while
+	// t.TempDir may retain the non-canonical spelling. Compare against the
+	// actual cwd that GetBeadsDir observes rather than the pre-chdir string.
+	currentDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get temp cwd: %v", err)
+	}
+	expected := filepath.Join(currentDir, ".beads")
 
 	result, err := loader.GetBeadsDir("")
 	if err != nil {
