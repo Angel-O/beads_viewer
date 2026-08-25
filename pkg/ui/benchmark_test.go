@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
@@ -42,6 +46,29 @@ func BenchmarkSnapshotSwap(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkKeyPressLatency(b *testing.B) {
+	issues := testutil.QuickRandom(1000, 0.01)
+	m := NewModel(issues, nil, "")
+	durations := make([]time.Duration, 0, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+		if view := m.View(); view == "" {
+			b.Fatal("View returned empty output")
+		}
+		durations = append(durations, time.Since(start))
+	}
+	b.StopTimer()
+
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p99Index := (99*len(durations)+99)/100 - 1
+	b.ReportMetric(float64(durations[p99Index].Nanoseconds()), "p99-ns/op")
 }
 
 func BenchmarkSnapshotBuilderBuild(b *testing.B) {
