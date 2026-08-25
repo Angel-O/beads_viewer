@@ -278,7 +278,7 @@ func (c *CoCommitExtractor) primeBatch(shas []string) {
 // helpers shared with the snapshot extractor.
 func batchLogArgs(diffFlag string, shas []string) []string {
 	args := make([]string, 0, len(shas)+8)
-	args = append(args, "log", "--no-walk=unsorted", diffFlag, "--format="+gitLogHeaderFormat)
+	args = append(args, "log", "--no-walk=unsorted", "--find-renames", diffFlag, "--format="+gitLogHeaderFormat)
 	args = append(args, shas...)
 	args = append(args, excludePathspecArgs()...)
 	return args
