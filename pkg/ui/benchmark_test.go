@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/testutil"
+	json "github.com/goccy/go-json"
 )
 
 func copyIssues(in []model.Issue) []model.Issue {
@@ -67,4 +72,76 @@ func BenchmarkSnapshotBuilderBuild(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkBackgroundWorkerBuildSnapshot(b *testing.B) {
+	for _, size := range []int{100, 1000} {
+		b.Run(fmt.Sprintf("issues=%d", size), func(b *testing.B) {
+			issues := testutil.QuickRandom(size, 0.01)
+			beadsPath := writeBenchmarkIssues(b, issues)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				worker, err := NewBackgroundWorker(WorkerConfig{
+					BeadsPath: beadsPath,
+					IdleGC:    &IdleGCConfig{Enabled: false},
+				})
+				if err != nil {
+					b.Fatalf("new background worker: %v", err)
+				}
+				b.StartTimer()
+
+				snapshot := worker.buildSnapshot(true)
+
+				b.StopTimer()
+				if snapshot == nil {
+					b.Fatal("buildSnapshot returned nil")
+				}
+				if got := len(snapshot.Issues); got != size {
+					b.Fatalf("snapshot issue count=%d, want %d", got, size)
+				}
+				if snapshot.Analysis != nil {
+					snapshot.Analysis.WaitForPhase2()
+				}
+				worker.cancel()
+				loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+				b.StartTimer()
+			}
+		})
+	}
+}
+
+func writeBenchmarkIssues(b *testing.B, issues []model.Issue) string {
+	b.Helper()
+	path := filepath.Join(b.TempDir(), "issues.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		b.Fatalf("create benchmark issues: %v", err)
+	}
+	w := bufio.NewWriter(file)
+	for i := range issues {
+		line, err := json.Marshal(issues[i])
+		if err != nil {
+			_ = file.Close()
+			b.Fatalf("marshal benchmark issue: %v", err)
+		}
+		if _, err := w.Write(line); err != nil {
+			_ = file.Close()
+			b.Fatalf("write benchmark issue: %v", err)
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			_ = file.Close()
+			b.Fatalf("terminate benchmark issue: %v", err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		_ = file.Close()
+		b.Fatalf("flush benchmark issues: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		b.Fatalf("close benchmark issues: %v", err)
+	}
+	return path
 }
