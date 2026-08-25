@@ -276,9 +276,13 @@ func (c *CoCommitExtractor) primeBatch(shas []string) {
 // batchLogArgs builds `git log --no-walk=unsorted <diffFlag> --format=<header>
 // <SHAs> -- <exclude pathspecs>`, reusing the streaming-log header and exclude
 // helpers shared with the snapshot extractor.
-func batchLogArgs(diffFlag string, shas []string) []string {
+func batchLogArgs(diffFlag string, shas []string, findRenames bool) []string {
 	args := make([]string, 0, len(shas)+8)
-	args = append(args, "log", "--no-walk=unsorted", "--find-renames", diffFlag, "--format="+gitLogHeaderFormat)
+	args = append(args, "log", "--no-walk=unsorted")
+	if findRenames {
+		args = append(args, "--find-renames")
+	}
+	args = append(args, diffFlag, "--format="+gitLogHeaderFormat)
 	args = append(args, shas...)
 	args = append(args, excludePathspecArgs()...)
 	return args
@@ -291,12 +295,23 @@ func batchLogArgs(diffFlag string, shas []string) []string {
 // were never actually inspected. A successful run with a genuinely-empty diff for
 // some SHA still returns no error (the empty result is correct and cacheable).
 func (c *CoCommitExtractor) batchFilesChanged(shas []string) (map[string][]FileChange, error) {
+	return c.batchFilesChangedWithOptions(shas, false)
+}
+
+func (c *CoCommitExtractor) batchFilesChangedWithRenameDetection(shas []string) (map[string][]FileChange, error) {
+	return c.batchFilesChangedWithOptions(shas, true)
+}
+
+func (c *CoCommitExtractor) batchFilesChangedWithOptions(shas []string, findRenames bool) (map[string][]FileChange, error) {
 	files := make(map[string][]FileChange, len(shas))
 
-	cmd := gitCommand(c.ctx, withNoColorGit(batchLogArgs("--name-status", shas))...)
+	cmd := gitCommand(c.ctx, withNoColorGit(batchLogArgs("--name-status", shas, findRenames))...)
 	cmd.Dir = c.repoPath
-	out, err := cmd.Output()
+	out, err := runGitOutputBounded(cmd)
 	if err != nil {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return files, c.ctx.Err()
+		}
 		return files, err
 	}
 
@@ -310,12 +325,23 @@ func (c *CoCommitExtractor) batchFilesChanged(shas []string) (map[string][]FileC
 // line-stat maps using the same parsing as getLineStats. Like batchFilesChanged,
 // a git failure is surfaced as an error so the caller skips persisting empties.
 func (c *CoCommitExtractor) batchLineStats(shas []string) (map[string]map[string]lineStats, error) {
+	return c.batchLineStatsWithOptions(shas, false)
+}
+
+func (c *CoCommitExtractor) batchLineStatsWithRenameDetection(shas []string) (map[string]map[string]lineStats, error) {
+	return c.batchLineStatsWithOptions(shas, true)
+}
+
+func (c *CoCommitExtractor) batchLineStatsWithOptions(shas []string, findRenames bool) (map[string]map[string]lineStats, error) {
 	stats := make(map[string]map[string]lineStats, len(shas))
 
-	cmd := gitCommand(c.ctx, withNoColorGit(batchLogArgs("--numstat", shas))...)
+	cmd := gitCommand(c.ctx, withNoColorGit(batchLogArgs("--numstat", shas, findRenames))...)
 	cmd.Dir = c.repoPath
-	out, err := cmd.Output()
+	out, err := runGitOutputBounded(cmd)
 	if err != nil {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return stats, c.ctx.Err()
+		}
 		return stats, err
 	}
 
@@ -342,7 +368,7 @@ func (c *CoCommitExtractor) forEachCommitChunk(out []byte, fn func(sha string, p
 		if nl < 0 {
 			continue
 		}
-		// The header is %H<NUL>... ; the SHA is the leading 40 hex chars.
+		// The header is %H<NUL>... ; the SHA is the leading 40 or 64 hex chars.
 		header := chunk[:nl]
 		z := bytes.IndexByte(header, 0)
 		if z < 0 {

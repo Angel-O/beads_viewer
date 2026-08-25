@@ -42,7 +42,7 @@ func TestLoadExternalCommitsBatchMatchesSingleCommitSemantics(t *testing.T) {
 				t.Fatal(err)
 			}
 			runTestGit(t, gitPath, repoPath, "add", ".")
-			runTestGitWithDate(t, gitPath, repoPath, []string{"commit", "--quiet", "-m", fmt.Sprintf("commit %02d", i)}, i)
+			runTestGitWithDate(t, gitPath, repoPath, []string{"commit", "--quiet", "-m", fmt.Sprintf("commit %02d\n\nbody %02d", i, i)}, i)
 			allCommits[repository.key] = append(allCommits[repository.key], strings.TrimSpace(runTestGit(t, gitPath, repoPath, "rev-parse", "HEAD")))
 		}
 		oldPath := filepath.Join(repoPath, "src-00.go")
@@ -53,6 +53,10 @@ func TestLoadExternalCommitsBatchMatchesSingleCommitSemantics(t *testing.T) {
 		runTestGit(t, gitPath, repoPath, "add", "-A")
 		runTestGitWithDate(t, gitPath, repoPath, []string{"commit", "--quiet", "-m", "rename source"}, 20)
 		allCommits[repository.key] = append(allCommits[repository.key], strings.TrimSpace(runTestGit(t, gitPath, repoPath, "rev-parse", "HEAD")))
+		if repository.name == "repository-a" {
+			runTestGit(t, gitPath, repoPath, "tag", "-a", "alias-tag", "-m", "alias", "HEAD")
+			allCommits[repository.key] = append(allCommits[repository.key], strings.TrimSpace(runTestGit(t, gitPath, repoPath, "rev-parse", "refs/tags/alias-tag")))
+		}
 	}
 
 	logPath := filepath.Join(root, "git-invocations.log")
@@ -137,6 +141,78 @@ func TestBatchExternalMetadataRejectsMalformedOutput(t *testing.T) {
 	}
 }
 
+func TestExternalBatchReportsGitStderr(t *testing.T) {
+	correlator := &Correlator{ctx: context.Background()}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf 'diagnostic detail\\n' >&2\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, err := correlator.batchExternalCommitMetadata(t.TempDir(), []string{strings.Repeat("a", 40)})
+	if err == nil || !strings.Contains(err.Error(), "diagnostic detail") {
+		t.Fatalf("Git diagnostic error = %v", err)
+	}
+}
+
+func TestBatchExternalMetadataRejectsTrailingOutput(t *testing.T) {
+	correlator := &Correlator{ctx: context.Background()}
+	sha := strings.Repeat("a", 40)
+	bin := t.TempDir()
+	wrapper := fmt.Sprintf("#!/bin/sh\nprintf '\\\\000%%s\\\\0002026-01-01T00:00:00Z\\\\000Author\\\\000author@example.invalid\\\\000message\\\\000trailing' %q\n", sha)
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, err := correlator.batchExternalCommitMetadata(t.TempDir(), []string{sha})
+	if err == nil || !strings.Contains(err.Error(), "unexpected Git output") {
+		t.Fatalf("trailing metadata error = %v", err)
+	}
+}
+
+func TestExternalBatchSupportsSHA256Repositories(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoPath := filepath.Join(t.TempDir(), "repository")
+	if err := os.Mkdir(repoPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(gitPath, "init", "--quiet", "--object-format=sha256")
+	cmd.Dir = repoPath
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("Git does not support SHA-256 repositories: %v (%s)", err, output)
+	}
+	runTestGit(t, gitPath, repoPath, "config", "user.name", "Batch Test")
+	runTestGit(t, gitPath, repoPath, "config", "user.email", "batch@example.invalid")
+	if err := os.WriteFile(filepath.Join(repoPath, "file.go"), []byte("package p\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, gitPath, repoPath, "add", ".")
+	runTestGit(t, gitPath, repoPath, "commit", "--quiet", "-m", "sha256 commit")
+	sha := strings.TrimSpace(runTestGit(t, gitPath, repoPath, "rev-parse", "HEAD"))
+	if len(sha) != 64 {
+		t.Fatalf("SHA-256 repository HEAD length = %d, want 64", len(sha))
+	}
+
+	extractor := NewCoCommitExtractor(repoPath)
+	files, err := extractor.batchFilesChanged([]string{sha})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := files[sha]; !ok {
+		t.Fatalf("SHA-256 commit missing from changed-path batch: %s", sha)
+	}
+	correlator := &Correlator{ctx: context.Background()}
+	metadata, err := correlator.batchExternalCommitMetadata(repoPath, []string{sha})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata[sha].sha != sha {
+		t.Fatalf("SHA-256 metadata SHA = %q, want %q", metadata[sha].sha, sha)
+	}
+}
+
 func TestLoadExternalCommitsBatchHonorsCancellation(t *testing.T) {
 	repoPath := disposableGitRepository(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,6 +221,70 @@ func TestLoadExternalCommitsBatchHonorsCancellation(t *testing.T) {
 	_, err := correlator.loadExternalCommits("ctx:test", repoPath, []string{strings.TrimSpace(runTestGit(t, "git", repoPath, "rev-parse", "HEAD"))})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled batch error = %v, want context canceled", err)
+	}
+}
+
+func TestBatchDiffPassesCancellationFromLaterGitStage(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		call func(*CoCommitExtractor, []string) error
+	}{
+		{name: "files", call: func(extractor *CoCommitExtractor, shas []string) error {
+			_, err := extractor.batchFilesChanged(shas)
+			return err
+		}},
+		{name: "stats", call: func(extractor *CoCommitExtractor, shas []string) error {
+			_, err := extractor.batchLineStats(shas)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repoPath := disposableGitRepository(t)
+			sha := strings.TrimSpace(runTestGit(t, "git", repoPath, "rev-parse", "HEAD"))
+			bin := t.TempDir()
+			marker := filepath.Join(t.TempDir(), "started")
+			wrapper := fmt.Sprintf("#!/bin/sh\nprintf x > %q\nwhile :; do :; done\n", marker)
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			extractor := NewCoCommitExtractor(repoPath)
+			extractor.ctx = ctx
+			errCh := make(chan error, 1)
+			go func() { errCh <- test.call(extractor, []string{sha}) }()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				if _, err := os.Stat(marker); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("batch Git process did not start")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			cancel()
+			select {
+			case err := <-errCh:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("batch stage error = %v, want context canceled", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("batch Git process did not stop after cancellation")
+			}
+		})
+	}
+}
+
+func TestBatchLogArgsRenameDetectionIsExplicit(t *testing.T) {
+	withoutRenames := strings.Join(batchLogArgs("--name-status", []string{"abc"}, false), " ")
+	withRenames := strings.Join(batchLogArgs("--name-status", []string{"abc"}, true), " ")
+	if strings.Contains(withoutRenames, "--find-renames") {
+		t.Fatalf("local batch args unexpectedly enable rename detection: %s", withoutRenames)
+	}
+	if !strings.Contains(withRenames, "--find-renames") {
+		t.Fatalf("external batch args do not enable rename detection: %s", withRenames)
 	}
 }
 

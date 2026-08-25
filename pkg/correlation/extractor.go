@@ -348,7 +348,7 @@ func (e *Extractor) parseGitLogOutput(r io.Reader, filterBeadID string) ([]BeadE
 }
 
 // commitPattern matches the start of a commit in our custom log format
-var commitPattern = regexp.MustCompile(`(?m)^[0-9a-f]{40}\x00`)
+var commitPattern = regexp.MustCompile(`(?m)^[0-9a-f]{40}(?:[0-9a-f]{24})?\x00`)
 
 // parseCommitInfo extracts commit metadata from the header line
 func parseCommitInfo(line string) (commitInfo, error) {
