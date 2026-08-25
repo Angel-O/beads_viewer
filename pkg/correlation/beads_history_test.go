@@ -262,7 +262,7 @@ func TestLoadBeadsLifecycleReportsMissingExecutableWithoutCapabilityGuidance(t *
 }
 
 func TestLoadBeadsLifecycleRejectsOversizedResponseAndReapsProcess(t *testing.T) {
-	fixture := installBeadsHistoryHelper(t, "oversized", "", "oversized response")
+	fixture := installBeadsHistoryHelper(t, "oversized", "", "accepts 1 arg(s), received 2")
 	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
 	if err == nil || !strings.Contains(err.Error(), "bulk History response too large") || !strings.Contains(err.Error(), strconv.Itoa(beadsBulkHistoryMaxResponseBytes)) || strings.Contains(err.Error(), "bulk History support is required") {
 		t.Fatalf("error = %v", err)
