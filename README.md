@@ -212,8 +212,9 @@ bv --robot-triage --format toon
 export BV_OUTPUT_FORMAT=toon
 bv --robot-next
 
-Before claiming, verify the current bead state with `br show <id> --json` or
-`br ready --json`. `recommendations` can include graph-important blocked or
+Before claiming, verify the current bead state with the configured tracker:
+`br show <id> --json` / `br ready --json`, or `bd show <id> --json` /
+`bd ready --json`. `recommendations` can include graph-important blocked or
 assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields
 represent claimable work.
 
@@ -314,7 +315,7 @@ bv --agents-dry-run           # Show what would happen without executing
 
 The blurb uses HTML comment markers for version tracking:
 ```
-<!-- bv-agent-instructions-v3 -->
+<!-- bv-agent-instructions-v4 -->
 ... content ...
 <!-- end-bv-agent-instructions -->
 ```

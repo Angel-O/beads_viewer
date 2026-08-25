@@ -23,6 +23,9 @@ retained below.
   right-click menu can now copy either a node ID or its raw description. Both actions share a
   clipboard fallback for local/offline dashboards and report empty descriptions or copy failures
   instead of silently doing nothing.
+- **Generate correct agent guidance for both Beads trackers.** `bv --agents-add` now installs a
+  tracker-neutral v4 blurb with separate, current `bd` and `br` command families, rather than
+  telling Go Beads workspaces to mutate their tracker with `br`.
 
 ---
 
