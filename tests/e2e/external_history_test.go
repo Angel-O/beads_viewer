@@ -197,9 +197,18 @@ case " $* " in
     exit 0
     ;;
 esac
-cat <<JSON
-[{"CommitHash":"dolt-closed-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"$bead","status":"in_progress","issue_type":"task"}},{"CommitHash":"dolt-created-$bead","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"$bead","status":"open","issue_type":"task"}}]
-JSON
+printf '{"schema_version":1,"issues":['
+separator=
+for arg in "$@"; do
+  case "$arg" in
+    work-*)
+      bead="$arg"
+      printf '%s{"issue_id":"%s","snapshots":[{"CommitHash":"dolt-closed-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"%s","status":"in_progress","issue_type":"task"}},{"CommitHash":"dolt-created-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"%s","status":"open","issue_type":"task"}}]}' "$separator" "$bead" "$bead" "$bead" "$bead" "$bead"
+      separator=,
+      ;;
+  esac
+done
+printf ']}\n'
 `
 	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(bdScript), 0o755); err != nil {
 		t.Fatal(err)
@@ -686,7 +695,8 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(logData), "history work-3") || !strings.Contains(string(logData), "history work-1") || !strings.Contains(string(logData), "history work-2") {
+	bulkInvocation := fmt.Sprintf("--db %s --readonly history work-1 work-2 --json", filepath.Join(fixture.storeRoot, ".beads"))
+	if strings.Count(string(logData), bulkInvocation) != 1 {
 		t.Fatalf("lifecycle provider queried the wrong beads: %s", logData)
 	}
 	if err := os.WriteFile(fixture.bdLog, nil, 0o600); err != nil {
@@ -700,7 +710,8 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "history work-3") || strings.Contains(string(logData), "history work-1") || strings.Contains(string(logData), "history work-2") {
+	selectedInvocation := fmt.Sprintf("--db %s --readonly history work-3 --json", filepath.Join(fixture.storeRoot, ".beads"))
+	if strings.Count(string(logData), selectedInvocation) != 1 {
 		t.Fatalf("selected lifecycle-only bead query was not scoped: %s", logData)
 	}
 }

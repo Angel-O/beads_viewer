@@ -2,7 +2,6 @@ package correlation
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -58,10 +57,60 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		}
 	}
 
+	type externalBatchRequest struct {
+		context    string
+		repository string
+		commits    []string
+	}
 	type loadedCommit struct {
 		commit CorrelatedCommit
+		err    error
 	}
+	requestsByContext := make(map[string]*externalBatchRequest)
+	for _, correlation := range applicable {
+		if _, skip := unavailable[correlation.Context]; skip {
+			continue
+		}
+		request := requestsByContext[correlation.Context]
+		if request == nil {
+			request = &externalBatchRequest{context: correlation.Context, repository: hub.repositories[correlation.Context]}
+			requestsByContext[correlation.Context] = request
+		}
+		seen := false
+		for _, requested := range request.commits {
+			if strings.EqualFold(requested, correlation.Commit) {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			request.commits = append(request.commits, correlation.Commit)
+		}
+	}
+	for _, request := range requestsByContext {
+		sort.SliceStable(request.commits, func(i, j int) bool {
+			return strings.ToLower(request.commits[i]) < strings.ToLower(request.commits[j])
+		})
+	}
+
 	loaded := make(map[string]loadedCommit)
+	for _, contextKey := range repositoryKeys {
+		request := requestsByContext[contextKey]
+		if request == nil {
+			continue
+		}
+		batch, batchErr := c.loadExternalCommits(request.context, request.repository, request.commits)
+		for _, requested := range request.commits {
+			identity := repositoryCommitIdentity(request.context, strings.ToLower(requested))
+			if batchErr != nil {
+				loaded[identity] = loadedCommit{err: batchErr}
+				continue
+			}
+			result := batch[strings.ToLower(requested)]
+			loaded[identity] = loadedCommit{commit: result.commit, err: result.err}
+		}
+	}
+
 	commits := make([]CorrelatedCommit, 0, len(applicable))
 	for _, correlation := range applicable {
 		if _, skip := unavailable[correlation.Context]; skip {
@@ -70,12 +119,10 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		identity := repositoryCommitIdentity(correlation.Context, strings.ToLower(correlation.Commit))
 		entry, exists := loaded[identity]
 		if !exists {
-			commit, loadErr := c.loadExternalCommit(correlation.Context, hub.repositories[correlation.Context], correlation.Commit)
-			if loadErr != nil {
-				return nil, fmt.Errorf("correlation ledger %q record %d: %w", hub.ledger, correlation.record, loadErr)
-			}
-			entry = loadedCommit{commit: commit}
-			loaded[identity] = entry
+			return nil, fmt.Errorf("correlation ledger %q record %d: commit %q was not included in the repository batch", hub.ledger, correlation.record, correlation.Commit)
+		}
+		if entry.err != nil {
+			return nil, fmt.Errorf("correlation ledger %q record %d: %w", hub.ledger, correlation.record, entry.err)
 		}
 		commit := entry.commit
 		if opts.Since != nil && commit.Timestamp.Before(*opts.Since) {
@@ -182,70 +229,215 @@ func selectLifecycleBeads(beads []BeadInfo, correlations []ExternalHistoryCorrel
 	return selected
 }
 
-func (c *Correlator) loadExternalCommit(repository, repoPath, requestedSHA string) (CorrelatedCommit, error) {
-	resolve := gitCommand(c.ctx, "-C", repoPath, "rev-parse", "--verify", requestedSHA+"^{commit}")
-	resolvedOut, err := resolve.CombinedOutput()
-	if err != nil {
-		if c.ctx != nil && c.ctx.Err() != nil {
-			return CorrelatedCommit{}, c.ctx.Err()
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return CorrelatedCommit{}, err
-		}
-		return CorrelatedCommit{}, fmt.Errorf("commit %q is absent from repository %q at %q: %s", requestedSHA, repository, repoPath, strings.TrimSpace(string(resolvedOut)))
-	}
-	resolvedSHA := strings.TrimSpace(string(resolvedOut))
+type externalCommitMetadata struct {
+	sha        string
+	author     string
+	authorMail string
+	timestamp  time.Time
+	message    string
+}
 
-	metadata := gitCommand(c.ctx, "-C", repoPath, "show", "-s", "--format=%H%x00%an%x00%ae%x00%aI%x00%B", resolvedSHA)
-	metadataOut, err := metadata.Output()
-	if err != nil {
-		return CorrelatedCommit{}, fmt.Errorf("loading commit %q metadata from repository %q: %w", resolvedSHA, repository, err)
-	}
-	parts := bytes.SplitN(metadataOut, []byte{0}, 5)
-	if len(parts) != 5 {
-		return CorrelatedCommit{}, fmt.Errorf("loading commit %q metadata from repository %q: unexpected Git output", resolvedSHA, repository)
-	}
-	timestamp, err := time.Parse(time.RFC3339, strings.TrimSpace(string(parts[3])))
-	if err != nil {
-		return CorrelatedCommit{}, fmt.Errorf("parsing commit %q timestamp from repository %q: %w", resolvedSHA, repository, err)
-	}
+type externalCommitResult struct {
+	commit CorrelatedCommit
+	err    error
+}
 
+func (c *Correlator) loadExternalCommits(repository, repoPath string, requested []string) (map[string]externalCommitResult, error) {
+	commits := make(map[string]externalCommitResult, len(requested))
+	resolved, perCommitErr, err := c.resolveExternalCommits(repository, repoPath, requested)
+	if err != nil {
+		return commits, err
+	}
+	resolvedSHAs := make([]string, 0, len(resolved))
+	seenResolved := make(map[string]struct{}, len(resolved))
+	for _, requestedSHA := range requested {
+		if sha := resolved[strings.ToLower(requestedSHA)]; sha != "" {
+			sha = strings.ToLower(sha)
+			if _, seen := seenResolved[sha]; seen {
+				continue
+			}
+			seenResolved[sha] = struct{}{}
+			resolvedSHAs = append(resolvedSHAs, sha)
+		}
+	}
+	if len(resolvedSHAs) == 0 {
+		for _, requestedSHA := range requested {
+			key := strings.ToLower(requestedSHA)
+			commits[key] = externalCommitResult{err: perCommitErr[key]}
+		}
+		return commits, nil
+	}
+	metadata, err := c.batchExternalCommitMetadata(repoPath, resolvedSHAs)
+	if err != nil {
+		return commits, err
+	}
 	extractor := NewCoCommitExtractor(repoPath)
 	extractor.ctx = c.ctx
-	files, err := extractor.getFilesChanged(resolvedSHA)
-	if err != nil {
-		return CorrelatedCommit{}, fmt.Errorf("loading commit %q changed paths from repository %q: %w", resolvedSHA, repository, err)
+	filesBySHA, filesErr := extractor.batchFilesChangedWithRenameDetection(resolvedSHAs)
+	if filesErr != nil {
+		return commits, fmt.Errorf("loading changed paths from repository %q: %w", repository, filesErr)
 	}
-	stats, err := extractor.getLineStats(resolvedSHA)
-	if err != nil {
-		return CorrelatedCommit{}, fmt.Errorf("loading commit %q line statistics from repository %q: %w", resolvedSHA, repository, err)
+	statsBySHA, statsErr := extractor.batchLineStatsWithRenameDetection(resolvedSHAs)
+	if statsErr != nil {
+		return commits, fmt.Errorf("loading line statistics from repository %q: %w", repository, statsErr)
 	}
-	filtered := make([]FileChange, 0, len(files))
-	for _, file := range files {
-		if isExcludedPath(file.Path) {
+	for _, requestedSHA := range requested {
+		key := strings.ToLower(requestedSHA)
+		if resolveErr := perCommitErr[key]; resolveErr != nil {
+			commits[key] = externalCommitResult{err: resolveErr}
 			continue
 		}
-		file.Repository = repository
-		if stat, exists := stats[file.Path]; exists {
-			file.Insertions = stat.insertions
-			file.Deletions = stat.deletions
+		resolvedSHA := resolved[key]
+		if resolvedSHA == "" {
+			commits[key] = externalCommitResult{err: fmt.Errorf("commit %q was not resolved in repository %q", requestedSHA, repository)}
+			continue
 		}
-		filtered = append(filtered, file)
+		meta, ok := metadata[resolvedSHA]
+		if !ok {
+			return commits, fmt.Errorf("loading commit %q metadata from repository %q: unexpected Git output", resolvedSHA, repository)
+		}
+		files := filesBySHA[resolvedSHA]
+		stats := statsBySHA[resolvedSHA]
+		filtered := make([]FileChange, 0, len(files))
+		for _, file := range files {
+			if isExcludedPath(file.Path) {
+				continue
+			}
+			file.Repository = repository
+			if stat, exists := stats[file.Path]; exists {
+				file.Insertions = stat.insertions
+				file.Deletions = stat.deletions
+			}
+			filtered = append(filtered, file)
+		}
+		commits[key] = externalCommitResult{commit: CorrelatedCommit{
+			Repository:  repository,
+			SHA:         meta.sha,
+			ShortSHA:    shortSHA(meta.sha),
+			Message:     meta.message,
+			Author:      meta.author,
+			AuthorEmail: meta.authorMail,
+			Timestamp:   meta.timestamp,
+			Files:       filtered,
+			Method:      MethodExternalLedger,
+			Confidence:  1,
+			Reason:      "Explicit Beads Hub correlation",
+		}}
 	}
+	return commits, nil
+}
 
-	return CorrelatedCommit{
-		Repository:  repository,
-		SHA:         strings.TrimSpace(string(parts[0])),
-		ShortSHA:    shortSHA(resolvedSHA),
-		Message:     strings.TrimSpace(string(parts[4])),
-		Author:      string(parts[1]),
-		AuthorEmail: string(parts[2]),
-		Timestamp:   timestamp,
-		Files:       filtered,
-		Method:      MethodExternalLedger,
-		Confidence:  1,
-		Reason:      "Explicit Beads Hub correlation",
-	}, nil
+func (c *Correlator) resolveExternalCommits(repository, repoPath string, requested []string) (map[string]string, map[string]error, error) {
+	resolved := make(map[string]string, len(requested))
+	perCommitErr := make(map[string]error)
+	cmd := gitCommand(c.ctx, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)")
+	cmd.Dir = repoPath
+	queries := make([]string, len(requested))
+	for i, requestedSHA := range requested {
+		queries[i] = requestedSHA + "^{commit}"
+	}
+	cmd.Stdin = strings.NewReader(strings.Join(queries, "\n") + "\n")
+	out, err := runGitOutputBounded(cmd)
+	if err != nil {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return resolved, perCommitErr, c.ctx.Err()
+		}
+		return resolved, perCommitErr, fmt.Errorf("resolving commits in repository %q: %w", repoPath, err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != len(requested) {
+		return resolved, perCommitErr, fmt.Errorf("resolving commits in repository %q: unexpected Git output: got %d results for %d commits", repoPath, len(lines), len(requested))
+	}
+	for i, line := range lines {
+		parts := strings.Fields(line)
+		key := strings.ToLower(requested[i])
+		if len(parts) == 2 && parts[1] == "missing" {
+			perCommitErr[key] = fmt.Errorf("commit %q is absent from repository %q at %q: not found", requested[i], repository, repoPath)
+			continue
+		}
+		if len(parts) != 3 || parts[1] != "commit" {
+			perCommitErr[key] = fmt.Errorf("commit %q is not a commit in repository %q at %q: %s", requested[i], repository, repoPath, line)
+			continue
+		}
+		resolved[key] = strings.ToLower(parts[0])
+	}
+	return resolved, perCommitErr, nil
+}
+
+func (c *Correlator) batchExternalCommitMetadata(repoPath string, shas []string) (map[string]externalCommitMetadata, error) {
+	metadata := make(map[string]externalCommitMetadata, len(shas))
+	if len(shas) == 0 {
+		return metadata, nil
+	}
+	args := make([]string, 0, len(shas)+4)
+	args = append(args, "log", "--no-walk=unsorted", "--format=%x00%H%x00%aI%x00%an%x00%ae%x00%B%x00")
+	args = append(args, shas...)
+	cmd := gitCommand(c.ctx, withNoColorGit(args)...)
+	cmd.Dir = repoPath
+	out, err := runGitOutputBounded(cmd)
+	if err != nil {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return metadata, c.ctx.Err()
+		}
+		return metadata, fmt.Errorf("loading commit metadata from repository %q: %w", repoPath, err)
+	}
+	for offset := 0; offset < len(out); {
+		if out[offset] != 0 {
+			return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+		}
+		offset++
+		fields := make([][]byte, 5)
+		for i := range fields {
+			end := bytes.IndexByte(out[offset:], 0)
+			if end < 0 {
+				return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+			}
+			end += offset
+			fields[i] = out[offset:end]
+			offset = end + 1
+		}
+		if !validExternalSHA(fields[0]) {
+			return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+		}
+		sha := string(fields[0])
+		timestamp, parseErr := time.Parse(time.RFC3339, string(fields[1]))
+		if parseErr != nil {
+			return metadata, fmt.Errorf("parsing commit %q timestamp from repository %q: %w", sha, repoPath, parseErr)
+		}
+		if _, duplicate := metadata[sha]; duplicate {
+			return metadata, fmt.Errorf("loading commit metadata from repository %q: duplicate record for %q", repoPath, sha)
+		}
+		metadata[sha] = externalCommitMetadata{
+			sha:        sha,
+			author:     string(fields[2]),
+			authorMail: string(fields[3]),
+			timestamp:  timestamp,
+			message:    strings.TrimSpace(string(fields[4])),
+		}
+		if offset == len(out) {
+			break
+		}
+		if out[offset] != '\n' {
+			return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output", repoPath)
+		}
+		offset++
+	}
+	if len(metadata) != len(shas) {
+		return metadata, fmt.Errorf("loading commit metadata from repository %q: unexpected Git output: got %d records for %d commits", repoPath, len(metadata), len(shas))
+	}
+	return metadata, nil
+}
+
+func validExternalSHA(value []byte) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func repositoryCommitIdentity(repository, sha string) string {
