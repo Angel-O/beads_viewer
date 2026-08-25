@@ -640,6 +640,65 @@ func TestSnapshotBuilder_WithPrecomputedAnalysis(t *testing.T) {
 	}
 }
 
+func TestSnapshotSwap_PreservesListSelectionByID(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.currentFilter = "all"
+
+	for i, raw := range m.list.Items() {
+		item, ok := raw.(IssueItem)
+		if ok && item.Issue.ID == "a" {
+			m.list.Select(i)
+			break
+		}
+	}
+	if selected, ok := m.list.SelectedItem().(IssueItem); !ok || selected.Issue.ID != "a" {
+		t.Fatalf("expected initial selection a, got %#v", m.list.SelectedItem())
+	}
+
+	updated := []model.Issue{
+		{ID: "c", Title: "C", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeTask},
+		issues[0],
+		issues[1],
+	}
+	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(updated).Build()})
+	m = newM.(Model)
+
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok || selected.Issue.ID != "a" {
+		t.Fatalf("expected list selection a after swap, got %#v", m.list.SelectedItem())
+	}
+}
+
+func TestSnapshotSwap_SelectsRemainingIssueWhenSelectionRemoved(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.currentFilter = "all"
+
+	for i, raw := range m.list.Items() {
+		item, ok := raw.(IssueItem)
+		if ok && item.Issue.ID == "a" {
+			m.list.Select(i)
+			break
+		}
+	}
+
+	remaining := []model.Issue{issues[1]}
+	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(remaining).Build()})
+	m = newM.(Model)
+
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok || selected.Issue.ID != "b" {
+		t.Fatalf("expected remaining issue b after selected issue removal, got %#v", m.list.SelectedItem())
+	}
+}
+
 func TestSnapshotSwap_PreservesBoardSelectionByID(t *testing.T) {
 	now := time.Now()
 	issues := []model.Issue{
