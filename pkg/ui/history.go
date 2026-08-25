@@ -2768,25 +2768,78 @@ func (h *HistoryModel) renderDetailPanel(width, height int) string {
 	// Reserve space for footer (3 lines: separator + stats + hint)
 	footerHeight := 3
 	contentHeight := height - 2 - footerHeight - 3 // -3 for header lines
+	contentRows := max(contentHeight+3, 1)
+	detailLineHeight := func(line string) int {
+		return max(h.historyListLineHeight(line, width), 1)
+	}
+	detailRows := func(content []string) int {
+		rows := 0
+		for _, line := range content {
+			rows += detailLineHeight(line)
+		}
+		return rows
+	}
 
-	// Render commits
-	for i, commit := range hist.Commits {
+	// Keep the selected commit visible when the detail pane owns focus. The
+	// middle pane uses the same commit selection and scroll offset.
+	commitContentHeight := contentRows - detailRows(lines)
+	if commitContentHeight < 1 {
+		commitContentHeight = 1
+	}
+	commitHeight := func(index int) int {
+		blockHeight := 0
+		for _, line := range h.renderCommitDetail(hist.Commits[index], width-4, false) {
+			blockHeight += detailLineHeight(line)
+		}
+		if index < len(hist.Commits)-1 {
+			blockHeight += detailLineHeight("") // Spacer between commits.
+		}
+		return max(blockHeight, 1)
+	}
+	if h.focused == historyFocusDetail {
+		ensureHistorySelectionVisibleByHeight(
+			h.selectedCommit,
+			len(hist.Commits),
+			commitContentHeight,
+			&h.middleScrollOffset,
+			commitHeight,
+		)
+	}
+
+	// Render commits from the current detail viewport.
+	usedCommitHeight := 0
+	for i := h.middleScrollOffset; i < len(hist.Commits); i++ {
 		isSelected := i == h.selectedCommit && h.focused == historyFocusDetail
-		commitLines := h.renderCommitDetail(commit, width-4, isSelected)
+		commitLines := h.renderCommitDetail(hist.Commits[i], width-4, isSelected)
+		itemHeight := commitHeight(i)
+		if usedCommitHeight > 0 && usedCommitHeight+itemHeight > commitContentHeight {
+			break
+		}
 		lines = append(lines, commitLines...)
 		if i < len(hist.Commits)-1 {
 			lines = append(lines, "") // Spacer between commits
 		}
+		usedCommitHeight += itemHeight
 	}
 
 	// Pad content to push footer to bottom
-	for len(lines) < contentHeight+3 { // +3 for header lines
+	for detailRows(lines) < contentRows {
 		lines = append(lines, "")
 	}
 
 	// Truncate content if too long (before adding footer)
-	if len(lines) > contentHeight+3 {
-		lines = lines[:contentHeight+3]
+	if detailRows(lines) > contentRows {
+		bounded := make([]string, 0, len(lines))
+		usedRows := 0
+		for _, line := range lines {
+			lineHeight := detailLineHeight(line)
+			if usedRows+lineHeight > contentRows {
+				break
+			}
+			bounded = append(bounded, line)
+			usedRows += lineHeight
+		}
+		lines = bounded
 	}
 
 	// === STATS FOOTER (bv-9fk1) ===

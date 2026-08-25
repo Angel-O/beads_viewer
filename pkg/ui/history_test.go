@@ -279,6 +279,85 @@ func TestHistoryModel_GitListScrollsPastInitialViewport(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_DetailColumnScrollsPastInitialViewport(t *testing.T) {
+	now := time.Now()
+	longRepository := "github.com/acme/platform/" + strings.Repeat("service-", 8)
+	commits := make([]correlation.CorrelatedCommit, 10)
+	for i := range commits {
+		sha := fmt.Sprintf("%040d", i+1)
+		commits[i] = correlation.CorrelatedCommit{
+			SHA:        sha,
+			ShortSHA:   sha[:7],
+			Repository: longRepository,
+			Message:    fmt.Sprintf("commit %02d", i),
+			Author:     "Scroll Tester",
+			Timestamp:  now.Add(-time.Duration(i) * time.Minute),
+		}
+	}
+	report := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{
+		"bv-detail-scroll": {
+			BeadID:  "bv-detail-scroll",
+			Title:   "Detail scroll test",
+			Status:  "open",
+			Commits: commits,
+		},
+	}}
+
+	h := NewHistoryModel(report, testTheme())
+	h.SetSize(120, 30)
+	h.ToggleFocus()
+	if h.focused != historyFocusMiddle {
+		t.Fatalf("first focus toggle = %v, want middle", h.focused)
+	}
+	h.ToggleFocus()
+	if h.focused != historyFocusDetail {
+		t.Fatalf("second focus toggle = %v, want detail", h.focused)
+	}
+
+	listWidth := h.historyListPanelWidth()
+	detailWidth := h.width - listWidth - int(float64(h.width)*0.35)
+	if rows := h.historyListLineHeight("    Repository: "+longRepository, detailWidth); rows < 2 {
+		t.Fatalf("test setup repository line height = %d, want wrapping", rows)
+	}
+	itemHeight := func(index int) int {
+		rows := 0
+		for _, line := range h.renderCommitDetail(commits[index], detailWidth-4, false) {
+			rows += max(h.historyListLineHeight(line, detailWidth), 1)
+		}
+		if index < len(commits)-1 {
+			rows++
+		}
+		return rows
+	}
+	for range 5 {
+		h.MoveDown()
+		panel := h.renderDetailPanel(detailWidth, h.historyPanelHeight())
+		if !strings.Contains(panel, "▸") {
+			t.Fatalf("selected commit %d is not visible in the rightmost detail panel", h.selectedCommit)
+		}
+		if !strings.Contains(panel, "10 commits") || !strings.Contains(panel, "J/K:nav") {
+			t.Fatal("detail stats footer was clipped by wrapped commit content")
+		}
+	}
+
+	if h.selectedCommit != 5 {
+		t.Fatalf("selectedCommit = %d, want 5", h.selectedCommit)
+	}
+	visibleCommitRows := h.historyPanelHeight() - 5 - 3 // Footer and detail header rows.
+	expectedOffset := 0
+	usedRows := 0
+	for index := 0; index <= h.selectedCommit; index++ {
+		usedRows += itemHeight(index)
+	}
+	for expectedOffset < h.selectedCommit && usedRows > visibleCommitRows {
+		usedRows -= itemHeight(expectedOffset)
+		expectedOffset++
+	}
+	if h.middleScrollOffset != expectedOffset {
+		t.Fatalf("detail viewport offset = %d, want rendered-height offset %d", h.middleScrollOffset, expectedOffset)
+	}
+}
+
 func TestHistoryModel_WideLayoutScrollsWrappedBeadRows(t *testing.T) {
 	h := NewHistoryModel(createOverflowHistoryReport(30), testTheme())
 	h.SetSize(200, 40)
