@@ -1454,6 +1454,9 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 
 	m := NewModel(issues, nil, "")
 	m.snapshot = snapshot
+	if view := m.View(); view == "" {
+		t.Fatal("UI did not render while Phase 2 snapshot was pending")
+	}
 	newM, _ := m.Update(msg)
 	m = newM.(Model)
 	if !m.snapshot.phase2Ready {
