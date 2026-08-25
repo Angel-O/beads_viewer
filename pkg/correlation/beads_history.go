@@ -126,8 +126,10 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 	if commandContext == nil {
 		commandContext = context.Background()
 	}
-	cmd := exec.CommandContext(commandContext, "bd", "--db", store, "--readonly", "history", "--ids-stdin", "--json")
-	cmd.Stdin = strings.NewReader(strings.Join(ids, "\n") + "\n")
+	args := []string{"--db", store, "--readonly", "history"}
+	args = append(args, ids...)
+	args = append(args, "--json")
+	cmd := exec.CommandContext(commandContext, "bd", args...)
 	out, diagnostic, err := runBulkHistoryCommand(cmd)
 	if err != nil {
 		if commandContext.Err() != nil {
@@ -139,7 +141,7 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && isBulkHistoryCapabilityDiagnostic(diagnostic) {
-			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history --ids-stdin --json': %w: %s", store, err, diagnostic)
+			return nil, bulkHistoryCapabilityError(store, err, diagnostic)
 		}
 		if diagnostic != "" {
 			return nil, fmt.Errorf("loading bulk Beads lifecycle from %q: %w: %s", store, err, diagnostic)
@@ -149,6 +151,9 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 
 	groups, err := parseBulkBeadsHistory(out, ids, store)
 	if err != nil {
+		if isBulkHistoryResponseIncompatibility(out, ids) {
+			return nil, bulkHistoryCapabilityError(store, err, "incompatible single-ID History response")
+		}
 		return nil, err
 	}
 
@@ -201,10 +206,27 @@ func runBulkHistoryCommand(cmd *exec.Cmd) ([]byte, string, error) {
 
 func isBulkHistoryCapabilityDiagnostic(diagnostic string) bool {
 	diagnostic = strings.ToLower(diagnostic)
-	return strings.Contains(diagnostic, "unknown flag: --ids-stdin") ||
+	return strings.Contains(diagnostic, "accepts 1 arg(s), received ") ||
+		strings.Contains(diagnostic, "accepts 1 argument, received ") ||
 		strings.Contains(diagnostic, "unknown command \"history\"") ||
 		strings.Contains(diagnostic, "does not support bulk history") ||
 		strings.Contains(diagnostic, "bulk history is not supported")
+}
+
+func bulkHistoryCapabilityError(store string, cause error, diagnostic string) error {
+	message := fmt.Sprintf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history <bead-id>... --json'", store)
+	if diagnostic == "" {
+		return fmt.Errorf("%s: %w", message, cause)
+	}
+	return fmt.Errorf("%s: %w: %s", message, cause, diagnostic)
+}
+
+func isBulkHistoryResponseIncompatibility(data []byte, requestedIDs []string) bool {
+	if len(requestedIDs) != 1 {
+		return false
+	}
+	var snapshots []beadsHistorySnapshot
+	return json.Unmarshal(bytes.TrimSpace(data), &snapshots) == nil
 }
 
 func validateBulkHistoryRequestIDs(ids []string) error {

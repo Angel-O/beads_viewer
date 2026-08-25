@@ -296,17 +296,17 @@ tuple is a successful idempotent no-op with deterministic JSON:
 External history invokes the installed Beads CLI as:
 
 ```text
-bd --db <store> --readonly history --ids-stdin --json
+bd --db <store> --readonly history <bead-id>... --json
 ```
 
-Viewer sends the selected exact IDs as newline-delimited stdin and requires the
-Beads bulk History capability. The response is the schema-versioned grouped
-envelope with one snapshot group per requested ID. Older CLIs and storage
-backends without bulk History support fail with an upgrade/capability error;
-Viewer never falls back to one subprocess per ID.
+Viewer appends the selected exact IDs as separate sorted positional arguments
+and requires the Beads bulk History capability. The response is the
+schema-versioned grouped envelope with one snapshot group per requested ID.
+Older CLIs and storage backends without bulk History support fail with an
+upgrade/capability error; Viewer never falls back to one subprocess per ID.
 
 This capability is currently unreleased. External History requires a Beads
-build containing bulk `history --ids-stdin` support until an upstream release
+build containing bulk positional `history` support until an upstream release
 includes it.
 
 Each group contains Dolt snapshots with `CommitHash`, `Committer`, `CommitDate`,
