@@ -693,6 +693,7 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 		issues, poolRefs = processIssueLine(line, lineNum, opts, usePool, issues, poolRefs, opts.Stats, warn)
 	}
 
+	internRepeatedIssueStrings(issues, poolRefs)
 	return issues, poolRefs, nil
 }
 
@@ -1054,6 +1055,7 @@ func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapaci
 		opts.Stats.Skipped += stats.Skipped
 	}
 
+	internRepeatedIssueStrings(issues, poolRefs)
 	return issues, poolRefs, nil
 }
 
@@ -1195,6 +1197,97 @@ func normalizeLoadedIssue(issue *model.Issue) {
 		}
 		if dep.IssueID == "" {
 			dep.IssueID = issue.ID
+		}
+	}
+}
+
+const issueStringInternerSlots = 128
+
+// issueStringInterner is a bounded, stack-friendly table for the low-cardinality
+// strings repeated across issues. A fixed table avoids both a process-global
+// retention leak and a fresh map allocation on every reload.
+type issueStringInterner struct {
+	slots [issueStringInternerSlots]string
+}
+
+func (in *issueStringInterner) intern(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	const fnvOffset64 = uint64(14695981039346656037)
+	const fnvPrime64 = uint64(1099511628211)
+	hash := fnvOffset64
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= fnvPrime64
+	}
+
+	start := int(hash & (issueStringInternerSlots - 1))
+	for probe := 0; probe < issueStringInternerSlots; probe++ {
+		index := (start + probe) & (issueStringInternerSlots - 1)
+		canonical := in.slots[index]
+		if canonical == value {
+			return canonical
+		}
+		if canonical == "" {
+			in.slots[index] = value
+			return value
+		}
+	}
+
+	// High-cardinality input filled the bounded table. Preserve correctness and
+	// skip interning this value rather than growing an unbounded structure.
+	return value
+}
+
+// internRepeatedIssueStrings shares immutable string storage within one parsed
+// snapshot. The table is deliberately parse-scoped: labels, assignees, repo
+// names, enums, and dependency targets repeat heavily, while a process-global
+// interner would retain arbitrary user input forever.
+func internRepeatedIssueStrings(issues []model.Issue, poolRefs []*model.Issue) {
+	if len(issues) == 0 {
+		return
+	}
+
+	var interner issueStringInterner
+	for i := range issues {
+		issue := &issues[i]
+		issue.Status = model.Status(interner.intern(string(issue.Status)))
+		issue.IssueType = model.IssueType(interner.intern(string(issue.IssueType)))
+		issue.Assignee = interner.intern(issue.Assignee)
+		issue.SourceRepo = interner.intern(issue.SourceRepo)
+		for labelIndex := range issue.Labels {
+			issue.Labels[labelIndex] = interner.intern(issue.Labels[labelIndex])
+		}
+
+		if i < len(poolRefs) && poolRefs[i] != nil {
+			ref := poolRefs[i]
+			ref.Status = issue.Status
+			ref.IssueType = issue.IssueType
+			ref.Assignee = issue.Assignee
+			ref.SourceRepo = issue.SourceRepo
+			for labelIndex := range ref.Labels {
+				ref.Labels[labelIndex] = issue.Labels[labelIndex]
+			}
+		}
+	}
+
+	for i := range issues {
+		issue := &issues[i]
+		for _, dep := range issue.Dependencies {
+			if dep == nil {
+				continue
+			}
+			dep.Type = model.DependencyType(interner.intern(string(dep.Type)))
+			dep.CreatedBy = interner.intern(dep.CreatedBy)
+		}
+		for _, comment := range issue.Comments {
+			if comment == nil {
+				continue
+			}
+			comment.IssueID = interner.intern(comment.IssueID)
+			comment.Author = interner.intern(comment.Author)
 		}
 	}
 }

@@ -2020,6 +2020,61 @@ func TestModelUpdate_RecordsUserInputForIdleGC(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_GCPausesUnderRapidSnapshotLoad(t *testing.T) {
+	beadsPath := filepath.Join(t.TempDir(), "issues.jsonl")
+	if err := writeStressIssuesFile(beadsPath, 1000, 0, "gc-pause"); err != nil {
+		t.Fatalf("write stress issues: %v", err)
+	}
+
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath: beadsPath,
+		IdleGC:    &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	for i := 0; i < 10; i++ {
+		snapshot := worker.buildSnapshot(true)
+		if snapshot == nil {
+			t.Fatalf("buildSnapshot returned nil at iteration %d", i)
+		}
+		if snapshot.Analysis != nil {
+			snapshot.Analysis.WaitForPhase2()
+		}
+		loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+		snapshot = nil
+		runtime.GC()
+	}
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if after.NumGC <= before.NumGC {
+		t.Fatalf("expected GC cycles under rapid snapshot load: before=%d after=%d", before.NumGC, after.NumGC)
+	}
+
+	firstCycle := before.NumGC + 1
+	if after.NumGC-firstCycle+1 > uint32(len(after.PauseNs)) {
+		firstCycle = after.NumGC - uint32(len(after.PauseNs)) + 1
+	}
+	var maxPause time.Duration
+	for cycle := firstCycle; cycle <= after.NumGC; cycle++ {
+		pause := time.Duration(after.PauseNs[(cycle-1)%uint32(len(after.PauseNs))])
+		if pause > maxPause {
+			maxPause = pause
+		}
+	}
+	t.Logf("rapid snapshot GC cycles=%d max_pause=%v", after.NumGC-before.NumGC, maxPause)
+	if maxPause >= 10*time.Millisecond {
+		t.Fatalf("maximum GC pause=%v, want <10ms", maxPause)
+	}
+}
+
 func TestBackgroundWorker_MaybeIdleGC_DoesNotRunWhenProcessing(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath: "",
