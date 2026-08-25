@@ -254,6 +254,42 @@ func TestBackgroundWorker_TriggerRefresh(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_RefreshRequestMsg(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
+	content := `{"id":"test-1","title":"Test","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	if err := os.WriteFile(beadsPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: beadsPath})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
+	waitForSnapshotVersion(t, worker, 1)
+	first := worker.GetSnapshot()
+
+	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
+	waitForSnapshotVersion(t, worker, 2)
+	if second := worker.GetSnapshot(); second == first {
+		t.Fatal("forced RefreshRequestMsg was deduplicated")
+	}
+
+	r := &recipe.Recipe{Name: "message-flow"}
+	worker.HandleRefreshRequest(RefreshRequestMsg{Recipe: r})
+	waitForSnapshotVersion(t, worker, 3)
+
+	worker.mu.RLock()
+	gotRecipe := worker.currentRecipe
+	worker.mu.RUnlock()
+	if gotRecipe != r {
+		t.Fatal("RefreshRequestMsg recipe was not applied by worker")
+	}
+}
+
 func TestBackgroundWorker_WatcherChanged(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")

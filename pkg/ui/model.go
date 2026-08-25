@@ -241,7 +241,7 @@ func StartBackgroundWorkerCmd(w *BackgroundWorker) tea.Cmd {
 		if err := w.Start(); err != nil {
 			return SnapshotErrorMsg{Err: fmt.Errorf("starting background worker: %w", err), Recoverable: false}
 		}
-		w.TriggerRefresh()
+		w.HandleRefreshRequest(RefreshRequestMsg{})
 		return nil
 	}
 }
@@ -2830,7 +2830,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = false
 
 			if m.backgroundWorker != nil {
-				m.backgroundWorker.ForceRefresh()
+				m.backgroundWorker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
 				cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
 				return m, tea.Batch(cmds...)
 			}
