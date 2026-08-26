@@ -2099,6 +2099,7 @@ func main() {
 					"blurb_structure_error": detection.BlurbStructureError,
 					"has_malformed_blurb":   detection.HasMalformedBlurb(),
 					"has_duplicate_blurbs":  detection.HasDuplicateBlurbs(),
+					"has_future_blurb":      detection.HasFutureBlurb(),
 					"current_version":       agents.BlurbVersion,
 					"needs_blurb":           detection.Found() && detection.NeedsBlurb(),
 					"needs_upgrade":         detection.NeedsUpgrade(),
@@ -2119,6 +2120,12 @@ func main() {
 					fmt.Printf("Found %s at %s with malformed bv blurb markers: %s\n",
 						detection.FileType, detection.FilePath, detection.BlurbStructureError)
 					fmt.Println("Repair the marker structure before adding, updating, or removing the blurb.")
+					os.Exit(1)
+				}
+				if detection.HasFutureBlurb() {
+					fmt.Printf("Found %s at %s with bv blurb v%d, newer than this bv binary (v%d)\n",
+						detection.FileType, detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
+					fmt.Println("Use a matching or newer bv binary; this version will not modify the blurb.")
 					os.Exit(1)
 				}
 				if detection.HasDuplicateBlurbs() {
@@ -2152,6 +2159,11 @@ func main() {
 			if *agentsAdd {
 				if detection.Found() && detection.HasMalformedBlurb() {
 					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
+				if detection.Found() && detection.HasFutureBlurb() {
+					fmt.Fprintf(os.Stderr, "%s contains bv blurb v%d, newer than this bv binary (v%d); refusing to modify it.\n",
+						detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
 					os.Exit(1)
 				}
 				if detection.Found() && detection.NeedsUpgrade() {
@@ -2227,6 +2239,11 @@ func main() {
 				}
 				if detection.HasMalformedBlurb() {
 					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
+				if detection.HasFutureBlurb() {
+					fmt.Fprintf(os.Stderr, "%s contains bv blurb v%d, newer than this bv binary (v%d); refusing to downgrade it.\n",
+						detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
 					os.Exit(1)
 				}
 				if !detection.HasBlurb && !detection.HasLegacyBlurb {

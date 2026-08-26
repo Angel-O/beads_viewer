@@ -1,6 +1,8 @@
 package agents
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +148,27 @@ func TestUpdateBlurbInFileRejectsMalformedMarkersWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestUpdateBlurbInFileRejectsFutureVersionWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n\n<!-- bv-agent-instructions-v9 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UpdateBlurbInFile(filePath)
+	if err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("UpdateBlurbInFile() error=%v, want future-version refusal", err)
+	}
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != original {
+		t.Fatalf("future-version update changed file:\n got: %q\nwant: %q", got, original)
+	}
+}
+
 func TestRemoveBlurbFromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
@@ -282,6 +305,34 @@ func TestCreateAgentFile(t *testing.T) {
 	}
 }
 
+func TestCreateAgentFileDoesNotReplaceExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := []byte("# Existing instructions\n\nDo not overwrite me.\n")
+	if err := os.WriteFile(filePath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := CreateAgentFile(filePath)
+	if err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("CreateAgentFile() error=%v, want os.ErrExist", err)
+	}
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("CreateAgentFile() replaced existing content:\n got: %q\nwant: %q", got, original)
+	}
+	info, statErr := os.Stat(filePath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("existing mode=%o after failed create, want 600", info.Mode().Perm())
+	}
+}
+
 func TestVerifyBlurbPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -345,6 +396,32 @@ func TestVerifyBlurbPresent(t *testing.T) {
 		}
 		if present {
 			t.Fatal("duplicate blocks must not verify as one healthy blurb")
+		}
+	})
+
+	t.Run("older blurb does not verify as current", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "old-blurb.md")
+		content := "<!-- bv-agent-instructions-v3 -->\nold\n<!-- end-bv-agent-instructions -->"
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		present, err := VerifyBlurbPresent(filePath)
+		if err == nil || present {
+			t.Fatalf("VerifyBlurbPresent() present=%v err=%v, want false and version error", present, err)
+		}
+	})
+
+	t.Run("fenced marker example does not verify", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "fenced-example.md")
+		content := "```markdown\n<!-- bv-agent-instructions-v4 -->\nexample\n<!-- end-bv-agent-instructions -->\n```"
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		present, err := VerifyBlurbPresent(filePath)
+		if err != nil || present {
+			t.Fatalf("VerifyBlurbPresent() present=%v err=%v, want false, nil", present, err)
 		}
 	})
 
@@ -430,55 +507,6 @@ func TestAtomicWriteNewFile(t *testing.T) {
 	}
 	if string(content) != "brand new" {
 		t.Errorf("Unexpected content: %s", content)
-	}
-}
-
-func TestReplaceFileWithBackupSuccess(t *testing.T) {
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "AGENTS.md")
-	tmpPath := filepath.Join(tmpDir, "replacement.tmp")
-	if err := os.WriteFile(filePath, []byte("original"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tmpPath, []byte("replacement"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := replaceFileWithBackup(tmpPath, filePath); err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "replacement" {
-		t.Fatalf("content=%q, want replacement", content)
-	}
-	if _, err := os.Stat(tmpPath + ".backup"); !os.IsNotExist(err) {
-		t.Fatalf("backup should be removed after success, stat error=%v", err)
-	}
-}
-
-func TestReplaceFileWithBackupRestoresOriginalOnInstallFailure(t *testing.T) {
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "AGENTS.md")
-	missingTmpPath := filepath.Join(tmpDir, "missing-replacement.tmp")
-	if err := os.WriteFile(filePath, []byte("original"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := replaceFileWithBackup(missingTmpPath, filePath); err == nil {
-		t.Fatal("expected replacement failure")
-	}
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "original" {
-		t.Fatalf("rollback content=%q, want original", content)
-	}
-	if _, err := os.Stat(missingTmpPath + ".backup"); !os.IsNotExist(err) {
-		t.Fatalf("backup should be consumed by successful rollback, stat error=%v", err)
 	}
 }
 

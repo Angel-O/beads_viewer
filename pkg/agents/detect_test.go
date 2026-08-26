@@ -146,6 +146,7 @@ func TestAgentFileDetectionMethods(t *testing.T) {
 			{"no blurb", AgentFileDetection{HasBlurb: false}, false},
 			{"current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion, BlurbCount: 1}, false},
 			{"old version", AgentFileDetection{HasBlurb: true, BlurbVersion: 0}, true},
+			{"future version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion + 1, BlurbCount: 1}, true},
 			{"malformed current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion, BlurbStructureError: "bad markers"}, true},
 			{"duplicate current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion, BlurbCount: 2}, true},
 		}
@@ -156,6 +157,15 @@ func TestAgentFileDetectionMethods(t *testing.T) {
 					t.Errorf("NeedsUpgrade() = %v, want %v", tt.det.NeedsUpgrade(), tt.expected)
 				}
 			})
+		}
+	})
+
+	t.Run("HasFutureBlurb", func(t *testing.T) {
+		if (AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion}).HasFutureBlurb() {
+			t.Fatal("current blurb reported as future")
+		}
+		if !(AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion + 1}).HasFutureBlurb() {
+			t.Fatal("newer blurb was not reported as future")
 		}
 	})
 }
@@ -218,6 +228,23 @@ func TestDetectAgentFileReportsMalformedAndDuplicateBlurbs(t *testing.T) {
 				t.Fatal("malformed marker structure must not be treated as a safe append target")
 			}
 		})
+	}
+}
+
+func TestDetectAgentFileReportsHighestAndFutureBlurbVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	content := "<!-- bv-agent-instructions-v4 -->\ncurrent\n<!-- end-bv-agent-instructions -->\n" +
+		"<!-- bv-agent-instructions-v7 -->\nfuture\n<!-- end-bv-agent-instructions -->\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	detection := DetectAgentFile(tmpDir)
+	if detection.BlurbVersion != 7 {
+		t.Fatalf("BlurbVersion=%d, want highest version 7", detection.BlurbVersion)
+	}
+	if !detection.HasFutureBlurb() || !detection.NeedsUpgrade() {
+		t.Fatalf("future detection=%+v, want future and needs-attention state", detection)
 	}
 }
 

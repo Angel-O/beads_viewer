@@ -20,7 +20,7 @@ type AgentFileDetection struct {
 	// HasLegacyBlurb indicates the file has the old-format blurb (pre-v1, no HTML markers)
 	HasLegacyBlurb bool
 
-	// BlurbVersion is the version of the blurb found (0 if none or legacy)
+	// BlurbVersion is the highest version found (0 if none or legacy).
 	BlurbVersion int
 
 	// BlurbCount is the number of complete, structurally valid versioned blocks
@@ -56,6 +56,12 @@ func (d AgentFileDetection) HasDuplicateBlurbs() bool {
 	return d.BlurbCount > 1
 }
 
+// HasFutureBlurb reports that the file contains instructions written by a
+// newer bv binary. Older binaries must never normalize or downgrade them.
+func (d AgentFileDetection) HasFutureBlurb() bool {
+	return d.HasBlurb && d.BlurbVersion > BlurbVersion
+}
+
 // NeedsUpgrade returns true when the blurb needs repair or normalization:
 // malformed markers, duplicate versioned blocks, legacy content, or an older
 // versioned blurb all require attention.
@@ -63,7 +69,7 @@ func (d AgentFileDetection) NeedsUpgrade() bool {
 	if d.HasMalformedBlurb() || d.HasDuplicateBlurbs() || d.HasLegacyBlurb {
 		return true
 	}
-	return d.HasBlurb && d.BlurbVersion < BlurbVersion
+	return d.HasBlurb && d.BlurbVersion != BlurbVersion
 }
 
 // DetectAgentFile looks for AGENTS.md or CLAUDE.md in the given directory.

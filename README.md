@@ -308,7 +308,8 @@ bv --agents-check             # Check if blurb is present in agent file
 bv --agents-add               # Add blurb to agent file (creates file if needed)
 bv --agents-remove            # Remove blurb from agent file
 bv --agents-update            # Update blurb to latest version
-bv --agents-dry-run           # Show what would happen without executing
+bv --agents-add --agents-dry-run       # Preview an add without writing
+bv --agents-update --agents-dry-run    # Preview an update without writing
 ```
 
 **Version Tracking:**

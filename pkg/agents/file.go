@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // AppendBlurbToFile appends the agent blurb to the specified file.
@@ -80,16 +79,13 @@ func RemoveBlurbFromFile(filePath string) error {
 }
 
 // CreateAgentFile creates a new AGENTS.md file with the blurb content.
-// The file is created with standard permissions (0644).
+// The file is created exclusively with standard permissions (0644); an
+// existing path is never replaced, including if it appears after detection.
 func CreateAgentFile(filePath string) error {
-	// Create with just the blurb (no existing content)
 	content := "# AI Agent Instructions\n\n" + AgentBlurb + "\n"
-
-	// Write atomically
-	if err := atomicWrite(filePath, []byte(content)); err != nil {
+	if err := writeNewFileExclusive(filePath, []byte(content)); err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-
 	return nil
 }
 
@@ -114,7 +110,42 @@ func VerifyBlurbPresent(filePath string) (bool, error) {
 	if ContainsLegacyBlurb(contentStr) {
 		return false, fmt.Errorf("validate blurb structure: legacy blurb remains alongside versioned blurb")
 	}
+	version := GetBlurbVersion(contentStr)
+	if version != BlurbVersion {
+		return false, fmt.Errorf("validate blurb version: found v%d, want current v%d", version, BlurbVersion)
+	}
 	return true, nil
+}
+
+func writeNewFileExclusive(filePath string, content []byte) error {
+	dir := filepath.Dir(filePath)
+	tmp, err := os.CreateTemp(dir, ".bv-create-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := tmp.Write(content); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	// Linking a fully written same-directory temp file creates the destination
+	// name in one operation and fails with os.ErrExist instead of replacing it.
+	if err := os.Link(tmpPath, filePath); err != nil {
+		return fmt.Errorf("link new file: %w", err)
+	}
+	return nil
 }
 
 // atomicWrite writes content to a file atomically using a temp file and rename.
@@ -162,52 +193,15 @@ func atomicWrite(filePath string, content []byte) error {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 
-	// Atomic rename
+	// os.Rename replaces an existing regular file atomically on supported Go
+	// platforms, including Windows (where the standard library uses
+	// MoveFileEx with MOVEFILE_REPLACE_EXISTING). If replacement fails, leave
+	// the original untouched and report the error.
 	if err := os.Rename(tmpPath, filePath); err != nil {
-		// Windows does not allow renaming over an existing file.
-		if runtime.GOOS == "windows" {
-			if info, statErr := os.Lstat(filePath); statErr == nil && !info.IsDir() {
-				if replaceErr := replaceFileWithBackup(tmpPath, filePath); replaceErr != nil {
-					return replaceErr
-				}
-				success = true
-				return nil
-			}
-		}
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 
 	success = true
-	return nil
-}
-
-// replaceFileWithBackup provides the recoverable replacement path needed on
-// Windows, where os.Rename cannot replace an existing file. The original is
-// moved intact to a unique same-directory backup before the new file is
-// installed. If installation fails, the original name is restored; if even
-// that rollback fails, the error reports the preserved backup path.
-func replaceFileWithBackup(tmpPath, filePath string) error {
-	backupPath := tmpPath + ".backup"
-	if _, err := os.Lstat(backupPath); err == nil {
-		return fmt.Errorf("reserve backup path %s: path already exists", backupPath)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("check backup path %s: %w", backupPath, err)
-	}
-
-	if err := os.Rename(filePath, backupPath); err != nil {
-		return fmt.Errorf("secure original file as backup: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, filePath); err != nil {
-		if restoreErr := os.Rename(backupPath, filePath); restoreErr != nil {
-			return fmt.Errorf("install replacement: %w; restore original: %v; original preserved at %s", err, restoreErr, backupPath)
-		}
-		return fmt.Errorf("install replacement: %w (original restored)", err)
-	}
-
-	if err := os.Remove(backupPath); err != nil {
-		return fmt.Errorf("replacement installed but remove backup %s: %w", backupPath, err)
-	}
 	return nil
 }
 

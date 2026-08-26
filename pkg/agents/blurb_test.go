@@ -193,13 +193,14 @@ func TestRemoveBlurbPreservesCRLFSeparator(t *testing.T) {
 	}
 }
 
-func TestRemoveBlurbInlineMarkersDoNotAddSeparator(t *testing.T) {
+func TestInlineMarkersAreNotInstalledBlurbs(t *testing.T) {
 	content := "before<!-- bv-agent-instructions-v1 -->generated<!-- end-bv-agent-instructions -->after"
 
-	result := RemoveBlurb(content)
-	expected := "beforeafter"
-	if result != expected {
-		t.Fatalf("RemoveBlurb() = %q, want %q", result, expected)
+	if ContainsBlurb(content) {
+		t.Fatal("inline marker text must not be treated as an installed blurb")
+	}
+	if result := RemoveBlurb(content); result != content {
+		t.Fatalf("RemoveBlurb() changed inline documentation: got %q, want %q", result, content)
 	}
 }
 
@@ -269,6 +270,19 @@ func TestUpdateBlurbMalformedMarkersFailClosed(t *testing.T) {
 				t.Fatalf("malformed content changed across repeated updates:\nfirst: %q\nsecond: %q\nwant: %q", first, second, tt.content)
 			}
 		})
+	}
+}
+
+func TestUpdateBlurbFutureVersionFailsClosed(t *testing.T) {
+	content := "# Header\n\n" +
+		"<!-- bv-agent-instructions-v5 -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n\n" +
+		"<!-- bv-agent-instructions-v4 -->\ncurrent instructions\n<!-- end-bv-agent-instructions -->\n"
+
+	if got := UpdateBlurb(content); got != content {
+		t.Fatalf("UpdateBlurb() downgraded future instructions:\n got: %q\nwant: %q", got, content)
+	}
+	if _, err := updateBlurbChecked(content); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("checked update error=%v, want explicit future-version refusal", err)
 	}
 }
 
@@ -822,7 +836,7 @@ Use --robot-plan to get plans.
 
 Note: bv already computes the hard parts - use it!
 `,
-			expected: true, // All patterns are present, even if scattered
+			expected: false,
 		},
 	}
 
@@ -959,9 +973,9 @@ func TestGetBlurbVersionEdgeCases(t *testing.T) {
 			expected: 0, // \d+ matches "1" but then pattern expects " -->" not "a -->"
 		},
 		{
-			name:     "multiple version markers returns first",
+			name:     "multiple version markers returns highest",
 			content:  "<!-- bv-agent-instructions-v3 -->\nsome content\n<!-- bv-agent-instructions-v5 -->",
-			expected: 3, // FindStringSubmatch returns first match
+			expected: 5,
 		},
 		{
 			name:     "version marker in middle of content",
@@ -1088,7 +1102,7 @@ Current blurb
 		{
 			name:     "marker inside code block",
 			content:  "```\n<!-- bv-agent-instructions-v1 -->\n```",
-			expected: true, // simple string check doesn't parse markdown
+			expected: false,
 		},
 	}
 
@@ -1099,5 +1113,23 @@ Current blurb
 				t.Errorf("ContainsAnyBlurb() = %v, want %v", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestCompleteMarkerExampleInsideFenceIsIgnoredAndPreserved(t *testing.T) {
+	content := "# Documentation\n\n```markdown\n" +
+		"<!-- bv-agent-instructions-v99 -->\nexample only\n<!-- end-bv-agent-instructions -->\n```\n"
+
+	if ContainsAnyBlurb(content) {
+		t.Fatal("complete fenced marker example must not count as an installed blurb")
+	}
+	if version := GetBlurbVersion(content); version != 0 {
+		t.Fatalf("GetBlurbVersion()=%d for fenced example, want 0", version)
+	}
+	if count, err := inspectBlurbStructure(content); err != nil || count != 0 {
+		t.Fatalf("inspectBlurbStructure() count=%d err=%v, want 0, nil", count, err)
+	}
+	if got := RemoveBlurb(content); got != content {
+		t.Fatalf("RemoveBlurb() changed fenced example:\n got: %q\nwant: %q", got, content)
 	}
 }

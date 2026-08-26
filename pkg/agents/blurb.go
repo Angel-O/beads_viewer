@@ -142,8 +142,9 @@ var SupportedAgentFiles = []string{
 	"claude.md",
 }
 
-// blurbVersionRegex extracts the version number from a blurb marker.
-var blurbVersionRegex = regexp.MustCompile(`<!-- bv-agent-instructions-v(\d+) -->`)
+// blurbVersionRegex validates a complete, standalone version marker after the
+// surrounding line whitespace has been removed.
+var blurbVersionRegex = regexp.MustCompile(`^<!-- bv-agent-instructions-v(\d+) -->$`)
 
 // LegacyBlurbPatterns are markers that identify the old blurb format (pre-v1, no HTML markers).
 var LegacyBlurbPatterns = []string{
@@ -153,38 +154,58 @@ var LegacyBlurbPatterns = []string{
 	"bv already computes the hard parts",
 }
 
-// legacyBlurbStartPattern matches the beginning of the legacy blurb.
-var legacyBlurbStartPattern = regexp.MustCompile(`(?m)^#{2,3}\s*Using bv as an AI sidecar`)
+type markdownLine struct {
+	start        int
+	end          int
+	text         string
+	outsideFence bool
+}
 
-// legacyBlurbEndPattern matches content near the end of the legacy blurb.
-// Uses non-capturing group to make the entire triple-backtick sequence optional.
-var legacyBlurbEndPattern = regexp.MustCompile(`(?m)bv already computes the hard parts[^\n]*(?:\n*` + "```" + `)?\n*`)
+type blurbMarkerKind uint8
 
-// legacyBlurbNextSectionPattern matches the start of a new section after the legacy blurb.
-// Used as fallback when the end pattern isn't found.
-var legacyBlurbNextSectionPattern = regexp.MustCompile(`(?m)^#{1,2}\s+[^#]`)
+const (
+	blurbStart blurbMarkerKind = iota
+	blurbEnd
+	blurbInvalidStart
+)
 
-// ContainsBlurb checks if the content already contains a beads_viewer agent blurb.
+type blurbMarker struct {
+	kind       blurbMarkerKind
+	version    int
+	byteOffset int
+	lineStart  int
+	lineEnd    int
+}
+
+type blurbBlock struct {
+	start   int
+	end     int
+	version int
+}
+
+type legacyBlurbSpan struct {
+	start int
+	end   int
+}
+
+// ContainsBlurb checks for a standalone versioned start marker outside fenced
+// Markdown. Marker examples in code fences and inline prose are documentation,
+// not installed instructions.
 func ContainsBlurb(content string) bool {
-	return strings.Contains(content, blurbStartPrefix)
+	for _, marker := range scanBlurbMarkers(content) {
+		if marker.kind == blurbStart || marker.kind == blurbInvalidStart {
+			return true
+		}
+	}
+	return false
 }
 
 // ContainsLegacyBlurb checks if the content contains the old-format blurb (pre-v1, no HTML markers).
-// Requires all 4 legacy patterns to match to avoid false positives on content that
-// merely references robot flags (like the current AGENTS.md documentation).
+// All identifying text must occur, in template order, inside one bounded
+// Markdown section. Scattered references in unrelated sections are not a blurb.
 func ContainsLegacyBlurb(content string) bool {
-	if !legacyBlurbStartPattern.MatchString(content) {
-		return false
-	}
-	matchCount := 0
-	for _, pattern := range LegacyBlurbPatterns {
-		if strings.Contains(content, pattern) {
-			matchCount++
-		}
-	}
-	// Require all patterns - the key differentiator is "bv already computes the hard parts"
-	// which only appears in the legacy blurb, not in current documentation
-	return matchCount == len(LegacyBlurbPatterns)
+	_, ok := findLegacyBlurb(content)
+	return ok
 }
 
 // ContainsAnyBlurb checks if the content contains either the current or legacy blurb format.
@@ -192,17 +213,17 @@ func ContainsAnyBlurb(content string) bool {
 	return ContainsBlurb(content) || ContainsLegacyBlurb(content)
 }
 
-// GetBlurbVersion extracts the version number from existing blurb content.
+// GetBlurbVersion returns the highest version advertised by standalone markers
+// outside fenced Markdown. Taking the maximum prevents an older first block
+// from hiding a later blurb written by a newer bv binary.
 func GetBlurbVersion(content string) int {
-	matches := blurbVersionRegex.FindStringSubmatch(content)
-	if len(matches) < 2 {
-		return 0
+	maxVersion := 0
+	for _, marker := range scanBlurbMarkers(content) {
+		if marker.kind == blurbStart && marker.version > maxVersion {
+			maxVersion = marker.version
+		}
 	}
-	version, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return 0
-	}
-	return version
+	return maxVersion
 }
 
 // NeedsUpdate checks whether the content needs normalization or an updated
@@ -219,7 +240,7 @@ func NeedsUpdate(content string) bool {
 	if count == 0 {
 		return false
 	}
-	return GetBlurbVersion(content) < BlurbVersion
+	return GetBlurbVersion(content) != BlurbVersion
 }
 
 // AppendBlurb appends the agent blurb to the given content.
@@ -245,42 +266,20 @@ func RemoveBlurb(content string) string {
 }
 
 func removeFirstVersionedBlurb(content string) string {
-	startIdx := strings.Index(content, blurbStartPrefix)
-	if startIdx == -1 {
+	blocks, err := inspectBlurbBlocks(content)
+	if err != nil || len(blocks) == 0 {
 		return content
 	}
-	endLoc := strings.Index(content[startIdx:], BlurbEndMarker)
-	if endLoc == -1 {
-		return content
-	}
-	endIdx := startIdx + endLoc + len(BlurbEndMarker)
-	return removeDelimitedBlurb(content, startIdx, endIdx)
+	return removeDelimitedBlurb(content, blocks[0].start, blocks[0].end)
 }
 
 // RemoveLegacyBlurb removes the old-format blurb (pre-v1, no HTML markers) from content.
 func RemoveLegacyBlurb(content string) string {
-	if !ContainsLegacyBlurb(content) {
+	span, ok := findLegacyBlurb(content)
+	if !ok {
 		return content
 	}
-	startLoc := legacyBlurbStartPattern.FindStringIndex(content)
-	if startLoc == nil {
-		return content
-	}
-	startIdx := startLoc[0]
-	endLoc := legacyBlurbEndPattern.FindStringIndex(content[startIdx:])
-	var endIdx int
-	if endLoc != nil {
-		endIdx = startIdx + endLoc[1]
-	} else {
-		// Fallback: find the next major section heading
-		nextLoc := legacyBlurbNextSectionPattern.FindStringIndex(content[startIdx+10:])
-		if nextLoc != nil {
-			endIdx = startIdx + 10 + nextLoc[0]
-		} else {
-			endIdx = len(content)
-		}
-	}
-	return removeDelimitedBlurb(content, startIdx, endIdx)
+	return removeDelimitedBlurb(content, span.start, span.end)
 }
 
 // UpdateBlurb replaces existing, structurally valid blurbs with the current
@@ -295,11 +294,16 @@ func UpdateBlurb(content string) string {
 }
 
 func updateBlurbChecked(content string) (string, error) {
-	if err := validateBlurbStructure(content); err != nil {
+	blocks, err := inspectBlurbBlocks(content)
+	if err != nil {
 		return "", err
 	}
+	for _, block := range blocks {
+		if block.version > BlurbVersion {
+			return "", fmt.Errorf("refusing to replace bv agent blurb v%d with older v%d", block.version, BlurbVersion)
+		}
+	}
 
-	var err error
 	content, err = removeLegacyBlurbsChecked(content)
 	if err != nil {
 		return "", err
@@ -350,49 +354,206 @@ func validateBlurbStructure(content string) error {
 }
 
 func inspectBlurbStructure(content string) (int, error) {
-	cursor := 0
-	count := 0
-	for cursor < len(content) {
-		remaining := content[cursor:]
-		startOffset := strings.Index(remaining, blurbStartPrefix)
-		endOffset := strings.Index(remaining, BlurbEndMarker)
+	blocks, err := inspectBlurbBlocks(content)
+	return len(blocks), err
+}
 
-		if startOffset == -1 {
-			if endOffset != -1 {
-				return count, fmt.Errorf("malformed bv agent blurb: end marker at byte %d has no start marker", cursor+endOffset)
+func inspectBlurbBlocks(content string) ([]blurbBlock, error) {
+	markers := scanBlurbMarkers(content)
+	blocks := make([]blurbBlock, 0, len(markers)/2)
+	var open *blurbMarker
+	for i := range markers {
+		marker := &markers[i]
+		switch marker.kind {
+		case blurbInvalidStart:
+			return blocks, fmt.Errorf("malformed bv agent blurb: invalid start marker at byte %d", marker.byteOffset)
+		case blurbStart:
+			if open != nil {
+				return blocks, fmt.Errorf("malformed bv agent blurb: nested start marker at byte %d", marker.byteOffset)
 			}
-			return count, nil
+			open = marker
+		case blurbEnd:
+			if open == nil {
+				return blocks, fmt.Errorf("malformed bv agent blurb: end marker at byte %d has no start marker", marker.byteOffset)
+			}
+			blocks = append(blocks, blurbBlock{start: open.lineStart, end: marker.lineEnd, version: open.version})
+			open = nil
 		}
-		if endOffset != -1 && endOffset < startOffset {
-			return count, fmt.Errorf("malformed bv agent blurb: end marker at byte %d precedes start marker", cursor+endOffset)
-		}
-
-		start := cursor + startOffset
-		markerCloseOffset := strings.Index(content[start:], "-->")
-		if markerCloseOffset == -1 {
-			return count, fmt.Errorf("malformed bv agent blurb: start marker at byte %d is unterminated", start)
-		}
-		markerEnd := start + markerCloseOffset + len("-->")
-		marker := content[start:markerEnd]
-		match := blurbVersionRegex.FindStringIndex(marker)
-		if match == nil || match[0] != 0 || match[1] != len(marker) {
-			return count, fmt.Errorf("malformed bv agent blurb: invalid start marker at byte %d", start)
-		}
-
-		body := content[markerEnd:]
-		nextStartOffset := strings.Index(body, blurbStartPrefix)
-		matchingEndOffset := strings.Index(body, BlurbEndMarker)
-		if matchingEndOffset == -1 {
-			return count, fmt.Errorf("malformed bv agent blurb: start marker at byte %d has no end marker", start)
-		}
-		if nextStartOffset != -1 && nextStartOffset < matchingEndOffset {
-			return count, fmt.Errorf("malformed bv agent blurb: nested start marker at byte %d", markerEnd+nextStartOffset)
-		}
-
-		count++
-		cursor = markerEnd + matchingEndOffset + len(BlurbEndMarker)
 	}
-	return count, nil
+	if open != nil {
+		return blocks, fmt.Errorf("malformed bv agent blurb: start marker at byte %d has no end marker", open.byteOffset)
+	}
+	return blocks, nil
+}
+
+func scanBlurbMarkers(content string) []blurbMarker {
+	lines := scanMarkdownLines(content)
+	markers := make([]blurbMarker, 0, 2)
+	for _, line := range lines {
+		if !line.outsideFence {
+			continue
+		}
+		trimmed, indent, ok := standaloneMarkdownText(line.text)
+		if !ok {
+			continue
+		}
+		marker := blurbMarker{
+			byteOffset: line.start + indent,
+			lineStart:  line.start,
+			lineEnd:    line.end,
+		}
+		switch {
+		case trimmed == BlurbEndMarker:
+			marker.kind = blurbEnd
+			markers = append(markers, marker)
+		case strings.HasPrefix(trimmed, blurbStartPrefix):
+			matches := blurbVersionRegex.FindStringSubmatch(trimmed)
+			if len(matches) != 2 {
+				marker.kind = blurbInvalidStart
+				markers = append(markers, marker)
+				continue
+			}
+			version, err := strconv.Atoi(matches[1])
+			if err != nil {
+				marker.kind = blurbInvalidStart
+				markers = append(markers, marker)
+				continue
+			}
+			marker.kind = blurbStart
+			marker.version = version
+			markers = append(markers, marker)
+		}
+	}
+	return markers
+}
+
+func scanMarkdownLines(content string) []markdownLine {
+	lines := make([]markdownLine, 0, strings.Count(content, "\n")+1)
+	var fenceChar byte
+	var fenceWidth int
+	for start := 0; start < len(content); {
+		relEnd := strings.IndexByte(content[start:], '\n')
+		end := len(content)
+		next := len(content)
+		if relEnd >= 0 {
+			end = start + relEnd
+			next = end + 1
+		}
+		text := content[start:end]
+		outside := fenceChar == 0
+		if fenceChar != 0 {
+			outside = false
+			if char, width, rest, ok := markdownFenceRun(text); ok && char == fenceChar && width >= fenceWidth && strings.TrimSpace(rest) == "" {
+				fenceChar = 0
+				fenceWidth = 0
+			}
+		} else if char, width, _, ok := markdownFenceRun(text); ok {
+			outside = false
+			fenceChar = char
+			fenceWidth = width
+		}
+		lines = append(lines, markdownLine{start: start, end: end, text: text, outsideFence: outside})
+		start = next
+	}
+	return lines
+}
+
+func standaloneMarkdownText(line string) (string, int, bool) {
+	line = strings.TrimSuffix(line, "\r")
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || (indent < len(line) && line[indent] == '\t') {
+		return "", 0, false
+	}
+	return strings.TrimSpace(line[indent:]), indent, true
+}
+
+func markdownFenceRun(line string) (byte, int, string, bool) {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok || len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return 0, 0, "", false
+	}
+	char := trimmed[0]
+	width := 0
+	for width < len(trimmed) && trimmed[width] == char {
+		width++
+	}
+	if width < 3 {
+		return 0, 0, "", false
+	}
+	return char, width, trimmed[width:], true
+}
+
+func markdownHeading(line markdownLine) (int, string, bool) {
+	if !line.outsideFence {
+		return 0, "", false
+	}
+	trimmed, _, ok := standaloneMarkdownText(line.text)
+	if !ok || trimmed == "" || trimmed[0] != '#' {
+		return 0, "", false
+	}
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	if level > 6 || level == len(trimmed) || (trimmed[level] != ' ' && trimmed[level] != '\t') {
+		return 0, "", false
+	}
+	title := strings.TrimSpace(strings.TrimRight(trimmed[level:], "#"))
+	return level, title, true
+}
+
+func findLegacyBlurb(content string) (legacyBlurbSpan, bool) {
+	lines := scanMarkdownLines(content)
+	for i, line := range lines {
+		level, title, ok := markdownHeading(line)
+		if !ok || level != 3 || title != "Using bv as an AI sidecar" {
+			continue
+		}
+
+		sectionEnd := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if nextLevel, _, isHeading := markdownHeading(lines[j]); isHeading && nextLevel <= level {
+				sectionEnd = j
+				break
+			}
+		}
+
+		sawInsights := false
+		sawPlan := false
+		endLine := -1
+		for j := i + 1; j < sectionEnd; j++ {
+			if !lines[j].outsideFence {
+				continue
+			}
+			text := lines[j].text
+			sawInsights = sawInsights || strings.Contains(text, "--robot-insights")
+			sawPlan = sawPlan || strings.Contains(text, "--robot-plan")
+			if sawInsights && sawPlan && strings.Contains(text, "bv already computes the hard parts") {
+				endLine = j
+				break
+			}
+		}
+		if endLine == -1 {
+			continue
+		}
+
+		end := lines[endLine].end
+		for j := endLine + 1; j < sectionEnd; j++ {
+			trimmed := strings.TrimSpace(lines[j].text)
+			if trimmed == "" {
+				continue
+			}
+			if trimmed == "```" || trimmed == "~~~" {
+				end = lines[j].end
+			}
+			break
+		}
+		return legacyBlurbSpan{start: line.start, end: end}, true
+	}
+	return legacyBlurbSpan{}, false
 }
 
 func removeDelimitedBlurb(content string, startIdx, endIdx int) string {
