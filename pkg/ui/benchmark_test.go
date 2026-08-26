@@ -36,13 +36,13 @@ func BenchmarkSnapshotSwap(b *testing.B) {
 			snapshot := NewSnapshotBuilder(copyIssues(issues)).Build()
 
 			tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-			m = tm.(Model)
+			m = tm.(*Model)
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-				m = tm.(Model)
+				m = tm.(*Model)
 			}
 		})
 	}
@@ -58,7 +58,7 @@ func BenchmarkKeyPressLatency(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		start := time.Now()
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if view := m.View(); view == "" {
 			b.Fatal("View returned empty output")
 		}

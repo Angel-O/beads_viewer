@@ -65,7 +65,7 @@ func TestShortcutsSidebarComposedWidthFitsTerminal(t *testing.T) {
 
 			// Open the sidebar via the real `;` key path.
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showShortcutsSidebar {
 				t.Fatalf("`;` did not enable the shortcuts sidebar")
 			}

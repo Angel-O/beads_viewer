@@ -5544,7 +5544,7 @@ func main() {
 	}
 }
 
-func runTUIProgram(m ui.Model) error {
+func runTUIProgram(m *ui.Model) error {
 	p := tea.NewProgram(
 		m,
 		tea.WithAltScreen(),

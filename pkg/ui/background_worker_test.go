@@ -1357,11 +1357,11 @@ func TestBackgroundWorker_RapidWritesKeepUIResponsive(t *testing.T) {
 				errorCount++
 			}
 			updated, _ := m.Update(msg)
-			m = updated.(Model)
+			m = updated.(*Model)
 		case <-tick.C:
 			start := time.Now()
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-			m = updated.(Model)
+			m = updated.(*Model)
 			updateLatency := time.Since(start)
 			renderStart := time.Now()
 			if view := m.View(); view == "" {
@@ -1604,7 +1604,7 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 		t.Fatal("UI did not render while Phase 2 snapshot was pending")
 	}
 	newM, _ := m.Update(msg)
-	m = newM.(Model)
+	m = newM.(*Model)
 	if !m.snapshot.phase2Ready {
 		t.Fatal("matching Phase2UpdateMsg did not mark current snapshot ready")
 	}

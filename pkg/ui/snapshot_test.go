@@ -665,7 +665,7 @@ func TestSnapshotSwap_PreservesListSelectionByID(t *testing.T) {
 		issues[1],
 	}
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(updated).Build()})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	selected, ok := m.list.SelectedItem().(IssueItem)
 	if !ok || selected.Issue.ID != "a" {
@@ -691,7 +691,7 @@ func TestSnapshotSwap_SelectsRemainingIssueWhenSelectionRemoved(t *testing.T) {
 
 	remaining := []model.Issue{issues[1]}
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(remaining).Build()})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	selected, ok := m.list.SelectedItem().(IssueItem)
 	if !ok || selected.Issue.ID != "b" {
@@ -708,7 +708,7 @@ func TestSnapshotSwap_PreservesBoardSelectionByID(t *testing.T) {
 
 	m := NewModel(issues, nil, "")
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusBoard {
 		t.Fatalf("expected focusBoard, got %v", m.focused)
@@ -729,7 +729,7 @@ func TestSnapshotSwap_PreservesBoardSelectionByID(t *testing.T) {
 	snapshot := NewSnapshotBuilder(updatedIssues).Build()
 
 	newM, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusBoard {
 		t.Fatalf("expected focusBoard after swap, got %v", m.focused)
@@ -750,7 +750,7 @@ func TestSnapshotSwap_UsesSnapshotInsights(t *testing.T) {
 	snapshot.insights.Bottlenecks = []analysis.InsightItem{{ID: "sentinel", Value: 1}}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if len(m.insightsPanel.insights.Bottlenecks) == 0 || m.insightsPanel.insights.Bottlenecks[0].ID != "sentinel" {
 		t.Fatalf("expected insights to come from snapshot")
@@ -769,7 +769,7 @@ func TestSnapshotSwap_InstallsPrecomputedSearchDocuments(t *testing.T) {
 	snapshot.semanticDocs["test-1"] = sentinel
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	got := m.semanticSearch.Snapshot()
 	if got.Docs["test-1"] != sentinel {
@@ -804,7 +804,7 @@ func TestSnapshotSwap_UsesSnapshotGraphLayoutWhenUnfiltered(t *testing.T) {
 	snapshot.graphLayout.Blockers["A"] = []string{"SENTINEL"}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if got := m.graphView.SelectedIssue(); got == nil {
 		t.Fatal("expected graph view to have a selection")
@@ -834,12 +834,12 @@ func TestPhase2ReadyMsg_DoesNotRebuildGraphViewWhenSnapshotHasLayout(t *testing.
 	snapshot.graphLayout.Blockers["A"] = []string{"SENTINEL"}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	// Simulate Phase 2 completion message; Stats identity must match m.analysis.
 	ins := m.analysis.GenerateInsights(len(m.issues))
 	newM, _ = m.Update(Phase2ReadyMsg{Stats: m.analysis, Insights: ins})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if got := m.graphView.blockers["A"]; len(got) != 1 || got[0] != "SENTINEL" {
 		t.Fatalf("expected Phase2ReadyMsg to preserve snapshot GraphLayout, got blockers[A]=%#v", got)
@@ -855,7 +855,7 @@ func TestSnapshotSwap_PreservesInsightsNavigationState(t *testing.T) {
 
 	m := NewModel(issues, nil, "")
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusInsights {
 		t.Fatalf("expected focusInsights, got %v", m.focused)
@@ -869,7 +869,7 @@ func TestSnapshotSwap_PreservesInsightsNavigationState(t *testing.T) {
 	snapshot := NewSnapshotBuilder(updated).Build()
 
 	newM, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusInsights {
 		t.Fatalf("expected focusInsights after swap, got %v", m.focused)
@@ -914,7 +914,7 @@ func TestSnapshotSwap_RebuildsTreeWhenFocusedAndPreservesSelection(t *testing.T)
 
 	// Enter tree view and select the child.
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
-	m = newM.(Model)
+	m = newM.(*Model)
 	if m.focused != focusTree {
 		t.Fatalf("expected focusTree, got %v", m.focused)
 	}
@@ -944,7 +944,7 @@ func TestSnapshotSwap_RebuildsTreeWhenFocusedAndPreservesSelection(t *testing.T)
 	snapshot := NewSnapshotBuilder(updated).Build()
 
 	newM, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 	if m.focused != focusTree {
 		t.Fatalf("expected focusTree after swap, got %v", m.focused)
 	}

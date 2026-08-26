@@ -815,7 +815,7 @@ func (m *Model) issuesForAsync() []model.Issue {
 
 // NewModel creates a new Model from the given issues
 // beadsPath is the path to the beads.jsonl file for live reload support
-func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) Model {
+func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) *Model {
 	// Graph Analysis - Phase 1 is instant, Phase 2 runs in background
 	analyzer := analysis.NewAnalyzer(issues)
 	graphStats := analyzer.AnalyzeAsync(context.Background())
@@ -1236,7 +1236,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	}
 
 	m.registerKeyBindings()
-	return m
+	return &m
 }
 
 // rebuildInsightsPanel refreshes the underlying insights view model from the
@@ -1279,7 +1279,7 @@ func (m *Model) rebuildInsightsPanel() {
 	m.insightsPanel = panel
 }
 
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
 	// Note: ReadyTimeoutCmd is no longer needed since the model is now
 	// initialized as ready with default dimensions in NewModel().
 	// This eliminates the "Initializing..." phase entirely.
@@ -1305,7 +1305,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
 
@@ -4932,7 +4932,7 @@ func (m Model) renderLoadingScreen() string {
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, content)
 }
 
-func (m Model) View() string {
+func (m *Model) View() string {
 	if !m.ready {
 		return "Initializing..."
 	}
