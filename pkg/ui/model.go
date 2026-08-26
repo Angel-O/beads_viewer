@@ -448,6 +448,7 @@ type Model struct {
 
 	// UI Components
 	list               list.Model
+	listItemsBuffer    []list.Item
 	viewport           viewport.Model
 	renderer           *MarkdownRenderer
 	board              BoardModel
@@ -720,6 +721,22 @@ func (m *Model) updateSemanticIDs(items []list.Item) {
 	}
 	m.semanticSearch.SetIDs(ids)
 	m.semanticSearch.SetDocs(docs)
+}
+
+// installSnapshotListItems installs precomputed snapshot items without forcing
+// bubbles/list to recompute unchanged pagination and keybinding layout. The
+// model owns this backing slice so copying does not mutate an immutable snapshot.
+func (m *Model) installSnapshotListItems(items []list.Item) {
+	current := m.list.Items()
+	bufferOwned := len(items) > 0 && len(current) == len(items) &&
+		len(m.listItemsBuffer) == len(items) && &current[0] == &m.listItemsBuffer[0]
+	if m.list.FilterState() == list.Unfiltered && bufferOwned {
+		copy(m.listItemsBuffer, items)
+		return
+	}
+
+	m.listItemsBuffer = append(make([]list.Item, 0, len(items)), items...)
+	m.list.SetItems(m.listItemsBuffer)
 }
 
 func (m *Model) shouldShowSearchScores() bool {
@@ -1169,6 +1186,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		backgroundWorker:       backgroundWorker,
 		instanceLock:           instLock,
 		list:                   l,
+		listItemsBuffer:        items,
 		viewport:               vp,
 		renderer:               renderer,
 		board:                  board,
@@ -1896,7 +1914,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				len(msg.Snapshot.listModelItems) == len(msg.Snapshot.ListItems) &&
 				msg.Snapshot.BoardState != nil && msg.Snapshot.GetGraphLayout() != nil
 			if fastDefaultView {
-				m.list.SetItems(msg.Snapshot.listModelItems)
+				m.installSnapshotListItems(msg.Snapshot.listModelItems)
 				if m.semanticSearch != nil {
 					m.semanticSearch.setSnapshotDocuments(msg.Snapshot.semanticIDs, msg.Snapshot.semanticDocs)
 				}

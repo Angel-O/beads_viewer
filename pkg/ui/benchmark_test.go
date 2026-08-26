@@ -74,7 +74,7 @@ func BenchmarkSnapshotViewSyncComponents(b *testing.B) {
 	b.Run("list", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			m.list.SetItems(snapshot.listModelItems)
+			m.installSnapshotListItems(snapshot.listModelItems)
 		}
 	})
 	b.Run("board", func(b *testing.B) {
