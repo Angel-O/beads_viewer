@@ -3810,7 +3810,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleBoardKeys handles keyboard input when the board is focused (bv-yg39)
-func (m Model) handleBoardKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleBoardKeys(msg tea.KeyMsg) *Model {
 	key := msg.String()
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -4002,7 +4002,7 @@ func (m Model) handleBoardKeys(msg tea.KeyMsg) Model {
 }
 
 // handleGraphKeys handles keyboard input when the graph view is focused
-func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleGraphKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "h", "left":
 		m.graphView.MoveLeft()
@@ -4045,7 +4045,7 @@ func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
 }
 
 // handleTreeKeys handles keyboard input when tree view is focused (bv-gllx)
-func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleTreeKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "j", "down":
 		m.tree.MoveDown()
@@ -4090,7 +4090,7 @@ func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
 }
 
 // handleActionableKeys handles keyboard input when actionable view is focused
-func (m Model) handleActionableKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleActionableKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "j", "down":
 		m.actionableView.MoveDown()
@@ -4122,7 +4122,7 @@ func (m Model) handleActionableKeys(msg tea.KeyMsg) Model {
 }
 
 // handleHistoryKeys handles keyboard input when history view is focused
-func (m Model) handleHistoryKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleHistoryKeys(msg tea.KeyMsg) *Model {
 	// Handle search input when active (bv-nkrj)
 	if m.historyView.IsSearchActive() {
 		switch msg.String() {
@@ -4496,7 +4496,7 @@ func openBrowserURL(url string) error {
 }
 
 // handleFlowMatrixKeys handles keyboard input when flow matrix view is focused
-func (m Model) handleFlowMatrixKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleFlowMatrixKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "f", "q", "esc":
 		// If in drilldown mode, close drilldown first
@@ -4546,7 +4546,7 @@ func (m Model) handleFlowMatrixKeys(msg tea.KeyMsg) Model {
 }
 
 // handleRecipePickerKeys handles keyboard input when recipe picker is focused
-func (m Model) handleRecipePickerKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleRecipePickerKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "j", "down":
 		m.recipePicker.MoveDown()
@@ -4568,7 +4568,7 @@ func (m Model) handleRecipePickerKeys(msg tea.KeyMsg) Model {
 }
 
 // handleRepoPickerKeys handles keyboard input when repo picker is focused (workspace mode).
-func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleRepoPickerKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "j", "down":
 		m.repoPicker.MoveDown()
@@ -4608,7 +4608,7 @@ func (m Model) handleRepoPickerKeys(msg tea.KeyMsg) Model {
 }
 
 // handleLabelPickerKeys handles keyboard input when label picker is focused (bv-126)
-func (m Model) handleLabelPickerKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleLabelPickerKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "esc":
 		m.showLabelPicker = false
@@ -4634,7 +4634,7 @@ func (m Model) handleLabelPickerKeys(msg tea.KeyMsg) Model {
 }
 
 // handleInsightsKeys handles keyboard input when insights panel is focused
-func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleInsightsKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "esc":
 		m.focused = focusList
@@ -4686,7 +4686,7 @@ func (m Model) handleInsightsKeys(msg tea.KeyMsg) Model {
 }
 
 // handleListKeys handles keyboard input when the list is focused
-func (m Model) handleListKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleListKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "enter":
 		if !m.isSplitView {
@@ -4796,7 +4796,7 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 }
 
 // handleTimeTravelInputKeys handles keyboard input for the time-travel revision prompt
-func (m Model) handleTimeTravelInputKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleTimeTravelInputKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "enter":
 		// Submit the revision
@@ -4869,7 +4869,7 @@ func (m Model) restoreFocusFromHelp() focus {
 }
 
 // handleHelpKeys handles keyboard input when the help overlay is focused
-func (m Model) handleHelpKeys(msg tea.KeyMsg) Model {
+func (m *Model) handleHelpKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "j", "down":
 		m.helpScroll++
@@ -7368,7 +7368,7 @@ func (m Model) listChromeLines() int {
 // flow-matrix) are full-screen single panels with their own internal layout;
 // they are already focused, so a click there is treated as a no-op rather than
 // guessing at their internal geometry. The viewer stays read-only.
-func (m Model) handleLeftClick(x, y int) Model {
+func (m *Model) handleLeftClick(x, y int) *Model {
 	// Ignore clicks while any overlay/modal is up: the main list isn't drawn,
 	// so there is nothing meaningful to focus or select.
 	if m.showQuitConfirm || m.showAgentPrompt || m.showCassModal ||
