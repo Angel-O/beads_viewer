@@ -1160,6 +1160,15 @@ func sourceDateEpochActive() bool {
 func stabilizeRobotTriageForPinnedClock(triage *analysis.TriageResult) {
 	if sourceDateEpochActive() {
 		triage.Meta.ComputeTimeMs = 0
+		triage.Status.PageRank.Elapsed = 0
+		triage.Status.Betweenness.Elapsed = 0
+		triage.Status.Eigenvector.Elapsed = 0
+		triage.Status.HITS.Elapsed = 0
+		triage.Status.Critical.Elapsed = 0
+		triage.Status.Cycles.Elapsed = 0
+		triage.Status.KCore.Elapsed = 0
+		triage.Status.Articulation.Elapsed = 0
+		triage.Status.Slack.Elapsed = 0
 	}
 }
 
@@ -8297,7 +8306,7 @@ type RobotMeta struct {
 // in every robot surface instead of the records simply not existing (#190).
 func NewRobotEnvelope(dataHash string) RobotEnvelope {
 	env := RobotEnvelope{
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt:  robotNow().Format(time.RFC3339),
 		DataHash:     dataHash,
 		OutputFormat: robotOutputFormat,
 		Version:      version.Version,

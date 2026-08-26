@@ -806,6 +806,10 @@ func (s graphStatsCacheSoA) validate() error {
 	if len(s.Nodes) != s.NodeCount {
 		return fmt.Errorf("node dictionary length %d does not match node_count %d", len(s.Nodes), s.NodeCount)
 	}
+	if s.Density < 0 || s.Density > 1 {
+		return fmt.Errorf("density %g is outside [0,1]", s.Density)
+	}
+	nodeSet := make(map[string]struct{}, len(s.Nodes))
 	for i, node := range s.Nodes {
 		if node == "" {
 			return fmt.Errorf("empty node ID at dictionary index %d", i)
@@ -813,6 +817,7 @@ func (s graphStatsCacheSoA) validate() error {
 		if i > 0 && s.Nodes[i-1] >= node {
 			return fmt.Errorf("node dictionary is not strictly sorted at index %d", i)
 		}
+		nodeSet[node] = struct{}{}
 	}
 
 	columns := []struct {
@@ -835,6 +840,45 @@ func (s graphStatsCacheSoA) validate() error {
 	for _, column := range columns {
 		if err := validateGraphStatsCacheColumn(column.name, column.set, column.idx, column.valueLen, len(s.Nodes)); err != nil {
 			return err
+		}
+	}
+	// Phase 1 degree maps are initialized densely for every graph, including
+	// the empty graph. Without them, an arbitrary node dictionary plus all
+	// omitted metric columns could be accepted as a phase-2-ready cache hit.
+	if !s.OutDegreeSet || s.OutDegreeIdx != nil || !s.InDegreeSet || s.InDegreeIdx != nil {
+		return fmt.Errorf("phase-1 degree columns must both be present and dense")
+	}
+	if len(s.TopologicalOrder) != 0 && len(s.TopologicalOrder) != s.NodeCount {
+		return fmt.Errorf("topological order length %d is neither zero nor node_count %d", len(s.TopologicalOrder), s.NodeCount)
+	}
+	seenTopo := make(map[string]struct{}, len(s.TopologicalOrder))
+	for _, node := range s.TopologicalOrder {
+		if _, exists := nodeSet[node]; !exists {
+			return fmt.Errorf("topological order references unknown node %q", node)
+		}
+		if _, duplicate := seenTopo[node]; duplicate {
+			return fmt.Errorf("topological order repeats node %q", node)
+		}
+		seenTopo[node] = struct{}{}
+	}
+	seenArticulation := make(map[string]struct{}, len(s.Articulation))
+	for _, node := range s.Articulation {
+		if _, exists := nodeSet[node]; !exists {
+			return fmt.Errorf("articulation list references unknown node %q", node)
+		}
+		if _, duplicate := seenArticulation[node]; duplicate {
+			return fmt.Errorf("articulation list repeats node %q", node)
+		}
+		seenArticulation[node] = struct{}{}
+	}
+	for cycleIndex, cycle := range s.Cycles {
+		if len(cycle) == 0 {
+			return fmt.Errorf("cycle %d is empty", cycleIndex)
+		}
+		for _, node := range cycle {
+			if _, exists := nodeSet[node]; !exists {
+				return fmt.Errorf("cycle %d references unknown node %q", cycleIndex, node)
+			}
 		}
 	}
 	return nil
@@ -1218,7 +1262,7 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 	}
 	if info.Size() > robotAnalysisDiskCacheMaxEntrySize {
 		_ = f.Close()
-		_ = os.Remove(path)
+		removeRobotDiskCacheEntryIfSame(path, info)
 		return nil, false, false
 	}
 	raw, readErr := io.ReadAll(io.LimitReader(f, robotAnalysisDiskCacheMaxEntrySize+1))
@@ -1227,7 +1271,7 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 		return nil, false, false
 	}
 	if len(raw) > robotAnalysisDiskCacheMaxEntrySize {
-		_ = os.Remove(path)
+		removeRobotDiskCacheEntryIfSame(path, info)
 		return nil, false, false
 	}
 
@@ -1236,16 +1280,17 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 		entry.Version != robotAnalysisDiskCacheVersion ||
 		entry.Key != fullKey ||
 		entry.DataHash+"|"+entry.ConfigHash != fullKey ||
+		ComputeConfigHash(&entry.Result.Config) != entry.ConfigHash ||
 		!entry.Result.decoded {
 		// Corrupt, foreign, or filename-collision content can never satisfy a
 		// lookup; drop the regenerable file so it stops costing reads.
-		_ = os.Remove(path)
+		removeRobotDiskCacheEntryIfSame(path, info)
 		return nil, false, false
 	}
 
 	now := time.Now()
 	if entry.CreatedAt.IsZero() || now.Sub(entry.CreatedAt) > robotAnalysisDiskCacheMaxAge {
-		_ = os.Remove(path)
+		removeRobotDiskCacheEntryIfSame(path, info)
 		return nil, false, false
 	}
 
@@ -1255,7 +1300,7 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 	// case the cached GraphStats are stale and must be recomputed.
 	dirMtime := beadsDirModTime()
 	if !dirMtime.IsZero() && dirMtime.After(entry.CreatedAt) {
-		_ = os.Remove(path)
+		removeRobotDiskCacheEntryIfSame(path, info)
 		return nil, false, false
 	}
 
@@ -1267,6 +1312,32 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 		xfetch.ShouldRefresh(entry.CreatedAt, entry.ComputeDuration, 1.0, now)
 
 	return entry.Result.toGraphStats(), shouldXFetchRefresh, true
+}
+
+// removeRobotDiskCacheEntryIfSame reaps only the inode this reader inspected.
+// Cleanup takes the same directory lock as writers so the identity check and
+// Remove are one critical section: a writer cannot install a newer valid entry
+// between them and have that replacement deleted by this stale reader.
+func removeRobotDiskCacheEntryIfSame(path string, openedInfo os.FileInfo) {
+	if openedInfo == nil {
+		return
+	}
+	lockPath := filepath.Join(filepath.Dir(path), ".lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return
+	}
+	defer lock.Close()
+	if err := lockFile(lock); err != nil {
+		return
+	}
+	defer func() { _ = unlockFile(lock) }()
+
+	currentInfo, err := os.Stat(path)
+	if err != nil || !os.SameFile(openedInfo, currentInfo) {
+		return
+	}
+	_ = os.Remove(path)
 }
 
 func putRobotDiskCachedStats(fullKey, dataHash, configHash string, stats *GraphStats, computeDuration time.Duration) {

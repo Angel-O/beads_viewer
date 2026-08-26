@@ -260,6 +260,27 @@ func loadIssuesForReload(path string, opts loader.ParseOptions) (loader.PooledIs
 	}
 }
 
+func countIssuesForReload(path string) (int, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".db", ".sqlite", ".sqlite3":
+		source, ok, err := datasource.SourceFromFile(path)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, fmt.Errorf("unsupported SQLite source path: %s", path)
+		}
+		reader, err := datasource.NewReader(source)
+		if err != nil {
+			return 0, err
+		}
+		defer reader.Close()
+		return reader.CountIssues()
+	default:
+		return countJSONLLines(path)
+	}
+}
+
 // StartBackgroundWorkerCmd starts the background worker and triggers an initial refresh.
 type backgroundWorkerStartErrorMsg struct {
 	worker *BackgroundWorker
@@ -343,8 +364,10 @@ func CheckUpdateCmd() tea.Cmd {
 
 // HistoryLoadedMsg is sent when background history loading completes
 type HistoryLoadedMsg struct {
-	Report *correlation.HistoryReport
-	Error  error
+	DataGeneration    uint64
+	RequestGeneration uint64
+	Report            *correlation.HistoryReport
+	Error             error
 }
 
 // AgentFileCheckMsg is sent after checking for AGENTS.md integration (bv-i8dk)
@@ -383,7 +406,7 @@ func CheckAgentFileCmd(workDir string) tea.Cmd {
 }
 
 // LoadHistoryCmd returns a command that loads history data in the background
-func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
+func LoadHistoryCmd(issues []model.Issue, beadsPath string, dataGeneration, requestGeneration uint64) tea.Cmd {
 	return func() tea.Msg {
 		var repoPath string
 		var err error
@@ -407,7 +430,11 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 		if repoPath == "" {
 			repoPath, err = os.Getwd()
 			if err != nil {
-				return HistoryLoadedMsg{Error: err}
+				return HistoryLoadedMsg{
+					DataGeneration:    dataGeneration,
+					RequestGeneration: requestGeneration,
+					Error:             err,
+				}
 			}
 		}
 
@@ -439,7 +466,12 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 		}
 
 		report, err := correlator.GenerateReport(beads, opts)
-		return HistoryLoadedMsg{Report: report, Error: err}
+		return HistoryLoadedMsg{
+			DataGeneration:    dataGeneration,
+			RequestGeneration: requestGeneration,
+			Report:            report,
+			Error:             err,
+		}
 	}
 }
 
@@ -586,9 +618,11 @@ type Model struct {
 	actionableView ActionableModel
 
 	// History view
-	historyView       HistoryModel
-	historyLoading    bool // True while history is being loaded in background
-	historyLoadFailed bool // True if history loading failed
+	historyView                  HistoryModel
+	historyLoading               bool // True while history is being loaded in background
+	historyLoadFailed            bool // True if history loading failed
+	historyLoadDataGeneration    uint64
+	historyLoadRequestGeneration uint64
 
 	// Filter and sort state
 	currentFilter            string
@@ -1249,6 +1283,33 @@ func (m *Model) issuesForAsync() []model.Issue {
 	return cloneIssuesForAsync(m.issues)
 }
 
+// startHistoryLoad assigns ownership of the next history completion to the
+// current dataset and a unique request. Correlation walks git history and may
+// finish well after a snapshot swap, so an untagged result must never replace
+// the view for newer issues.
+func (m *Model) startHistoryLoad() tea.Cmd {
+	if m == nil {
+		return nil
+	}
+	m.historyLoadRequestGeneration++
+	m.historyLoadDataGeneration = m.semanticDataGeneration
+	m.historyLoadFailed = false
+
+	if len(m.issues) == 0 {
+		m.historyLoading = false
+		m.historyView.SetReport(nil)
+		return nil
+	}
+
+	m.historyLoading = true
+	return LoadHistoryCmd(
+		m.issuesForAsync(),
+		m.beadsPath,
+		m.historyLoadDataGeneration,
+		m.historyLoadRequestGeneration,
+	)
+}
+
 // NewModel creates a new Model from the given issues
 // beadsPath is the path to the beads.jsonl file for live reload support
 func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) *Model {
@@ -1739,9 +1800,9 @@ func (m *Model) Init() tea.Cmd {
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
-	// Start loading history in background
-	if len(m.issues) > 0 {
-		cmds = append(cmds, LoadHistoryCmd(m.issuesForAsync(), m.beadsPath))
+	// Start loading history in background.
+	if historyCmd := m.startHistoryLoad(); historyCmd != nil {
+		cmds = append(cmds, historyCmd)
 	}
 	// Check for AGENTS.md integration prompt (bv-i8dk)
 	if m.workDir != "" && !m.workspaceMode {
@@ -2402,14 +2463,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case HistoryLoadedMsg:
+		if !m.historyLoading ||
+			msg.DataGeneration != m.semanticDataGeneration ||
+			msg.DataGeneration != m.historyLoadDataGeneration ||
+			msg.RequestGeneration != m.historyLoadRequestGeneration {
+			return m, nil
+		}
 		// Background history loading completed
 		m.historyLoading = false
+		m.historyLoadDataGeneration = 0
 		if msg.Error != nil {
 			m.historyLoadFailed = true
 			m.statusMsg = fmt.Sprintf("History load failed: %v", msg.Error)
 			m.statusIsError = true
-		} else if msg.Report != nil {
-			m.historyView = NewHistoryModel(msg.Report, m.theme)
+		} else {
+			m.historyLoadFailed = false
+			m.historyView.SetReport(msg.Report)
 			m.historyView.SetSize(m.width, m.height-1)
 			// Refresh detail pane if visible
 			if m.isSplitView || m.showDetails {
@@ -2562,6 +2631,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate every async semantic result from the previous dataset before
 		// scheduling current-generation replacements.
 		m.beginSemanticDatasetUpdate()
+		if historyCmd := m.startHistoryLoad(); historyCmd != nil {
+			cmds = append(cmds, historyCmd)
+		}
 		if m.semanticHybridEnabled {
 			if hybridCmd := m.startSemanticHybridBuild(); hybridCmd != nil {
 				cmds = append(cmds, hybridCmd)
@@ -2969,6 +3041,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Recompute analysis (async Phase 1/Phase 2) with caching
 		m.issues = newIssues
 		m.beginSemanticDatasetUpdate()
+		if historyCmd := m.startHistoryLoad(); historyCmd != nil {
+			cmds = append(cmds, historyCmd)
+		}
 		var analysisStart time.Time
 		if profileRefresh {
 			analysisStart = time.Now()

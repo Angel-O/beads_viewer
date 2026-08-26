@@ -1723,6 +1723,13 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 // surface, which agents rely on as their single bounded entry point.
 const defaultRobotHistoryTimeout = 10 * time.Second
 
+// robotHistoryShutdownGrace bounds how long a timed-out triage invocation
+// waits for context-bound git children to be killed and reaped. Returning as
+// soon as the deadline fires lets the short-lived bv process exit before
+// exec.CommandContext's cancellation goroutine has completed, orphaning the
+// child that the timeout was intended to contain.
+const robotHistoryShutdownGrace = 2 * time.Second
+
 // resolveRobotHistoryTimeout returns the history-prologue budget. Precedence:
 // the --robot-history-timeout-ms flag (when explicitly set, i.e. >= 0), then
 // the BV_ROBOT_HISTORY_TIMEOUT_MS environment variable, then the 10s default.
@@ -1805,6 +1812,16 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 		}
 		return res.report, "ok"
 	case <-histCtx.Done():
+		// Cancel explicitly before the deferred cancellation, then give the
+		// report goroutine a bounded opportunity to finish cmd.Wait and reap any
+		// context-killed git process before this short-lived bv process exits.
+		cancel()
+		shutdownTimer := time.NewTimer(robotHistoryShutdownGrace)
+		defer shutdownTimer.Stop()
+		select {
+		case <-resCh:
+		case <-shutdownTimer.C:
+		}
 		return nil, "timeout"
 	}
 }

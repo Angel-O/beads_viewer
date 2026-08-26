@@ -68,7 +68,10 @@ func TestGraphStatsCacheBlob_SoARoundTrip(t *testing.T) {
 			Betweenness: nil, // nil must round-trip back to nil
 			Hubs:        map[string]float64{},
 		},
-		"empty": {},
+		"empty": {
+			OutDegree: map[string]int{},
+			InDegree:  map[string]int{},
+		},
 	}
 
 	for name, blob := range cases {
@@ -202,8 +205,8 @@ func TestRobotDiskCacheRejectsStructurallyCorruptSoA(t *testing.T) {
 		t.Fatal(err)
 	}
 	const dataHash = "data-hash"
-	const configHash = "config-hash"
-	const key = dataHash + "|" + configHash
+	configHash := ComputeConfigHash(&AnalysisConfig{})
+	key := dataHash + "|" + configHash
 	path := filepath.Join(dir, robotAnalysisEntryFileName(key))
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 
@@ -218,6 +221,9 @@ func TestRobotDiskCacheRejectsStructurallyCorruptSoA(t *testing.T) {
 		{name: "out of range sparse index", result: `{"v":3,"nodes":["a","b"],"node_count":2,"od_set":true,"od_idx":[2],"od":[1]}`},
 		{name: "duplicate sparse index", result: `{"v":3,"nodes":["a","b"],"node_count":2,"od_set":true,"od_idx":[0,0],"od":[1,2]}`},
 		{name: "unsorted node dictionary", result: `{"v":3,"nodes":["b","a"],"node_count":2}`},
+		{name: "missing required phase1 degrees", result: `{"v":3,"nodes":["a"],"node_count":1}`},
+		{name: "unknown topological node", result: `{"v":3,"nodes":["a"],"node_count":1,"topological_order":["missing"],"od_set":true,"od_idx":null,"od":[0],"id_set":true,"id_idx":null,"id":[0]}`},
+		{name: "result config does not match key", result: `{"v":3,"nodes":[],"node_count":0,"config":{"ComputePageRank":true},"od_set":true,"od_idx":null,"id_set":true,"id_idx":null}`},
 	}
 
 	for _, tt := range tests {
@@ -275,5 +281,34 @@ func TestRobotDiskCacheRejectsOversizedEntryBeforeDecode(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("oversized cache entry was not reaped: %v", err)
+	}
+}
+
+func TestRemoveRobotDiskCacheEntryIfSamePreservesConcurrentReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entry.json")
+	if err := os.WriteFile(path, []byte("old corrupt entry"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := filepath.Join(dir, "replacement.json")
+	if err := os.WriteFile(replacement, []byte("new valid entry"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	removeRobotDiskCacheEntryIfSame(path, oldInfo)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("concurrent replacement was removed: %v", err)
+	}
+	if string(got) != "new valid entry" {
+		t.Fatalf("replacement content=%q, want preserved valid entry", got)
 	}
 }

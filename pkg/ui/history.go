@@ -192,7 +192,13 @@ func NewHistoryModel(report *correlation.HistoryReport, theme Theme) HistoryMode
 // SetReport updates the history data
 func (h *HistoryModel) SetReport(report *correlation.HistoryReport) {
 	h.report = report
-	h.rebuildFilteredList()
+	// Keep the user's query, search focus, filters, and view mode while applying
+	// the refreshed report. Rebuilding only the base bead list would silently
+	// drop an active query and leave git-mode results tied to the old report.
+	h.applySearchFilter()
+	if h.showFileTree {
+		h.buildFileTree()
+	}
 }
 
 // SetSessionsForBead stores correlated sessions for a bead in the cache (bv-pr1l)

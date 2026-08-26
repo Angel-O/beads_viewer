@@ -189,6 +189,7 @@ func TestRace_DataConsistency(t *testing.T) {
 			defer wg.Done()
 			cmd := exec.Command(bv, "--robot-next")
 			cmd.Dir = env
+			cmd.Env = append(os.Environ(), "SOURCE_DATE_EPOCH=1234567890")
 			var stdout bytes.Buffer
 			cmd.Stdout = &stdout
 			if err := cmd.Run(); err != nil {
@@ -205,7 +206,7 @@ func TestRace_DataConsistency(t *testing.T) {
 	if len(results) > 0 && results[0] != "" {
 		for i := 1; i < numReads; i++ {
 			if results[i] != results[0] {
-				t.Errorf("inconsistent results: read 0 != read %d", i)
+				t.Errorf("inconsistent results: read 0 != read %d\nread 0: %s\nread %d: %s", i, results[0], i, results[i])
 			}
 		}
 	}
