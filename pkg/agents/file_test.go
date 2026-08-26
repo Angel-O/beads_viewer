@@ -738,8 +738,14 @@ func TestWriteReplacementPreservesPermissions(t *testing.T) {
 		t.Fatalf("Initial permissions wrong: %o", info.Mode().Perm())
 	}
 
-	// Same-directory replacement
-	if err := writeReplacement(filePath, []byte("new content")); err != nil {
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+
+	// Same-directory replacement of the locked, still-current source.
+	if err := locked.replace([]byte("new content")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -762,22 +768,67 @@ func TestWriteReplacementPreservesPermissions(t *testing.T) {
 	}
 }
 
-func TestWriteReplacementNewFile(t *testing.T) {
+func TestWriteReplacementRejectsConcurrentByteChange(t *testing.T) {
 	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "new-file.md")
-
-	// Write to non-existent file
-	if err := writeReplacement(filePath, []byte("brand new")); err != nil {
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify file created
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+
+	// Advisory locks serialize bv writers, but an editor may ignore them and
+	// write in place. The final byte check must reject rather than erase it.
+	if err := os.WriteFile(filePath, []byte("concurrent editor bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := locked.replace([]byte("bv replacement")); !errors.Is(err, errAgentFileChanged) {
+		t.Fatalf("replace error=%v, want concurrent-change refusal", err)
+	}
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "brand new" {
-		t.Errorf("Unexpected content: %s", content)
+	if string(content) != "concurrent editor bytes" {
+		t.Fatalf("concurrent bytes were overwritten: %q", content)
+	}
+}
+
+func TestWriteReplacementRejectsConcurrentIdentityChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+
+	editorPath := filepath.Join(tmpDir, "editor-save")
+	if err := os.WriteFile(editorPath, []byte("concurrent atomic save"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(editorPath, filePath); err != nil {
+		t.Skipf("platform does not permit replacing a locked destination: %v", err)
+	}
+	if err := locked.replace([]byte("bv replacement")); !errors.Is(err, errAgentFileChanged) {
+		t.Fatalf("replace error=%v, want destination-identity refusal", err)
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "concurrent atomic save" {
+		t.Fatalf("concurrent replacement was overwritten: %q", content)
 	}
 }
 
@@ -951,15 +1002,26 @@ func TestWriteReplacementNoPermission(t *testing.T) {
 
 	// Create a read-only directory
 	readOnlyDir := filepath.Join(tmpDir, "readonly")
-	if err := os.Mkdir(readOnlyDir, 0555); err != nil {
+	if err := os.Mkdir(readOnlyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(readOnlyDir, "test.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnlyDir, 0555); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chmod(readOnlyDir, 0755) // Cleanup
 
-	filePath := filepath.Join(readOnlyDir, "test.md")
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
 
 	// This should fail because we can't create temp file in read-only dir
-	err := writeReplacement(filePath, []byte("test"))
+	err = locked.replace([]byte("test"))
 	if err == nil {
 		t.Error("Expected error writing to read-only directory")
 	}

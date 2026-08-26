@@ -521,13 +521,20 @@ func scanBlurbMarkers(content string) []blurbMarker {
 func scanMarkdownLines(content string) []markdownLine {
 	lines := make([]markdownLine, 0, strings.Count(content, "\n")+1)
 	var fence markdownFence
+	htmlCommentDepth := 0
+	htmlRawTag := ""
 	for start := 0; start < len(content); {
-		relEnd := strings.IndexByte(content[start:], '\n')
-		end := len(content)
-		next := len(content)
-		if relEnd >= 0 {
-			end = start + relEnd
-			next = end + 1
+		end := start
+		for end < len(content) && content[end] != '\n' && content[end] != '\r' {
+			end++
+		}
+		next := end
+		if next < len(content) {
+			if content[next] == '\r' && next+1 < len(content) && content[next+1] == '\n' {
+				next += 2
+			} else {
+				next++
+			}
 		}
 		text := content[start:end]
 		outside := true
@@ -547,6 +554,33 @@ func scanMarkdownLines(content string) []markdownLine {
 				fence = markdownFence{}
 			}
 		}
+		if outside && htmlCommentDepth > 0 {
+			htmlCommentDepth, _ = advanceHTMLCommentDepth(text, htmlCommentDepth)
+			outside = false
+		} else if outside && htmlRawTag != "" {
+			if closesHTMLRawBlock(text, htmlRawTag) {
+				htmlRawTag = ""
+			}
+			outside = false
+		} else if outside {
+			if tag := opensHTMLRawBlock(text); tag != "" {
+				htmlRawTag = tag
+				if closesHTMLRawBlock(text, tag) {
+					htmlRawTag = ""
+				}
+				outside = false
+			} else {
+				var sawHTMLComment bool
+				htmlCommentDepth, sawHTMLComment = advanceHTMLCommentDepth(text, 0)
+				// Versioned blurb delimiters are themselves complete HTML comments,
+				// so recognize a standalone delimiter at top level. Everything inside
+				// an already-open multiline comment remains documentation, including
+				// nested marker-shaped examples.
+				if sawHTMLComment && !standaloneBlurbMarkerText(text) {
+					outside = false
+				}
+			}
+		}
 		if outside {
 			if char, width, rest, containers, ok := markdownFenceOpening(text); ok {
 				// Backtick info strings cannot contain backticks in CommonMark.
@@ -560,6 +594,61 @@ func scanMarkdownLines(content string) []markdownLine {
 		start = next
 	}
 	return lines
+}
+
+func advanceHTMLCommentDepth(line string, depth int) (int, bool) {
+	sawComment := false
+	for pos := 0; pos < len(line); {
+		switch {
+		case strings.HasPrefix(line[pos:], "<!--"):
+			depth++
+			sawComment = true
+			pos += len("<!--")
+		case strings.HasPrefix(line[pos:], "-->"):
+			if depth > 0 {
+				depth--
+				sawComment = true
+			}
+			pos += len("-->")
+		default:
+			pos++
+		}
+	}
+	return depth, sawComment
+}
+
+func standaloneBlurbMarkerText(line string) bool {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok {
+		return false
+	}
+	return trimmed == BlurbEndMarker || strings.HasPrefix(trimmed, blurbStartPrefix)
+}
+
+func opensHTMLRawBlock(line string) string {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	for _, tag := range [...]string{"pre", "script", "style", "textarea"} {
+		prefix := "<" + tag
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		if len(lower) == len(prefix) {
+			return tag
+		}
+		switch lower[len(prefix)] {
+		case ' ', '\t', '>':
+			return tag
+		}
+	}
+	return ""
+}
+
+func closesHTMLRawBlock(line, tag string) bool {
+	return strings.Contains(strings.ToLower(line), "</"+tag+">")
 }
 
 func markdownFenceOpening(line string) (byte, int, string, []markdownContainer, bool) {
@@ -729,7 +818,18 @@ func markdownHeading(line markdownLine) (int, string, bool) {
 	if level > 6 || level == len(trimmed) || (trimmed[level] != ' ' && trimmed[level] != '\t') {
 		return 0, "", false
 	}
-	title := strings.TrimSpace(strings.TrimRight(trimmed[level:], "#"))
+	body := strings.TrimRight(trimmed[level:], " \t")
+	closingStart := len(body)
+	for closingStart > 0 && body[closingStart-1] == '#' {
+		closingStart--
+	}
+	// CommonMark only treats a trailing # run as an ATX closing sequence when
+	// whitespace separates it from the heading text. Without that separator,
+	// the hashes are literal title bytes and must participate in legacy matching.
+	if closingStart < len(body) && closingStart > 0 && (body[closingStart-1] == ' ' || body[closingStart-1] == '\t') {
+		body = strings.TrimRight(body[:closingStart], " \t")
+	}
+	title := strings.TrimSpace(body)
 	return level, title, true
 }
 
@@ -870,6 +970,9 @@ func preferredLineBreak(removedWhitespace string) string {
 	}
 	if strings.Contains(removedWhitespace, "\r\n") {
 		return "\r\n"
+	}
+	if strings.Contains(removedWhitespace, "\r") && !strings.Contains(removedWhitespace, "\n") {
+		return "\r"
 	}
 	return "\n"
 }

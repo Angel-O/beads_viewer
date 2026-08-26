@@ -194,6 +194,27 @@ func TestRemoveBlurbPreservesCRLFSeparator(t *testing.T) {
 	}
 }
 
+func TestBareCRBlurbLinesPreserveExactOffsetsAndSeparator(t *testing.T) {
+	content := "# My AGENTS.md\r\rBefore blurb.\r\r" +
+		"<!-- bv-agent-instructions-v1 -->\rGenerated content\r<!-- end-bv-agent-instructions -->\r\r" +
+		"After blurb.\r"
+
+	if !ContainsBlurb(content) {
+		t.Fatal("bare-CR versioned blurb was not detected")
+	}
+	if version := GetBlurbVersion(content); version != 1 {
+		t.Fatalf("GetBlurbVersion()=%d for bare-CR content, want 1", version)
+	}
+	if count, err := inspectBlurbStructure(content); err != nil || count != 1 {
+		t.Fatalf("inspectBlurbStructure() count=%d err=%v, want 1, nil", count, err)
+	}
+
+	want := "# My AGENTS.md\r\rBefore blurb.\rAfter blurb.\r"
+	if got := RemoveBlurb(content); got != want {
+		t.Fatalf("RemoveBlurb() changed bare-CR offsets or separator:\n got: %q\nwant: %q", got, want)
+	}
+}
+
 func TestInlineMarkersAreNotInstalledBlurbs(t *testing.T) {
 	content := "before<!-- bv-agent-instructions-v1 -->generated<!-- end-bv-agent-instructions -->after"
 
@@ -202,6 +223,95 @@ func TestInlineMarkersAreNotInstalledBlurbs(t *testing.T) {
 	}
 	if result := RemoveBlurb(content); result != content {
 		t.Fatalf("RemoveBlurb() changed inline documentation: got %q, want %q", result, content)
+	}
+}
+
+func TestMarkerAndLegacyExamplesInsideMultilineHTMLCommentsArePreserved(t *testing.T) {
+	versioned := "# Documentation\n\n<!-- hidden example\n" +
+		BlurbStartMarker + "\nexample only\n" + BlurbEndMarker + "\n-->\n\n# Keep\n"
+	if ContainsAnyBlurb(versioned) {
+		t.Fatal("marker-shaped example inside multiline HTML comment counted as installed")
+	}
+	if version := GetBlurbVersion(versioned); version != 0 {
+		t.Fatalf("GetBlurbVersion()=%d for HTML-comment example, want 0", version)
+	}
+	if count, err := inspectBlurbStructure(versioned); err != nil || count != 0 {
+		t.Fatalf("inspectBlurbStructure() count=%d err=%v, want 0, nil", count, err)
+	}
+	if got := RemoveBlurb(versioned); got != versioned {
+		t.Fatalf("RemoveBlurb() changed HTML-comment marker example:\n got: %q\nwant: %q", got, versioned)
+	}
+
+	legacy := "# Documentation\n\n<!-- hidden legacy example\n" +
+		"### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n-->\n\n# Keep\n"
+	if ContainsLegacyBlurb(legacy) {
+		t.Fatal("legacy-shaped example inside multiline HTML comment counted as installed")
+	}
+	if got := RemoveLegacyBlurb(legacy); got != legacy {
+		t.Fatalf("RemoveLegacyBlurb() changed HTML-comment legacy example:\n got: %q\nwant: %q", got, legacy)
+	}
+	if got := RemoveBlurb(legacy); got != legacy {
+		t.Fatalf("RemoveBlurb() changed HTML-comment legacy example:\n got: %q\nwant: %q", got, legacy)
+	}
+}
+
+func TestMarkerAndLegacyExamplesInsideHTMLRawBlocksArePreserved(t *testing.T) {
+	tags := []struct {
+		name    string
+		opening string
+		closing string
+	}{
+		{name: "pre", opening: `<PrE class="example">`, closing: "</pRE>"},
+		{name: "script", opening: `<SCRIPT type="text/plain">`, closing: "</script>"},
+		{name: "style", opening: `<Style media="screen">`, closing: "</STYLE>"},
+		{name: "textarea", opening: `<TEXTAREA aria-label="example">`, closing: "</TextArea>"},
+	}
+
+	for _, tt := range tags {
+		t.Run(tt.name+"/versioned", func(t *testing.T) {
+			content := "# Documentation\n\n" + tt.opening + "\n" +
+				BlurbStartMarker + "\nexample only\n" + BlurbEndMarker + "\n" +
+				tt.closing + "\n\n# Keep\n"
+			if ContainsAnyBlurb(content) {
+				t.Fatal("marker-shaped raw-block example counted as installed")
+			}
+			if version := GetBlurbVersion(content); version != 0 {
+				t.Fatalf("GetBlurbVersion()=%d for raw-block example, want 0", version)
+			}
+			if count, err := inspectBlurbStructure(content); err != nil || count != 0 {
+				t.Fatalf("inspectBlurbStructure() count=%d err=%v, want 0, nil", count, err)
+			}
+			if got := RemoveBlurb(content); got != content {
+				t.Fatalf("RemoveBlurb() changed raw-block marker example:\n got: %q\nwant: %q", got, content)
+			}
+		})
+
+		t.Run(tt.name+"/legacy", func(t *testing.T) {
+			content := "# Documentation\n\n" + tt.opening + "\n" +
+				"### Using bv as an AI sidecar\n\n" +
+				"--robot-insights\n--robot-plan\n" +
+				"bv already computes the hard parts for you.\n" +
+				tt.closing + "\n\n# Keep\n"
+			if ContainsLegacyBlurb(content) {
+				t.Fatal("legacy-shaped raw-block example counted as installed")
+			}
+			if got := RemoveLegacyBlurb(content); got != content {
+				t.Fatalf("RemoveLegacyBlurb() changed raw-block legacy example:\n got: %q\nwant: %q", got, content)
+			}
+			if got := RemoveBlurb(content); got != content {
+				t.Fatalf("RemoveBlurb() changed raw-block legacy example:\n got: %q\nwant: %q", got, content)
+			}
+		})
+	}
+
+	real := BlurbStartMarker + "\ninstalled\n" + BlurbEndMarker + "\n"
+	if !ContainsBlurb(real) {
+		t.Fatal("top-level standalone marker comments stopped being recognized")
+	}
+	if count, err := inspectBlurbStructure(real); err != nil || count != 1 {
+		t.Fatalf("top-level marker structure count=%d err=%v, want 1, nil", count, err)
 	}
 }
 
@@ -630,6 +740,33 @@ func TestContainsLegacyBlurb(t *testing.T) {
 				t.Errorf("ContainsLegacyBlurb() = %v, want %v", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestLegacyHeadingRequiresWhitespaceBeforeClosingHashes(t *testing.T) {
+	content := `# Documentation
+
+### Using bv as an AI sidecar###
+
+--robot-insights
+--robot-plan
+bv already computes the hard parts for you.
+
+# Keep
+`
+	if ContainsLegacyBlurb(content) {
+		t.Fatal("literal no-space trailing hashes were misparsed as an ATX closing sequence")
+	}
+	if got := RemoveLegacyBlurb(content); got != content {
+		t.Fatalf("RemoveLegacyBlurb() changed a non-legacy heading:\n got: %q\nwant: %q", got, content)
+	}
+	if got := RemoveBlurb(content); got != content {
+		t.Fatalf("RemoveBlurb() changed a non-legacy heading:\n got: %q\nwant: %q", got, content)
+	}
+
+	valid := strings.Replace(content, "sidecar###", "sidecar ###", 1)
+	if !ContainsLegacyBlurb(valid) {
+		t.Fatal("whitespace-delimited ATX closing hashes should still identify the legacy heading")
 	}
 }
 

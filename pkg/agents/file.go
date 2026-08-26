@@ -1,23 +1,127 @@
 package agents
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
+
+var errAgentFileChanged = errors.New("agent file changed while the bv edit was being prepared")
+
+type lockedAgentFile struct {
+	path    string
+	file    *os.File
+	info    os.FileInfo
+	content []byte
+}
+
+// lockAgentFileForMutation opens and locks the exact inode whose bytes will be
+// transformed. The lock serializes cooperating bv processes; the identity and
+// byte checks in replace also reject editors that ignore advisory locks and
+// save the path before the final rename.
+func lockAgentFileForMutation(filePath string) (*lockedAgentFile, error) {
+	file, err := openAgentFileForMutation(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockAgentFile(file); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock file: %w", err)
+	}
+
+	beforeInfo, beforeStatErr := file.Stat()
+	content, readErr := io.ReadAll(file)
+	afterInfo, afterStatErr := file.Stat()
+	if beforeStatErr != nil || readErr != nil || afterStatErr != nil {
+		_ = unlockAgentFile(file)
+		_ = file.Close()
+		if beforeStatErr != nil {
+			return nil, beforeStatErr
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, afterStatErr
+	}
+	if !sameAgentFileSnapshot(beforeInfo, afterInfo) || int64(len(content)) != afterInfo.Size() {
+		_ = unlockAgentFile(file)
+		_ = file.Close()
+		return nil, errAgentFileChanged
+	}
+
+	return &lockedAgentFile{path: filePath, file: file, info: afterInfo, content: content}, nil
+}
+
+func (f *lockedAgentFile) close() {
+	if f == nil || f.file == nil {
+		return
+	}
+	_ = unlockAgentFile(f.file)
+	_ = f.file.Close()
+	f.file = nil
+}
+
+func (f *lockedAgentFile) verifyUnchanged() error {
+	current, err := os.Open(f.path)
+	if err != nil {
+		return fmt.Errorf("%w: reopen destination: %v", errAgentFileChanged, err)
+	}
+	defer current.Close()
+
+	currentInfo, err := current.Stat()
+	if err != nil {
+		return fmt.Errorf("%w: stat destination: %v", errAgentFileChanged, err)
+	}
+	if !os.SameFile(f.info, currentInfo) {
+		return fmt.Errorf("%w: destination identity was replaced", errAgentFileChanged)
+	}
+	if f.info.Mode() != currentInfo.Mode() {
+		return fmt.Errorf("%w: destination mode changed from %s to %s", errAgentFileChanged, f.info.Mode(), currentInfo.Mode())
+	}
+	content, err := io.ReadAll(current)
+	if err != nil {
+		return fmt.Errorf("%w: reread destination: %v", errAgentFileChanged, err)
+	}
+	afterReadInfo, err := current.Stat()
+	if err != nil || !sameAgentFileSnapshot(currentInfo, afterReadInfo) || int64(len(content)) != afterReadInfo.Size() {
+		return fmt.Errorf("%w: destination changed while it was being verified", errAgentFileChanged)
+	}
+	if !bytes.Equal(f.content, content) {
+		return fmt.Errorf("%w: destination bytes changed", errAgentFileChanged)
+	}
+	pathInfo, err := os.Stat(f.path)
+	if err != nil || !sameAgentFileSnapshot(afterReadInfo, pathInfo) {
+		return fmt.Errorf("%w: destination changed during verification", errAgentFileChanged)
+	}
+	return nil
+}
+
+func sameAgentFileSnapshot(a, b os.FileInfo) bool {
+	return a != nil && b != nil &&
+		os.SameFile(a, b) &&
+		a.Size() == b.Size() &&
+		a.Mode() == b.Mode() &&
+		a.ModTime().Equal(b.ModTime())
+}
+
+func (f *lockedAgentFile) replace(content []byte) error {
+	return writeVerifiedReplacement(f.path, content, f.info.Mode(), f.verifyUnchanged)
+}
 
 // AppendBlurbToFile appends the agent blurb to the specified file.
 // The complete result is validated before a same-directory replacement so a
 // blurb cannot be written inside an EOF-terminated Markdown fence.
 func AppendBlurbToFile(filePath string) error {
-	// Read existing content
-	content, err := os.ReadFile(filePath)
+	locked, err := lockAgentFileForMutation(filePath)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
+	defer locked.close()
 
-	contentStr := string(content)
+	contentStr := string(locked.content)
 	if _, err := inspectBlurbStructure(contentStr); err != nil {
 		return fmt.Errorf("validate existing blurb markers: %w", err)
 	}
@@ -35,7 +139,7 @@ func AppendBlurbToFile(filePath string) error {
 		return fmt.Errorf("validate appended blurb: found %d standalone versioned blocks at v%d, want exactly one v%d block", count, GetBlurbVersion(newContent), BlurbVersion)
 	}
 
-	if err := writeReplacement(filePath, []byte(newContent)); err != nil {
+	if err := locked.replace([]byte(newContent)); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 
@@ -45,17 +149,18 @@ func AppendBlurbToFile(filePath string) error {
 // UpdateBlurbInFile replaces an existing blurb with the current version.
 // Uses a fully written same-directory replacement to prevent partial writes.
 func UpdateBlurbInFile(filePath string) error {
-	content, err := os.ReadFile(filePath)
+	locked, err := lockAgentFileForMutation(filePath)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
+	defer locked.close()
 
-	newContent, err := updateBlurbChecked(string(content))
+	newContent, err := updateBlurbChecked(string(locked.content))
 	if err != nil {
 		return fmt.Errorf("validate existing blurb: %w", err)
 	}
 
-	if err := writeReplacement(filePath, []byte(newContent)); err != nil {
+	if err := locked.replace([]byte(newContent)); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 
@@ -66,20 +171,21 @@ func UpdateBlurbInFile(filePath string) error {
 // specified file. Malformed and future-version markers are rejected without
 // writing. Uses a fully written same-directory replacement.
 func RemoveBlurbFromFile(filePath string) error {
-	content, err := os.ReadFile(filePath)
+	locked, err := lockAgentFileForMutation(filePath)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}
+	defer locked.close()
 
-	newContent, err := removeBlurbsChecked(string(content))
+	newContent, err := removeBlurbsChecked(string(locked.content))
 	if err != nil {
 		return fmt.Errorf("validate existing blurb: %w", err)
 	}
-	if newContent == string(content) {
+	if newContent == string(locked.content) {
 		return nil
 	}
 
-	if err := writeReplacement(filePath, []byte(newContent)); err != nil {
+	if err := locked.replace([]byte(newContent)); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 
@@ -210,18 +316,14 @@ func writeFileDirectExclusive(filePath string, content []byte) error {
 	return nil
 }
 
-// writeReplacement writes a complete same-directory temp file, then renames
-// it over the destination. Same-directory rename is atomic on Unix. Go does
-// replace existing regular files on Windows, but explicitly does not promise
-// Rename atomicity on non-Unix platforms; this path therefore avoids claiming
-// a stronger guarantee and never removes the destination before replacement.
-func writeReplacement(filePath string, content []byte) error {
-	// Get file info to preserve permissions
-	var mode os.FileMode = 0644
-	if info, err := os.Stat(filePath); err == nil {
-		mode = info.Mode()
+// writeVerifiedReplacement writes a complete same-directory temp file, calls
+// verify immediately before commit, then renames over the destination. The
+// caller supplies the mode captured from the locked source inode. No mutation
+// path is allowed to skip the stale-source check.
+func writeVerifiedReplacement(filePath string, content []byte, mode os.FileMode, verify func() error) error {
+	if verify == nil {
+		return fmt.Errorf("replacement requires stale-source verification")
 	}
-
 	// Create the temp file in the same directory so replacement stays on one
 	// filesystem and Unix can provide atomic rename semantics.
 	dir := filepath.Dir(filePath)
@@ -257,6 +359,10 @@ func writeReplacement(filePath string, content []byte) error {
 	// Set permissions on temp file
 	if err := os.Chmod(tmpPath, mode); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
+	}
+
+	if err := verify(); err != nil {
+		return fmt.Errorf("verify destination before replacement: %w", err)
 	}
 
 	// os.Rename supports replacement on Windows as well as Unix. Do not add a
