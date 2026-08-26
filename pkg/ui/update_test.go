@@ -178,51 +178,61 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 
 func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		width int
+		name   string
+		width  int
+		height int
 	}{
-		{name: "realistic", width: 100},
-		{name: "narrow", width: 28},
+		{name: "realistic", width: 100, height: 30},
+		{name: "narrow", width: 28, height: 12},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
-			m.width, m.height = test.width, 30
+			m.width, m.height = test.width, test.height
 			m.hubRepositoryMode = true
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
 			m = updated.(Model)
 
-			before := m.commentInput.View()
 			beforeModal := m.renderCommentPrompt()
-			if strings.Contains(ansi.Strip(before), "│") {
-				t.Fatalf("empty editor contains a prompt/gutter: %q", ansi.Strip(before))
-			}
-			comment := "Title\n" + strings.Repeat("0123456789", 6) + "\n" + strings.Repeat("line\n", 9) + strings.Repeat("tail", 30)
-			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(comment)})
-			m = updated.(Model)
-			after := m.commentInput.View()
-			afterModal := m.renderCommentPrompt()
-			if strings.Contains(ansi.Strip(after), "│") {
-				t.Fatalf("editor contains a prompt/gutter: %q", ansi.Strip(after))
+			panelWidth, panelHeight := m.commentPanelWidth, m.commentPanelHeight
+			editorWidth, editorHeight := m.commentEditorWidth, m.commentEditorHeight
+			modalHeight := lipgloss.Height(beforeModal)
+			checkGeometry := func(stage string) {
+				t.Helper()
+				if m.commentPanelWidth != panelWidth || m.commentPanelHeight != panelHeight ||
+					m.commentPanelWidth != max(1, test.width-2) || m.commentPanelHeight != max(1, test.height-3) ||
+					m.commentEditorWidth != editorWidth || m.commentEditorHeight != editorHeight ||
+					m.commentInput.Height() != editorHeight || lipgloss.Height(m.renderCommentPrompt()) != modalHeight {
+					t.Fatalf("%s changed geometry: panel=%dx%d editor=%dx%d modal height=%d", stage, m.commentPanelWidth, m.commentPanelHeight, m.commentEditorWidth, m.commentEditorHeight, lipgloss.Height(m.renderCommentPrompt()))
+				}
+				plain := ansi.Strip(m.commentInput.View())
+				if strings.Contains(plain, "│") {
+					t.Fatalf("%s editor contains a prompt/gutter: %q", stage, plain)
+				}
+				for _, line := range strings.Split(m.renderCommentPrompt(), "\n") {
+					if lipgloss.Width(line) > test.width {
+						t.Fatalf("%s modal overflows terminal width %d: %d columns", stage, test.width, lipgloss.Width(line))
+					}
+				}
 			}
 
-			if m.commentEditorWidth == 0 || m.commentInput.Height() != commentEditorHeight {
-				t.Fatalf("editor geometry = width %d height %d", m.commentEditorWidth, m.commentInput.Height())
-			}
-			plainBefore := ansi.Strip(before)
-			plainAfter := ansi.Strip(after)
-			if lipgloss.Width(plainBefore) != lipgloss.Width(plainAfter) {
-				t.Fatalf("editor width changed from %d to %d", lipgloss.Width(plainBefore), lipgloss.Width(plainAfter))
-			}
-			if lipgloss.Height(beforeModal) != lipgloss.Height(afterModal) {
-				t.Fatalf("modal height changed from %d to %d", lipgloss.Height(beforeModal), lipgloss.Height(afterModal))
-			}
-			if m.commentInput.LineInfo().Height <= 1 || m.commentInput.LineCount() <= commentEditorHeight {
+			checkGeometry("empty")
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+			m = updated.(Model)
+			checkGeometry("first character")
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(Model)
+			checkGeometry("newline")
+			comment := "Title\n" + strings.Repeat("0123456789", 6) + "\n" + strings.Repeat("line\n", 30) + strings.Repeat("tail", 30)
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(comment)})
+			m = updated.(Model)
+			checkGeometry("multiline and wrapped content")
+			if m.commentInput.LineInfo().Height <= 1 || m.commentInput.LineCount() <= m.commentEditorHeight {
 				t.Fatalf("comment was not wrapped/retained in textarea: line height=%d logical lines=%d", m.commentInput.LineInfo().Height, m.commentInput.LineCount())
 			}
-			for _, line := range strings.Split(afterModal, "\n") {
-				if lipgloss.Width(line) > test.width {
-					t.Fatalf("modal line overflows terminal width %d: %d columns", test.width, lipgloss.Width(line))
-				}
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+			m = updated.(Model)
+			if !strings.Contains(ansi.Strip(m.commentInput.View()), "x") {
+				t.Fatal("textarea navigation could not return to earlier content")
 			}
 		})
 	}

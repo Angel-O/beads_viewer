@@ -47,20 +47,20 @@ const (
 	WideViewThreshold      = 140
 	UltraWideViewThreshold = 180
 
-	commentEditorHeight    = 7
-	commentModalFrameWidth = 6 // two borders plus two columns of padding
-	commentEditorMaxWidth  = 88
+	commentPanelMargin    = 1
+	commentModalFrameSize = 4 // two borders plus one column of padding on each side
 )
 
 func commentEditorWidth(terminalWidth int) int {
-	width := terminalWidth - commentModalFrameWidth
+	width := terminalWidth - (commentPanelMargin * 2) - commentModalFrameSize
 	if width < 1 {
 		return 1
 	}
-	if width > commentEditorMaxWidth {
-		return commentEditorMaxWidth
-	}
 	return width
+}
+
+func commentHintText() string {
+	return "Ctrl+S submit · Enter newline · Arrows navigate · Esc cancel · Ctrl+C quit"
 }
 
 // focus represents which UI element has keyboard focus
@@ -702,13 +702,16 @@ type Model struct {
 	showTimeTravelPrompt bool
 
 	// Comment input prompt
-	commentInput       textarea.Model
-	commentEditorWidth int
-	showCommentPrompt  bool
-	commentIssueID     string
-	commentOrigin      focus
-	commentSubmitting  bool
-	commentRunner      func(string, string) error
+	commentInput        textarea.Model
+	commentPanelWidth   int
+	commentPanelHeight  int
+	commentEditorWidth  int
+	commentEditorHeight int
+	showCommentPrompt   bool
+	commentIssueID      string
+	commentOrigin       focus
+	commentSubmitting   bool
+	commentRunner       func(string, string) error
 
 	// Status message (for temporary feedback)
 	statusMsg     string
@@ -4394,8 +4397,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		m.applyContentSizing()
 		if m.showCommentPrompt {
-			m.commentEditorWidth = commentEditorWidth(m.width)
-			m.commentInput.SetWidth(m.commentEditorWidth)
+			m.resizeCommentEditor()
 		}
 	}
 
@@ -5732,13 +5734,28 @@ func (m *Model) beginComment() {
 	}
 	m.commentIssueID = issueItem.Issue.ID
 	m.commentOrigin = m.focused
-	m.commentEditorWidth = commentEditorWidth(m.width)
-	m.commentInput.SetWidth(m.commentEditorWidth)
-	m.commentInput.SetHeight(commentEditorHeight)
+	m.resizeCommentEditor()
 	m.commentInput.SetValue("")
 	m.commentInput.Focus()
 	m.showCommentPrompt = true
 	m.focused = focusCommentInput
+}
+
+func (m *Model) resizeCommentEditor() {
+	panelWidth := max(1, m.width-(commentPanelMargin*2))
+	bodyHeight := max(1, m.height-1)
+	panelHeight := max(1, bodyHeight-(commentPanelMargin*2))
+	editorWidth := commentEditorWidth(m.width)
+	innerHeight := max(1, panelHeight-2)
+	hintHeight := lipgloss.Height(lipgloss.NewStyle().Width(editorWidth).Render(commentHintText()))
+	editorHeight := max(1, innerHeight-2-hintHeight)
+
+	m.commentPanelWidth = panelWidth
+	m.commentPanelHeight = panelHeight
+	m.commentEditorWidth = editorWidth
+	m.commentEditorHeight = editorHeight
+	m.commentInput.SetWidth(editorWidth)
+	m.commentInput.SetHeight(editorHeight)
 }
 
 func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -9258,23 +9275,32 @@ func (m Model) renderCommentPrompt() string {
 	boxStyle := t.Renderer.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Primary).
-		Padding(1, 2).
-		Width(m.commentEditorWidth)
+		Padding(0, 1).
+		Width(max(1, m.commentPanelWidth-commentModalFrameSize)).
+		Height(max(1, m.commentPanelHeight-2)).
+		MaxHeight(max(1, m.commentPanelHeight-2)).
+		MaxWidth(max(1, m.commentPanelWidth))
 	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).
-		Width(m.commentEditorWidth).Align(lipgloss.Center)
+		Width(m.commentEditorWidth).Align(lipgloss.Left)
 	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext).
-		Width(m.commentEditorWidth).Align(lipgloss.Center)
+		Width(m.commentEditorWidth).Align(lipgloss.Left)
 	keyStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
 	hintStyle := t.Renderer.NewStyle().Foreground(t.Subtext).
 		Width(m.commentEditorWidth).Align(lipgloss.Center)
-	content := titleStyle.Render("Add comment") + "\n\n" +
-		subtitleStyle.Render("Issue "+m.commentIssueID) + "\n\n" +
-		m.commentInput.View() + "\n\n" +
+	editorStyle := t.Renderer.NewStyle().
+		Width(m.commentEditorWidth).
+		Height(m.commentEditorHeight).
+		MaxHeight(m.commentEditorHeight).
+		Align(lipgloss.Left)
+	content := titleStyle.Render("Add comment") + "\n" +
+		subtitleStyle.Render("Issue "+m.commentIssueID) + "\n" +
+		editorStyle.Render(m.commentInput.View()) + "\n" +
 		hintStyle.Render(keyStyle.Render("Ctrl+S")+" submit · "+
 			keyStyle.Render("Enter")+" newline · "+
+			keyStyle.Render("Arrows")+" navigate · "+
 			keyStyle.Render("Esc")+" cancel · "+
 			keyStyle.Render("Ctrl+C")+" quit")
-	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
+	return lipgloss.Place(m.width, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
 // renderTimeTravelPrompt renders the time-travel revision input overlay
