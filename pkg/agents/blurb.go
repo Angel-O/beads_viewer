@@ -161,6 +161,24 @@ type markdownLine struct {
 	outsideFence bool
 }
 
+type markdownContainerKind uint8
+
+const (
+	markdownBlockquote markdownContainerKind = iota
+	markdownList
+)
+
+type markdownContainer struct {
+	kind   markdownContainerKind
+	indent int
+}
+
+type markdownFence struct {
+	char       byte
+	width      int
+	containers []markdownContainer
+}
+
 type blurbMarkerKind uint8
 
 const (
@@ -298,14 +316,23 @@ func updateBlurbChecked(content string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, block := range blocks {
-		if block.version > BlurbVersion {
-			return "", fmt.Errorf("refusing to replace bv agent blurb v%d with older v%d", block.version, BlurbVersion)
-		}
+	if err := rejectFutureBlurbBlocks(blocks, "replace"); err != nil {
+		return "", err
 	}
 
 	content, err = removeLegacyBlurbsChecked(content)
 	if err != nil {
+		return "", err
+	}
+	// A historical legacy blurb may end with a bare fence delimiter. Until the
+	// legacy span is removed, that delimiter can hide later versioned markers
+	// from Markdown-aware scanning. Re-inspect before deleting anything so an
+	// older bv binary can never replace a newly revealed future-version block.
+	blocks, err = inspectBlurbBlocks(content)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectFutureBlurbBlocks(blocks, "replace"); err != nil {
 		return "", err
 	}
 	for ContainsBlurb(content) {
@@ -319,12 +346,24 @@ func updateBlurbChecked(content string) (string, error) {
 }
 
 func removeBlurbsChecked(content string) (string, error) {
-	if err := validateBlurbStructure(content); err != nil {
+	blocks, err := inspectBlurbBlocks(content)
+	if err != nil {
 		return "", err
 	}
-	var err error
+	if err := rejectFutureBlurbBlocks(blocks, "remove"); err != nil {
+		return "", err
+	}
 	content, err = removeLegacyBlurbsChecked(content)
 	if err != nil {
+		return "", err
+	}
+	// As in updateBlurbChecked, legacy-fence removal can reveal markers that
+	// were not structurally visible in the original Markdown.
+	blocks, err = inspectBlurbBlocks(content)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectFutureBlurbBlocks(blocks, "remove"); err != nil {
 		return "", err
 	}
 	for ContainsBlurb(content) {
@@ -335,6 +374,15 @@ func removeBlurbsChecked(content string) (string, error) {
 		content = withoutBlurb
 	}
 	return content, nil
+}
+
+func rejectFutureBlurbBlocks(blocks []blurbBlock, action string) error {
+	for _, block := range blocks {
+		if block.version > BlurbVersion {
+			return fmt.Errorf("refusing to %s bv agent blurb v%d with older bv v%d", action, block.version, BlurbVersion)
+		}
+	}
+	return nil
 }
 
 func removeLegacyBlurbsChecked(content string) (string, error) {
@@ -429,8 +477,7 @@ func scanBlurbMarkers(content string) []blurbMarker {
 
 func scanMarkdownLines(content string) []markdownLine {
 	lines := make([]markdownLine, 0, strings.Count(content, "\n")+1)
-	var fenceChar byte
-	var fenceWidth int
+	var fence markdownFence
 	for start := 0; start < len(content); {
 		relEnd := strings.IndexByte(content[start:], '\n')
 		end := len(content)
@@ -440,22 +487,160 @@ func scanMarkdownLines(content string) []markdownLine {
 			next = end + 1
 		}
 		text := content[start:end]
-		outside := fenceChar == 0
-		if fenceChar != 0 {
-			outside = false
-			if char, width, rest, ok := markdownFenceRun(text); ok && char == fenceChar && width >= fenceWidth && strings.TrimSpace(rest) == "" {
-				fenceChar = 0
-				fenceWidth = 0
+		outside := true
+		if fence.char != 0 {
+			if strings.TrimSpace(text) == "" {
+				// Blank lines remain inside list and blockquote fenced blocks even
+				// when their container prefix is omitted.
+				outside = false
+			} else if remainder, ok := stripMarkdownContainers(text, fence.containers); ok {
+				outside = false
+				if char, width, rest, isFence := markdownFenceRun(remainder); isFence && char == fence.char && width >= fence.width && strings.TrimSpace(rest) == "" {
+					fence = markdownFence{}
+				}
+			} else {
+				// An unclosed fenced block inside a list/blockquote ends when its
+				// containing block ends. Reprocess this line as top-level Markdown.
+				fence = markdownFence{}
 			}
-		} else if char, width, _, ok := markdownFenceRun(text); ok {
-			outside = false
-			fenceChar = char
-			fenceWidth = width
+		}
+		if outside {
+			if char, width, rest, containers, ok := markdownFenceOpening(text); ok {
+				// Backtick info strings cannot contain backticks in CommonMark.
+				if char != '`' || !strings.Contains(rest, "`") {
+					outside = false
+					fence = markdownFence{char: char, width: width, containers: containers}
+				}
+			}
 		}
 		lines = append(lines, markdownLine{start: start, end: end, text: text, outsideFence: outside})
 		start = next
 	}
 	return lines
+}
+
+func markdownFenceOpening(line string) (byte, int, string, []markdownContainer, bool) {
+	remainder, containers, ok := stripMarkdownOpeningContainers(line)
+	if !ok {
+		return 0, 0, "", nil, false
+	}
+	char, width, rest, ok := markdownFenceRun(remainder)
+	return char, width, rest, containers, ok
+}
+
+// stripMarkdownOpeningContainers removes list and blockquote prefixes from a
+// possible fence-opening line. List continuation indentation is retained as a
+// sequence so closing fences and content can be recognized without treating
+// ordinary four-space-indented code as a top-level fence.
+func stripMarkdownOpeningContainers(line string) (string, []markdownContainer, bool) {
+	line = strings.TrimSuffix(line, "\r")
+	containers := make([]markdownContainer, 0, 2)
+	pos := 0
+	for {
+		spaces := countLeadingSpaces(line[pos:])
+		if spaces > 3 {
+			return "", nil, false
+		}
+		pos += spaces
+		if pos >= len(line) {
+			return line[pos:], containers, true
+		}
+
+		if line[pos] == '>' {
+			containers = append(containers, markdownContainer{kind: markdownBlockquote})
+			pos++
+			if pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+				pos++
+			}
+			continue
+		}
+
+		markerWidth, gapWidth, isList := markdownListMarker(line[pos:])
+		if isList {
+			containers = append(containers, markdownContainer{
+				kind:   markdownList,
+				indent: spaces + markerWidth + gapWidth,
+			})
+			pos += markerWidth + gapWidth
+			continue
+		}
+
+		return line[pos:], containers, true
+	}
+}
+
+func stripMarkdownContainers(line string, containers []markdownContainer) (string, bool) {
+	line = strings.TrimSuffix(line, "\r")
+	pos := 0
+	for _, container := range containers {
+		switch container.kind {
+		case markdownBlockquote:
+			spaces := countLeadingSpaces(line[pos:])
+			if spaces > 3 {
+				return "", false
+			}
+			pos += spaces
+			if pos >= len(line) || line[pos] != '>' {
+				return "", false
+			}
+			pos++
+			if pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+				pos++
+			}
+		case markdownList:
+			if container.indent <= 0 || len(line)-pos < container.indent {
+				return "", false
+			}
+			for i := 0; i < container.indent; i++ {
+				if line[pos+i] != ' ' {
+					return "", false
+				}
+			}
+			pos += container.indent
+		}
+	}
+	return line[pos:], true
+}
+
+func markdownListMarker(line string) (int, int, bool) {
+	if len(line) < 2 {
+		return 0, 0, false
+	}
+	markerWidth := 0
+	switch line[0] {
+	case '-', '+', '*':
+		markerWidth = 1
+	default:
+		for markerWidth < len(line) && markerWidth < 9 && line[markerWidth] >= '0' && line[markerWidth] <= '9' {
+			markerWidth++
+		}
+		if markerWidth == 0 || markerWidth >= len(line) || (line[markerWidth] != '.' && line[markerWidth] != ')') {
+			return 0, 0, false
+		}
+		markerWidth++
+	}
+	if markerWidth >= len(line) {
+		return 0, 0, false
+	}
+	if line[markerWidth] == '\t' {
+		return markerWidth, 1, true
+	}
+	if line[markerWidth] != ' ' {
+		return 0, 0, false
+	}
+	gapWidth := countLeadingSpaces(line[markerWidth:])
+	if gapWidth < 1 || gapWidth > 4 {
+		return 0, 0, false
+	}
+	return markerWidth, gapWidth, true
+}
+
+func countLeadingSpaces(line string) int {
+	count := 0
+	for count < len(line) && line[count] == ' ' {
+		count++
+	}
+	return count
 }
 
 func standaloneMarkdownText(line string) (string, int, bool) {
@@ -541,19 +726,29 @@ func findLegacyBlurb(content string) (legacyBlurbSpan, bool) {
 		}
 
 		end := lines[endLine].end
-		for j := endLine + 1; j < sectionEnd; j++ {
-			trimmed := strings.TrimSpace(lines[j].text)
-			if trimmed == "" {
-				continue
+		// Some historical copies have a bare closing delimiter immediately
+		// after the identifying sentence. Do not skip blank lines looking for
+		// one: a later bare fence is an unrelated user code-block opener and
+		// must be preserved.
+		if next := endLine + 1; next < sectionEnd {
+			trimmed := strings.TrimSpace(lines[next].text)
+			if (trimmed == "```" || trimmed == "~~~") && !hasLaterFenceClose(lines, next+1, trimmed[0], len(trimmed), sectionEnd) {
+				end = lines[next].end
 			}
-			if trimmed == "```" || trimmed == "~~~" {
-				end = lines[j].end
-			}
-			break
 		}
 		return legacyBlurbSpan{start: line.start, end: end}, true
 	}
 	return legacyBlurbSpan{}, false
+}
+
+func hasLaterFenceClose(lines []markdownLine, start int, char byte, width, end int) bool {
+	for i := start; i < end; i++ {
+		candidateChar, candidateWidth, rest, ok := markdownFenceRun(lines[i].text)
+		if ok && candidateChar == char && candidateWidth >= width && strings.TrimSpace(rest) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func removeDelimitedBlurb(content string, startIdx, endIdx int) string {

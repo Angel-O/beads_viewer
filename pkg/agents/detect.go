@@ -124,18 +124,30 @@ func checkAgentFile(filePath, fileType string) AgentFileDetection {
 
 	contentStr := string(content)
 	hasLegacy := ContainsLegacyBlurb(contentStr)
-	blurbCount, structureErr := inspectBlurbStructure(contentStr)
+	// Legacy copies can end with a dangling fence delimiter that hides later
+	// versioned markers. Inspect a non-mutating, legacy-free view so detection
+	// and CLI dry-runs see the same future versions that checked mutations see.
+	markerContent := contentStr
+	var legacyViewErr error
+	if withoutLegacy, err := removeLegacyBlurbsChecked(contentStr); err != nil {
+		legacyViewErr = err
+	} else {
+		markerContent = withoutLegacy
+	}
+	blurbCount, structureErr := inspectBlurbStructure(markerContent)
 	structureError := ""
 	if structureErr != nil {
 		structureError = structureErr.Error()
+	} else if legacyViewErr != nil {
+		structureError = legacyViewErr.Error()
 	}
 
 	return AgentFileDetection{
 		FilePath:            filePath,
 		FileType:            fileType,
-		HasBlurb:            ContainsAnyBlurb(contentStr),
+		HasBlurb:            hasLegacy || ContainsBlurb(markerContent),
 		HasLegacyBlurb:      hasLegacy,
-		BlurbVersion:        GetBlurbVersion(contentStr),
+		BlurbVersion:        GetBlurbVersion(markerContent),
 		BlurbCount:          blurbCount,
 		BlurbStructureError: structureError,
 		Content:             contentStr,

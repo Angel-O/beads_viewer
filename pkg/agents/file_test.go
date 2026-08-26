@@ -86,6 +86,37 @@ func TestAppendBlurbToFileRejectsMalformedMarkersWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestAppendBlurbToFileRejectsEOFOpenFenceWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+	}{
+		{name: "tilde fence", original: "# Header\n\n~~~~markdown\nexample continues to EOF\n"},
+		{name: "long backtick fence", original: "# Header\n\n````markdown\nexample continues to EOF\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			filePath := filepath.Join(tmpDir, "AGENTS.md")
+			if err := os.WriteFile(filePath, []byte(tt.original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := AppendBlurbToFile(filePath); err == nil {
+				t.Fatal("expected EOF-open fence validation error")
+			}
+			got, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.original {
+				t.Fatalf("append changed EOF-fenced content:\n got: %q\nwant: %q", got, tt.original)
+			}
+		})
+	}
+}
+
 func TestUpdateBlurbInFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
@@ -166,6 +197,28 @@ func TestUpdateBlurbInFileRejectsFutureVersionWithoutWriting(t *testing.T) {
 	}
 	if string(got) != original {
 		t.Fatalf("future-version update changed file:\n got: %q\nwant: %q", got, original)
+	}
+}
+
+func TestUpdateBlurbInFileRejectsFutureVersionRevealedByLegacyRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n\n" + LegacyBlurbContent + "\n" +
+		"<!-- bv-agent-instructions-v9 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UpdateBlurbInFile(filePath)
+	if err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("UpdateBlurbInFile() error=%v, want revealed future-version refusal", err)
+	}
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != original {
+		t.Fatalf("revealed future-version update changed file:\n got: %q\nwant: %q", got, original)
 	}
 }
 
@@ -281,6 +334,27 @@ func TestRemoveBlurbFromFileRejectsMalformedMarkersWithoutWriting(t *testing.T) 
 	}
 }
 
+func TestRemoveBlurbFromFileRejectsFutureVersionWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n<!-- bv-agent-instructions-v12 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemoveBlurbFromFile(filePath)
+	if err == nil || !strings.Contains(err.Error(), "refusing to remove") {
+		t.Fatalf("RemoveBlurbFromFile() error=%v, want future-version refusal", err)
+	}
+	got, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != original {
+		t.Fatalf("future-version removal changed file:\n got: %q\nwant: %q", got, original)
+	}
+}
+
 func TestCreateAgentFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
@@ -330,6 +404,38 @@ func TestCreateAgentFileDoesNotReplaceExistingFile(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("existing mode=%o after failed create, want 600", info.Mode().Perm())
+	}
+}
+
+func TestWriteNewFileExclusiveFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	want := []byte("# Complete instructions\n")
+	linkUnsupported := func(string, string) error {
+		return errors.New("hard links are unsupported")
+	}
+
+	if err := writeNewFileExclusiveUsing(filePath, want, linkUnsupported); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("fallback content=%q, want %q", got, want)
+	}
+
+	err = writeNewFileExclusiveUsing(filePath, []byte("replacement"), linkUnsupported)
+	if err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("fallback existing-path error=%v, want os.ErrExist", err)
+	}
+	got, err = os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("fallback replaced existing content: got %q, want %q", got, want)
 	}
 }
 
@@ -449,7 +555,7 @@ func TestVerifyBlurbPresent(t *testing.T) {
 	})
 }
 
-func TestAtomicWritePreservesPermissions(t *testing.T) {
+func TestWriteReplacementPreservesPermissions(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "test.md")
 
@@ -467,8 +573,8 @@ func TestAtomicWritePreservesPermissions(t *testing.T) {
 		t.Fatalf("Initial permissions wrong: %o", info.Mode().Perm())
 	}
 
-	// Atomic write
-	if err := atomicWrite(filePath, []byte("new content")); err != nil {
+	// Same-directory replacement
+	if err := writeReplacement(filePath, []byte("new content")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -491,12 +597,12 @@ func TestAtomicWritePreservesPermissions(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteNewFile(t *testing.T) {
+func TestWriteReplacementNewFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "new-file.md")
 
 	// Write to non-existent file
-	if err := atomicWrite(filePath, []byte("brand new")); err != nil {
+	if err := writeReplacement(filePath, []byte("brand new")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -594,6 +700,26 @@ func TestEnsureBlurb(t *testing.T) {
 		}
 	})
 
+	t.Run("EOF-open fence - errors without writing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := "# My Instructions\n\n~~~~markdown\nexample continues to EOF\n"
+		if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := EnsureBlurb(tmpDir); err == nil {
+			t.Fatal("expected EOF-open fence validation error")
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != original {
+			t.Fatalf("EnsureBlurb changed EOF-fenced content:\n got: %q\nwant: %q", content, original)
+		}
+	})
+
 	t.Run("duplicate current blurbs - consolidates", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "AGENTS.md")
@@ -628,7 +754,7 @@ func TestAppendBlurbNonExistentFile(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteNoPermission(t *testing.T) {
+func TestWriteReplacementNoPermission(t *testing.T) {
 	// Skip on platforms where we can't test permissions properly
 	if os.Getuid() == 0 {
 		t.Skip("Skipping permission test as root")
@@ -646,7 +772,7 @@ func TestAtomicWriteNoPermission(t *testing.T) {
 	filePath := filepath.Join(readOnlyDir, "test.md")
 
 	// This should fail because we can't create temp file in read-only dir
-	err := atomicWrite(filePath, []byte("test"))
+	err := writeReplacement(filePath, []byte("test"))
 	if err == nil {
 		t.Error("Expected error writing to read-only directory")
 	}

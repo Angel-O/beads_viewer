@@ -248,6 +248,23 @@ func TestDetectAgentFileReportsHighestAndFutureBlurbVersion(t *testing.T) {
 	}
 }
 
+func TestDetectAgentFileReportsFutureBlurbRevealedByLegacyRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	content := LegacyBlurbContent + "\n" +
+		"<!-- bv-agent-instructions-v11 -->\nfuture\n<!-- end-bv-agent-instructions -->\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	detection := DetectAgentFile(tmpDir)
+	if detection.BlurbVersion != 11 || !detection.HasFutureBlurb() {
+		t.Fatalf("future detection behind legacy fence=%+v, want version 11 future state", detection)
+	}
+	if detection.HasMalformedBlurb() || detection.BlurbCount != 1 {
+		t.Fatalf("revealed future structure=%+v, want one complete block", detection)
+	}
+}
+
 func TestDetectAgentFileInParents(t *testing.T) {
 	// Create nested temporary directories
 	tmpDir := t.TempDir()

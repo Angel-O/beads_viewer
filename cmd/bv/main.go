@@ -2306,6 +2306,11 @@ func main() {
 					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
 					os.Exit(1)
 				}
+				if detection.HasFutureBlurb() {
+					fmt.Fprintf(os.Stderr, "%s contains bv blurb v%d, newer than this bv binary (v%d); refusing to remove it.\n",
+						detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
+					os.Exit(1)
+				}
 				if !detection.HasBlurb && !detection.HasLegacyBlurb {
 					fmt.Printf("%s has no blurb — nothing to remove.\n", detection.FilePath)
 					os.Exit(0)

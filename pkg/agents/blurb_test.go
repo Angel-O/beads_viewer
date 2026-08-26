@@ -286,6 +286,18 @@ func TestUpdateBlurbFutureVersionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestUpdateBlurbFutureVersionRevealedByLegacyRemovalFailsClosed(t *testing.T) {
+	content := "# Header\n\n" + LegacyBlurbContent + "\n" +
+		"<!-- bv-agent-instructions-v9 -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n"
+
+	if got := UpdateBlurb(content); got != content {
+		t.Fatalf("UpdateBlurb() replaced a future blurb hidden by the legacy fence:\n got: %q\nwant: %q", got, content)
+	}
+	if _, err := updateBlurbChecked(content); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
+		t.Fatalf("checked update error=%v, want future-version refusal after legacy removal", err)
+	}
+}
+
 func TestRemoveBlurbMalformedMarkersFailClosed(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -315,6 +327,16 @@ func TestRemoveBlurbMalformedMarkersFailClosed(t *testing.T) {
 				t.Fatal("checked removal accepted malformed marker structure")
 			}
 		})
+	}
+}
+
+func TestRemoveBlurbFutureVersionFailsClosed(t *testing.T) {
+	content := "# Header\n\n<!-- bv-agent-instructions-v8 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+	if got := RemoveBlurb(content); got != content {
+		t.Fatalf("RemoveBlurb() removed future instructions:\n got: %q\nwant: %q", got, content)
+	}
+	if _, err := removeBlurbsChecked(content); err == nil || !strings.Contains(err.Error(), "refusing to remove") {
+		t.Fatalf("checked removal error=%v, want future-version refusal", err)
 	}
 }
 
@@ -662,6 +684,25 @@ bv already computes the hard parts for you.
 	}
 	if !strings.Contains(result, "## Next Section") {
 		t.Error("RemoveLegacyBlurb() did not preserve next section")
+	}
+}
+
+func TestRemoveLegacyBlurbPreservesLaterUserFence(t *testing.T) {
+	legacy := `### Using bv as an AI sidecar
+
+--robot-insights
+--robot-plan
+bv already computes the hard parts for you.
+`
+	userCode := "```\nuser code must retain both fences\n```\n"
+	content := "# Header\n\n" + legacy + "\n" + userCode
+
+	result := RemoveLegacyBlurb(content)
+	if strings.Contains(result, "bv already computes the hard parts") {
+		t.Fatalf("legacy blurb was not removed:\n%s", result)
+	}
+	if !strings.Contains(result, userCode) {
+		t.Fatalf("legacy removal consumed a later user fence:\n got: %q\nwant to preserve: %q", result, userCode)
 	}
 }
 
@@ -1131,5 +1172,54 @@ func TestCompleteMarkerExampleInsideFenceIsIgnoredAndPreserved(t *testing.T) {
 	}
 	if got := RemoveBlurb(content); got != content {
 		t.Fatalf("RemoveBlurb() changed fenced example:\n got: %q\nwant: %q", got, content)
+	}
+}
+
+func TestCompleteMarkerExamplesInsideContainerFencesAreIgnoredAndPreserved(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "bullet list",
+			content: "- ```markdown\n" +
+				"  <!-- bv-agent-instructions-v99 -->\n" +
+				"  example only\n" +
+				"  <!-- end-bv-agent-instructions -->\n" +
+				"  ```\n",
+		},
+		{
+			name: "ordered list",
+			content: "1. ```markdown\n" +
+				"   <!-- bv-agent-instructions-v99 -->\n" +
+				"   example only\n" +
+				"   <!-- end-bv-agent-instructions -->\n" +
+				"   ```\n",
+		},
+		{
+			name: "blockquote",
+			content: "> ```markdown\n" +
+				"> <!-- bv-agent-instructions-v99 -->\n" +
+				"> example only\n" +
+				"> <!-- end-bv-agent-instructions -->\n" +
+				"> ```\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if ContainsAnyBlurb(tt.content) {
+				t.Fatal("container-fenced marker example must not count as an installed blurb")
+			}
+			if version := GetBlurbVersion(tt.content); version != 0 {
+				t.Fatalf("GetBlurbVersion()=%d for container-fenced example, want 0", version)
+			}
+			if count, err := inspectBlurbStructure(tt.content); err != nil || count != 0 {
+				t.Fatalf("inspectBlurbStructure() count=%d err=%v, want 0, nil", count, err)
+			}
+			if got := RemoveBlurb(tt.content); got != tt.content {
+				t.Fatalf("RemoveBlurb() changed container-fenced example:\n got: %q\nwant: %q", got, tt.content)
+			}
+		})
 	}
 }
