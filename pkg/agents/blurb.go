@@ -159,6 +159,7 @@ type markdownLine struct {
 	end          int
 	text         string
 	outsideFence bool
+	topLevel     bool
 }
 
 type markdownContainerKind uint8
@@ -169,8 +170,9 @@ const (
 )
 
 type markdownContainer struct {
-	kind   markdownContainerKind
-	indent int
+	kind         markdownContainerKind
+	indent       int
+	orderedStart int
 }
 
 type markdownFence struct {
@@ -263,12 +265,20 @@ func NeedsUpdate(content string) bool {
 
 // AppendBlurb appends the agent blurb to the given content.
 func AppendBlurb(content string) string {
-	if !strings.HasSuffix(content, "\n") {
-		content += "\n"
+	lineBreak := preferredLineBreak(content)
+	if lineBreak == "" {
+		lineBreak = "\n"
 	}
-	content += "\n"
-	content += AgentBlurb
-	content += "\n"
+	blurb := strings.ReplaceAll(AgentBlurb, "\n", lineBreak)
+	if content == "" {
+		return blurb + lineBreak
+	}
+	if !strings.HasSuffix(content, "\n") && !strings.HasSuffix(content, "\r") {
+		content += lineBreak
+	}
+	content += lineBreak
+	content += blurb
+	content += lineBreak
 	return content
 }
 
@@ -481,7 +491,7 @@ func scanBlurbMarkers(content string) []blurbMarker {
 	lines := scanMarkdownLines(content)
 	markers := make([]blurbMarker, 0, 2)
 	for _, line := range lines {
-		if !line.outsideFence {
+		if !line.outsideFence || !line.topLevel {
 			continue
 		}
 		trimmed, indent, ok := standaloneMarkdownText(line.text)
@@ -521,24 +531,40 @@ func scanBlurbMarkers(content string) []blurbMarker {
 func scanMarkdownLines(content string) []markdownLine {
 	lines := make([]markdownLine, 0, strings.Count(content, "\n")+1)
 	var fence markdownFence
+	htmlCommentDepth := 0
+	htmlRawTag := ""
+	htmlTerminator := ""
+	htmlBlankTerminated := false
+	var htmlContainers []markdownContainer
+	var listContainers []markdownContainer
+	emptyListParentDepth := -1
+	paragraphOpen := false
 	for start := 0; start < len(content); {
-		relEnd := strings.IndexByte(content[start:], '\n')
-		end := len(content)
-		next := len(content)
-		if relEnd >= 0 {
-			end = start + relEnd
-			next = end + 1
+		end := start
+		for end < len(content) && content[end] != '\n' && content[end] != '\r' {
+			end++
+		}
+		next := end
+		if next < len(content) {
+			if content[next] == '\r' && next+1 < len(content) && content[next+1] == '\n' {
+				next += 2
+			} else {
+				next++
+			}
 		}
 		text := content[start:end]
+		blank := isMarkdownBlankLine(text)
+		paragraphAtLineStart := paragraphOpen
+		topLevel := markdownLineIsTopLevel(text, listContainers)
 		outside := true
 		if fence.char != 0 {
-			if strings.TrimSpace(text) == "" {
+			if blank {
 				// Blank lines remain inside list and blockquote fenced blocks even
 				// when their container prefix is omitted.
 				outside = false
 			} else if remainder, ok := stripMarkdownContainers(text, fence.containers); ok {
 				outside = false
-				if char, width, rest, isFence := markdownFenceRun(remainder); isFence && char == fence.char && width >= fence.width && strings.TrimSpace(rest) == "" {
+				if char, width, rest, isFence := markdownFenceRun(remainder); isFence && char == fence.char && width >= fence.width && isMarkdownBlankLine(rest) {
 					fence = markdownFence{}
 				}
 			} else {
@@ -547,7 +573,10 @@ func scanMarkdownLines(content string) []markdownLine {
 				fence = markdownFence{}
 			}
 		}
-		if outside {
+		// A valid fence opener takes precedence over comment-like bytes in its
+		// info string. Otherwise ```text <!-- example could incorrectly start an
+		// HTML comment and hide marker lines after the fence closes.
+		if outside && htmlCommentDepth == 0 && htmlRawTag == "" && htmlTerminator == "" && !htmlBlankTerminated {
 			if char, width, rest, containers, ok := markdownFenceOpening(text); ok {
 				// Backtick info strings cannot contain backticks in CommonMark.
 				if char != '`' || !strings.Contains(rest, "`") {
@@ -556,10 +585,487 @@ func scanMarkdownLines(content string) []markdownLine {
 				}
 			}
 		}
-		lines = append(lines, markdownLine{start: start, end: end, text: text, outsideFence: outside})
+
+		// HTML leaf blocks end at the end of their containing list/blockquote.
+		// If the current line no longer belongs to the recorded container, clear
+		// the HTML state and process this same line as ordinary top-level Markdown.
+		htmlText := text
+		if outside && (htmlCommentDepth > 0 || htmlRawTag != "" || htmlTerminator != "" || htmlBlankTerminated) && len(htmlContainers) > 0 {
+			if scoped, ok := stripMarkdownContainers(text, htmlContainers); ok {
+				htmlText = scoped
+			} else if blank && markdownContainersAreLists(htmlContainers) {
+				htmlText = text
+			} else {
+				htmlCommentDepth = 0
+				htmlRawTag = ""
+				htmlTerminator = ""
+				htmlBlankTerminated = false
+				htmlContainers = nil
+			}
+		}
+		if outside && htmlCommentDepth > 0 {
+			htmlCommentDepth, _ = advanceHTMLCommentDepth(htmlText, htmlCommentDepth)
+			if htmlCommentDepth == 0 {
+				htmlContainers = nil
+			}
+			outside = false
+		} else if outside && htmlRawTag != "" {
+			if closesHTMLRawBlock(htmlText, htmlRawTag) {
+				htmlRawTag = ""
+				htmlContainers = nil
+			}
+			outside = false
+		} else if outside && htmlTerminator != "" {
+			if strings.Contains(htmlText, htmlTerminator) {
+				htmlTerminator = ""
+				htmlContainers = nil
+			}
+			outside = false
+		} else if outside && htmlBlankTerminated {
+			if isMarkdownBlankLine(htmlText) {
+				htmlBlankTerminated = false
+				htmlContainers = nil
+			} else {
+				outside = false
+			}
+		} else if outside {
+			openingText, openingContainers := markdownHTMLBlockOpening(text, listContainers)
+			if tag := opensHTMLRawBlock(openingText); tag != "" {
+				htmlRawTag = tag
+				htmlContainers = append([]markdownContainer(nil), openingContainers...)
+				if closesHTMLRawBlock(openingText, tag) {
+					htmlRawTag = ""
+					htmlContainers = nil
+				}
+				outside = false
+			} else if opensHTMLCommentBlock(openingText) && !standaloneBlurbMarkerText(openingText) {
+				htmlCommentDepth, _ = advanceHTMLCommentDepth(openingText, 0)
+				htmlContainers = append([]markdownContainer(nil), openingContainers...)
+				if htmlCommentDepth == 0 {
+					htmlContainers = nil
+				}
+				// Versioned blurb delimiters are themselves complete HTML comments,
+				// so recognize a standalone delimiter at top level. Everything inside
+				// an already-open multiline comment remains documentation, including
+				// nested marker-shaped examples.
+				outside = false
+			} else if terminator := opensHTMLDelimitedBlock(openingText); terminator != "" {
+				htmlTerminator = terminator
+				htmlContainers = append([]markdownContainer(nil), openingContainers...)
+				if strings.Contains(openingText, terminator) {
+					htmlTerminator = ""
+					htmlContainers = nil
+				}
+				outside = false
+			} else if opensHTMLBlankTerminatedBlock(openingText, paragraphOpen) {
+				htmlBlankTerminated = true
+				htmlContainers = append([]markdownContainer(nil), openingContainers...)
+				outside = false
+			}
+		}
+		lines = append(lines, markdownLine{
+			start:        start,
+			end:          end,
+			text:         text,
+			outsideFence: outside,
+			topLevel:     topLevel,
+		})
+
+		// Carry list continuation indentation so an HTML block opened on a later
+		// indented line remains scoped to that list, not the whole document.
+		if blank && emptyListParentDepth >= 0 {
+			// An empty list marker has no paragraph whose continuation can span a
+			// blank line. End that innermost list without discarding any ancestor
+			// container that still owns the following indented content.
+			listContainers = listContainers[:emptyListParentDepth]
+			emptyListParentDepth = -1
+		} else if remainder, explicitContainers, ok := stripMarkdownOpeningContainersWithActive(text, listContainers); ok &&
+			containsMarkdownList(explicitContainers) &&
+			!(paragraphAtLineStart && (isMarkdownBlankLine(remainder) || firstNewContainerCannotInterruptParagraph(explicitContainers, listContainers))) {
+			parentDepth := markdownContainerPrefixLength(explicitContainers, listContainers)
+			listContainers = append([]markdownContainer(nil), explicitContainers...)
+			emptyListParentDepth = -1
+			if isMarkdownBlankLine(remainder) {
+				emptyListParentDepth = parentDepth
+			}
+		} else if !blank && len(listContainers) > 0 {
+			if _, matched := stripMarkdownContainerPrefix(text, listContainers); matched > 0 {
+				listContainers = listContainers[:matched]
+				emptyListParentDepth = -1
+			} else {
+				if !(paragraphAtLineStart && outside && !startsNonParagraphMarkdownBlock(text, true)) {
+					listContainers = nil
+					emptyListParentDepth = -1
+				}
+			}
+		}
+
+		switch {
+		case blank:
+			paragraphOpen = false
+		case !outside, standaloneBlurbMarkerText(text), startsNonParagraphMarkdownBlock(text, paragraphOpen):
+			paragraphOpen = false
+		default:
+			paragraphOpen = true
+		}
 		start = next
 	}
 	return lines
+}
+
+// markdownLineIsTopLevel reports whether line is outside every explicit or
+// continued list/blockquote container. Installed blurb delimiters and legacy
+// headings are document-level material; marker-shaped examples nested in a
+// list or blockquote must remain ordinary user documentation.
+func markdownLineIsTopLevel(line string, activeListContainers []markdownContainer) bool {
+	if len(activeListContainers) > 0 {
+		if _, matched := stripMarkdownContainerPrefix(line, activeListContainers); matched > 0 {
+			return false
+		}
+	}
+	_, explicitContainers, ok := stripMarkdownOpeningContainers(line)
+	return !ok || len(explicitContainers) == 0
+}
+
+func opensHTMLCommentBlock(line string) bool {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	return ok && strings.HasPrefix(trimmed, "<!--")
+}
+
+func advanceHTMLCommentDepth(line string, depth int) (int, bool) {
+	start := 0
+	if depth == 0 {
+		start = strings.Index(line, "<!--")
+		if start < 0 {
+			return 0, false
+		}
+		start += len("<!--")
+	}
+	// CommonMark type-2 HTML blocks are not nested. The first closing token
+	// ends the block even when another opening token precedes it.
+	if strings.Contains(line[start:], "-->") {
+		return 0, true
+	}
+	return 1, true
+}
+
+func standaloneBlurbMarkerText(line string) bool {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok {
+		return false
+	}
+	return trimmed == BlurbEndMarker || strings.HasPrefix(trimmed, blurbStartPrefix)
+}
+
+func opensHTMLRawBlock(line string) string {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	for _, tag := range [...]string{"pre", "script", "style", "textarea"} {
+		prefix := "<" + tag
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		if len(lower) == len(prefix) {
+			return tag
+		}
+		switch lower[len(prefix)] {
+		case ' ', '\t', '>':
+			return tag
+		}
+	}
+	return ""
+}
+
+func closesHTMLRawBlock(line, tag string) bool {
+	return strings.Contains(strings.ToLower(line), "</"+tag+">")
+}
+
+func opensHTMLDelimitedBlock(line string) string {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(trimmed, "<?"):
+		return "?>"
+	case strings.HasPrefix(trimmed, "<![CDATA["):
+		return "]]>"
+	case len(trimmed) >= 3 && strings.HasPrefix(trimmed, "<!") && isASCIIAlpha(trimmed[2]):
+		return ">"
+	default:
+		return ""
+	}
+}
+
+func opensHTMLBlankTerminatedBlock(line string, paragraphOpen bool) bool {
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok || len(trimmed) < 3 || trimmed[0] != '<' {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	for _, tag := range [...]string{
+		"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
+		"col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+		"figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4",
+		"h5", "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main",
+		"menu", "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search",
+		"section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
+	} {
+		if htmlTagPrefix(lower, tag) {
+			return true
+		}
+	}
+
+	// CommonMark type 7 accepts a complete open or closing tag and runs until
+	// the next blank line, but it cannot interrupt a paragraph and the complete
+	// tag must be the only non-space/tab content on its line.
+	return !paragraphOpen && isCompleteCommonMarkHTMLTag(trimmed)
+}
+
+func htmlTagPrefix(lower, tag string) bool {
+	for _, prefix := range [...]string{"<" + tag, "</" + tag} {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		if len(lower) == len(prefix) {
+			return true
+		}
+		switch lower[len(prefix)] {
+		case ' ', '\t', '>':
+			return true
+		case '/':
+			return len(lower) > len(prefix)+1 && lower[len(prefix)+1] == '>'
+		}
+	}
+	return false
+}
+
+func isASCIIAlpha(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func isMarkdownBlankLine(line string) bool {
+	return strings.Trim(line, " \t") == ""
+}
+
+func containsMarkdownList(containers []markdownContainer) bool {
+	for _, container := range containers {
+		if container.kind == markdownList {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNewContainerCannotInterruptParagraph(containers, active []markdownContainer) bool {
+	start := markdownContainerPrefixLength(containers, active)
+	if start >= len(containers) {
+		return false
+	}
+	first := containers[start]
+	return first.kind == markdownList && first.orderedStart >= 0 && first.orderedStart != 1
+}
+
+func markdownContainerPrefixLength(containers, prefix []markdownContainer) int {
+	if len(prefix) > len(containers) {
+		return 0
+	}
+	for i := range prefix {
+		if prefix[i] != containers[i] {
+			return 0
+		}
+	}
+	return len(prefix)
+}
+
+func markdownContainersAreLists(containers []markdownContainer) bool {
+	if len(containers) == 0 {
+		return false
+	}
+	for _, container := range containers {
+		if container.kind != markdownList {
+			return false
+		}
+	}
+	return true
+}
+
+func markdownHTMLBlockOpening(line string, listContainers []markdownContainer) (string, []markdownContainer) {
+	if remainder, containers, ok := stripMarkdownOpeningContainersWithActive(line, listContainers); ok {
+		return remainder, containers
+	}
+	return line, nil
+}
+
+func stripMarkdownOpeningContainersWithActive(line string, active []markdownContainer) (string, []markdownContainer, bool) {
+	if len(active) > 0 {
+		if remainder, matched := stripMarkdownContainerPrefix(line, active); matched == len(active) {
+			tail, added, ok := stripMarkdownOpeningContainers(remainder)
+			if ok {
+				containers := append([]markdownContainer(nil), active...)
+				containers = append(containers, added...)
+				return tail, containers, true
+			}
+		}
+	}
+	return stripMarkdownOpeningContainers(line)
+}
+
+// isCompleteCommonMarkHTMLTag recognizes the complete open/closing-tag shape
+// used by CommonMark HTML block type 7. It deliberately parses the small tag
+// grammar instead of accepting the first later '>', which would misclassify
+// prose such as "<span> explanation" as an HTML block.
+func isCompleteCommonMarkHTMLTag(line string) bool {
+	if len(line) < 3 || line[0] != '<' {
+		return false
+	}
+	pos := 1
+	closing := false
+	if line[pos] == '/' {
+		closing = true
+		pos++
+	}
+	nameStart := pos
+	if pos >= len(line) || !isASCIIAlpha(line[pos]) {
+		return false
+	}
+	pos++
+	for pos < len(line) && (isASCIIAlpha(line[pos]) || isASCIIDigit(line[pos]) || line[pos] == '-') {
+		pos++
+	}
+	tagName := strings.ToLower(line[nameStart:pos])
+	if tagName == "pre" || tagName == "script" || tagName == "style" || tagName == "textarea" {
+		return false
+	}
+	if closing {
+		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+			pos++
+		}
+		return pos == len(line)-1 && line[pos] == '>'
+	}
+
+	for {
+		spaceStart := pos
+		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+			pos++
+		}
+		if pos == len(line)-1 && line[pos] == '>' {
+			return true
+		}
+		if pos+1 == len(line)-1 && line[pos] == '/' && line[pos+1] == '>' {
+			return true
+		}
+		if pos >= len(line) || pos == spaceStart || !isHTMLAttributeNameStart(line[pos]) {
+			return false
+		}
+		pos++
+		for pos < len(line) && isHTMLAttributeNameByte(line[pos]) {
+			pos++
+		}
+		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+			pos++
+		}
+		if pos >= len(line) || line[pos] != '=' {
+			continue
+		}
+		pos++
+		for pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
+			pos++
+		}
+		if pos >= len(line) {
+			return false
+		}
+		if line[pos] == '\'' || line[pos] == '"' {
+			quote := line[pos]
+			pos++
+			for pos < len(line) && line[pos] != quote {
+				pos++
+			}
+			if pos >= len(line) {
+				return false
+			}
+			pos++
+			continue
+		}
+		valueStart := pos
+		for pos < len(line) && line[pos] != ' ' && line[pos] != '\t' && line[pos] != '>' {
+			switch line[pos] {
+			case '"', '\'', '=', '<', '`':
+				return false
+			}
+			pos++
+		}
+		if pos == valueStart {
+			return false
+		}
+	}
+}
+
+func isHTMLAttributeNameStart(value byte) bool {
+	return isASCIIAlpha(value) || value == '_' || value == ':'
+}
+
+func isHTMLAttributeNameByte(value byte) bool {
+	return isHTMLAttributeNameStart(value) || isASCIIDigit(value) || value == '.' || value == '-'
+}
+
+func startsNonParagraphMarkdownBlock(line string, paragraphAlreadyOpen bool) bool {
+	line = strings.TrimSuffix(line, "\r")
+	if remainder, containers, ok := stripMarkdownOpeningContainers(line); ok && len(containers) > 0 {
+		line = remainder
+	}
+	leading := countLeadingSpaces(line)
+	if leading >= 4 || leading < len(line) && line[leading] == '\t' {
+		// Indented code cannot interrupt a paragraph; in that state it is an
+		// ordinary continuation line rather than a new block.
+		return !paragraphAlreadyOpen
+	}
+	trimmed, _, ok := standaloneMarkdownText(line)
+	if !ok {
+		return true
+	}
+	if trimmed == "" {
+		return !paragraphAlreadyOpen
+	}
+	if standaloneBlurbMarkerText(line) {
+		return true
+	}
+	if trimmed[0] == '#' {
+		width := 0
+		for width < len(trimmed) && width < 7 && trimmed[width] == '#' {
+			width++
+		}
+		if width >= 1 && width <= 6 && (width == len(trimmed) || trimmed[width] == ' ' || trimmed[width] == '\t') {
+			return true
+		}
+	}
+	nonSpace := strings.ReplaceAll(strings.ReplaceAll(trimmed, " ", ""), "\t", "")
+	if nonSpace != "" {
+		allSame := true
+		for i := 1; i < len(nonSpace); i++ {
+			if nonSpace[i] != nonSpace[0] {
+				allSame = false
+				break
+			}
+		}
+		if allSame && nonSpace[0] == '=' {
+			return paragraphAlreadyOpen
+		}
+		if allSame && nonSpace[0] == '-' {
+			return paragraphAlreadyOpen || len(nonSpace) >= 3
+		}
+		if allSame && len(nonSpace) >= 3 && (nonSpace[0] == '*' || nonSpace[0] == '_') {
+			return true
+		}
+	}
+	return false
 }
 
 func markdownFenceOpening(line string) (byte, int, string, []markdownContainer, bool) {
@@ -582,6 +1088,9 @@ func stripMarkdownOpeningContainers(line string) (string, []markdownContainer, b
 	for {
 		spaces := countLeadingSpaces(line[pos:])
 		if spaces > 3 {
+			if len(containers) > 0 {
+				return line[pos:], containers, true
+			}
 			return "", nil, false
 		}
 		pos += spaces
@@ -598,13 +1107,14 @@ func stripMarkdownOpeningContainers(line string) (string, []markdownContainer, b
 			continue
 		}
 
-		markerWidth, gapWidth, isList := markdownListMarker(line[pos:])
+		markerWidth, gapBytes, continuationIndent, orderedStart, isList := markdownListMarker(line[pos:], spaces)
 		if isList {
 			containers = append(containers, markdownContainer{
-				kind:   markdownList,
-				indent: spaces + markerWidth + gapWidth,
+				kind:         markdownList,
+				indent:       continuationIndent,
+				orderedStart: orderedStart,
 			})
-			pos += markerWidth + gapWidth
+			pos += markerWidth + gapBytes
 			continue
 		}
 
@@ -613,18 +1123,24 @@ func stripMarkdownOpeningContainers(line string) (string, []markdownContainer, b
 }
 
 func stripMarkdownContainers(line string, containers []markdownContainer) (string, bool) {
+	remainder, matched := stripMarkdownContainerPrefix(line, containers)
+	return remainder, matched == len(containers)
+}
+
+func stripMarkdownContainerPrefix(line string, containers []markdownContainer) (string, int) {
 	line = strings.TrimSuffix(line, "\r")
 	pos := 0
-	for _, container := range containers {
+	for index, container := range containers {
+		containerStart := pos
 		switch container.kind {
 		case markdownBlockquote:
 			spaces := countLeadingSpaces(line[pos:])
 			if spaces > 3 {
-				return "", false
+				return line[containerStart:], index
 			}
 			pos += spaces
 			if pos >= len(line) || line[pos] != '>' {
-				return "", false
+				return line[containerStart:], index
 			}
 			pos++
 			if pos < len(line) && (line[pos] == ' ' || line[pos] == '\t') {
@@ -632,24 +1148,25 @@ func stripMarkdownContainers(line string, containers []markdownContainer) (strin
 			}
 		case markdownList:
 			if container.indent <= 0 || len(line)-pos < container.indent {
-				return "", false
+				return line[containerStart:], index
 			}
 			for i := 0; i < container.indent; i++ {
 				if line[pos+i] != ' ' {
-					return "", false
+					return line[containerStart:], index
 				}
 			}
 			pos += container.indent
 		}
 	}
-	return line[pos:], true
+	return line[pos:], len(containers)
 }
 
-func markdownListMarker(line string) (int, int, bool) {
-	if len(line) < 2 {
-		return 0, 0, false
+func markdownListMarker(line string, markerColumn int) (int, int, int, int, bool) {
+	if len(line) == 0 {
+		return 0, 0, 0, 0, false
 	}
 	markerWidth := 0
+	orderedStart := -1
 	switch line[0] {
 	case '-', '+', '*':
 		markerWidth = 1
@@ -658,24 +1175,42 @@ func markdownListMarker(line string) (int, int, bool) {
 			markerWidth++
 		}
 		if markerWidth == 0 || markerWidth >= len(line) || (line[markerWidth] != '.' && line[markerWidth] != ')') {
-			return 0, 0, false
+			return 0, 0, 0, 0, false
 		}
+		orderedStart, _ = strconv.Atoi(line[:markerWidth])
 		markerWidth++
 	}
-	if markerWidth >= len(line) {
-		return 0, 0, false
+	if markerWidth == len(line) {
+		return markerWidth, 0, markerColumn + markerWidth + 1, orderedStart, true
 	}
-	if line[markerWidth] == '\t' {
-		return markerWidth, 1, true
+	if strings.Trim(line[markerWidth:], " \t") == "" {
+		return markerWidth, len(line) - markerWidth, markerColumn + markerWidth + 1, orderedStart, true
 	}
-	if line[markerWidth] != ' ' {
-		return 0, 0, false
+	if line[markerWidth] != ' ' && line[markerWidth] != '\t' {
+		return 0, 0, 0, 0, false
 	}
-	gapWidth := countLeadingSpaces(line[markerWidth:])
-	if gapWidth < 1 || gapWidth > 4 {
-		return 0, 0, false
+	afterMarker := markerColumn + markerWidth
+	column := afterMarker
+	whitespaceEnd := markerWidth
+	for whitespaceEnd < len(line) && (line[whitespaceEnd] == ' ' || line[whitespaceEnd] == '\t') {
+		if line[whitespaceEnd] == ' ' {
+			column++
+		} else {
+			column += 4 - column%4
+		}
+		whitespaceEnd++
 	}
-	return markerWidth, gapWidth, true
+	paddingColumns := column - afterMarker
+	gapBytes := whitespaceEnd - markerWidth
+	if paddingColumns > 4 {
+		gapBytes = 1
+		if line[markerWidth] == ' ' {
+			paddingColumns = 1
+		} else {
+			paddingColumns = 4 - afterMarker%4
+		}
+	}
+	return markerWidth, gapBytes, afterMarker + paddingColumns, orderedStart, true
 }
 
 func countLeadingSpaces(line string) int {
@@ -695,7 +1230,7 @@ func standaloneMarkdownText(line string) (string, int, bool) {
 	if indent > 3 || (indent < len(line) && line[indent] == '\t') {
 		return "", 0, false
 	}
-	return strings.TrimSpace(line[indent:]), indent, true
+	return strings.Trim(line[indent:], " \t"), indent, true
 }
 
 func markdownFenceRun(line string) (byte, int, string, bool) {
@@ -715,7 +1250,7 @@ func markdownFenceRun(line string) (byte, int, string, bool) {
 }
 
 func markdownHeading(line markdownLine) (int, string, bool) {
-	if !line.outsideFence {
+	if !line.outsideFence || !line.topLevel {
 		return 0, "", false
 	}
 	trimmed, _, ok := standaloneMarkdownText(line.text)
@@ -729,8 +1264,62 @@ func markdownHeading(line markdownLine) (int, string, bool) {
 	if level > 6 || level == len(trimmed) || (trimmed[level] != ' ' && trimmed[level] != '\t') {
 		return 0, "", false
 	}
-	title := strings.TrimSpace(strings.TrimRight(trimmed[level:], "#"))
+	body := strings.TrimRight(trimmed[level:], " \t")
+	closingStart := len(body)
+	for closingStart > 0 && body[closingStart-1] == '#' {
+		closingStart--
+	}
+	// CommonMark only treats a trailing # run as an ATX closing sequence when
+	// whitespace separates it from the heading text. Without that separator,
+	// the hashes are literal title bytes and must participate in legacy matching.
+	if closingStart < len(body) && closingStart > 0 && (body[closingStart-1] == ' ' || body[closingStart-1] == '\t') {
+		body = strings.TrimRight(body[:closingStart], " \t")
+	}
+	title := strings.TrimSpace(body)
 	return level, title, true
+}
+
+// markdownSetextHeading recognizes a top-level CommonMark setext underline at
+// underlineIndex and returns the heading level. The caller uses the preceding
+// line as the start of the new section; recognizing that boundary prevents a
+// legacy signature from being assembled across unrelated Markdown sections.
+func markdownSetextHeading(lines []markdownLine, underlineIndex int) (int, int, bool) {
+	if underlineIndex <= 0 || underlineIndex >= len(lines) {
+		return 0, 0, false
+	}
+	underline := lines[underlineIndex]
+	previous := lines[underlineIndex-1]
+	if !underline.outsideFence || !underline.topLevel || !previous.outsideFence || !previous.topLevel {
+		return 0, 0, false
+	}
+	if isMarkdownBlankLine(previous.text) || startsNonParagraphMarkdownBlock(previous.text, false) {
+		return 0, 0, false
+	}
+	trimmed, _, ok := standaloneMarkdownText(underline.text)
+	if !ok || trimmed == "" {
+		return 0, 0, false
+	}
+	marker := trimmed[0]
+	if marker != '=' && marker != '-' {
+		return 0, 0, false
+	}
+	for i := 1; i < len(trimmed); i++ {
+		if trimmed[i] != marker {
+			return 0, 0, false
+		}
+	}
+	paragraphStart := underlineIndex - 1
+	for paragraphStart > 0 {
+		candidate := lines[paragraphStart-1]
+		if !candidate.outsideFence || !candidate.topLevel || isMarkdownBlankLine(candidate.text) || startsNonParagraphMarkdownBlock(candidate.text, false) {
+			break
+		}
+		paragraphStart--
+	}
+	if marker == '=' {
+		return 1, paragraphStart, true
+	}
+	return 2, paragraphStart, true
 }
 
 func findLegacyBlurb(content string) (legacyBlurbSpan, bool) {
@@ -752,20 +1341,33 @@ func findLegacyBlurbWithPolicy(content string, consumeAmbiguousFence bool) (lega
 				sectionEnd = j
 				break
 			}
+			if nextLevel, headingStart, isHeading := markdownSetextHeading(lines, j); isHeading && nextLevel <= level {
+				sectionEnd = headingStart
+				break
+			}
 		}
 
-		sawInsights := false
-		sawPlan := false
+		nextPattern := 1 // The heading above already matched LegacyBlurbPatterns[0].
 		endLine := -1
 		for j := i + 1; j < sectionEnd; j++ {
 			if !lines[j].outsideFence {
 				continue
 			}
 			text := lines[j].text
-			sawInsights = sawInsights || strings.Contains(text, "--robot-insights")
-			sawPlan = sawPlan || strings.Contains(text, "--robot-plan")
-			if sawInsights && sawPlan && strings.Contains(text, "bv already computes the hard parts") {
-				endLine = j
+			searchFrom := 0
+			for nextPattern < len(LegacyBlurbPatterns) {
+				offset := strings.Index(text[searchFrom:], LegacyBlurbPatterns[nextPattern])
+				if offset < 0 {
+					break
+				}
+				searchFrom += offset + len(LegacyBlurbPatterns[nextPattern])
+				nextPattern++
+				if nextPattern == len(LegacyBlurbPatterns) {
+					endLine = j
+					break
+				}
+			}
+			if endLine >= 0 {
 				break
 			}
 		}
@@ -823,7 +1425,7 @@ func hasMatchingFenceClose(lines []markdownLine, start, end int, char byte, widt
 func removeDelimitedBlurb(content string, startIdx, endIdx int) string {
 	prefixEnd := trimLineBreaksBefore(content, startIdx)
 	suffixStart := trimLineBreaksAfter(content, endIdx)
-	if prefixEnd > 0 && suffixStart < len(content) {
+	if prefixEnd > 0 {
 		separator := preferredLineBreak(content[prefixEnd:startIdx] + content[endIdx:suffixStart])
 		return content[:prefixEnd] + separator + content[suffixStart:]
 	}
@@ -870,6 +1472,9 @@ func preferredLineBreak(removedWhitespace string) string {
 	}
 	if strings.Contains(removedWhitespace, "\r\n") {
 		return "\r\n"
+	}
+	if strings.Contains(removedWhitespace, "\r") && !strings.Contains(removedWhitespace, "\n") {
+		return "\r"
 	}
 	return "\n"
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -572,15 +573,12 @@ func TestCreateAgentFileDoesNotReplaceExistingFile(t *testing.T) {
 	}
 }
 
-func TestWriteNewFileExclusiveFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
+func TestWriteNewFileExclusiveUsesNoReplacementCreate(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
 	want := []byte("# Complete instructions\n")
-	linkUnsupported := func(string, string) error {
-		return errors.New("hard links are unsupported")
-	}
 
-	if err := writeNewFileExclusiveUsing(filePath, want, linkUnsupported); err != nil {
+	if err := writeNewFileExclusive(filePath, want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filePath)
@@ -588,19 +586,19 @@ func TestWriteNewFileExclusiveFallsBackWhenHardLinksAreUnavailable(t *testing.T)
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("fallback content=%q, want %q", got, want)
+		t.Fatalf("created content=%q, want %q", got, want)
 	}
 
-	err = writeNewFileExclusiveUsing(filePath, []byte("replacement"), linkUnsupported)
+	err = writeNewFileExclusive(filePath, []byte("replacement"))
 	if err == nil || !errors.Is(err, os.ErrExist) {
-		t.Fatalf("fallback existing-path error=%v, want os.ErrExist", err)
+		t.Fatalf("existing-path error=%v, want os.ErrExist", err)
 	}
 	got, err = os.ReadFile(filePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("fallback replaced existing content: got %q, want %q", got, want)
+		t.Fatalf("exclusive create replaced existing content: got %q, want %q", got, want)
 	}
 }
 
@@ -738,8 +736,14 @@ func TestWriteReplacementPreservesPermissions(t *testing.T) {
 		t.Fatalf("Initial permissions wrong: %o", info.Mode().Perm())
 	}
 
-	// Same-directory replacement
-	if err := writeReplacement(filePath, []byte("new content")); err != nil {
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+
+	// Same-directory replacement of the locked, still-current source.
+	if err := locked.replace([]byte("new content")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -762,22 +766,214 @@ func TestWriteReplacementPreservesPermissions(t *testing.T) {
 	}
 }
 
-func TestWriteReplacementNewFile(t *testing.T) {
+func TestAppendBlurbRejectsSymlinkWithoutUpdatingTarget(t *testing.T) {
 	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "new-file.md")
+	targetPath := filepath.Join(tmpDir, "instructions.md")
+	linkPath := filepath.Join(tmpDir, "AGENTS.md")
+	if err := os.WriteFile(targetPath, []byte("# Original\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("instructions.md", linkPath); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
 
-	// Write to non-existent file
-	if err := writeReplacement(filePath, []byte("brand new")); err != nil {
+	if err := AppendBlurbToFile(linkPath); err == nil || !strings.Contains(err.Error(), "symbolic-link") {
+		t.Fatalf("AppendBlurbToFile error=%v, want symbolic-link refusal", err)
+	}
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("AppendBlurbToFile replaced the symlink instead of its target")
+	}
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "# Original\n" {
+		t.Fatalf("symlink target changed despite refusal:\n%s", content)
+	}
+}
+
+func TestWriteReplacementRejectsConcurrentSymlinkRetarget(t *testing.T) {
+	tmpDir := t.TempDir()
+	secondTarget := filepath.Join(tmpDir, "second.md")
+	linkPath := filepath.Join(tmpDir, "AGENTS.md")
+	newLinkPath := filepath.Join(tmpDir, "new-link")
+	if err := os.WriteFile(secondTarget, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linkPath, []byte("first"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify file created
+	locked, err := lockAgentFileForMutation(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+	if err := os.Symlink(secondTarget, newLinkPath); err != nil {
+		t.Skipf("cannot create replacement symlink: %v", err)
+	}
+	if err := os.Rename(newLinkPath, linkPath); err != nil {
+		t.Skipf("platform cannot atomically retarget a symlink: %v", err)
+	}
+
+	if err := locked.replace([]byte("bv replacement")); !errors.Is(err, errAgentFileChanged) {
+		t.Fatalf("replace error=%v, want symlink-change refusal", err)
+	}
+	got, err := os.ReadFile(secondTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "second" {
+		t.Fatalf("retarget race changed %s: got %q, want %q", secondTarget, got, "second")
+	}
+}
+
+func TestVerifyRequestedPathRejectsRegularFileChangedToSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	requestedPath := filepath.Join(tmpDir, "AGENTS.md")
+	displacedPath := filepath.Join(tmpDir, "AGENTS.displaced.md")
+	victimPath := filepath.Join(tmpDir, "victim.md")
+	if err := os.WriteFile(requestedPath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(victimPath, []byte("victim"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initialInfo, err := os.Lstat(requestedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(requestedPath, displacedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victimPath, requestedPath); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	victimInfo, err := os.Stat(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locked := &lockedAgentFile{
+		requestedPath: requestedPath,
+		requestedInfo: initialInfo,
+	}
+	if err := locked.verifyRequestedPath(victimInfo); !errors.Is(err, errAgentFileChanged) {
+		t.Fatalf("verifyRequestedPath error=%v, want regular-to-symlink refusal", err)
+	}
+	content, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "victim" {
+		t.Fatalf("victim content changed: %q", content)
+	}
+}
+
+func TestWriteReplacementRejectsConcurrentByteChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+
+	// A lock-ignoring writer changes a byte while bv holds its cooperative
+	// process lock. Byte verification must still refuse to overwrite the edit.
+	editor, err := os.OpenFile(filePath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := editor.WriteAt([]byte("X"), 1); err != nil {
+		_ = editor.Close()
+		t.Fatal(err)
+	}
+	if err := editor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := locked.replace([]byte("bv replacement")); !errors.Is(err, errAgentFileChanged) {
+		t.Fatalf("replace error=%v, want concurrent-change refusal", err)
+	}
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != "brand new" {
-		t.Errorf("Unexpected content: %s", content)
+	if string(content) != "oXiginal" {
+		t.Fatalf("concurrent bytes were overwritten: %q", content)
+	}
+}
+
+func TestWriteReplacementRejectsConcurrentIdentityChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+
+	editorPath := filepath.Join(tmpDir, "editor-save")
+	if err := os.WriteFile(editorPath, []byte("concurrent atomic save"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(editorPath, filePath); err != nil {
+		t.Skipf("platform does not permit replacing a locked destination: %v", err)
+	}
+	if err := locked.replace([]byte("bv replacement")); !errors.Is(err, errAgentFileChanged) {
+		t.Fatalf("replace error=%v, want destination-identity refusal", err)
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "concurrent atomic save" {
+		t.Fatalf("concurrent replacement was overwritten: %q", content)
+	}
+}
+
+func TestWriteReplacementRejectsHardLinkedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	aliasPath := filepath.Join(tmpDir, "AGENTS.alias.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filePath, aliasPath); err != nil {
+		t.Skipf("filesystem does not support hard links: %v", err)
+	}
+
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
+	if err := locked.replace([]byte("bv replacement")); err == nil || !strings.Contains(err.Error(), "hard links") {
+		t.Fatalf("replace error=%v, want hard-link refusal", err)
+	}
+
+	for _, path := range []string{filePath, aliasPath} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != "original" {
+			t.Fatalf("hard-linked file %s changed: %q", path, content)
+		}
 	}
 }
 
@@ -943,6 +1139,9 @@ func TestAppendBlurbNonExistentFile(t *testing.T) {
 
 func TestWriteReplacementNoPermission(t *testing.T) {
 	// Skip on platforms where we can't test permissions properly
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows ACLs, not Unix mode bits, govern directory writes")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("Skipping permission test as root")
 	}
@@ -951,15 +1150,26 @@ func TestWriteReplacementNoPermission(t *testing.T) {
 
 	// Create a read-only directory
 	readOnlyDir := filepath.Join(tmpDir, "readonly")
-	if err := os.Mkdir(readOnlyDir, 0555); err != nil {
+	if err := os.Mkdir(readOnlyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(readOnlyDir, "test.md")
+	if err := os.WriteFile(filePath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnlyDir, 0555); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chmod(readOnlyDir, 0755) // Cleanup
 
-	filePath := filepath.Join(readOnlyDir, "test.md")
+	locked, err := lockAgentFileForMutation(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locked.close()
 
 	// This should fail because we can't create temp file in read-only dir
-	err := writeReplacement(filePath, []byte("test"))
+	err = locked.replace([]byte("test"))
 	if err == nil {
 		t.Error("Expected error writing to read-only directory")
 	}
