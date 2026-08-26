@@ -64,6 +64,26 @@ func TestAppendBlurbToEmptyFile(t *testing.T) {
 	}
 }
 
+func TestAppendBlurbToFileRejectsMalformedMarkersWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n\n<!-- end-bv-agent-instructions -->\nUser instructions"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AppendBlurbToFile(filePath); err == nil {
+		t.Fatal("expected malformed marker error")
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("malformed append changed file:\n got: %q\nwant: %q", content, original)
+	}
+}
+
 func TestUpdateBlurbInFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
@@ -95,6 +115,37 @@ func TestUpdateBlurbInFile(t *testing.T) {
 	}
 }
 
+func TestUpdateBlurbInFileRejectsMalformedMarkersWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n\n<!-- bv-agent-instructions-v1 -->\nUser instructions without an end marker"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := UpdateBlurbInFile(filePath); err == nil {
+		t.Fatal("expected malformed marker error")
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("malformed update changed file:\n got: %q\nwant: %q", content, original)
+	}
+
+	if err := UpdateBlurbInFile(filePath); err == nil {
+		t.Fatal("expected repeated malformed marker error")
+	}
+	content, err = os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("repeated malformed update changed file:\n got: %q\nwant: %q", content, original)
+	}
+}
+
 func TestRemoveBlurbFromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
@@ -121,6 +172,89 @@ func TestRemoveBlurbFromFile(t *testing.T) {
 	}
 	if !strings.Contains(string(newContent), "# My AGENTS.md") {
 		t.Error("Header should still be present")
+	}
+}
+
+func TestRemoveBlurbFromFileRemovesLegacyAndDuplicateVersionedBlocks(t *testing.T) {
+	t.Run("legacy", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := `# Header
+
+### Using bv as an AI sidecar
+
+--robot-insights
+--robot-plan
+bv already computes the hard parts for you.
+
+## Preserve Me
+`
+		if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := RemoveBlurbFromFile(filePath); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), "bv already computes the hard parts") {
+			t.Fatalf("legacy blurb was not removed:\n%s", content)
+		}
+		if !strings.Contains(string(content), "# Header") || !strings.Contains(string(content), "## Preserve Me") {
+			t.Fatalf("legacy removal lost surrounding content:\n%s", content)
+		}
+	})
+
+	t.Run("multiple versioned", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := "# Header\n\n" +
+			"<!-- bv-agent-instructions-v4 -->\none\n<!-- end-bv-agent-instructions -->\n\n" +
+			"Preserve between.\n\n" +
+			"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->\n\n# Footer\n"
+		if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := RemoveBlurbFromFile(filePath); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(content), blurbStartPrefix) || strings.Contains(string(content), BlurbEndMarker) {
+			t.Fatalf("not all versioned blurbs were removed:\n%s", content)
+		}
+		for _, preserved := range []string{"# Header", "Preserve between.", "# Footer"} {
+			if !strings.Contains(string(content), preserved) {
+				t.Fatalf("versioned removal lost %q:\n%s", preserved, content)
+			}
+		}
+	})
+}
+
+func TestRemoveBlurbFromFileRejectsMalformedMarkersWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n<!-- bv-agent-instructions-v1 -->\nUser instructions\n" +
+		"<!-- bv-agent-instructions-v4 -->\nMore user instructions\n<!-- end-bv-agent-instructions -->\n# Footer"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveBlurbFromFile(filePath); err == nil {
+		t.Fatal("expected malformed marker error")
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("malformed removal changed file:\n got: %q\nwant: %q", content, original)
 	}
 }
 
@@ -179,6 +313,54 @@ func TestVerifyBlurbPresent(t *testing.T) {
 		}
 		if present {
 			t.Error("Expected blurb to NOT be present")
+		}
+	})
+
+	t.Run("malformed current blurb", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "malformed-blurb.md")
+		content := "<!-- bv-agent-instructions-v4 -->\nmissing end marker"
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		present, err := VerifyBlurbPresent(filePath)
+		if err == nil {
+			t.Fatal("expected malformed marker error")
+		}
+		if present {
+			t.Fatal("malformed marker must not verify as a present blurb")
+		}
+	})
+
+	t.Run("duplicate current blurbs", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "duplicate-blurb.md")
+		content := AgentBlurb + "\n\n" + AgentBlurb
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		present, err := VerifyBlurbPresent(filePath)
+		if err == nil {
+			t.Fatal("expected duplicate marker error")
+		}
+		if present {
+			t.Fatal("duplicate blocks must not verify as one healthy blurb")
+		}
+	})
+
+	t.Run("current and legacy blurbs", func(t *testing.T) {
+		filePath := filepath.Join(tmpDir, "current-and-legacy.md")
+		content := AgentBlurb + "\n\n" + LegacyBlurbContent
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		present, err := VerifyBlurbPresent(filePath)
+		if err == nil {
+			t.Fatal("expected remaining legacy blurb error")
+		}
+		if present {
+			t.Fatal("versioned and legacy blocks must not verify as one healthy blurb")
 		}
 	})
 
@@ -251,6 +433,55 @@ func TestAtomicWriteNewFile(t *testing.T) {
 	}
 }
 
+func TestReplaceFileWithBackupSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	tmpPath := filepath.Join(tmpDir, "replacement.tmp")
+	if err := os.WriteFile(filePath, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmpPath, []byte("replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceFileWithBackup(tmpPath, filePath); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "replacement" {
+		t.Fatalf("content=%q, want replacement", content)
+	}
+	if _, err := os.Stat(tmpPath + ".backup"); !os.IsNotExist(err) {
+		t.Fatalf("backup should be removed after success, stat error=%v", err)
+	}
+}
+
+func TestReplaceFileWithBackupRestoresOriginalOnInstallFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	missingTmpPath := filepath.Join(tmpDir, "missing-replacement.tmp")
+	if err := os.WriteFile(filePath, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceFileWithBackup(missingTmpPath, filePath); err == nil {
+		t.Fatal("expected replacement failure")
+	}
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("rollback content=%q, want original", content)
+	}
+	if _, err := os.Stat(missingTmpPath + ".backup"); !os.IsNotExist(err) {
+		t.Fatalf("backup should be consumed by successful rollback, stat error=%v", err)
+	}
+}
+
 func TestEnsureBlurb(t *testing.T) {
 	t.Run("no agent file - creates one", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -312,6 +543,49 @@ func TestEnsureBlurb(t *testing.T) {
 		count := strings.Count(string(content), BlurbStartMarker)
 		if count != 1 {
 			t.Errorf("Expected exactly 1 blurb, got %d", count)
+		}
+	})
+
+	t.Run("malformed current blurb - errors without writing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := "# My Instructions\n\n<!-- bv-agent-instructions-v4 -->\nunterminated user content"
+		if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := EnsureBlurb(tmpDir); err == nil {
+			t.Fatal("expected malformed marker error")
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != original {
+			t.Fatalf("EnsureBlurb changed malformed content:\n got: %q\nwant: %q", content, original)
+		}
+	})
+
+	t.Run("duplicate current blurbs - consolidates", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := "# My Instructions\n\n" + AgentBlurb + "\n\nPreserve me.\n\n" + AgentBlurb
+		if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := EnsureBlurb(tmpDir); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(string(content), BlurbStartMarker); got != 1 {
+			t.Fatalf("current blurb count=%d, want 1", got)
+		}
+		if !strings.Contains(string(content), "Preserve me.") {
+			t.Fatalf("duplicate consolidation lost user content:\n%s", content)
 		}
 	})
 }

@@ -13,7 +13,8 @@ type AgentFileDetection struct {
 	// FileType is the type of file found ("AGENTS.md", "CLAUDE.md", etc.)
 	FileType string
 
-	// HasBlurb indicates whether the file already contains our blurb (current or legacy)
+	// HasBlurb indicates whether the file contains a versioned-marker prefix or
+	// a detected legacy blurb. Consult BlurbStructureError before mutation.
 	HasBlurb bool
 
 	// HasLegacyBlurb indicates the file has the old-format blurb (pre-v1, no HTML markers)
@@ -21,6 +22,14 @@ type AgentFileDetection struct {
 
 	// BlurbVersion is the version of the blurb found (0 if none or legacy)
 	BlurbVersion int
+
+	// BlurbCount is the number of complete, structurally valid versioned blocks
+	// found before any malformed marker. A healthy injected blurb has count 1.
+	BlurbCount int
+
+	// BlurbStructureError describes malformed versioned marker structure. It is
+	// empty when all versioned start/end markers are balanced and non-nested.
+	BlurbStructureError string
 
 	// Content is the file content (populated if file was read)
 	Content string
@@ -33,13 +42,25 @@ func (d AgentFileDetection) Found() bool {
 
 // NeedsBlurb returns true if the file exists but doesn't have our blurb.
 func (d AgentFileDetection) NeedsBlurb() bool {
-	return d.Found() && !d.HasBlurb
+	return d.Found() && !d.HasBlurb && !d.HasMalformedBlurb()
 }
 
-// NeedsUpgrade returns true if the file has an older version of the blurb
-// (either legacy format or outdated versioned blurb).
+// HasMalformedBlurb reports whether versioned marker structure is invalid.
+func (d AgentFileDetection) HasMalformedBlurb() bool {
+	return d.BlurbStructureError != ""
+}
+
+// HasDuplicateBlurbs reports whether more than one complete versioned block is
+// present. Duplicate current-version blocks still need normalization.
+func (d AgentFileDetection) HasDuplicateBlurbs() bool {
+	return d.BlurbCount > 1
+}
+
+// NeedsUpgrade returns true when the blurb needs repair or normalization:
+// malformed markers, duplicate versioned blocks, legacy content, or an older
+// versioned blurb all require attention.
 func (d AgentFileDetection) NeedsUpgrade() bool {
-	if d.HasLegacyBlurb {
+	if d.HasMalformedBlurb() || d.HasDuplicateBlurbs() || d.HasLegacyBlurb {
 		return true
 	}
 	return d.HasBlurb && d.BlurbVersion < BlurbVersion
@@ -97,14 +118,21 @@ func checkAgentFile(filePath, fileType string) AgentFileDetection {
 
 	contentStr := string(content)
 	hasLegacy := ContainsLegacyBlurb(contentStr)
+	blurbCount, structureErr := inspectBlurbStructure(contentStr)
+	structureError := ""
+	if structureErr != nil {
+		structureError = structureErr.Error()
+	}
 
 	return AgentFileDetection{
-		FilePath:       filePath,
-		FileType:       fileType,
-		HasBlurb:       ContainsAnyBlurb(contentStr),
-		HasLegacyBlurb: hasLegacy,
-		BlurbVersion:   GetBlurbVersion(contentStr),
-		Content:        contentStr,
+		FilePath:            filePath,
+		FileType:            fileType,
+		HasBlurb:            ContainsAnyBlurb(contentStr),
+		HasLegacyBlurb:      hasLegacy,
+		BlurbVersion:        GetBlurbVersion(contentStr),
+		BlurbCount:          blurbCount,
+		BlurbStructureError: structureError,
+		Content:             contentStr,
 	}
 }
 

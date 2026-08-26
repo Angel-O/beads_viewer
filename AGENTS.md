@@ -230,7 +230,7 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ## beads_viewer — This Project
 
-**This is the project you're working on.** beads_viewer (`bv`) is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` workspaces, with `.beads/beads.jsonl` supported for legacy/`bd` workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically. It provides both an interactive TUI and machine-readable `--robot-*` JSON outputs for AI agent consumption.
+**This is the project you're working on.** beads_viewer (`bv`) is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` and Dolt-backed `bd` workspaces, with `.beads/beads.jsonl` supported for legacy workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically. It provides both an interactive TUI and machine-readable `--robot-*` JSON outputs for AI agent consumption.
 
 ### What It Does
 
@@ -522,7 +522,7 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 
 ## bv — Graph-Aware Triage Engine
 
-bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` workspaces, with `.beads/beads.jsonl` supported for legacy/`bd` workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
+bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` and Dolt-backed `bd` workspaces, with `.beads/beads.jsonl` supported for legacy workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
 
 **Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
 
@@ -750,19 +750,21 @@ Returns structured results with file paths, line ranges, and extracted code snip
 - **Don't** use `ripgrep` to understand "how does X work" → wastes time with manual reads
 - **Don't** use `ripgrep` for codemods → risks collateral edits
 
-<!-- bv-agent-instructions-v3 -->
+<!-- bv-agent-instructions-v4 -->
 
 ---
 
 ## Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported JSONL files, so agents should use `br`/`bv` commands instead of hard-coding a single filename.
+This project uses a Beads tracker—either the Go `bd` CLI or the Rust `br` CLI—for issue tracking, plus [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/`. `bv` auto-discovers supported JSONL exports, including `.beads/issues.jsonl` and legacy `.beads/beads.jsonl`.
+
+**Choose the tracker CLI from this repository's instructions and configuration.** Use `bd` commands in a Go Beads workspace and `br` commands in a beads_rust workspace. Do not run both trackers against the same workspace or infer the tracker solely from the JSONL filename.
 
 ### Using bv as an AI sidecar
 
 bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
 
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). `br` handles creating, modifying, and closing beads.
+**Scope boundary:** bv handles *what to work on* (triage, priority, planning). The selected tracker CLI (`bd` or `br`) handles creating, claiming, modifying, and closing beads.
 
 **CRITICAL: Use ONLY --robot-* flags. Bare bv launches an interactive TUI that blocks your session.**
 
@@ -784,7 +786,7 @@ bv --robot-next          # Minimal: just the single top pick + claim command
 bv --robot-triage --format toon
 ```
 
-Before claiming, verify current state with `br show <id> --json` or `br ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
+Before claiming, verify current state with the selected tracker: `br show <id> --json`/`br ready --json` or `bd show <id> --json`/`bd ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
 
 #### Other bv Commands
 
@@ -807,7 +809,11 @@ bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blo
 bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
 ```
 
-### br Commands for Issue Management
+### Tracker Commands for Issue Management
+
+Use exactly one command family, matching the tracker configured for the repository.
+
+#### Rust beads_rust (`br`)
 
 ```bash
 br ready --json                       # Show issues ready to work (no blockers)
@@ -820,24 +826,37 @@ br close <id1> <id2> --reason="Completed" --json
 br sync --flush-only                  # Export DB to JSONL after Beads mutations
 ```
 
+#### Go Beads (`bd`)
+
+```bash
+bd ready --json                       # Show issues ready to work
+bd show <id> --json                   # Full issue details
+bd create "..." -t task -p 2 --json
+bd update <id> --claim --json         # Atomically claim work
+bd close <id> --json
+bd dep add <issue> <depends-on>
+bd export -o .beads/issues.jsonl      # Refresh the compatibility export read by bv
+```
+
 ### Workflow Pattern
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Use `br update <id> --status=in_progress --json`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id> --reason="Completed" --json`
-5. **Sync**: Run `br sync --flush-only` after Beads mutations so the JSONL export is current
+2. **Verify**: Check the selected tracker's `show`/`ready` output before claiming
+3. **Claim**: Use `br update <id> --status=in_progress --json` or `bd update <id> --claim --json`
+4. **Work**: Implement the task
+5. **Complete**: Use the selected tracker's `close` command
+6. **Refresh for bv**: Run `br sync --flush-only` or the `bd export` command above so the JSONL export is current
 
 ### Key Concepts
 
-- **Dependencies**: Issues can block other issues. `br ready --json` shows only unblocked work.
+- **Dependencies**: Issues can block other issues. `br ready --json` and `bd ready --json` show unblocked work.
 - **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
 - **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
+- **Blocking**: Use `br dep add <issue> <depends-on>` or `bd dep add <issue> <depends-on>` to add dependencies
 
 ### Git Policy
 
-`br` never commits or pushes. Follow this repository's own git instructions before staging, committing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
+Tracker commands do not grant permission to commit or push application code. Follow this repository's own git and tracker instructions before staging, committing, syncing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
 
 <!-- end-bv-agent-instructions -->
 

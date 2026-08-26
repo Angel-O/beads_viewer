@@ -125,6 +125,7 @@ func TestAgentFileDetectionMethods(t *testing.T) {
 			{"empty", AgentFileDetection{}, false},
 			{"found without blurb", AgentFileDetection{FilePath: "/path", HasBlurb: false}, true},
 			{"found with blurb", AgentFileDetection{FilePath: "/path", HasBlurb: true}, false},
+			{"found with malformed markers", AgentFileDetection{FilePath: "/path", BlurbStructureError: "bad markers"}, false},
 		}
 
 		for _, tt := range tests {
@@ -143,8 +144,10 @@ func TestAgentFileDetectionMethods(t *testing.T) {
 			expected bool
 		}{
 			{"no blurb", AgentFileDetection{HasBlurb: false}, false},
-			{"current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion}, false},
+			{"current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion, BlurbCount: 1}, false},
 			{"old version", AgentFileDetection{HasBlurb: true, BlurbVersion: 0}, true},
+			{"malformed current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion, BlurbStructureError: "bad markers"}, true},
+			{"duplicate current version", AgentFileDetection{HasBlurb: true, BlurbVersion: BlurbVersion, BlurbCount: 2}, true},
 		}
 
 		for _, tt := range tests {
@@ -155,6 +158,67 @@ func TestAgentFileDetectionMethods(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestDetectAgentFileReportsMalformedAndDuplicateBlurbs(t *testing.T) {
+	tests := []struct {
+		name          string
+		content       string
+		wantHasBlurb  bool
+		wantCount     int
+		wantMalformed bool
+		wantDuplicate bool
+	}{
+		{
+			name:          "unterminated current blurb",
+			content:       "# Header\n\n<!-- bv-agent-instructions-v4 -->\ncontent",
+			wantHasBlurb:  true,
+			wantMalformed: true,
+		},
+		{
+			name:          "stray end marker",
+			content:       "# Header\n\n<!-- end-bv-agent-instructions -->",
+			wantMalformed: true,
+		},
+		{
+			name: "duplicate current blurbs",
+			content: "<!-- bv-agent-instructions-v4 -->\none\n<!-- end-bv-agent-instructions -->\n" +
+				"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->",
+			wantHasBlurb:  true,
+			wantCount:     2,
+			wantDuplicate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			filePath := filepath.Join(tmpDir, "AGENTS.md")
+			if err := os.WriteFile(filePath, []byte(tt.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			detection := DetectAgentFile(tmpDir)
+			if detection.HasBlurb != tt.wantHasBlurb {
+				t.Fatalf("HasBlurb=%v, want %v", detection.HasBlurb, tt.wantHasBlurb)
+			}
+			if detection.BlurbCount != tt.wantCount {
+				t.Fatalf("BlurbCount=%d, want %d", detection.BlurbCount, tt.wantCount)
+			}
+			if detection.HasMalformedBlurb() != tt.wantMalformed {
+				t.Fatalf("HasMalformedBlurb()=%v, want %v (error=%q)", detection.HasMalformedBlurb(), tt.wantMalformed, detection.BlurbStructureError)
+			}
+			if detection.HasDuplicateBlurbs() != tt.wantDuplicate {
+				t.Fatalf("HasDuplicateBlurbs()=%v, want %v", detection.HasDuplicateBlurbs(), tt.wantDuplicate)
+			}
+			if !detection.NeedsUpgrade() {
+				t.Fatal("malformed or duplicate blurb should need update/normalization")
+			}
+			if detection.NeedsBlurb() {
+				t.Fatal("malformed marker structure must not be treated as a safe append target")
+			}
+		})
+	}
 }
 
 func TestDetectAgentFileInParents(t *testing.T) {

@@ -80,14 +80,14 @@ irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/insta
 
 ## Generating the JSONL File (`br` and `bd`)
 
-`bv` reads Beads JSONL exports from `.beads/`. Current Rust-based `br` workspaces normally use `.beads/issues.jsonl`; older `bd` and legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported file names.
+`bv` reads Beads JSONL exports from `.beads/`. Current `br` and Dolt-backed `bd` workspaces use `.beads/issues.jsonl`; older legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported file names.
 
 **Rust (`br`) users** — run `br sync --flush-only` after Beads mutations so `.beads/issues.jsonl` is current.
 
 **Go (`bd`) users** — run:
 
 ```bash
-bd export --no-memories -o .beads/beads.jsonl
+bd export -o .beads/issues.jsonl
 ```
 
 Once the file exists, `bv` works identically regardless of which tool produced it.
@@ -171,7 +171,7 @@ Configure pre- and post-export hooks in `.bv/hooks.yaml` to run validations, not
 ```
 ### Using bv as an AI sidecar
 
-bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` workspaces, with `.beads/beads.jsonl` supported for legacy/`bd` workspaces). Instead of parsing JSONL or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
+bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` and Dolt-backed `bd` workspaces, with `.beads/beads.jsonl` supported for legacy workspaces). Instead of parsing JSONL or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
 
 **Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail).
 

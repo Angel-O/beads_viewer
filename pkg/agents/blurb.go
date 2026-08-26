@@ -4,6 +4,7 @@
 package agents
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ const BlurbStartMarker = "<!-- bv-agent-instructions-v4 -->"
 
 // BlurbEndMarker marks the end of injected agent instructions.
 const BlurbEndMarker = "<!-- end-bv-agent-instructions -->"
+
+const blurbStartPrefix = "<!-- bv-agent-instructions-v"
 
 // AgentBlurb contains the instructions to be appended to AGENTS.md files.
 // This is the v4 blurb that combines bd/br workflow commands with bv robot triage.
@@ -106,7 +109,7 @@ bd create "..." -t task -p 2 --json
 bd update <id> --claim --json         # Atomically claim work
 bd close <id> --json
 bd dep add <issue> <depends-on>
-bd export --no-memories -o .beads/beads.jsonl  # Refresh the export read by bv
+bd export -o .beads/issues.jsonl        # Refresh the compatibility export read by bv
 ` + "```" + `
 
 ### Workflow Pattern
@@ -163,7 +166,7 @@ var legacyBlurbNextSectionPattern = regexp.MustCompile(`(?m)^#{1,2}\s+[^#]`)
 
 // ContainsBlurb checks if the content already contains a beads_viewer agent blurb.
 func ContainsBlurb(content string) bool {
-	return strings.Contains(content, "<!-- bv-agent-instructions-v")
+	return strings.Contains(content, blurbStartPrefix)
 }
 
 // ContainsLegacyBlurb checks if the content contains the old-format blurb (pre-v1, no HTML markers).
@@ -202,12 +205,18 @@ func GetBlurbVersion(content string) int {
 	return version
 }
 
-// NeedsUpdate checks if the content has an older version of the blurb that should be updated.
+// NeedsUpdate checks whether the content needs normalization or an updated
+// blurb. Malformed marker structure and multiple complete versioned blocks both
+// require attention even when the first marker advertises the current version.
 func NeedsUpdate(content string) bool {
+	count, err := inspectBlurbStructure(content)
+	if err != nil || count > 1 {
+		return true
+	}
 	if ContainsLegacyBlurb(content) {
 		return true
 	}
-	if !ContainsBlurb(content) {
+	if count == 0 {
 		return false
 	}
 	return GetBlurbVersion(content) < BlurbVersion
@@ -224,9 +233,19 @@ func AppendBlurb(content string) string {
 	return content
 }
 
-// RemoveBlurb removes an existing blurb from the content.
+// RemoveBlurb removes all structurally valid versioned and legacy blurbs from
+// the content. Malformed versioned markers are left byte-for-byte unchanged;
+// file-writing callers use removeBlurbsChecked so they can surface the error.
 func RemoveBlurb(content string) string {
-	startIdx := strings.Index(content, "<!-- bv-agent-instructions-v")
+	updated, err := removeBlurbsChecked(content)
+	if err != nil {
+		return content
+	}
+	return updated
+}
+
+func removeFirstVersionedBlurb(content string) string {
+	startIdx := strings.Index(content, blurbStartPrefix)
 	if startIdx == -1 {
 		return content
 	}
@@ -264,11 +283,116 @@ func RemoveLegacyBlurb(content string) string {
 	return removeDelimitedBlurb(content, startIdx, endIdx)
 }
 
-// UpdateBlurb replaces an existing blurb with the current version.
+// UpdateBlurb replaces existing, structurally valid blurbs with the current
+// version. Malformed markers are left byte-for-byte unchanged; file-writing
+// callers use updateBlurbChecked so they can surface the validation error.
 func UpdateBlurb(content string) string {
-	content = RemoveLegacyBlurb(content)
-	content = RemoveBlurb(content)
-	return AppendBlurb(content)
+	updated, err := updateBlurbChecked(content)
+	if err != nil {
+		return content
+	}
+	return updated
+}
+
+func updateBlurbChecked(content string) (string, error) {
+	if err := validateBlurbStructure(content); err != nil {
+		return "", err
+	}
+
+	var err error
+	content, err = removeLegacyBlurbsChecked(content)
+	if err != nil {
+		return "", err
+	}
+	for ContainsBlurb(content) {
+		withoutBlurb := removeFirstVersionedBlurb(content)
+		if withoutBlurb == content {
+			return "", fmt.Errorf("malformed bv agent blurb: unable to remove validated marker")
+		}
+		content = withoutBlurb
+	}
+	return AppendBlurb(content), nil
+}
+
+func removeBlurbsChecked(content string) (string, error) {
+	if err := validateBlurbStructure(content); err != nil {
+		return "", err
+	}
+	var err error
+	content, err = removeLegacyBlurbsChecked(content)
+	if err != nil {
+		return "", err
+	}
+	for ContainsBlurb(content) {
+		withoutBlurb := removeFirstVersionedBlurb(content)
+		if withoutBlurb == content {
+			return "", fmt.Errorf("malformed bv agent blurb: unable to remove validated marker")
+		}
+		content = withoutBlurb
+	}
+	return content, nil
+}
+
+func removeLegacyBlurbsChecked(content string) (string, error) {
+	for ContainsLegacyBlurb(content) {
+		withoutBlurb := RemoveLegacyBlurb(content)
+		if withoutBlurb == content {
+			return "", fmt.Errorf("malformed legacy bv agent blurb: unable to remove detected content")
+		}
+		content = withoutBlurb
+	}
+	return content, nil
+}
+
+func validateBlurbStructure(content string) error {
+	_, err := inspectBlurbStructure(content)
+	return err
+}
+
+func inspectBlurbStructure(content string) (int, error) {
+	cursor := 0
+	count := 0
+	for cursor < len(content) {
+		remaining := content[cursor:]
+		startOffset := strings.Index(remaining, blurbStartPrefix)
+		endOffset := strings.Index(remaining, BlurbEndMarker)
+
+		if startOffset == -1 {
+			if endOffset != -1 {
+				return count, fmt.Errorf("malformed bv agent blurb: end marker at byte %d has no start marker", cursor+endOffset)
+			}
+			return count, nil
+		}
+		if endOffset != -1 && endOffset < startOffset {
+			return count, fmt.Errorf("malformed bv agent blurb: end marker at byte %d precedes start marker", cursor+endOffset)
+		}
+
+		start := cursor + startOffset
+		markerCloseOffset := strings.Index(content[start:], "-->")
+		if markerCloseOffset == -1 {
+			return count, fmt.Errorf("malformed bv agent blurb: start marker at byte %d is unterminated", start)
+		}
+		markerEnd := start + markerCloseOffset + len("-->")
+		marker := content[start:markerEnd]
+		match := blurbVersionRegex.FindStringIndex(marker)
+		if match == nil || match[0] != 0 || match[1] != len(marker) {
+			return count, fmt.Errorf("malformed bv agent blurb: invalid start marker at byte %d", start)
+		}
+
+		body := content[markerEnd:]
+		nextStartOffset := strings.Index(body, blurbStartPrefix)
+		matchingEndOffset := strings.Index(body, BlurbEndMarker)
+		if matchingEndOffset == -1 {
+			return count, fmt.Errorf("malformed bv agent blurb: start marker at byte %d has no end marker", start)
+		}
+		if nextStartOffset != -1 && nextStartOffset < matchingEndOffset {
+			return count, fmt.Errorf("malformed bv agent blurb: nested start marker at byte %d", markerEnd+nextStartOffset)
+		}
+
+		count++
+		cursor = markerEnd + matchingEndOffset + len(BlurbEndMarker)
+	}
+	return count, nil
 }
 
 func removeDelimitedBlurb(content string, startIdx, endIdx int) string {

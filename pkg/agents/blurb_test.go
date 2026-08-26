@@ -164,7 +164,7 @@ func TestRemoveBlurbPreservesSurroundingLineBreak(t *testing.T) {
 	}
 }
 
-func TestRemoveBlurbUsesEndMarkerAfterStartMarker(t *testing.T) {
+func TestRemoveBlurbRejectsEndMarkerBeforeStart(t *testing.T) {
 	content := "# My AGENTS.md\n\n" +
 		"Example marker that is not an injected blurb:\n" +
 		BlurbEndMarker + "\n\n" +
@@ -173,13 +173,11 @@ func TestRemoveBlurbUsesEndMarkerAfterStartMarker(t *testing.T) {
 		BlurbEndMarker + "\n\n" +
 		"After blurb.\n"
 
-	result := RemoveBlurb(content)
-	expected := "# My AGENTS.md\n\n" +
-		"Example marker that is not an injected blurb:\n" +
-		BlurbEndMarker + "\n\n" +
-		"Before blurb.\nAfter blurb.\n"
-	if result != expected {
-		t.Fatalf("RemoveBlurb() = %q, want %q", result, expected)
+	if result := RemoveBlurb(content); result != content {
+		t.Fatalf("RemoveBlurb() changed malformed content: got %q, want %q", result, content)
+	}
+	if _, err := removeBlurbsChecked(content); err == nil {
+		t.Fatal("checked removal accepted an end marker before a start marker")
 	}
 }
 
@@ -243,6 +241,112 @@ func TestUpdateBlurb(t *testing.T) {
 	}
 }
 
+func TestUpdateBlurbMalformedMarkersFailClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "missing end marker",
+			content: "# Header\n\n<!-- bv-agent-instructions-v1 -->\nUser content without an end marker",
+		},
+		{
+			name: "nested start marker",
+			content: "<!-- bv-agent-instructions-v1 -->\nOld content\n" +
+				"<!-- bv-agent-instructions-v2 -->\nMore content\n<!-- end-bv-agent-instructions -->",
+		},
+		{
+			name:    "unexpected end marker",
+			content: "# Header\n<!-- end-bv-agent-instructions -->",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first := UpdateBlurb(tt.content)
+			second := UpdateBlurb(first)
+			if first != tt.content || second != tt.content {
+				t.Fatalf("malformed content changed across repeated updates:\nfirst: %q\nsecond: %q\nwant: %q", first, second, tt.content)
+			}
+		})
+	}
+}
+
+func TestRemoveBlurbMalformedMarkersFailClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "missing end marker",
+			content: "# Header\n\n<!-- bv-agent-instructions-v1 -->\nUser content without an end marker",
+		},
+		{
+			name: "nested start marker",
+			content: "# Header\n<!-- bv-agent-instructions-v1 -->\nUser instructions\n" +
+				"<!-- bv-agent-instructions-v2 -->\nMore user instructions\n<!-- end-bv-agent-instructions -->\n# Footer",
+		},
+		{
+			name:    "unexpected end marker",
+			content: "# Header\n<!-- end-bv-agent-instructions -->\n# Footer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RemoveBlurb(tt.content); got != tt.content {
+				t.Fatalf("malformed removal changed content:\n got: %q\nwant: %q", got, tt.content)
+			}
+			if _, err := removeBlurbsChecked(tt.content); err == nil {
+				t.Fatal("checked removal accepted malformed marker structure")
+			}
+		})
+	}
+}
+
+func TestRemoveBlurbRemovesLegacyAndAllVersionedBlocks(t *testing.T) {
+	legacy := `### Using bv as an AI sidecar
+
+--robot-insights
+--robot-plan
+bv already computes the hard parts for you.
+`
+	content := "# Header\n\n" + legacy + "\nPreserve between.\n\n" +
+		"<!-- bv-agent-instructions-v1 -->\none\n<!-- end-bv-agent-instructions -->\n\n" +
+		"Preserve after first.\n\n" +
+		"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->\n\n# Footer\n"
+
+	removed, err := removeBlurbsChecked(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{blurbStartPrefix, BlurbEndMarker, "bv already computes the hard parts"} {
+		if strings.Contains(removed, unwanted) {
+			t.Fatalf("removed content still contains %q:\n%s", unwanted, removed)
+		}
+	}
+	for _, preserved := range []string{"# Header", "Preserve between.", "Preserve after first.", "# Footer"} {
+		if !strings.Contains(removed, preserved) {
+			t.Fatalf("removal lost %q:\n%s", preserved, removed)
+		}
+	}
+}
+
+func TestUpdateBlurbCollapsesMultipleCompleteBlocks(t *testing.T) {
+	content := "# Header\n\n" +
+		"<!-- bv-agent-instructions-v1 -->\none\n<!-- end-bv-agent-instructions -->\n\n" +
+		"User instructions\n\n" +
+		"<!-- bv-agent-instructions-v2 -->\ntwo\n<!-- end-bv-agent-instructions -->\n"
+
+	updated := UpdateBlurb(content)
+	if got := strings.Count(updated, blurbStartPrefix); got != 1 {
+		t.Fatalf("start marker count=%d, want 1", got)
+	}
+	if !strings.Contains(updated, "User instructions") {
+		t.Fatal("update removed content between complete blurb blocks")
+	}
+}
+
 func TestNeedsUpdate(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -255,9 +359,20 @@ func TestNeedsUpdate(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "current version",
-			content:  "<!-- bv-agent-instructions-v4 -->",
+			name:     "single complete current version",
+			content:  "<!-- bv-agent-instructions-v4 -->\ncontent\n<!-- end-bv-agent-instructions -->",
 			expected: false, // v4 is current, no update needed
+		},
+		{
+			name:     "unterminated current version",
+			content:  "<!-- bv-agent-instructions-v4 -->\ncontent",
+			expected: true,
+		},
+		{
+			name: "duplicate current version",
+			content: "<!-- bv-agent-instructions-v4 -->\none\n<!-- end-bv-agent-instructions -->\n" +
+				"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->",
+			expected: true,
 		},
 		{
 			name:     "old v3 needs update",
@@ -303,7 +418,7 @@ func TestAgentBlurbContent(t *testing.T) {
 		"bd update <id> --claim --json",
 		"bd close <id> --json",
 		"bd dep add",
-		"bd export --no-memories -o .beads/beads.jsonl",
+		"bd export -o .beads/issues.jsonl",
 		"bv --robot-triage",
 		"bv --robot-next",
 		"bv --robot-plan",

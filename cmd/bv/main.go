@@ -2089,15 +2089,19 @@ func main() {
 			if robotMode {
 				// JSON output for AI agents
 				result := map[string]interface{}{
-					"found":            detection.Found(),
-					"file_path":        detection.FilePath,
-					"file_type":        detection.FileType,
-					"has_blurb":        detection.HasBlurb,
-					"has_legacy_blurb": detection.HasLegacyBlurb,
-					"blurb_version":    detection.BlurbVersion,
-					"current_version":  agents.BlurbVersion,
-					"needs_blurb":      detection.Found() && detection.NeedsBlurb(),
-					"needs_upgrade":    detection.NeedsUpgrade(),
+					"found":                 detection.Found(),
+					"file_path":             detection.FilePath,
+					"file_type":             detection.FileType,
+					"has_blurb":             detection.HasBlurb,
+					"has_legacy_blurb":      detection.HasLegacyBlurb,
+					"blurb_version":         detection.BlurbVersion,
+					"blurb_count":           detection.BlurbCount,
+					"blurb_structure_error": detection.BlurbStructureError,
+					"has_malformed_blurb":   detection.HasMalformedBlurb(),
+					"has_duplicate_blurbs":  detection.HasDuplicateBlurbs(),
+					"current_version":       agents.BlurbVersion,
+					"needs_blurb":           detection.Found() && detection.NeedsBlurb(),
+					"needs_upgrade":         detection.NeedsUpgrade(),
 				}
 				data, _ := json.MarshalIndent(result, "", "  ")
 				fmt.Println(string(data))
@@ -2109,6 +2113,18 @@ func main() {
 				if !detection.Found() {
 					fmt.Printf("No agent file found (searched up to 3 parent directories from %s)\n", workDir)
 					fmt.Println("Run 'bv --agents-add' to create AGENTS.md with beads workflow instructions.")
+					os.Exit(0)
+				}
+				if detection.HasMalformedBlurb() {
+					fmt.Printf("Found %s at %s with malformed bv blurb markers: %s\n",
+						detection.FileType, detection.FilePath, detection.BlurbStructureError)
+					fmt.Println("Repair the marker structure before adding, updating, or removing the blurb.")
+					os.Exit(1)
+				}
+				if detection.HasDuplicateBlurbs() {
+					fmt.Printf("Found %s at %s with %d versioned blurbs — needs normalization\n",
+						detection.FileType, detection.FilePath, detection.BlurbCount)
+					fmt.Println("Run 'bv --agents-update' to consolidate them into one current blurb.")
 					os.Exit(0)
 				}
 				if detection.HasLegacyBlurb {
@@ -2134,13 +2150,17 @@ func main() {
 			}
 
 			if *agentsAdd {
+				if detection.Found() && detection.HasMalformedBlurb() {
+					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
+				if detection.Found() && detection.NeedsUpgrade() {
+					fmt.Println("Existing blurb found but it needs update or normalization. Use --agents-update instead.")
+					os.Exit(1)
+				}
 				if detection.Found() && detection.HasBlurb && detection.BlurbVersion >= agents.BlurbVersion {
 					fmt.Printf("%s already has current blurb (v%d) — no action needed.\n", detection.FilePath, detection.BlurbVersion)
 					os.Exit(0)
-				}
-				if detection.Found() && (detection.HasLegacyBlurb || (detection.HasBlurb && detection.BlurbVersion < agents.BlurbVersion)) {
-					fmt.Println("Existing blurb found but outdated. Use --agents-update instead.")
-					os.Exit(1)
 				}
 
 				targetPath := detection.FilePath
@@ -2188,7 +2208,11 @@ func main() {
 					fmt.Printf("Appended beads workflow instructions to %s.\n", targetPath)
 				}
 
-				ok, _ := agents.VerifyBlurbPresent(targetPath)
+				ok, verifyErr := agents.VerifyBlurbPresent(targetPath)
+				if verifyErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: verification failed: %v\n", verifyErr)
+					os.Exit(1)
+				}
 				if !ok {
 					fmt.Fprintf(os.Stderr, "Warning: verification failed — blurb may not have been written correctly.\n")
 					os.Exit(1)
@@ -2201,17 +2225,24 @@ func main() {
 					fmt.Println("No agent file found. Use --agents-add to create one.")
 					os.Exit(1)
 				}
+				if detection.HasMalformedBlurb() {
+					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
 				if !detection.HasBlurb && !detection.HasLegacyBlurb {
 					fmt.Printf("%s has no blurb to update. Use --agents-add to add one.\n", detection.FilePath)
 					os.Exit(1)
 				}
-				if detection.HasBlurb && detection.BlurbVersion >= agents.BlurbVersion {
+				if !detection.NeedsUpgrade() {
 					fmt.Printf("%s already has current blurb (v%d) — no update needed.\n", detection.FilePath, detection.BlurbVersion)
 					os.Exit(0)
 				}
 
 				if *agentsDryRun {
-					if detection.HasLegacyBlurb {
+					if detection.HasDuplicateBlurbs() {
+						fmt.Printf("[dry-run] Would consolidate %d versioned blurbs into v%d in %s.\n",
+							detection.BlurbCount, agents.BlurbVersion, detection.FilePath)
+					} else if detection.HasLegacyBlurb {
 						fmt.Printf("[dry-run] Would upgrade legacy blurb to v%d in %s.\n", agents.BlurbVersion, detection.FilePath)
 					} else {
 						fmt.Printf("[dry-run] Would update blurb from v%d to v%d in %s.\n",
@@ -2237,7 +2268,11 @@ func main() {
 				}
 				fmt.Printf("Updated blurb to v%d in %s.\n", agents.BlurbVersion, detection.FilePath)
 
-				ok, _ := agents.VerifyBlurbPresent(detection.FilePath)
+				ok, verifyErr := agents.VerifyBlurbPresent(detection.FilePath)
+				if verifyErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: verification failed: %v\n", verifyErr)
+					os.Exit(1)
+				}
 				if !ok {
 					fmt.Fprintf(os.Stderr, "Warning: verification failed — blurb may not have been written correctly.\n")
 					os.Exit(1)
@@ -2249,6 +2284,10 @@ func main() {
 				if !detection.Found() {
 					fmt.Println("No agent file found — nothing to remove.")
 					os.Exit(0)
+				}
+				if detection.HasMalformedBlurb() {
+					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
 				}
 				if !detection.HasBlurb && !detection.HasLegacyBlurb {
 					fmt.Printf("%s has no blurb — nothing to remove.\n", detection.FilePath)

@@ -16,8 +16,16 @@ func AppendBlurbToFile(filePath string) error {
 		return fmt.Errorf("read file: %w", err)
 	}
 
+	contentStr := string(content)
+	if _, err := inspectBlurbStructure(contentStr); err != nil {
+		return fmt.Errorf("validate existing blurb markers: %w", err)
+	}
+	if ContainsAnyBlurb(contentStr) {
+		return fmt.Errorf("agent file already contains bv instructions; update or remove them instead")
+	}
+
 	// Append blurb using the string function
-	newContent := AppendBlurb(string(content))
+	newContent := AppendBlurb(contentStr)
 
 	// Write atomically
 	if err := atomicWrite(filePath, []byte(newContent)); err != nil {
@@ -35,7 +43,10 @@ func UpdateBlurbInFile(filePath string) error {
 		return fmt.Errorf("read file: %w", err)
 	}
 
-	newContent := UpdateBlurb(string(content))
+	newContent, err := updateBlurbChecked(string(content))
+	if err != nil {
+		return fmt.Errorf("validate existing blurb: %w", err)
+	}
 
 	if err := atomicWrite(filePath, []byte(newContent)); err != nil {
 		return fmt.Errorf("write file: %w", err)
@@ -44,7 +55,8 @@ func UpdateBlurbInFile(filePath string) error {
 	return nil
 }
 
-// RemoveBlurbFromFile removes the agent blurb from the specified file.
+// RemoveBlurbFromFile removes all versioned and legacy agent blurbs from the
+// specified file. Malformed versioned markers are rejected without writing.
 // Uses atomic write to prevent corruption.
 func RemoveBlurbFromFile(filePath string) error {
 	content, err := os.ReadFile(filePath)
@@ -52,7 +64,13 @@ func RemoveBlurbFromFile(filePath string) error {
 		return fmt.Errorf("read file: %w", err)
 	}
 
-	newContent := RemoveBlurb(string(content))
+	newContent, err := removeBlurbsChecked(string(content))
+	if err != nil {
+		return fmt.Errorf("validate existing blurb: %w", err)
+	}
+	if newContent == string(content) {
+		return nil
+	}
 
 	if err := atomicWrite(filePath, []byte(newContent)); err != nil {
 		return fmt.Errorf("write file: %w", err)
@@ -75,13 +93,28 @@ func CreateAgentFile(filePath string) error {
 	return nil
 }
 
-// VerifyBlurbPresent checks that the blurb was successfully added to a file.
+// VerifyBlurbPresent checks that exactly one structurally valid versioned blurb
+// is present and that no legacy blurb remains.
 func VerifyBlurbPresent(filePath string) (bool, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return false, err
 	}
-	return ContainsBlurb(string(content)), nil
+	contentStr := string(content)
+	count, err := inspectBlurbStructure(contentStr)
+	if err != nil {
+		return false, fmt.Errorf("validate blurb structure: %w", err)
+	}
+	if count == 0 {
+		return false, nil
+	}
+	if count > 1 {
+		return false, fmt.Errorf("validate blurb structure: found %d versioned blurb blocks, want exactly 1", count)
+	}
+	if ContainsLegacyBlurb(contentStr) {
+		return false, fmt.Errorf("validate blurb structure: legacy blurb remains alongside versioned blurb")
+	}
+	return true, nil
 }
 
 // atomicWrite writes content to a file atomically using a temp file and rename.
@@ -133,19 +166,48 @@ func atomicWrite(filePath string, content []byte) error {
 	if err := os.Rename(tmpPath, filePath); err != nil {
 		// Windows does not allow renaming over an existing file.
 		if runtime.GOOS == "windows" {
-			if rmErr := os.Remove(filePath); rmErr == nil {
-				if err2 := os.Rename(tmpPath, filePath); err2 == nil {
-					success = true
-					return nil
-				} else {
-					return fmt.Errorf("rename temp file: %w", err2)
+			if info, statErr := os.Lstat(filePath); statErr == nil && !info.IsDir() {
+				if replaceErr := replaceFileWithBackup(tmpPath, filePath); replaceErr != nil {
+					return replaceErr
 				}
+				success = true
+				return nil
 			}
 		}
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 
 	success = true
+	return nil
+}
+
+// replaceFileWithBackup provides the recoverable replacement path needed on
+// Windows, where os.Rename cannot replace an existing file. The original is
+// moved intact to a unique same-directory backup before the new file is
+// installed. If installation fails, the original name is restored; if even
+// that rollback fails, the error reports the preserved backup path.
+func replaceFileWithBackup(tmpPath, filePath string) error {
+	backupPath := tmpPath + ".backup"
+	if _, err := os.Lstat(backupPath); err == nil {
+		return fmt.Errorf("reserve backup path %s: path already exists", backupPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check backup path %s: %w", backupPath, err)
+	}
+
+	if err := os.Rename(filePath, backupPath); err != nil {
+		return fmt.Errorf("secure original file as backup: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		if restoreErr := os.Rename(backupPath, filePath); restoreErr != nil {
+			return fmt.Errorf("install replacement: %w; restore original: %v; original preserved at %s", err, restoreErr, backupPath)
+		}
+		return fmt.Errorf("install replacement: %w (original restored)", err)
+	}
+
+	if err := os.Remove(backupPath); err != nil {
+		return fmt.Errorf("replacement installed but remove backup %s: %w", backupPath, err)
+	}
 	return nil
 }
 
