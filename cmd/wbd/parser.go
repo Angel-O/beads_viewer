@@ -178,18 +178,19 @@ func usageFor(path string) string {
 }
 
 type request struct {
-	command       string
-	subcommand    string
-	args          []string
-	positionals   []string
-	json          bool
-	allContexts   bool
-	prefix        string
-	contexts      []string
-	contextless   bool
-	fromTodo      string
-	commentAuthor string
-	commentFile   string
+	command          string
+	subcommand       string
+	args             []string
+	positionals      []string
+	json             bool
+	allContexts      bool
+	prefix           string
+	contexts         []string
+	contextless      bool
+	fromTodo         string
+	commentAuthor    string
+	commentFile      string
+	commentSeparator bool
 }
 
 func commandName(arguments []string) (string, error) {
@@ -314,6 +315,7 @@ func parseCommentsAdd(result request, arguments []string) (request, error) {
 		arguments = arguments[1:]
 		if !separator && argument == "--" {
 			separator = true
+			result.commentSeparator = true
 			continue
 		}
 		if !separator && argument == "--json" {

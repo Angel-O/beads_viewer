@@ -1293,6 +1293,9 @@ func TestCommentsAddAcceptsMultiWordTextAndSeparator(t *testing.T) {
 	if want := []string{"work-1", "--starts-with-a-dash"}; !reflect.DeepEqual(request.positionals, want) {
 		t.Fatalf("separated positionals = %#v, want %#v", request.positionals, want)
 	}
+	if !request.commentSeparator {
+		t.Fatal("separator was not preserved in parsed request")
+	}
 }
 
 func TestCommentsAddAuthorValidationNamesAuthor(t *testing.T) {
@@ -1331,6 +1334,28 @@ func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
 		}
 		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
 			t.Fatalf("successful comment did not signal Viewer: %v", err)
+		}
+	})
+
+	t.Run("preserves separator for hyphen-leading text", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		})
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", "--author", "agent-7", "--", "--starts-with-a-dash")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %#v", calls)
+		}
+		want := []string{"--db", test.store, "--json", "comments", "add", "work-1", "--author", "agent-7", "--", "--starts-with-a-dash"}
+		if !reflect.DeepEqual(calls[1].Args, want) {
+			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
 		}
 	})
 

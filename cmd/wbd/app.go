@@ -622,13 +622,21 @@ func (a *app) commentsAdd(request request) int {
 
 	args := appendJSON(nil, request.json)
 	args = append(args, "comments", "add", issue.ID)
-	if request.commentFile != "" {
-		args = append(args, "--file", request.commentFile)
-	} else {
+	if request.commentSeparator {
+		if request.commentAuthor != "" {
+			args = append(args, "--author", request.commentAuthor)
+		}
+		args = append(args, "--")
 		args = append(args, request.positionals[1:]...)
-	}
-	if request.commentAuthor != "" {
-		args = append(args, "--author", request.commentAuthor)
+	} else {
+		if request.commentFile != "" {
+			args = append(args, "--file", request.commentFile)
+		} else {
+			args = append(args, request.positionals[1:]...)
+		}
+		if request.commentAuthor != "" {
+			args = append(args, "--author", request.commentAuthor)
+		}
 	}
 	return a.runBDMutation(a.dir, args...)
 }
