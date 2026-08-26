@@ -1228,7 +1228,7 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 		"--prefix": "item", "--description": "details", "--type": "task", "--priority": "2",
 		"--assignee": "agent-7", "--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
 		"--title": "title", "--status": "open", "--label": "team", "--limit": "20", "--add-label": "team",
-		"--reason": "done",
+		"--reason": "done", "--author": "agent-7", "--file": "notes.txt",
 	}
 	for _, path := range commandOrder {
 		spec := commandSpecs[path]
@@ -1265,6 +1265,7 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"dep", "remove", "work-1", "work-2", "--json"},
 		{"close", "work-1", "--json"},
 		{"reopen", "work-1", "--json"},
+		{"comments", "add", "work-1", "A comment", "--json"},
 		{"compatibility", "--json"},
 	}
 	for _, arguments := range tests {
@@ -1274,6 +1275,56 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSingularCommentCommandIsNotSupported(t *testing.T) {
+	if _, err := parse([]string{"comment", "work-1", "Nope"}); err == nil {
+		t.Fatal("singular comment command was accepted")
+	}
+}
+
+func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
+	t.Run("forwards comment and signals Viewer", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		})
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", "Needs review", "--author", "agent-7")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %#v", calls)
+		}
+		want := []string{"--db", test.store, "--json", "comments", "add", "work-1", "Needs review", "--author", "agent-7"}
+		if !reflect.DeepEqual(calls[1].Args, want) {
+			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
+		}
+		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+			t.Fatalf("successful comment did not signal Viewer: %v", err)
+		}
+	})
+
+	t.Run("rejects invalid context before mutation", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:registered": test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:missing"]}]`,
+		})
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", "Nope")
+		if code != 1 || !strings.Contains(stderr, `"code":"unregistered_context"`) {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 1 {
+			t.Fatalf("invalid comment mutated store: %#v", calls)
+		}
+		assertNoViewerSignal(t, test)
+	})
 }
 
 func TestAssigneeJSONSurvivesScopedAndAllContextReads(t *testing.T) {

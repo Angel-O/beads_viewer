@@ -135,6 +135,58 @@ func TestModelUpdatePhase2AndFileChanged(t *testing.T) {
 	}
 }
 
+func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.beadsPath = filepath.Join(t.TempDir(), "issues.jsonl")
+	m.hubRepositoryMode = true
+	var gotID, gotText string
+	m.SetCommentRunner(func(issueID, text string) error {
+		gotID, gotText = issueID, text
+		return nil
+	})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if !m.showCommentPrompt || m.focused != focusCommentInput || cmd != nil {
+		t.Fatalf("comment prompt did not open: shown=%v focus=%v cmd=%v", m.showCommentPrompt, m.focused, cmd != nil)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.showCommentPrompt || !m.commentSubmitting || cmd == nil {
+		t.Fatalf("comment prompt did not submit: shown=%v submitting=%v cmd=%v", m.showCommentPrompt, m.commentSubmitting, cmd != nil)
+	}
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if gotID != "A" || gotText != "looks good" || m.commentSubmitting || m.statusIsError || refreshCmd == nil {
+		t.Fatalf("comment result = id %q text %q submitting=%v error=%v", gotID, gotText, m.commentSubmitting, m.statusIsError)
+	}
+	refreshMsg := refreshCmd()
+	if _, ok := refreshMsg.(FileChangedMsg); !ok {
+		t.Fatalf("successful comment refresh command = %T, want FileChangedMsg", refreshMsg)
+	}
+}
+
+func TestCommentsAddPromptCancelDoesNotSubmit(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	submitted := false
+	m.SetCommentRunner(func(string, string) error {
+		submitted = true
+		return nil
+	})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.showCommentPrompt || m.focused != focusList || cmd != nil || submitted || m.commentSubmitting {
+		t.Fatalf("cancel mutated comment state: shown=%v focus=%v cmd=%v submitted=%v submitting=%v", m.showCommentPrompt, m.focused, cmd != nil, submitted, m.commentSubmitting)
+	}
+}
+
 type badItem struct{}
 
 func (badItem) Title() string       { return "bad" }

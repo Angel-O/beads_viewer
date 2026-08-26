@@ -74,6 +74,7 @@ const (
 	focusTutorial    // Interactive tutorial (bv-8y31)
 	focusCassModal   // Cass session preview modal (bv-5bqh)
 	focusUpdateModal // Self-update modal (bv-182)
+	focusCommentInput
 )
 
 // SortMode represents the current list sorting mode (bv-3ita)
@@ -116,6 +117,29 @@ type LabelGraphAnalysisResult struct {
 type UpdateMsg struct {
 	TagName string
 	URL     string
+}
+
+type commentAddedMsg struct {
+	issueID string
+	err     error
+}
+
+func runWBDCommentsAdd(issueID, text string, runner func(string, string) error) tea.Cmd {
+	return func() tea.Msg {
+		if runner != nil {
+			return commentAddedMsg{issueID: issueID, err: runner(issueID, text)}
+		}
+		command := exec.Command("wbd", "comments", "add", issueID, text, "--json")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			}
+			return commentAddedMsg{issueID: issueID, err: fmt.Errorf("wbd comments add failed: %s", detail)}
+		}
+		return commentAddedMsg{issueID: issueID}
+	}
 }
 
 // Phase2ReadyMsg is sent when async graph analysis Phase 2 completes
@@ -656,6 +680,14 @@ type Model struct {
 	// Time-travel input prompt
 	timeTravelInput      textinput.Model
 	showTimeTravelPrompt bool
+
+	// Comment input prompt
+	commentInput      textinput.Model
+	showCommentPrompt bool
+	commentIssueID    string
+	commentOrigin     focus
+	commentSubmitting bool
+	commentRunner     func(string, string) error
 
 	// Status message (for temporary feedback)
 	statusMsg     string
@@ -1358,9 +1390,19 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		typePicker:          typePicker,
 		labelDrilldownCache: make(map[string][]model.Issue),
 		timeTravelInput:     ti,
-		statusMsg:           initialStatus,
-		statusIsError:       initialStatusErr,
-		historyLoading:      len(issues) > 0, // Will be loaded in Init()
+		commentInput: func() textinput.Model {
+			input := textinput.New()
+			input.Placeholder = "Write a comment..."
+			input.CharLimit = 10000
+			input.Width = 60
+			input.Prompt = "Comment: "
+			input.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+			input.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
+			return input
+		}(),
+		statusMsg:      initialStatus,
+		statusIsError:  initialStatusErr,
+		historyLoading: len(issues) > 0, // Will be loaded in Init()
 		// Alerts panel (bv-168)
 		alerts:          alerts,
 		alertsCritical:  alertsCritical,
@@ -1622,6 +1664,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateAvailable = true
 		m.updateTag = msg.TagName
 		m.updateURL = msg.URL
+
+	case commentAddedMsg:
+		m.commentSubmitting = false
+		m.commentIssueID = ""
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Comment failed: %v", msg.err)
+			m.statusIsError = true
+			break
+		}
+		m.statusMsg = fmt.Sprintf("Comment added to %s", msg.issueID)
+		m.statusIsError = false
+		if m.backgroundWorker != nil {
+			m.backgroundWorker.ForceSourceRefresh()
+			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+		} else if m.beadsPath != "" {
+			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
+		}
 
 	case UpdateCompleteMsg:
 		// Forward to the update modal
@@ -3485,6 +3544,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.handleTimeTravelInputKeys(msg)
 			return m, nil
 		}
+		if m.focused == focusCommentInput && m.showCommentPrompt {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m.handleCommentInputKeys(msg)
+		}
 
 		// Search/file-tree submodes must consume keys before the global key block.
 		// Otherwise printable input, q, and esc leak into global view toggles and
@@ -3910,6 +3975,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case focusDetail:
+				if keyStr == "#" {
+					m.beginComment()
+					return m, nil
+				}
 				// Intercept "O" in detail view for editor dispatch (bv-134)
 				if keyStr == "O" {
 					if editorCmd := m.openInEditor(); editorCmd != nil {
@@ -3938,6 +4007,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (enabling cross-view switching, e.g. 'g' from board -> graph).
 			// ═══════════════════════════════════════════════════════════════
 			switch msg.String() {
+			case "#":
+				m.beginComment()
+				return m, nil
+
 			case "b":
 				m.clearAttentionOverlay()
 				m.isBoardView = !m.isBoardView
@@ -5584,6 +5657,72 @@ func (m Model) handleTimeTravelInputKeys(msg tea.KeyMsg) Model {
 	return m
 }
 
+// beginComment opens the comment prompt for the currently selected issue.
+func (m *Model) beginComment() {
+	if m.commentSubmitting {
+		return
+	}
+	if !m.hubRepositoryMode {
+		m.statusMsg = "Comments require Hub mode; run wbv --hub"
+		m.statusIsError = true
+		return
+	}
+	selectedItem := m.list.SelectedItem()
+	if selectedItem == nil {
+		m.statusMsg = "No issue selected"
+		m.statusIsError = true
+		return
+	}
+	issueItem, ok := selectedItem.(IssueItem)
+	if !ok {
+		m.statusMsg = "Invalid issue selection"
+		m.statusIsError = true
+		return
+	}
+	m.commentIssueID = issueItem.Issue.ID
+	m.commentOrigin = m.focused
+	m.commentInput.SetValue("")
+	m.commentInput.Focus()
+	m.showCommentPrompt = true
+	m.focused = focusCommentInput
+}
+
+func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		text := strings.TrimSpace(m.commentInput.Value())
+		if text == "" {
+			m.statusMsg = "Comment cannot be empty"
+			m.statusIsError = true
+			return m, nil
+		}
+		m.showCommentPrompt = false
+		m.commentInput.Blur()
+		m.focused = m.commentOrigin
+		m.commentSubmitting = true
+		m.statusMsg = fmt.Sprintf("Adding comment to %s...", m.commentIssueID)
+		m.statusIsError = false
+		return m, runWBDCommentsAdd(m.commentIssueID, text, m.commentRunner)
+	case "esc":
+		m.showCommentPrompt = false
+		m.commentInput.Blur()
+		m.commentInput.SetValue("")
+		m.focused = m.commentOrigin
+		m.commentIssueID = ""
+		m.statusMsg = "Comment cancelled"
+		m.statusIsError = false
+		return m, nil
+	default:
+		m.commentInput, _ = m.commentInput.Update(msg)
+		return m, nil
+	}
+}
+
+// SetCommentRunner replaces the external comment command for tests.
+func (m *Model) SetCommentRunner(runner func(string, string) error) {
+	m.commentRunner = runner
+}
+
 // restoreFocusFromHelp returns the appropriate focus based on current view state.
 // This fixes the bug where dismissing help would always return to focusList,
 // even when the user was in a specialized view (graph, board, insights, etc.).
@@ -5739,6 +5878,8 @@ func (m Model) View() string {
 		body = m.renderLabelDrilldown()
 	} else if m.showAlertsPanel {
 		body = m.renderAlertsPanel()
+	} else if m.showCommentPrompt {
+		body = m.renderCommentPrompt()
 	} else if m.showTimeTravelPrompt {
 		body = m.renderTimeTravelPrompt()
 	} else if m.showRecipePicker {
@@ -7360,6 +7501,8 @@ func (m *Model) renderFooter() string {
 		if m.semanticSearchEnabled {
 			keyHints = append(keyHints, keyStyle.Render("H")+" hybrid", keyStyle.Render("alt+h")+" preset")
 		}
+	} else if m.showCommentPrompt {
+		keyHints = append(keyHints, keyStyle.Render("Enter")+" add", keyStyle.Render("Esc")+" cancel")
 	} else if m.showTimeTravelPrompt {
 		keyHints = append(keyHints, keyStyle.Render("⏎")+" compare", keyStyle.Render("esc")+" cancel")
 	} else {
@@ -7368,9 +7511,9 @@ func (m *Model) renderFooter() string {
 		} else if m.isSplitView {
 			keyHints = append(keyHints, keyStyle.Render("tab")+" focus", keyStyle.Render("C")+" copy", keyStyle.Render("x")+" export", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else if m.showDetails {
-			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("#")+" comment", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else {
-			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("#")+" comment", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 			if m.workspaceMode || m.hubRepositoryMode {
 				keyHints = append(keyHints, keyStyle.Render("w")+" repos")
 			}
@@ -8339,7 +8482,7 @@ func (m Model) handleLeftClick(x, y int) Model {
 	// so there is nothing meaningful to focus or select.
 	if m.showQuitConfirm || m.showAgentPrompt || m.showCassModal ||
 		m.showUpdateModal || m.showLabelHealthDetail || m.showLabelGraphAnalysis ||
-		m.showLabelDrilldown || m.showAlertsPanel || m.showTimeTravelPrompt ||
+		m.showLabelDrilldown || m.showAlertsPanel || m.showCommentPrompt || m.showTimeTravelPrompt ||
 		m.showRecipePicker || m.showRepoPicker || m.showTypePicker || m.showLabelPicker ||
 		m.showHelp || m.showTutorial {
 		return m
@@ -8982,6 +9125,8 @@ func (f focus) String() string {
 		return "cass_modal"
 	case focusUpdateModal:
 		return "update_modal"
+	case focusCommentInput:
+		return "comment_input"
 	default:
 		return "unknown"
 	}
@@ -9048,6 +9193,24 @@ func (m *Model) generateExportFilename() string {
 	// Format: beads_report_<project>_YYYY-MM-DD.md
 	timestamp := time.Now().Format("2006-01-02")
 	return fmt.Sprintf("beads_report_%s_%s.md", projectName, timestamp)
+}
+
+func (m Model) renderCommentPrompt() string {
+	t := m.theme
+	boxStyle := t.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Padding(1, 3).
+		Align(lipgloss.Center)
+	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
+	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext)
+	keyStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
+	content := titleStyle.Render("Add comment") + "\n\n" +
+		subtitleStyle.Render("Issue "+m.commentIssueID) + "\n\n" +
+		m.commentInput.View() + "\n\n" +
+		subtitleStyle.Render("Press ") + keyStyle.Render("Enter") + subtitleStyle.Render(" to add, ") +
+		keyStyle.Render("Esc") + subtitleStyle.Render(" to cancel")
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
 // renderTimeTravelPrompt renders the time-travel revision input overlay

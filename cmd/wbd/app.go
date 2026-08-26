@@ -251,6 +251,8 @@ func (a *app) run(arguments []string) int {
 		args = append(args, request.command, request.positionals[0])
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
+	case "comments":
+		return a.commentsAdd(request)
 	case "link":
 		if err := need("bv"); err != nil {
 			return a.fail(err)
@@ -369,10 +371,10 @@ func helpTarget(arguments []string) (string, bool, error) {
 		return "", true, errors.New(supportedCommands())
 	}
 	path := filtered[0]
-	if path == "dep" && len(filtered) > 1 {
+	if (path == "dep" || path == "comments") && len(filtered) > 1 {
 		candidate := path + " " + filtered[1]
 		if _, ok := specFor(candidate); !ok {
-			return "", true, errors.New(usageFor("dep"))
+			return "", true, errors.New(usageFor(path))
 		}
 		path = candidate
 	}
@@ -603,6 +605,32 @@ func (a *app) replace(request request) int {
 	a.signalMutation("replace")
 	a.writeReplacement(original.ID, replacementID, request.json)
 	return 0
+}
+
+func (a *app) commentsAdd(request request) int {
+	issue, err := a.readIssue(request.positionals[0], false)
+	if err != nil {
+		return a.fail(err)
+	}
+	config, err := hub.Resolve(a.paths.Config)
+	if err != nil {
+		return a.fail(fmt.Errorf("resolving Hub config: %w", err))
+	}
+	if err := hub.ValidateStoredIssue(issue.policyState(), config.Repositories); err != nil {
+		return a.fail(fmt.Errorf("validating issue %s: %w", issue.ID, err))
+	}
+
+	args := appendJSON(nil, request.json)
+	args = append(args, "comments", "add", issue.ID)
+	if request.commentFile != "" {
+		args = append(args, "--file", request.commentFile)
+	} else {
+		args = append(args, request.positionals[1:]...)
+	}
+	if request.commentAuthor != "" {
+		args = append(args, "--author", request.commentAuthor)
+	}
+	return a.runBDMutation(a.dir, args...)
 }
 
 func (a *app) compatibility() int {
