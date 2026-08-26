@@ -16,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	_ "modernc.org/sqlite"
 )
 
@@ -153,7 +154,7 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
 	m = updated.(Model)
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(Model)
 	if m.showCommentPrompt || !m.commentSubmitting || cmd == nil {
 		t.Fatalf("comment prompt did not submit: shown=%v submitting=%v cmd=%v", m.showCommentPrompt, m.commentSubmitting, cmd != nil)
@@ -166,6 +167,78 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	refreshMsg := refreshCmd()
 	if _, ok := refreshMsg.(FileChangedMsg); !ok {
 		t.Fatalf("successful comment refresh command = %T, want FileChangedMsg", refreshMsg)
+	}
+}
+
+func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		width int
+	}{
+		{name: "realistic", width: 100},
+		{name: "narrow", width: 28},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+			m.width, m.height = test.width, 30
+			m.hubRepositoryMode = true
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+			m = updated.(Model)
+
+			before := m.commentInput.View()
+			beforeModal := m.renderCommentPrompt()
+			comment := "Title\n" + strings.Repeat("0123456789", 6) + "\n" + strings.Repeat("line\n", 9) + strings.Repeat("tail", 30)
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(comment)})
+			m = updated.(Model)
+			after := m.commentInput.View()
+			afterModal := m.renderCommentPrompt()
+
+			if m.commentEditorWidth == 0 || m.commentInput.Height() != commentEditorHeight {
+				t.Fatalf("editor geometry = width %d height %d", m.commentEditorWidth, m.commentInput.Height())
+			}
+			if lipgloss.Width(before) != lipgloss.Width(after) {
+				t.Fatalf("editor width changed from %d to %d", lipgloss.Width(before), lipgloss.Width(after))
+			}
+			if lipgloss.Height(beforeModal) != lipgloss.Height(afterModal) {
+				t.Fatalf("modal height changed from %d to %d", lipgloss.Height(beforeModal), lipgloss.Height(afterModal))
+			}
+			if m.commentInput.LineInfo().Height <= 1 || m.commentInput.LineCount() <= commentEditorHeight {
+				t.Fatalf("comment was not wrapped/retained in textarea: line height=%d logical lines=%d", m.commentInput.LineInfo().Height, m.commentInput.LineCount())
+			}
+			for _, line := range strings.Split(afterModal, "\n") {
+				if lipgloss.Width(line) > test.width {
+					t.Fatalf("modal line overflows terminal width %d: %d columns", test.width, lipgloss.Width(line))
+				}
+			}
+		})
+	}
+}
+
+func TestCommentEditorSemicolonAndEnterStayInEditor(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 80, 30
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("first")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("second")})
+	m = updated.(Model)
+	if m.commentInput.Value() != "first;\nsecond" || m.showShortcutsSidebar || !m.showCommentPrompt {
+		t.Fatalf("editor input = %q sidebar=%v modal=%v", m.commentInput.Value(), m.showShortcutsSidebar, m.showCommentPrompt)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Ctrl+C did not return quit command")
+	}
+	quitMsg := cmd()
+	if _, ok := quitMsg.(tea.QuitMsg); !ok {
+		t.Fatalf("Ctrl+C command = %T, want tea.QuitMsg", quitMsg)
 	}
 }
 
@@ -207,7 +280,7 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 	m = updatedModel.(Model)
 	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
 	m = updatedModel.(Model)
-	updatedModel, submitCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updatedModel, submitCmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updatedModel.(Model)
 	if submitCmd == nil {
 		t.Fatal("comment submission returned no command")
@@ -260,7 +333,7 @@ func TestCommentsAddTargetsDirectInsightsDetail(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
 	m = updated.(Model)
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(Model)
 	if cmd == nil {
 		t.Fatal("comment submission returned no command")
@@ -292,7 +365,7 @@ func TestCommentsAddFailureDoesNotRequestRefresh(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
 	m = updated.(Model)
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(Model)
 	if cmd == nil {
 		t.Fatal("comment submission returned no command")

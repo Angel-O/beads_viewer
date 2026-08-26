@@ -33,6 +33,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -45,7 +46,22 @@ const (
 	SplitViewThreshold     = 100
 	WideViewThreshold      = 140
 	UltraWideViewThreshold = 180
+
+	commentEditorHeight    = 7
+	commentModalFrameWidth = 6 // two borders plus two columns of padding
+	commentEditorMaxWidth  = 88
 )
+
+func commentEditorWidth(terminalWidth int) int {
+	width := terminalWidth - commentModalFrameWidth
+	if width < 1 {
+		return 1
+	}
+	if width > commentEditorMaxWidth {
+		return commentEditorMaxWidth
+	}
+	return width
+}
 
 // focus represents which UI element has keyboard focus
 type focus int
@@ -682,12 +698,13 @@ type Model struct {
 	showTimeTravelPrompt bool
 
 	// Comment input prompt
-	commentInput      textinput.Model
-	showCommentPrompt bool
-	commentIssueID    string
-	commentOrigin     focus
-	commentSubmitting bool
-	commentRunner     func(string, string) error
+	commentInput       textarea.Model
+	commentEditorWidth int
+	showCommentPrompt  bool
+	commentIssueID     string
+	commentOrigin      focus
+	commentSubmitting  bool
+	commentRunner      func(string, string) error
 
 	// Status message (for temporary feedback)
 	statusMsg     string
@@ -1390,14 +1407,16 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		typePicker:          typePicker,
 		labelDrilldownCache: make(map[string][]model.Issue),
 		timeTravelInput:     ti,
-		commentInput: func() textinput.Model {
-			input := textinput.New()
-			input.Placeholder = "Write a comment..."
-			input.CharLimit = 10000
-			input.Width = 60
-			input.Prompt = "Comment: "
-			input.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
-			input.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
+		commentInput: func() textarea.Model {
+			input := textarea.New()
+			input.Placeholder = "Write a Markdown comment..."
+			input.CharLimit = 0
+			input.MaxHeight = 0
+			input.ShowLineNumbers = false
+			input.Prompt = "│ "
+			input.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+			input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
+			input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
 			return input
 		}(),
 		statusMsg:      initialStatus,
@@ -1651,6 +1670,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyMsg, tea.MouseMsg:
 			m.backgroundWorker.recordActivity()
 		}
+	}
+	if m.focused == focusCommentInput && m.showCommentPrompt {
+		if keyMsg, isKey := msg.(tea.KeyMsg); isKey {
+			if keyMsg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m.handleCommentInputKeys(keyMsg)
+		}
+		m.commentInput, cmd = m.commentInput.Update(msg)
+		return m, cmd
 	}
 
 	switch msg := msg.(type) {
@@ -3544,13 +3573,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.handleTimeTravelInputKeys(msg)
 			return m, nil
 		}
-		if m.focused == focusCommentInput && m.showCommentPrompt {
-			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
-			}
-			return m.handleCommentInputKeys(msg)
-		}
-
 		// Search/file-tree submodes must consume keys before the global key block.
 		// Otherwise printable input, q, and esc leak into global view toggles and
 		// close the active view instead of updating the focused submode.
@@ -5701,6 +5723,11 @@ func (m *Model) beginComment() {
 	}
 	m.commentIssueID = issueItem.Issue.ID
 	m.commentOrigin = m.focused
+	if m.commentEditorWidth == 0 {
+		m.commentEditorWidth = commentEditorWidth(m.width)
+		m.commentInput.SetWidth(m.commentEditorWidth)
+	}
+	m.commentInput.SetHeight(commentEditorHeight)
 	m.commentInput.SetValue("")
 	m.commentInput.Focus()
 	m.showCommentPrompt = true
@@ -5709,7 +5736,7 @@ func (m *Model) beginComment() {
 
 func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "enter":
+	case "ctrl+s":
 		text := strings.TrimSpace(m.commentInput.Value())
 		if text == "" {
 			m.statusMsg = "Comment cannot be empty"
@@ -5733,8 +5760,9 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.statusIsError = false
 		return m, nil
 	default:
-		m.commentInput, _ = m.commentInput.Update(msg)
-		return m, nil
+		var cmd tea.Cmd
+		m.commentInput, cmd = m.commentInput.Update(msg)
+		return m, cmd
 	}
 }
 
@@ -7522,7 +7550,7 @@ func (m *Model) renderFooter() string {
 			keyHints = append(keyHints, keyStyle.Render("H")+" hybrid", keyStyle.Render("alt+h")+" preset")
 		}
 	} else if m.showCommentPrompt {
-		keyHints = append(keyHints, keyStyle.Render("Enter")+" add", keyStyle.Render("Esc")+" cancel")
+		keyHints = append(keyHints, keyStyle.Render("Ctrl+S")+" submit", keyStyle.Render("Enter")+" newline", keyStyle.Render("Esc")+" cancel", keyStyle.Render("Ctrl+C")+" quit")
 	} else if m.showTimeTravelPrompt {
 		keyHints = append(keyHints, keyStyle.Render("⏎")+" compare", keyStyle.Render("esc")+" cancel")
 	} else {
@@ -9220,7 +9248,8 @@ func (m Model) renderCommentPrompt() string {
 	boxStyle := t.Renderer.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Primary).
-		Padding(1, 3).
+		Padding(1, 2).
+		Width(m.commentEditorWidth).
 		Align(lipgloss.Center)
 	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
 	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext)
@@ -9228,8 +9257,10 @@ func (m Model) renderCommentPrompt() string {
 	content := titleStyle.Render("Add comment") + "\n\n" +
 		subtitleStyle.Render("Issue "+m.commentIssueID) + "\n\n" +
 		m.commentInput.View() + "\n\n" +
-		subtitleStyle.Render("Press ") + keyStyle.Render("Enter") + subtitleStyle.Render(" to add, ") +
-		keyStyle.Render("Esc") + subtitleStyle.Render(" to cancel")
+		subtitleStyle.Render("Ctrl+S") + subtitleStyle.Render(" submit · ") +
+		keyStyle.Render("Enter") + subtitleStyle.Render(" newline · ") +
+		keyStyle.Render("Esc") + subtitleStyle.Render(" cancel · ") +
+		keyStyle.Render("Ctrl+C") + subtitleStyle.Render(" quit")
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
