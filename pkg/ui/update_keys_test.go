@@ -58,6 +58,40 @@ func TestUpdateHelpQuitAndTabFocus(t *testing.T) {
 	}
 }
 
+func TestHelpRestoresExactUnderlyingFocus(t *testing.T) {
+	tests := []struct {
+		name  string
+		focus focus
+		setup func(*Model)
+	}{
+		{name: "list", focus: focusList},
+		{name: "tree", focus: focusTree},
+		{name: "split detail", focus: focusDetail, setup: func(m *Model) { m.isSplitView = true }},
+		{name: "tutorial", focus: focusTutorial, setup: func(m *Model) { m.showTutorial = true }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+			m.focused = tt.focus
+			if tt.setup != nil {
+				tt.setup(m)
+			}
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+			m = updated.(*Model)
+			if m.focused != focusHelp {
+				t.Fatalf("focus after opening help=%v, want help", m.focused)
+			}
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(*Model)
+			if m.focused != tt.focus {
+				t.Fatalf("focus after closing help=%v, want %v", m.focused, tt.focus)
+			}
+		})
+	}
+}
+
 func TestUpdateMsgSetsUpdateAvailable(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 	updated, _ := m.Update(UpdateMsg{TagName: "v9.9.9", URL: "https://example"})

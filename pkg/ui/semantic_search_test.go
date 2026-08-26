@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
+	"github.com/charmbracelet/bubbles/list"
 )
 
 // =============================================================================
@@ -515,6 +517,128 @@ func TestSemanticSearchCacheManagement(t *testing.T) {
 	}
 }
 
+func TestSemanticSearchCachesResultsAndScoresPerTermAcrossABA(t *testing.T) {
+	ss := NewSemanticSearch()
+	idx := search.NewVectorIndex(2)
+	embedder := &mockEmbedder{
+		dim: 2,
+		embedFunc: func(ctx context.Context, texts []string) ([][]float32, error) {
+			result := make([][]float32, len(texts))
+			for i, text := range texts {
+				switch text {
+				case "alpha":
+					result[i] = []float32{1.0, 0.0}
+				case "beta":
+					result[i] = []float32{0.0, 1.0}
+				default:
+					result[i] = []float32{0.0, 0.0}
+				}
+			}
+			return result, nil
+		},
+	}
+	idx.Upsert("issue-alpha", search.ContentHash{}, []float32{1.0, 0.0})
+	idx.Upsert("issue-beta", search.ContentHash{}, []float32{0.0, 1.0})
+	ss.SetIndex(idx, embedder)
+	ss.SetIDs([]string{"issue-alpha", "issue-beta"})
+
+	alphaResults := ss.ComputeSemanticResults("alpha")
+	ss.SetCachedResults("alpha", alphaResults)
+	if len(alphaResults) != 2 || alphaResults[0].Index != 0 {
+		t.Fatalf("alpha results = %#v, want issue-alpha first", alphaResults)
+	}
+
+	betaResults := ss.ComputeSemanticResults("beta")
+	ss.SetCachedResults("beta", betaResults)
+	if len(betaResults) != 2 || betaResults[0].Index != 1 {
+		t.Fatalf("beta results = %#v, want issue-beta first", betaResults)
+	}
+
+	alphaAgain := ss.Filter("alpha", []string{"alpha target", "beta target"})
+	if len(alphaAgain) != 2 || alphaAgain[0].Index != 0 {
+		t.Fatalf("cached alpha results after A-B-A = %#v, want issue-alpha first", alphaAgain)
+	}
+	alphaScores, ok := ss.Scores("alpha")
+	if !ok || alphaScores["issue-alpha"].Score != 1.0 {
+		t.Fatalf("alpha scores after A-B-A = %#v, %t; want issue-alpha score 1.0", alphaScores, ok)
+	}
+	betaScores, ok := ss.Scores("beta")
+	if !ok || betaScores["issue-beta"].Score != 1.0 {
+		t.Fatalf("beta scores after A-B-A = %#v, %t; want issue-beta score 1.0", betaScores, ok)
+	}
+}
+
+func TestSemanticSearchStateMutationsInvalidateCachedTerms(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*SemanticSearch)
+	}{
+		{
+			name: "IDs",
+			mutate: func(ss *SemanticSearch) {
+				ss.SetIDs([]string{"new-id"})
+			},
+		},
+		{
+			name: "docs",
+			mutate: func(ss *SemanticSearch) {
+				ss.SetDocs(map[string]string{"issue-1": "new document"})
+			},
+		},
+		{
+			name: "documents",
+			mutate: func(ss *SemanticSearch) {
+				ss.SetDocuments([]string{"new-id"}, map[string]string{"new-id": "new document"})
+			},
+		},
+		{
+			name: "snapshot documents",
+			mutate: func(ss *SemanticSearch) {
+				ss.setSnapshotDocuments([]string{"new-id"}, map[string]string{"new-id": "new document"})
+			},
+		},
+		{
+			name: "hybrid config",
+			mutate: func(ss *SemanticSearch) {
+				ss.SetHybridConfig(true, search.PresetDefault)
+			},
+		},
+		{
+			name: "index",
+			mutate: func(ss *SemanticSearch) {
+				ss.SetIndex(search.NewVectorIndex(3), &mockEmbedder{dim: 3})
+			},
+		},
+		{
+			name: "metrics",
+			mutate: func(ss *SemanticSearch) {
+				ss.SetMetricsCache(&staticMetricsCache{metrics: map[string]search.IssueMetrics{"issue-1": {}}})
+			},
+		},
+	}
+
+	for _, tt := range mutations {
+		t.Run(tt.name, func(t *testing.T) {
+			ss := NewSemanticSearch()
+			ss.SetCachedResults("term", []list.Rank{{Index: 0}})
+			ss.SetScores("term", map[string]SemanticScore{"issue-1": {Score: 0.75}})
+			ss.MarkPending("term")
+
+			tt.mutate(ss)
+
+			if ss.HasCachedResults("term") {
+				t.Fatal("cached ranks survived state mutation")
+			}
+			if scores, ok := ss.Scores("term"); ok {
+				t.Fatalf("cached scores survived state mutation: %#v", scores)
+			}
+			if pending := ss.GetPendingTerm(); pending != "" {
+				t.Fatalf("pending term survived state mutation: %q", pending)
+			}
+		})
+	}
+}
+
 // dotFloat32 Tests
 // =============================================================================
 
@@ -586,14 +710,22 @@ func TestDotFloat32(t *testing.T) {
 func TestSemanticIndexReadyMsg(t *testing.T) {
 	// Test that the message struct works correctly
 	msg := SemanticIndexReadyMsg{
-		Embedder:  &mockEmbedder{dim: 384},
-		Index:     search.NewVectorIndex(384),
-		IndexPath: "/path/to/index",
-		Loaded:    true,
-		Stats:     search.IndexSyncStats{},
-		Error:     nil,
+		DataGeneration:  17,
+		BuildGeneration: 19,
+		Embedder:        &mockEmbedder{dim: 384},
+		Index:           search.NewVectorIndex(384),
+		IndexPath:       "/path/to/index",
+		Loaded:          true,
+		Stats:           search.IndexSyncStats{},
+		Error:           nil,
 	}
 
+	if msg.DataGeneration != 17 {
+		t.Errorf("DataGeneration = %d, want 17", msg.DataGeneration)
+	}
+	if msg.BuildGeneration != 19 {
+		t.Errorf("BuildGeneration = %d, want 19", msg.BuildGeneration)
+	}
 	if msg.Embedder == nil {
 		t.Error("Embedder should not be nil")
 	}
@@ -614,11 +746,406 @@ func TestSemanticIndexReadyMsg(t *testing.T) {
 func TestSemanticIndexReadyMsgWithError(t *testing.T) {
 	testErr := context.DeadlineExceeded
 	msg := SemanticIndexReadyMsg{
-		Error: testErr,
+		DataGeneration:  23,
+		BuildGeneration: 29,
+		Error:           testErr,
 	}
 
+	if msg.DataGeneration != 23 {
+		t.Errorf("DataGeneration = %d, want 23", msg.DataGeneration)
+	}
+	if msg.BuildGeneration != 29 {
+		t.Errorf("BuildGeneration = %d, want 29", msg.BuildGeneration)
+	}
 	if msg.Error != testErr {
 		t.Errorf("Error = %v, want %v", msg.Error, testErr)
+	}
+}
+
+func TestComputeSemanticFilterCmdCarriesGenerationsWithoutMutatingScores(t *testing.T) {
+	ss := NewSemanticSearch()
+	idx := search.NewVectorIndex(3)
+	embedder := &mockEmbedder{
+		dim: 3,
+		embedFunc: func(ctx context.Context, texts []string) ([][]float32, error) {
+			return [][]float32{{1.0, 0.0, 0.0}}, nil
+		},
+	}
+	idx.Upsert("issue-1", search.ContentHash{}, []float32{1.0, 0.0, 0.0})
+	ss.SetIndex(idx, embedder)
+	ss.SetIDs([]string{"issue-1"})
+	ss.SetScores("previous", map[string]SemanticScore{
+		"issue-1": {Score: 0.25, TextScore: 0.25},
+	})
+
+	raw := ComputeSemanticFilterCmd(ss, "query", 31, 47)()
+	msg, ok := raw.(SemanticFilterResultMsg)
+	if !ok {
+		t.Fatalf("ComputeSemanticFilterCmd returned %T, want SemanticFilterResultMsg", raw)
+	}
+	if msg.DataGeneration != 31 {
+		t.Errorf("DataGeneration = %d, want 31", msg.DataGeneration)
+	}
+	if msg.QueryGeneration != 47 {
+		t.Errorf("QueryGeneration = %d, want 47", msg.QueryGeneration)
+	}
+	if msg.Term != "query" {
+		t.Errorf("Term = %q, want %q", msg.Term, "query")
+	}
+	if len(msg.Results) != 1 || msg.Results[0].Index != 0 {
+		t.Fatalf("Results = %#v, want one rank for index 0", msg.Results)
+	}
+	if score, ok := msg.Scores["issue-1"]; !ok || score.Score != 1.0 {
+		t.Errorf("Scores[issue-1] = %#v, %t; want score 1.0", score, ok)
+	}
+
+	if _, ok := ss.Scores("query"); ok {
+		t.Fatal("async computation installed query scores before generation fencing")
+	}
+	if scores, ok := ss.Scores("previous"); !ok || scores["issue-1"].Score != 0.25 {
+		t.Fatalf("previous scores were mutated: %#v, %t", scores, ok)
+	}
+}
+
+func TestComputeSemanticResultsDirectStoresScores(t *testing.T) {
+	ss := NewSemanticSearch()
+	idx := search.NewVectorIndex(3)
+	embedder := &mockEmbedder{
+		dim: 3,
+		embedFunc: func(ctx context.Context, texts []string) ([][]float32, error) {
+			return [][]float32{{1.0, 0.0, 0.0}}, nil
+		},
+	}
+	idx.Upsert("issue-1", search.ContentHash{}, []float32{1.0, 0.0, 0.0})
+	ss.SetIndex(idx, embedder)
+	ss.SetIDs([]string{"issue-1"})
+
+	results := ss.ComputeSemanticResults("query")
+	if len(results) != 1 || results[0].Index != 0 {
+		t.Fatalf("ComputeSemanticResults() = %#v, want one rank for index 0", results)
+	}
+	scores, ok := ss.Scores("query")
+	if !ok {
+		t.Fatal("direct ComputeSemanticResults did not install scores")
+	}
+	if score := scores["issue-1"]; score.Score != 1.0 {
+		t.Errorf("stored score = %#v, want score 1.0", score)
+	}
+}
+
+func TestBuildHybridMetricsCmdCarriesGenerations(t *testing.T) {
+	raw := BuildHybridMetricsCmd(nil, 59, 67)()
+	msg, ok := raw.(HybridMetricsReadyMsg)
+	if !ok {
+		t.Fatalf("BuildHybridMetricsCmd returned %T, want HybridMetricsReadyMsg", raw)
+	}
+	if msg.DataGeneration != 59 {
+		t.Errorf("DataGeneration = %d, want 59", msg.DataGeneration)
+	}
+	if msg.BuildGeneration != 67 {
+		t.Errorf("BuildGeneration = %d, want 67", msg.BuildGeneration)
+	}
+	if msg.Error != nil {
+		t.Fatalf("BuildHybridMetricsCmd returned error: %v", msg.Error)
+	}
+	if msg.Cache == nil {
+		t.Fatal("BuildHybridMetricsCmd returned a nil cache")
+	}
+}
+
+func TestBuildSemanticIndexCmdErrorCarriesGenerations(t *testing.T) {
+	t.Setenv(search.EnvSemanticEmbedder, string(search.ProviderOpenAI))
+
+	raw := BuildSemanticIndexCmd(nil, 61, 71)()
+	msg, ok := raw.(SemanticIndexReadyMsg)
+	if !ok {
+		t.Fatalf("BuildSemanticIndexCmd returned %T, want SemanticIndexReadyMsg", raw)
+	}
+	if msg.DataGeneration != 61 {
+		t.Errorf("DataGeneration = %d, want 61", msg.DataGeneration)
+	}
+	if msg.BuildGeneration != 71 {
+		t.Errorf("BuildGeneration = %d, want 71", msg.BuildGeneration)
+	}
+	if msg.Error == nil {
+		t.Fatal("BuildSemanticIndexCmd unexpectedly succeeded with placeholder provider")
+	}
+}
+
+func TestNewModelInitializesSemanticDocuments(t *testing.T) {
+	issue := model.Issue{
+		ID:          "issue-1",
+		Title:       "Semantic document title",
+		Description: "Semantic document description",
+		Status:      model.StatusOpen,
+		Labels:      []string{"search", "regression"},
+	}
+	m := NewModel([]model.Issue{issue}, nil, "")
+
+	snap := m.semanticSearch.Snapshot()
+	if len(snap.IDs) != 1 || snap.IDs[0] != issue.ID {
+		t.Fatalf("initial semantic IDs = %#v, want [%q]", snap.IDs, issue.ID)
+	}
+	wantDoc := search.IssueDocument(issue)
+	if got := snap.Docs[issue.ID]; got != wantDoc {
+		t.Fatalf("initial semantic document = %q, want %q", got, wantDoc)
+	}
+}
+
+func TestModelClearsPendingSemanticFilterAfterEmbedError(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.list.Filter = m.semanticSearch.Filter
+	m.list.SetFilterText("alpha")
+	m.list.SetFilterState(list.FilterApplied)
+
+	idx := search.NewVectorIndex(3)
+	failingEmbedder := &mockEmbedder{
+		dim: 3,
+		embedFunc: func(ctx context.Context, texts []string) ([][]float32, error) {
+			return nil, context.DeadlineExceeded
+		},
+	}
+	m.semanticSearch.SetIndex(idx, failingEmbedder)
+	m.semanticSearch.MarkPending("alpha")
+
+	cmd := m.startSemanticFilter("alpha")
+	if cmd == nil {
+		t.Fatal("startSemanticFilter returned nil for a ready active query")
+	}
+	raw := cmd()
+	msg, ok := raw.(SemanticFilterResultMsg)
+	if !ok {
+		t.Fatalf("semantic filter command returned %T, want SemanticFilterResultMsg", raw)
+	}
+	if msg.Error == nil {
+		t.Fatal("semantic filter command unexpectedly succeeded with failing embedder")
+	}
+
+	updated, _ := m.Update(msg)
+	m = updated.(*Model)
+	if m.semanticFilterBuilding {
+		t.Fatal("embed error left semantic filter build pending")
+	}
+	if pending := m.semanticSearch.GetPendingTerm(); pending != "" {
+		t.Fatalf("embed error left pending term %q", pending)
+	}
+	if !m.statusIsError {
+		t.Fatal("embed error did not set error status")
+	}
+	if cmd := m.pendingSemanticFilterCmd(); cmd != nil {
+		t.Fatal("embed error immediately rescheduled the failed query")
+	}
+}
+
+func TestModelIgnoresOlderSemanticBuildAttemptForSameData(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.semanticHybridEnabled = true
+	m.semanticDataGeneration = 9
+	m.semanticIndexBuilding = true
+	m.semanticIndexBuildData = 9
+	m.semanticIndexBuildGen = 42
+	m.semanticHybridBuilding = true
+	m.semanticHybridBuildData = 9
+	m.semanticHybridBuildGen = 52
+
+	oldIndex := search.NewVectorIndex(3)
+	updated, _ := m.Update(SemanticIndexReadyMsg{
+		DataGeneration:  9,
+		BuildGeneration: 41,
+		Index:           oldIndex,
+		Embedder:        &mockEmbedder{dim: 3},
+		Error:           context.DeadlineExceeded,
+	})
+	m = updated.(*Model)
+	if !m.semanticIndexBuilding {
+		t.Fatal("older same-data index attempt cleared the current build state")
+	}
+	if !m.semanticSearchEnabled {
+		t.Fatal("older same-data index error disabled semantic search")
+	}
+	if m.semanticSearch.Snapshot().Index == oldIndex {
+		t.Fatal("older same-data index attempt was installed")
+	}
+
+	oldCache := &staticMetricsCache{metrics: map[string]search.IssueMetrics{"old": {}}}
+	updated, _ = m.Update(HybridMetricsReadyMsg{
+		DataGeneration:  9,
+		BuildGeneration: 51,
+		Cache:           oldCache,
+		Error:           context.DeadlineExceeded,
+	})
+	m = updated.(*Model)
+	if !m.semanticHybridBuilding {
+		t.Fatal("older same-data hybrid attempt cleared the current build state")
+	}
+	if !m.semanticHybridEnabled {
+		t.Fatal("older same-data hybrid error disabled hybrid search")
+	}
+	if m.semanticSearch.getMetricsCache() == oldCache {
+		t.Fatal("older same-data hybrid attempt was installed")
+	}
+
+	currentIndex := search.NewVectorIndex(3)
+	updated, _ = m.Update(SemanticIndexReadyMsg{
+		DataGeneration:  9,
+		BuildGeneration: 42,
+		Index:           currentIndex,
+		Embedder:        &mockEmbedder{dim: 3},
+	})
+	m = updated.(*Model)
+	if m.semanticIndexBuilding || m.semanticSearch.Snapshot().Index != currentIndex {
+		t.Fatal("current same-data index attempt was not accepted")
+	}
+
+	currentCache := &staticMetricsCache{metrics: map[string]search.IssueMetrics{"current": {}}}
+	updated, _ = m.Update(HybridMetricsReadyMsg{
+		DataGeneration:  9,
+		BuildGeneration: 52,
+		Cache:           currentCache,
+	})
+	m = updated.(*Model)
+	if m.semanticHybridBuilding || m.semanticSearch.getMetricsCache() != currentCache {
+		t.Fatal("current same-data hybrid attempt was not accepted")
+	}
+}
+
+func TestModelIgnoresStaleSemanticBuildResults(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.semanticHybridEnabled = true
+	m.semanticDataGeneration = 9
+	m.semanticIndexBuilding = true
+	m.semanticIndexBuildData = 9
+	m.semanticIndexBuildGen = 17
+	m.semanticHybridBuilding = true
+	m.semanticHybridBuildData = 9
+	m.semanticHybridBuildGen = 23
+
+	staleIndex := search.NewVectorIndex(3)
+	updated, _ := m.Update(SemanticIndexReadyMsg{
+		DataGeneration:  8,
+		BuildGeneration: 17,
+		Index:           staleIndex,
+		Embedder:        &mockEmbedder{dim: 3},
+	})
+	m = updated.(*Model)
+	if !m.semanticIndexBuilding {
+		t.Fatal("stale index result cleared the current build state")
+	}
+	if m.semanticSearch.Snapshot().Ready {
+		t.Fatal("stale index result was installed")
+	}
+
+	staleCache := &staticMetricsCache{metrics: map[string]search.IssueMetrics{"stale": {}}}
+	updated, _ = m.Update(HybridMetricsReadyMsg{DataGeneration: 8, BuildGeneration: 23, Cache: staleCache})
+	m = updated.(*Model)
+	if !m.semanticHybridBuilding {
+		t.Fatal("stale hybrid result cleared the current build state")
+	}
+	if m.semanticSearch.getMetricsCache() != nil {
+		t.Fatal("stale hybrid metrics were installed")
+	}
+
+	currentIndex := search.NewVectorIndex(3)
+	updated, _ = m.Update(SemanticIndexReadyMsg{
+		DataGeneration:  9,
+		BuildGeneration: 17,
+		Index:           currentIndex,
+		Embedder:        &mockEmbedder{dim: 3},
+	})
+	m = updated.(*Model)
+	if m.semanticIndexBuilding || m.semanticSearch.Snapshot().Index != currentIndex {
+		t.Fatal("current index result was not accepted")
+	}
+
+	currentCache := &staticMetricsCache{metrics: map[string]search.IssueMetrics{"current": {}}}
+	updated, _ = m.Update(HybridMetricsReadyMsg{DataGeneration: 9, BuildGeneration: 23, Cache: currentCache})
+	m = updated.(*Model)
+	if m.semanticHybridBuilding || m.semanticSearch.getMetricsCache() != currentCache {
+		t.Fatal("current hybrid result was not accepted")
+	}
+}
+
+func TestModelIgnoresStaleSemanticFilterResults(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.list.Filter = m.semanticSearch.Filter
+	m.list.SetFilterText("alpha")
+	m.semanticDataGeneration = 5
+	m.semanticQueryGeneration = 12
+	m.semanticFilterBuilding = true
+	m.semanticFilterDataGen = 5
+	m.semanticFilterQueryGen = 12
+	m.semanticFilterTerm = "alpha"
+	m.lastSearchTerm = "alpha"
+
+	updated, _ := m.Update(SemanticFilterResultMsg{
+		DataGeneration:  4,
+		QueryGeneration: 11,
+		Term:            "alpha",
+		Results:         []list.Rank{{Index: 0}},
+		Scores:          map[string]SemanticScore{"issue-1": {Score: 0.1}},
+	})
+	m = updated.(*Model)
+	if !m.semanticFilterBuilding {
+		t.Fatal("stale filter result cleared the current filter build")
+	}
+	if _, ok := m.semanticSearch.Scores("alpha"); ok {
+		t.Fatal("stale filter scores were installed")
+	}
+
+	updated, _ = m.Update(SemanticFilterResultMsg{
+		DataGeneration:  5,
+		QueryGeneration: 12,
+		Term:            "alpha",
+		Results:         []list.Rank{{Index: 0}},
+		Scores:          map[string]SemanticScore{"issue-1": {Score: 0.9}},
+	})
+	m = updated.(*Model)
+	if m.semanticFilterBuilding {
+		t.Fatal("current filter result did not clear build state")
+	}
+	if scores, ok := m.semanticSearch.Scores("alpha"); !ok || scores["issue-1"].Score != 0.9 {
+		t.Fatalf("current filter scores not installed: %#v, %t", scores, ok)
+	}
+}
+
+func TestSnapshotReloadStartsCurrentSemanticBuildGeneration(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "old", Title: "Old", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.semanticHybridEnabled = true
+	m.semanticIndexBuilding = true
+	m.semanticIndexBuildData = m.semanticDataGeneration
+	m.semanticIndexBuildGen = 7
+	m.semanticHybridBuilding = true
+	m.semanticHybridBuildData = m.semanticDataGeneration
+	m.semanticHybridBuildGen = 11
+	oldIndexBuildGen := m.semanticIndexBuildGen
+	oldHybridBuildGen := m.semanticHybridBuildGen
+
+	next := NewSnapshotBuilder([]model.Issue{{ID: "new", Title: "New", Status: model.StatusOpen}}).Build()
+	next.Analysis = nil
+	updated, cmd := m.Update(SnapshotReadyMsg{Snapshot: next})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("reload did not schedule current semantic builds")
+	}
+	if m.semanticDataGeneration != 2 {
+		t.Fatalf("semantic data generation=%d, want 2", m.semanticDataGeneration)
+	}
+	if !m.semanticIndexBuilding || m.semanticIndexBuildData != m.semanticDataGeneration {
+		t.Fatalf("index build state=(%t, data %d), want current data generation %d", m.semanticIndexBuilding, m.semanticIndexBuildData, m.semanticDataGeneration)
+	}
+	if m.semanticIndexBuildGen <= oldIndexBuildGen {
+		t.Fatalf("index build generation=%d, want newer than %d", m.semanticIndexBuildGen, oldIndexBuildGen)
+	}
+	if !m.semanticHybridBuilding || m.semanticHybridBuildData != m.semanticDataGeneration {
+		t.Fatalf("hybrid build state=(%t, data %d), want current data generation %d", m.semanticHybridBuilding, m.semanticHybridBuildData, m.semanticDataGeneration)
+	}
+	if m.semanticHybridBuildGen <= oldHybridBuildGen {
+		t.Fatalf("hybrid build generation=%d, want newer than %d", m.semanticHybridBuildGen, oldHybridBuildGen)
 	}
 }
 

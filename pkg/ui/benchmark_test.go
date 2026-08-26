@@ -12,7 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/testutil"
 	json "github.com/goccy/go-json"
@@ -236,7 +235,7 @@ func BenchmarkBackgroundWorkerBuildSnapshot(b *testing.B) {
 					snapshot.Analysis.WaitForPhase2()
 				}
 				worker.cancel()
-				loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+				snapshot.releasePooledIssues()
 				b.StartTimer()
 			}
 		})

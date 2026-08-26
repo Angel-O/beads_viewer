@@ -174,7 +174,7 @@ func TestBackgroundWorker_StopReturnsSnapshotPooledIssues(t *testing.T) {
 	pooled.Labels = append(pooled.Labels, "backend")
 	worker.snapshot = &DataSnapshot{
 		Issues:           []model.Issue{{ID: "test-1", Title: "Test", Status: model.StatusOpen}},
-		pooledIssues:     []*model.Issue{pooled},
+		pooledIssues:     newPooledIssueLease([]*model.Issue{pooled}),
 		CreatedAt:        time.Now(),
 		phase2Ready:      true,
 		LoadWarningCount: 0,
@@ -201,7 +201,7 @@ func TestModelStopReturnsSnapshotPooledIssuesWithoutWorker(t *testing.T) {
 	m := Model{
 		snapshot: &DataSnapshot{
 			Issues:       []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen}},
-			pooledIssues: []*model.Issue{pooled},
+			pooledIssues: newPooledIssueLease([]*model.Issue{pooled}),
 		},
 	}
 
@@ -213,8 +213,127 @@ func TestModelStopReturnsSnapshotPooledIssuesWithoutWorker(t *testing.T) {
 	if len(pooled.Comments) != 0 {
 		t.Fatalf("expected pooled issue comments to be cleared on Model.Stop, got %d", len(pooled.Comments))
 	}
-	if m.snapshot == nil || len(m.snapshot.pooledIssues) != 0 {
+	if m.snapshot == nil || m.snapshot.hasPooledIssues() {
 		t.Fatal("expected snapshot pooled refs to be cleared on Model.Stop")
+	}
+}
+
+func TestModelStopReleasesSharedPhase2PoolLeaseOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
+	if err := os.WriteFile(beadsPath, []byte(`{"id":"A","title":"Issue A","status":"open","issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write test issues: %v", err)
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: beadsPath})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+
+	pooled := loader.GetIssue()
+	pooled.ID = "shared-phase2"
+	var releases atomic.Int32
+	phase1 := NewSnapshotBuilder([]model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	phase1.pooledIssues = &pooledIssueLease{
+		refs: []*model.Issue{pooled},
+		release: func(refs []*model.Issue) {
+			releases.Add(1)
+			loader.ReturnIssuePtrsToPool(refs)
+		},
+	}
+	phase2 := phase1.WithPhase2(phase1.Analysis, phase1.GetInsights(), phase1.Issues, phase1.Analyzer)
+	if phase2.pooledIssues != phase1.pooledIssues {
+		t.Fatal("expected Phase 2 snapshot to share the Phase 1 pool lease")
+	}
+
+	worker.snapshot = phase1
+	m := Model{backgroundWorker: worker, snapshot: phase2}
+	m.Stop()
+
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("pool release count=%d, want exactly 1", got)
+	}
+	if phase1.hasPooledIssues() || phase2.hasPooledIssues() {
+		t.Fatal("expected shared pool lease to be inactive after Stop")
+	}
+}
+
+func TestBackgroundWorkerSendReleasesDroppedSupersededSnapshotLease(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	var staleReleases atomic.Int32
+	stale := &DataSnapshot{
+		pooledIssues: &pooledIssueLease{
+			refs: []*model.Issue{{ID: "pooled-stale"}},
+			release: func([]*model.Issue) {
+				staleReleases.Add(1)
+			},
+		},
+	}
+	var currentReleases atomic.Int32
+	current := &DataSnapshot{
+		pooledIssues: &pooledIssueLease{
+			refs: []*model.Issue{{ID: "pooled-current"}},
+			release: func([]*model.Issue) {
+				currentReleases.Add(1)
+			},
+		},
+	}
+
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.msgCh <- SnapshotReadyMsg{Snapshot: stale, SnapshotVer: 1}
+	worker.send(SnapshotReadyMsg{Snapshot: current, SnapshotVer: 2})
+
+	if got := staleReleases.Load(); got != 1 {
+		t.Fatalf("dropped stale snapshot release count=%d, want 1", got)
+	}
+	if stale.hasPooledIssues() {
+		t.Fatal("dropped stale snapshot retained an active pooled lease")
+	}
+	if got := currentReleases.Load(); got != 0 {
+		t.Fatalf("current snapshot was released while still worker-owned: count=%d", got)
+	}
+	if !current.hasPooledIssues() {
+		t.Fatal("current snapshot lease became inactive while still worker-owned")
+	}
+
+	queued := <-worker.msgCh
+	ready, ok := queued.(SnapshotReadyMsg)
+	if !ok || ready.Snapshot != current || ready.SnapshotVer != 2 {
+		t.Fatalf("queued message=%#v, want current SnapshotReadyMsg version 2", queued)
+	}
+}
+
+func TestBackgroundWorkerSendDoesNotLetPhase2EvictSnapshotReady(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	snapshot := &DataSnapshot{DataHash: "current"}
+	ready := SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 7}
+	worker.msgCh <- ready
+	worker.send(Phase2UpdateMsg{
+		DataHash:    snapshot.DataHash,
+		Snapshot:    snapshot,
+		SnapshotVer: ready.SnapshotVer,
+	})
+
+	queued := <-worker.msgCh
+	got, ok := queued.(SnapshotReadyMsg)
+	if !ok || got.Snapshot != snapshot || got.SnapshotVer != ready.SnapshotVer {
+		t.Fatalf("queued message=%#v, want authoritative SnapshotReadyMsg", queued)
+	}
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("full channel unexpectedly retained optional Phase2 message: %#v", unexpected)
+	default:
 	}
 }
 
@@ -976,7 +1095,7 @@ func TestBackgroundWorker_BuildSnapshotDoesNotPublishHashBeforeSwap(t *testing.T
 	if unaccepted == nil {
 		t.Fatal("expected unaccepted changed snapshot")
 	}
-	defer loader.ReturnIssuePtrsToPool(unaccepted.pooledIssues)
+	defer unaccepted.releasePooledIssues()
 
 	if unaccepted.DataHash == "" {
 		t.Fatal("expected unaccepted snapshot DataHash")
@@ -1589,7 +1708,8 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 	defer worker.Stop()
 	worker.snapshot = snapshot
 
-	go worker.runPhase2Analysis(snapshot.Analysis, snapshot.DataHash)
+	const snapshotVersion = 9
+	go worker.runPhase2Analysis(snapshot, snapshotVersion)
 	msg := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(msg tea.Msg) bool {
 		_, ok := msg.(Phase2UpdateMsg)
 		return ok
@@ -1597,9 +1717,16 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 	if msg.DataHash != snapshot.DataHash {
 		t.Fatalf("Phase2UpdateMsg hash=%q, want %q", msg.DataHash, snapshot.DataHash)
 	}
+	if msg.Stats != snapshot.Analysis {
+		t.Fatal("Phase2UpdateMsg did not preserve the active GraphStats identity")
+	}
+	if msg.Snapshot != snapshot || msg.SnapshotVer != snapshotVersion {
+		t.Fatalf("Phase2UpdateMsg identity=(%p,%d), want (%p,%d)", msg.Snapshot, msg.SnapshotVer, snapshot, snapshotVersion)
+	}
 
 	m := NewModel(issues, nil, "")
 	m.snapshot = snapshot
+	m.lastAppliedSnapshotVer = snapshotVersion
 	if view := m.View(); view == "" {
 		t.Fatal("UI did not render while Phase 2 snapshot was pending")
 	}
@@ -2047,7 +2174,7 @@ func TestBackgroundWorker_GCPausesUnderRapidSnapshotLoad(t *testing.T) {
 		if snapshot.Analysis != nil {
 			snapshot.Analysis.WaitForPhase2()
 		}
-		loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+		snapshot.releasePooledIssues()
 		snapshot = nil
 		runtime.GC()
 	}

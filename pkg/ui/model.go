@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -442,26 +443,31 @@ type Model struct {
 	// (or an error), allowing a polished cold-start loading screen (bv-tspo).
 	snapshotInitPending bool
 	// backgroundWorker manages async data loading (nil if background mode disabled)
-	backgroundWorker *BackgroundWorker
-	workerSpinnerIdx int // Spinner frame for background worker activity (bv-9nfy)
-	lastForceRefresh time.Time
+	backgroundWorker       *BackgroundWorker
+	lastAppliedSnapshotVer uint64
+	workerSpinnerIdx       int // Spinner frame for background worker activity (bv-9nfy)
+	lastForceRefresh       time.Time
 
 	// UI Components
-	list               list.Model
-	listItemsBuffer    []list.Item
-	listOrderHash      uint64
-	viewport           viewport.Model
-	renderer           *MarkdownRenderer
-	board              BoardModel
-	labelDashboard     LabelDashboardModel
-	velocityComparison VelocityComparisonModel // bv-125
-	shortcutsSidebar   ShortcutsSidebar        // bv-3qi5
-	graphView          GraphModel
-	tree               TreeModel // Hierarchical tree view (bv-gllx)
-	insightsPanel      InsightsModel
-	flowMatrix         FlowMatrixModel // Cross-label flow matrix
-	theme              Theme
-	keyRegistry        *KeyRegistry // Centralized key dispatch (bv-3bsx)
+	list                list.Model
+	listItemsBuffer     []list.Item
+	listOrderHash       uint64
+	listDataGeneration  uint64
+	listQueryGeneration uint64
+	pendingFilterTerm   string
+	pendingSelectedID   string
+	viewport            viewport.Model
+	renderer            *MarkdownRenderer
+	board               BoardModel
+	labelDashboard      LabelDashboardModel
+	velocityComparison  VelocityComparisonModel // bv-125
+	shortcutsSidebar    ShortcutsSidebar        // bv-3qi5
+	graphView           GraphModel
+	tree                TreeModel // Hierarchical tree view (bv-gllx)
+	insightsPanel       InsightsModel
+	flowMatrix          FlowMatrixModel // Cross-label flow matrix
+	theme               Theme
+	keyRegistry         *KeyRegistry // Centralized key dispatch (bv-3bsx)
 
 	// Update State
 	updateAvailable bool
@@ -514,16 +520,26 @@ type Model struct {
 	historyLoadFailed bool // True if history loading failed
 
 	// Filter and sort state
-	currentFilter          string
-	sortMode               SortMode // bv-3ita: current sort mode
-	semanticSearchEnabled  bool
-	semanticIndexBuilding  bool
-	semanticSearch         *SemanticSearch
-	semanticHybridEnabled  bool
-	semanticHybridPreset   search.PresetName
-	semanticHybridBuilding bool
-	semanticHybridReady    bool
-	lastSearchTerm         string
+	currentFilter           string
+	sortMode                SortMode // bv-3ita: current sort mode
+	semanticSearchEnabled   bool
+	semanticIndexBuilding   bool
+	semanticDataGeneration  uint64
+	semanticIndexBuildGen   uint64
+	semanticIndexBuildData  uint64
+	semanticSearch          *SemanticSearch
+	semanticHybridEnabled   bool
+	semanticHybridPreset    search.PresetName
+	semanticHybridBuilding  bool
+	semanticHybridBuildGen  uint64
+	semanticHybridBuildData uint64
+	semanticHybridReady     bool
+	semanticQueryGeneration uint64
+	semanticFilterBuilding  bool
+	semanticFilterDataGen   uint64
+	semanticFilterQueryGen  uint64
+	semanticFilterTerm      string
+	lastSearchTerm          string
 
 	// Stats (cached)
 	countOpen    int
@@ -720,37 +736,270 @@ func (m *Model) updateSemanticIDs(items []list.Item) {
 			docs[id] = search.IssueDocument(issueItem.Issue)
 		}
 	}
-	m.semanticSearch.SetIDs(ids)
-	m.semanticSearch.SetDocs(docs)
+	m.invalidateSemanticFilter()
+	m.semanticSearch.SetDocuments(ids, docs)
 }
 
-// installSnapshotListItems installs precomputed snapshot items without forcing
-// bubbles/list to recompute unchanged pagination and keybinding layout. The
-// model owns this backing slice so copying does not mutate an immutable snapshot.
-func (m *Model) installSnapshotListItems(snapshot *DataSnapshot) {
-	items := snapshot.listModelItems
-	current := m.list.Items()
-	bufferOwned := len(items) > 0 && len(current) == len(items) &&
-		len(m.listItemsBuffer) == len(items) && &current[0] == &m.listItemsBuffer[0]
-	if m.list.FilterState() == list.Unfiltered && bufferOwned {
-		diff := snapshot.IssueDiff
-		if snapshot.IncrementalListUsed && diff != nil &&
-			m.listOrderHash == snapshot.listOrderHash {
-			for _, id := range diff.Modified {
-				if index, ok := snapshot.listIndexByID[id]; ok {
-					m.listItemsBuffer[index] = items[index]
-				}
-			}
-			return
-		}
-		copy(m.listItemsBuffer, items)
-		m.listOrderHash = snapshot.listOrderHash
+func (m *Model) installSnapshotSemanticDocuments(ids []string, docs map[string]string) {
+	if m.semanticSearch == nil {
 		return
 	}
+	m.invalidateSemanticFilter()
+	m.semanticSearch.setSnapshotDocuments(ids, docs)
+}
 
-	m.listItemsBuffer = append(make([]list.Item, 0, len(items)), items...)
-	m.list.SetItems(m.listItemsBuffer)
+func (m *Model) invalidateSemanticFilter() {
+	m.semanticQueryGeneration++
+	m.semanticFilterBuilding = false
+	m.semanticFilterDataGen = 0
+	m.semanticFilterQueryGen = 0
+	m.semanticFilterTerm = ""
+	if m.semanticSearch != nil {
+		m.semanticSearch.ClearPending()
+	}
+}
+
+func (m *Model) beginSemanticDatasetUpdate() {
+	m.semanticDataGeneration++
+	m.invalidateSemanticFilter()
+	m.semanticIndexBuilding = false
+	m.semanticIndexBuildGen++
+	m.semanticIndexBuildData = 0
+	m.semanticHybridBuilding = false
+	m.semanticHybridBuildGen++
+	m.semanticHybridBuildData = 0
+	m.semanticHybridReady = false
+	if m.semanticSearch != nil {
+		// The old vectors and metrics describe the previous ordered dataset and
+		// must not be observable while replacements are still in flight.
+		m.semanticSearch.SetIndex(nil, nil)
+		m.semanticSearch.ResetCache()
+		m.semanticSearch.SetMetricsCache(nil)
+	}
+}
+
+func (m *Model) startSemanticIndexBuild() tea.Cmd {
+	if m.semanticSearch == nil {
+		return nil
+	}
+	if m.semanticIndexBuilding && m.semanticIndexBuildData == m.semanticDataGeneration {
+		return nil
+	}
+	m.semanticIndexBuilding = true
+	m.semanticIndexBuildGen++
+	m.semanticIndexBuildData = m.semanticDataGeneration
+	return BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticDataGeneration, m.semanticIndexBuildGen)
+}
+
+func (m *Model) startSemanticHybridBuild() tea.Cmd {
+	if m.semanticSearch == nil {
+		return nil
+	}
+	if m.semanticHybridBuilding && m.semanticHybridBuildData == m.semanticDataGeneration {
+		return nil
+	}
+	m.semanticHybridBuilding = true
+	m.semanticHybridBuildGen++
+	m.semanticHybridBuildData = m.semanticDataGeneration
+	return BuildHybridMetricsCmd(m.issuesForAsync(), m.semanticDataGeneration, m.semanticHybridBuildGen)
+}
+
+func (m *Model) startSemanticFilter(term string) tea.Cmd {
+	if m.semanticSearch == nil || term == "" || m.list.FilterState() == list.Unfiltered ||
+		m.list.FilterInput.Value() != term || !m.semanticSearch.Snapshot().Ready {
+		return nil
+	}
+	if m.semanticFilterBuilding && m.semanticFilterDataGen == m.semanticDataGeneration &&
+		m.semanticFilterTerm == term {
+		return nil
+	}
+	m.semanticQueryGeneration++
+	m.semanticFilterBuilding = true
+	m.semanticFilterDataGen = m.semanticDataGeneration
+	m.semanticFilterQueryGen = m.semanticQueryGeneration
+	m.semanticFilterTerm = term
+	return ComputeSemanticFilterCmd(
+		m.semanticSearch,
+		term,
+		m.semanticFilterDataGen,
+		m.semanticFilterQueryGen,
+	)
+}
+
+func (m *Model) pendingSemanticFilterCmd() tea.Cmd {
+	if !m.semanticSearchEnabled || m.semanticSearch == nil || m.list.FilterState() == list.Unfiltered {
+		return nil
+	}
+	pendingTerm := m.semanticSearch.GetPendingTerm()
+	currentTerm := m.list.FilterInput.Value()
+	if pendingTerm == "" {
+		return nil
+	}
+	if strings.TrimSpace(currentTerm) == "" || pendingTerm != currentTerm {
+		m.semanticSearch.ClearPending()
+		return nil
+	}
+	elapsed := time.Since(m.semanticSearch.GetLastQueryTime())
+	if elapsed >= 150*time.Millisecond {
+		return m.startSemanticFilter(pendingTerm)
+	}
+	return tea.Tick(150*time.Millisecond-elapsed, func(time.Time) tea.Msg {
+		return semanticDebounceTickMsg{}
+	})
+}
+
+type snapshotListFilterMsg struct {
+	snapshot        *DataSnapshot
+	dataGeneration  uint64
+	queryGeneration uint64
+	term            string
+	selectedID      string
+	matches         tea.Msg
+}
+
+func waitForSnapshotListFilterCmd(snapshot *DataSnapshot, dataGeneration, queryGeneration uint64, term, selectedID string, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		msg := cmd()
+		switch typed := msg.(type) {
+		case list.FilterMatchesMsg:
+			return snapshotListFilterMsg{
+				snapshot:        snapshot,
+				dataGeneration:  dataGeneration,
+				queryGeneration: queryGeneration,
+				term:            term,
+				selectedID:      selectedID,
+				matches:         typed,
+			}
+		case tea.BatchMsg:
+			// list.Update batches its asynchronous refilter with unrelated
+			// commands such as cursor blinking. Fence only FilterMatchesMsg;
+			// returning the other messages unchanged preserves their normal
+			// Bubble Tea delivery semantics.
+			wrapped := make(tea.BatchMsg, 0, len(typed))
+			for _, child := range typed {
+				if child != nil {
+					wrapped = append(wrapped, waitForSnapshotListFilterCmd(
+						snapshot,
+						dataGeneration,
+						queryGeneration,
+						term,
+						selectedID,
+						child,
+					))
+				}
+			}
+			return wrapped
+		default:
+			return msg
+		}
+	}
+}
+
+func (m *Model) prepareSnapshotListFilterCmd(snapshot *DataSnapshot, term, selectedID string, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+	m.pendingFilterTerm = term
+	m.pendingSelectedID = selectedID
+	return waitForSnapshotListFilterCmd(
+		snapshot,
+		m.listDataGeneration,
+		m.listQueryGeneration,
+		term,
+		selectedID,
+		cmd,
+	)
+}
+
+func (m *Model) selectedListIssueID(filterActive bool, term string) string {
+	if selected := m.list.SelectedItem(); selected != nil {
+		if item, ok := selected.(IssueItem); ok {
+			return item.Issue.ID
+		}
+	}
+	if filterActive && m.pendingFilterTerm == term {
+		return m.pendingSelectedID
+	}
+	return ""
+}
+
+func (m *Model) selectVisibleListItemByID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i, raw := range m.list.VisibleItems() {
+		item, ok := raw.(IssueItem)
+		if ok && item.Issue.ID == id {
+			m.list.Select(i)
+			return true
+		}
+	}
+	return false
+}
+
+// installSnapshotListItems installs detached precomputed snapshot items. Every
+// list filtering command captures the then-current items slice and can execute
+// off-thread, so reloads must never reuse or mutate its backing array.
+func (m *Model) installSnapshotListItems(snapshot *DataSnapshot) tea.Cmd {
+	m.listDataGeneration++
+	items := snapshot.listModelItems
+	m.listItemsBuffer = append([]list.Item(nil), items...)
+	cmd := m.list.SetItems(m.listItemsBuffer)
 	m.listOrderHash = snapshot.listOrderHash
+	return cmd
+}
+
+func (m *Model) setListItems(items []list.Item) tea.Cmd {
+	filterState := m.list.FilterState()
+	filterTerm := m.list.FilterInput.Value()
+	selectedID := m.selectedListIssueID(filterState != list.Unfiltered, filterTerm)
+	m.listDataGeneration++
+	cmd := m.list.SetItems(items)
+	m.updateSemanticIDs(items)
+	if filterState == list.Unfiltered {
+		return cmd
+	}
+
+	// Membership/sort changes are user-driven and comparatively rare. Refilter
+	// them synchronously so callers that historically returned only *Model cannot
+	// strand the list with an empty filteredItems slice by dropping SetItems' Cmd.
+	m.refilterListSynchronously(filterState, filterTerm, selectedID)
+	return nil
+}
+
+// refilterListSynchronously replaces the visible filtered-item copies and
+// invalidates every older asynchronous FilterMatchesMsg. Callers use this for
+// programmatic filter/data changes; user keystrokes retain the asynchronous,
+// generation-fenced path.
+func (m *Model) refilterListSynchronously(filterState list.FilterState, filterTerm, selectedID string) {
+	if filterState == list.Unfiltered {
+		return
+	}
+	m.listQueryGeneration++
+	m.pendingFilterTerm = ""
+	m.pendingSelectedID = ""
+	m.list.Select(0)
+	m.list.SetFilterText(filterTerm)
+	if filterState == list.Filtering {
+		m.list.SetFilterState(list.Filtering)
+	}
+	if !m.selectVisibleListItemByID(selectedID) && len(m.list.VisibleItems()) > 0 {
+		m.list.Select(0)
+	}
+}
+
+// replaceListPresentation installs detached IssueItem values without changing
+// semantic IDs/documents. Filter commands can still be reading the previous
+// backing slice concurrently, so presentation-only updates must copy-on-write.
+func (m *Model) replaceListPresentation(items []list.Item, selectedID string) {
+	filterState := m.list.FilterState()
+	filterTerm := m.list.FilterInput.Value()
+	m.listDataGeneration++
+	_ = m.list.SetItems(items)
+	m.refilterListSynchronously(filterState, filterTerm, selectedID)
 }
 
 func (m *Model) shouldShowSearchScores() bool {
@@ -784,36 +1033,57 @@ func (m *Model) applySemanticScores(term string) {
 	if !ok {
 		return
 	}
-	items := m.list.Items()
-	for i := range items {
-		issueItem, ok := items[i].(IssueItem)
+	current := m.list.Items()
+	var items []list.Item
+	changed := false
+	for i := range current {
+		issueItem, ok := current[i].(IssueItem)
 		if !ok {
 			continue
 		}
+		desired := issueItem
 		if score, ok := scores[issueItem.Issue.ID]; ok {
-			issueItem.SearchScore = score.Score
-			issueItem.SearchTextScore = score.TextScore
-			issueItem.SearchComponents = score.Components
-			issueItem.SearchScoreSet = true
+			desired.SearchScore = score.Score
+			desired.SearchTextScore = score.TextScore
+			desired.SearchComponents = score.Components
+			desired.SearchScoreSet = true
 		} else {
-			issueItem.SearchScore = 0
-			issueItem.SearchTextScore = 0
-			issueItem.SearchComponents = nil
-			issueItem.SearchScoreSet = false
+			desired.SearchScore = 0
+			desired.SearchTextScore = 0
+			desired.SearchComponents = nil
+			desired.SearchScoreSet = false
 		}
-		items[i] = issueItem
+		if issueItem.SearchScore == desired.SearchScore &&
+			issueItem.SearchTextScore == desired.SearchTextScore &&
+			issueItem.SearchScoreSet == desired.SearchScoreSet &&
+			maps.Equal(issueItem.SearchComponents, desired.SearchComponents) {
+			continue
+		}
+		if !changed {
+			items = append([]list.Item(nil), current...)
+			changed = true
+		}
+		items[i] = desired
+	}
+	if changed {
+		selectedID := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value())
+		m.replaceListPresentation(items, selectedID)
 	}
 }
 
-func (m *Model) clearSemanticScores() {
-	items := m.list.Items()
+func (m *Model) clearSemanticScores() bool {
+	current := m.list.Items()
+	var items []list.Item
 	changed := false
-	for i := range items {
-		issueItem, ok := items[i].(IssueItem)
+	for i := range current {
+		issueItem, ok := current[i].(IssueItem)
 		if !ok {
 			continue
 		}
 		if issueItem.SearchScoreSet || issueItem.SearchComponents != nil {
+			if !changed {
+				items = append([]list.Item(nil), current...)
+			}
 			issueItem.SearchScore = 0
 			issueItem.SearchTextScore = 0
 			issueItem.SearchComponents = nil
@@ -822,26 +1092,21 @@ func (m *Model) clearSemanticScores() {
 			changed = true
 		}
 	}
-	if changed && m.list.FilterState() != list.Unfiltered {
-		prevState := m.list.FilterState()
-		currentTerm := m.list.FilterInput.Value()
-		// Reset cursor before SetFilterText to avoid panic on out-of-bounds access
-		m.list.Select(0)
-		m.list.SetFilterText(currentTerm)
-		if prevState == list.Filtering {
-			m.list.SetFilterState(list.Filtering)
-		}
+	if changed {
+		selectedID := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value())
+		m.replaceListPresentation(items, selectedID)
 	}
+	return changed
 }
 
 func (m *Model) issuesForAsync() []model.Issue {
 	if m == nil {
 		return nil
 	}
-	if (m.snapshot != nil && len(m.snapshot.pooledIssues) > 0) || len(m.pooledIssues) > 0 {
-		return cloneIssuesForAsync(m.issues)
-	}
-	return m.issues
+	// Every caller hands this slice to a tea.Cmd that can run concurrently with
+	// later UI updates. Phase 2 recipe sorting mutates m.issues in place, so even
+	// non-pooled data must be detached before it crosses the async boundary.
+	return cloneIssuesForAsync(m.issues)
 }
 
 // NewModel creates a new Model from the given issues
@@ -1150,12 +1415,15 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	// Semantic search (bv-9gf.3): initialized lazily on first toggle.
 	semanticSearch := NewSemanticSearch()
 	semanticIDs := make([]string, 0, len(items))
+	semanticDocs := make(map[string]string, len(items))
 	for _, it := range items {
 		if issueItem, ok := it.(IssueItem); ok {
-			semanticIDs = append(semanticIDs, issueItem.Issue.ID)
+			id := issueItem.Issue.ID
+			semanticIDs = append(semanticIDs, id)
+			semanticDocs[id] = search.IssueDocument(issueItem.Issue)
 		}
 	}
-	semanticSearch.SetIDs(semanticIDs)
+	semanticSearch.SetDocuments(semanticIDs, semanticDocs)
 
 	// Build initial status message if watcher failed
 	var initialStatus string
@@ -1190,38 +1458,42 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	}
 
 	m := Model{
-		issues:                 issues,
-		issueMap:               issueMap,
-		analyzer:               analyzer,
-		analysis:               graphStats,
-		beadsPath:              beadsPath,
-		watcher:                fileWatcher,
-		snapshotInitPending:    backgroundWorker != nil,
-		backgroundWorker:       backgroundWorker,
-		instanceLock:           instLock,
-		list:                   l,
-		listItemsBuffer:        items,
-		viewport:               vp,
-		renderer:               renderer,
-		board:                  board,
-		labelDashboard:         labelDashboard,
-		velocityComparison:     velocityComparison,
-		shortcutsSidebar:       shortcutsSidebar,
-		graphView:              graphView,
-		tree:                   treeModel,
-		insightsPanel:          insightsPanel,
-		historyView:            NewHistoryModel(nil, theme), // Initialize with empty report for safe search access
-		theme:                  theme,
-		keyRegistry:            keyRegistry,
-		currentFilter:          "all",
-		semanticSearch:         semanticSearch,
-		semanticHybridEnabled:  false,
-		semanticHybridPreset:   search.PresetDefault,
-		semanticHybridBuilding: false,
-		semanticHybridReady:    false,
-		lastSearchTerm:         "",
-		focused:                focusList,
-		splitPaneRatio:         0.4, // Default: list pane gets 40% of width
+		issues:                  issues,
+		issueMap:                issueMap,
+		analyzer:                analyzer,
+		analysis:                graphStats,
+		beadsPath:               beadsPath,
+		watcher:                 fileWatcher,
+		snapshotInitPending:     backgroundWorker != nil,
+		backgroundWorker:        backgroundWorker,
+		instanceLock:            instLock,
+		list:                    l,
+		listItemsBuffer:         items,
+		listDataGeneration:      1,
+		listQueryGeneration:     1,
+		viewport:                vp,
+		renderer:                renderer,
+		board:                   board,
+		labelDashboard:          labelDashboard,
+		velocityComparison:      velocityComparison,
+		shortcutsSidebar:        shortcutsSidebar,
+		graphView:               graphView,
+		tree:                    treeModel,
+		insightsPanel:           insightsPanel,
+		historyView:             NewHistoryModel(nil, theme), // Initialize with empty report for safe search access
+		theme:                   theme,
+		keyRegistry:             keyRegistry,
+		currentFilter:           "all",
+		semanticSearch:          semanticSearch,
+		semanticDataGeneration:  1,
+		semanticQueryGeneration: 1,
+		semanticHybridEnabled:   false,
+		semanticHybridPreset:    search.PresetDefault,
+		semanticHybridBuilding:  false,
+		semanticHybridReady:     false,
+		lastSearchTerm:          "",
+		focused:                 focusList,
+		splitPaneRatio:          0.4, // Default: list pane gets 40% of width
 		// Initialize as ready with default dimensions to eliminate "Initializing..." phase
 		ready:               true,
 		width:               defaultWidth,
@@ -1374,6 +1646,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+	case snapshotListFilterMsg:
+		// SetItems refilters asynchronously. Fence the result to the snapshot and
+		// query that produced it so an older reload cannot replace newer rows.
+		if msg.snapshot != m.snapshot || msg.dataGeneration != m.listDataGeneration ||
+			msg.queryGeneration != m.listQueryGeneration ||
+			m.list.FilterState() == list.Unfiltered ||
+			m.list.FilterInput.Value() != msg.term || msg.matches == nil {
+			if m.semanticSearchEnabled && m.semanticSearch != nil && m.list.FilterState() != list.Unfiltered {
+				currentTerm := m.list.FilterInput.Value()
+				if strings.TrimSpace(currentTerm) != "" && !m.semanticSearch.HasCachedResults(currentTerm) {
+					m.semanticSearch.MarkPending(currentTerm)
+				}
+			}
+			return m, m.pendingSemanticFilterCmd()
+		}
+		m.list, cmd = m.list.Update(msg.matches)
+		// Bubbles does not refresh pagination when FilterMatchesMsg arrives.
+		m.list.SetSize(m.list.Width(), m.list.Height())
+		if !m.selectVisibleListItemByID(msg.selectedID) && len(m.list.VisibleItems()) > 0 {
+			m.list.Select(0)
+		}
+		if m.pendingFilterTerm == msg.term && m.pendingSelectedID == msg.selectedID {
+			m.pendingFilterTerm = ""
+			m.pendingSelectedID = ""
+		}
+		m.updateListDelegate()
+		if m.isSplitView || m.showDetails {
+			m.updateViewportContent()
+		}
+		return m, tea.Batch(cmd, m.pendingSemanticFilterCmd())
+
 	case editorExitMsg:
 		// Terminal editor exited — parse changes and apply via br update (bv-134)
 		defer os.Remove(msg.tmpFile)
@@ -1473,18 +1776,52 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case SemanticIndexReadyMsg:
+		if msg.DataGeneration != m.semanticDataGeneration ||
+			msg.DataGeneration != m.semanticIndexBuildData ||
+			msg.BuildGeneration != m.semanticIndexBuildGen {
+			break
+		}
 		m.semanticIndexBuilding = false
+		m.semanticIndexBuildData = 0
 		if msg.Error != nil {
 			// If indexing fails, revert to fuzzy mode for predictable behavior.
 			m.semanticSearchEnabled = false
 			m.list.Filter = list.DefaultFilter
+			m.invalidateSemanticFilter()
+			filterState := m.list.FilterState()
+			m.refilterListSynchronously(filterState, m.list.FilterInput.Value(), m.selectedListIssueID(filterState != list.Unfiltered, m.list.FilterInput.Value()))
 			m.statusMsg = fmt.Sprintf("Semantic search unavailable: %v", msg.Error)
 			m.statusIsError = true
 			break
 		}
+		if msg.NeedsSave {
+			if msg.Index == nil || msg.IndexPath == "" {
+				m.semanticSearchEnabled = false
+				m.list.Filter = list.DefaultFilter
+				m.invalidateSemanticFilter()
+				filterState := m.list.FilterState()
+				m.refilterListSynchronously(filterState, m.list.FilterInput.Value(), m.selectedListIssueID(filterState != list.Unfiltered, m.list.FilterInput.Value()))
+				m.statusMsg = "Semantic search unavailable: completed index is missing save data"
+				m.statusIsError = true
+				break
+			}
+			// Persistence occurs only after this attempt wins the model fence. This
+			// prevents an older, slower build from overwriting the current index.
+			if err := msg.Index.Save(msg.IndexPath); err != nil {
+				m.semanticSearchEnabled = false
+				m.list.Filter = list.DefaultFilter
+				m.invalidateSemanticFilter()
+				filterState := m.list.FilterState()
+				m.refilterListSynchronously(filterState, m.list.FilterInput.Value(), m.selectedListIssueID(filterState != list.Unfiltered, m.list.FilterInput.Value()))
+				m.statusMsg = fmt.Sprintf("Semantic search unavailable: save index: %v", err)
+				m.statusIsError = true
+				break
+			}
+		}
 		if m.semanticSearch != nil {
 			m.semanticSearch.SetIndex(msg.Index, msg.Embedder)
 		}
+		m.invalidateSemanticFilter()
 		if !msg.Loaded {
 			m.statusMsg = fmt.Sprintf("Semantic index built (%d embedded)", msg.Stats.Embedded)
 		} else if msg.Stats.Changed() {
@@ -1496,16 +1833,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Refresh current filter view if the user is actively searching.
 		if m.semanticSearchEnabled && m.list.FilterState() != list.Unfiltered {
-			prevState := m.list.FilterState()
+			filterState := m.list.FilterState()
 			filterText := m.list.FilterInput.Value()
-			m.list.SetFilterText(filterText)
-			if prevState == list.Filtering {
-				m.list.SetFilterState(list.Filtering)
-			}
+			selectedID := m.selectedListIssueID(true, filterText)
+			m.refilterListSynchronously(filterState, filterText, selectedID)
 		}
 
 	case HybridMetricsReadyMsg:
+		if msg.DataGeneration != m.semanticDataGeneration ||
+			msg.DataGeneration != m.semanticHybridBuildData ||
+			msg.BuildGeneration != m.semanticHybridBuildGen {
+			break
+		}
 		m.semanticHybridBuilding = false
+		m.semanticHybridBuildData = 0
 		if msg.Error != nil {
 			m.semanticHybridEnabled = false
 			m.semanticHybridReady = false
@@ -1528,36 +1869,48 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.semanticHybridEnabled && m.semanticSearchEnabled && m.list.FilterState() != list.Unfiltered {
 			currentTerm := m.list.FilterInput.Value()
 			if currentTerm != "" {
-				m.semanticSearch.ResetCache()
-				cmds = append(cmds, ComputeSemanticFilterCmd(m.semanticSearch, currentTerm))
+				m.invalidateSemanticFilter()
+				filterState := m.list.FilterState()
+				selectedID := m.selectedListIssueID(true, currentTerm)
+				m.refilterListSynchronously(filterState, currentTerm, selectedID)
+				if filterCmd := m.startSemanticFilter(currentTerm); filterCmd != nil {
+					cmds = append(cmds, filterCmd)
+				}
 			}
 		}
 
 	case SemanticFilterResultMsg:
+		if msg.DataGeneration != m.semanticDataGeneration ||
+			msg.QueryGeneration != m.semanticQueryGeneration ||
+			msg.DataGeneration != m.semanticFilterDataGen ||
+			msg.QueryGeneration != m.semanticFilterQueryGen {
+			break
+		}
+		m.semanticFilterBuilding = false
+		if msg.Error != nil {
+			if m.semanticSearch != nil {
+				m.semanticSearch.ClearPending()
+			}
+			m.statusMsg = fmt.Sprintf("Semantic search query failed: %v", msg.Error)
+			m.statusIsError = true
+			break
+		}
 		// Async semantic filter results arrived - cache and refresh list
 		if m.semanticSearch != nil && msg.Results != nil {
+			m.semanticSearch.SetScores(msg.Term, msg.Scores)
 			m.semanticSearch.SetCachedResults(msg.Term, msg.Results)
 
 			// Refresh list if still filtering with the same term
 			currentTerm := m.list.FilterInput.Value()
 			if m.semanticSearchEnabled && currentTerm == msg.Term {
 				m.applySemanticScores(msg.Term)
-				prevState := m.list.FilterState()
-				m.list.SetFilterText(currentTerm)
-				if prevState == list.Filtering {
-					m.list.SetFilterState(list.Filtering)
-				}
 			}
+		} else if m.semanticSearch != nil {
+			m.semanticSearch.ClearPending()
 		}
 
 	case semanticDebounceTickMsg:
-		// Debounce timer expired - check if we should trigger semantic computation
-		if m.semanticSearchEnabled && m.semanticSearch != nil && m.list.FilterState() != list.Unfiltered {
-			pendingTerm := m.semanticSearch.GetPendingTerm()
-			if pendingTerm != "" && time.Since(m.semanticSearch.GetLastQueryTime()) >= 150*time.Millisecond {
-				return m, ComputeSemanticFilterCmd(m.semanticSearch, pendingTerm)
-			}
-		}
+		return m, m.pendingSemanticFilterCmd()
 
 	case comboTickMsg:
 		// Combo timeout expired (bv-6fm0). If pending key matches AND we're still
@@ -1600,6 +1953,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Stats != m.analysis {
 			return m, nil
 		}
+		listFilterActive := m.list.FilterState() != list.Unfiltered
+		listFilterTerm := m.list.FilterInput.Value()
+		selectedID := m.selectedListIssueID(listFilterActive, listFilterTerm)
 
 		// Create new immutable snapshot with Phase 2 data (bv-b5q1)
 		ins := msg.Insights
@@ -1707,11 +2063,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.applyFilter()
 		}
+		if listFilterActive && !m.selectVisibleListItemByID(selectedID) && len(m.list.VisibleItems()) > 0 {
+			m.list.Select(0)
+		}
 
 	case Phase2UpdateMsg:
 		// BackgroundWorker notifies that Phase 2 analysis is complete (bv-e3ub)
-		// Verify this update matches the current snapshot using DataHash
-		if m.snapshot == nil || m.snapshot.DataHash != msg.DataHash {
+		// Verify this update matches the exact current snapshot. Data hashes can
+		// repeat on a forced refresh and cached analyses can share a Stats pointer,
+		// so worker-emitted messages also carry the monotonic snapshot version.
+		if m.snapshot == nil || m.snapshot.DataHash != msg.DataHash ||
+			msg.Stats == nil || m.snapshot.Analysis != msg.Stats ||
+			(msg.Snapshot != nil && m.snapshot != msg.Snapshot) ||
+			(m.lastAppliedSnapshotVer != 0 && msg.SnapshotVer == 0) ||
+			(msg.SnapshotVer != 0 && msg.SnapshotVer != m.lastAppliedSnapshotVer) {
 			// Stale update - ignore
 			if m.backgroundWorker != nil {
 				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
@@ -1771,6 +2136,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if (m.lastAppliedSnapshotVer != 0 && msg.SnapshotVer == 0) ||
+			(msg.SnapshotVer != 0 && msg.SnapshotVer <= m.lastAppliedSnapshotVer) {
+			msg.Snapshot.releasePooledIssues()
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
+		if msg.SnapshotVer != 0 {
+			m.lastAppliedSnapshotVer = msg.SnapshotVer
+		}
 
 		firstSnapshot := m.snapshotInitPending && m.snapshot == nil
 		m.snapshotInitPending = false
@@ -1788,17 +2164,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.modifiedIssueIDs = nil
 		}
 
-		// Store selected issue ID to restore position after swap
-		var selectedID string
-		if sel := m.list.SelectedItem(); sel != nil {
-			if item, ok := sel.(IssueItem); ok {
-				selectedID = item.Issue.ID
-			}
+		listFilterActive := m.list.FilterState() != list.Unfiltered
+		listFilterTerm := m.list.FilterInput.Value()
+		selectedID := m.selectedListIssueID(listFilterActive, listFilterTerm)
+		underlyingFocus := m.focused
+		if underlyingFocus == focusHelp {
+			underlyingFocus = m.focusBeforeHelp
 		}
 
 		// Preserve board selection by issue ID (bv-6n4c).
 		var boardSelectedID string
-		if m.focused == focusBoard {
+		if underlyingFocus == focusBoard {
 			if sel := m.board.SelectedIssue(); sel != nil {
 				boardSelectedID = sel.ID
 			}
@@ -1817,8 +2193,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.backgroundWorker.recordUIUpdateLatency(time.Since(latencyStart))
 			}
 		}
-		if oldSnapshot != nil && len(oldSnapshot.pooledIssues) > 0 {
-			go loader.ReturnIssuePtrsToPool(oldSnapshot.pooledIssues)
+		if oldSnapshot != nil && oldSnapshot.hasPooledIssues() {
+			go oldSnapshot.releasePooledIssues()
 		}
 
 		// Update legacy fields for backwards compatibility during migration
@@ -1871,16 +2247,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.showAlertsPanel = false
 
-		// Reset semantic caches for the new dataset.
-		if m.semanticSearch != nil {
-			m.semanticSearch.ResetCache()
-			m.semanticSearch.SetMetricsCache(nil)
-		}
-		m.semanticHybridReady = false
-		m.semanticHybridBuilding = false
+		// Invalidate every async semantic result from the previous dataset before
+		// scheduling current-generation replacements.
+		m.beginSemanticDatasetUpdate()
 		if m.semanticHybridEnabled {
-			m.semanticHybridBuilding = true
-			cmds = append(cmds, BuildHybridMetricsCmd(m.issuesForAsync()))
+			if hybridCmd := m.startSemanticHybridBuild(); hybridCmd != nil {
+				cmds = append(cmds, hybridCmd)
+			}
 		}
 
 		// Regenerate sub-views (Phase 1 data; Phase 2 will update via Phase2ReadyMsg)
@@ -1893,6 +2266,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.insightsPanel.SetSize(m.width, bodyHeight)
 
 		// Update list/board/graph views while preserving the current recipe/filter state.
+		var listRefilterCmd tea.Cmd
 		if m.activeRecipe != nil {
 			// If the snapshot already includes recipe filtering/sorting, use it directly (bv-cwwd).
 			if msg.Snapshot.RecipeName == m.activeRecipe.Name && msg.Snapshot.RecipeHash == recipeFingerprint(m.activeRecipe) {
@@ -1914,8 +2288,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					filteredIssues = append(filteredIssues, issue)
 				}
 
-				m.list.SetItems(filteredItems)
-				m.updateSemanticIDs(filteredItems)
+				listRefilterCmd = m.setListItems(filteredItems)
 				m.board.SetIssues(filteredIssues)
 
 				recipeIns := analysis.Insights{}
@@ -1940,13 +2313,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				len(msg.Snapshot.listModelItems) == len(msg.Snapshot.ListItems) &&
 				msg.Snapshot.BoardState != nil && msg.Snapshot.GetGraphLayout() != nil
 			if fastDefaultView {
-				m.installSnapshotListItems(msg.Snapshot)
-				if m.semanticSearch != nil {
-					m.semanticSearch.setSnapshotDocuments(msg.Snapshot.semanticIDs, msg.Snapshot.semanticDocs)
-				}
+				listRefilterCmd = m.installSnapshotListItems(msg.Snapshot)
+				m.installSnapshotSemanticDocuments(msg.Snapshot.semanticIDs, msg.Snapshot.semanticDocs)
 				m.board.SetSnapshot(msg.Snapshot)
 				m.graphView.SetSnapshot(msg.Snapshot)
-				if selectedID != "" {
+				if !listFilterActive && selectedID != "" {
 					if index, ok := msg.Snapshot.listIndexByID[selectedID]; ok {
 						m.list.Select(index)
 					}
@@ -2013,8 +2384,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				m.sortFilteredItems(filteredItems, filteredIssues)
-				m.list.SetItems(filteredItems)
-				m.updateSemanticIDs(filteredItems)
+				listRefilterCmd = m.setListItems(filteredItems)
 				if m.snapshot != nil && m.snapshot.BoardState != nil && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
 					m.board.SetSnapshot(m.snapshot)
 				} else {
@@ -2028,7 +2398,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Restore selection if possible
-				if selectedID != "" {
+				if !listFilterActive && selectedID != "" {
 					for i, it := range filteredItems {
 						if item, ok := it.(IssueItem); ok && item.Issue.ID == selectedID {
 							m.list.Select(i)
@@ -2045,7 +2415,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Restore selection in recipe mode (applyRecipe rebuilds list items)
-		if m.activeRecipe != nil && selectedID != "" {
+		if m.activeRecipe != nil && !listFilterActive && selectedID != "" {
 			items := m.list.Items()
 			for i := range items {
 				if item, ok := items[i].(IssueItem); ok && item.Issue.ID == selectedID {
@@ -2053,6 +2423,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+		}
+		if listFilterActive && listRefilterCmd != nil {
+			cmds = append(cmds, m.prepareSnapshotListFilterCmd(
+				msg.Snapshot,
+				listFilterTerm,
+				selectedID,
+				listRefilterCmd,
+			))
+		} else if listFilterActive && !m.selectVisibleListItemByID(selectedID) && len(m.list.VisibleItems()) > 0 {
+			m.list.Select(0)
 		}
 
 		// Restore board selection after SetIssues/applyRecipe rebuilds columns (bv-6n4c).
@@ -2062,7 +2442,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// If the tree view is active, rebuild it from the new snapshot while preserving
 		// user state (selection + persisted expand/collapse) (bv-6n4c).
-		if m.focused == focusTree {
+		if underlyingFocus == focusTree {
 			m.tree.BuildFromSnapshot(m.snapshot)
 			m.tree.SetSize(m.width, m.height-2)
 		}
@@ -2073,9 +2453,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Keep semantic index current when enabled.
-		if m.semanticSearchEnabled && !m.semanticIndexBuilding {
-			m.semanticIndexBuilding = true
-			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync()))
+		if m.semanticSearchEnabled {
+			if indexCmd := m.startSemanticIndexBuild(); indexCmd != nil {
+				cmds = append(cmds, indexCmd)
+			}
 		}
 
 		// Reload sprints (bv-161)
@@ -2223,13 +2604,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pooledIssues = loadedIssues.PoolRefs
 		newIssues := loadedIssues.Issues
 
-		// Store selected issue ID to restore position after reload
-		var selectedID string
-		if sel := m.list.SelectedItem(); sel != nil {
-			if item, ok := sel.(IssueItem); ok {
-				selectedID = item.Issue.ID
-			}
-		}
+		// Store the active query and selected issue so the asynchronous list
+		// refilter can restore the same visible row after the reload.
+		listFilterActive := m.list.FilterState() != list.Unfiltered
+		listFilterTerm := m.list.FilterInput.Value()
+		selectedID := m.selectedListIssueID(listFilterActive, listFilterTerm)
 
 		// Apply default sorting (Open first, Priority, Date)
 		var sortStart time.Time
@@ -2253,6 +2632,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Recompute analysis (async Phase 1/Phase 2) with caching
 		m.issues = newIssues
+		m.beginSemanticDatasetUpdate()
 		var analysisStart time.Time
 		if profileRefresh {
 			analysisStart = time.Now()
@@ -2357,19 +2737,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if profileRefresh {
 			recordTiming("list_items", time.Since(listStart))
 		}
-		m.updateSemanticIDs(items)
-		m.clearSemanticScores()
-		if m.semanticSearch != nil {
-			m.semanticSearch.ResetCache()
-			m.semanticSearch.SetMetricsCache(nil)
-		}
-		m.semanticHybridReady = false
-		m.semanticHybridBuilding = false
 		if m.semanticHybridEnabled {
-			m.semanticHybridBuilding = true
-			cmds = append(cmds, BuildHybridMetricsCmd(m.issuesForAsync()))
+			if hybridCmd := m.startSemanticHybridBuild(); hybridCmd != nil {
+				cmds = append(cmds, hybridCmd)
+			}
 		}
-		m.list.SetItems(items)
+		m.setListItems(items)
 
 		// Restore selection position
 		if selectedID != "" {
@@ -2449,6 +2822,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeRecipe != nil {
 			m.applyRecipe(m.activeRecipe)
 		}
+		if listFilterActive && !m.selectVisibleListItemByID(selectedID) && len(m.list.VisibleItems()) > 0 {
+			m.list.Select(0)
+		}
 
 		// Reload sprints (bv-161)
 		if m.beadsPath != "" {
@@ -2475,9 +2851,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Keep semantic index current when enabled.
-		if m.semanticSearchEnabled && !m.semanticIndexBuilding {
-			m.semanticIndexBuilding = true
-			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync()))
+		if m.semanticSearchEnabled {
+			if indexCmd := m.startSemanticIndexBuild(); indexCmd != nil {
+				cmds = append(cmds, indexCmd)
+			}
 		}
 
 		if cacheHit {
@@ -2938,12 +3315,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.semanticSearch.SetHybridConfig(m.semanticHybridEnabled, m.semanticHybridPreset)
-				m.semanticSearch.ResetCache()
-				m.clearSemanticScores()
-				if m.semanticHybridEnabled && !m.semanticHybridReady && !m.semanticHybridBuilding {
-					m.semanticHybridBuilding = true
+				m.invalidateSemanticFilter()
+				refiltered := m.clearSemanticScores()
+				if !m.semanticHybridEnabled {
+					m.semanticHybridBuilding = false
+					m.semanticHybridBuildData = 0
+					m.semanticHybridBuildGen++
+				}
+				if m.semanticHybridEnabled && !m.semanticHybridReady {
 					m.statusMsg = "Hybrid search: computing metrics…"
-					cmds = append(cmds, BuildHybridMetricsCmd(m.issuesForAsync()))
+					if hybridCmd := m.startSemanticHybridBuild(); hybridCmd != nil {
+						cmds = append(cmds, hybridCmd)
+					}
 				} else if m.semanticHybridEnabled {
 					m.statusMsg = fmt.Sprintf("Hybrid search enabled (%s)", m.semanticHybridPreset)
 				} else {
@@ -2951,8 +3334,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.semanticSearchEnabled && m.list.FilterState() != list.Unfiltered {
 					currentTerm := m.list.FilterInput.Value()
+					if !refiltered {
+						filterState := m.list.FilterState()
+						m.refilterListSynchronously(filterState, currentTerm, m.selectedListIssueID(true, currentTerm))
+					}
 					if currentTerm != "" && !m.semanticHybridBuilding {
-						cmds = append(cmds, ComputeSemanticFilterCmd(m.semanticSearch, currentTerm))
+						if filterCmd := m.startSemanticFilter(currentTerm); filterCmd != nil {
+							cmds = append(cmds, filterCmd)
+						}
 					}
 				}
 				m.updateListDelegate()
@@ -2962,9 +3351,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.semanticHybridPreset = nextHybridPreset(m.semanticHybridPreset)
 				if m.semanticSearch != nil {
 					m.semanticSearch.SetHybridConfig(m.semanticHybridEnabled, m.semanticHybridPreset)
-					m.semanticSearch.ResetCache()
 				}
-				m.clearSemanticScores()
+				m.invalidateSemanticFilter()
+				refiltered := m.clearSemanticScores()
 				if m.semanticHybridEnabled {
 					m.statusMsg = fmt.Sprintf("Hybrid preset: %s", m.semanticHybridPreset)
 				} else {
@@ -2972,8 +3361,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.semanticSearchEnabled && m.semanticHybridEnabled && m.list.FilterState() != list.Unfiltered {
 					currentTerm := m.list.FilterInput.Value()
+					if !refiltered {
+						filterState := m.list.FilterState()
+						m.refilterListSynchronously(filterState, currentTerm, m.selectedListIssueID(true, currentTerm))
+					}
 					if currentTerm != "" && !m.semanticHybridBuilding {
-						cmds = append(cmds, ComputeSemanticFilterCmd(m.semanticSearch, currentTerm))
+						if filterCmd := m.startSemanticFilter(currentTerm); filterCmd != nil {
+							cmds = append(cmds, filterCmd)
+						}
 					}
 				}
 				m.updateListDelegate()
@@ -2988,12 +3383,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.semanticSearchEnabled {
 				if m.semanticSearch != nil {
 					m.list.Filter = m.semanticSearch.Filter
-					if !m.semanticSearch.Snapshot().Ready && !m.semanticIndexBuilding {
-						m.semanticIndexBuilding = true
+					if !m.semanticSearch.Snapshot().Ready {
 						m.statusMsg = "Semantic search: building index…"
-						cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync()))
-					} else if !m.semanticSearch.Snapshot().Ready && m.semanticIndexBuilding {
-						m.statusMsg = "Semantic search: indexing…"
+						if indexCmd := m.startSemanticIndexBuild(); indexCmd != nil {
+							cmds = append(cmds, indexCmd)
+						}
 					} else {
 						m.statusMsg = "Semantic search enabled"
 					}
@@ -3003,13 +3397,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusMsg = "Semantic search unavailable"
 					m.statusIsError = true
 				}
-				if m.semanticHybridEnabled && !m.semanticHybridReady && !m.semanticHybridBuilding {
-					m.semanticHybridBuilding = true
-					cmds = append(cmds, BuildHybridMetricsCmd(m.issuesForAsync()))
+				if m.semanticHybridEnabled && !m.semanticHybridReady {
+					if hybridCmd := m.startSemanticHybridBuild(); hybridCmd != nil {
+						cmds = append(cmds, hybridCmd)
+					}
 				}
 			} else {
 				m.list.Filter = list.DefaultFilter
 				m.statusMsg = "Fuzzy search enabled"
+				m.invalidateSemanticFilter()
+				m.semanticIndexBuilding = false
+				m.semanticIndexBuildData = 0
+				m.semanticIndexBuildGen++
 				m.clearSemanticScores()
 			}
 
@@ -3017,10 +3416,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			prevState := m.list.FilterState()
 			filterText := m.list.FilterInput.Value()
 			if prevState != list.Unfiltered {
-				m.list.SetFilterText(filterText)
-				if prevState == list.Filtering {
-					m.list.SetFilterState(list.Filtering)
-				}
+				selectedID := m.selectedListIssueID(true, filterText)
+				m.refilterListSynchronously(prevState, filterText, selectedID)
 			}
 
 			m.updateListDelegate()
@@ -3818,13 +4215,43 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.focused == focusList {
 		if _, isWindowSize := msg.(tea.WindowSizeMsg); !isWindowSize {
 			m.list, cmd = m.list.Update(msg)
-			cmds = append(cmds, cmd)
 		}
+		// A list command captures the items/filter state at the instant Update
+		// creates it. Preserve those generations before semantic score cleanup or
+		// another presentation refresh can replace the backing slice below.
+		cmdSnapshot := m.snapshot
+		cmdDataGeneration := m.listDataGeneration
 		currentTerm := m.list.FilterInput.Value()
 		if currentTerm != m.lastSearchTerm {
 			m.lastSearchTerm = currentTerm
+			m.listQueryGeneration++
+			m.pendingFilterTerm = ""
+			m.pendingSelectedID = ""
+			m.invalidateSemanticFilter()
 			if m.semanticSearchEnabled {
 				m.clearSemanticScores()
+			}
+		}
+		cmdQueryGeneration := m.listQueryGeneration
+		cmdSelectedID := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, currentTerm)
+		if cmd != nil {
+			if m.list.FilterState() == list.Unfiltered {
+				cmds = append(cmds, cmd)
+			} else {
+				if cmdDataGeneration == m.listDataGeneration && cmdQueryGeneration == m.listQueryGeneration {
+					m.pendingFilterTerm = currentTerm
+					m.pendingSelectedID = cmdSelectedID
+				}
+				if wrapped := waitForSnapshotListFilterCmd(
+					cmdSnapshot,
+					cmdDataGeneration,
+					cmdQueryGeneration,
+					currentTerm,
+					cmdSelectedID,
+					cmd,
+				); wrapped != nil {
+					cmds = append(cmds, wrapped)
+				}
 			}
 		}
 		if m.semanticSearchEnabled && m.semanticHybridEnabled && m.list.FilterState() != list.Unfiltered {
@@ -3840,20 +4267,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportContent()
 	}
 
-	// Trigger async semantic computation if needed (debounced)
-	if m.semanticSearchEnabled && m.semanticSearch != nil && m.list.FilterState() != list.Unfiltered {
-		pendingTerm := m.semanticSearch.GetPendingTerm()
-		if pendingTerm != "" {
-			// Debounce: only compute if 150ms since last query change
-			if time.Since(m.semanticSearch.GetLastQueryTime()) >= 150*time.Millisecond {
-				cmds = append(cmds, ComputeSemanticFilterCmd(m.semanticSearch, pendingTerm))
-			} else {
-				// Schedule a tick to check again after debounce period
-				cmds = append(cmds, tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
-					return semanticDebounceTickMsg{}
-				}))
-			}
-		}
+	// Trigger async semantic computation if needed (debounced).
+	if pendingCmd := m.pendingSemanticFilterCmd(); pendingCmd != nil {
+		cmds = append(cmds, pendingCmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -4870,52 +5286,11 @@ func (m *Model) handleTimeTravelInputKeys(msg tea.KeyMsg) *Model {
 	return m
 }
 
-// restoreFocusFromHelp returns the appropriate focus based on current view state.
-// This fixes the bug where dismissing help would always return to focusList,
-// even when the user was in a specialized view (graph, board, insights, etc.).
+// restoreFocusFromHelp returns the exact focus that opened the help overlay.
+// focusBeforeHelp is captured on every real help transition and remains the
+// authoritative state even for split detail, tree, and tutorial views.
 func (m Model) restoreFocusFromHelp() focus {
-	// Full-screen detail view (not split mode)
-	if m.showDetails && !m.isSplitView {
-		return focusDetail
-	}
-	// Specialized views take precedence
-	if m.isGraphView {
-		return focusGraph
-	}
-	if m.isBoardView {
-		return focusBoard
-	}
-	if m.isActionableView {
-		return focusActionable
-	}
-	if m.isHistoryView {
-		return focusHistory
-	}
-	// Check for other focus states using stored focusBeforeHelp
-	// (m.focused is focusHelp while help is open, so we use the saved value)
-	if m.focusBeforeHelp == focusInsights {
-		return focusInsights
-	}
-	if m.focusBeforeHelp == focusLabelDashboard {
-		return focusLabelDashboard
-	}
-	if m.focusBeforeHelp == focusSprint {
-		return focusSprint
-	}
-	if m.focusBeforeHelp == focusFlowMatrix {
-		return focusFlowMatrix
-	}
-	if m.focusBeforeHelp == focusAttention {
-		return focusAttention
-	}
-	if m.focusBeforeHelp == focusLabelPicker {
-		return focusLabelPicker
-	}
-	if m.focusBeforeHelp == focusTimeTravelInput {
-		return focusTimeTravelInput
-	}
-	// Default: return to list
-	return focusList
+	return m.focusBeforeHelp
 }
 
 // handleHelpKeys handles keyboard input when the help overlay is focused
@@ -6831,8 +7206,7 @@ func (m *Model) applyFilter() {
 	// Apply sort mode (bv-3ita)
 	m.sortFilteredItems(filteredItems, filteredIssues)
 
-	m.list.SetItems(filteredItems)
-	m.updateSemanticIDs(filteredItems)
+	m.setListItems(filteredItems)
 	if m.snapshot != nil && m.snapshot.BoardState != nil && m.currentFilter == "all" && (!m.workspaceMode || m.activeRepos == nil) && len(filteredIssues) == len(m.snapshot.Issues) {
 		m.board.SetSnapshot(m.snapshot)
 	} else {
@@ -6856,12 +7230,13 @@ func (m *Model) applyFilter() {
 // refreshListItemsPhase2 updates visible items with Phase 2 scores and triage data
 // without rebuilding the filtered set.
 func (m *Model) refreshListItemsPhase2() {
-	items := m.list.Items()
-	if len(items) == 0 {
+	current := m.list.Items()
+	if len(current) == 0 {
 		return
 	}
+	items := append([]list.Item(nil), current...)
 
-	selectedIdx := m.list.Index()
+	selectedID := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value())
 	for i := range items {
 		item, ok := items[i].(IssueItem)
 		if !ok {
@@ -6886,10 +7261,7 @@ func (m *Model) refreshListItemsPhase2() {
 		items[i] = item
 	}
 
-	m.list.SetItems(items)
-	if selectedIdx >= 0 && selectedIdx < len(items) {
-		m.list.Select(selectedIdx)
-	}
+	m.replaceListPresentation(items, selectedID)
 	m.updateViewportContent()
 }
 
@@ -7200,8 +7572,7 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 		})
 	}
 
-	m.list.SetItems(filteredItems)
-	m.updateSemanticIDs(filteredItems)
+	m.setListItems(filteredItems)
 	m.board.SetIssues(filteredIssues)
 	// Generate insights for graph view (for metric rankings and sorting)
 	recipeIns := m.analysis.GenerateInsights(len(filteredIssues))
@@ -8880,9 +9251,8 @@ func (m *Model) Stop() {
 		loader.ReturnIssuePtrsToPool(m.pooledIssues)
 		m.pooledIssues = nil
 	}
-	if m.snapshot != nil && len(m.snapshot.pooledIssues) > 0 {
-		loader.ReturnIssuePtrsToPool(m.snapshot.pooledIssues)
-		m.snapshot.pooledIssues = nil
+	if m.snapshot != nil && m.snapshot.hasPooledIssues() {
+		m.snapshot.releasePooledIssues()
 	}
 }
 

@@ -6,10 +6,13 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
@@ -120,6 +123,45 @@ type IssueDiffStats struct {
 	Ratio   float64
 }
 
+// pooledIssueLease gives Phase 1 and Phase 2 snapshots shared, one-shot
+// ownership of pooled parser structs. A Phase 2 snapshot is a distinct object,
+// so copying the raw pointer slice would otherwise let shutdown return the same
+// objects to sync.Pool twice.
+type pooledIssueLease struct {
+	once     sync.Once
+	released atomic.Bool
+	refs     []*model.Issue
+	release  func([]*model.Issue)
+}
+
+func newPooledIssueLease(refs []*model.Issue) *pooledIssueLease {
+	if len(refs) == 0 {
+		return nil
+	}
+	return &pooledIssueLease{
+		refs:    refs,
+		release: loader.ReturnIssuePtrsToPool,
+	}
+}
+
+func (l *pooledIssueLease) releaseOnce() {
+	if l == nil {
+		return
+	}
+	l.once.Do(func() {
+		refs := l.refs
+		l.refs = nil
+		if len(refs) > 0 && l.release != nil {
+			l.release(refs)
+		}
+		l.released.Store(true)
+	})
+}
+
+func (l *pooledIssueLease) active() bool {
+	return l != nil && !l.released.Load()
+}
+
 // DataSnapshot is an immutable, self-contained representation of all data
 // the UI needs to render. Once created, it never changes - this is critical
 // for thread safety when the background worker is building the next snapshot.
@@ -130,9 +172,9 @@ type DataSnapshot struct {
 	// Core data
 	Issues   []model.Issue           // All issues (sorted)
 	IssueMap map[string]*model.Issue // Lookup by ID
-	// pooledIssues holds pooled backing structs used during parse.
-	// It must be returned to the pool when the snapshot is replaced.
-	pooledIssues []*model.Issue
+	// pooledIssues is shared by Phase 1/Phase 2 snapshots so parser refs are
+	// returned exactly once even though both snapshot objects can outlive a swap.
+	pooledIssues *pooledIssueLease
 	// ViewIssues are the issues included in the current view context (e.g. recipe).
 	// When empty, callers should fall back to Issues.
 	ViewIssues []model.Issue
@@ -217,6 +259,24 @@ type DataSnapshot struct {
 	LoadError    error     // Non-nil if last load had recoverable errors
 	ErrorTime    time.Time // When error occurred
 	StaleWarning bool      // True if data is from previous successful load
+}
+
+func (s *DataSnapshot) attachPooledIssues(refs []*model.Issue) {
+	if s == nil {
+		return
+	}
+	s.pooledIssues = newPooledIssueLease(refs)
+}
+
+func (s *DataSnapshot) releasePooledIssues() {
+	if s == nil {
+		return
+	}
+	s.pooledIssues.releaseOnce()
+}
+
+func (s *DataSnapshot) hasPooledIssues() bool {
+	return s != nil && s.pooledIssues.active()
 }
 
 // IsPhase2Ready returns whether expensive Phase 2 metrics are computed.
@@ -624,6 +684,9 @@ func issueDiffStats(diff *analysis.IssueDiff) IssueDiffStats {
 
 func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *recipe.Recipe, stats IssueDiffStats, currentIssues []model.Issue) bool {
 	if prev == nil || diff == nil || len(prev.ListItems) == 0 {
+		return false
+	}
+	if diff.HasDuplicateIDs {
 		return false
 	}
 	// Topology changes can alter graph-derived scores for otherwise unchanged

@@ -648,16 +648,12 @@ func (w *BackgroundWorker) Stop() {
 		}
 	}
 
-	var pooledRefs []*model.Issue
 	w.mu.Lock()
-	if w.snapshot != nil && len(w.snapshot.pooledIssues) > 0 {
-		pooledRefs = w.snapshot.pooledIssues
-		w.snapshot.pooledIssues = nil
-	}
+	snapshot := w.snapshot
 	w.snapshot = nil
 	w.mu.Unlock()
-	if len(pooledRefs) > 0 {
-		loader.ReturnIssuePtrsToPool(pooledRefs)
+	if snapshot != nil {
+		snapshot.releasePooledIssues()
 	}
 
 	w.logEvent(LogLevelInfo, "worker_stop", nil)
@@ -1072,16 +1068,16 @@ func (w *BackgroundWorker) process() {
 	// If we recovered while processing, ignore this stale result.
 	if w.generation != gen {
 		w.mu.Unlock()
-		if snapshot != nil && len(snapshot.pooledIssues) > 0 {
-			loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+		if snapshot != nil {
+			snapshot.releasePooledIssues()
 		}
 		return
 	}
 	// Check if stopped while we were processing - don't overwrite stopped state
 	if w.state == WorkerStopped {
 		w.mu.Unlock()
-		if snapshot != nil && len(snapshot.pooledIssues) > 0 {
-			loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+		if snapshot != nil {
+			snapshot.releasePooledIssues()
 		}
 		return
 	}
@@ -1089,9 +1085,11 @@ func (w *BackgroundWorker) process() {
 	// Only update snapshot if we got a new one (nil means deduped or error)
 	var swapLatency time.Duration
 	var version uint64
+	var previousSnapshot *DataSnapshot
 	if snapshot != nil {
 		swapStart := time.Now()
 		w.lastHash = snapshot.DataHash
+		previousSnapshot = w.snapshot
 		w.snapshot = snapshot
 		swapLatency = time.Since(swapStart)
 		version = w.metrics.snapshotVersion.Add(1)
@@ -1109,6 +1107,9 @@ func (w *BackgroundWorker) process() {
 		"state": "idle",
 	})
 	w.mu.Unlock()
+	if previousSnapshot != nil && previousSnapshot != snapshot {
+		previousSnapshot.releasePooledIssues()
+	}
 
 	processingDuration := time.Since(processStart)
 	w.metrics.processingCount.Add(1)
@@ -1145,6 +1146,12 @@ func (w *BackgroundWorker) process() {
 			QueueDepth:    queueDepth,
 			CoalesceCount: coalesced,
 		})
+		// Start the Phase 2 waiter only after SnapshotReadyMsg has been queued.
+		// This guarantees message order and gives the completion message the
+		// exact snapshot/version identity needed to reject same-hash refreshes.
+		if !snapshot.IsPhase2Ready() {
+			go w.runPhase2Analysis(snapshot, version)
+		}
 	}
 
 	// If dirty, process again immediately
@@ -1520,7 +1527,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext bool) *DataSnapshot {
 		snapshot.LoadWarningCount = len(loadWarnings)
 		snapshot.RecipeName = recipeID
 		snapshot.RecipeHash = recipeHash
-		snapshot.pooledIssues = pooledRefs
+		snapshot.attachPooledIssues(pooledRefs)
 		snapshot.DatasetTier = tier
 		snapshot.SourceIssueCountHint = sourceLineCount
 		snapshot.LoadedOpenOnly = loadOpenOnly
@@ -1571,11 +1578,6 @@ func (w *BackgroundWorker) buildSnapshot(forceNext bool) *DataSnapshot {
 			formatReloadDuration(snapshotTimings["load_issues"]),
 			formatReloadDuration(snapshotTimings["phase1"]),
 		)
-	}
-
-	// Spawn Phase 2 completion watcher if Phase 2 isn't ready yet
-	if snapshot != nil && !snapshot.IsPhase2Ready() {
-		go w.runPhase2Analysis(snapshot.Analysis, hash)
 	}
 
 	return snapshot
@@ -1715,11 +1717,12 @@ func envDurationMilliseconds(name string, fallback time.Duration) time.Duration 
 
 // runPhase2Analysis waits for Phase 2 analysis to complete and notifies the UI.
 // This runs in a goroutine so it doesn't block snapshot delivery.
-// The dataHash is used by the UI to verify the update matches the current snapshot.
-func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHash string) {
-	if stats == nil {
+func (w *BackgroundWorker) runPhase2Analysis(snapshot *DataSnapshot, snapshotVer uint64) {
+	if snapshot == nil || snapshot.Analysis == nil {
 		return
 	}
+	stats := snapshot.Analysis
+	dataHash := snapshot.DataHash
 
 	// Wait for Phase 2 to complete (blocking)
 	phase2Start := time.Now()
@@ -1738,7 +1741,7 @@ func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHas
 	current := w.snapshot
 	w.mu.RUnlock()
 
-	if stopped || current == nil || current.Analysis != stats || current.DataHash != dataHash {
+	if stopped || current != snapshot {
 		w.logEvent(LogLevelDebug, "phase2_skip", map[string]any{
 			"hash": hashPrefix(dataHash),
 		})
@@ -1750,7 +1753,12 @@ func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHas
 	})
 
 	// Notify UI that Phase 2 metrics are ready
-	w.send(Phase2UpdateMsg{DataHash: dataHash})
+	w.send(Phase2UpdateMsg{
+		DataHash:    dataHash,
+		Stats:       stats,
+		Snapshot:    snapshot,
+		SnapshotVer: snapshotVer,
+	})
 }
 
 // SnapshotReadyMsg is sent to the UI when a new snapshot is ready.
@@ -1773,7 +1781,10 @@ type SnapshotErrorMsg struct {
 // This allows the UI to update without waiting for full rebuild.
 // The UI should check DataHash matches current snapshot before using.
 type Phase2UpdateMsg struct {
-	DataHash string // Content hash to verify this matches current snapshot
+	DataHash    string // Content hash to verify this matches current snapshot
+	Stats       *analysis.GraphStats
+	Snapshot    *DataSnapshot
+	SnapshotVer uint64
 }
 
 // RefreshRequestMsg asks the BackgroundWorker to reload data. Force bypasses
@@ -1788,6 +1799,17 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 	if w == nil || msg == nil {
 		return
 	}
+	// Phase 2 is an optional enrichment notification; SnapshotReady and error
+	// messages are authoritative. Never let a Phase 2 completion evict the
+	// SnapshotReady message it follows from a full channel.
+	if _, phase2 := msg.(Phase2UpdateMsg); phase2 {
+		select {
+		case w.msgCh <- msg:
+		case <-w.ctx.Done():
+		default:
+		}
+		return
+	}
 	for {
 		select {
 		case w.msgCh <- msg:
@@ -1799,9 +1821,26 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 
 		// Channel is full; drop an older message so the newest wins.
 		select {
-		case <-w.msgCh:
+		case dropped := <-w.msgCh:
+			w.releaseDroppedMessage(dropped)
 		default:
 		}
+	}
+}
+
+func (w *BackgroundWorker) releaseDroppedMessage(msg tea.Msg) {
+	ready, ok := msg.(SnapshotReadyMsg)
+	if !ok || ready.Snapshot == nil {
+		return
+	}
+	w.mu.RLock()
+	current := w.snapshot
+	w.mu.RUnlock()
+	// The worker retains its current snapshot until replacement/Stop. Older
+	// dropped messages have no remaining owner unless the UI already installed
+	// them, whose release path shares the same one-shot lease.
+	if ready.Snapshot != current {
+		ready.Snapshot.releasePooledIssues()
 	}
 }
 
