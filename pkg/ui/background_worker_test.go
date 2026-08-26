@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -337,6 +338,141 @@ func TestBackgroundWorkerSendDoesNotLetPhase2EvictSnapshotReady(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorkerSendDoesNotLetErrorEvictSnapshotReady(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	generation := worker.Generation()
+	snapshot := &DataSnapshot{DataHash: "current"}
+	ready := SnapshotReadyMsg{
+		Snapshot:         snapshot,
+		SnapshotVer:      7,
+		WorkerGeneration: generation,
+	}
+	worker.msgCh <- ready
+	worker.send(SnapshotErrorMsg{
+		Err:              errors.New("recoverable reload error"),
+		Recoverable:      true,
+		WorkerGeneration: generation,
+	})
+
+	queued := <-worker.msgCh
+	got, ok := queued.(SnapshotReadyMsg)
+	if !ok || got.Snapshot != snapshot || got.SnapshotVer != ready.SnapshotVer {
+		t.Fatalf("queued message=%#v, want authoritative SnapshotReadyMsg", queued)
+	}
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("full channel unexpectedly retained lower-priority error: %#v", unexpected)
+	default:
+	}
+}
+
+func TestBackgroundWorkerSendDropsStaleGenerationError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	staleGeneration := worker.Generation()
+	mutateWorkerForTest(worker, func() {
+		worker.generation++
+	})
+	worker.send(SnapshotErrorMsg{
+		Err:              errors.New("stale reload error"),
+		Recoverable:      true,
+		WorkerGeneration: staleGeneration,
+	})
+
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("stale worker message was queued: %#v", unexpected)
+	default:
+	}
+}
+
+func TestBackgroundWorkerProcessDiscardsInvalidatedBuildError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	previous := &WorkerError{Phase: "previous", Cause: errors.New("previous error"), Time: time.Now()}
+	worker.recordError(previous)
+
+	buildStarted := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	processDone := make(chan struct{})
+	staleErr := &WorkerError{Phase: "load", Cause: errors.New("stale load error"), Time: time.Now()}
+	go func() {
+		worker.processWithSnapshotBuilder(func(bool) snapshotBuildResult {
+			close(buildStarted)
+			<-releaseBuild
+			return snapshotBuildResult{err: staleErr}
+		})
+		close(processDone)
+	}()
+
+	<-buildStarted
+	mutateWorkerForTest(worker, func() {
+		if worker.state != WorkerProcessing {
+			t.Fatalf("worker state=%v, want processing before invalidation", worker.state)
+		}
+		worker.generation++
+		worker.state = WorkerIdle
+		worker.processingStart = time.Time{}
+	})
+	close(releaseBuild)
+	<-processDone
+
+	if got := worker.LastError(); got != previous {
+		t.Fatalf("stale build changed LastError: got %v, want previous error", got)
+	}
+	if staleErr.Retries != 0 {
+		t.Fatalf("stale build error retry count=%d, want untouched", staleErr.Retries)
+	}
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("stale build published a worker message: %#v", unexpected)
+	default:
+	}
+}
+
+func TestBackgroundWorkerProcessPublishesAcceptedErrorGeneration(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.beadsPath = filepath.Join(t.TempDir(), "missing.jsonl")
+
+	worker.process()
+
+	if worker.LastError() == nil {
+		t.Fatal("accepted build error did not update LastError")
+	}
+	select {
+	case queued := <-worker.msgCh:
+		msg, ok := queued.(SnapshotErrorMsg)
+		if !ok {
+			t.Fatalf("queued message=%#v, want SnapshotErrorMsg", queued)
+		}
+		if msg.WorkerGeneration != worker.Generation() {
+			t.Fatalf("error generation=%d, want current generation %d", msg.WorkerGeneration, worker.Generation())
+		}
+		if msg.Err == nil || !msg.Recoverable {
+			t.Fatalf("error message=%#v, want recoverable load error", msg)
+		}
+	default:
+		t.Fatal("accepted build error did not publish SnapshotErrorMsg")
+	}
+}
+
 func TestBackgroundWorker_TriggerRefresh(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
@@ -396,6 +532,9 @@ func TestBackgroundWorker_RefreshRequestMsg(t *testing.T) {
 	}).(SnapshotReadyMsg)
 	if firstMsg.Snapshot != first {
 		t.Fatal("RefreshRequestMsg snapshot was not delivered through worker message channel")
+	}
+	if firstMsg.WorkerGeneration != worker.Generation() {
+		t.Fatalf("SnapshotReadyMsg generation=%d, want %d", firstMsg.WorkerGeneration, worker.Generation())
 	}
 
 	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
@@ -1709,7 +1848,8 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 	worker.snapshot = snapshot
 
 	const snapshotVersion = 9
-	go worker.runPhase2Analysis(snapshot, snapshotVersion)
+	workerGeneration := worker.Generation()
+	go worker.runPhase2Analysis(snapshot, snapshotVersion, workerGeneration)
 	msg := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(msg tea.Msg) bool {
 		_, ok := msg.(Phase2UpdateMsg)
 		return ok
@@ -1722,6 +1862,9 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 	}
 	if msg.Snapshot != snapshot || msg.SnapshotVer != snapshotVersion {
 		t.Fatalf("Phase2UpdateMsg identity=(%p,%d), want (%p,%d)", msg.Snapshot, msg.SnapshotVer, snapshot, snapshotVersion)
+	}
+	if msg.WorkerGeneration != workerGeneration {
+		t.Fatalf("Phase2UpdateMsg generation=%d, want %d", msg.WorkerGeneration, workerGeneration)
 	}
 
 	m := NewModel(issues, nil, "")
