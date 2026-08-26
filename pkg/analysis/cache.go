@@ -619,6 +619,7 @@ type graphStatsCacheBlob struct {
 	Slack             map[string]float64 `json:"slack"`
 	Cycles            [][]string         `json:"cycles"`
 	Status            MetricStatus       `json:"status"`
+	decoded           bool
 }
 
 // graphStatsCacheSoA is the on-disk (serialized) form of graphStatsCacheBlob.
@@ -660,44 +661,44 @@ type graphStatsCacheSoA struct {
 
 	// Float metrics (positional, aligned to Nodes unless *Idx present).
 	PageRankSet bool      `json:"pr_set,omitempty"`
-	PageRankIdx []int32   `json:"pr_idx,omitempty"`
+	PageRankIdx []int32   `json:"pr_idx"`
 	PageRank    []float64 `json:"pr,omitempty"`
 
 	BetweennessSet bool      `json:"bt_set,omitempty"`
-	BetweennessIdx []int32   `json:"bt_idx,omitempty"`
+	BetweennessIdx []int32   `json:"bt_idx"`
 	Betweenness    []float64 `json:"bt,omitempty"`
 
 	EigenvectorSet bool      `json:"ev_set,omitempty"`
-	EigenvectorIdx []int32   `json:"ev_idx,omitempty"`
+	EigenvectorIdx []int32   `json:"ev_idx"`
 	Eigenvector    []float64 `json:"ev,omitempty"`
 
 	HubsSet bool      `json:"hub_set,omitempty"`
-	HubsIdx []int32   `json:"hub_idx,omitempty"`
+	HubsIdx []int32   `json:"hub_idx"`
 	Hubs    []float64 `json:"hub,omitempty"`
 
 	AuthoritiesSet bool      `json:"auth_set,omitempty"`
-	AuthoritiesIdx []int32   `json:"auth_idx,omitempty"`
+	AuthoritiesIdx []int32   `json:"auth_idx"`
 	Authorities    []float64 `json:"auth,omitempty"`
 
 	CriticalPathScoreSet bool      `json:"cp_set,omitempty"`
-	CriticalPathScoreIdx []int32   `json:"cp_idx,omitempty"`
+	CriticalPathScoreIdx []int32   `json:"cp_idx"`
 	CriticalPathScore    []float64 `json:"cp,omitempty"`
 
 	SlackSet bool      `json:"sl_set,omitempty"`
-	SlackIdx []int32   `json:"sl_idx,omitempty"`
+	SlackIdx []int32   `json:"sl_idx"`
 	Slack    []float64 `json:"sl,omitempty"`
 
 	// Int metrics (positional, aligned to Nodes unless *Idx present).
 	OutDegreeSet bool    `json:"od_set,omitempty"`
-	OutDegreeIdx []int32 `json:"od_idx,omitempty"`
+	OutDegreeIdx []int32 `json:"od_idx"`
 	OutDegree    []int   `json:"od,omitempty"`
 
 	InDegreeSet bool    `json:"id_set,omitempty"`
-	InDegreeIdx []int32 `json:"id_idx,omitempty"`
+	InDegreeIdx []int32 `json:"id_idx"`
 	InDegree    []int   `json:"id,omitempty"`
 
 	CoreNumberSet bool    `json:"kc_set,omitempty"`
-	CoreNumberIdx []int32 `json:"kc_idx,omitempty"`
+	CoreNumberIdx []int32 `json:"kc_idx"`
 	CoreNumber    []int   `json:"kc,omitempty"`
 }
 
@@ -766,6 +767,9 @@ func (b *graphStatsCacheBlob) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &soa); err != nil {
 		return err
 	}
+	if err := soa.validate(); err != nil {
+		return fmt.Errorf("invalid graph stats cache payload: %w", err)
+	}
 
 	b.TopologicalOrder = soa.TopologicalOrder
 	b.Density = soa.Density
@@ -787,7 +791,81 @@ func (b *graphStatsCacheBlob) UnmarshalJSON(data []byte) error {
 	b.OutDegree = expandInt(soa.OutDegreeSet, soa.OutDegreeIdx, soa.OutDegree, soa.Nodes)
 	b.InDegree = expandInt(soa.InDegreeSet, soa.InDegreeIdx, soa.InDegree, soa.Nodes)
 	b.CoreNumber = expandInt(soa.CoreNumberSet, soa.CoreNumberIdx, soa.CoreNumber, soa.Nodes)
+	b.decoded = true
 
+	return nil
+}
+
+func (s graphStatsCacheSoA) validate() error {
+	if s.Version != robotAnalysisDiskCacheVersion {
+		return fmt.Errorf("version %d, want %d", s.Version, robotAnalysisDiskCacheVersion)
+	}
+	if s.NodeCount < 0 || s.EdgeCount < 0 {
+		return fmt.Errorf("negative graph size nodes=%d edges=%d", s.NodeCount, s.EdgeCount)
+	}
+	if len(s.Nodes) != s.NodeCount {
+		return fmt.Errorf("node dictionary length %d does not match node_count %d", len(s.Nodes), s.NodeCount)
+	}
+	for i, node := range s.Nodes {
+		if node == "" {
+			return fmt.Errorf("empty node ID at dictionary index %d", i)
+		}
+		if i > 0 && s.Nodes[i-1] >= node {
+			return fmt.Errorf("node dictionary is not strictly sorted at index %d", i)
+		}
+	}
+
+	columns := []struct {
+		name     string
+		set      bool
+		idx      []int32
+		valueLen int
+	}{
+		{name: "page_rank", set: s.PageRankSet, idx: s.PageRankIdx, valueLen: len(s.PageRank)},
+		{name: "betweenness", set: s.BetweennessSet, idx: s.BetweennessIdx, valueLen: len(s.Betweenness)},
+		{name: "eigenvector", set: s.EigenvectorSet, idx: s.EigenvectorIdx, valueLen: len(s.Eigenvector)},
+		{name: "hubs", set: s.HubsSet, idx: s.HubsIdx, valueLen: len(s.Hubs)},
+		{name: "authorities", set: s.AuthoritiesSet, idx: s.AuthoritiesIdx, valueLen: len(s.Authorities)},
+		{name: "critical_path_score", set: s.CriticalPathScoreSet, idx: s.CriticalPathScoreIdx, valueLen: len(s.CriticalPathScore)},
+		{name: "slack", set: s.SlackSet, idx: s.SlackIdx, valueLen: len(s.Slack)},
+		{name: "out_degree", set: s.OutDegreeSet, idx: s.OutDegreeIdx, valueLen: len(s.OutDegree)},
+		{name: "in_degree", set: s.InDegreeSet, idx: s.InDegreeIdx, valueLen: len(s.InDegree)},
+		{name: "core_number", set: s.CoreNumberSet, idx: s.CoreNumberIdx, valueLen: len(s.CoreNumber)},
+	}
+	for _, column := range columns {
+		if err := validateGraphStatsCacheColumn(column.name, column.set, column.idx, column.valueLen, len(s.Nodes)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGraphStatsCacheColumn(name string, set bool, idx []int32, valueLen, nodeCount int) error {
+	if !set {
+		if idx != nil || valueLen != 0 {
+			return fmt.Errorf("%s has data while its set flag is false", name)
+		}
+		return nil
+	}
+	if idx == nil {
+		if valueLen != nodeCount {
+			return fmt.Errorf("%s dense value length %d does not match node count %d", name, valueLen, nodeCount)
+		}
+		return nil
+	}
+	if len(idx) != valueLen {
+		return fmt.Errorf("%s sparse index/value lengths differ: %d/%d", name, len(idx), valueLen)
+	}
+	previous := int32(-1)
+	for i, nodeIndex := range idx {
+		if nodeIndex < 0 || int(nodeIndex) >= nodeCount {
+			return fmt.Errorf("%s sparse index %d at position %d is outside [0,%d)", name, nodeIndex, i, nodeCount)
+		}
+		if nodeIndex <= previous {
+			return fmt.Errorf("%s sparse indexes are not strictly increasing at position %d", name, i)
+		}
+		previous = nodeIndex
+	}
 	return nil
 }
 
@@ -1129,15 +1207,36 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 	// never a torn write. Decoding touches exactly one entry — the whole point
 	// of the v3 layout (issue #192): the v2 single file made every lookup
 	// decode every entry for every repo this user runs bv in.
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
+		return nil, false, false
+	}
+	info, statErr := f.Stat()
+	if statErr != nil {
+		_ = f.Close()
+		return nil, false, false
+	}
+	if info.Size() > robotAnalysisDiskCacheMaxEntrySize {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return nil, false, false
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(f, robotAnalysisDiskCacheMaxEntrySize+1))
+	closeErr := f.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, false, false
+	}
+	if len(raw) > robotAnalysisDiskCacheMaxEntrySize {
+		_ = os.Remove(path)
 		return nil, false, false
 	}
 
 	var entry robotAnalysisDiskCacheEntry
 	if err := json.Unmarshal(raw, &entry); err != nil ||
 		entry.Version != robotAnalysisDiskCacheVersion ||
-		entry.Key != fullKey {
+		entry.Key != fullKey ||
+		entry.DataHash+"|"+entry.ConfigHash != fullKey ||
+		!entry.Result.decoded {
 		// Corrupt, foreign, or filename-collision content can never satisfy a
 		// lookup; drop the regenerable file so it stops costing reads.
 		_ = os.Remove(path)

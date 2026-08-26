@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -58,6 +59,7 @@ func TestGraphStatsCacheBlob_SoARoundTrip(t *testing.T) {
 		// Sparse: CoreNumber/Slack cover a subset of the node union; this must
 		// stay distinct from present-zero after the round trip.
 		"sparse_and_nil": {
+			NodeCount:   3,
 			OutDegree:   map[string]int{"X": 1, "Y": 2, "Z": 0},
 			InDegree:    map[string]int{"X": 0, "Y": 0, "Z": 2},
 			PageRank:    map[string]float64{"X": 0.3, "Y": 0.3, "Z": 0.4},
@@ -79,8 +81,10 @@ func TestGraphStatsCacheBlob_SoARoundTrip(t *testing.T) {
 			if err := json.Unmarshal(data, &got); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if !reflect.DeepEqual(blob, got) {
-				t.Fatalf("round-trip mismatch:\n want %#v\n  got %#v", blob, got)
+			want := blob
+			want.decoded = true
+			if !reflect.DeepEqual(want, got) {
+				t.Fatalf("round-trip mismatch:\n want %#v\n  got %#v", want, got)
 			}
 		})
 	}
@@ -180,5 +184,96 @@ func TestExpandFloatIntNegativeIndexNoPanic(t *testing.T) {
 	im := expandInt(true, []int32{-3}, []int{7}, nodes)
 	if len(im) != 0 {
 		t.Errorf("expandInt: expected empty (only negative index), got %v", im)
+	}
+}
+
+func TestRobotDiskCacheRejectsStructurallyCorruptSoA(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	cacheDir := t.TempDir()
+	t.Setenv("BV_CACHE_DIR", cacheDir)
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DB", beadsDir)
+
+	dir, err := robotAnalysisDiskCacheDir(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const dataHash = "data-hash"
+	const configHash = "config-hash"
+	const key = dataHash + "|" + configHash
+	path := filepath.Join(dir, robotAnalysisEntryFileName(key))
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+
+	tests := []struct {
+		name   string
+		result string
+	}{
+		{name: "missing result", result: ""},
+		{name: "wrong inner version", result: `{"v":2,"nodes":[],"node_count":0}`},
+		{name: "short dense column", result: `{"v":3,"nodes":["a","b"],"node_count":2,"od_set":true,"od_idx":null,"od":[1]}`},
+		{name: "mismatched sparse columns", result: `{"v":3,"nodes":["a","b"],"node_count":2,"od_set":true,"od_idx":[0,1],"od":[1]}`},
+		{name: "out of range sparse index", result: `{"v":3,"nodes":["a","b"],"node_count":2,"od_set":true,"od_idx":[2],"od":[1]}`},
+		{name: "duplicate sparse index", result: `{"v":3,"nodes":["a","b"],"node_count":2,"od_set":true,"od_idx":[0,0],"od":[1,2]}`},
+		{name: "unsorted node dictionary", result: `{"v":3,"nodes":["b","a"],"node_count":2}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resultField := ""
+			if tt.result != "" {
+				resultField = `,"result":` + tt.result
+			}
+			raw := fmt.Sprintf(`{"version":%d,"key":%q,"created_at":%q,"data_hash":%q,"config_hash":%q%s}`,
+				robotAnalysisDiskCacheVersion, key, createdAt, dataHash, configHash, resultField)
+			if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if stats, _, hit := getRobotDiskCachedStats(key); hit || stats != nil {
+				t.Fatalf("corrupt cache returned hit=%v stats=%p", hit, stats)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("corrupt cache entry was not reaped: %v", err)
+			}
+		})
+	}
+}
+
+func TestRobotDiskCacheRejectsOversizedEntryBeforeDecode(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	cacheDir := t.TempDir()
+	t.Setenv("BV_CACHE_DIR", cacheDir)
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DB", beadsDir)
+
+	dir, err := robotAnalysisDiskCacheDir(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "oversized|entry"
+	path := filepath.Join(dir, robotAnalysisEntryFileName(key))
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(robotAnalysisDiskCacheMaxEntrySize + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if stats, _, hit := getRobotDiskCachedStats(key); hit || stats != nil {
+		t.Fatalf("oversized cache returned hit=%v stats=%p", hit, stats)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversized cache entry was not reaped: %v", err)
 	}
 }
