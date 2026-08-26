@@ -33,19 +33,69 @@ func BenchmarkSnapshotSwap(b *testing.B) {
 			issues := testutil.QuickRandom(size, 0.01)
 
 			m := NewModel(copyIssues(issues), nil, "")
-			snapshot := NewSnapshotBuilder(copyIssues(issues)).Build()
+			snapshots := [2]*DataSnapshot{
+				NewSnapshotBuilder(copyIssues(issues)).Build(),
+				NewSnapshotBuilder(copyIssues(issues)).Build(),
+			}
 
-			tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+			tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshots[0]})
 			m = tm.(*Model)
 
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+				tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshots[i&1]})
 				m = tm.(*Model)
 			}
 		})
 	}
+}
+
+func BenchmarkDuplicateSnapshotDelivery(b *testing.B) {
+	issues := testutil.QuickRandom(1000, 0.01)
+	m := NewModel(copyIssues(issues), nil, "")
+	snapshot := NewSnapshotBuilder(copyIssues(issues)).Build()
+	tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+	m = tm.(*Model)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tm, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+		m = tm.(*Model)
+	}
+}
+
+func BenchmarkSnapshotViewSyncComponents(b *testing.B) {
+	issues := testutil.QuickRandom(1000, 0.01)
+	m := NewModel(copyIssues(issues), nil, "")
+	snapshot := NewSnapshotBuilder(copyIssues(issues)).Build()
+
+	b.Run("list", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			m.list.SetItems(snapshot.listModelItems)
+		}
+	})
+	b.Run("board", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			m.board.SetSnapshot(snapshot)
+		}
+	})
+	b.Run("graph", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			m.graphView.SetSnapshot(snapshot)
+		}
+	})
+	b.Run("insights", func(b *testing.B) {
+		insights := snapshot.GetInsights()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			m.insightsPanel.SetInsights(insights)
+		}
+	})
 }
 
 func BenchmarkKeyPressLatency(b *testing.B) {

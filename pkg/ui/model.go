@@ -1733,6 +1733,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if msg.Snapshot == m.snapshot {
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
 
 		firstSnapshot := m.snapshotInitPending && m.snapshot == nil
 		m.snapshotInitPending = false
