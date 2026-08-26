@@ -29,7 +29,7 @@ func TestShortcutsSidebarComposedWidthFitsTerminal(t *testing.T) {
 
 	// composeWidth rebuilds the same body+sidebar join View() performs, before
 	// the final full-screen clamp, for the currently-focused list/detail body.
-	composeWidth := func(m Model, showDetails bool) int {
+	composeWidth := func(m *Model, showDetails bool) int {
 		var body string
 		if m.isSplitView {
 			body = m.renderSplitView()
