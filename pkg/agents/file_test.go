@@ -205,7 +205,9 @@ func TestUpdateBlurbInFileRejectsFutureVersionRevealedByLegacyRemoval(t *testing
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
 	original := "# Header\n\n" + LegacyBlurbContent + "\n" +
-		"<!-- bv-agent-instructions-v9 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+		"<!-- bv-agent-instructions-v9 -->\n" +
+		"```bash\nfuture command\n```\n" +
+		"newer\n<!-- end-bv-agent-instructions -->\n"
 	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +222,28 @@ func TestUpdateBlurbInFileRejectsFutureVersionRevealedByLegacyRemoval(t *testing
 	}
 	if string(got) != original {
 		t.Fatalf("revealed future-version update changed file:\n got: %q\nwant: %q", got, original)
+	}
+}
+
+func TestUpdateBlurbInFileRejectsEOFOpenFenceWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := "# Header\n\n" +
+		"<!-- bv-agent-instructions-v3 -->\nold instructions\n<!-- end-bv-agent-instructions -->\n\n" +
+		"```markdown\nuser example continues to EOF\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := UpdateBlurbInFile(filePath); err == nil || !strings.Contains(err.Error(), "validate updated") {
+		t.Fatalf("UpdateBlurbInFile() error=%v, want EOF-open fence validation failure", err)
+	}
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("EOF-open fence update changed file:\n got: %q\nwant: %q", got, original)
 	}
 }
 
@@ -336,23 +360,163 @@ func TestRemoveBlurbFromFileRejectsMalformedMarkersWithoutWriting(t *testing.T) 
 }
 
 func TestRemoveBlurbFromFileRejectsFutureVersionWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+	}{
+		{
+			name:     "direct",
+			original: "# Header\n<!-- bv-agent-instructions-v12 -->\nnewer\n<!-- end-bv-agent-instructions -->\n",
+		},
+		{
+			name: "revealed after legacy removal with fenced example",
+			original: "# Header\n\n" + LegacyBlurbContent + "\n" +
+				"<!-- bv-agent-instructions-v12 -->\n" +
+				"```bash\nfuture command\n```\n" +
+				"newer\n<!-- end-bv-agent-instructions -->\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			filePath := filepath.Join(tmpDir, "AGENTS.md")
+			if err := os.WriteFile(filePath, []byte(tt.original), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			err := RemoveBlurbFromFile(filePath)
+			if err == nil || !strings.Contains(err.Error(), "refusing to remove") {
+				t.Fatalf("RemoveBlurbFromFile() error=%v, want future-version refusal", err)
+			}
+			got, readErr := os.ReadFile(filePath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != tt.original {
+				t.Fatalf("future-version removal changed file:\n got: %q\nwant: %q", got, tt.original)
+			}
+		})
+	}
+}
+
+func TestRemoveBlurbFromFilePreservesImmediatelyAdjacentUserFence(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
-	original := "# Header\n<!-- bv-agent-instructions-v12 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	userCode := "```\nuser code must retain both fences\n```\n"
+	original := "# Header\n\n" + legacy + userCode
 	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	err := RemoveBlurbFromFile(filePath)
-	if err == nil || !strings.Contains(err.Error(), "refusing to remove") {
-		t.Fatalf("RemoveBlurbFromFile() error=%v, want future-version refusal", err)
+	if err := RemoveBlurbFromFile(filePath); err != nil {
+		t.Fatalf("RemoveBlurbFromFile failed: %v", err)
 	}
-	got, readErr := os.ReadFile(filePath)
-	if readErr != nil {
-		t.Fatal(readErr)
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(got), userCode) {
+		t.Fatalf("file removal changed adjacent user fence:\n got: %q\nwant suffix: %q", got, userCode)
+	}
+}
+
+func TestRemoveBlurbFromFilePreservesUnclosedFenceWhoseBodyStartsWithHeading(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	userCode := "```\n## literal heading inside unfinished fence\n"
+	original := "# Header\n\n" + legacy + userCode
+	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveBlurbFromFile(filePath); err != nil {
+		t.Fatalf("RemoveBlurbFromFile failed: %v", err)
+	}
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(got), userCode) {
+		t.Fatalf("file removal changed unclosed fenced heading:\n got: %q\nwant suffix: %q", got, userCode)
+	}
+}
+
+func TestEnsureBlurbRejectsAmbiguousLegacyFenceWithoutWriting(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	original := LegacyBlurbContent + "\n" +
+		"<!-- bv-agent-instructions-v4 -->\n" +
+		"```bash\ncurrent command\n```\n" +
+		"current\n<!-- end-bv-agent-instructions -->\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureBlurb(tmpDir); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("EnsureBlurb error=%v, want fail-closed malformed result", err)
+	}
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if string(got) != original {
-		t.Fatalf("future-version removal changed file:\n got: %q\nwant: %q", got, original)
+		t.Fatalf("EnsureBlurb changed ambiguous fenced content:\n got: %q\nwant: %q", got, original)
+	}
+}
+
+func TestFileMutationsRejectAmbiguousLegacyInterpretationsWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		wantError string
+	}{
+		{
+			name:      "same-version physical blocks swap visibility",
+			content:   ambiguousSameVersionBlockSwapContent(),
+			wantError: "ambiguous marker material",
+		},
+		{
+			name:      "legacy removal count diverges",
+			content:   ambiguousTwoLegacyBlocksContent(),
+			wantError: "removal count",
+		},
+	}
+	mutations := []struct {
+		name string
+		run  func(string) error
+	}{
+		{name: "update", run: UpdateBlurbInFile},
+		{name: "remove", run: RemoveBlurbFromFile},
+	}
+
+	for _, tt := range tests {
+		for _, mutation := range mutations {
+			t.Run(tt.name+"/"+mutation.name, func(t *testing.T) {
+				tmpDir := t.TempDir()
+				filePath := filepath.Join(tmpDir, "AGENTS.md")
+				if err := os.WriteFile(filePath, []byte(tt.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				if err := mutation.run(filePath); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("%s error=%v, want %q", mutation.name, err, tt.wantError)
+				}
+				got, err := os.ReadFile(filePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, []byte(tt.content)) {
+					t.Fatalf("%s changed ambiguous file bytes:\n got: %q\nwant: %q", mutation.name, got, tt.content)
+				}
+			})
+		}
 	}
 }
 
@@ -718,6 +882,28 @@ func TestEnsureBlurb(t *testing.T) {
 		}
 		if string(content) != original {
 			t.Fatalf("EnsureBlurb changed EOF-fenced content:\n got: %q\nwant: %q", content, original)
+		}
+	})
+
+	t.Run("old blurb followed by EOF-open fence - errors without writing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := "# My Instructions\n\n" +
+			"<!-- bv-agent-instructions-v3 -->\nold instructions\n<!-- end-bv-agent-instructions -->\n\n" +
+			"```markdown\nuser example continues to EOF\n"
+		if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := EnsureBlurb(tmpDir); err == nil {
+			t.Fatal("expected EOF-open fence validation error")
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != original {
+			t.Fatalf("EnsureBlurb changed old blurb plus EOF-fenced content:\n got: %q\nwant: %q", content, original)
 		}
 	})
 

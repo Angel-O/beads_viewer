@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -288,13 +289,28 @@ func TestUpdateBlurbFutureVersionFailsClosed(t *testing.T) {
 
 func TestUpdateBlurbFutureVersionRevealedByLegacyRemovalFailsClosed(t *testing.T) {
 	content := "# Header\n\n" + LegacyBlurbContent + "\n" +
-		"<!-- bv-agent-instructions-v9 -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n"
+		"<!-- bv-agent-instructions-v9 -->\n" +
+		"```bash\nfuture command\n```\n" +
+		"newer instructions\n<!-- end-bv-agent-instructions -->\n"
 
 	if got := UpdateBlurb(content); got != content {
 		t.Fatalf("UpdateBlurb() replaced a future blurb hidden by the legacy fence:\n got: %q\nwant: %q", got, content)
 	}
 	if _, err := updateBlurbChecked(content); err == nil || !strings.Contains(err.Error(), "refusing to replace") {
 		t.Fatalf("checked update error=%v, want future-version refusal after legacy removal", err)
+	}
+}
+
+func TestUpdateBlurbRejectsResultInsideEOFOpenFence(t *testing.T) {
+	content := "# Header\n\n" +
+		"<!-- bv-agent-instructions-v3 -->\nold instructions\n<!-- end-bv-agent-instructions -->\n\n" +
+		"```markdown\nuser example continues to EOF\n"
+
+	if got := UpdateBlurb(content); got != content {
+		t.Fatalf("UpdateBlurb() wrote the replacement inside an EOF-open fence:\n got: %q\nwant: %q", got, content)
+	}
+	if _, err := updateBlurbChecked(content); err == nil || !strings.Contains(err.Error(), "validate updated") {
+		t.Fatalf("checked update error=%v, want final-result validation failure", err)
 	}
 }
 
@@ -342,7 +358,9 @@ func TestRemoveBlurbFutureVersionFailsClosed(t *testing.T) {
 
 func TestRemoveBlurbFutureVersionRevealedByLegacyRemovalFailsClosed(t *testing.T) {
 	content := "# Header\n\n" + LegacyBlurbContent + "\n" +
-		"<!-- bv-agent-instructions-v8 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+		"<!-- bv-agent-instructions-v8 -->\n" +
+		"```bash\nfuture command\n```\n" +
+		"newer\n<!-- end-bv-agent-instructions -->\n"
 	if got := RemoveBlurb(content); got != content {
 		t.Fatalf("RemoveBlurb() removed future instructions hidden by the legacy fence:\n got: %q\nwant: %q", got, content)
 	}
@@ -552,6 +570,26 @@ coding tasks.
 bv already computes the hard parts for you.
 ` + "```"
 
+// ambiguousSameVersionBlockSwapContent presents two complete v4 blocks whose
+// visibility swaps depending on whether the legacy blurb's trailing fence is
+// treated as its closer or as a user fence opener.
+func ambiguousSameVersionBlockSwapContent() string {
+	return LegacyBlurbContent + "\n" +
+		BlurbStartMarker + "\nfirst physical block\n" + BlurbEndMarker + "\n" +
+		"```\n" +
+		BlurbStartMarker + "\nsecond physical block\n" + BlurbEndMarker + "\n"
+}
+
+// ambiguousTwoLegacyBlocksContent hides the second legacy section behind the
+// first section's ambiguous trailing fence. The conservative removal view sees
+// one legacy blurb while the hypothetical fence-consumed view sees two.
+func ambiguousTwoLegacyBlocksContent() string {
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	return "# Header\n\n" + legacy + "```\n" + legacy + "```\n"
+}
+
 func TestContainsLegacyBlurb(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -714,6 +752,187 @@ bv already computes the hard parts for you.
 	}
 	if !strings.Contains(result, userCode) {
 		t.Fatalf("legacy removal consumed a later user fence:\n got: %q\nwant to preserve: %q", result, userCode)
+	}
+}
+
+func TestRemoveLegacyBlurbPreservesImmediatelyAdjacentUserFence(t *testing.T) {
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	userCode := "```\nuser code must retain both fences\n```\n"
+	content := "# Header\n\n" + legacy + userCode
+
+	result := RemoveLegacyBlurb(content)
+	if strings.Contains(result, "bv already computes the hard parts") {
+		t.Fatalf("legacy blurb was not removed:\n%s", result)
+	}
+	if !strings.HasSuffix(result, userCode) {
+		t.Fatalf("legacy removal changed an adjacent user fence:\n got: %q\nwant suffix: %q", result, userCode)
+	}
+	if got := strings.Count(result, "```"); got != 2 {
+		t.Fatalf("adjacent user fence delimiter count=%d, want 2", got)
+	}
+}
+
+func TestRemoveLegacyBlurbPreservesIndentedLiteralFence(t *testing.T) {
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	literal := "    ```\nindented literal must remain\n"
+	result := RemoveLegacyBlurb(legacy + literal)
+	if !strings.HasSuffix(result, literal) {
+		t.Fatalf("legacy removal consumed a four-space-indented literal:\n got: %q\nwant suffix: %q", result, literal)
+	}
+}
+
+func TestRemoveLegacyBlurbPreservesUnclosedAdjacentUserFence(t *testing.T) {
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	userCode := "```\nunfinished user example\n"
+	result := RemoveLegacyBlurb(legacy + userCode)
+	if !strings.HasSuffix(result, userCode) {
+		t.Fatalf("legacy removal consumed an unclosed adjacent user fence:\n got: %q\nwant suffix: %q", result, userCode)
+	}
+}
+
+func TestRemoveLegacyBlurbPreservesUnclosedFenceWhoseBodyStartsWithHeading(t *testing.T) {
+	legacy := "### Using bv as an AI sidecar\n\n" +
+		"--robot-insights\n--robot-plan\n" +
+		"bv already computes the hard parts for you.\n"
+	userCode := "```\n## literal heading inside unfinished fence\n"
+	result := RemoveLegacyBlurb(legacy + userCode)
+	if !strings.HasSuffix(result, userCode) {
+		t.Fatalf("legacy removal consumed an unclosed user fence before a heading:\n got: %q\nwant suffix: %q", result, userCode)
+	}
+}
+
+func TestCurrentBlurbHiddenByAmbiguousLegacyFenceFailsClosed(t *testing.T) {
+	content := LegacyBlurbContent + "\n" +
+		"<!-- bv-agent-instructions-v4 -->\n" +
+		"```bash\ncurrent command\n```\n" +
+		"current instructions\n<!-- end-bv-agent-instructions -->\n"
+
+	if got := UpdateBlurb(content); got != content {
+		t.Fatalf("UpdateBlurb rewrote ambiguous fenced content:\n got: %q\nwant: %q", got, content)
+	}
+	if got := RemoveBlurb(content); got != content {
+		t.Fatalf("RemoveBlurb rewrote ambiguous fenced content:\n got: %q\nwant: %q", got, content)
+	}
+	if _, err := updateBlurbChecked(content); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("checked update error=%v, want fail-closed malformed result", err)
+	}
+}
+
+func TestVersionedBlurbsHiddenByAmbiguousLegacyFenceFailClosed(t *testing.T) {
+	tests := []struct {
+		name      string
+		version   int
+		body      string
+		wantError string
+	}{
+		{name: "current simple body", version: BlurbVersion, body: "current instructions\n", wantError: "malformed"},
+		{name: "current bare fenced body", version: BlurbVersion, body: "```\ncurrent command\n```\ncurrent instructions\n", wantError: "malformed"},
+		{name: "future simple body", version: BlurbVersion + 5, body: "future instructions\n", wantError: "refusing"},
+		{name: "future bare fenced body", version: BlurbVersion + 5, body: "```\nfuture command\n```\nfuture instructions\n", wantError: "refusing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := LegacyBlurbContent + "\n" +
+				fmt.Sprintf("<!-- bv-agent-instructions-v%d -->\n", tt.version) +
+				tt.body + BlurbEndMarker + "\n"
+
+			if got := UpdateBlurb(content); got != content {
+				t.Fatalf("UpdateBlurb rewrote ambiguous content:\n got: %q\nwant: %q", got, content)
+			}
+			if got := RemoveBlurb(content); got != content {
+				t.Fatalf("RemoveBlurb rewrote ambiguous content:\n got: %q\nwant: %q", got, content)
+			}
+			if _, err := updateBlurbChecked(content); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("checked update error=%v, want %q fail-closed error", err, tt.wantError)
+			}
+			if _, err := removeBlurbsChecked(content); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("checked removal error=%v, want %q fail-closed error", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestAmbiguousLegacyInterpretationsFailClosedWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name                    string
+		content                 string
+		wantError               string
+		wantRealRemovals        int
+		wantAnalysisRemovals    int
+		wantRealVisibleBody     string
+		wantAnalysisVisibleBody string
+	}{
+		{
+			name:                    "same-version physical blocks swap visibility",
+			content:                 ambiguousSameVersionBlockSwapContent(),
+			wantError:               "ambiguous marker material",
+			wantRealRemovals:        1,
+			wantAnalysisRemovals:    1,
+			wantRealVisibleBody:     "second physical block",
+			wantAnalysisVisibleBody: "first physical block",
+		},
+		{
+			name:                 "second legacy block is hidden",
+			content:              ambiguousTwoLegacyBlocksContent(),
+			wantError:            "removal count",
+			wantRealRemovals:     1,
+			wantAnalysisRemovals: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			realView, ambiguous, realRemovals, err := removeLegacyBlurbsChecked(tt.content)
+			if err != nil {
+				t.Fatalf("conservative legacy removal failed: %v", err)
+			}
+			if !ambiguous {
+				t.Fatal("fixture did not preserve an ambiguous legacy fence")
+			}
+			analysisView, _, analysisRemovals, err := removeLegacyBlurbsCheckedWithPolicy(tt.content, true)
+			if err != nil {
+				t.Fatalf("hypothetical legacy removal failed: %v", err)
+			}
+			if realRemovals != tt.wantRealRemovals || analysisRemovals != tt.wantAnalysisRemovals {
+				t.Fatalf("legacy removal counts real/analysis=%d/%d, want %d/%d", realRemovals, analysisRemovals, tt.wantRealRemovals, tt.wantAnalysisRemovals)
+			}
+
+			if tt.wantRealVisibleBody != "" {
+				realBlocks, realErr := inspectBlurbBlocks(realView)
+				analysisBlocks, analysisErr := inspectBlurbBlocks(analysisView)
+				if realErr != nil || analysisErr != nil || len(realBlocks) != 1 || len(analysisBlocks) != 1 {
+					t.Fatalf("fixture block structure real=%v/%d analysis=%v/%d, want one valid block in each view", realErr, len(realBlocks), analysisErr, len(analysisBlocks))
+				}
+				realBlock := realView[realBlocks[0].start:realBlocks[0].end]
+				analysisBlock := analysisView[analysisBlocks[0].start:analysisBlocks[0].end]
+				if !strings.Contains(realBlock, tt.wantRealVisibleBody) || !strings.Contains(analysisBlock, tt.wantAnalysisVisibleBody) {
+					t.Fatalf("physical block visibility did not swap:\n real: %q\nanalysis: %q", realBlock, analysisBlock)
+				}
+				if realBlocks[0].version != BlurbVersion || analysisBlocks[0].version != BlurbVersion {
+					t.Fatalf("visible block versions real/analysis=%d/%d, want v%d in both", realBlocks[0].version, analysisBlocks[0].version, BlurbVersion)
+				}
+			}
+
+			if got := UpdateBlurb(tt.content); got != tt.content {
+				t.Fatalf("UpdateBlurb changed ambiguous content:\n got: %q\nwant: %q", got, tt.content)
+			}
+			if got := RemoveBlurb(tt.content); got != tt.content {
+				t.Fatalf("RemoveBlurb changed ambiguous content:\n got: %q\nwant: %q", got, tt.content)
+			}
+			if _, err := updateBlurbChecked(tt.content); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("checked update error=%v, want %q", err, tt.wantError)
+			}
+			if _, err := removeBlurbsChecked(tt.content); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("checked removal error=%v, want %q", err, tt.wantError)
+			}
+		})
 	}
 }
 

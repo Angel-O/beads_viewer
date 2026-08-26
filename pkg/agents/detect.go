@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -124,19 +125,65 @@ func checkAgentFile(filePath, fileType string) AgentFileDetection {
 
 	contentStr := string(content)
 	hasLegacy := ContainsLegacyBlurb(contentStr)
-	// Legacy copies can end with a dangling fence delimiter that hides later
-	// versioned markers. Inspect a non-mutating, legacy-free view so detection
-	// and CLI dry-runs see the same future versions that checked mutations see.
+	originalBlocks, originalStructureErr := inspectBlurbBlocks(contentStr)
+	// Remove only an unambiguous historical delimiter. A matching later close
+	// makes the adjacent fence a possible user code-block opener, so the real
+	// mutation path preserves it byte-for-byte.
 	markerContent := contentStr
 	var legacyViewErr error
-	if withoutLegacy, err := removeLegacyBlurbsChecked(contentStr); err != nil {
+	var ambiguousFencePreserved bool
+	var realLegacyRemovals int
+	if withoutLegacy, ambiguous, removed, err := removeLegacyBlurbsChecked(contentStr); err != nil {
 		legacyViewErr = err
 	} else {
 		markerContent = withoutLegacy
+		ambiguousFencePreserved = ambiguous
+		realLegacyRemovals = removed
 	}
-	blurbCount, structureErr := inspectBlurbStructure(markerContent)
+	markerBlocks, structureErr := inspectBlurbBlocks(markerContent)
+	blurbCount := len(markerBlocks)
+	blurbVersion := GetBlurbVersion(markerContent)
+	completeBlocks := markerBlocks
+	completeVersion := highestBlurbBlockVersion(markerBlocks)
+	if originalVersion := highestBlurbBlockVersion(originalBlocks); originalVersion > completeVersion {
+		completeBlocks = originalBlocks
+		completeVersion = originalVersion
+	}
+	var ambiguityErr error
+	// If malformed marker structure may be a historical fence artifact, inspect
+	// a hypothetical delimiter-consumed view solely to protect complete future
+	// blocks. Never use this view for mutation or for non-future detection: doing
+	// so could reinterpret a user's fenced example as installed instructions.
+	if ambiguousFencePreserved || originalStructureErr != nil || structureErr != nil {
+		if analysisView, _, analysisLegacyRemovals, err := removeLegacyBlurbsCheckedWithPolicy(contentStr, true); err == nil {
+			analysisBlocks, analysisStructureErr := inspectBlurbBlocks(analysisView)
+			if analysisVersion := highestBlurbBlockVersion(analysisBlocks); analysisVersion > completeVersion {
+				completeBlocks = analysisBlocks
+				completeVersion = analysisVersion
+			}
+			if completeVersion <= BlurbVersion && ambiguousFencePreserved && (len(scanBlurbMarkers(markerContent)) > 0 || len(scanBlurbMarkers(analysisView)) > 0) {
+				ambiguityErr = fmt.Errorf("malformed bv agent blurb: ambiguous marker material hidden by preserved legacy fence")
+			} else if completeVersion <= BlurbVersion && ambiguousFencePreserved && realLegacyRemovals != analysisLegacyRemovals {
+				ambiguityErr = fmt.Errorf("malformed legacy bv agent blurb: ambiguous fence changes removal count from %d to %d", realLegacyRemovals, analysisLegacyRemovals)
+			} else if completeVersion <= BlurbVersion && analysisStructureErr != nil && originalStructureErr == nil && structureErr == nil {
+				structureErr = analysisStructureErr
+			}
+		}
+	}
+	if completeVersion > BlurbVersion {
+		blurbCount = len(completeBlocks)
+		blurbVersion = completeVersion
+		ambiguityErr = nil
+		originalStructureErr = nil
+		structureErr = nil
+		legacyViewErr = nil
+	}
 	structureError := ""
-	if structureErr != nil {
+	if ambiguityErr != nil {
+		structureError = ambiguityErr.Error()
+	} else if originalStructureErr != nil {
+		structureError = originalStructureErr.Error()
+	} else if structureErr != nil {
 		structureError = structureErr.Error()
 	} else if legacyViewErr != nil {
 		structureError = legacyViewErr.Error()
@@ -147,11 +194,21 @@ func checkAgentFile(filePath, fileType string) AgentFileDetection {
 		FileType:            fileType,
 		HasBlurb:            hasLegacy || ContainsBlurb(markerContent),
 		HasLegacyBlurb:      hasLegacy,
-		BlurbVersion:        GetBlurbVersion(markerContent),
+		BlurbVersion:        blurbVersion,
 		BlurbCount:          blurbCount,
 		BlurbStructureError: structureError,
 		Content:             contentStr,
 	}
+}
+
+func highestBlurbBlockVersion(blocks []blurbBlock) int {
+	version := 0
+	for _, block := range blocks {
+		if block.version > version {
+			version = block.version
+		}
+	}
+	return version
 }
 
 // DetectAgentFileInParents searches for agent files starting from workDir

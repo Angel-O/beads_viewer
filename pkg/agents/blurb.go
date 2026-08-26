@@ -312,27 +312,9 @@ func UpdateBlurb(content string) string {
 }
 
 func updateBlurbChecked(content string) (string, error) {
-	blocks, err := inspectBlurbBlocks(content)
+	var err error
+	content, err = prepareBlurbMutation(content, "replace")
 	if err != nil {
-		return "", err
-	}
-	if err := rejectFutureBlurbBlocks(blocks, "replace"); err != nil {
-		return "", err
-	}
-
-	content, err = removeLegacyBlurbsChecked(content)
-	if err != nil {
-		return "", err
-	}
-	// A historical legacy blurb may end with a bare fence delimiter. Until the
-	// legacy span is removed, that delimiter can hide later versioned markers
-	// from Markdown-aware scanning. Re-inspect before deleting anything so an
-	// older bv binary can never replace a newly revealed future-version block.
-	blocks, err = inspectBlurbBlocks(content)
-	if err != nil {
-		return "", err
-	}
-	if err := rejectFutureBlurbBlocks(blocks, "replace"); err != nil {
 		return "", err
 	}
 	for ContainsBlurb(content) {
@@ -342,28 +324,22 @@ func updateBlurbChecked(content string) (string, error) {
 		}
 		content = withoutBlurb
 	}
-	return AppendBlurb(content), nil
+	updated := AppendBlurb(content)
+	count, err := inspectBlurbStructure(updated)
+	if err != nil {
+		return "", fmt.Errorf("validate updated bv agent blurb: %w", err)
+	}
+	version := GetBlurbVersion(updated)
+	if count != 1 || version != BlurbVersion {
+		return "", fmt.Errorf("validate updated bv agent blurb: found %d standalone versioned blocks at v%d, want exactly one v%d block", count, version, BlurbVersion)
+	}
+	return updated, nil
 }
 
 func removeBlurbsChecked(content string) (string, error) {
-	blocks, err := inspectBlurbBlocks(content)
+	var err error
+	content, err = prepareBlurbMutation(content, "remove")
 	if err != nil {
-		return "", err
-	}
-	if err := rejectFutureBlurbBlocks(blocks, "remove"); err != nil {
-		return "", err
-	}
-	content, err = removeLegacyBlurbsChecked(content)
-	if err != nil {
-		return "", err
-	}
-	// As in updateBlurbChecked, legacy-fence removal can reveal markers that
-	// were not structurally visible in the original Markdown.
-	blocks, err = inspectBlurbBlocks(content)
-	if err != nil {
-		return "", err
-	}
-	if err := rejectFutureBlurbBlocks(blocks, "remove"); err != nil {
 		return "", err
 	}
 	for ContainsBlurb(content) {
@@ -374,6 +350,62 @@ func removeBlurbsChecked(content string) (string, error) {
 		content = withoutBlurb
 	}
 	return content, nil
+}
+
+// prepareBlurbMutation validates both the original Markdown view and a
+// non-mutating view with recognized legacy blurbs removed. Historical legacy
+// copies can end in a dangling bare fence: a later versioned blurb's own code
+// fence may then make its end marker look stray in the original view. Inspect
+// the legacy-free view before returning that original structural error so a
+// hidden future-version blurb is still identified and protected. For all
+// non-future content, the original structural error remains fail-closed.
+func prepareBlurbMutation(content, action string) (string, error) {
+	originalBlocks, originalStructureErr := inspectBlurbBlocks(content)
+	if originalStructureErr == nil {
+		if err := rejectFutureBlurbBlocks(originalBlocks, action); err != nil {
+			return "", err
+		}
+	}
+
+	withoutLegacy, ambiguousFencePreserved, realLegacyRemovals, err := removeLegacyBlurbsChecked(content)
+	if err != nil {
+		return "", err
+	}
+	revealedBlocks, revealedStructureErr := inspectBlurbBlocks(withoutLegacy)
+	if err := rejectFutureBlurbBlocks(revealedBlocks, action); err != nil {
+		return "", err
+	}
+	// An ambiguous adjacent fence is preserved by real removal because it may be
+	// a user code-block opener. Inspect a hypothetical view that consumes that
+	// historical delimiter, but never write it. Future-version refusal takes
+	// precedence; any other marker visibility or legacy-removal-count ambiguity
+	// fails closed rather than choosing which user bytes are installed content.
+	if ambiguousFencePreserved || originalStructureErr != nil || revealedStructureErr != nil {
+		analysisView, _, analysisLegacyRemovals, analysisErr := removeLegacyBlurbsCheckedWithPolicy(content, true)
+		if analysisErr != nil {
+			return "", analysisErr
+		}
+		analysisBlocks, analysisStructureErr := inspectBlurbBlocks(analysisView)
+		if err := rejectFutureBlurbBlocks(analysisBlocks, action); err != nil {
+			return "", err
+		}
+		if ambiguousFencePreserved && (len(scanBlurbMarkers(withoutLegacy)) > 0 || len(scanBlurbMarkers(analysisView)) > 0) {
+			return "", fmt.Errorf("malformed bv agent blurb: ambiguous marker material hidden by preserved legacy fence; refusing to %s", action)
+		}
+		if ambiguousFencePreserved && realLegacyRemovals != analysisLegacyRemovals {
+			return "", fmt.Errorf("malformed legacy bv agent blurb: ambiguous fence changes removal count from %d to %d; refusing to %s", realLegacyRemovals, analysisLegacyRemovals, action)
+		}
+		if analysisStructureErr != nil && originalStructureErr == nil && revealedStructureErr == nil {
+			return "", analysisStructureErr
+		}
+	}
+	if originalStructureErr != nil {
+		return "", originalStructureErr
+	}
+	if revealedStructureErr != nil {
+		return "", revealedStructureErr
+	}
+	return withoutLegacy, nil
 }
 
 func rejectFutureBlurbBlocks(blocks []blurbBlock, action string) error {
@@ -385,15 +417,26 @@ func rejectFutureBlurbBlocks(blocks []blurbBlock, action string) error {
 	return nil
 }
 
-func removeLegacyBlurbsChecked(content string) (string, error) {
-	for ContainsLegacyBlurb(content) {
-		withoutBlurb := RemoveLegacyBlurb(content)
+func removeLegacyBlurbsChecked(content string) (string, bool, int, error) {
+	return removeLegacyBlurbsCheckedWithPolicy(content, false)
+}
+
+func removeLegacyBlurbsCheckedWithPolicy(content string, consumeAmbiguousFence bool) (string, bool, int, error) {
+	ambiguousFencePreserved := false
+	removed := 0
+	for {
+		span, ok, ambiguous := findLegacyBlurbWithPolicy(content, consumeAmbiguousFence)
+		ambiguousFencePreserved = ambiguousFencePreserved || ambiguous
+		if !ok {
+			return content, ambiguousFencePreserved, removed, nil
+		}
+		withoutBlurb := removeDelimitedBlurb(content, span.start, span.end)
 		if withoutBlurb == content {
-			return "", fmt.Errorf("malformed legacy bv agent blurb: unable to remove detected content")
+			return "", ambiguousFencePreserved, removed, fmt.Errorf("malformed legacy bv agent blurb: unable to remove detected content")
 		}
 		content = withoutBlurb
+		removed++
 	}
-	return content, nil
 }
 
 func validateBlurbStructure(content string) error {
@@ -691,6 +734,11 @@ func markdownHeading(line markdownLine) (int, string, bool) {
 }
 
 func findLegacyBlurb(content string) (legacyBlurbSpan, bool) {
+	span, ok, _ := findLegacyBlurbWithPolicy(content, false)
+	return span, ok
+}
+
+func findLegacyBlurbWithPolicy(content string, consumeAmbiguousFence bool) (legacyBlurbSpan, bool, bool) {
 	lines := scanMarkdownLines(content)
 	for i, line := range lines {
 		level, title, ok := markdownHeading(line)
@@ -726,19 +774,50 @@ func findLegacyBlurb(content string) (legacyBlurbSpan, bool) {
 		}
 
 		end := lines[endLine].end
+		ambiguousFencePreserved := false
 		// Some historical copies have a bare closing delimiter immediately
 		// after the identifying sentence. Do not skip blank lines looking for
 		// one: a later bare fence is an unrelated user code-block opener and
 		// must be preserved.
 		if next := endLine + 1; next < sectionEnd {
-			trimmed := strings.TrimSpace(lines[next].text)
-			if trimmed == "```" || trimmed == "~~~" {
-				end = lines[next].end
+			char, width, rest, isFence := markdownFenceRun(lines[next].text)
+			if isFence && strings.TrimSpace(rest) == "" {
+				clearlyTrailing := legacyFenceIsClearlyTrailing(lines, next, sectionEnd, char, width)
+				if consumeAmbiguousFence || clearlyTrailing {
+					end = lines[next].end
+				} else {
+					ambiguousFencePreserved = true
+				}
 			}
 		}
-		return legacyBlurbSpan{start: line.start, end: end}, true
+		return legacyBlurbSpan{start: line.start, end: end}, true, ambiguousFencePreserved
 	}
-	return legacyBlurbSpan{}, false
+	return legacyBlurbSpan{}, false, false
+}
+
+func legacyFenceIsClearlyTrailing(lines []markdownLine, opener, sectionEnd int, char byte, width int) bool {
+	if hasMatchingFenceClose(lines, opener+1, sectionEnd, char, width) {
+		return false
+	}
+	for i := opener + 1; i < sectionEnd; i++ {
+		if strings.TrimSpace(lines[i].text) == "" {
+			continue
+		}
+		// Any content after an unmatched candidate may belong to an unfinished
+		// user fence, including lines that look like Markdown headings.
+		return false
+	}
+	return true
+}
+
+func hasMatchingFenceClose(lines []markdownLine, start, end int, char byte, width int) bool {
+	for i := start; i < end; i++ {
+		candidateChar, candidateWidth, rest, ok := markdownFenceRun(lines[i].text)
+		if ok && candidateChar == char && candidateWidth >= width && strings.TrimSpace(rest) == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func removeDelimitedBlurb(content string, startIdx, endIdx int) string {
