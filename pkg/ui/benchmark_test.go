@@ -180,7 +180,7 @@ func BenchmarkSnapshotBuilderBuild(b *testing.B) {
 func BenchmarkListItemBuild(b *testing.B) {
 	issues := testutil.QuickRandom(1000, 0.01)
 	prev := NewSnapshotBuilder(copyIssues(issues)).Build()
-	updated := copyIssues(issues)
+	updated := copyIssues(prev.Issues)
 	updated[len(updated)/2].Title += " updated"
 	diff := analysis.ComputeIssueDiff(prev.Issues, updated)
 

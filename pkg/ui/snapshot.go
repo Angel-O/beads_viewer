@@ -666,28 +666,21 @@ func buildListItems(issues []model.Issue, stats *analysis.GraphStats) []IssueIte
 }
 
 func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats, prev *DataSnapshot, diff *analysis.IssueDiff) []IssueItem {
-	if prev == nil || len(prev.ListItems) == 0 || diff == nil {
+	if prev == nil || len(prev.ListItems) != len(issues) || diff == nil {
 		return buildListItems(issues, stats)
-	}
-	changed := make(map[string]struct{}, len(diff.Added)+len(diff.Modified))
-	for _, id := range diff.Added {
-		changed[id] = struct{}{}
-	}
-	for _, id := range diff.Modified {
-		changed[id] = struct{}{}
 	}
 
 	listItems := make([]IssueItem, len(issues))
-	for i := range issues {
-		issue := issues[i]
-		prevIndex, ok := prev.listIndexByID[issue.ID]
-		if !ok || prevIndex < 0 || prevIndex >= len(prev.ListItems) || isChangedID(changed, issue.ID) {
-			listItems[i] = buildIssueItemForSnapshot(issue, stats)
-			continue
+	copy(listItems, prev.ListItems)
+	for i := range listItems {
+		clearIssueItemEphemeral(&listItems[i])
+	}
+	for _, id := range diff.Modified {
+		index, ok := prev.listIndexByID[id]
+		if !ok || index < 0 || index >= len(issues) || issues[index].ID != id {
+			return buildListItems(issues, stats)
 		}
-		item := prev.ListItems[prevIndex]
-		clearIssueItemEphemeral(&item)
-		listItems[i] = item
+		listItems[index] = buildIssueItemForSnapshot(issues[index], stats)
 	}
 	return listItems
 }
@@ -732,11 +725,6 @@ func recipeName(r *recipe.Recipe) string {
 		return ""
 	}
 	return r.Name
-}
-
-func isChangedID(changed map[string]struct{}, id string) bool {
-	_, ok := changed[id]
-	return ok
 }
 
 func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *recipe.Recipe) bool {
