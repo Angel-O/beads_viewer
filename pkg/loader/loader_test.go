@@ -1048,6 +1048,13 @@ func TestLoadIssuesFromFile_PermissionDenied(t *testing.T) {
 	if err := os.Chmod(path, 0000); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_ = os.Chmod(path, 0o600)
+	})
+	if readable, openErr := os.Open(path); openErr == nil {
+		_ = readable.Close()
+		t.Skip("permission bits do not make the fixture unreadable for this test user")
+	}
 
 	_, err := loader.LoadIssuesFromFile(path)
 	if err == nil {
