@@ -355,7 +355,7 @@ func parseCommentsAdd(result request, arguments []string) (request, error) {
 			if err := safeID("comments add", argument); err != nil {
 				return result, err
 			}
-		} else if err := safeValue("comments add", argument); err != nil {
+		} else if err := validateCommentBody(argument); err != nil {
 			return result, err
 		}
 		result.positionals = append(result.positionals, argument)
@@ -809,6 +809,18 @@ func safeValue(name, value string) error {
 	}
 	if strings.ContainsAny(value, "\n\r\t") {
 		return fmt.Errorf("invalid control character in %s", name)
+	}
+	return nil
+}
+
+func validateCommentBody(value string) error {
+	if value == "" {
+		return errors.New("missing value for comments add")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return errors.New("invalid control character in comments add")
+		}
 	}
 	return nil
 }

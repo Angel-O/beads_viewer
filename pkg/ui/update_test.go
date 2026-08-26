@@ -145,6 +145,7 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	m.showShortcutsSidebar = true
 	m.applyContentSizing()
 	var gotID, gotText string
+	body := "## Details\n\n```go\n    fmt.Println(\"hello\")\n```\n"
 	m.SetCommentRunner(func(issueID, text string) error {
 		gotID, gotText = issueID, text
 		return nil
@@ -155,7 +156,7 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	if !m.showCommentPrompt || m.focused != focusCommentInput || cmd != nil {
 		t.Fatalf("comment prompt did not open: shown=%v focus=%v cmd=%v", m.showCommentPrompt, m.focused, cmd != nil)
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(body)})
 	m = updated.(Model)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(Model)
@@ -164,7 +165,7 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	}
 	updated, refreshCmd := m.Update(cmd())
 	m = updated.(Model)
-	if gotID != "A" || gotText != "looks good" || m.commentSubmitting || m.statusIsError || refreshCmd == nil {
+	if gotID != "A" || gotText != strings.TrimSpace(body) || m.commentSubmitting || m.statusIsError || refreshCmd == nil {
 		t.Fatalf("comment result = id %q text %q submitting=%v error=%v", gotID, gotText, m.commentSubmitting, m.statusIsError)
 	}
 	if !strings.Contains(m.View(), "Shortcuts") {

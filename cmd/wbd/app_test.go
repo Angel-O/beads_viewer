@@ -1298,6 +1298,31 @@ func TestCommentsAddAcceptsMultiWordTextAndSeparator(t *testing.T) {
 	}
 }
 
+func TestCommentsAddAcceptsMultilineMarkdownBody(t *testing.T) {
+	body := "## Example\r\n\r\n```go\r\n\tfmt.Println(\"hello\")\r\n```\r\n"
+	request, err := parse([]string{"comments", "add", "work-1", body, "--json"})
+	if err != nil {
+		t.Fatalf("multiline Markdown comment rejected: %v", err)
+	}
+	if want := []string{"work-1", body}; !reflect.DeepEqual(request.positionals, want) {
+		t.Fatalf("positionals = %#v, want %#v", request.positionals, want)
+	}
+
+	for _, whitespace := range []string{"line\nfeed", "line\rfeed", "line\r\nfeed", "line\tindented"} {
+		if _, err := parse([]string{"comments", "add", "work-1", whitespace}); err != nil {
+			t.Errorf("comment body %q rejected: %v", whitespace, err)
+		}
+	}
+}
+
+func TestCommentsAddRejectsEmptyAndOtherControlCharactersInBody(t *testing.T) {
+	for _, body := range []string{"", "line\x00feed", "line\x1bfeed"} {
+		if _, err := parse([]string{"comments", "add", "work-1", body}); err == nil {
+			t.Errorf("comment body %q was accepted", body)
+		}
+	}
+}
+
 func TestCommentsAddAuthorValidationNamesAuthor(t *testing.T) {
 	_, err := parse([]string{"comments", "add", "work-1", "text", "--author", "   "})
 	if err == nil || !strings.Contains(err.Error(), "author") {
@@ -1334,6 +1359,29 @@ func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
 		}
 		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
 			t.Fatalf("successful comment did not signal Viewer: %v", err)
+		}
+	})
+
+	t.Run("forwards multiline Markdown as one argument in JSON mode", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		})
+		body := "## Example\r\n\r\n```go\r\n\tfmt.Println(\"hello\")\r\n```\r\n"
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", body, "--author", "agent-7")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %#v", calls)
+		}
+		want := []string{"--db", test.store, "--json", "comments", "add", "work-1", body, "--author", "agent-7"}
+		if !reflect.DeepEqual(calls[1].Args, want) {
+			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
 		}
 	})
 
