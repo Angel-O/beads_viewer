@@ -261,6 +261,133 @@ func TestParallelDiff_StatefulFilterRunsSequentiallyInSourceOrder(t *testing.T) 
 	}
 }
 
+func TestParallelDiff_WarningAndFilterCallbacksObserveSourceOrder(t *testing.T) {
+	data := []byte("{not-json}\n" +
+		`{"id":"kept","title":"Kept","status":"open","issue_type":"task","priority":1}` + "\n")
+
+	run := func(parallel bool) ([]model.Issue, ParseStats, []string) {
+		var stats ParseStats
+		var warnings []string
+		allow := false
+		opts := ParseOptions{
+			Stats: &stats,
+			WarningHandler: func(message string) {
+				warnings = append(warnings, message)
+				if strings.Contains(message, "malformed JSON on line 1") && stats.Errors == 1 {
+					allow = true
+				}
+			},
+			IssueFilter: func(*model.Issue) bool {
+				return allow && stats.Valid == 1 && stats.Errors == 1
+			},
+		}
+		var issues []model.Issue
+		var err error
+		if parallel {
+			issues, _, err = parseIssuesParallel(data, opts, false, DefaultMaxBufferSize)
+		} else {
+			issues, _, err = parseIssuesWithOptions(bytes.NewReader(data), opts, false)
+		}
+		if err != nil {
+			t.Fatalf("parallel=%v: parse error: %v", parallel, err)
+		}
+		return issues, stats, warnings
+	}
+
+	serialIssues, serialStats, serialWarnings := run(false)
+	parallelIssues, parallelStats, parallelWarnings := run(true)
+	if !reflect.DeepEqual(serialIssues, parallelIssues) || len(serialIssues) != 1 || serialIssues[0].ID != "kept" {
+		t.Fatalf("callback timing changed output: serial=%+v parallel=%+v", serialIssues, parallelIssues)
+	}
+	if serialStats != parallelStats || !reflect.DeepEqual(serialWarnings, parallelWarnings) {
+		t.Fatalf("callback timing changed accounting: serial=%+v %v parallel=%+v %v", serialStats, serialWarnings, parallelStats, parallelWarnings)
+	}
+}
+
+func TestParallelDiff_DuplicateWarningObservesReclassifiedStats(t *testing.T) {
+	data := []byte(
+		`{"id":"dup","title":"First","status":"open","issue_type":"task","priority":1}` + "\n" +
+			`{"id":"dup","title":"Second","status":"open","issue_type":"task","priority":1}` + "\n",
+	)
+
+	run := func(parallel bool) (ParseStats, []ParseStats) {
+		var stats ParseStats
+		var observed []ParseStats
+		opts := ParseOptions{
+			Stats: &stats,
+			WarningHandler: func(message string) {
+				if strings.Contains(message, "skipping duplicate issue ID") {
+					observed = append(observed, stats)
+				}
+			},
+		}
+		var err error
+		if parallel {
+			_, _, err = parseIssuesParallel(data, opts, false, DefaultMaxBufferSize)
+		} else {
+			_, _, err = parseIssuesWithOptions(bytes.NewReader(data), opts, false)
+		}
+		if err != nil {
+			t.Fatalf("parallel=%v: parse error: %v", parallel, err)
+		}
+		return stats, observed
+	}
+
+	want := ParseStats{Valid: 1, Errors: 1}
+	for _, parallel := range []bool{false, true} {
+		stats, observed := run(parallel)
+		if stats != want {
+			t.Fatalf("parallel=%v: stats=%+v, want %+v", parallel, stats, want)
+		}
+		if len(observed) != 1 || observed[0] != want {
+			t.Fatalf("parallel=%v: duplicate callback observed %+v, want [%+v]", parallel, observed, want)
+		}
+	}
+}
+
+func TestParallelDiff_LineCapacityBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       []byte
+		bufferSize int
+	}{
+		{name: "lf accepted just below cap", data: []byte(strings.Repeat("x", 15) + "\n"), bufferSize: 16},
+		{name: "lf rejected at cap", data: []byte(strings.Repeat("x", 16) + "\n"), bufferSize: 16},
+		{name: "crlf accepted when terminator fits", data: []byte(strings.Repeat("x", 14) + "\r\n"), bufferSize: 16},
+		{name: "crlf rejected when cr fills cap", data: []byte(strings.Repeat("x", 15) + "\r\n"), bufferSize: 16},
+		{name: "sub-minimum buffer uses bufio floor", data: []byte(strings.Repeat("x", 15) + "\n"), bufferSize: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var serialStats, parallelStats ParseStats
+			var serialWarnings, parallelWarnings []string
+			serialOpts := ParseOptions{
+				BufferSize:     tc.bufferSize,
+				Stats:          &serialStats,
+				WarningHandler: func(message string) { serialWarnings = append(serialWarnings, message) },
+			}
+			parallelOpts := ParseOptions{
+				BufferSize:     tc.bufferSize,
+				Stats:          &parallelStats,
+				WarningHandler: func(message string) { parallelWarnings = append(parallelWarnings, message) },
+			}
+
+			serialIssues, _, serialErr := parseIssuesWithOptions(bytes.NewReader(tc.data), serialOpts, false)
+			if serialErr != nil {
+				t.Fatal(serialErr)
+			}
+			parallelIssues, _, parallelErr := parseIssuesParallel(tc.data, parallelOpts, false, tc.bufferSize)
+			if parallelErr != nil {
+				t.Fatal(parallelErr)
+			}
+			if !reflect.DeepEqual(serialIssues, parallelIssues) || serialStats != parallelStats || !reflect.DeepEqual(serialWarnings, parallelWarnings) {
+				t.Fatalf("boundary mismatch: serial=%+v %+v %v parallel=%+v %+v %v", serialIssues, serialStats, serialWarnings, parallelIssues, parallelStats, parallelWarnings)
+			}
+		})
+	}
+}
+
 // TestParallelParse_AutoDispatchMatchesSerial proves the public entry point's
 // size-gated auto-dispatch actually takes the parallel branch (when the file
 // exceeds parallelParseMinBytes) and that its result is identical to forcing

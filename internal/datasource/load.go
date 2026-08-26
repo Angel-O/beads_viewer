@@ -19,15 +19,16 @@ const maxLoadReportWarnings = 10
 // JSONL load, so callers (robot payload emitters in particular) can surface
 // records that were dropped during load instead of silently reporting them as
 // nonexistent (#190). Errors counts issue-shaped lines that were malformed JSON
-// or failed model validation (e.g. updated_at < created_at); each such skip
-// also contributes a human-readable reason to Warnings (capped).
+// or failed model validation (e.g. updated_at < created_at), plus later records
+// that repeat an earlier issue ID; each such skip also contributes a
+// human-readable reason to Warnings (capped).
 type LoadReport struct {
 	// Path is the JSONL file the report describes.
 	Path string
-	// Valid is the number of issue lines that parsed and validated.
+	// Valid is the number of unique issue lines that parsed and validated.
 	Valid int
 	// Errors is the number of issue-shaped lines dropped as malformed JSON or
-	// failed model validation.
+	// failed model validation, or rejected because the issue ID was duplicated.
 	Errors int
 	// Skipped is the number of recognized non-issue `_type` records.
 	Skipped int
