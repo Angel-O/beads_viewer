@@ -92,6 +92,7 @@ func TestAppendBlurbToFileRejectsEOFOpenFenceWithoutWriting(t *testing.T) {
 		original string
 	}{
 		{name: "tilde fence", original: "# Header\n\n~~~~markdown\nexample continues to EOF\n"},
+		{name: "backtick fence", original: "# Header\n\n```markdown\nexample continues to EOF\n"},
 		{name: "long backtick fence", original: "# Header\n\n````markdown\nexample continues to EOF\n"},
 	}
 

@@ -983,7 +983,8 @@ func TestModelClearsPendingSemanticFilterAfterEmbedError(t *testing.T) {
 	}
 }
 
-func newProgrammaticSemanticRefilterModel() *Model {
+func newProgrammaticSemanticRefilterModel(t *testing.T) *Model {
+	t.Helper()
 	issues := []model.Issue{
 		{ID: "repo-a-1", Title: "Alpha backend", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"backend"}, SourceRepo: "repo-a"},
 		{ID: "repo-b-1", Title: "Alpha frontend", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"frontend"}, SourceRepo: "repo-b"},
@@ -991,7 +992,9 @@ func newProgrammaticSemanticRefilterModel() *Model {
 	m := NewModel(issues, nil, "")
 	idx := search.NewVectorIndex(3)
 	for _, issue := range issues {
-		_ = idx.Upsert(issue.ID, search.ContentHash{}, []float32{1, 0, 0})
+		if err := idx.Upsert(issue.ID, search.ContentHash{}, []float32{1, 0, 0}); err != nil {
+			t.Fatalf("upsert semantic fixture %s: %v", issue.ID, err)
+		}
 	}
 	m.semanticSearch.SetIndex(idx, &mockEmbedder{dim: 3})
 	m.semanticSearchEnabled = true
@@ -1054,7 +1057,7 @@ func TestProgrammaticSemanticRefiltersSchedulePendingWorkBeforeEarlyReturn(t *te
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newProgrammaticSemanticRefilterModel()
+			m := newProgrammaticSemanticRefilterModel(t)
 			tt.setup(m)
 
 			updated, cmd := m.Update(tt.key)
@@ -1137,7 +1140,9 @@ func TestSemanticIndexPersistenceIsAsyncSerializedAndGenerationSafe(t *testing.T
 		Index:           secondIndex,
 		Embedder:        &mockEmbedder{dim: 3},
 		IndexPath:       "second-index",
-		NeedsSave:       true,
+		// This build observed an up-to-date disk before the older save finished.
+		// It still has to be queued so the older physical write cannot finish last.
+		NeedsSave: false,
 	})
 	m = updated.(*Model)
 	if m.semanticSearch.Snapshot().Index != secondIndex {

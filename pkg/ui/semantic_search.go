@@ -44,6 +44,10 @@ type semanticScoreCache struct {
 
 const semanticCacheMaxTerms = 20
 
+func semanticCacheNeedsReset(size int, termExists bool) bool {
+	return !termExists && size >= semanticCacheMaxTerms
+}
+
 type metricsCacheHolder struct {
 	cache search.MetricsCache
 }
@@ -118,7 +122,8 @@ func (s *SemanticSearch) SetScores(term string, scores map[string]SemanticScore)
 	for cachedTerm, cachedScores := range current.byTerm {
 		byTerm[cachedTerm] = cachedScores
 	}
-	if _, exists := byTerm[term]; !exists && len(byTerm) >= semanticCacheMaxTerms {
+	_, termExists := byTerm[term]
+	if semanticCacheNeedsReset(len(byTerm), termExists) {
 		byTerm = make(map[string]map[string]SemanticScore)
 	}
 	if scores == nil {
@@ -214,7 +219,8 @@ func (s *SemanticSearch) SetCachedResults(term string, results []list.Rank) {
 		newCache.results[k] = v
 	}
 	// Limit cache size to prevent memory bloat
-	if _, exists := newCache.results[term]; !exists && len(newCache.results) >= semanticCacheMaxTerms {
+	_, termExists := newCache.results[term]
+	if semanticCacheNeedsReset(len(newCache.results), termExists) {
 		// Clear old entries (simple approach: clear all)
 		newCache.results = make(map[string][]list.Rank)
 	}

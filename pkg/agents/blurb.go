@@ -732,23 +732,13 @@ func findLegacyBlurb(content string) (legacyBlurbSpan, bool) {
 		// must be preserved.
 		if next := endLine + 1; next < sectionEnd {
 			trimmed := strings.TrimSpace(lines[next].text)
-			if (trimmed == "```" || trimmed == "~~~") && !hasLaterFenceClose(lines, next+1, trimmed[0], len(trimmed), sectionEnd) {
+			if trimmed == "```" || trimmed == "~~~" {
 				end = lines[next].end
 			}
 		}
 		return legacyBlurbSpan{start: line.start, end: end}, true
 	}
 	return legacyBlurbSpan{}, false
-}
-
-func hasLaterFenceClose(lines []markdownLine, start int, char byte, width, end int) bool {
-	for i := start; i < end; i++ {
-		candidateChar, candidateWidth, rest, ok := markdownFenceRun(lines[i].text)
-		if ok && candidateChar == char && candidateWidth >= width && strings.TrimSpace(rest) == "" {
-			return true
-		}
-	}
-	return false
 }
 
 func removeDelimitedBlurb(content string, startIdx, endIdx int) string {

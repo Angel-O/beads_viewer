@@ -340,6 +340,17 @@ func TestRemoveBlurbFutureVersionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRemoveBlurbFutureVersionRevealedByLegacyRemovalFailsClosed(t *testing.T) {
+	content := "# Header\n\n" + LegacyBlurbContent + "\n" +
+		"<!-- bv-agent-instructions-v8 -->\nnewer\n<!-- end-bv-agent-instructions -->\n"
+	if got := RemoveBlurb(content); got != content {
+		t.Fatalf("RemoveBlurb() removed future instructions hidden by the legacy fence:\n got: %q\nwant: %q", got, content)
+	}
+	if _, err := removeBlurbsChecked(content); err == nil || !strings.Contains(err.Error(), "refusing to remove") {
+		t.Fatalf("checked removal error=%v, want future-version refusal after legacy removal", err)
+	}
+}
+
 func TestRemoveBlurbRemovesLegacyAndAllVersionedBlocks(t *testing.T) {
 	legacy := `### Using bv as an AI sidecar
 

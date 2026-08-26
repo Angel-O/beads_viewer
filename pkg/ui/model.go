@@ -521,29 +521,29 @@ type Model struct {
 	historyLoadFailed bool // True if history loading failed
 
 	// Filter and sort state
-	currentFilter           string
-	sortMode                SortMode // bv-3ita: current sort mode
-	semanticSearchEnabled   bool
-	semanticIndexBuilding   bool
-	semanticDataGeneration  uint64
-	semanticIndexBuildGen   uint64
-	semanticIndexBuildData  uint64
-	semanticIndexSaver      semanticIndexSaveFunc
-	semanticIndexSaveActive *semanticIndexSaveRequest
+	currentFilter            string
+	sortMode                 SortMode // bv-3ita: current sort mode
+	semanticSearchEnabled    bool
+	semanticIndexBuilding    bool
+	semanticDataGeneration   uint64
+	semanticIndexBuildGen    uint64
+	semanticIndexBuildData   uint64
+	semanticIndexSaver       semanticIndexSaveFunc
+	semanticIndexSaveActive  *semanticIndexSaveRequest
 	semanticIndexSavePending *semanticIndexSaveRequest
-	semanticSearch          *SemanticSearch
-	semanticHybridEnabled   bool
-	semanticHybridPreset    search.PresetName
-	semanticHybridBuilding  bool
-	semanticHybridBuildGen  uint64
-	semanticHybridBuildData uint64
-	semanticHybridReady     bool
-	semanticQueryGeneration uint64
-	semanticFilterBuilding  bool
-	semanticFilterDataGen   uint64
-	semanticFilterQueryGen  uint64
-	semanticFilterTerm      string
-	lastSearchTerm          string
+	semanticSearch           *SemanticSearch
+	semanticHybridEnabled    bool
+	semanticHybridPreset     search.PresetName
+	semanticHybridBuilding   bool
+	semanticHybridBuildGen   uint64
+	semanticHybridBuildData  uint64
+	semanticHybridReady      bool
+	semanticQueryGeneration  uint64
+	semanticFilterBuilding   bool
+	semanticFilterDataGen    uint64
+	semanticFilterQueryGen   uint64
+	semanticFilterTerm       string
+	lastSearchTerm           string
 
 	// Stats (cached)
 	countOpen    int
@@ -1852,7 +1852,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			break
 		}
-		if msg.NeedsSave {
+		// Even an index that matched disk when its build ran must be written after
+		// an older active save. Otherwise that older save can physically finish
+		// last and roll the on-disk index back after this newer build was accepted.
+		mustSaveAfterActive := m.semanticIndexSaveActive != nil
+		if msg.NeedsSave || mustSaveAfterActive {
 			if msg.Index == nil || msg.IndexPath == "" {
 				m.semanticSearchEnabled = false
 				m.list.Filter = list.DefaultFilter
