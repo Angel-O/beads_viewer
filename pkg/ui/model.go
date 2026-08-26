@@ -152,7 +152,7 @@ func runWBDCommentsAdd(issueID, text string, runner func(string, string) error) 
 		if runner != nil {
 			return commentAddedMsg{issueID: issueID, err: runner(issueID, text)}
 		}
-		command := exec.Command("wbd", "comments", "add", issueID, text, "--json")
+		command := exec.Command("wbd", "--json", "comments", "add", issueID, "--", text)
 		output, err := command.CombinedOutput()
 		if err != nil {
 			detail := strings.TrimSpace(string(output))

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,35 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	refreshMsg := refreshCmd()
 	if _, ok := refreshMsg.(FileChangedMsg); !ok {
 		t.Fatalf("successful comment refresh command = %T, want FileChangedMsg", refreshMsg)
+	}
+}
+
+func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake wbd uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	argsPath := filepath.Join(binDir, "args")
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake wbd: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	body := "- item\n- [ ] task\n  - nested\n"
+
+	message := runWBDCommentsAdd("work-1", body, nil)()
+	added, ok := message.(commentAddedMsg)
+	if !ok || added.err != nil {
+		t.Fatalf("comment command result = %#v, want successful commentAddedMsg", message)
+	}
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+	want := []string{"--json", "comments", "add", "work-1", "--", body}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wbd argv = %#v, want %#v", got, want)
 	}
 }
 
