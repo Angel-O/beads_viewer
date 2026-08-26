@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	_ "modernc.org/sqlite"
 )
 
@@ -132,6 +135,420 @@ func TestModelUpdatePhase2AndFileChanged(t *testing.T) {
 	// FileChangedMsg with empty beadsPath should simply re-arm watcher (no panic)
 	if updated2, cmd := m2.Update(FileChangedMsg{}); updated2.(Model).statusMsg != m2.statusMsg {
 		_ = cmd // command may be nil; just ensure no panic and type matches
+	}
+}
+
+func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.beadsPath = filepath.Join(t.TempDir(), "issues.jsonl")
+	m.hubRepositoryMode = true
+	m.showShortcutsSidebar = true
+	m.applyContentSizing()
+	var gotID, gotText string
+	body := "## Details\n\n```go\n    fmt.Println(\"hello\")\n```\n"
+	m.SetCommentRunner(func(issueID, text string) error {
+		gotID, gotText = issueID, text
+		return nil
+	})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if !m.showCommentPrompt || m.focused != focusCommentInput || cmd != nil {
+		t.Fatalf("comment prompt did not open: shown=%v focus=%v cmd=%v", m.showCommentPrompt, m.focused, cmd != nil)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(body)})
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+	if m.showCommentPrompt || !m.commentSubmitting || cmd == nil {
+		t.Fatalf("comment prompt did not submit: shown=%v submitting=%v cmd=%v", m.showCommentPrompt, m.commentSubmitting, cmd != nil)
+	}
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if gotID != "A" || gotText != strings.TrimSpace(body) || m.commentSubmitting || m.statusIsError || refreshCmd == nil {
+		t.Fatalf("comment result = id %q text %q submitting=%v error=%v", gotID, gotText, m.commentSubmitting, m.statusIsError)
+	}
+	if !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("sidebar composition was not restored after submit")
+	}
+	refreshMsg := refreshCmd()
+	if _, ok := refreshMsg.(FileChangedMsg); !ok {
+		t.Fatalf("successful comment refresh command = %T, want FileChangedMsg", refreshMsg)
+	}
+}
+
+func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake wbd uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	argsPath := filepath.Join(binDir, "args")
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake wbd: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	body := "- item\n- [ ] task\n  - nested\n"
+
+	message := runWBDCommentsAdd("work-1", body, nil)()
+	added, ok := message.(commentAddedMsg)
+	if !ok || added.err != nil {
+		t.Fatalf("comment command result = %#v, want successful commentAddedMsg", message)
+	}
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+	want := []string{"--json", "comments", "add", "work-1", "--", body}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wbd argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "realistic", width: 100, height: 30},
+		{name: "narrow", width: 28, height: 12},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+			m.width, m.height = test.width, test.height
+			m.hubRepositoryMode = true
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+			m = updated.(Model)
+
+			beforeModal := m.renderCommentPrompt()
+			panelWidth, panelHeight := m.commentPanelWidth, m.commentPanelHeight
+			editorWidth, editorHeight := m.commentEditorWidth, m.commentEditorHeight
+			modalHeight := lipgloss.Height(beforeModal)
+			checkGeometry := func(stage string) {
+				t.Helper()
+				plainModal := ansi.Strip(m.renderCommentPrompt())
+				if m.commentPanelWidth != panelWidth || m.commentPanelHeight != panelHeight ||
+					m.commentPanelWidth != max(1, test.width-2) || m.commentPanelHeight != max(1, test.height-3) ||
+					m.commentEditorWidth != editorWidth || m.commentEditorHeight != editorHeight ||
+					m.commentInput.Height() != editorHeight || lipgloss.Height(m.renderCommentPrompt()) != modalHeight {
+					t.Fatalf("%s changed geometry: panel=%dx%d editor=%dx%d modal height=%d", stage, m.commentPanelWidth, m.commentPanelHeight, m.commentEditorWidth, m.commentEditorHeight, lipgloss.Height(m.renderCommentPrompt()))
+				}
+				panelLines := strings.Split(plainModal, "\n")
+				firstPanelLine, lastPanelLine := -1, -1
+				for i, line := range panelLines {
+					if strings.TrimSpace(line) != "" {
+						if firstPanelLine < 0 {
+							firstPanelLine = i
+						}
+						lastPanelLine = i
+					}
+				}
+				if firstPanelLine < 0 || lastPanelLine-firstPanelLine+1 != panelHeight ||
+					!strings.Contains(strings.TrimSpace(panelLines[firstPanelLine]), "╭") ||
+					!strings.Contains(strings.TrimSpace(panelLines[lastPanelLine]), "╰") ||
+					!strings.Contains(strings.TrimSpace(panelLines[lastPanelLine]), "╯") ||
+					!strings.Contains(plainModal, "Ctrl+S") {
+					t.Fatalf("%s lost bounded panel content: first=%d last=%d height=%d panel=%dx%d", stage, firstPanelLine, lastPanelLine, lastPanelLine-firstPanelLine+1, panelWidth, panelHeight)
+				}
+				subtitleLine := -1
+				for i, line := range panelLines {
+					if strings.Contains(line, "Bead A") {
+						subtitleLine = i
+						break
+					}
+				}
+				if subtitleLine < 0 || subtitleLine+1 >= len(panelLines) || strings.TrimSpace(strings.Trim(strings.TrimSpace(panelLines[subtitleLine+1]), "│")) != "" {
+					t.Fatalf("%s missing blank row after Bead label in:\n%s", stage, plainModal)
+				}
+				plain := ansi.Strip(m.commentInput.View())
+				if strings.Contains(plain, "│") {
+					t.Fatalf("%s editor contains a prompt/gutter: %q", stage, plain)
+				}
+				for _, line := range strings.Split(m.renderCommentPrompt(), "\n") {
+					if lipgloss.Width(line) > test.width {
+						t.Fatalf("%s modal overflows terminal width %d: %d columns", stage, test.width, lipgloss.Width(line))
+					}
+				}
+			}
+
+			checkGeometry("empty")
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+			m = updated.(Model)
+			checkGeometry("first character")
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			m = updated.(Model)
+			checkGeometry("newline")
+			comment := "Title\n" + strings.Repeat("0123456789", 6) + "\n" + strings.Repeat("line\n", 30) + strings.Repeat("tail", 30)
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(comment)})
+			m = updated.(Model)
+			checkGeometry("multiline and wrapped content")
+			if m.commentInput.LineInfo().Height <= 1 || m.commentInput.LineCount() <= m.commentEditorHeight {
+				t.Fatalf("comment was not wrapped/retained in textarea: line height=%d logical lines=%d", m.commentInput.LineInfo().Height, m.commentInput.LineCount())
+			}
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+			m = updated.(Model)
+			if !strings.Contains(ansi.Strip(m.commentInput.View()), "x") {
+				t.Fatal("textarea navigation could not return to earlier content")
+			}
+		})
+	}
+}
+
+func TestCommentEditorSemicolonAndEnterStayInEditor(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 80, 30
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("first")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("second")})
+	m = updated.(Model)
+	if m.commentInput.Value() != "first;\nsecond" || m.showShortcutsSidebar || !m.showCommentPrompt {
+		t.Fatalf("editor input = %q sidebar=%v modal=%v", m.commentInput.Value(), m.showShortcutsSidebar, m.showCommentPrompt)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Ctrl+C did not return quit command")
+	}
+	quitMsg := cmd()
+	if _, ok := quitMsg.(tea.QuitMsg); !ok {
+		t.Fatalf("Ctrl+C command = %T, want tea.QuitMsg", quitMsg)
+	}
+}
+
+func TestCommentEditorRecomputesWidthAfterResizeAndReopen(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 100, 30
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	firstWidth := m.commentEditorWidth
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if firstWidth == m.commentEditorWidth || m.commentEditorWidth != commentEditorWidth(28) {
+		t.Fatalf("reopened editor width = %d, first=%d want %d", m.commentEditorWidth, firstWidth, commentEditorWidth(28))
+	}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if lipgloss.Width(line) > 28 {
+			t.Fatalf("reopened modal overflows terminal: %d columns", lipgloss.Width(line))
+		}
+	}
+}
+
+func TestCommentEditorResizesWhileOpenAndDeliversSnapshot(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 80, 30
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
+	m = updated.(Model)
+	if m.width != 28 || m.commentEditorWidth != commentEditorWidth(28) || m.commentInput.Value() != "draft" {
+		t.Fatalf("resize changed editor state: terminal=%d editor=%d text=%q", m.width, m.commentEditorWidth, m.commentInput.Value())
+	}
+
+	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "B", Title: "Bravo", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
+	m = updated.(Model)
+	if m.issueMap["B"] == nil || !m.showCommentPrompt || m.commentInput.Value() != "draft" {
+		t.Fatalf("snapshot was not delivered through main update: issueMap=%v modal=%v text=%q", m.issueMap["B"] != nil, m.showCommentPrompt, m.commentInput.Value())
+	}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if lipgloss.Width(line) > 28 {
+			t.Fatalf("resized modal overflows terminal: %d columns", lipgloss.Width(line))
+		}
+	}
+}
+
+func TestCommentEditorSuppressesExistingSidebarWithoutOverflow(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 40, 30
+	m.hubRepositoryMode = true
+	m.showShortcutsSidebar = true
+	m.applyContentSizing()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	view := m.View()
+	if !m.showShortcutsSidebar || strings.Contains(view, "Shortcuts") {
+		t.Fatalf("sidebar composition was not suppressed: state=%v", m.showShortcutsSidebar)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("comment modal overflows terminal: %d columns", lipgloss.Width(line))
+		}
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("sidebar composition was not restored after cancel")
+	}
+}
+
+func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
+	initial := `{"id":"A","title":"Alpha","status":"open","issue_type":"task"}` + "\n"
+	updated := `{"id":"A","title":"Alpha","status":"open","issue_type":"task","comments":[{"id":"c1","issue_id":"A","author":"tester","text":"looks good","created_at":"2026-08-26T00:00:00Z"}]}` + "\n"
+	root, issuesPath := makeReloadBDWorkspace(t, initial)
+	payloadPath := installReloadFakeBD(t, root, initial)
+	configPath := filepath.Join(root, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, nil)
+
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.beadsPath = issuesPath
+	m.hubConfigPath = configPath
+	m.hubRepositoryMode = true
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:     issuesPath,
+		HubConfigPath: configPath,
+		DebounceDelay: time.Millisecond,
+		IdleGC:        &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.backgroundWorker = worker
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	m.SetCommentRunner(func(string, string) error {
+		if err := os.WriteFile(payloadPath, []byte(updated), 0o644); err != nil {
+			return err
+		}
+		return nil
+	})
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updatedModel.(Model)
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updatedModel.(Model)
+	updatedModel, submitCmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updatedModel.(Model)
+	if submitCmd == nil {
+		t.Fatal("comment submission returned no command")
+	}
+	updatedModel, refreshCmd := m.Update(submitCmd())
+	m = updatedModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("successful Hub comment returned no refresh command")
+	}
+
+	var ready SnapshotReadyMsg
+	if message := refreshCmd(); message != nil {
+		ready, _ = message.(SnapshotReadyMsg)
+	}
+	if ready.Snapshot == nil {
+		ready = waitForSnapshotReady(t, worker.Messages())
+	}
+	updatedModel, _ = m.Update(ready)
+	m = updatedModel.(Model)
+	issue := m.issueMap["A"]
+	if issue == nil || len(issue.Comments) != 1 || issue.Comments[0].Text != "looks good" {
+		t.Fatalf("refreshed comments = %#v, want one persisted comment", issue)
+	}
+	if !strings.Contains(m.list.View(), "💬1") {
+		t.Fatalf("list did not show refreshed comment count: %q", m.list.View())
+	}
+}
+
+func TestCommentsAddTargetsDirectInsightsDetail(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "B", Title: "Bravo", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	m.insightsDetailID = "B"
+	m.focused = focusDetail
+	m.list.Select(0)
+	var gotID string
+	m.SetCommentRunner(func(issueID, _ string) error {
+		gotID = issueID
+		return nil
+	})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if !m.showCommentPrompt || m.commentIssueID != "B" {
+		t.Fatalf("comment prompt targeted %q, want B", m.commentIssueID)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("comment submission returned no command")
+	}
+	updated, _ = m.Update(cmd())
+	if gotID != "B" {
+		t.Fatalf("comment runner received issue %q, want B", gotID)
+	}
+}
+
+func TestCommentsShortcutIgnoredOutsideListAndDetail(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	m.focused = focusGraph
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if m.showCommentPrompt || cmd != nil {
+		t.Fatalf("comment shortcut acted outside list/detail: shown=%v cmd=%v", m.showCommentPrompt, cmd != nil)
+	}
+}
+
+func TestCommentsAddFailureDoesNotRequestRefresh(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	m.SetCommentRunner(func(string, string) error { return errors.New("permission denied") })
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("comment submission returned no command")
+	}
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if refreshCmd != nil || m.commentSubmitting || !m.statusIsError || !strings.Contains(m.statusMsg, "permission denied") {
+		t.Fatalf("failed comment state = submitting:%v error:%v status:%q refresh:%v", m.commentSubmitting, m.statusIsError, m.statusMsg, refreshCmd != nil)
+	}
+}
+
+func TestCommentsAddPromptCancelDoesNotSubmit(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	submitted := false
+	m.SetCommentRunner(func(string, string) error {
+		submitted = true
+		return nil
+	})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.showCommentPrompt || m.focused != focusList || cmd != nil || submitted || m.commentSubmitting {
+		t.Fatalf("cancel mutated comment state: shown=%v focus=%v cmd=%v submitted=%v submitting=%v", m.showCommentPrompt, m.focused, cmd != nil, submitted, m.commentSubmitting)
 	}
 }
 

@@ -1228,7 +1228,7 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 		"--prefix": "item", "--description": "details", "--type": "task", "--priority": "2",
 		"--assignee": "agent-7", "--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
 		"--title": "title", "--status": "open", "--label": "team", "--limit": "20", "--add-label": "team",
-		"--reason": "done",
+		"--reason": "done", "--author": "agent-7", "--file": "notes.txt",
 	}
 	for _, path := range commandOrder {
 		spec := commandSpecs[path]
@@ -1265,6 +1265,7 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"dep", "remove", "work-1", "work-2", "--json"},
 		{"close", "work-1", "--json"},
 		{"reopen", "work-1", "--json"},
+		{"comments", "add", "work-1", "A comment", "--json"},
 		{"compatibility", "--json"},
 	}
 	for _, arguments := range tests {
@@ -1274,6 +1275,154 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCommentsAddAcceptsMultiWordTextAndSeparator(t *testing.T) {
+	request, err := parse([]string{"comments", "add", "work-1", "Needs", "a", "review"})
+	if err != nil {
+		t.Fatalf("multi-word comment rejected: %v", err)
+	}
+	if want := []string{"work-1", "Needs", "a", "review"}; !reflect.DeepEqual(request.positionals, want) {
+		t.Fatalf("positionals = %#v, want %#v", request.positionals, want)
+	}
+
+	request, err = parse([]string{"comments", "add", "work-1", "--", "--starts-with-a-dash"})
+	if err != nil {
+		t.Fatalf("separated comment rejected: %v", err)
+	}
+	if want := []string{"work-1", "--starts-with-a-dash"}; !reflect.DeepEqual(request.positionals, want) {
+		t.Fatalf("separated positionals = %#v, want %#v", request.positionals, want)
+	}
+	if !request.commentSeparator {
+		t.Fatal("separator was not preserved in parsed request")
+	}
+}
+
+func TestCommentsAddAcceptsMultilineMarkdownBody(t *testing.T) {
+	body := "## Example\r\n\r\n```go\r\n\tfmt.Println(\"hello\")\r\n```\r\n"
+	request, err := parse([]string{"comments", "add", "work-1", body, "--json"})
+	if err != nil {
+		t.Fatalf("multiline Markdown comment rejected: %v", err)
+	}
+	if want := []string{"work-1", body}; !reflect.DeepEqual(request.positionals, want) {
+		t.Fatalf("positionals = %#v, want %#v", request.positionals, want)
+	}
+
+	for _, whitespace := range []string{"line\nfeed", "line\rfeed", "line\r\nfeed", "line\tindented"} {
+		if _, err := parse([]string{"comments", "add", "work-1", whitespace}); err != nil {
+			t.Errorf("comment body %q rejected: %v", whitespace, err)
+		}
+	}
+}
+
+func TestCommentsAddRejectsEmptyAndOtherControlCharactersInBody(t *testing.T) {
+	for _, body := range []string{"", "line\x00feed", "line\x1bfeed"} {
+		if _, err := parse([]string{"comments", "add", "work-1", body}); err == nil {
+			t.Errorf("comment body %q was accepted", body)
+		}
+	}
+}
+
+func TestCommentsAddAuthorValidationNamesAuthor(t *testing.T) {
+	_, err := parse([]string{"comments", "add", "work-1", "text", "--author", "   "})
+	if err == nil || !strings.Contains(err.Error(), "author") {
+		t.Fatalf("author validation error = %v, want author-specific error", err)
+	}
+}
+
+func TestSingularCommentCommandIsNotSupported(t *testing.T) {
+	if _, err := parse([]string{"comment", "work-1", "Nope"}); err == nil {
+		t.Fatal("singular comment command was accepted")
+	}
+}
+
+func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
+	t.Run("forwards comment and signals Viewer", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		})
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", "Needs review", "--author", "agent-7")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %#v", calls)
+		}
+		want := []string{"--db", test.store, "--json", "comments", "add", "work-1", "Needs review", "--author", "agent-7"}
+		if !reflect.DeepEqual(calls[1].Args, want) {
+			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
+		}
+		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+			t.Fatalf("successful comment did not signal Viewer: %v", err)
+		}
+	})
+
+	t.Run("forwards multiline Markdown as one argument in JSON mode", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		})
+		body := "## Example\r\n\r\n```go\r\n\tfmt.Println(\"hello\")\r\n```\r\n"
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", body, "--author", "agent-7")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %#v", calls)
+		}
+		want := []string{"--db", test.store, "--json", "comments", "add", "work-1", body, "--author", "agent-7"}
+		if !reflect.DeepEqual(calls[1].Args, want) {
+			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
+		}
+	})
+
+	t.Run("preserves separator for hyphen-leading text", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		})
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", "--author", "agent-7", "--", "--starts-with-a-dash")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %#v", calls)
+		}
+		want := []string{"--db", test.store, "--json", "comments", "add", "work-1", "--author", "agent-7", "--", "--starts-with-a-dash"}
+		if !reflect.DeepEqual(calls[1].Args, want) {
+			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
+		}
+	})
+
+	t.Run("rejects invalid context before mutation", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:registered": test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:missing"]}]`,
+		})
+
+		code, _, stderr := test.run("--json", "comments", "add", "work-1", "Nope")
+		if code != 1 || !strings.Contains(stderr, `"code":"unregistered_context"`) {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 1 {
+			t.Fatalf("invalid comment mutated store: %#v", calls)
+		}
+		assertNoViewerSignal(t, test)
+	})
 }
 
 func TestAssigneeJSONSurvivesScopedAndAllContextReads(t *testing.T) {

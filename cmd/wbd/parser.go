@@ -27,7 +27,7 @@ type commandSpec struct {
 var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "dep", "dep add", "dep remove",
-	"close", "reopen", "link", "unlink",
+	"close", "reopen", "comments", "comments add", "link", "unlink",
 }
 
 var commandSpecs = map[string]commandSpec{
@@ -128,6 +128,17 @@ var commandSpecs = map[string]commandSpec{
 		path: "reopen", usage: "wbd reopen <id> [--reason <text>] [--json]", summary: "Reopen one issue unless supersession policy forbids it.",
 		options: []optionSpec{{name: "--reason", value: "<text>", description: "Reopen reason."}, {name: "--json", description: "Emit JSON."}},
 	},
+	"comments": {
+		path: "comments", usage: "wbd comments add <issue-id> (<text...> | --file <path>)", summary: "Manage comments on authoritative Hub issues.",
+	},
+	"comments add": {
+		path: "comments add", usage: "wbd comments add <issue-id> (<text...> | --file <path>) [options]", summary: "Add a comment to an authoritative Hub issue.",
+		options: []optionSpec{
+			{name: "--author", value: "<identity>", description: "Explicit comment author."},
+			{name: "--file", value: "<path>", description: "Read comment text from a file instead of positional text."},
+			{name: "--json", description: "Emit JSON."},
+		},
+	},
 	"link": {path: "link", usage: "wbd link <bead-id> [commit]", summary: "Correlate current-context concrete work with a commit."},
 	"unlink": {
 		path: "unlink", usage: "wbd unlink <bead-id> <full-commit-sha>", summary: "Remove one exact current-context commit correlation.",
@@ -167,16 +178,19 @@ func usageFor(path string) string {
 }
 
 type request struct {
-	command     string
-	subcommand  string
-	args        []string
-	positionals []string
-	json        bool
-	allContexts bool
-	prefix      string
-	contexts    []string
-	contextless bool
-	fromTodo    string
+	command          string
+	subcommand       string
+	args             []string
+	positionals      []string
+	json             bool
+	allContexts      bool
+	prefix           string
+	contexts         []string
+	contextless      bool
+	fromTodo         string
+	commentAuthor    string
+	commentFile      string
+	commentSeparator bool
 }
 
 func commandName(arguments []string) (string, error) {
@@ -249,6 +263,12 @@ func parse(arguments []string) (request, error) {
 		return parseDep(result, arguments)
 	case "close", "reopen":
 		return parseClose(result, arguments)
+	case "comments":
+		if len(arguments) == 0 || arguments[0] != "add" {
+			return result, errors.New(usageFor("comments"))
+		}
+		result.subcommand = arguments[0]
+		return parseCommentsAdd(result, arguments[1:])
 	case "link":
 		if result.json || len(arguments) < 1 || len(arguments) > 2 {
 			return result, errors.New(usageFor("link"))
@@ -283,6 +303,65 @@ func parse(arguments []string) (request, error) {
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands())
+	}
+	return result, nil
+}
+
+func parseCommentsAdd(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	separator := false
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if !separator && argument == "--" {
+			separator = true
+			result.commentSeparator = true
+			continue
+		}
+		if !separator && argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if !separator {
+			flag, value, consumed, matched, err := optionValueFor("comments add", argument, arguments)
+			if err != nil {
+				return result, err
+			}
+			if matched {
+				arguments = arguments[consumed:]
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+				switch flag {
+				case "--author":
+					if err := validateCommentAuthor(value); err != nil {
+						return result, err
+					}
+					result.commentAuthor = value
+				case "--file":
+					result.commentFile = value
+				}
+				continue
+			}
+		}
+		if strings.HasPrefix(argument, "-") {
+			if !separator {
+				return result, fmt.Errorf("unsupported option for comments add: %s", argument)
+			}
+		}
+		if len(result.positionals) == 0 {
+			if err := safeID("comments add", argument); err != nil {
+				return result, err
+			}
+		} else if err := validateCommentBody(argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if result.commentFile != "" && len(result.positionals) != 1 || result.commentFile == "" && len(result.positionals) < 2 {
+		return result, errors.New(usageFor("comments add"))
 	}
 	return result, nil
 }
@@ -702,15 +781,23 @@ func safeOptionValue(option optionSpec, value string) error {
 }
 
 func validateAssignee(value string) error {
+	return validateIdentity("assignee", value)
+}
+
+func validateCommentAuthor(value string) error {
+	return validateIdentity("author", value)
+}
+
+func validateIdentity(name, value string) error {
 	if value == "" {
 		return nil
 	}
 	if strings.TrimSpace(value) == "" {
-		return errors.New("assignee must contain non-whitespace characters")
+		return fmt.Errorf("%s must contain non-whitespace characters", name)
 	}
 	for _, character := range value {
 		if unicode.IsControl(character) {
-			return errors.New("invalid control character in assignee")
+			return fmt.Errorf("invalid control character in %s", name)
 		}
 	}
 	return nil
@@ -722,6 +809,18 @@ func safeValue(name, value string) error {
 	}
 	if strings.ContainsAny(value, "\n\r\t") {
 		return fmt.Errorf("invalid control character in %s", name)
+	}
+	return nil
+}
+
+func validateCommentBody(value string) error {
+	if value == "" {
+		return errors.New("missing value for comments add")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return errors.New("invalid control character in comments add")
+		}
 	}
 	return nil
 }
