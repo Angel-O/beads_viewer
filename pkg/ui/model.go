@@ -1417,7 +1417,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			input.CharLimit = 0
 			input.MaxHeight = 0
 			input.ShowLineNumbers = false
-			input.Prompt = "│ "
+			input.Prompt = ""
 			input.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 			input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
 			input.BlurredStyle.Text = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
@@ -9259,18 +9259,21 @@ func (m Model) renderCommentPrompt() string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.Primary).
 		Padding(1, 2).
-		Width(m.commentEditorWidth).
-		Align(lipgloss.Center)
-	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
-	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext)
+		Width(m.commentEditorWidth)
+	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).
+		Width(m.commentEditorWidth).Align(lipgloss.Center)
+	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext).
+		Width(m.commentEditorWidth).Align(lipgloss.Center)
 	keyStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
+	hintStyle := t.Renderer.NewStyle().Foreground(t.Subtext).
+		Width(m.commentEditorWidth).Align(lipgloss.Center)
 	content := titleStyle.Render("Add comment") + "\n\n" +
 		subtitleStyle.Render("Issue "+m.commentIssueID) + "\n\n" +
 		m.commentInput.View() + "\n\n" +
-		subtitleStyle.Render("Ctrl+S") + subtitleStyle.Render(" submit · ") +
-		keyStyle.Render("Enter") + subtitleStyle.Render(" newline · ") +
-		keyStyle.Render("Esc") + subtitleStyle.Render(" cancel · ") +
-		keyStyle.Render("Ctrl+C") + subtitleStyle.Render(" quit")
+		hintStyle.Render(keyStyle.Render("Ctrl+S")+" submit · "+
+			keyStyle.Render("Enter")+" newline · "+
+			keyStyle.Render("Esc")+" cancel · "+
+			keyStyle.Render("Ctrl+C")+" quit")
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 

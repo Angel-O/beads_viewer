@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	_ "modernc.org/sqlite"
 )
 
@@ -192,17 +193,25 @@ func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 
 			before := m.commentInput.View()
 			beforeModal := m.renderCommentPrompt()
+			if strings.Contains(ansi.Strip(before), "│") {
+				t.Fatalf("empty editor contains a prompt/gutter: %q", ansi.Strip(before))
+			}
 			comment := "Title\n" + strings.Repeat("0123456789", 6) + "\n" + strings.Repeat("line\n", 9) + strings.Repeat("tail", 30)
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(comment)})
 			m = updated.(Model)
 			after := m.commentInput.View()
 			afterModal := m.renderCommentPrompt()
+			if strings.Contains(ansi.Strip(after), "│") {
+				t.Fatalf("editor contains a prompt/gutter: %q", ansi.Strip(after))
+			}
 
 			if m.commentEditorWidth == 0 || m.commentInput.Height() != commentEditorHeight {
 				t.Fatalf("editor geometry = width %d height %d", m.commentEditorWidth, m.commentInput.Height())
 			}
-			if lipgloss.Width(before) != lipgloss.Width(after) {
-				t.Fatalf("editor width changed from %d to %d", lipgloss.Width(before), lipgloss.Width(after))
+			plainBefore := ansi.Strip(before)
+			plainAfter := ansi.Strip(after)
+			if lipgloss.Width(plainBefore) != lipgloss.Width(plainAfter) {
+				t.Fatalf("editor width changed from %d to %d", lipgloss.Width(plainBefore), lipgloss.Width(plainAfter))
 			}
 			if lipgloss.Height(beforeModal) != lipgloss.Height(afterModal) {
 				t.Fatalf("modal height changed from %d to %d", lipgloss.Height(beforeModal), lipgloss.Height(afterModal))
