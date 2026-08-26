@@ -198,11 +198,39 @@ func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 			modalHeight := lipgloss.Height(beforeModal)
 			checkGeometry := func(stage string) {
 				t.Helper()
+				plainModal := ansi.Strip(m.renderCommentPrompt())
 				if m.commentPanelWidth != panelWidth || m.commentPanelHeight != panelHeight ||
 					m.commentPanelWidth != max(1, test.width-2) || m.commentPanelHeight != max(1, test.height-3) ||
 					m.commentEditorWidth != editorWidth || m.commentEditorHeight != editorHeight ||
 					m.commentInput.Height() != editorHeight || lipgloss.Height(m.renderCommentPrompt()) != modalHeight {
 					t.Fatalf("%s changed geometry: panel=%dx%d editor=%dx%d modal height=%d", stage, m.commentPanelWidth, m.commentPanelHeight, m.commentEditorWidth, m.commentEditorHeight, lipgloss.Height(m.renderCommentPrompt()))
+				}
+				panelLines := strings.Split(plainModal, "\n")
+				firstPanelLine, lastPanelLine := -1, -1
+				for i, line := range panelLines {
+					if strings.TrimSpace(line) != "" {
+						if firstPanelLine < 0 {
+							firstPanelLine = i
+						}
+						lastPanelLine = i
+					}
+				}
+				if firstPanelLine < 0 || lastPanelLine-firstPanelLine+1 != panelHeight ||
+					!strings.Contains(strings.TrimSpace(panelLines[firstPanelLine]), "╭") ||
+					!strings.Contains(strings.TrimSpace(panelLines[lastPanelLine]), "╰") ||
+					!strings.Contains(strings.TrimSpace(panelLines[lastPanelLine]), "╯") ||
+					!strings.Contains(plainModal, "Ctrl+S") {
+					t.Fatalf("%s lost bounded panel content: first=%d last=%d height=%d panel=%dx%d", stage, firstPanelLine, lastPanelLine, lastPanelLine-firstPanelLine+1, panelWidth, panelHeight)
+				}
+				subtitleLine := -1
+				for i, line := range panelLines {
+					if strings.Contains(line, "Bead A") {
+						subtitleLine = i
+						break
+					}
+				}
+				if subtitleLine < 0 || subtitleLine+1 >= len(panelLines) || strings.TrimSpace(strings.Trim(strings.TrimSpace(panelLines[subtitleLine+1]), "│")) != "" {
+					t.Fatalf("%s missing blank row after Bead label in:\n%s", stage, plainModal)
 				}
 				plain := ansi.Strip(m.commentInput.View())
 				if strings.Contains(plain, "│") {

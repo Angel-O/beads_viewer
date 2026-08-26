@@ -52,15 +52,18 @@ const (
 )
 
 func commentEditorWidth(terminalWidth int) int {
-	width := terminalWidth - (commentPanelMargin * 2) - commentModalFrameSize
+	width := terminalWidth - (commentPanelMargin * 2) - commentModalFrameSize - 2
 	if width < 1 {
 		return 1
 	}
 	return width
 }
 
-func commentHintText() string {
-	return "Ctrl+S submit · Enter newline · Arrows navigate · Esc cancel · Ctrl+C quit"
+func commentHintText(width int) string {
+	if width < 30 {
+		return "Ctrl+S save · Esc\nEnter=nl · Arrows\nCtrl+C quit"
+	}
+	return "Ctrl+S submit · Enter newline · Arrows · Esc cancel · Ctrl+C quit"
 }
 
 // focus represents which UI element has keyboard focus
@@ -5747,8 +5750,8 @@ func (m *Model) resizeCommentEditor() {
 	panelHeight := max(1, bodyHeight-(commentPanelMargin*2))
 	editorWidth := commentEditorWidth(m.width)
 	innerHeight := max(1, panelHeight-2)
-	hintHeight := lipgloss.Height(lipgloss.NewStyle().Width(editorWidth).Render(commentHintText()))
-	editorHeight := max(1, innerHeight-2-hintHeight)
+	hintHeight := lipgloss.Height(lipgloss.NewStyle().Width(editorWidth).Render(commentHintText(editorWidth)))
+	editorHeight := max(1, innerHeight-3-hintHeight)
 
 	m.commentPanelWidth = panelWidth
 	m.commentPanelHeight = panelHeight
@@ -5756,6 +5759,9 @@ func (m *Model) resizeCommentEditor() {
 	m.commentEditorHeight = editorHeight
 	m.commentInput.SetWidth(editorWidth)
 	m.commentInput.SetHeight(editorHeight)
+	if m.commentInput.Focused() {
+		m.commentInput, _ = m.commentInput.Update(tea.KeyMsg{})
+	}
 }
 
 func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -9278,13 +9284,11 @@ func (m Model) renderCommentPrompt() string {
 		Padding(0, 1).
 		Width(max(1, m.commentPanelWidth-commentModalFrameSize)).
 		Height(max(1, m.commentPanelHeight-2)).
-		MaxHeight(max(1, m.commentPanelHeight-2)).
 		MaxWidth(max(1, m.commentPanelWidth))
 	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).
 		Width(m.commentEditorWidth).Align(lipgloss.Left)
 	subtitleStyle := t.Renderer.NewStyle().Foreground(t.Subtext).
 		Width(m.commentEditorWidth).Align(lipgloss.Left)
-	keyStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
 	hintStyle := t.Renderer.NewStyle().Foreground(t.Subtext).
 		Width(m.commentEditorWidth).Align(lipgloss.Center)
 	editorStyle := t.Renderer.NewStyle().
@@ -9292,14 +9296,16 @@ func (m Model) renderCommentPrompt() string {
 		Height(m.commentEditorHeight).
 		MaxHeight(m.commentEditorHeight).
 		Align(lipgloss.Left)
+	editorView := strings.TrimSuffix(m.commentInput.View(), "\n")
+	editorLines := strings.Split(editorView, "\n")
+	if len(editorLines) > m.commentEditorHeight {
+		editorLines = editorLines[:m.commentEditorHeight]
+	}
+	editorView = strings.Join(editorLines, "\n")
 	content := titleStyle.Render("Add comment") + "\n" +
-		subtitleStyle.Render("Issue "+m.commentIssueID) + "\n" +
-		editorStyle.Render(m.commentInput.View()) + "\n" +
-		hintStyle.Render(keyStyle.Render("Ctrl+S")+" submit · "+
-			keyStyle.Render("Enter")+" newline · "+
-			keyStyle.Render("Arrows")+" navigate · "+
-			keyStyle.Render("Esc")+" cancel · "+
-			keyStyle.Render("Ctrl+C")+" quit")
+		subtitleStyle.Render("Bead "+m.commentIssueID) + "\n\n" +
+		editorStyle.Render(editorView) + "\n" +
+		hintStyle.Render(commentHintText(m.commentEditorWidth))
 	return lipgloss.Place(m.width, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
