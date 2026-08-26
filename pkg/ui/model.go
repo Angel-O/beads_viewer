@@ -140,6 +140,10 @@ type commentAddedMsg struct {
 	err     error
 }
 
+type commentPasteMsg struct {
+	msg tea.Msg
+}
+
 func runWBDCommentsAdd(issueID, text string, runner func(string, string) error) tea.Cmd {
 	return func() tea.Msg {
 		if runner != nil {
@@ -1671,17 +1675,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.backgroundWorker.recordActivity()
 		}
 	}
-	if m.focused == focusCommentInput && m.showCommentPrompt {
-		if keyMsg, isKey := msg.(tea.KeyMsg); isKey {
-			if keyMsg.String() == "ctrl+c" {
-				return m, tea.Quit
-			}
-			return m.handleCommentInputKeys(keyMsg)
-		}
-		m.commentInput, cmd = m.commentInput.Update(msg)
-		return m, cmd
-	}
-
 	switch msg := msg.(type) {
 	case UpdateMsg:
 		if !updater.IsNewerThanCurrent(msg.TagName) {
@@ -1709,6 +1702,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
 		} else if m.beadsPath != "" {
 			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
+		}
+
+	case commentPasteMsg:
+		if m.focused == focusCommentInput && m.showCommentPrompt {
+			m.commentInput, cmd = m.commentInput.Update(msg.msg)
+			cmds = append(cmds, cmd)
 		}
 
 	case UpdateCompleteMsg:
@@ -3037,6 +3036,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		if m.focused == focusCommentInput && m.showCommentPrompt {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m.handleCommentInputKeys(msg)
+		}
 		// Clear status message on any keypress
 		m.statusMsg = ""
 		m.statusIsError = false
@@ -4388,6 +4393,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isSplitView = msg.Width > SplitViewThreshold
 		m.ready = true
 		m.applyContentSizing()
+		if m.showCommentPrompt {
+			m.commentEditorWidth = commentEditorWidth(m.width)
+			m.commentInput.SetWidth(m.commentEditorWidth)
+		}
 	}
 
 	// Update list for navigation, but NOT for WindowSizeMsg
@@ -5723,10 +5732,8 @@ func (m *Model) beginComment() {
 	}
 	m.commentIssueID = issueItem.Issue.ID
 	m.commentOrigin = m.focused
-	if m.commentEditorWidth == 0 {
-		m.commentEditorWidth = commentEditorWidth(m.width)
-		m.commentInput.SetWidth(m.commentEditorWidth)
-	}
+	m.commentEditorWidth = commentEditorWidth(m.width)
+	m.commentInput.SetWidth(m.commentEditorWidth)
 	m.commentInput.SetHeight(commentEditorHeight)
 	m.commentInput.SetValue("")
 	m.commentInput.Focus()
@@ -5762,6 +5769,9 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 	default:
 		var cmd tea.Cmd
 		m.commentInput, cmd = m.commentInput.Update(msg)
+		if msg.String() == "ctrl+v" && cmd != nil {
+			return m, func() tea.Msg { return commentPasteMsg{msg: cmd()} }
+		}
 		return m, cmd
 	}
 }
@@ -5983,7 +5993,7 @@ func (m Model) View() string {
 	}
 
 	// Add shortcuts sidebar if enabled (bv-3qi5)
-	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial {
+	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial && !m.showCommentPrompt {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
 		m.shortcutsSidebar.SetFocus(m.focused)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)

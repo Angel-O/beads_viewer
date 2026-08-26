@@ -141,6 +141,8 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.beadsPath = filepath.Join(t.TempDir(), "issues.jsonl")
 	m.hubRepositoryMode = true
+	m.showShortcutsSidebar = true
+	m.applyContentSizing()
 	var gotID, gotText string
 	m.SetCommentRunner(func(issueID, text string) error {
 		gotID, gotText = issueID, text
@@ -163,6 +165,9 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	m = updated.(Model)
 	if gotID != "A" || gotText != "looks good" || m.commentSubmitting || m.statusIsError || refreshCmd == nil {
 		t.Fatalf("comment result = id %q text %q submitting=%v error=%v", gotID, gotText, m.commentSubmitting, m.statusIsError)
+	}
+	if !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("sidebar composition was not restored after submit")
 	}
 	refreshMsg := refreshCmd()
 	if _, ok := refreshMsg.(FileChangedMsg); !ok {
@@ -239,6 +244,80 @@ func TestCommentEditorSemicolonAndEnterStayInEditor(t *testing.T) {
 	quitMsg := cmd()
 	if _, ok := quitMsg.(tea.QuitMsg); !ok {
 		t.Fatalf("Ctrl+C command = %T, want tea.QuitMsg", quitMsg)
+	}
+}
+
+func TestCommentEditorRecomputesWidthAfterResizeAndReopen(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 100, 30
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	firstWidth := m.commentEditorWidth
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if firstWidth == m.commentEditorWidth || m.commentEditorWidth != commentEditorWidth(28) {
+		t.Fatalf("reopened editor width = %d, first=%d want %d", m.commentEditorWidth, firstWidth, commentEditorWidth(28))
+	}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if lipgloss.Width(line) > 28 {
+			t.Fatalf("reopened modal overflows terminal: %d columns", lipgloss.Width(line))
+		}
+	}
+}
+
+func TestCommentEditorResizesWhileOpenAndDeliversSnapshot(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 80, 30
+	m.hubRepositoryMode = true
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
+	m = updated.(Model)
+	if m.width != 28 || m.commentEditorWidth != commentEditorWidth(28) || m.commentInput.Value() != "draft" {
+		t.Fatalf("resize changed editor state: terminal=%d editor=%d text=%q", m.width, m.commentEditorWidth, m.commentInput.Value())
+	}
+
+	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "B", Title: "Bravo", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
+	m = updated.(Model)
+	if m.issueMap["B"] == nil || !m.showCommentPrompt || m.commentInput.Value() != "draft" {
+		t.Fatalf("snapshot was not delivered through main update: issueMap=%v modal=%v text=%q", m.issueMap["B"] != nil, m.showCommentPrompt, m.commentInput.Value())
+	}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if lipgloss.Width(line) > 28 {
+			t.Fatalf("resized modal overflows terminal: %d columns", lipgloss.Width(line))
+		}
+	}
+}
+
+func TestCommentEditorSuppressesExistingSidebarWithoutOverflow(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 40, 30
+	m.hubRepositoryMode = true
+	m.showShortcutsSidebar = true
+	m.applyContentSizing()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	view := m.View()
+	if !m.showShortcutsSidebar || strings.Contains(view, "Shortcuts") {
+		t.Fatalf("sidebar composition was not suppressed: state=%v", m.showShortcutsSidebar)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("comment modal overflows terminal: %d columns", lipgloss.Width(line))
+		}
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("sidebar composition was not restored after cancel")
 	}
 }
 
