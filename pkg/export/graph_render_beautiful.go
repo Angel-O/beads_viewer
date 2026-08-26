@@ -1514,8 +1514,13 @@ function showContextMenu(node, event) {
 function hideContextMenu() { document.getElementById('context-menu').classList.remove('visible'); contextNode = null; }
 async function writeClipboardText(value) {
     if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(value);
-        return;
+        try {
+            await navigator.clipboard.writeText(value);
+            return;
+        } catch (_) {
+            // Permission policies can reject the modern API even in a secure
+            // context. Fall through to the synchronous compatibility path.
+        }
     }
 
     const textarea = document.createElement('textarea');
