@@ -154,6 +154,7 @@ type DataSnapshot struct {
 	ListItems      []IssueItem // Pre-built list items with scores
 	listModelItems []list.Item
 	listIndexByID  map[string]int
+	listOrderHash  uint64
 	semanticIDs    []string
 	semanticDocs   map[string]string
 	alerts         []drift.Alert
@@ -447,10 +448,12 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 	if b.analysis == nil {
 		statsForListItems = nil
 	}
-	listItems := buildListItems(viewIssues, statsForListItems)
-	if shouldUseIncrementalList(b.prevSnapshot, b.diff, b.recipe, b.diffStats) {
-		listItems = buildListItemsIncremental(viewIssues, statsForListItems, b.prevSnapshot.ListItems, b.diff)
+	var listItems []IssueItem
+	if shouldUseIncrementalList(b.prevSnapshot, b.diff, b.recipe, b.diffStats, viewIssues) {
+		listItems = buildListItemsIncremental(viewIssues, statsForListItems, b.prevSnapshot, b.diff)
 		listItemsIncremental = true
+	} else {
+		listItems = buildListItems(viewIssues, statsForListItems)
 	}
 
 	var (
@@ -554,6 +557,7 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		ListItems:      listItems,
 		listModelItems: listModelItems,
 		listIndexByID:  listIndexByID,
+		listOrderHash:  listOrderFingerprint(listItems),
 		semanticIDs:    semanticIDs,
 		semanticDocs:   semanticDocs,
 		alerts:         alerts,
@@ -570,6 +574,8 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		BoardState:     boardState,
 		graphLayout:    graphLayout,
 		CreatedAt:      time.Now(),
+		RecipeName:     recipeName(b.recipe),
+		RecipeHash:     recipeFingerprint(b.recipe),
 		phase2Ready:    graphStats.IsPhase2Ready(),
 		IssueDiff:      b.diff,
 		IssueDiffStats: IssueDiffStats{
@@ -579,6 +585,24 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		},
 		IncrementalListUsed: listItemsIncremental,
 	}
+}
+
+func listOrderFingerprint(items []IssueItem) uint64 {
+	const (
+		offset64 = uint64(14695981039346656037)
+		prime64  = uint64(1099511628211)
+	)
+	hash := offset64
+	for i := range items {
+		id := items[i].Issue.ID
+		for j := 0; j < len(id); j++ {
+			hash ^= uint64(id[j])
+			hash *= prime64
+		}
+		hash ^= 0xff
+		hash *= prime64
+	}
+	return hash
 }
 
 func issueDiffStats(diff *analysis.IssueDiff) IssueDiffStats {
@@ -598,8 +622,14 @@ func issueDiffStats(diff *analysis.IssueDiff) IssueDiffStats {
 	}
 }
 
-func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *recipe.Recipe, stats IssueDiffStats) bool {
+func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *recipe.Recipe, stats IssueDiffStats, currentIssues []model.Issue) bool {
 	if prev == nil || diff == nil || len(prev.ListItems) == 0 {
+		return false
+	}
+	// Topology changes can alter graph-derived scores for otherwise unchanged
+	// issues, so reusing their old list items would be incorrect. Additions and
+	// removals also change pagination and may shift recipe membership.
+	if len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.DependencyChanged) > 0 {
 		return false
 	}
 
@@ -612,6 +642,14 @@ func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *r
 
 	if prev.RecipeName != currentRecipeName || prev.RecipeHash != currentRecipeHash {
 		return false
+	}
+	if len(currentIssues) != len(prev.ListItems) {
+		return false
+	}
+	for i := range currentIssues {
+		if currentIssues[i].ID != prev.ListItems[i].Issue.ID {
+			return false
+		}
 	}
 	if stats.Total == 0 {
 		return false
@@ -627,13 +665,9 @@ func buildListItems(issues []model.Issue, stats *analysis.GraphStats) []IssueIte
 	return listItems
 }
 
-func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats, prevItems []IssueItem, diff *analysis.IssueDiff) []IssueItem {
-	if len(prevItems) == 0 || diff == nil {
+func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats, prev *DataSnapshot, diff *analysis.IssueDiff) []IssueItem {
+	if prev == nil || len(prev.ListItems) == 0 || diff == nil {
 		return buildListItems(issues, stats)
-	}
-	prevByID := make(map[string]IssueItem, len(prevItems))
-	for _, item := range prevItems {
-		prevByID[item.Issue.ID] = item
 	}
 	changed := make(map[string]struct{}, len(diff.Added)+len(diff.Modified))
 	for _, id := range diff.Added {
@@ -646,11 +680,13 @@ func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats,
 	listItems := make([]IssueItem, len(issues))
 	for i := range issues {
 		issue := issues[i]
-		item, ok := prevByID[issue.ID]
-		if !ok || isChangedID(changed, issue.ID) {
-			item = IssueItem{}
+		prevIndex, ok := prev.listIndexByID[issue.ID]
+		if !ok || prevIndex < 0 || prevIndex >= len(prev.ListItems) || isChangedID(changed, issue.ID) {
+			listItems[i] = buildIssueItemForSnapshot(issue, stats)
+			continue
 		}
-		resetIssueItemForSnapshot(&item, issue, stats)
+		item := prev.ListItems[prevIndex]
+		clearIssueItemEphemeral(&item)
 		listItems[i] = item
 	}
 	return listItems
@@ -672,6 +708,10 @@ func resetIssueItemForSnapshot(item *IssueItem, issue model.Issue, stats *analys
 		item.Impact = 0
 	}
 	item.RepoPrefix = issueRepoKey(issue)
+	clearIssueItemEphemeral(item)
+}
+
+func clearIssueItemEphemeral(item *IssueItem) {
 	item.DiffStatus = DiffStatusNone
 
 	item.SearchScore = 0
@@ -685,6 +725,13 @@ func resetIssueItemForSnapshot(item *IssueItem, issue model.Issue, stats *analys
 	item.IsQuickWin = false
 	item.IsBlocker = false
 	item.UnblocksCount = 0
+}
+
+func recipeName(r *recipe.Recipe) string {
+	if r == nil {
+		return ""
+	}
+	return r.Name
 }
 
 func isChangedID(changed map[string]struct{}, id string) bool {
@@ -1218,6 +1265,7 @@ func (s *DataSnapshot) WithPhase2(stats *analysis.GraphStats, insights analysis.
 		ListItems:      listItems, // Deep copy - contains mutable SearchComponents/TriageReasons
 		listModelItems: listModelItems,
 		listIndexByID:  listIndexByID,
+		listOrderHash:  s.listOrderHash,
 		semanticIDs:    s.semanticIDs,
 		semanticDocs:   s.semanticDocs,
 		alerts:         alerts,

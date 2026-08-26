@@ -345,6 +345,63 @@ func TestComputeIssueFingerprint_Deterministic(t *testing.T) {
 	}
 }
 
+func TestComputeIssueFingerprint_CommentTieOrderIndependent(t *testing.T) {
+	ts := time.Date(2024, 2, 10, 12, 0, 0, 0, time.UTC)
+	alice := &model.Comment{ID: "same", IssueID: "A", Author: "alice", Text: "first", CreatedAt: ts}
+	bob := &model.Comment{ID: "same", IssueID: "A", Author: "bob", Text: "second", CreatedAt: ts}
+
+	issueA := model.Issue{ID: "A", Comments: []*model.Comment{alice, bob}}
+	issueB := model.Issue{ID: "A", Comments: []*model.Comment{bob, alice}}
+
+	fpA := analysis.ComputeIssueFingerprint(issueA)
+	fpB := analysis.ComputeIssueFingerprint(issueB)
+	if fpA.ContentHash != fpB.ContentHash {
+		t.Fatalf("comment input order changed ContentHash: %s vs %s", fpA.ContentHash, fpB.ContentHash)
+	}
+}
+
+func TestComputeIssueFingerprint_NilDependenciesIgnored(t *testing.T) {
+	withoutDependencies := analysis.ComputeIssueFingerprint(model.Issue{ID: "A"})
+	withNilDependency := analysis.ComputeIssueFingerprint(model.Issue{
+		ID:           "A",
+		Dependencies: []*model.Dependency{nil},
+	})
+
+	if withoutDependencies.DependencyHash != withNilDependency.DependencyHash {
+		t.Fatalf("nil dependency changed DependencyHash: %s vs %s", withoutDependencies.DependencyHash, withNilDependency.DependencyHash)
+	}
+}
+
+func TestComputeIssueFingerprint_PointerPresenceChangesContentHash(t *testing.T) {
+	empty := ""
+	zero := 0
+	zeroTime := time.Time{}
+	tests := []struct {
+		name   string
+		mutate func(*model.Issue)
+	}{
+		{name: "external ref", mutate: func(issue *model.Issue) { issue.ExternalRef = &empty }},
+		{name: "estimated minutes", mutate: func(issue *model.Issue) { issue.EstimatedMinutes = &zero }},
+		{name: "due date", mutate: func(issue *model.Issue) { issue.DueDate = &zeroTime }},
+		{name: "defer until", mutate: func(issue *model.Issue) { issue.DeferUntil = &zeroTime }},
+		{name: "closed at", mutate: func(issue *model.Issue) { issue.ClosedAt = &zeroTime }},
+		{name: "compacted at", mutate: func(issue *model.Issue) { issue.CompactedAt = &zeroTime }},
+		{name: "compacted at commit", mutate: func(issue *model.Issue) { issue.CompactedAtCommit = &empty }},
+	}
+
+	baseHash := analysis.ComputeIssueFingerprint(model.Issue{ID: "A"}).ContentHash
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := model.Issue{ID: "A"}
+			tt.mutate(&issue)
+			got := analysis.ComputeIssueFingerprint(issue).ContentHash
+			if got == baseHash {
+				t.Fatalf("present empty/zero pointer did not change ContentHash %q", got)
+			}
+		})
+	}
+}
+
 func TestComputeIssueDiff(t *testing.T) {
 	ts := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	oldIssues := []model.Issue{
@@ -397,6 +454,51 @@ func TestComputeIssueDiff(t *testing.T) {
 	}
 	if got := strings.Join(diff.Unchanged, ","); got != "E" {
 		t.Fatalf("Unchanged=%q, want %q", got, "E")
+	}
+}
+
+func TestComputeIssueDiff_OrderIndependent(t *testing.T) {
+	oldIssues := []model.Issue{
+		{ID: "A", Title: "changed"},
+		{ID: "B", Title: "removed"},
+		{ID: "C", Title: "unchanged"},
+	}
+	newIssues := []model.Issue{
+		{ID: "D", Title: "added"},
+		{ID: "C", Title: "unchanged"},
+		{ID: "A", Title: "updated"},
+	}
+	want := analysis.ComputeIssueDiff(oldIssues, newIssues)
+
+	permutedOld := []model.Issue{oldIssues[2], oldIssues[0], oldIssues[1]}
+	permutedNew := []model.Issue{newIssues[2], newIssues[0], newIssues[1]}
+	got := analysis.ComputeIssueDiff(permutedOld, permutedNew)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("input order changed diff:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestComputeIssueDiff_ContentAndDependencyChange(t *testing.T) {
+	oldIssues := []model.Issue{{
+		ID:           "A",
+		Title:        "before",
+		Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}},
+	}}
+	newIssues := []model.Issue{{
+		ID:           "A",
+		Title:        "after",
+		Dependencies: []*model.Dependency{{DependsOnID: "C", Type: model.DepBlocks}},
+	}}
+
+	diff := analysis.ComputeIssueDiff(oldIssues, newIssues)
+	if !reflect.DeepEqual(diff.Modified, []string{"A"}) {
+		t.Fatalf("Modified=%v, want [A] exactly once", diff.Modified)
+	}
+	if !reflect.DeepEqual(diff.ContentChanged, []string{"A"}) {
+		t.Fatalf("ContentChanged=%v, want [A]", diff.ContentChanged)
+	}
+	if !reflect.DeepEqual(diff.DependencyChanged, []string{"A"}) {
+		t.Fatalf("DependencyChanged=%v, want [A]", diff.DependencyChanged)
 	}
 }
 

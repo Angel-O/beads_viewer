@@ -440,7 +440,16 @@ func computeIssueContentHash(issue model.Issue) string {
 			if comments[i].ID != comments[j].ID {
 				return comments[i].ID < comments[j].ID
 			}
-			return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+			if !comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
+				return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+			}
+			if comments[i].IssueID != comments[j].IssueID {
+				return comments[i].IssueID < comments[j].IssueID
+			}
+			if comments[i].Author != comments[j].Author {
+				return comments[i].Author < comments[j].Author
+			}
+			return comments[i].Text < comments[j].Text
 		})
 		for _, comment := range comments {
 			writeStringHash(h, comment.ID)
@@ -477,6 +486,9 @@ func computeIssueDependencyHash(issue model.Issue) string {
 			createdBy: dep.CreatedBy,
 		})
 	}
+	if len(deps) == 0 {
+		return "none"
+	}
 	sort.Slice(deps, func(i, j int) bool {
 		if deps[i].dependsOn != deps[j].dependsOn {
 			return deps[i].dependsOn < deps[j].dependsOn
@@ -508,10 +520,12 @@ func writeStringHash(w io.Writer, v string) {
 }
 
 func writeStringPtrHash(w io.Writer, v *string) {
-	if v != nil {
-		_, _ = io.WriteString(w, *v)
+	if v == nil {
+		_, _ = w.Write([]byte{0})
+		return
 	}
-	_, _ = w.Write([]byte{0})
+	_, _ = w.Write([]byte{1})
+	writeStringHash(w, *v)
 }
 
 func writeIntHash(w io.Writer, v int) {
@@ -520,10 +534,12 @@ func writeIntHash(w io.Writer, v int) {
 }
 
 func writeIntPtrHash(w io.Writer, v *int) {
-	if v != nil {
-		_, _ = io.WriteString(w, strconv.Itoa(*v))
+	if v == nil {
+		_, _ = w.Write([]byte{0})
+		return
 	}
-	_, _ = w.Write([]byte{0})
+	_, _ = w.Write([]byte{1})
+	writeIntHash(w, *v)
 }
 
 func writeInt64Hash(w io.Writer, v int64) {
@@ -539,10 +555,12 @@ func writeTimeHash(w io.Writer, t time.Time) {
 }
 
 func writeTimePtrHash(w io.Writer, t *time.Time) {
-	if t != nil {
-		_, _ = io.WriteString(w, t.UTC().Format(time.RFC3339Nano))
+	if t == nil {
+		_, _ = w.Write([]byte{0})
+		return
 	}
-	_, _ = w.Write([]byte{0})
+	_, _ = w.Write([]byte{1})
+	writeTimeHash(w, *t)
 }
 
 // ComputeConfigHash generates a deterministic hash of the analysis configuration.

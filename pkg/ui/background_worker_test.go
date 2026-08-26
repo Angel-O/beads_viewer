@@ -579,14 +579,14 @@ func TestBackgroundWorker_IncrementalListMetrics(t *testing.T) {
 	}
 
 	metrics := worker.Metrics()
-	if metrics.IncrementalListCount == 0 {
-		t.Fatalf("expected IncrementalListCount > 0, got %d", metrics.IncrementalListCount)
+	if metrics.IncrementalListCount != 1 {
+		t.Fatalf("IncrementalListCount=%d, want 1", metrics.IncrementalListCount)
 	}
-	if metrics.FullListCount == 0 {
-		t.Fatalf("expected FullListCount > 0, got %d", metrics.FullListCount)
+	if metrics.FullListCount != 1 {
+		t.Fatalf("FullListCount=%d, want 1", metrics.FullListCount)
 	}
-	if metrics.IncrementalListRatio <= 0 {
-		t.Fatalf("expected IncrementalListRatio > 0, got %f", metrics.IncrementalListRatio)
+	if metrics.IncrementalListRatio != 0.5 {
+		t.Fatalf("IncrementalListRatio=%f, want 0.5", metrics.IncrementalListRatio)
 	}
 }
 

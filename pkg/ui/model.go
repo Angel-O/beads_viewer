@@ -449,6 +449,7 @@ type Model struct {
 	// UI Components
 	list               list.Model
 	listItemsBuffer    []list.Item
+	listOrderHash      uint64
 	viewport           viewport.Model
 	renderer           *MarkdownRenderer
 	board              BoardModel
@@ -726,17 +727,30 @@ func (m *Model) updateSemanticIDs(items []list.Item) {
 // installSnapshotListItems installs precomputed snapshot items without forcing
 // bubbles/list to recompute unchanged pagination and keybinding layout. The
 // model owns this backing slice so copying does not mutate an immutable snapshot.
-func (m *Model) installSnapshotListItems(items []list.Item) {
+func (m *Model) installSnapshotListItems(snapshot *DataSnapshot) {
+	items := snapshot.listModelItems
 	current := m.list.Items()
 	bufferOwned := len(items) > 0 && len(current) == len(items) &&
 		len(m.listItemsBuffer) == len(items) && &current[0] == &m.listItemsBuffer[0]
 	if m.list.FilterState() == list.Unfiltered && bufferOwned {
+		diff := snapshot.IssueDiff
+		if snapshot.IncrementalListUsed && diff != nil &&
+			m.listOrderHash == snapshot.listOrderHash {
+			for _, id := range diff.Modified {
+				if index, ok := snapshot.listIndexByID[id]; ok {
+					m.listItemsBuffer[index] = items[index]
+				}
+			}
+			return
+		}
 		copy(m.listItemsBuffer, items)
+		m.listOrderHash = snapshot.listOrderHash
 		return
 	}
 
 	m.listItemsBuffer = append(make([]list.Item, 0, len(items)), items...)
 	m.list.SetItems(m.listItemsBuffer)
+	m.listOrderHash = snapshot.listOrderHash
 }
 
 func (m *Model) shouldShowSearchScores() bool {
@@ -1834,15 +1848,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear caches that need recomputation
 		m.labelHealthCached = false
 		m.attentionCached = false
-		m.priorityHints = make(map[string]*analysis.PriorityRecommendation)
-		m.labelDrilldownCache = make(map[string][]model.Issue)
+		if m.priorityHints == nil {
+			m.priorityHints = make(map[string]*analysis.PriorityRecommendation)
+		} else {
+			clear(m.priorityHints)
+		}
+		if m.labelDrilldownCache == nil {
+			m.labelDrilldownCache = make(map[string][]model.Issue)
+		} else {
+			clear(m.labelDrilldownCache)
+		}
 
 		// Alerts are derived while the immutable snapshot is built, off the UI loop.
 		m.alerts = msg.Snapshot.alerts
 		m.alertsCritical = msg.Snapshot.alertsCritical
 		m.alertsWarning = msg.Snapshot.alertsWarning
 		m.alertsInfo = msg.Snapshot.alertsInfo
-		m.dismissedAlerts = make(map[string]bool)
+		if m.dismissedAlerts == nil {
+			m.dismissedAlerts = make(map[string]bool)
+		} else {
+			clear(m.dismissedAlerts)
+		}
 		m.showAlertsPanel = false
 
 		// Reset semantic caches for the new dataset.
@@ -1914,7 +1940,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				len(msg.Snapshot.listModelItems) == len(msg.Snapshot.ListItems) &&
 				msg.Snapshot.BoardState != nil && msg.Snapshot.GetGraphLayout() != nil
 			if fastDefaultView {
-				m.installSnapshotListItems(msg.Snapshot.listModelItems)
+				m.installSnapshotListItems(msg.Snapshot)
 				if m.semanticSearch != nil {
 					m.semanticSearch.setSnapshotDocuments(msg.Snapshot.semanticIDs, msg.Snapshot.semanticDocs)
 				}

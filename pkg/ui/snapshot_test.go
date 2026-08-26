@@ -598,6 +598,233 @@ func TestSnapshotBuilder_IncrementalListMatchesFull(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilder_IncrementalListFallsBackForTopologyChanges(t *testing.T) {
+	base := make([]model.Issue, 10)
+	for i := range base {
+		base[i] = model.Issue{
+			ID:        fmt.Sprintf("T-%02d", i),
+			Title:     fmt.Sprintf("Issue %d", i),
+			Status:    model.StatusOpen,
+			Priority:  i,
+			IssueType: model.TypeTask,
+		}
+	}
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+	prev := NewSnapshotBuilder(copyIssues(base)).WithBuildConfig(cfg).Build()
+
+	tests := []struct {
+		name   string
+		mutate func([]model.Issue) []model.Issue
+	}{
+		{
+			name: "addition",
+			mutate: func(issues []model.Issue) []model.Issue {
+				return append(issues, model.Issue{ID: "T-10", Title: "Added", Status: model.StatusOpen, Priority: 10, IssueType: model.TypeTask})
+			},
+		},
+		{
+			name: "removal",
+			mutate: func(issues []model.Issue) []model.Issue {
+				return issues[:len(issues)-1]
+			},
+		},
+		{
+			name: "dependency change",
+			mutate: func(issues []model.Issue) []model.Issue {
+				issues[1].Dependencies = []*model.Dependency{{DependsOnID: issues[0].ID, Type: model.DepBlocks}}
+				return issues
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := tc.mutate(copyIssues(base))
+			diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+			incremental := NewSnapshotBuilder(copyIssues(changed)).
+				WithBuildConfig(cfg).
+				WithPreviousSnapshot(prev, &diff).
+				Build()
+			full := NewSnapshotBuilder(copyIssues(changed)).WithBuildConfig(cfg).Build()
+
+			if incremental.IncrementalListUsed {
+				t.Fatal("expected full list rebuild")
+			}
+			if !reflect.DeepEqual(incremental.ListItems, full.ListItems) {
+				t.Fatal("fallback list differs from full rebuild")
+			}
+		})
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListFallsBackForRecipeMembershipChange(t *testing.T) {
+	issues := make([]model.Issue, 10)
+	for i := range issues {
+		status := model.StatusOpen
+		if i == len(issues)-1 {
+			status = model.StatusClosed
+		}
+		issues[i] = model.Issue{ID: fmt.Sprintf("T-%02d", i), Title: fmt.Sprintf("Issue %d", i), Status: status, Priority: i, IssueType: model.TypeTask}
+	}
+	r := &recipe.Recipe{Name: "open-only", Filters: recipe.FilterConfig{Status: []string{"open"}}}
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+	prev := NewSnapshotBuilder(copyIssues(issues)).WithBuildConfig(cfg).WithRecipe(r).Build()
+
+	changed := copyIssues(issues)
+	changed[len(changed)-1].Status = model.StatusOpen
+	diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+	incremental := NewSnapshotBuilder(copyIssues(changed)).
+		WithBuildConfig(cfg).
+		WithRecipe(r).
+		WithPreviousSnapshot(prev, &diff).
+		Build()
+	full := NewSnapshotBuilder(copyIssues(changed)).WithBuildConfig(cfg).WithRecipe(r).Build()
+
+	if incremental.IncrementalListUsed {
+		t.Fatal("expected recipe membership change to use full list build")
+	}
+	if !reflect.DeepEqual(incremental.ListItems, full.ListItems) {
+		t.Fatal("incremental recipe list differs from full rebuild")
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListThreshold(t *testing.T) {
+	issues := make([]model.Issue, 10)
+	for i := range issues {
+		issues[i] = model.Issue{
+			ID:        fmt.Sprintf("T-%02d", i),
+			Title:     fmt.Sprintf("Issue %d", i),
+			Status:    model.StatusOpen,
+			Priority:  i,
+			IssueType: model.TypeTask,
+		}
+	}
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+	prev := NewSnapshotBuilder(copyIssues(issues)).WithBuildConfig(cfg).Build()
+
+	for _, tc := range []struct {
+		name            string
+		changedCount    int
+		wantIncremental bool
+	}{
+		{name: "exactly twenty percent", changedCount: 2, wantIncremental: true},
+		{name: "over twenty percent", changedCount: 3, wantIncremental: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := copyIssues(issues)
+			for i := 0; i < tc.changedCount; i++ {
+				changed[i].Title += " updated"
+			}
+			diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+			got := NewSnapshotBuilder(copyIssues(changed)).
+				WithBuildConfig(cfg).
+				WithPreviousSnapshot(prev, &diff).
+				Build()
+			full := NewSnapshotBuilder(copyIssues(changed)).WithBuildConfig(cfg).Build()
+
+			if got.IncrementalListUsed != tc.wantIncremental {
+				t.Fatalf("IncrementalListUsed=%v, want %v", got.IncrementalListUsed, tc.wantIncremental)
+			}
+			if !reflect.DeepEqual(got.ListItems, full.ListItems) {
+				t.Fatal("threshold-selected list differs from full rebuild")
+			}
+		})
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListFallsBackForRecipeHashChange(t *testing.T) {
+	issues := make([]model.Issue, 10)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("T-%02d", i), Title: fmt.Sprintf("Issue %d", i), Status: model.StatusOpen, Priority: i}
+	}
+	beforeRecipe := &recipe.Recipe{Name: "same-name", Filters: recipe.FilterConfig{Status: []string{"open"}}}
+	afterRecipe := &recipe.Recipe{Name: "same-name", Filters: recipe.FilterConfig{Priority: []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}}
+	prev := NewSnapshotBuilder(copyIssues(issues)).WithRecipe(beforeRecipe).Build()
+	changed := copyIssues(issues)
+	changed[0].Title += " updated"
+	diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+
+	got := NewSnapshotBuilder(changed).
+		WithRecipe(afterRecipe).
+		WithPreviousSnapshot(prev, &diff).
+		Build()
+	if got.IncrementalListUsed {
+		t.Fatal("expected changed recipe hash to force full list build")
+	}
+}
+
+func TestSnapshotSwap_IncrementalListUpdatesOwnedBuffer(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+		{ID: "c", Title: "C", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeTask},
+	}
+	m := NewModel(copyIssues(issues), nil, "")
+	first := NewSnapshotBuilder(copyIssues(issues)).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: first})
+	m = updated.(*Model)
+
+	before := m.list.Items()
+	if len(before) == 0 {
+		t.Fatal("expected populated list")
+	}
+	backing := &before[0]
+
+	changed := copyIssues(issues)
+	changed[1].Title = "B updated"
+	diff := analysis.ComputeIssueDiff(first.Issues, changed)
+	next := NewSnapshotBuilder(copyIssues(changed)).
+		WithPreviousSnapshot(first, &diff).
+		Build()
+	if next.IncrementalListUsed {
+		t.Fatal("expected reordered list to use full snapshot build")
+	}
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: next})
+	m = updated.(*Model)
+
+	after := m.list.Items()
+	if &after[0] != backing {
+		t.Fatal("incremental snapshot replaced the model-owned list buffer")
+	}
+	for _, raw := range after {
+		item := raw.(IssueItem)
+		if item.Issue.ID == "b" && item.Issue.Title != "B updated" {
+			t.Fatalf("modified item title=%q, want B updated", item.Issue.Title)
+		}
+	}
+}
+
+func TestSnapshotSwap_ReorderedListUsesFullBufferRefresh(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+	}
+	m := NewModel(copyIssues(issues), nil, "")
+	first := NewSnapshotBuilder(copyIssues(issues)).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: first})
+	m = updated.(*Model)
+
+	changed := copyIssues(issues)
+	changed[1].Priority = 0
+	diff := analysis.ComputeIssueDiff(first.Issues, changed)
+	next := NewSnapshotBuilder(copyIssues(changed)).
+		WithPreviousSnapshot(first, &diff).
+		Build()
+	if next.listOrderHash == first.listOrderHash {
+		t.Fatal("expected list order fingerprint to change")
+	}
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: next})
+	m = updated.(*Model)
+
+	firstItem := m.list.Items()[0].(IssueItem)
+	if firstItem.Issue.ID != "b" {
+		t.Fatalf("first item=%q, want reordered issue b", firstItem.Issue.ID)
+	}
+}
+
 func TestSortIssuesByRecipe_PriorityAsc(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "A", Priority: 2},

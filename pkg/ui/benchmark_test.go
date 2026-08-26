@@ -31,11 +31,17 @@ func BenchmarkSnapshotSwap(b *testing.B) {
 	for _, size := range []int{100, 1000, 5000} {
 		b.Run(fmt.Sprintf("issues=%d", size), func(b *testing.B) {
 			issues := testutil.QuickRandom(size, 0.01)
+			modifiedIssues := copyIssues(issues)
+			modifiedID := modifiedIssues[len(modifiedIssues)/2].ID
+			modifiedIssues[len(modifiedIssues)/2].Title += " updated"
 
 			m := NewModel(copyIssues(issues), nil, "")
 			snapshots := [2]*DataSnapshot{
 				NewSnapshotBuilder(copyIssues(issues)).Build(),
-				NewSnapshotBuilder(copyIssues(issues)).Build(),
+				NewSnapshotBuilder(modifiedIssues).Build(),
+			}
+			for _, snapshot := range snapshots {
+				snapshot.IssueDiff = &analysis.IssueDiff{Modified: []string{modifiedID}}
 			}
 
 			tm, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshots[0]})
@@ -74,7 +80,7 @@ func BenchmarkSnapshotViewSyncComponents(b *testing.B) {
 	b.Run("list", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			m.installSnapshotListItems(snapshot.listModelItems)
+			m.installSnapshotListItems(snapshot)
 		}
 	})
 	b.Run("board", func(b *testing.B) {
@@ -121,6 +127,26 @@ func BenchmarkKeyPressLatency(b *testing.B) {
 	b.ReportMetric(float64(durations[p99Index].Nanoseconds()), "p99-ns/op")
 }
 
+func BenchmarkKeyPressUpdateLatency(b *testing.B) {
+	issues := testutil.QuickRandom(1000, 0.01)
+	m := NewModel(issues, nil, "")
+	durations := make([]time.Duration, 0, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(*Model)
+		durations = append(durations, time.Since(start))
+	}
+	b.StopTimer()
+
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p99Index := (99*len(durations)+99)/100 - 1
+	b.ReportMetric(float64(durations[p99Index].Nanoseconds()), "p99-ns/op")
+}
+
 func BenchmarkSnapshotBuilderBuild(b *testing.B) {
 	cfg := analysis.AnalysisConfig{}
 
@@ -149,6 +175,33 @@ func BenchmarkSnapshotBuilderBuild(b *testing.B) {
 			}
 		})
 	}
+}
+
+func BenchmarkListItemBuild(b *testing.B) {
+	issues := testutil.QuickRandom(1000, 0.01)
+	prev := NewSnapshotBuilder(copyIssues(issues)).Build()
+	updated := copyIssues(issues)
+	updated[len(updated)/2].Title += " updated"
+	diff := analysis.ComputeIssueDiff(prev.Issues, updated)
+
+	b.Run("full", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			items := buildListItems(updated, nil)
+			if len(items) != len(updated) {
+				b.Fatal("incomplete full list build")
+			}
+		}
+	})
+	b.Run("one-of-1000-incremental", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			items := buildListItemsIncremental(updated, nil, prev, &diff)
+			if len(items) != len(updated) {
+				b.Fatal("incomplete incremental list build")
+			}
+		}
+	})
 }
 
 func BenchmarkBackgroundWorkerBuildSnapshot(b *testing.B) {
