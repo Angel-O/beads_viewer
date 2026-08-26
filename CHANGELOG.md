@@ -9,6 +9,7 @@ retained below.
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
+| [`v0.22.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.22.0) | 2026-08-25 | GitHub Release | Makes snapshot delivery pointer-based and incrementally rebuilds safe list changes, with measured UI latency and allocation reductions. |
 | [`v0.21.2`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.21.2) | 2026-08-24 | GitHub Release | Publishes the 50-pass performance campaign, verified binaries, checksums, SBOM, and corrected Nix guidance. |
 | [`v0.21.1`](https://github.com/Dicklesworthstone/beads_viewer/tree/v0.21.1) | 2026-08-24 | Tag only | Staged the performance and license work; superseded before binary publication. |
 | [`v0.21.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.21.0) | 2026-08-23 | GitHub Release | Strict robot-count semantics, bounded history liveness, theme selection, and cache-path repairs. |
@@ -16,6 +17,73 @@ retained below.
 ---
 
 ## [Unreleased]
+
+---
+
+## [v0.22.0] -- 2026-08-25 (Release)
+
+This release finishes the responsive-snapshot workstream: Bubble Tea now keeps the large UI model
+behind a pointer, snapshot installation reuses model-owned buffers, and small content-only changes
+rebuild only the affected list items. The fast path is guarded by deterministic fingerprints and
+falls back to a full rebuild whenever graph topology, recipe membership, sort order, or more than
+20% of issues changes.
+
+### Delivered capability: Faster UI Updates
+
+- **Stop copying the entire model on every message.** The TUI model and its hot navigation helpers
+  now use pointer receivers, eliminating the roughly 198 KB interface-boxing copy that previously
+  accompanied each `Update`. On the 1,000-issue snapshot-swap benchmark, the measured handler moved
+  from **105-225 us** before this work to **4.076-4.284 us**, a **24.5x-55.2x latency reduction**;
+  bytes per operation fell by about **99.8%**. See
+  [`96029793`](https://github.com/Dicklesworthstone/beads_viewer/commit/96029793) and
+  [`1a90b016`](https://github.com/Dicklesworthstone/beads_viewer/commit/1a90b016).
+- **Keep interactive latency inside the frame budget.** Five update-only keypress runs measured
+  p99 at **148-160 us**. Three isolated update-plus-render runs measured p99 at
+  **33.05-35.54 ms**, below the 50 ms interaction target. Isolated GC validation measured maximum
+  pauses of **0.879-1.374 ms**. The benchmarks live with the code in
+  [`5aac8532`](https://github.com/Dicklesworthstone/beads_viewer/commit/5aac8532) and the broader
+  regression coverage in [`d5a1be08`](https://github.com/Dicklesworthstone/beads_viewer/commit/d5a1be08).
+- **Precompute immutable view inputs off the UI loop.** Snapshots now carry list-model items,
+  semantic-search documents, alert summaries, graph data, and stable ID/order indexes so delivery
+  does not reconstruct these structures during rendering. See
+  [`b24297fc`](https://github.com/Dicklesworthstone/beads_viewer/commit/b24297fc).
+
+### Delivered capability: Correct Incremental List Rebuilds
+
+- **Detect changes deterministically.** Issue fingerprints distinguish nil from present zero-value
+  fields, ignore nil dependency entries, canonically order tied comments, and classify simultaneous
+  content and dependency changes exactly once. See
+  [`16ed4342`](https://github.com/Dicklesworthstone/beads_viewer/commit/16ed4342).
+- **Reuse unchanged work only when it is safe.** A change at or below the 20% threshold uses the
+  incremental list path only when recipe identity, membership, order, and dependency topology are
+  unchanged. Additions, removals, dependency edits, recipe changes, reordered results, and larger
+  diffs automatically take the full path. Incremental and full results are compared directly in
+  tests, including recipe and topology fallbacks.
+- **Measured result:** on an AMD EPYC-Milan worker, five paired 1,000-item runs reduced one-change
+  list construction from **374.9-412.4 us** to **189.1-212.6 us** (**1.76x-2.18x faster**).
+  Allocations fell from **1,001 to 2 per operation** (**99.8% fewer**). The remaining approximately
+  516 KB/op is the immutable output slice itself and is not claimed as eliminated.
+
+### Reliability, Integration, and Operator Improvements
+
+- Make background-worker cancellation and recovery ownership thread-safe, with lifecycle and idle-GC
+  coverage in [`2a2ec14e`](https://github.com/Dicklesworthstone/beads_viewer/commit/2a2ec14e) and
+  [`3e6473bb`](https://github.com/Dicklesworthstone/beads_viewer/commit/3e6473bb).
+- Copy interactive graph node descriptions without mutating Beads, including clipboard fallbacks
+  for offline dashboards ([`f2e6c9da`](https://github.com/Dicklesworthstone/beads_viewer/commit/f2e6c9da)).
+- Generate tracker-neutral v4 agent guidance with current `bd` and `br` command families, backed by
+  integration coverage ([`b9ae1472`](https://github.com/Dicklesworthstone/beads_viewer/commit/b9ae1472)).
+- Keep fallback and Nix version sources aligned through a release invariant test
+  ([`70adf7f8`](https://github.com/Dicklesworthstone/beads_viewer/commit/70adf7f8)).
+
+### Verification Boundary
+
+- Passed `go build ./...`, `go vet ./...`, the complete analysis package, focused incremental race
+  tests (three repetitions), and all non-environment-sensitive packages through RCH.
+- The RCH environment runs as root, rewrites the working directory, and lacks usable VCS metadata;
+  seven permission/cwd/timing tests were therefore excluded from the aggregate remote run after
+  their failure modes were reproduced and classified. The E2E package passed separately with
+  `GOFLAGS=-buildvcs=false` propagated into its nested build.
 
 ### Added
 
@@ -1023,7 +1091,8 @@ Initial release of Beads Viewer -- a keyboard-driven terminal interface for the 
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.2...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.22.0...HEAD
+[v0.22.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.2...v0.22.0
 [v0.21.2]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.1...v0.21.2
 [v0.21.1]: https://github.com/Dicklesworthstone/beads_viewer/tree/v0.21.1
 [v0.21.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.20.0...v0.21.0
