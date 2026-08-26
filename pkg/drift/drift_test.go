@@ -79,6 +79,51 @@ func TestCalculatorNewCycle(t *testing.T) {
 	}
 }
 
+func TestCalculatorSetNowPinsAllAlertTimesAndStaleness(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	bl := &baseline.Baseline{
+		Stats:  baseline.GraphStats{NodeCount: 10, EdgeCount: 10},
+		Cycles: [][]string{},
+	}
+	current := &baseline.Baseline{
+		Stats:  bl.Stats,
+		Cycles: [][]string{{"A", "B", "A"}},
+	}
+	calc := NewCalculator(bl, current, nil)
+	calc.SetNow(pinned)
+	calc.SetIssues([]model.Issue{{
+		ID:        "STALE",
+		Status:    model.StatusOpen,
+		UpdatedAt: pinned.Add(-40 * 24 * time.Hour),
+	}})
+
+	result := calc.Calculate()
+	if len(result.Alerts) < 2 {
+		t.Fatalf("expected cycle and staleness alerts, got %#v", result.Alerts)
+	}
+	for _, alert := range result.Alerts {
+		if !alert.DetectedAt.Equal(pinned) {
+			t.Fatalf("alert %s detected_at = %v, want %v", alert.Type, alert.DetectedAt, pinned)
+		}
+	}
+}
+
+func TestCalculatorSetNowAcceptsZeroEpoch(t *testing.T) {
+	bl := &baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 1}}
+	current := &baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 2}}
+	calc := NewCalculator(bl, current, nil)
+	calc.SetNow(time.Time{})
+	result := calc.Calculate()
+	if len(result.Alerts) == 0 {
+		t.Fatal("expected node-count drift alert")
+	}
+	for _, alert := range result.Alerts {
+		if !alert.DetectedAt.IsZero() {
+			t.Fatalf("alert detected_at=%v, want zero epoch", alert.DetectedAt)
+		}
+	}
+}
+
 func TestCalculatorDensityGrowth(t *testing.T) {
 	bl := &baseline.Baseline{
 		Stats: baseline.GraphStats{

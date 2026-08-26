@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	json "github.com/goccy/go-json"
@@ -97,12 +98,13 @@ func (a *historyArtifact) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
+	if len(w.CommitBeadIDs) != len(w.Commits) {
+		return fmt.Errorf("decoding history artifact: commit_bead_ids length %d does not match commits length %d", len(w.CommitBeadIDs), len(w.Commits))
+	}
 	a.Events = w.Events
 	a.Commits = w.Commits
 	for i := range a.Commits {
-		if i < len(w.CommitBeadIDs) {
-			a.Commits[i].BeadID = w.CommitBeadIDs[i]
-		}
+		a.Commits[i].BeadID = w.CommitBeadIDs[i]
 	}
 	return nil
 }
@@ -295,14 +297,32 @@ func dedupCommits(commits []CorrelatedCommit) []CorrelatedCommit {
 
 // buildCommitIndex creates a reverse lookup from commit SHA to bead IDs
 func (c *Correlator) buildCommitIndex(histories map[string]BeadHistory) CommitIndex {
-	index := make(CommitIndex)
+	return BuildCommitIndex(histories)
+}
 
+// BuildCommitIndex creates a deterministic reverse lookup from commit SHA to
+// bead IDs. A malformed/redundant history must not duplicate a bead in one
+// commit's list, and map iteration must not leak into robot JSON arrays.
+func BuildCommitIndex(histories map[string]BeadHistory) CommitIndex {
+	seen := make(map[string]map[string]struct{})
 	for beadID, history := range histories {
 		for _, commit := range history.Commits {
-			index[commit.SHA] = append(index[commit.SHA], beadID)
+			if seen[commit.SHA] == nil {
+				seen[commit.SHA] = make(map[string]struct{})
+			}
+			seen[commit.SHA][beadID] = struct{}{}
 		}
 	}
 
+	index := make(CommitIndex, len(seen))
+	for sha, beadSet := range seen {
+		beadIDs := make([]string, 0, len(beadSet))
+		for beadID := range beadSet {
+			beadIDs = append(beadIDs, beadID)
+		}
+		sort.Strings(beadIDs)
+		index[sha] = beadIDs
+	}
 	return index
 }
 

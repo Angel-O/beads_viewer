@@ -46,7 +46,8 @@ type TriageMeta struct {
 	// correlation prologue used by --robot-triage (issue #166):
 	// "ok" (history report generated), "error" (generation failed),
 	// "timeout" (generation exceeded the configured budget and was
-	// cancelled; triage proceeded without history), or empty when history
+	// cancelled; triage proceeded without history), "skipped" (a pinned
+	// SOURCE_DATE_EPOCH requested reproducible output), or empty when history
 	// generation was not attempted (no git repo / no open issues / callers
 	// outside the robot-triage path).
 	HistoryStatus string `json:"history_status,omitempty"`
@@ -1422,8 +1423,9 @@ type TriageReasonContext struct {
 	IsQuickWin      bool
 	BlockerDepth    int
 	// Now is the reference instant for time-gated readiness (defer_until).
-	// Zero means "use wall-clock time".
-	Now time.Time
+	// Set HasNow when zero itself is the intended instant.
+	Now    time.Time
+	HasNow bool
 }
 
 // TriageReasons contains all generated reasons for an issue
@@ -1437,7 +1439,7 @@ type TriageReasons struct {
 // These are emoji-prefixed, human-readable explanations that tell agents what to DO
 func GenerateTriageReasons(ctx TriageReasonContext) TriageReasons {
 	now := ctx.Now
-	if now.IsZero() {
+	if !ctx.HasNow && now.IsZero() {
 		now = time.Now()
 	}
 	// A future defer_until withholds the bead from claiming (issue #191). It is
@@ -1681,6 +1683,7 @@ func generateTriageReasonsForScoreAt(score TriageScore, triageCtx *TriageContext
 		IsQuickWin:      isQuickWin,
 		BlockerDepth:    triageCtx.BlockerDepth(score.IssueID), // cached
 		Now:             now,
+		HasNow:          true,
 	}
 
 	return GenerateTriageReasons(ctx)

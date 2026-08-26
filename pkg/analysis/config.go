@@ -15,6 +15,13 @@ type AnalysisConfig struct {
 	// cache. This is useful for profiling and validation that require fresh work.
 	DisableCache bool `json:"-"`
 
+	// RunToCompletion removes wall-clock races from otherwise deterministic
+	// metric algorithms. ApplyEnvOverrides enables it when SOURCE_DATE_EPOCH is
+	// a valid base-10 int64, which is the CLI's signal for reproducible output.
+	// It is execution state rather than robot output, so the disk-cache codec
+	// persists it separately while ComputeConfigHash still binds it into the key.
+	RunToCompletion bool `json:"-"`
+
 	// Betweenness centrality (expensive: O(V*E))
 	ComputeBetweenness       bool
 	BetweennessTimeout       time.Duration
@@ -343,6 +350,9 @@ const (
 	EnvSkipPhase2 = "BV_SKIP_PHASE2"
 	// EnvPhase2TimeoutSeconds overrides per-metric Phase 2 timeouts when set (>0).
 	EnvPhase2TimeoutSeconds = "BV_PHASE2_TIMEOUT_S"
+	// EnvSourceDateEpoch requests reproducible output when it contains a valid
+	// base-10 int64 Unix timestamp, matching the robot CLI clock contract.
+	EnvSourceDateEpoch = "SOURCE_DATE_EPOCH"
 )
 
 // ApplyEnvOverrides applies environment-variable tunables to the analysis config.
@@ -351,7 +361,13 @@ const (
 //   - BV_SKIP_PHASE2=1: skip expensive Phase 2 metrics (PageRank, Betweenness, HITS, Cycles,
 //     Eigenvector, Critical Path). (k-core/articulation/slack remain enabled.)
 //   - BV_PHASE2_TIMEOUT_S=N: override per-metric timeouts to N seconds (must be >0).
+//   - SOURCE_DATE_EPOCH=N: in robot mode, run timeout-raced metrics to completion
+//     when N is a valid base-10 int64, making their result state reproducible.
 func ApplyEnvOverrides(cfg AnalysisConfig) AnalysisConfig {
+	// SOURCE_DATE_EPOCH is a robot-output reproducibility contract. Do not let a
+	// process-wide build timestamp silently remove the TUI/library latency bounds.
+	cfg.RunToCompletion = envBool("BV_ROBOT") && validSourceDateEpoch()
+
 	if envBool(EnvSkipPhase2) {
 		cfg.ComputeBetweenness = false
 		cfg.BetweennessMode = BetweennessSkip
@@ -387,6 +403,15 @@ func ApplyEnvOverrides(cfg AnalysisConfig) AnalysisConfig {
 	}
 
 	return cfg
+}
+
+func validSourceDateEpoch() bool {
+	v := strings.TrimSpace(os.Getenv(EnvSourceDateEpoch))
+	if v == "" {
+		return false
+	}
+	_, err := strconv.ParseInt(v, 10, 64)
+	return err == nil
 }
 
 func envPositiveInt(name string) (int, bool) {

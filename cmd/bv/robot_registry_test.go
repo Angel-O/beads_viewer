@@ -2,12 +2,77 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 )
+
+func TestRobotHistoryTimeoutFromMillisecondsChecked(t *testing.T) {
+	tests := []struct {
+		name string
+		ms   int64
+		want time.Duration
+		ok   bool
+	}{
+		{name: "negative is unset", ms: -1, want: 0, ok: false},
+		{name: "zero remains unbounded sentinel", ms: 0, want: 0, ok: true},
+		{name: "ordinary duration", ms: 1250, want: 1250 * time.Millisecond, ok: true},
+		{
+			name: "largest exact millisecond duration",
+			ms:   maxRobotHistoryTimeoutMillis,
+			want: time.Duration(maxRobotHistoryTimeoutMillis) * time.Millisecond,
+			ok:   true,
+		},
+		{
+			name: "one millisecond beyond duration range saturates",
+			ms:   maxRobotHistoryTimeoutMillis + 1,
+			want: time.Duration(math.MaxInt64),
+			ok:   true,
+		},
+		{
+			name: "largest parsed integer saturates",
+			ms:   math.MaxInt64,
+			want: time.Duration(math.MaxInt64),
+			ok:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := robotHistoryTimeoutFromMilliseconds(tt.ms)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("robotHistoryTimeoutFromMilliseconds(%d) = (%s, %v), want (%s, %v)", tt.ms, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestResolveRobotHistoryTimeoutSaturatesOverflow(t *testing.T) {
+	t.Setenv("BV_ROBOT_HISTORY_TIMEOUT_MS", strconv.FormatInt(maxRobotHistoryTimeoutMillis+1, 10))
+	unset := -1
+	if got := resolveRobotHistoryTimeout(phaseThreeRobotHandlerConfig{HistoryTimeoutMs: &unset}); got != time.Duration(math.MaxInt64) {
+		t.Fatalf("overflowing environment timeout = %s, want saturation at %s", got, time.Duration(math.MaxInt64))
+	}
+	if strconv.IntSize == 64 {
+		overflowingMillis := int64(maxRobotHistoryTimeoutMillis + 1)
+		overflowingFlag := int(overflowingMillis)
+		if got := resolveRobotHistoryTimeout(phaseThreeRobotHandlerConfig{HistoryTimeoutMs: &overflowingFlag}); got != time.Duration(math.MaxInt64) {
+			t.Fatalf("overflowing flag timeout = %s, want saturation at %s", got, time.Duration(math.MaxInt64))
+		}
+	}
+
+	flagValue := 25
+	if got := resolveRobotHistoryTimeout(phaseThreeRobotHandlerConfig{HistoryTimeoutMs: &flagValue}); got != 25*time.Millisecond {
+		t.Fatalf("explicit flag timeout = %s, want 25ms and precedence over environment", got)
+	}
+}
 
 func TestRobotRegistryValidate_RejectsModifierAlone(t *testing.T) {
 	var robotTriage bool
@@ -186,6 +251,52 @@ func TestRobotRegistryDispatchFlag_RunsActiveHandler(t *testing.T) {
 	}
 	if called != 1 {
 		t.Fatalf("handler call count = %d, want 1", called)
+	}
+}
+
+func TestRobotDiffHandlerPinsNestedTimestampWithoutMutatingInput(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 34, 56, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(pinned.Unix(), 10))
+
+	active := true
+	registry := newRobotRegistry()
+	registerPhaseTwoRobotHandlers(&registry, phaseTwoRobotHandlerConfig{RobotDiffFlag: &active})
+
+	from := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	originalTo := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
+	diff := &analysis.SnapshotDiff{FromTimestamp: from, ToTimestamp: originalTo}
+	var output bytes.Buffer
+	handled, err := registry.DispatchFlag("robot-diff", RobotContext{
+		DataHash:              "current-hash",
+		Diff:                  diff,
+		DiffResolvedRevision:  "abc123",
+		DiffHistoricalIssues: nil,
+		Encoder:               json.NewEncoder(&output),
+	})
+	if err != nil {
+		t.Fatalf("dispatch robot-diff: %v", err)
+	}
+	if !handled {
+		t.Fatal("robot-diff handler was not dispatched")
+	}
+	var decoded struct {
+		GeneratedAt string `json:"generated_at"`
+		Diff        struct {
+			FromTimestamp time.Time `json:"from_timestamp"`
+			ToTimestamp   time.Time `json:"to_timestamp"`
+		} `json:"diff"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode robot-diff output: %v\n%s", err, output.String())
+	}
+	if decoded.GeneratedAt != pinned.Format(time.RFC3339) || !decoded.Diff.ToTimestamp.Equal(pinned) {
+		t.Fatalf("pinned output times = generated %q, nested %v; want %v", decoded.GeneratedAt, decoded.Diff.ToTimestamp, pinned)
+	}
+	if !decoded.Diff.FromTimestamp.Equal(from) {
+		t.Fatalf("from timestamp = %v, want %v", decoded.Diff.FromTimestamp, from)
+	}
+	if !diff.ToTimestamp.Equal(originalTo) {
+		t.Fatalf("handler mutated input diff timestamp to %v", diff.ToTimestamp)
 	}
 }
 

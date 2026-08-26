@@ -684,8 +684,8 @@ func TestRobotDiskCache_WritesAndHits(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("parsing cache entry json: %v", err)
 	}
-	if entry.Version != 3 {
-		t.Fatalf("cache entry version: got %d, want %d", entry.Version, 3)
+	if entry.Version != 4 {
+		t.Fatalf("cache entry version: got %d, want %d", entry.Version, 4)
 	}
 	if entry.Key != fullKey {
 		t.Fatalf("cache entry key: got %q, want %q", entry.Key, fullKey)

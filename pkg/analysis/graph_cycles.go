@@ -10,14 +10,13 @@ import (
 // findCyclesSafe finds a limited number of cycles in the graph without exponential blowup.
 // It uses Tarjan's SCC algorithm to identify cyclic components and extracts one cycle per component.
 func findCyclesSafe(g graph.Directed, limit int) [][]graph.Node {
+	if limit <= 0 {
+		return nil
+	}
 	sccs := topo.TarjanSCC(g)
 	var cycles [][]graph.Node
 
 	for _, scc := range sccs {
-		if len(cycles) >= limit {
-			break
-		}
-
 		if len(scc) == 1 {
 			// Check for self-loop
 			n := scc[0]
@@ -51,6 +50,9 @@ func findCyclesSafe(g graph.Directed, limit int) [][]graph.Node {
 		return false
 	})
 
+	if len(cycles) > limit {
+		cycles = cycles[:limit]
+	}
 	return cycles
 }
 

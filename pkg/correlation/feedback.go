@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -133,10 +134,23 @@ func (fs *FeedbackStore) GetAll() []CorrelationFeedback {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 
+	return fs.sortedFeedbackLocked()
+}
+
+// sortedFeedbackLocked returns cache values in their semantic key order. The
+// caller must hold at least fs.mu.RLock. Stable ordering also makes floating-
+// point aggregation reproducible instead of depending on Go map iteration.
+func (fs *FeedbackStore) sortedFeedbackLocked() []CorrelationFeedback {
 	result := make([]CorrelationFeedback, 0, len(fs.cache))
 	for _, fb := range fs.cache {
 		result = append(result, fb)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CommitSHA != result[j].CommitSHA {
+			return result[i].CommitSHA < result[j].CommitSHA
+		}
+		return result[i].BeadID < result[j].BeadID
+	})
 	return result
 }
 
@@ -148,7 +162,7 @@ func (fs *FeedbackStore) GetStats() FeedbackStats {
 	stats := FeedbackStats{}
 	var confirmSum, rejectSum float64
 
-	for _, fb := range fs.cache {
+	for _, fb := range fs.sortedFeedbackLocked() {
 		stats.TotalFeedback++
 		switch fb.Type {
 		case FeedbackConfirm:

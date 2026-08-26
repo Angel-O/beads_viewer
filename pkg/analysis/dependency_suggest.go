@@ -262,6 +262,7 @@ func findSharedKeys(m1, m2 map[string]bool) []string {
 			shared = append(shared, k)
 		}
 	}
+	sort.Strings(shared)
 	return shared
 }
 
@@ -269,7 +270,13 @@ func findSharedKeys(m1, m2 map[string]bool) []string {
 // Uses sort.Slice for O(n log n) performance instead of bubble sort O(n²)
 func sortMatchesByConfidence(matches []DependencyMatch) {
 	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Confidence > matches[j].Confidence
+		if matches[i].Confidence != matches[j].Confidence {
+			return matches[i].Confidence > matches[j].Confidence
+		}
+		if matches[i].From != matches[j].From {
+			return matches[i].From < matches[j].From
+		}
+		return matches[i].To < matches[j].To
 	})
 }
 

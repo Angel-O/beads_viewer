@@ -289,7 +289,13 @@ func uniqueStrings(s []string) []string {
 // Uses sort.Slice for O(n log n) performance instead of bubble sort O(n²)
 func sortLabelMatchesByConfidence(matches []LabelMatch) {
 	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Confidence > matches[j].Confidence
+		if matches[i].Confidence != matches[j].Confidence {
+			return matches[i].Confidence > matches[j].Confidence
+		}
+		if matches[i].IssueID != matches[j].IssueID {
+			return matches[i].IssueID < matches[j].IssueID
+		}
+		return matches[i].Label < matches[j].Label
 	})
 }
 

@@ -260,6 +260,27 @@ func loadIssuesForReload(path string, opts loader.ParseOptions) (loader.PooledIs
 	}
 }
 
+func countIssuesForReload(path string) (int, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".db", ".sqlite", ".sqlite3":
+		source, ok, err := datasource.SourceFromFile(path)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, fmt.Errorf("unsupported SQLite source path: %s", path)
+		}
+		reader, err := datasource.NewReader(source)
+		if err != nil {
+			return 0, err
+		}
+		defer reader.Close()
+		return reader.CountIssues()
+	default:
+		return countJSONLLines(path)
+	}
+}
+
 // StartBackgroundWorkerCmd starts the background worker and triggers an initial refresh.
 type backgroundWorkerStartErrorMsg struct {
 	worker *BackgroundWorker
@@ -343,8 +364,10 @@ func CheckUpdateCmd() tea.Cmd {
 
 // HistoryLoadedMsg is sent when background history loading completes
 type HistoryLoadedMsg struct {
-	Report *correlation.HistoryReport
-	Error  error
+	DataGeneration    uint64
+	RequestGeneration uint64
+	Report            *correlation.HistoryReport
+	Error             error
 }
 
 // AgentFileCheckMsg is sent after checking for AGENTS.md integration (bv-i8dk)
@@ -382,8 +405,25 @@ func CheckAgentFileCmd(workDir string) tea.Cmd {
 	}
 }
 
-// LoadHistoryCmd returns a command that loads history data in the background
-func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
+type historyLoadCommandFactory func(
+	context.Context,
+	[]model.Issue,
+	string,
+	uint64,
+	uint64,
+) tea.Cmd
+
+// LoadHistoryCmd returns a command that loads history data in the background.
+// The caller owns ctx and cancels it when a newer dataset supersedes this load.
+func LoadHistoryCmd(
+	ctx context.Context,
+	issues []model.Issue,
+	beadsPath string,
+	dataGeneration, requestGeneration uint64,
+) tea.Cmd {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return func() tea.Msg {
 		var repoPath string
 		var err error
@@ -407,7 +447,11 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 		if repoPath == "" {
 			repoPath, err = os.Getwd()
 			if err != nil {
-				return HistoryLoadedMsg{Error: err}
+				return HistoryLoadedMsg{
+					DataGeneration:    dataGeneration,
+					RequestGeneration: requestGeneration,
+					Error:             err,
+				}
 			}
 		}
 
@@ -433,13 +477,18 @@ func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
 			}
 		}
 
-		correlator := correlation.NewCorrelator(repoPath, correlationPath)
+		correlator := correlation.NewCorrelator(repoPath, correlationPath).WithContext(ctx)
 		opts := correlation.CorrelatorOptions{
 			Limit: 500, // Reasonable limit for TUI performance
 		}
 
 		report, err := correlator.GenerateReport(beads, opts)
-		return HistoryLoadedMsg{Report: report, Error: err}
+		return HistoryLoadedMsg{
+			DataGeneration:    dataGeneration,
+			RequestGeneration: requestGeneration,
+			Report:            report,
+			Error:             err,
+		}
 	}
 }
 
@@ -586,9 +635,14 @@ type Model struct {
 	actionableView ActionableModel
 
 	// History view
-	historyView       HistoryModel
-	historyLoading    bool // True while history is being loaded in background
-	historyLoadFailed bool // True if history loading failed
+	historyView                  HistoryModel
+	historyLoading               bool // True while history is being loaded in background
+	historyLoadFailed            bool // True if history loading failed
+	historyReportDataGeneration  uint64
+	historyLoadDataGeneration    uint64
+	historyLoadRequestGeneration uint64
+	historyLoadCancel            context.CancelFunc
+	historyLoadCommand           historyLoadCommandFactory
 
 	// Filter and sort state
 	currentFilter            string
@@ -1249,6 +1303,73 @@ func (m *Model) issuesForAsync() []model.Issue {
 	return cloneIssuesForAsync(m.issues)
 }
 
+// startHistoryLoad assigns ownership of the next history completion to the
+// current dataset and a unique request. Correlation walks git history and may
+// finish well after a snapshot swap, so an untagged result must never replace
+// the view for newer issues.
+func (m *Model) startHistoryLoad() tea.Cmd {
+	if m == nil {
+		return nil
+	}
+	// Repeated startup/snapshot notifications for the same semantic dataset
+	// share the in-flight git walk. Only a request with an owned cancellation
+	// context is eligible: NewModel marks historyLoading before Init schedules
+	// the first real command.
+	if len(m.issues) > 0 &&
+		m.historyLoading &&
+		m.historyLoadCancel != nil &&
+		m.historyLoadDataGeneration == m.semanticDataGeneration {
+		return nil
+	}
+
+	m.cancelHistoryLoad()
+	m.historyLoadRequestGeneration++
+	m.historyLoadDataGeneration = m.semanticDataGeneration
+	m.historyLoadFailed = false
+
+	if len(m.issues) == 0 {
+		m.historyLoading = false
+		m.historyLoadDataGeneration = 0
+		m.historyView.SetReport(nil)
+		m.historyReportDataGeneration = 0
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.historyLoadCancel = cancel
+	m.historyLoading = true
+	loadCommand := m.historyLoadCommand
+	if loadCommand == nil {
+		loadCommand = LoadHistoryCmd
+	}
+	cmd := loadCommand(
+		ctx,
+		m.issuesForAsync(),
+		m.beadsPath,
+		m.historyLoadDataGeneration,
+		m.historyLoadRequestGeneration,
+	)
+	if cmd == nil {
+		m.cancelHistoryLoad()
+		m.historyLoading = false
+		m.historyLoadDataGeneration = 0
+	}
+	return cmd
+}
+
+func (m *Model) cancelHistoryLoad() {
+	if m == nil || m.historyLoadCancel == nil {
+		return
+	}
+	m.historyLoadCancel()
+	m.historyLoadCancel = nil
+}
+
+func (m *Model) quitCommand() tea.Cmd {
+	m.cancelHistoryLoad()
+	return tea.Quit
+}
+
 // NewModel creates a new Model from the given issues
 // beadsPath is the path to the beads.jsonl file for live reload support
 func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) *Model {
@@ -1739,9 +1860,9 @@ func (m *Model) Init() tea.Cmd {
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
-	// Start loading history in background
-	if len(m.issues) > 0 {
-		cmds = append(cmds, LoadHistoryCmd(m.issuesForAsync(), m.beadsPath))
+	// Start loading history in background.
+	if historyCmd := m.startHistoryLoad(); historyCmd != nil {
+		cmds = append(cmds, historyCmd)
 	}
 	// Check for AGENTS.md integration prompt (bv-i8dk)
 	if m.workDir != "" && !m.workspaceMode {
@@ -2402,14 +2523,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case HistoryLoadedMsg:
+		if !m.historyLoading ||
+			msg.DataGeneration != m.semanticDataGeneration ||
+			msg.DataGeneration != m.historyLoadDataGeneration ||
+			msg.RequestGeneration != m.historyLoadRequestGeneration {
+			return m, nil
+		}
 		// Background history loading completed
+		m.cancelHistoryLoad()
 		m.historyLoading = false
+		m.historyLoadDataGeneration = 0
 		if msg.Error != nil {
 			m.historyLoadFailed = true
+			// Retain the old report only as hidden state so a retry can restore the
+			// user's bead/commit/file-tree identity. Generation gates below prevent
+			// rendering or acting on it for a newer dataset.
 			m.statusMsg = fmt.Sprintf("History load failed: %v", msg.Error)
 			m.statusIsError = true
-		} else if msg.Report != nil {
-			m.historyView = NewHistoryModel(msg.Report, m.theme)
+		} else {
+			m.historyLoadFailed = false
+			m.historyView.SetReport(msg.Report)
+			m.historyReportDataGeneration = msg.DataGeneration
 			m.historyView.SetSize(m.width, m.height-1)
 			// Refresh detail pane if visible
 			if m.isSplitView || m.showDetails {
@@ -2562,6 +2696,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate every async semantic result from the previous dataset before
 		// scheduling current-generation replacements.
 		m.beginSemanticDatasetUpdate()
+		if historyCmd := m.startHistoryLoad(); historyCmd != nil {
+			cmds = append(cmds, historyCmd)
+		}
 		if m.semanticHybridEnabled {
 			if hybridCmd := m.startSemanticHybridBuild(); hybridCmd != nil {
 				cmds = append(cmds, hybridCmd)
@@ -2969,6 +3106,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Recompute analysis (async Phase 1/Phase 2) with caching
 		m.issues = newIssues
 		m.beginSemanticDatasetUpdate()
+		if historyCmd := m.startHistoryLoad(); historyCmd != nil {
+			cmds = append(cmds, historyCmd)
+		}
 		var analysisStart time.Time
 		if profileRefresh {
 			analysisStart = time.Now()
@@ -3529,7 +3669,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle repo picker overlay (workspace mode) before global keys (esc/q/etc.)
 		if m.showRepoPicker {
 			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
+				return m, m.quitCommand()
 			}
 			m = m.handleRepoPickerKeys(msg)
 			return m, m.pendingSemanticFilterCmd()
@@ -3538,7 +3678,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle recipe picker overlay before global keys (esc/q/etc.)
 		if m.showRecipePicker {
 			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
+				return m, m.quitCommand()
 			}
 			m = m.handleRecipePickerKeys(msg)
 			return m, m.pendingSemanticFilterCmd()
@@ -3548,7 +3688,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showQuitConfirm {
 			switch msg.String() {
 			case "esc", "y", "Y":
-				return m, tea.Quit
+				return m, m.quitCommand()
 			default:
 				m.showQuitConfirm = false
 				m.focused = focusList
@@ -3792,7 +3932,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// But allow ctrl+c to always quit
 		if m.focused == focusTimeTravelInput {
 			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
+				return m, m.quitCommand()
 			}
 			var inputCmd tea.Cmd
 			m, inputCmd = m.handleTimeTravelInputKeys(msg)
@@ -3804,14 +3944,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// close the active view instead of updating the focused submode.
 		if m.focused == focusBoard && m.board.IsSearchMode() {
 			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
+				return m, m.quitCommand()
 			}
 			m = m.handleBoardKeys(msg)
 			return m, nil
 		}
-		if m.focused == focusHistory && (m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus()) {
+		if m.focused == focusHistory && m.historyReportIsCurrent() &&
+			(m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus()) {
 			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
+				return m, m.quitCommand()
 			}
 			var inputCmd tea.Cmd
 			m, inputCmd = m.handleHistoryKeys(msg)
@@ -3825,7 +3966,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and enter still applies via handleLabelPickerKeys.
 		if m.focused == focusLabelPicker && m.showLabelPicker {
 			if msg.String() == "ctrl+c" {
-				return m, tea.Quit
+				return m, m.quitCommand()
 			}
 			var inputCmd tea.Cmd
 			m, inputCmd = m.handleLabelPickerKeys(msg)
@@ -3840,7 +3981,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// ═══════════════════════════════════════════════════════════════
 			switch msg.String() {
 			case "ctrl+c":
-				return m, tea.Quit
+				return m, m.quitCommand()
 
 			case "q":
 				// q closes current view or quits if at top level
@@ -3898,7 +4039,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focused = focusList
 					return m, nil
 				}
-				return m, tea.Quit
+				return m, m.quitCommand()
 
 			case "esc":
 				// Escape closes modals and goes back
@@ -4149,6 +4290,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// History uses h/f/g for nav — intercept those.
 				// Let other view-toggle keys (b/a/i/E/etc.) fall through.
 				// In search or file-tree mode, all keys go to the handler.
+				if !m.historyReportIsCurrent() {
+					// Keep stale report state untouched so identity can be restored when
+					// the current generation arrives, but never navigate or act on it.
+					if keyStr != "h" {
+						viewToggleHandled = true
+					}
+					break
+				}
 				if m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus() {
 					m, cmd = m.handleHistoryKeys(msg)
 					cmds = append(cmds, cmd)
@@ -4318,22 +4467,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "h":
 				// Toggle history view
 				m.clearAttentionOverlay()
-				m.isHistoryView = !m.isHistoryView
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
 				if m.isHistoryView {
-					// Ensure history model has latest sizing
-					bodyHeight := m.height - 1
-					if bodyHeight < 5 {
-						bodyHeight = 5
+					if m.historyLoadFailed && !m.historyLoading {
+						return m, m.enterHistoryView()
 					}
-					m.historyView.SetSize(m.width, bodyHeight)
-					m.focused = focusHistory
-				} else {
+					m.isHistoryView = false
 					m.focused = focusList
+					return m, nil
 				}
-				return m, nil
+				return m, m.enterHistoryView()
 
 			case "[", "f3":
 				// Open label dashboard (phase 1: table view)
@@ -4509,7 +4654,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case focusActionable:
 				m.actionableView.MoveUp()
 			case focusHistory:
-				m.historyView.MoveUp()
+				if m.historyReportIsCurrent() {
+					m.historyView.MoveUp()
+				}
 			case focusFlowMatrix:
 				m.flowMatrix.MoveUp()
 			}
@@ -4538,7 +4685,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case focusActionable:
 				m.actionableView.MoveDown()
 			case focusHistory:
-				m.historyView.MoveDown()
+				if m.historyReportIsCurrent() {
+					m.historyView.MoveDown()
+				}
 			case focusFlowMatrix:
 				m.flowMatrix.MoveDown()
 			}
@@ -5590,7 +5739,7 @@ func (m *Model) handleListKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "h":
 		// Toggle history view
 		if !m.isHistoryView {
-			m.enterHistoryView()
+			cmd = m.enterHistoryView()
 		}
 	case "S":
 		// Apply triage recipe - sort by triage score (bv-151)
@@ -5786,8 +5935,16 @@ func (m *Model) View() string {
 		m.actionableView.SetSize(m.width, m.height-2)
 		body = m.actionableView.Render()
 	} else if m.isHistoryView {
-		m.historyView.SetSize(m.width, m.height-1)
-		body = m.historyView.View()
+		if m.historyReportIsCurrent() {
+			m.historyView.SetSize(m.width, m.height-1)
+			body = m.historyView.View()
+		} else {
+			message := "Loading history…"
+			if m.historyLoadFailed {
+				message = "History unavailable; press h to retry"
+			}
+			body = lipgloss.Place(max(m.width, 1), max(m.height-1, 1), lipgloss.Center, lipgloss.Center, message)
+		}
 	} else if m.isSprintView {
 		body = m.sprintViewText
 	} else if m.isSplitView {
@@ -8550,51 +8707,42 @@ func (m Model) IsWorkspaceMode() bool {
 	return m.workspaceMode
 }
 
-// enterHistoryView loads correlation data and shows the history view
-func (m *Model) enterHistoryView() {
-	cwd, err := os.Getwd()
-	if err != nil {
-		m.statusMsg = "Cannot get working directory for history"
-		m.statusIsError = true
-		return
+// enterHistoryView shows the asynchronously maintained correlation view. It
+// never performs a git walk on the Bubble Tea update goroutine; a failed or
+// not-yet-started load is retried through the normal generation-fenced command.
+func (m *Model) enterHistoryView() tea.Cmd {
+	bodyHeight := m.height - 1
+	if bodyHeight < 5 {
+		bodyHeight = 5
 	}
-
-	// Convert model.Issue to correlation.BeadInfo
-	beads := make([]correlation.BeadInfo, len(m.issues))
-	for i, issue := range m.issues {
-		beads[i] = correlation.BeadInfo{
-			ID:     issue.ID,
-			Title:  issue.Title,
-			Status: string(issue.Status),
-		}
-	}
-
-	// Load correlation data. History correlations come from the git history of
-	// the JSONL export, so redirect a DB (or other non-JSONL) selection to the
-	// git-tracked JSONL — see resolveHistoryCorrelationPath and bv #171. Without
-	// this, a beads.db that is a few ms newer than issues.jsonl (the normal state
-	// after `br sync`) silently yields a correlation-free history view.
-	correlationPath := resolveHistoryCorrelationPath(m.beadsPath, cwd)
-	correlator := correlation.NewCorrelator(cwd, correlationPath)
-	opts := correlation.CorrelatorOptions{
-		Limit: 500, // Reasonable limit for TUI performance
-	}
-
-	report, err := correlator.GenerateReport(beads, opts)
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("History load failed: %v", err)
-		m.statusIsError = true
-		return
-	}
-
-	// Initialize or update history view
-	m.historyView = NewHistoryModel(report, m.theme)
-	m.historyView.SetSize(m.width, m.height-1)
+	m.historyView.SetSize(m.width, bodyHeight)
 	m.isHistoryView = true
 	m.focused = focusHistory
 
-	m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", report.Stats.BeadsWithCommits)
+	if m.historyReportIsCurrent() && !m.historyLoadFailed {
+		m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", m.historyView.report.Stats.BeadsWithCommits)
+		m.statusIsError = false
+		return nil
+	}
+	if m.historyLoading {
+		m.statusMsg = "History is loading…"
+		m.statusIsError = false
+		return nil
+	}
+	if len(m.issues) == 0 {
+		m.statusMsg = "No issue history available"
+		m.statusIsError = false
+		return nil
+	}
+
+	m.statusMsg = "Loading history…"
 	m.statusIsError = false
+	return m.startHistoryLoad()
+}
+
+func (m *Model) historyReportIsCurrent() bool {
+	return m != nil && m.historyView.report != nil &&
+		m.historyReportDataGeneration == m.semanticDataGeneration
 }
 
 // enterTimeTravelMode loads historical data and computes diff
@@ -9607,6 +9755,7 @@ func parseBodyFromFrontmatter(content string) string {
 // Stop cleans up resources (file watcher, instance lock, background worker, etc.)
 // Should be called when the program exits
 func (m *Model) Stop() {
+	m.cancelHistoryLoad()
 	if m.backgroundWorker != nil {
 		m.backgroundWorker.Stop()
 	}

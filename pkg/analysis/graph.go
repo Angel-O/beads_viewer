@@ -1200,7 +1200,7 @@ type Analyzer struct {
 	blockerCountsMax int
 	config           *AnalysisConfig // Optional custom config, nil means use size-based defaults
 
-	// now is the reference instant for time-gated readiness (defer_until).
+	// now is the reference instant for time-gated readiness and scoring.
 	// Defaults to wall-clock time at construction; robot entrypoints with a
 	// pinned clock (SOURCE_DATE_EPOCH) override it via SetNow so their output
 	// stays deterministic.
@@ -1211,15 +1211,13 @@ type Analyzer struct {
 }
 
 // SetNow overrides the reference instant used for time-gated readiness checks
-// (currently defer_until). A zero value is ignored and leaves the clock as-is.
+// and time-sensitive scoring. The zero Go time is valid because
+// SOURCE_DATE_EPOCH=-62135596800 maps to it exactly.
 func (a *Analyzer) SetNow(now time.Time) {
-	if now.IsZero() {
-		return
-	}
 	a.now = now
 }
 
-// Now returns the analyzer's reference instant for time-gated readiness.
+// Now returns the analyzer's reference instant for readiness and scoring.
 func (a *Analyzer) Now() time.Time {
 	return a.now
 }
@@ -1327,30 +1325,42 @@ func (a *Analyzer) graphStructureHash() string {
 }
 
 func NewAnalyzer(issues []model.Issue) *Analyzer {
-	g := newCompactDirectedGraph(len(issues))
-	// Pre-allocate maps for efficiency
-	idToNode := make(map[string]int64, len(issues))
-	nodeToID := make(map[int64]string, len(issues))
+	// Issue IDs are the graph's semantic identity. Assign compact numeric IDs in
+	// sorted issue-ID order so cache-equivalent input permutations cannot change
+	// sampled pivots, traversal order, floating-point reduction, or cycle choice.
+	// Malformed duplicate IDs retain the loader's last-record-wins semantics.
 	issueMap := make(map[string]model.Issue, len(issues))
-	blockerCounts := make([]int, len(issues))
+	for _, issue := range issues {
+		issueMap[issue.ID] = issue
+	}
+	sortedIssueIDs := make([]string, 0, len(issueMap))
+	for id := range issueMap {
+		sortedIssueIDs = append(sortedIssueIDs, id)
+	}
+	sort.Strings(sortedIssueIDs)
+
+	g := newCompactDirectedGraph(len(sortedIssueIDs))
+	idToNode := make(map[string]int64, len(sortedIssueIDs))
+	nodeToID := make(map[int64]string, len(sortedIssueIDs))
+	blockerCounts := make([]int, len(sortedIssueIDs))
 
 	// 1. Add Nodes
-	for idx, issue := range issues {
-		issueMap[issue.ID] = issue
+	for idx, id := range sortedIssueIDs {
 		nodeID := int64(idx)
-		idToNode[issue.ID] = nodeID
-		nodeToID[nodeID] = issue.ID
+		idToNode[id] = nodeID
+		nodeToID[nodeID] = id
 	}
 
 	// 2. Add Edges (Dependency Direction)
 	// We only model *blocking* relationships in the analysis graph. Non-blocking
 	// links such as "related" should not influence centrality metrics or cycle
 	// detection because they do not gate execution order.
-	seenByBlocker := make([]int, len(issues))
+	seenByBlocker := make([]int, len(sortedIssueIDs))
 	epoch := 0
-	for _, issue := range issues {
+	for _, issueID := range sortedIssueIDs {
+		issue := issueMap[issueID]
 		epoch++
-		u, ok := idToNode[issue.ID]
+		u, ok := idToNode[issueID]
 		if !ok {
 			continue
 		}
@@ -1358,6 +1368,7 @@ func NewAnalyzer(issues []model.Issue) *Analyzer {
 			continue
 		}
 
+		blockingTargets := make([]int64, 0, len(issue.Dependencies))
 		for _, dep := range issue.Dependencies {
 			if dep == nil {
 				continue
@@ -1372,6 +1383,10 @@ func NewAnalyzer(issues []model.Issue) *Analyzer {
 			if !exists {
 				continue
 			}
+			blockingTargets = append(blockingTargets, v)
+		}
+		sort.Slice(blockingTargets, func(i, j int) bool { return blockingTargets[i] < blockingTargets[j] })
+		for _, v := range blockingTargets {
 			// Count all blocking dependencies (including duplicates) for impact scoring.
 			if v < 0 || int(v) >= len(blockerCounts) {
 				continue
@@ -1715,39 +1730,60 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	betweennessIsApprox := false
 	actualBetweennessSample := 0
 	cyclesTruncated := false
+	// RunToCompletion calls the four normally deadline-raced algorithms directly.
+	// Their inputs and iteration order are deterministic; removing the scheduler
+	// versus timer race makes the resulting values and status deterministic too.
 
 	// PageRank
 	if ctx.Err() == nil && config.ComputePageRank {
 		prStart := time.Now()
-		prDone := make(chan map[int64]float64, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Panic -> implicitly causes timeout in parent
+		if config.RunToCompletion {
+			if pr, ok := runMetricSafely(func() map[int64]float64 {
+				return computePageRank(a.g, 0.85, 1e-6)
+			}); ok {
+				for id, score := range pr {
+					localPageRank[a.nodeToID[id]] = score
 				}
-			}()
-			prDone <- computePageRank(a.g, 0.85, 1e-6)
-		}()
-
-		timer := time.NewTimer(config.PageRankTimeout)
-		select {
-		case pr := <-prDone:
-			timer.Stop()
-			for id, score := range pr {
-				localPageRank[a.nodeToID[id]] = score
-			}
-		case <-timer.C:
-			profile.PageRankTO = true
-			if len(a.issueMap) > 0 {
+			} else {
+				// Match the legacy goroutine path: a recovered worker panic
+				// eventually presents as a timed-out metric with uniform fallback.
+				profile.PageRankTO = true
 				uniform := 1.0 / float64(len(a.issueMap))
 				for id := range a.issueMap {
 					localPageRank[id] = uniform
 				}
 			}
-		case <-ctx.Done():
-			timer.Stop()
-			// Abort immediately
-			return
+		} else {
+			prDone := make(chan map[int64]float64, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic -> implicitly causes timeout in parent
+					}
+				}()
+				prDone <- computePageRank(a.g, 0.85, 1e-6)
+			}()
+
+			timer := time.NewTimer(config.PageRankTimeout)
+			select {
+			case pr := <-prDone:
+				timer.Stop()
+				for id, score := range pr {
+					localPageRank[a.nodeToID[id]] = score
+				}
+			case <-timer.C:
+				profile.PageRankTO = true
+				if len(a.issueMap) > 0 {
+					uniform := 1.0 / float64(len(a.issueMap))
+					for id := range a.issueMap {
+						localPageRank[id] = uniform
+					}
+				}
+			case <-ctx.Done():
+				timer.Stop()
+				// Abort immediately
+				return
+			}
 		}
 		profile.PageRank = time.Since(prStart)
 	}
@@ -1755,31 +1791,23 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	// Betweenness
 	if ctx.Err() == nil && config.ComputeBetweenness {
 		bwStart := time.Now()
-		bwDone := make(chan BetweennessResult, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Panic -> implicitly causes timeout in parent
-				}
-			}()
+		computeBetweenness := func() BetweennessResult {
 			// Choose algorithm based on mode
 			if config.BetweennessMode == BetweennessApproximate && config.BetweennessSampleSize > 0 {
-				bwDone <- ApproxBetweenness(a.g, config.BetweennessSampleSize, 1)
-			} else {
-				// Exact mode or mode not set (default to exact)
-				exact := network.Betweenness(a.g)
-				bwDone <- BetweennessResult{
-					Scores:     exact,
-					Mode:       BetweennessExact,
-					TotalNodes: a.g.Nodes().Len(),
+				if config.RunToCompletion {
+					return approxBetweennessDeterministic(a.g, config.BetweennessSampleSize, 1)
 				}
+				return ApproxBetweenness(a.g, config.BetweennessSampleSize, 1)
 			}
-		}()
+			// Exact mode or mode not set (default to exact)
+			return BetweennessResult{
+				Scores:     network.Betweenness(a.g),
+				Mode:       BetweennessExact,
+				TotalNodes: a.g.Nodes().Len(),
+			}
+		}
 
-		timer := time.NewTimer(config.BetweennessTimeout)
-		select {
-		case result := <-bwDone:
-			timer.Stop()
+		consumeBetweenness := func(result BetweennessResult) {
 			for id, score := range result.Scores {
 				localBetweenness[a.nodeToID[id]] = score
 			}
@@ -1788,11 +1816,36 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 				betweennessIsApprox = true
 				actualBetweennessSample = result.SampleSize
 			}
-		case <-timer.C:
-			profile.BetweennessTO = true
-		case <-ctx.Done():
-			timer.Stop()
-			return
+		}
+
+		if config.RunToCompletion {
+			if result, ok := runMetricSafely(computeBetweenness); ok {
+				consumeBetweenness(result)
+			} else {
+				profile.BetweennessTO = true
+			}
+		} else {
+			bwDone := make(chan BetweennessResult, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic -> implicitly causes timeout in parent
+					}
+				}()
+				bwDone <- computeBetweenness()
+			}()
+
+			timer := time.NewTimer(config.BetweennessTimeout)
+			select {
+			case result := <-bwDone:
+				timer.Stop()
+				consumeBetweenness(result)
+			case <-timer.C:
+				profile.BetweennessTO = true
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
 		}
 		profile.Betweenness = time.Since(bwStart)
 	}
@@ -1809,29 +1862,42 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	// HITS
 	if ctx.Err() == nil && config.ComputeHITS && a.g.Edges().Len() > 0 {
 		hitsStart := time.Now()
-		hitsDone := make(chan map[int64]network.HubAuthority, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Panic -> implicitly causes timeout in parent
-				}
-			}()
-			hitsDone <- network.HITS(a.g, 1e-3)
-		}()
-
-		timer := time.NewTimer(config.HITSTimeout)
-		select {
-		case hubAuth := <-hitsDone:
-			timer.Stop()
+		consumeHITS := func(hubAuth map[int64]network.HubAuthority) {
 			for id, ha := range hubAuth {
 				localHubs[a.nodeToID[id]] = ha.Hub
 				localAuthorities[a.nodeToID[id]] = ha.Authority
 			}
-		case <-timer.C:
-			profile.HITSTO = true
-		case <-ctx.Done():
-			timer.Stop()
-			return
+		}
+		if config.RunToCompletion {
+			if hubAuth, ok := runMetricSafely(func() map[int64]network.HubAuthority {
+				return network.HITS(a.g, 1e-3)
+			}); ok {
+				consumeHITS(hubAuth)
+			} else {
+				profile.HITSTO = true
+			}
+		} else {
+			hitsDone := make(chan map[int64]network.HubAuthority, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic -> implicitly causes timeout in parent
+					}
+				}()
+				hitsDone <- network.HITS(a.g, 1e-3)
+			}()
+
+			timer := time.NewTimer(config.HITSTimeout)
+			select {
+			case hubAuth := <-hitsDone:
+				timer.Stop()
+				consumeHITS(hubAuth)
+			case <-timer.C:
+				profile.HITSTO = true
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
 		}
 		profile.HITS = time.Since(hitsStart)
 	}
@@ -1850,7 +1916,7 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	if ctx.Err() == nil && config.ComputeCycles {
 		cyclesStart := time.Now()
 		maxCycles := config.MaxCyclesToStore
-		if maxCycles == 0 {
+		if maxCycles <= 0 {
 			maxCycles = 100
 		}
 
@@ -1871,20 +1937,7 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 		}
 
 		if hasCycles {
-			cyclesDone := make(chan [][]graph.Node, 1)
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						// Panic -> implicitly causes timeout in parent
-					}
-				}()
-				cyclesDone <- findCyclesSafe(a.g, maxCycles)
-			}()
-
-			timer := time.NewTimer(config.CyclesTimeout)
-			select {
-			case cycles := <-cyclesDone:
-				timer.Stop()
+			consumeCycles := func(cycles [][]graph.Node) {
 				profile.CycleCount = len(cycles)
 				cyclesToProcess := cycles
 				if len(cyclesToProcess) > maxCycles {
@@ -1899,11 +1952,37 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 					}
 					localCycles = append(localCycles, cycleIDs)
 				}
-			case <-timer.C:
-				profile.CyclesTO = true
-			case <-ctx.Done():
-				timer.Stop()
-				return
+			}
+			if config.RunToCompletion {
+				if cycles, ok := runMetricSafely(func() [][]graph.Node {
+					return findCyclesSafe(a.g, maxCycles)
+				}); ok {
+					consumeCycles(cycles)
+				} else {
+					profile.CyclesTO = true
+				}
+			} else {
+				cyclesDone := make(chan [][]graph.Node, 1)
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							// Panic -> implicitly causes timeout in parent
+						}
+					}()
+					cyclesDone <- findCyclesSafe(a.g, maxCycles)
+				}()
+
+				timer := time.NewTimer(config.CyclesTimeout)
+				select {
+				case cycles := <-cyclesDone:
+					timer.Stop()
+					consumeCycles(cycles)
+				case <-timer.C:
+					profile.CyclesTO = true
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
 			}
 		}
 		profile.Cycles = time.Since(cyclesStart)
@@ -1990,6 +2069,19 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 		Slack:        statusEntry{State: stateFromTiming(slackComputed, false), Elapsed: profile.Slack},
 	}
 	stats.mu.Unlock()
+}
+
+// runMetricSafely preserves the panic containment of the ordinary goroutine
+// path when reproducible mode executes a metric synchronously. A panic is
+// reported as an incomplete computation so the caller can apply the same
+// deterministic fallback/status it would use after the worker failed to send.
+func runMetricSafely[T any](compute func() T) (result T, completed bool) {
+	defer func() {
+		if recover() != nil {
+			completed = false
+		}
+	}()
+	return compute(), true
 }
 
 // computePhase1 calculates fast metrics synchronously.

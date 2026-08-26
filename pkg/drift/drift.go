@@ -4,6 +4,7 @@ package drift
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +79,7 @@ type Calculator struct {
 	baseline *baseline.Baseline
 	current  *baseline.Baseline
 	issues   []model.Issue
+	now      time.Time
 }
 
 // NewCalculator creates a drift calculator with the given baseline and current snapshot.
@@ -91,7 +93,19 @@ func NewCalculator(bl *baseline.Baseline, current *baseline.Baseline, cfg *Confi
 		config:   cfg,
 		baseline: bl,
 		current:  current,
+		now:      time.Now().UTC(),
 	}
+}
+
+// SetNow overrides the reference instant used for timestamps and time-based
+// drift checks. The zero Go time is valid because SOURCE_DATE_EPOCH can map to
+// year 1 exactly.
+func (c *Calculator) SetNow(now time.Time) {
+	c.now = now.UTC()
+}
+
+func (c *Calculator) nowUTC() time.Time {
+	return c.now.UTC()
 }
 
 // SetIssues attaches the current issue list for issue-level alerts (e.g., staleness).
@@ -186,7 +200,7 @@ func (c *Calculator) checkCycles(result *Result) {
 			CurrentVal:  float64(len(c.current.Cycles)),
 			Delta:       float64(len(newCycles)),
 			Details:     details,
-			DetectedAt:  time.Now().UTC(),
+			DetectedAt:  c.nowUTC(),
 		})
 	}
 }
@@ -216,7 +230,7 @@ func (c *Calculator) checkDensity(result *Result) {
 			BaselineVal: blDensity,
 			CurrentVal:  curDensity,
 			Delta:       delta,
-			DetectedAt:  time.Now().UTC(),
+			DetectedAt:  c.nowUTC(),
 		})
 	} else if pctChange >= c.config.DensityInfoPct {
 		result.Alerts = append(result.Alerts, Alert{
@@ -226,7 +240,7 @@ func (c *Calculator) checkDensity(result *Result) {
 			BaselineVal: blDensity,
 			CurrentVal:  curDensity,
 			Delta:       delta,
-			DetectedAt:  time.Now().UTC(),
+			DetectedAt:  c.nowUTC(),
 		})
 	}
 }
@@ -254,7 +268,7 @@ func (c *Calculator) checkGraphSize(result *Result) {
 				BaselineVal: float64(blNodes),
 				CurrentVal:  float64(curNodes),
 				Delta:       float64(nodeDelta),
-				DetectedAt:  time.Now().UTC(),
+				DetectedAt:  c.nowUTC(),
 			})
 		}
 	}
@@ -273,7 +287,7 @@ func (c *Calculator) checkGraphSize(result *Result) {
 				BaselineVal: float64(blEdges),
 				CurrentVal:  float64(curEdges),
 				Delta:       float64(edgeDelta),
-				DetectedAt:  time.Now().UTC(),
+				DetectedAt:  c.nowUTC(),
 			})
 		}
 	}
@@ -298,7 +312,7 @@ func (c *Calculator) checkBlocked(result *Result) {
 			BaselineVal: float64(blBlocked),
 			CurrentVal:  float64(curBlocked),
 			Delta:       float64(delta),
-			DetectedAt:  time.Now().UTC(),
+			DetectedAt:  c.nowUTC(),
 		})
 	}
 }
@@ -324,7 +338,7 @@ func (c *Calculator) checkActionable(result *Result) {
 				BaselineVal: float64(blAction),
 				CurrentVal:  float64(curAction),
 				Delta:       float64(delta),
-				DetectedAt:  time.Now().UTC(),
+				DetectedAt:  c.nowUTC(),
 			})
 		} else if pct >= c.config.ActionableIncreaseInfoPct || pct <= -c.config.ActionableIncreaseInfoPct {
 			result.Alerts = append(result.Alerts, Alert{
@@ -334,7 +348,7 @@ func (c *Calculator) checkActionable(result *Result) {
 				BaselineVal: float64(blAction),
 				CurrentVal:  float64(curAction),
 				Delta:       float64(delta),
-				DetectedAt:  time.Now().UTC(),
+				DetectedAt:  c.nowUTC(),
 			})
 		}
 	}
@@ -380,6 +394,7 @@ func (c *Calculator) checkPageRankChanges(result *Result) {
 			changes = append(changes, fmt.Sprintf("%s entered top", id))
 		}
 	}
+	sort.Strings(changes)
 
 	if len(changes) > 0 {
 		result.Alerts = append(result.Alerts, Alert{
@@ -387,7 +402,7 @@ func (c *Calculator) checkPageRankChanges(result *Result) {
 			Severity:   SeverityWarning,
 			Message:    fmt.Sprintf("%d PageRank changes detected", len(changes)),
 			Details:    changes,
-			DetectedAt: time.Now().UTC(),
+			DetectedAt: c.nowUTC(),
 		})
 	}
 }
@@ -404,7 +419,7 @@ func (c *Calculator) checkStaleness(result *Result) {
 	if len(c.issues) == 0 {
 		return
 	}
-	now := time.Now().UTC()
+	now := c.nowUTC()
 	for _, issue := range c.issues {
 		if issue.Status == model.StatusClosed || issue.Status == model.StatusTombstone {
 			continue
@@ -479,6 +494,7 @@ func (c *Calculator) checkBlockingCascade(result *Result) {
 	}
 
 	analyzer := analysis.NewAnalyzer(c.issues)
+	analyzer.SetNow(c.nowUTC())
 	actionable := analyzer.GetActionableIssues()
 	if len(actionable) == 0 {
 		return
@@ -511,7 +527,7 @@ func (c *Calculator) checkBlockingCascade(result *Result) {
 			Severity:              severity,
 			Message:               fmt.Sprintf("Completing %s unblocks %d downstream item(s)", iss.ID, count),
 			IssueID:               iss.ID,
-			DetectedAt:            time.Now().UTC(),
+			DetectedAt:            c.nowUTC(),
 			Details:               unblocks,
 			UnblocksCount:         count,
 			DownstreamPrioritySum: prioritySum,

@@ -600,7 +600,7 @@ func (w *BackgroundWorker) Start() error {
 		// Launch while holding w.mu: after unlock, Stop may win the mutex, but it
 		// will always observe a loop responsible for closing this exact latch.
 		w.lastHeartbeat = time.Now()
-		go w.runProcessLoop(done)
+		w.startProcessLoopLocked(done)
 		w.mu.Unlock()
 
 		if idleGCEnabled && idleGCGCPercent > 0 {
@@ -701,21 +701,16 @@ func (w *BackgroundWorker) Stop() {
 	w.closeTraceFile()
 }
 
-func (w *BackgroundWorker) runProcessLoop(done chan struct{}) {
+// startProcessLoopLocked publishes the loop's cancellation handle before the
+// goroutine can be observed by Stop or recovery. The caller must hold w.mu.
+func (w *BackgroundWorker) startProcessLoopLocked(done chan struct{}) {
 	loopCtx, loopCancel := context.WithCancel(w.ctx)
-	defer loopCancel()
-
-	w.mu.Lock()
-	if w.state == WorkerStopped {
-		w.mu.Unlock()
-		close(done)
-		return
-	}
 	w.loopCtx = loopCtx
 	w.loopCancel = loopCancel
-	w.mu.Unlock()
-
-	w.processLoop(loopCtx, done)
+	go func() {
+		defer loopCancel()
+		w.processLoop(loopCtx, done)
+	}()
 }
 
 func (w *BackgroundWorker) startWatchdog() {
@@ -878,7 +873,7 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 		nextDone := make(chan struct{})
 		w.done = nextDone
 		w.lastHeartbeat = time.Now()
-		go w.runProcessLoop(nextDone)
+		w.startProcessLoopLocked(nextDone)
 	}
 	w.mu.Unlock()
 	if watcherErr != nil {
@@ -1473,7 +1468,7 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool) snapshotBuildResu
 		countStart = time.Now()
 	}
 	countErr := w.safeCompute("count_lines", func() error {
-		n, err := countJSONLLines(w.beadsPath)
+		n, err := countIssuesForReload(w.beadsPath)
 		if err != nil {
 			return err
 		}

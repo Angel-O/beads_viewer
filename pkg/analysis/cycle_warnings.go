@@ -38,11 +38,11 @@ func DetectCycleWarnings(issues []model.Issue, config CycleWarningConfig) []Sugg
 	analyzer := NewAnalyzer(issues)
 
 	// Only compute cycles for performance
-	analysisConfig := AnalysisConfig{
+	analysisConfig := ApplyEnvOverrides(AnalysisConfig{
 		ComputeCycles:    true,
 		CyclesTimeout:    500 * time.Millisecond,
 		MaxCyclesToStore: 100,
-	}
+	})
 	stats := analyzer.AnalyzeWithConfig(analysisConfig)
 
 	// Get cycles from the stats

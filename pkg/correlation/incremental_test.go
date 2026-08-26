@@ -230,7 +230,7 @@ func TestMergeReports_CommitMerge(t *testing.T) {
 	}
 
 	newCommits := []CorrelatedCommit{
-		{SHA: "commit2", Author: "Bob", Timestamp: time.Now()},
+		{SHA: "commit2", BeadID: "bv-1", Author: "Bob", Timestamp: time.Now()},
 	}
 
 	merged := mergeReports(existing, beads, newEvents, newCommits)
@@ -271,7 +271,7 @@ func TestMergeReports_CommitDedup(t *testing.T) {
 	}
 
 	newCommits := []CorrelatedCommit{
-		{SHA: "commit1"}, // Duplicate
+		{SHA: "commit1", BeadID: "bv-1"}, // Duplicate
 	}
 
 	merged := mergeReports(existing, beads, newEvents, newCommits)
@@ -279,6 +279,38 @@ func TestMergeReports_CommitDedup(t *testing.T) {
 	h := merged.Histories["bv-1"]
 	if len(h.Commits) != 1 {
 		t.Errorf("Commits should be deduped: got %d, want 1", len(h.Commits))
+	}
+}
+
+func TestMergeReportsUsesCommitOwnedBeadLinkage(t *testing.T) {
+	existing := &HistoryReport{Histories: map[string]BeadHistory{
+		"bv-a": {BeadID: "bv-a"},
+		"bv-b": {BeadID: "bv-b"},
+	}}
+	beads := []BeadInfo{{ID: "bv-a"}, {ID: "bv-b"}}
+	events := []BeadEvent{
+		{BeadID: "bv-a", CommitSHA: "same"},
+		{BeadID: "bv-b", CommitSHA: "same"},
+	}
+	commits := []CorrelatedCommit{
+		{SHA: "same", BeadID: "bv-a", Reason: "reason-a"},
+		{SHA: "same", BeadID: "bv-b", Reason: "reason-b"},
+	}
+
+	merged := mergeReports(existing, beads, events, commits)
+	if got := merged.Histories["bv-a"].Commits; len(got) != 1 || got[0].Reason != "reason-a" {
+		t.Fatalf("bv-a commits = %+v, want only its owned correlation", got)
+	}
+	if got := merged.Histories["bv-b"].Commits; len(got) != 1 || got[0].Reason != "reason-b" {
+		t.Fatalf("bv-b commits = %+v, want only its owned correlation", got)
+	}
+}
+
+func TestMergeReportsThroughAdvancesCodeOnlyCursor(t *testing.T) {
+	existing := &HistoryReport{LatestCommitSHA: "old", Histories: map[string]BeadHistory{}}
+	merged := mergeReportsThrough(existing, nil, nil, nil, "new-code-only-head")
+	if merged.LatestCommitSHA != "new-code-only-head" {
+		t.Fatalf("LatestCommitSHA=%q, want processed code-only cursor", merged.LatestCommitSHA)
 	}
 }
 

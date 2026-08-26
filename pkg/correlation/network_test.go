@@ -1,6 +1,7 @@
 package correlation
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -171,6 +172,36 @@ func TestBuildNetwork(t *testing.T) {
 			t.Error("Expected edges in stats")
 		}
 	})
+}
+
+func TestBuildNetworkAtPinsNestedTimesAndBytes(t *testing.T) {
+	report := createTestHistoryReport()
+	pinned := time.Date(2026, 8, 26, 12, 34, 56, 0, time.UTC)
+	builder := NewNetworkBuilder(report)
+
+	var want []byte
+	for run := 0; run < 25; run++ {
+		network := builder.BuildAt(pinned)
+		result := network.ToResult("", 1)
+		if !network.GeneratedAt.Equal(pinned) || !result.GeneratedAt.Equal(pinned) || !result.Network.GeneratedAt.Equal(pinned) {
+			t.Fatalf("generated_at was not propagated: network=%v result=%v nested=%v", network.GeneratedAt, result.GeneratedAt, result.Network.GeneratedAt)
+		}
+		got, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		if run == 0 {
+			want = got
+		} else if string(got) != string(want) {
+			t.Fatalf("run %d produced non-deterministic network bytes\nwant: %s\n got: %s", run, want, got)
+		}
+	}
+
+	zeroNetwork := builder.BuildAt(time.Time{})
+	zeroResult := zeroNetwork.ToResult("", 1)
+	if !zeroNetwork.GeneratedAt.IsZero() || !zeroResult.GeneratedAt.IsZero() || !zeroResult.Network.GeneratedAt.IsZero() {
+		t.Fatalf("zero instant was replaced: network=%v result=%v nested=%v", zeroNetwork.GeneratedAt, zeroResult.GeneratedAt, zeroResult.Network.GeneratedAt)
+	}
 }
 
 func TestBuildNetworkSharedFiles(t *testing.T) {

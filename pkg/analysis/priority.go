@@ -76,7 +76,7 @@ const UrgencyDecayDays = 7.0
 
 // ComputeImpactScores calculates impact scores for all open issues
 func (a *Analyzer) ComputeImpactScores() []ImpactScore {
-	return a.ComputeImpactScoresAt(time.Now())
+	return a.ComputeImpactScoresAt(a.Now())
 }
 
 // ComputeImpactScoresAt calculates impact scores as of a specific time
@@ -506,7 +506,7 @@ func (a *Analyzer) GenerateRecommendations() []PriorityRecommendation {
 
 // GenerateRecommendationsWithThresholds generates recommendations with custom thresholds
 func (a *Analyzer) GenerateRecommendationsWithThresholds(thresholds RecommendationThresholds) []PriorityRecommendation {
-	scores := a.ComputeImpactScores()
+	scores := a.ComputeImpactScoresAt(a.Now())
 	if len(scores) == 0 {
 		return nil
 	}

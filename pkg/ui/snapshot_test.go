@@ -847,9 +847,18 @@ func TestSnapshotSwapRefiltersAndRestoresVisibleSelection(t *testing.T) {
 		t.Fatalf("visible items before async refilter=%d, want 0", got)
 	}
 
-	filterMsg, ok := cmd().(snapshotListFilterMsg)
+	raw := cmd()
+	filterMsg, ok := raw.(snapshotListFilterMsg)
+	if batch, isBatch := raw.(tea.BatchMsg); isBatch {
+		// The snapshot also schedules history refresh work. Search backward so
+		// this unit test executes only the list-refilter command, which is added
+		// after the unrelated background commands.
+		for i := len(batch) - 1; i >= 0 && !ok; i-- {
+			filterMsg, ok = batch[i]().(snapshotListFilterMsg)
+		}
+	}
 	if !ok {
-		t.Fatalf("snapshot command returned unexpected message type")
+		t.Fatalf("snapshot command returned %T without a list-filter message", raw)
 	}
 	updated, _ = m.Update(filterMsg)
 	m = updated.(*Model)
@@ -1119,6 +1128,9 @@ func TestPhase2UpdateRejectsSameHashFromDifferentStats(t *testing.T) {
 	// GraphStats may legitimately be shared by the analysis cache when only
 	// non-graph content differs. Give the stale snapshot a distinct stats
 	// identity so this test exercises the model's identity fence directly.
+	// Even SkipPhase2 uses the asynchronous completion path to publish disabled
+	// metric state, so wait before copying the struct under the race detector.
+	stale.Analysis.WaitForPhase2()
 	staleStats := *stale.Analysis
 	stale.Analysis = &staleStats
 	if current.Analysis == stale.Analysis {

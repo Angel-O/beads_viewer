@@ -18,6 +18,42 @@ func TestFindRelatedWork_NotFound(t *testing.T) {
 	}
 }
 
+func TestFindRelatedWorkAtPinsOpenWindowsAndMetadata(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	report := &HistoryReport{Histories: map[string]BeadHistory{
+		"target": {
+			BeadID:     "target",
+			Title:      "Target",
+			Status:     "open",
+			Milestones: BeadMilestones{Created: &BeadEvent{Timestamp: pinned.Add(-48 * time.Hour)}},
+		},
+		"peer": {
+			BeadID:     "peer",
+			Title:      "Peer",
+			Status:     "open",
+			Milestones: BeadMilestones{Created: &BeadEvent{Timestamp: pinned.Add(-24 * time.Hour)}},
+		},
+	}}
+	opts := DefaultRelatedWorkOptions()
+	opts.MinRelevance = 0
+
+	result := report.FindRelatedWorkAt("target", opts, pinned)
+	if result == nil {
+		t.Fatal("expected related-work result")
+	}
+	if !result.GeneratedAt.Equal(pinned) {
+		t.Fatalf("generated_at = %v, want %v", result.GeneratedAt, pinned)
+	}
+	if len(result.Concurrent) != 1 || result.Concurrent[0].BeadID != "peer" {
+		t.Fatalf("concurrent results = %#v, want peer", result.Concurrent)
+	}
+
+	zeroResult := report.FindRelatedWorkAt("target", opts, time.Time{})
+	if !zeroResult.GeneratedAt.IsZero() {
+		t.Fatalf("zero generated_at was replaced with %v", zeroResult.GeneratedAt)
+	}
+}
+
 func TestFindRelatedWork_FileOverlap(t *testing.T) {
 	now := time.Now()
 	report := &HistoryReport{

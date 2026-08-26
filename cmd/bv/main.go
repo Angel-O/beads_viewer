@@ -1160,7 +1160,24 @@ func sourceDateEpochActive() bool {
 func stabilizeRobotTriageForPinnedClock(triage *analysis.TriageResult) {
 	if sourceDateEpochActive() {
 		triage.Meta.ComputeTimeMs = 0
+		triage.Status = stabilizeRobotMetricStatusForPinnedClock(triage.Status)
 	}
+}
+
+func stabilizeRobotMetricStatusForPinnedClock(status analysis.MetricStatus) analysis.MetricStatus {
+	if !sourceDateEpochActive() {
+		return status
+	}
+	status.PageRank.Elapsed = 0
+	status.Betweenness.Elapsed = 0
+	status.Eigenvector.Elapsed = 0
+	status.HITS.Elapsed = 0
+	status.Critical.Elapsed = 0
+	status.Cycles.Elapsed = 0
+	status.KCore.Elapsed = 0
+	status.Articulation.Elapsed = 0
+	status.Slack.Elapsed = 0
+	return status
 }
 
 func enrichCommandParseError(err error, args []string) error {
@@ -1784,7 +1801,8 @@ func main() {
 			{flags: []string{"robot-insights"}},
 			{flags: []string{"robot-plan"}},
 			{flags: []string{"robot-priority"}},
-			{flags: []string{"robot-triage", "robot-next", "robot-triage-by-track", "robot-triage-by-label"}},
+			{flags: []string{"robot-next"}},
+			{flags: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label"}},
 			{flags: []string{"robot-diff"}},
 			{flags: []string{"robot-recipes"}},
 			{flags: []string{"robot-label-health"}},
@@ -2618,7 +2636,7 @@ func main() {
 				dataHashMatchesIssues = false
 				// Compute label health for context
 				cfg := analysis.DefaultLabelHealthConfig()
-				allHealth := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
+				allHealth := analysis.ComputeAllLabelHealth(issues, cfg, robotNow(), nil)
 				for i := range allHealth.Labels {
 					if allHealth.Labels[i].Label == *labelScope {
 						labelScopeContext = &allHealth.Labels[i]
@@ -2764,7 +2782,7 @@ func main() {
 
 			if *robotSearch {
 				out := robotSearchOutput{
-					GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+					GeneratedAt:  robotNow().Format(time.RFC3339),
 					DataHash:     dataHash,
 					OutputFormat: robotOutputFormat,
 					Version:      version.Version,
@@ -3204,7 +3222,7 @@ func main() {
 		// Handle --robot-label-health
 		if *robotLabelHealth {
 			cfg := analysis.DefaultLabelHealthConfig()
-			results := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
+			results := analysis.ComputeAllLabelHealth(issues, cfg, robotNow(), nil)
 
 			output := struct {
 				GeneratedAt    string                       `json:"generated_at"`
@@ -3213,7 +3231,7 @@ func main() {
 				Results        analysis.LabelAnalysisResult `json:"results"`
 				UsageHints     []string                     `json:"usage_hints"`
 			}{
-				GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt:    robotNow().Format(time.RFC3339),
 				DataHash:       dataHash,
 				AnalysisConfig: cfg,
 				Results:        results,
@@ -3244,7 +3262,7 @@ func main() {
 				Config      analysis.LabelHealthConfig `json:"analysis_config"`
 				UsageHints  []string                   `json:"usage_hints"`
 			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt: robotNow().Format(time.RFC3339),
 				DataHash:    dataHash,
 				LoadStats:   robotLoadStatsFromLastLoad(),
 				Flow:        flow,
@@ -3266,7 +3284,7 @@ func main() {
 		// Handle --robot-label-attention (bv-121)
 		if *robotLabelAttention {
 			cfg := analysis.DefaultLabelHealthConfig()
-			result := analysis.ComputeLabelAttentionScores(issues, cfg, time.Now().UTC())
+			result := analysis.ComputeLabelAttentionScores(issues, cfg, robotNow())
 
 			// Apply limit
 			limit := *attentionLimit
@@ -3300,7 +3318,7 @@ func main() {
 			}
 
 			output := AttentionOutput{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt: robotNow().Format(time.RFC3339),
 				DataHash:    dataHash,
 				LoadStats:   robotLoadStatsFromLastLoad(),
 				Limit:       limit,
@@ -3525,8 +3543,12 @@ func main() {
 				os.Exit(1)
 			}
 
-			// Run analysis on current issues
+			// Run analysis on current issues. Use one captured instant throughout
+			// the snapshot and drift calculation so SOURCE_DATE_EPOCH controls
+			// nested scoring values as well as the output envelope.
+			driftNow := robotNow()
 			analyzer := analysis.NewAnalyzer(issues)
+			analyzer.SetNow(driftNow)
 			if *forceFullAnalysis {
 				cfg := analysis.FullAnalysisConfig()
 				analyzer.SetConfig(&cfg)
@@ -3578,6 +3600,7 @@ func main() {
 			}
 
 			calc := drift.NewCalculator(bl, current, driftConfig)
+			calc.SetNow(driftNow)
 			result := calc.Calculate()
 
 			if *robotDriftCheck {
@@ -3597,7 +3620,7 @@ func main() {
 						CommitSHA string `json:"commit_sha,omitempty"`
 					} `json:"baseline"`
 				}{
-					GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+					GeneratedAt: driftNow.Format(time.RFC3339),
 					HasDrift:    result.HasDrift,
 					ExitCode:    result.ExitCode(),
 					Alerts:      result.Alerts,
@@ -3634,7 +3657,7 @@ func main() {
 			insights := stats.GenerateInsights(50)
 
 			// Add project-level velocity snapshot (using dedicated helper for efficiency)
-			if v := analysis.ComputeProjectVelocity(issues, time.Now(), 8); v != nil {
+			if v := analysis.ComputeProjectVelocity(issues, robotNow(), 8); v != nil {
 				snap := &analysis.VelocitySnapshot{
 					Closed7:   v.ClosedLast7Days,
 					Closed30:  v.ClosedLast30Days,
@@ -3760,13 +3783,13 @@ func main() {
 				AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"` // bv-181: Canonical advanced features
 				UsageHints       []string                   `json:"usage_hints"`                 // bv-84: Agent-friendly hints
 			}{
-				GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt:      robotNow().Format(time.RFC3339),
 				DataHash:         dataHash,
 				LoadStats:        robotLoadStatsFromLastLoad(),
 				AsOf:             *asOf,
 				AsOfCommit:       asOfResolved,
 				AnalysisConfig:   stats.Config,
-				Status:           stats.Status(),
+				Status:           stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 				LabelScope:       *labelScope,
 				LabelContext:     labelScopeContext,
 				Insights:         insights,
@@ -3896,7 +3919,7 @@ func main() {
 				Feedback    *analysis.FeedbackJSON `json:"feedback,omitempty"` // bv-90: Feedback loop state
 				UsageHints  []string               `json:"usage_hints"`        // bv-84: Agent-friendly hints
 			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt: robotNow().Format(time.RFC3339),
 				DataHash:    dataHash,
 				LoadStats:   robotLoadStatsFromLastLoad(),
 				AsOf:        *asOf,
@@ -4025,7 +4048,7 @@ func main() {
 				Version     string   `json:"version"`
 				Files       []string `json:"files"`
 			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt: robotNow().Format(time.RFC3339),
 				DataHash:    dataHash,
 				IssueCount:  len(issues),
 				Version:     version.Version,
@@ -4070,7 +4093,7 @@ func main() {
 				sb.WriteString("set -euo pipefail\n")
 			}
 
-			sb.WriteString(fmt.Sprintf("# Generated by bv --emit-script at %s\n", time.Now().UTC().Format(time.RFC3339)))
+			sb.WriteString(fmt.Sprintf("# Generated by bv --emit-script at %s\n", robotNow().Format(time.RFC3339)))
 			sb.WriteString(fmt.Sprintf("# Data hash: %s\n", dataHash))
 			sb.WriteString(fmt.Sprintf("# Top %d recommendations from %d actionable items\n", len(recs), len(triage.Recommendations)))
 			sb.WriteString("#\n")
@@ -4153,7 +4176,7 @@ func main() {
 
 			// Parse --history-since if provided
 			if *historySince != "" {
-				since, err := recipe.ParseRelativeTime(*historySince, time.Now())
+				since, err := recipe.ParseRelativeTime(*historySince, robotNow())
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error parsing --history-since: %v\n", err)
 					os.Exit(1)
@@ -4187,12 +4210,7 @@ func main() {
 				report.Histories = scorer.FilterHistoriesByConfidence(report.Histories, *minConfidence)
 
 				// Rebuild commit index after filtering
-				report.CommitIndex = make(correlation.CommitIndex)
-				for beadID, history := range report.Histories {
-					for _, commit := range history.Commits {
-						report.CommitIndex[commit.SHA] = append(report.CommitIndex[commit.SHA], beadID)
-					}
-				}
+				report.CommitIndex = correlation.BuildCommitIndex(report.Histories)
 
 				// Update stats
 				report.Stats.BeadsWithCommits = 0
@@ -4517,7 +4535,7 @@ func main() {
 			}
 
 			// Detect orphans using OrphanDetector
-			detector := correlation.NewOrphanDetector(report, cwd)
+			detector := correlation.NewOrphanDetectorAt(report, cwd, robotNow())
 			extractOpts := correlation.ExtractOptions{
 				Limit: *historyLimit,
 			}
@@ -4686,7 +4704,7 @@ func main() {
 				files[i] = strings.TrimSpace(files[i])
 			}
 
-			impactResult := fileLookup.ImpactAnalysis(files)
+			impactResult := fileLookup.ImpactAnalysisAt(files, robotNow())
 
 			type ImpactOutput struct {
 				RobotEnvelope
@@ -4863,7 +4881,7 @@ func main() {
 				DependencyGraph:   depGraph,
 			}
 
-			result := report.FindRelatedWork(*robotRelatedWork, opts)
+			result := report.FindRelatedWorkAt(*robotRelatedWork, opts, robotNow())
 			if result == nil {
 				fmt.Fprintf(os.Stderr, "Bead not found in history: %s\n", *robotRelatedWork)
 				os.Exit(1)
@@ -4994,7 +5012,7 @@ func main() {
 
 			// Build impact network
 			builder := correlation.NewNetworkBuilderWithIssues(report, issues)
-			network := builder.Build()
+			network := builder.BuildAt(robotNow())
 
 			// Determine if specific bead or full network
 			beadID := ""
@@ -5100,7 +5118,7 @@ func main() {
 				BlockerTitles:  blockerTitles,
 			}
 
-			result := report.BuildCausalityChain(*robotCausality, opts)
+			result := report.BuildCausalityChainAt(*robotCausality, opts, robotNow())
 			if result == nil {
 				fmt.Fprintf(os.Stderr, "Bead not found: %s\n", *robotCausality)
 				os.Exit(1)
@@ -5235,7 +5253,7 @@ func main() {
 				}
 			}
 
-			now := time.Now()
+			now := robotNow()
 			agents := *capacityAgents
 			if agents <= 0 {
 				agents = 1
@@ -5961,7 +5979,7 @@ func applyRecipeFilters(issues []model.Issue, r *recipe.Recipe) []model.Issue {
 	}
 
 	f := r.Filters
-	now := time.Now()
+	now := robotNow()
 
 	// Build a set of open blocker IDs for actionable filtering
 	openBlockers := make(map[string]bool)
@@ -6220,7 +6238,7 @@ func runProfileStartup(issues []model.Issue, loadDuration time.Duration, jsonOut
 			TotalWithLoad   string                   `json:"total_with_load"`
 			Recommendations []string                 `json:"recommendations"`
 		}{
-			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+			GeneratedAt:     robotNow().Format(time.RFC3339),
 			DataPath:        dataPath,
 			LoadJSONL:       loadDuration.String(),
 			Profile:         profile,
@@ -8247,7 +8265,7 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 	})
 
 	return &TimeTravelHistory{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: robotNow().Format(time.RFC3339),
 		Commits:     commits,
 	}, nil
 }
@@ -8297,7 +8315,7 @@ type RobotMeta struct {
 // in every robot surface instead of the records simply not existing (#190).
 func NewRobotEnvelope(dataHash string) RobotEnvelope {
 	env := RobotEnvelope{
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt:  robotNow().Format(time.RFC3339),
 		DataHash:     dataHash,
 		OutputFormat: robotOutputFormat,
 		Version:      version.Version,
@@ -8753,7 +8771,7 @@ func generateRobotCapabilities() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"generated_at":          time.Now().UTC().Format(time.RFC3339),
+		"generated_at":          robotNow().Format(time.RFC3339),
 		"tool":                  "bv",
 		"version":               version.Version,
 		"contract_version":      robotContractVersion,
@@ -8999,7 +9017,7 @@ func agentIntentAliasDocs() []map[string]string {
 // generateRobotDocs returns machine-readable documentation for AI agents (bd-2v50).
 // Topics: guide, commands, examples, env, exit-codes, all.
 func generateRobotDocs(topic string) map[string]interface{} {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := robotNow().Format(time.RFC3339)
 	result := map[string]interface{}{
 		"generated_at":  now,
 		"output_format": robotOutputFormat,
@@ -9088,7 +9106,7 @@ type RobotSchemas struct {
 
 // generateRobotSchemas creates JSON Schema definitions for robot command outputs
 func generateRobotSchemas() RobotSchemas {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := robotNow().Format(time.RFC3339)
 
 	// Common envelope schema (present in all robot outputs)
 	envelope := map[string]interface{}{
@@ -9143,7 +9161,7 @@ func generateRobotSchemas() RobotSchemas {
 								"issue_count":  map[string]interface{}{"type": "integer"},
 								"history_status": map[string]interface{}{
 									"type":        "string",
-									"enum":        []string{"ok", "error", "timeout"},
+									"enum":        []string{"ok", "error", "timeout", "skipped"},
 									"description": "Outcome of the git-history correlation prologue; omitted when history was not attempted (#166)",
 								},
 							},

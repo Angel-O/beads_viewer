@@ -191,8 +191,113 @@ func NewHistoryModel(report *correlation.HistoryReport, theme Theme) HistoryMode
 
 // SetReport updates the history data
 func (h *HistoryModel) SetReport(report *correlation.HistoryReport) {
+	selectedBeadID := h.SelectedBeadID()
+	selectedBeadCommitSHA := ""
+	if selected := h.SelectedCommit(); selected != nil {
+		selectedBeadCommitSHA = selected.SHA
+	}
+	selectedGitSHA := ""
+	selectedRelatedBead := ""
+	if selected := h.SelectedGitCommit(); selected != nil {
+		selectedGitSHA = selected.SHA
+		selectedRelatedBead = h.SelectedRelatedBeadID()
+	}
+	expandedPaths := make(map[string]bool)
+	var rememberExpansion func([]*FileTreeNode)
+	rememberExpansion = func(nodes []*FileTreeNode) {
+		for _, node := range nodes {
+			if node.Expanded {
+				expandedPaths[node.Path] = true
+			}
+			rememberExpansion(node.Children)
+		}
+	}
+	rememberExpansion(h.fileTree)
+	hadFileTree := h.fileTree != nil
+	selectedFilePath := ""
+	if h.selectedFileIdx >= 0 && h.selectedFileIdx < len(h.flatFileList) {
+		selectedFilePath = h.flatFileList[h.selectedFileIdx].Path
+	}
+
 	h.report = report
-	h.rebuildFilteredList()
+	// Keep the user's query, search focus, filters, and view mode while applying
+	// the refreshed report. Rebuilding only the base bead list would silently
+	// drop an active query and leave git-mode results tied to the old report.
+	h.applySearchFilter()
+	if h.viewMode == historyModeBead {
+		h.selectedBead = 0
+		h.selectedCommit = 0
+		for i, beadID := range h.beadIDs {
+			if beadID != selectedBeadID {
+				continue
+			}
+			h.selectedBead = i
+			for j := range h.histories[i].Commits {
+				if h.histories[i].Commits[j].SHA == selectedBeadCommitSHA {
+					h.selectedCommit = j
+					break
+				}
+			}
+			break
+		}
+		h.ensureBeadVisible()
+		if h.selectedBead < len(h.histories) {
+			h.ensureMiddleScrollVisible(h.selectedCommit, len(h.histories[h.selectedBead].Commits))
+		} else {
+			h.middleScrollOffset = 0
+		}
+	} else {
+		commits := h.GetFilteredCommitList()
+		h.selectedGitCommit = 0
+		h.selectedRelatedBead = 0
+		for i := range commits {
+			if commits[i].SHA != selectedGitSHA {
+				continue
+			}
+			h.selectedGitCommit = i
+			for j, beadID := range commits[i].BeadIDs {
+				if beadID == selectedRelatedBead {
+					h.selectedRelatedBead = j
+					break
+				}
+			}
+			break
+		}
+		h.ensureGitCommitVisible()
+		if h.selectedGitCommit < len(commits) {
+			h.ensureMiddleScrollVisible(h.selectedRelatedBead, len(commits[h.selectedGitCommit].BeadIDs))
+		} else {
+			h.middleScrollOffset = 0
+		}
+	}
+	// Timeline rows are derived from the whole report and do not have a stable
+	// row identity across refreshes. Reset rather than retaining an invalid old
+	// offset that can display impossible percentages or require many keypresses.
+	h.timelineScrollOffset = 0
+	if h.showFileTree || hadFileTree {
+		h.buildFileTree()
+		var restoreExpansion func([]*FileTreeNode)
+		restoreExpansion = func(nodes []*FileTreeNode) {
+			for _, node := range nodes {
+				node.Expanded = expandedPaths[node.Path]
+				restoreExpansion(node.Children)
+			}
+		}
+		restoreExpansion(h.fileTree)
+		h.rebuildFlatFileList()
+		h.selectedFileIdx = 0
+		for i, node := range h.flatFileList {
+			if node.Path == selectedFilePath {
+				h.selectedFileIdx = i
+				break
+			}
+		}
+		if len(h.flatFileList) == 0 {
+			h.fileTreeScroll = 0
+		} else if h.fileTreeScroll >= len(h.flatFileList) {
+			h.fileTreeScroll = len(h.flatFileList) - 1
+		}
+	}
 }
 
 // SetSessionsForBead stores correlated sessions for a bead in the cache (bv-pr1l)
@@ -881,12 +986,18 @@ func (h *HistoryModel) applySearchFilter() {
 // filterCommitList filters commits in git mode based on search query
 func (h *HistoryModel) filterCommitList(query string) {
 	if len(h.commitList) == 0 {
-		h.filteredCommits = nil
+		// A non-empty query with no source commits is still an active filter.
+		// Keep a non-nil empty slice so GetFilteredCommitList does not interpret
+		// this as the sentinel for "no filter" if commits are installed later.
+		h.filteredCommits = []CommitListEntry{}
 		return
 	}
 
 	query = strings.ToLower(query)
-	var filtered []CommitListEntry
+	// nil means "no active query" throughout HistoryModel. Start with a
+	// non-nil empty result so a valid query that matches nothing cannot fall
+	// through to the complete commit list.
+	filtered := make([]CommitListEntry, 0)
 
 	for _, commit := range h.commitList {
 		if h.commitMatchesQuery(commit, query) {

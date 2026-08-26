@@ -101,6 +101,14 @@ func DefaultCausalityOptions() CausalityOptions {
 
 // BuildCausalityChain constructs the causal chain for a bead
 func (hr *HistoryReport) BuildCausalityChain(beadID string, opts CausalityOptions) *CausalityResult {
+	return hr.BuildCausalityChainAt(beadID, opts, time.Now())
+}
+
+// BuildCausalityChainAt constructs the causal chain using a caller-owned
+// reference instant for open chains and serialized result metadata. The zero
+// instant is valid; open-chain duration is clamped rather than consulting the
+// wall clock when the reference instant predates the first event.
+func (hr *HistoryReport) BuildCausalityChainAt(beadID string, opts CausalityOptions, now time.Time) *CausalityResult {
 	history, exists := hr.Histories[beadID]
 	if !exists {
 		return nil
@@ -172,7 +180,18 @@ func (hr *HistoryReport) BuildCausalityChain(beadID string, opts CausalityOption
 
 	// Sort by timestamp
 	sort.Slice(rawEvents, func(i, j int) bool {
-		return rawEvents[i].timestamp.Before(rawEvents[j].timestamp)
+		if !rawEvents[i].timestamp.Equal(rawEvents[j].timestamp) {
+			return rawEvents[i].timestamp.Before(rawEvents[j].timestamp)
+		}
+		leftOrder := causalEventOrder(rawEvents[i].eventType)
+		rightOrder := causalEventOrder(rawEvents[j].eventType)
+		if leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		if rawEvents[i].commitSHA != rawEvents[j].commitSHA {
+			return rawEvents[i].commitSHA < rawEvents[j].commitSHA
+		}
+		return rawEvents[i].description < rawEvents[j].description
 	})
 
 	// Convert to CausalEvents with IDs and link causality
@@ -212,9 +231,13 @@ func (hr *HistoryReport) BuildCausalityChain(beadID string, opts CausalityOption
 	if len(chain.Events) > 0 {
 		chain.StartTime = chain.Events[0].Timestamp
 		chain.EndTime = chain.Events[len(chain.Events)-1].Timestamp
-		chain.IsComplete = history.Status == "closed"
+		status := normalizeStatus(history.Status)
+		chain.IsComplete = status == "closed" || status == "tombstone"
 		if !chain.IsComplete {
-			chain.EndTime = time.Now()
+			chain.EndTime = now
+			if chain.EndTime.Before(chain.StartTime) {
+				chain.EndTime = chain.StartTime
+			}
 		}
 		chain.TotalTime = chain.EndTime.Sub(chain.StartTime)
 	}
@@ -228,10 +251,31 @@ func (hr *HistoryReport) BuildCausalityChain(beadID string, opts CausalityOption
 	insights := buildInsights(chain, history)
 
 	return &CausalityResult{
-		GeneratedAt: time.Now(),
+		GeneratedAt: now,
 		DataHash:    hr.DataHash,
 		Chain:       chain,
 		Insights:    insights,
+	}
+}
+
+func causalEventOrder(eventType CausalEventType) int {
+	switch eventType {
+	case CausalCreated:
+		return 0
+	case CausalClaimed:
+		return 1
+	case CausalBlocked:
+		return 2
+	case CausalCommit:
+		return 3
+	case CausalUnblocked:
+		return 4
+	case CausalClosed:
+		return 5
+	case CausalReopened:
+		return 6
+	default:
+		return 7
 	}
 }
 

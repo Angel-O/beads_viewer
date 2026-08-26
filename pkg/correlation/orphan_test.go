@@ -55,6 +55,86 @@ func TestNewOrphanDetector(t *testing.T) {
 	}
 }
 
+func TestNewOrphanDetectorAtPinsOpenWindow(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	claimed := pinned.Add(-48 * time.Hour)
+	report := &HistoryReport{Histories: map[string]BeadHistory{
+		"bv-open": {
+			Title:      "Open work",
+			Status:     "in_progress",
+			Milestones: BeadMilestones{Claimed: &BeadEvent{Timestamp: claimed}},
+		},
+	}}
+
+	detector := NewOrphanDetectorAt(report, "", pinned)
+	window, ok := detector.beadWindows["bv-open"]
+	if !ok {
+		t.Fatal("open bead window missing")
+	}
+	if !window.End.Equal(pinned) {
+		t.Fatalf("open window end = %v, want %v", window.End, pinned)
+	}
+	if !detector.now.Equal(pinned) {
+		t.Fatalf("detector now = %v, want %v", detector.now, pinned)
+	}
+
+	zeroDetector := NewOrphanDetectorAt(report, "", time.Time{})
+	zeroWindow := zeroDetector.beadWindows["bv-open"]
+	if !zeroDetector.now.IsZero() || !zeroWindow.End.IsZero() {
+		t.Fatalf("zero instant was replaced: detector=%v window_end=%v", zeroDetector.now, zeroWindow.End)
+	}
+}
+
+func TestNewOrphanDetectorAtUsesReopenedWindowAndDataHash(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	claimed := pinned.Add(-72 * time.Hour)
+	closed := pinned.Add(-48 * time.Hour)
+	reopened := pinned.Add(-24 * time.Hour)
+	report := &HistoryReport{DataHash: "source-hash", Histories: map[string]BeadHistory{
+		"bv-reopened": {
+			Status: " open ",
+			Milestones: BeadMilestones{
+				Claimed:  &BeadEvent{Timestamp: claimed},
+				Closed:   &BeadEvent{Timestamp: closed},
+				Reopened: &BeadEvent{Timestamp: reopened},
+			},
+		},
+	}}
+	detector := NewOrphanDetectorAt(report, "", pinned)
+	window := detector.beadWindows["bv-reopened"]
+	if !window.Start.Equal(reopened) || !window.End.Equal(pinned) {
+		t.Fatalf("reopened window=%v..%v, want %v..%v", window.Start, window.End, reopened, pinned)
+	}
+	if detector.dataHash != "source-hash" {
+		t.Fatalf("detector data hash=%q, want source-hash", detector.dataHash)
+	}
+}
+
+func TestScoreMentionedBeadRejectsAmbiguousCaseCollision(t *testing.T) {
+	report := &HistoryReport{Histories: map[string]BeadHistory{
+		"bv-AbCd": {BeadID: "bv-AbCd", Title: "First", Status: "open"},
+		"BV-aBcD": {BeadID: "BV-aBcD", Title: "Second", Status: "open"},
+	}}
+	detector := NewOrphanDetectorAt(report, "", time.Time{})
+
+	for _, mention := range []string{"bv-abcd", "bv-AbCd"} {
+		scores := make(map[string]*probableBeadBuilder)
+		detector.scoreMentionedBead(scores, mention)
+		if len(scores) != 0 {
+			t.Fatalf("ambiguous mention %q credited %+v", mention, scores)
+		}
+	}
+
+	unique := NewOrphanDetectorAt(&HistoryReport{Histories: map[string]BeadHistory{
+		"bv-AbCd": {BeadID: "bv-AbCd", Title: "Only", Status: "open"},
+	}}, "", time.Time{})
+	scores := make(map[string]*probableBeadBuilder)
+	unique.scoreMentionedBead(scores, "BV-ABCD")
+	if got := scores["bv-AbCd"]; got == nil || got.score != 35 {
+		t.Fatalf("unique case-insensitive match was not credited: %+v", scores)
+	}
+}
+
 func TestNewSmartOrphanDetector(t *testing.T) {
 	report := &HistoryReport{
 		Histories:   make(map[string]BeadHistory),

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"reflect"
 	"sort"
@@ -519,7 +520,7 @@ func registerPhaseOneRobotHandlers(registry *RobotRegistry, cfg phaseOneRobotHan
 				Version      string                 `json:"version,omitempty"`
 				Recipes      []recipe.RecipeSummary `json:"recipes"`
 			}{
-				GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt:  robotNow().Format(time.RFC3339),
 				OutputFormat: robotOutputFormat,
 				Version:      version.Version,
 				Recipes:      summaries,
@@ -635,6 +636,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Description: "Output dependency-respecting execution plan",
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			analyzer.SetNow(robotNow())
 			if ctx.DataHashMatchesIssues {
 				analyzer.SeedDataHash(ctx.DataHash)
 			}
@@ -672,12 +674,12 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				Plan           analysis.ExecutionPlan  `json:"plan"`
 				UsageHints     []string                `json:"usage_hints"`
 			}{
-				GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt:    robotNow().Format(time.RFC3339),
 				DataHash:       ctx.DataHash,
 				AsOf:           ctx.AsOf,
 				AsOfCommit:     ctx.AsOfCommit,
 				AnalysisConfig: config,
-				Status:         stats.Status(),
+				Status:         stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 				LabelScope:     ctx.LabelScope,
 				LabelContext:   ctx.LabelContext,
 				Plan:           plan,
@@ -704,6 +706,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Description: "Output enhanced priority recommendations",
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			analyzer.SetNow(robotNow())
 			if ctx.DataHashMatchesIssues {
 				analyzer.SeedDataHash(ctx.DataHash)
 			}
@@ -790,12 +793,12 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				} `json:"summary"`
 				Usage []string `json:"usage_hints"`
 			}{
-				GeneratedAt:       time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt:       robotNow().Format(time.RFC3339),
 				DataHash:          ctx.DataHash,
 				AsOf:              ctx.AsOf,
 				AsOfCommit:        ctx.AsOfCommit,
 				AnalysisConfig:    config,
-				Status:            stats.Status(),
+				Status:            stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 				LabelScope:        ctx.LabelScope,
 				LabelContext:      ctx.LabelContext,
 				Recommendations:   recommendations,
@@ -834,6 +837,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Description: "Output dependency graph in JSON, DOT, or Mermaid",
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			analyzer.SetNow(robotNow())
 			stats := analyzer.Analyze()
 
 			format := export.GraphFormatJSON
@@ -890,6 +894,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			analyzer.SetNow(robotNow())
 			stats := analyzer.Analyze()
 
 			openCount, closedCount, blockedCount := 0, 0, 0
@@ -938,6 +943,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			calc := drift.NewCalculator(bl, cur, driftConfig)
+			calc.SetNow(robotNow())
 			calc.SetIssues(ctx.Issues)
 			driftResult := calc.Calculate()
 
@@ -1036,7 +1042,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				return newReportedRobotHandlerExit(1)
 			}
 
-			output := analysis.GenerateRobotSuggestOutput(ctx.Issues, config, ctx.DataHash)
+			output := analysis.GenerateRobotSuggestOutputAt(ctx.Issues, config, ctx.DataHash, robotNow())
 			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 				return fmt.Errorf("encoding suggestions: %w", err)
 			}
@@ -1120,7 +1126,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				}
 			}
 
-			now := time.Now()
+			now := robotNow()
 			burndown := calculateBurndownAt(targetSprint, ctx.Issues, now)
 			burndown.RobotEnvelope = NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues))
 			issueMap := make(map[string]model.Issue, len(ctx.Issues))
@@ -1150,6 +1156,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
+			analyzer.SetNow(robotNow())
 			graphStats := analyzer.Analyze()
 
 			targetIssues := make([]model.Issue, 0, len(ctx.Issues))
@@ -1192,7 +1199,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				targetIssues = append(targetIssues, issue)
 			}
 
-			now := time.Now()
+			now := robotNow()
 			agents := 1
 			if cfg.ForecastAgents != nil && *cfg.ForecastAgents > 0 {
 				agents = *cfg.ForecastAgents
@@ -1316,6 +1323,11 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			if ctx.Diff == nil {
 				return fmt.Errorf("diff output not initialized")
 			}
+			// The live-side snapshot is normally created with a wall-clock
+			// timestamp before dispatch. Copy it before normalizing the nested
+			// robot timestamp so reproducible output does not mutate caller state.
+			diff := *ctx.Diff
+			diff.ToTimestamp = robotNow()
 			output := struct {
 				GeneratedAt      string                 `json:"generated_at"`
 				ResolvedRevision string                 `json:"resolved_revision"`
@@ -1325,13 +1337,13 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				ToDataHash       string                 `json:"to_data_hash"`
 				Diff             *analysis.SnapshotDiff `json:"diff"`
 			}{
-				GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt:      robotNow().Format(time.RFC3339),
 				ResolvedRevision: ctx.DiffResolvedRevision,
 				AsOf:             ctx.AsOf,
 				AsOfCommit:       ctx.AsOfCommit,
 				FromDataHash:     analysis.ComputeDataHash(ctx.DiffHistoricalIssues),
 				ToDataHash:       ctx.DataHash,
-				Diff:             ctx.Diff,
+				Diff:             &diff,
 			}
 
 			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
@@ -1361,7 +1373,7 @@ func registerPhaseThreeRobotHandlers(registry *RobotRegistry, cfg phaseThreeRobo
 		return handleRobotInsights(ctx, cfg)
 	})
 	register("robot-next", cfg.RobotNextFlag, "Output only the single top recommendation", func(ctx RobotContext) error {
-		return handleRobotTriage(ctx, cfg)
+		return handleRobotNext(ctx, cfg)
 	})
 	register("robot-triage", cfg.RobotTriageFlag, "Output unified triage as JSON", func(ctx RobotContext) error {
 		return handleRobotTriage(ctx, cfg)
@@ -1429,7 +1441,7 @@ func registerPhaseThreeRobotHandlers(registry *RobotRegistry, cfg phaseThreeRobo
 
 func handleRobotLabelHealth(ctx RobotContext) error {
 	cfg := analysis.DefaultLabelHealthConfig()
-	results := analysis.ComputeAllLabelHealth(ctx.Issues, cfg, time.Now().UTC(), nil)
+	results := analysis.ComputeAllLabelHealth(ctx.Issues, cfg, robotNow(), nil)
 
 	output := struct {
 		GeneratedAt    string                       `json:"generated_at"`
@@ -1438,7 +1450,7 @@ func handleRobotLabelHealth(ctx RobotContext) error {
 		Results        analysis.LabelAnalysisResult `json:"results"`
 		UsageHints     []string                     `json:"usage_hints"`
 	}{
-		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt:    robotNow().Format(time.RFC3339),
 		DataHash:       ctx.DataHash,
 		AnalysisConfig: cfg,
 		Results:        results,
@@ -1466,7 +1478,7 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 		Config      analysis.LabelHealthConfig `json:"analysis_config"`
 		UsageHints  []string                   `json:"usage_hints"`
 	}{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: robotNow().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
 		LoadStats:   robotLoadStatsFromLastLoad(),
 		Flow:        flow,
@@ -1484,7 +1496,7 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 }
 
 func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	result := analysis.ComputeLabelAttentionScores(ctx.Issues, analysis.DefaultLabelHealthConfig(), time.Now().UTC())
+	result := analysis.ComputeLabelAttentionScores(ctx.Issues, analysis.DefaultLabelHealthConfig(), robotNow())
 
 	limit := 5
 	if cfg.AttentionLimit != nil {
@@ -1520,7 +1532,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 	}
 
 	output := attentionOutput{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: robotNow().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
 		LoadStats:   robotLoadStatsFromLastLoad(),
 		Limit:       limit,
@@ -1556,6 +1568,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 
 func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	analyzer := analysis.NewAnalyzer(ctx.Issues)
+	analyzer.SetNow(robotNow())
 	if ctx.DataHashMatchesIssues {
 		analyzer.SeedDataHash(ctx.DataHash)
 	}
@@ -1566,7 +1579,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	stats := analyzer.Analyze()
 	insights := stats.GenerateInsights(50)
 
-	if velocity := analysis.ComputeProjectVelocity(ctx.Issues, time.Now(), 8); velocity != nil {
+	if velocity := analysis.ComputeProjectVelocity(ctx.Issues, robotNow(), 8); velocity != nil {
 		snapshot := &analysis.VelocitySnapshot{
 			Closed7:   velocity.ClosedLast7Days,
 			Closed30:  velocity.ClosedLast30Days,
@@ -1684,13 +1697,13 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"`
 		UsageHints       []string                   `json:"usage_hints"`
 	}{
-		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt:      robotNow().Format(time.RFC3339),
 		DataHash:         ctx.DataHash,
 		LoadStats:        robotLoadStatsFromLastLoad(),
 		AsOf:             ctx.AsOf,
 		AsOfCommit:       ctx.AsOfCommit,
 		AnalysisConfig:   stats.Config,
-		Status:           stats.Status(),
+		Status:           stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 		LabelScope:       ctx.LabelScope,
 		LabelContext:     ctx.LabelContext,
 		Insights:         insights,
@@ -1723,17 +1736,42 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 // surface, which agents rely on as their single bounded entry point.
 const defaultRobotHistoryTimeout = 10 * time.Second
 
+// robotHistoryShutdownGrace bounds how long a timed-out triage invocation
+// waits for a directly spawned, context-bound git child to be killed and
+// reaped. Returning as soon as the deadline fires can let the short-lived bv
+// process exit before exec.CommandContext's cancellation path finishes.
+const robotHistoryShutdownGrace = 2 * time.Second
+
+const maxRobotHistoryTimeoutMillis = int64(math.MaxInt64) / int64(time.Millisecond)
+
+// robotHistoryTimeoutFromMilliseconds converts a user-supplied millisecond
+// count without allowing duration overflow to turn a very large positive
+// timeout into a negative (and therefore unbounded) duration. Values above
+// time.Duration's range saturate at its largest representable duration.
+func robotHistoryTimeoutFromMilliseconds(ms int64) (time.Duration, bool) {
+	if ms < 0 {
+		return 0, false
+	}
+	if ms > maxRobotHistoryTimeoutMillis {
+		return time.Duration(math.MaxInt64), true
+	}
+	return time.Duration(ms) * time.Millisecond, true
+}
+
 // resolveRobotHistoryTimeout returns the history-prologue budget. Precedence:
 // the --robot-history-timeout-ms flag (when explicitly set, i.e. >= 0), then
 // the BV_ROBOT_HISTORY_TIMEOUT_MS environment variable, then the 10s default.
 // A value of 0 disables the bound entirely (legacy run-to-completion).
 func resolveRobotHistoryTimeout(cfg phaseThreeRobotHandlerConfig) time.Duration {
 	if cfg.HistoryTimeoutMs != nil && *cfg.HistoryTimeoutMs >= 0 {
-		return time.Duration(*cfg.HistoryTimeoutMs) * time.Millisecond
+		timeout, _ := robotHistoryTimeoutFromMilliseconds(int64(*cfg.HistoryTimeoutMs))
+		return timeout
 	}
 	if env := strings.TrimSpace(os.Getenv("BV_ROBOT_HISTORY_TIMEOUT_MS")); env != "" {
-		if ms, err := strconv.Atoi(env); err == nil && ms >= 0 {
-			return time.Duration(ms) * time.Millisecond
+		if ms, err := strconv.ParseInt(env, 10, 64); err == nil {
+			if timeout, ok := robotHistoryTimeoutFromMilliseconds(ms); ok {
+				return timeout
+			}
 		}
 	}
 	return defaultRobotHistoryTimeout
@@ -1771,13 +1809,17 @@ func resolveNotReadyLabels(cfg phaseThreeRobotHandlerConfig) []string {
 // The report generation runs in a goroutine while this function selects on
 // the result vs. the budget. On timeout it returns (nil, "timeout") and
 // triage proceeds without history — the already-supported degradation path.
-// Crucially the goroutine does NOT leak unbounded work: the correlator is
-// bound to the timed-out context, so every git subprocess it spawned (or
-// would spawn next) is killed via exec.CommandContext, and the goroutine
-// unblocks and exits promptly.
+// Cancellation is propagated to directly spawned git subprocesses through
+// exec.CommandContext. The shutdown grace below gives a currently running
+// direct child and its cmd.Wait path a bounded chance to finish reaping before
+// this function returns. It does not claim that every internal cache or lock
+// wait is context-aware; this caller stops waiting for those paths when the
+// shutdown grace expires, and their goroutine may finish later.
 //
 // The returned status is "ok", "error", or "timeout"; it is surfaced as
-// meta.history_status in the triage output.
+// meta.history_status in the triage output. The caller uses "skipped" instead
+// when SOURCE_DATE_EPOCH requests reproducible output, because racing a git
+// history walk against a wall-clock deadline cannot produce stable bytes.
 func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correlation.BeadInfo, limit int, timeout time.Duration) (*correlation.HistoryReport, string) {
 	histCtx := context.Background()
 	cancel := context.CancelFunc(func() {})
@@ -1805,15 +1847,22 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 		}
 		return res.report, "ok"
 	case <-histCtx.Done():
+		// Cancel explicitly before the deferred cancellation, then give the
+		// report goroutine a bounded opportunity to finish cmd.Wait and reap a
+		// directly spawned, context-killed git child before this short-lived bv
+		// process exits.
+		cancel()
+		shutdownTimer := time.NewTimer(robotHistoryShutdownGrace)
+		defer shutdownTimer.Stop()
+		select {
+		case <-resCh:
+		case <-shutdownTimer.C:
+		}
 		return nil, "timeout"
 	}
 }
 
 func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	if cfg.RobotNextFlag != nil && *cfg.RobotNextFlag {
-		return handleRobotNext(ctx, cfg)
-	}
-
 	var historyReport *correlation.HistoryReport
 	historyStatus := "" // empty = history generation not attempted (#166)
 	hasOpenIssues := false
@@ -1824,7 +1873,9 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		}
 	}
 
-	if hasOpenIssues {
+	if hasOpenIssues && sourceDateEpochActive() {
+		historyStatus = "skipped"
+	} else if hasOpenIssues {
 		workDir, err := ctx.WorkDirOrDefault()
 		if err == nil {
 			if beadsDir, err := loader.GetBeadsDir(""); err == nil {
@@ -2231,7 +2282,7 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		opts.Limit = *cfg.HistoryLimit
 	}
 	if cfg.HistorySince != nil && strings.TrimSpace(*cfg.HistorySince) != "" {
-		since, err := recipe.ParseRelativeTime(*cfg.HistorySince, time.Now())
+		since, err := recipe.ParseRelativeTime(*cfg.HistorySince, robotNow())
 		if err != nil {
 			return fmt.Errorf("parsing --history-since: %w", err)
 		}
@@ -2253,16 +2304,12 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
+	report.GeneratedAt = robotNow()
 
 	if cfg.MinConfidence != nil && *cfg.MinConfidence > 0 {
 		scorer := correlation.NewScorer()
 		report.Histories = scorer.FilterHistoriesByConfidence(report.Histories, *cfg.MinConfidence)
-		report.CommitIndex = make(correlation.CommitIndex)
-		for beadID, history := range report.Histories {
-			for _, commit := range history.Commits {
-				report.CommitIndex[commit.SHA] = append(report.CommitIndex[commit.SHA], beadID)
-			}
-		}
+		report.CommitIndex = correlation.BuildCommitIndex(report.Histories)
 		report.Stats.BeadsWithCommits = 0
 		for _, history := range report.Histories {
 			if len(history.Commits) > 0 {
@@ -2404,7 +2451,7 @@ func handleRobotCorrelationStats(ctx RobotContext) error {
 		Version      string `json:"version,omitempty"`
 	}{
 		FeedbackStats: feedbackStore.GetStats(),
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt:   robotNow().Format(time.RFC3339),
 		OutputFormat:  robotOutputFormat,
 		Version:       version.Version,
 	}
@@ -2626,7 +2673,7 @@ func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		return err
 	}
 
-	orphanReport, err := correlation.NewOrphanDetector(report, workDir).DetectOrphans(correlation.ExtractOptions{Limit: limit})
+	orphanReport, err := correlation.NewOrphanDetectorAt(report, workDir, robotNow()).DetectOrphans(correlation.ExtractOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("detecting orphans: %w", err)
 	}
@@ -2758,7 +2805,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	for i := range files {
 		files[i] = strings.TrimSpace(files[i])
 	}
-	impactResult := fileLookup.ImpactAnalysis(files)
+	impactResult := fileLookup.ImpactAnalysisAt(files, robotNow())
 
 	output := struct {
 		RobotEnvelope
@@ -2843,7 +2890,7 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		options.IncludeClosed = *cfg.RelatedIncludeClosed
 	}
 
-	result := report.FindRelatedWork(*cfg.RobotRelatedFlag, options)
+	result := report.FindRelatedWorkAt(*cfg.RobotRelatedFlag, options, robotNow())
 	if result == nil {
 		fmt.Fprintf(ctx.StderrOrDefault(), "Bead not found in history: %s\n", *cfg.RobotRelatedFlag)
 		return newReportedRobotHandlerExit(1)
@@ -2876,7 +2923,9 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 		return fmt.Errorf("loading beads: %w", err)
 	}
 
-	result := analysis.NewAnalyzer(issues).GetBlockerChain(*cfg.RobotBlockerChainFlag)
+	analyzer := analysis.NewAnalyzer(issues)
+	analyzer.SetNow(robotNow())
+	result := analyzer.GetBlockerChain(*cfg.RobotBlockerChainFlag)
 	if result == nil {
 		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found: %s\n", *cfg.RobotBlockerChainFlag)
 		return newReportedRobotHandlerExit(1)
@@ -2931,7 +2980,7 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 		return fmt.Errorf("generating history report: %w", err)
 	}
 
-	network := correlation.NewNetworkBuilderWithIssues(report, issues).Build()
+	network := correlation.NewNetworkBuilderWithIssues(report, issues).BuildAt(robotNow())
 	beadID := ""
 	if *cfg.RobotImpactNetworkFlag != "all" {
 		beadID = *cfg.RobotImpactNetworkFlag
@@ -3008,10 +3057,10 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	for _, issue := range issues {
 		blockerTitles[issue.ID] = issue.Title
 	}
-	result := report.BuildCausalityChain(*cfg.RobotCausalityFlag, correlation.CausalityOptions{
+	result := report.BuildCausalityChainAt(*cfg.RobotCausalityFlag, correlation.CausalityOptions{
 		IncludeCommits: true,
 		BlockerTitles:  blockerTitles,
-	})
+	}, robotNow())
 	if result == nil {
 		fmt.Fprintf(ctx.StderrOrDefault(), "Bead not found: %s\n", *cfg.RobotCausalityFlag)
 		return newReportedRobotHandlerExit(1)
@@ -3068,7 +3117,9 @@ func handleRobotSprintShow(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) e
 }
 
 func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	graphStats := analysis.NewAnalyzer(ctx.Issues).Analyze()
+	analyzer := analysis.NewAnalyzer(ctx.Issues)
+	analyzer.SetNow(robotNow())
+	graphStats := analyzer.Analyze()
 
 	targetIssues := ctx.Issues
 	if cfg.CapacityLabel != nil && strings.TrimSpace(*cfg.CapacityLabel) != "" {
@@ -3093,7 +3144,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 	}
 
-	now := time.Now()
+	now := robotNow()
 	agents := 1
 	if cfg.CapacityAgents != nil && *cfg.CapacityAgents > 0 {
 		agents = *cfg.CapacityAgents

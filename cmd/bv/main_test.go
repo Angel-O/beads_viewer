@@ -458,6 +458,7 @@ func TestMissingFlagArgumentErrorSuggestsValueShape(t *testing.T) {
 func TestRobotNowHonorsSourceDateEpoch(t *testing.T) {
 	t.Setenv("SOURCE_DATE_EPOCH", "1234567890")
 	requireString(t, robotNow().Format(time.RFC3339), "2009-02-13T23:31:30Z")
+	requireString(t, NewRobotEnvelope("hash").GeneratedAt, "2009-02-13T23:31:30Z")
 }
 
 func TestAgentIntentArgRewrite(t *testing.T) {

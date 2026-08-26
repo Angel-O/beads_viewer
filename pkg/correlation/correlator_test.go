@@ -87,6 +87,17 @@ func TestBuildCommitIndex(t *testing.T) {
 	if len(index["abc123"]) != 2 {
 		t.Errorf("expected abc123 to reference 2 beads, got %d", len(index["abc123"]))
 	}
+	if got := index["abc123"]; got[0] != "bv-1" || got[1] != "bv-2" {
+		t.Fatalf("expected sorted abc123 bead IDs, got %v", got)
+	}
+
+	// Duplicate history entries must not produce duplicate reverse links.
+	history := histories["bv-2"]
+	history.Commits = append(history.Commits, CorrelatedCommit{SHA: "abc123"})
+	histories["bv-2"] = history
+	if got := BuildCommitIndex(histories)["abc123"]; len(got) != 2 {
+		t.Fatalf("expected duplicate commit link to collapse, got %v", got)
+	}
 }
 
 func TestCalculateStats_Empty(t *testing.T) {
