@@ -169,6 +169,141 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
+	initial := `{"id":"A","title":"Alpha","status":"open","issue_type":"task"}` + "\n"
+	updated := `{"id":"A","title":"Alpha","status":"open","issue_type":"task","comments":[{"id":"c1","issue_id":"A","author":"tester","text":"looks good","created_at":"2026-08-26T00:00:00Z"}]}` + "\n"
+	root, issuesPath := makeReloadBDWorkspace(t, initial)
+	payloadPath := installReloadFakeBD(t, root, initial)
+	configPath := filepath.Join(root, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, nil)
+
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.beadsPath = issuesPath
+	m.hubConfigPath = configPath
+	m.hubRepositoryMode = true
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:     issuesPath,
+		HubConfigPath: configPath,
+		DebounceDelay: time.Millisecond,
+		IdleGC:        &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.backgroundWorker = worker
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	m.SetCommentRunner(func(string, string) error {
+		if err := os.WriteFile(payloadPath, []byte(updated), 0o644); err != nil {
+			return err
+		}
+		return nil
+	})
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updatedModel.(Model)
+	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updatedModel.(Model)
+	updatedModel, submitCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updatedModel.(Model)
+	if submitCmd == nil {
+		t.Fatal("comment submission returned no command")
+	}
+	updatedModel, refreshCmd := m.Update(submitCmd())
+	m = updatedModel.(Model)
+	if refreshCmd == nil {
+		t.Fatal("successful Hub comment returned no refresh command")
+	}
+
+	var ready SnapshotReadyMsg
+	if message := refreshCmd(); message != nil {
+		ready, _ = message.(SnapshotReadyMsg)
+	}
+	if ready.Snapshot == nil {
+		ready = waitForSnapshotReady(t, worker.Messages())
+	}
+	updatedModel, _ = m.Update(ready)
+	m = updatedModel.(Model)
+	issue := m.issueMap["A"]
+	if issue == nil || len(issue.Comments) != 1 || issue.Comments[0].Text != "looks good" {
+		t.Fatalf("refreshed comments = %#v, want one persisted comment", issue)
+	}
+	if !strings.Contains(m.list.View(), "💬1") {
+		t.Fatalf("list did not show refreshed comment count: %q", m.list.View())
+	}
+}
+
+func TestCommentsAddTargetsDirectInsightsDetail(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "B", Title: "Bravo", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	m.insightsDetailID = "B"
+	m.focused = focusDetail
+	m.list.Select(0)
+	var gotID string
+	m.SetCommentRunner(func(issueID, _ string) error {
+		gotID = issueID
+		return nil
+	})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if !m.showCommentPrompt || m.commentIssueID != "B" {
+		t.Fatalf("comment prompt targeted %q, want B", m.commentIssueID)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("comment submission returned no command")
+	}
+	updated, _ = m.Update(cmd())
+	if gotID != "B" {
+		t.Fatalf("comment runner received issue %q, want B", gotID)
+	}
+}
+
+func TestCommentsShortcutIgnoredOutsideListAndDetail(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	m.focused = focusGraph
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	if m.showCommentPrompt || cmd != nil {
+		t.Fatalf("comment shortcut acted outside list/detail: shown=%v cmd=%v", m.showCommentPrompt, cmd != nil)
+	}
+}
+
+func TestCommentsAddFailureDoesNotRequestRefresh(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.width, m.height = 120, 40
+	m.hubRepositoryMode = true
+	m.SetCommentRunner(func(string, string) error { return errors.New("permission denied") })
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("comment submission returned no command")
+	}
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if refreshCmd != nil || m.commentSubmitting || !m.statusIsError || !strings.Contains(m.statusMsg, "permission denied") {
+		t.Fatalf("failed comment state = submitting:%v error:%v status:%q refresh:%v", m.commentSubmitting, m.statusIsError, m.statusMsg, refreshCmd != nil)
+	}
+}
+
 func TestCommentsAddPromptCancelDoesNotSubmit(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 	m.width, m.height = 120, 40

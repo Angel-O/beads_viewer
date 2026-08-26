@@ -4008,6 +4008,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// ═══════════════════════════════════════════════════════════════
 			switch msg.String() {
 			case "#":
+				if m.focused != focusList && m.focused != focusDetail {
+					return m, nil
+				}
 				m.beginComment()
 				return m, nil
 
@@ -5667,15 +5670,32 @@ func (m *Model) beginComment() {
 		m.statusIsError = true
 		return
 	}
-	selectedItem := m.list.SelectedItem()
-	if selectedItem == nil {
-		m.statusMsg = "No issue selected"
-		m.statusIsError = true
-		return
+	var issueItem IssueItem
+	if m.focused == focusDetail && m.insightsDetailID != "" {
+		issue := m.issueMap[m.insightsDetailID]
+		if issue == nil {
+			m.statusMsg = "No issue selected"
+			m.statusIsError = true
+			return
+		}
+		issueItem.Issue = *issue
+	} else {
+		selectedItem := m.list.SelectedItem()
+		if selectedItem == nil {
+			m.statusMsg = "No issue selected"
+			m.statusIsError = true
+			return
+		}
+		var ok bool
+		issueItem, ok = selectedItem.(IssueItem)
+		if !ok {
+			m.statusMsg = "Invalid issue selection"
+			m.statusIsError = true
+			return
+		}
 	}
-	issueItem, ok := selectedItem.(IssueItem)
-	if !ok {
-		m.statusMsg = "Invalid issue selection"
+	if issueItem.Issue.ID == "" {
+		m.statusMsg = "No issue selected"
 		m.statusIsError = true
 		return
 	}

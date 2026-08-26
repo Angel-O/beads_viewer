@@ -1277,6 +1277,31 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 	}
 }
 
+func TestCommentsAddAcceptsMultiWordTextAndSeparator(t *testing.T) {
+	request, err := parse([]string{"comments", "add", "work-1", "Needs", "a", "review"})
+	if err != nil {
+		t.Fatalf("multi-word comment rejected: %v", err)
+	}
+	if want := []string{"work-1", "Needs", "a", "review"}; !reflect.DeepEqual(request.positionals, want) {
+		t.Fatalf("positionals = %#v, want %#v", request.positionals, want)
+	}
+
+	request, err = parse([]string{"comments", "add", "work-1", "--", "--starts-with-a-dash"})
+	if err != nil {
+		t.Fatalf("separated comment rejected: %v", err)
+	}
+	if want := []string{"work-1", "--starts-with-a-dash"}; !reflect.DeepEqual(request.positionals, want) {
+		t.Fatalf("separated positionals = %#v, want %#v", request.positionals, want)
+	}
+}
+
+func TestCommentsAddAuthorValidationNamesAuthor(t *testing.T) {
+	_, err := parse([]string{"comments", "add", "work-1", "text", "--author", "   "})
+	if err == nil || !strings.Contains(err.Error(), "author") {
+		t.Fatalf("author validation error = %v, want author-specific error", err)
+	}
+}
+
 func TestSingularCommentCommandIsNotSupported(t *testing.T) {
 	if _, err := parse([]string{"comment", "work-1", "Nope"}); err == nil {
 		t.Fatal("singular comment command was accepted")
