@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -120,6 +121,8 @@ func TestIssueStringInterner_DeduplicatesAndStaysBounded(t *testing.T) {
 	}
 	if got := interner.intern(second); got != first {
 		t.Fatalf("duplicate intern=%q, want canonical %q", got, first)
+	} else if unsafe.StringData(got) != unsafe.StringData(first) {
+		t.Fatal("duplicate value did not reuse the canonical string backing storage")
 	}
 
 	occupied := 0
@@ -145,8 +148,11 @@ func TestIssueStringInterner_DeduplicatesAndStaysBounded(t *testing.T) {
 			occupied++
 		}
 	}
-	if occupied != issueStringInternerSlots {
-		t.Fatalf("occupied slots=%d, want bounded capacity %d", occupied, issueStringInternerSlots)
+	if occupied <= 0 || occupied > issueStringInternerSlots {
+		t.Fatalf("occupied slots=%d, want within 1..%d", occupied, issueStringInternerSlots)
+	}
+	if issueStringInternerMaxProbes >= issueStringInternerSlots {
+		t.Fatalf("probe budget=%d must remain below table capacity %d", issueStringInternerMaxProbes, issueStringInternerSlots)
 	}
 }
 

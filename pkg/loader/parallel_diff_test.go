@@ -185,6 +185,82 @@ func TestParallelDiff_NoTrailingNewline(t *testing.T) {
 	assertDiffEqual(t, "no-trailing-nl/pooled", data, true, nil)
 }
 
+func TestParallelDiff_DuplicateIntegrityPrecedesFilteringAndWarningsStayOrdered(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		`{"id":"same","title":"canonical","status":"open","issue_type":"task","priority":1}`,
+		`{"id":"same","title":"duplicate","status":"open","issue_type":"task","priority":2}`,
+		`{"id":"broken",not-json}`,
+		`{"id":"other","title":"kept","status":"open","issue_type":"task","priority":3}`,
+	}, "\n"))
+
+	for _, usePool := range []bool{false, true} {
+		newFilter := func(calls *[]string) func(*model.Issue) bool {
+			return func(issue *model.Issue) bool {
+				*calls = append(*calls, issue.ID)
+				return issue.ID != "same"
+			}
+		}
+
+		var serialCalls, parallelCalls []string
+		sIssues, sRefs, sStats, sWarns := parseSerial(t, data, usePool, newFilter(&serialCalls))
+		pIssues, pRefs, pStats, pWarns := parseParallel(t, data, usePool, newFilter(&parallelCalls))
+		if usePool {
+			defer ReturnIssuePtrsToPool(sRefs)
+			defer ReturnIssuePtrsToPool(pRefs)
+		}
+
+		if !reflect.DeepEqual(sIssues, pIssues) || len(sIssues) != 1 || sIssues[0].ID != "other" {
+			t.Fatalf("usePool=%v: serial/parallel retained issues differ: serial=%+v parallel=%+v", usePool, sIssues, pIssues)
+		}
+		wantCalls := []string{"same", "other"}
+		if !reflect.DeepEqual(serialCalls, wantCalls) || !reflect.DeepEqual(parallelCalls, wantCalls) {
+			t.Fatalf("usePool=%v: filters must run serially on canonical records in source order: serial=%v parallel=%v", usePool, serialCalls, parallelCalls)
+		}
+		wantStats := ParseStats{Valid: 2, Errors: 2}
+		if sStats != wantStats || pStats != wantStats {
+			t.Fatalf("usePool=%v: duplicate accounting changed with filtering: serial=%+v parallel=%+v want=%+v", usePool, sStats, pStats, wantStats)
+		}
+		if !reflect.DeepEqual(sWarns, pWarns) || len(sWarns) != 2 {
+			t.Fatalf("usePool=%v: warning parity/order mismatch: serial=%v parallel=%v", usePool, sWarns, pWarns)
+		}
+		if !strings.Contains(sWarns[0], `duplicate issue ID "same" on line 2`) || !strings.Contains(sWarns[1], "malformed JSON on line 3") {
+			t.Fatalf("usePool=%v: warnings are not in source order: %v", usePool, sWarns)
+		}
+	}
+}
+
+func TestParallelDiff_StatefulFilterRunsSequentiallyInSourceOrder(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 3000; i++ {
+		fmt.Fprintf(&b, `{"id":"FILTER-%04d","title":"T","status":"open","issue_type":"task","priority":1}`+"\n", i)
+	}
+	data := []byte(b.String())
+
+	newAlternatingFilter := func(calls *[]string) func(*model.Issue) bool {
+		return func(issue *model.Issue) bool {
+			*calls = append(*calls, issue.ID)
+			return len(*calls)%3 == 1
+		}
+	}
+
+	for _, usePool := range []bool{false, true} {
+		var serialCalls, parallelCalls []string
+		sIssues, sRefs, sStats, sWarns := parseSerial(t, data, usePool, newAlternatingFilter(&serialCalls))
+		pIssues, pRefs, pStats, pWarns := parseParallel(t, data, usePool, newAlternatingFilter(&parallelCalls))
+		if usePool {
+			defer ReturnIssuePtrsToPool(sRefs)
+			defer ReturnIssuePtrsToPool(pRefs)
+		}
+
+		if !reflect.DeepEqual(serialCalls, parallelCalls) || len(serialCalls) != 3000 {
+			t.Fatalf("usePool=%v: filter call order differs: serial=%d calls parallel=%d calls", usePool, len(serialCalls), len(parallelCalls))
+		}
+		if !reflect.DeepEqual(sIssues, pIssues) || sStats != pStats || !reflect.DeepEqual(sWarns, pWarns) {
+			t.Fatalf("usePool=%v: stateful filter changed observable results between serial and parallel paths", usePool)
+		}
+	}
+}
+
 // TestParallelParse_AutoDispatchMatchesSerial proves the public entry point's
 // size-gated auto-dispatch actually takes the parallel branch (when the file
 // exceeds parallelParseMinBytes) and that its result is identical to forcing

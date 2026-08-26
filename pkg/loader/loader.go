@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -609,9 +610,10 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 	// chunks across a bounded worker pool, and reassemble in ORIGINAL ORDER.
 	// This is the alien-graveyard §8.2 "morsel-driven parallelism" pattern:
 	// fixed-size morsels pulled by a bounded set of workers, with results
-	// stitched back deterministically. The path is byte-equivalent to the
+	// stitched back deterministically. The path is behavior-equivalent to the
 	// serial loop below (same BOM strip, same _type dispatch, same warnings in
-	// original line order, same ParseStats, same pooled deep-copy semantics);
+	// original line order, same sequential filter calls, same ParseStats, and
+	// the same pooled deep-copy semantics);
 	// see parseIssuesParallel and the differential test in loader_test.go.
 	if f, ok := r.(*os.File); ok {
 		if info, err := f.Stat(); err == nil && info.Size() >= parallelParseMinBytes {
@@ -645,6 +647,9 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 	reader := bufio.NewReaderSize(r, maxCapacity)
 
 	warn := resolveWarnHandler(opts.WarningHandler)
+	decodeOpts := opts
+	decodeOpts.IssueFilter = nil
+	seenIDs := make(map[string]struct{})
 
 	lineNum := 0
 	for {
@@ -690,18 +695,94 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 			line = stripBOM(line)
 		}
 
-		issues, poolRefs = processIssueLine(line, lineNum, opts, usePool, issues, poolRefs, opts.Stats, warn)
+		before := len(issues)
+		issues, poolRefs = processIssueLine(line, lineNum, decodeOpts, usePool, issues, poolRefs, opts.Stats, warn)
+		if len(issues) != before && !keepParsedIssue(
+			&issues[len(issues)-1], pooledRefAt(poolRefs, len(issues)-1), lineNum,
+			opts, seenIDs, warn,
+		) {
+			clear(issues[len(issues)-1:])
+			issues = issues[:len(issues)-1]
+			if usePool {
+				clear(poolRefs[len(poolRefs)-1:])
+				poolRefs = poolRefs[:len(poolRefs)-1]
+			}
+		}
 	}
 
+	issues, poolRefs = normalizeEmptyIssueResults(issues, poolRefs)
 	internRepeatedIssueStrings(issues, poolRefs)
 	return issues, poolRefs, nil
+}
+
+// keepParsedIssue applies the order-sensitive policies that must remain serial:
+// duplicate rejection and the caller-provided filter. Duplicate accounting is
+// intentionally performed before filtering, so every validated record
+// participates in data-integrity checks even when its canonical record is not
+// selected for the returned view.
+func keepParsedIssue(
+	issue *model.Issue,
+	poolRef *model.Issue,
+	lineNum int,
+	opts ParseOptions,
+	seenIDs map[string]struct{},
+	warn func(string),
+) bool {
+	if _, exists := seenIDs[issue.ID]; exists {
+		warn(fmt.Sprintf("skipping duplicate issue ID %q on line %d", issue.ID, lineNum))
+		if opts.Stats != nil {
+			if opts.Stats.Valid > 0 {
+				opts.Stats.Valid--
+			}
+			opts.Stats.Errors++
+		}
+		if poolRef != nil {
+			PutIssue(poolRef)
+		}
+		return false
+	}
+	seenIDs[issue.ID] = struct{}{}
+
+	filterTarget := issue
+	if poolRef != nil {
+		filterTarget = poolRef
+	}
+	if opts.IssueFilter != nil && !opts.IssueFilter(filterTarget) {
+		if poolRef != nil {
+			PutIssue(poolRef)
+		}
+		return false
+	}
+	if poolRef != nil {
+		*issue = *poolRef
+		DeepCopyIssueSlices(issue)
+	}
+	return true
+}
+
+func pooledRefAt(poolRefs []*model.Issue, index int) *model.Issue {
+	if index >= 0 && index < len(poolRefs) {
+		return poolRefs[index]
+	}
+	return nil
+}
+
+func normalizeEmptyIssueResults(issues []model.Issue, poolRefs []*model.Issue) ([]model.Issue, []*model.Issue) {
+	if len(issues) == 0 {
+		issues = nil
+	}
+	if len(poolRefs) == 0 {
+		poolRefs = nil
+	}
+	return issues, poolRefs
 }
 
 // processIssueLine applies the full per-line loader semantics to a single
 // (BOM-stripped, non-empty, end-of-line-trimmed) JSONL line and appends any
 // resulting issue. It is the single source of truth shared by the serial reader
 // loop and the parallel chunk workers, guaranteeing the two paths are
-// byte-equivalent: same `_type` dispatch, same malformed/invalid handling, same
+// behavior-equivalent: same `_type` dispatch, same malformed/invalid handling,
+// same
 // warning text keyed by lineNum, same ParseStats accounting, and the same
 // pooled deep-copy semantics (bv-fn4b). It returns the (possibly grown) issues
 // and poolRefs slices. stats may be nil; warn must be non-nil.
@@ -913,6 +994,7 @@ type pendingWarn struct {
 type chunkResult struct {
 	issues   []model.Issue
 	poolRefs []*model.Issue
+	lineNums []int
 	stats    ParseStats
 	warns    []pendingWarn
 }
@@ -927,6 +1009,9 @@ type chunkResult struct {
 // ParseStats accounting all match the serial path exactly.
 func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapacity int) ([]model.Issue, []*model.Issue, error) {
 	warn := resolveWarnHandler(opts.WarningHandler)
+	decodeOpts := opts
+	decodeOpts.IssueFilter = nil
+	decodeOpts.Stats = nil
 
 	// Build line-aligned chunk boundaries. Each chunk is [start,end) over data,
 	// ending exactly after a '\n' (except possibly the last). We also record the
@@ -1011,7 +1096,7 @@ func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapaci
 					res.poolRefs = make([]*model.Issue, 0, est)
 				}
 			}
-			parseChunkLines(data[span.start:span.end], span.startLine, ci == 0, opts, usePool, maxCapacity, res)
+			parseChunkLines(data[span.start:span.end], span.startLine, ci == 0, decodeOpts, usePool, maxCapacity, res)
 		}
 	}
 	wg.Add(workers)
@@ -1028,31 +1113,75 @@ func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapaci
 		totalRefs += len(results[i].poolRefs)
 	}
 
-	issues := make([]model.Issue, 0, total)
+	var issues []model.Issue
+	if total > 0 {
+		issues = make([]model.Issue, 0, total)
+	}
 	var poolRefs []*model.Issue
-	if usePool {
+	if usePool && totalRefs > 0 {
 		poolRefs = make([]*model.Issue, 0, totalRefs)
 	}
+	lineNums := make([]int, 0, total)
+	var allWarns []pendingWarn
 	var stats ParseStats
 	for i := range results {
 		issues = append(issues, results[i].issues...)
 		if usePool {
 			poolRefs = append(poolRefs, results[i].poolRefs...)
 		}
+		lineNums = append(lineNums, results[i].lineNums...)
 		stats.Valid += results[i].stats.Valid
 		stats.Errors += results[i].stats.Errors
 		stats.Skipped += results[i].stats.Skipped
-		// Warnings within a chunk are already in line order; chunks are in
-		// order, so concatenating preserves global line order.
-		for _, pw := range results[i].warns {
-			warn(pw.msg)
-		}
+		allWarns = append(allWarns, results[i].warns...)
 	}
 
 	if opts.Stats != nil {
 		opts.Stats.Valid += stats.Valid
 		opts.Stats.Errors += stats.Errors
 		opts.Stats.Skipped += stats.Skipped
+	}
+
+	if len(lineNums) != len(issues) {
+		if usePool {
+			ReturnIssuePtrsToPool(poolRefs)
+		}
+		return nil, nil, fmt.Errorf("internal loader error: decoded %d issues with %d line numbers", len(issues), len(lineNums))
+	}
+
+	seenIDs := make(map[string]struct{}, len(issues))
+	keptIssues := issues[:0]
+	var keptRefs []*model.Issue
+	if usePool {
+		keptRefs = poolRefs[:0]
+	}
+	for i := range issues {
+		ref := pooledRefAt(poolRefs, i)
+		lineNum := lineNums[i]
+		if !keepParsedIssue(&issues[i], ref, lineNum, opts, seenIDs, func(msg string) {
+			allWarns = append(allWarns, pendingWarn{lineNum: lineNum, msg: msg})
+		}) {
+			continue
+		}
+		keptIssues = append(keptIssues, issues[i])
+		if usePool {
+			keptRefs = append(keptRefs, ref)
+		}
+	}
+	clear(issues[len(keptIssues):])
+	issues = keptIssues
+	if usePool {
+		clear(poolRefs[len(keptRefs):])
+		poolRefs = keptRefs
+	}
+	issues, poolRefs = normalizeEmptyIssueResults(issues, poolRefs)
+
+	// Duplicate warnings are discovered during the sequential policy pass,
+	// after worker warnings have already been collected. Stable sorting by the
+	// original line number restores the exact serial observation order.
+	sort.SliceStable(allWarns, func(i, j int) bool { return allWarns[i].lineNum < allWarns[j].lineNum })
+	for _, pw := range allWarns {
+		warn(pw.msg)
 	}
 
 	internRepeatedIssueStrings(issues, poolRefs)
@@ -1106,11 +1235,15 @@ func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseO
 			line = stripBOM(line)
 		}
 
+		before := len(res.issues)
 		res.issues, res.poolRefs = processIssueLine(
 			line, lineNum, opts, usePool,
 			res.issues, res.poolRefs, &res.stats,
 			func(msg string) { warn(lineNum, msg) },
 		)
+		if len(res.issues) != before {
+			res.lineNums = append(res.lineNums, lineNum)
+		}
 	}
 }
 
@@ -1201,7 +1334,10 @@ func normalizeLoadedIssue(issue *model.Issue) {
 	}
 }
 
-const issueStringInternerSlots = 128
+const (
+	issueStringInternerSlots     = 128
+	issueStringInternerMaxProbes = 8
+)
 
 // issueStringInterner is a bounded, stack-friendly table for the low-cardinality
 // strings repeated across issues. A fixed table avoids both a process-global
@@ -1224,7 +1360,7 @@ func (in *issueStringInterner) intern(value string) string {
 	}
 
 	start := int(hash & (issueStringInternerSlots - 1))
-	for probe := 0; probe < issueStringInternerSlots; probe++ {
+	for probe := 0; probe < issueStringInternerMaxProbes; probe++ {
 		index := (start + probe) & (issueStringInternerSlots - 1)
 		canonical := in.slots[index]
 		if canonical == value {
@@ -1236,8 +1372,9 @@ func (in *issueStringInterner) intern(value string) string {
 		}
 	}
 
-	// High-cardinality input filled the bounded table. Preserve correctness and
-	// skip interning this value rather than growing an unbounded structure.
+	// This hash cluster exceeded the fixed probe budget. Preserve correctness and
+	// skip interning this value: high-cardinality input must not turn every later
+	// string into a full-table scan.
 	return value
 }
 
