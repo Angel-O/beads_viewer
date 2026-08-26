@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -547,6 +548,12 @@ func TestSemanticSearchCachesShareDistinctTermEvictionBoundary(t *testing.T) {
 
 	// The twenty-first distinct term resets both caches at the same boundary.
 	ss.SetScores("overflow", map[string]SemanticScore{"issue": {Score: 101}})
+	if got := len(ss.getScores().byTerm); got != 1 {
+		t.Fatalf("score cache size immediately after paired eviction=%d, want 1", got)
+	}
+	if got := len(ss.getCache().results); got != 0 {
+		t.Fatalf("result cache size immediately after paired eviction=%d, want 0", got)
+	}
 	ss.SetCachedResults("overflow", []list.Rank{{Index: 101}})
 	if got := len(ss.getScores().byTerm); got != 1 {
 		t.Fatalf("score cache size after overflow=%d, want 1", got)
@@ -559,6 +566,44 @@ func TestSemanticSearchCachesShareDistinctTermEvictionBoundary(t *testing.T) {
 	}
 	if _, ok := ss.getCache().results["term-00"]; ok {
 		t.Fatal("result cache retained an evicted term")
+	}
+}
+
+func TestSemanticSearchBlankTermsDoNotEvictUsefulCaches(t *testing.T) {
+	ss := NewSemanticSearch()
+	for i := 0; i < semanticCacheMaxTerms; i++ {
+		term := fmt.Sprintf("term-%02d", i)
+		ss.SetScores(term, map[string]SemanticScore{"issue": {Score: float64(i)}})
+		ss.SetCachedResults(term, []list.Rank{{Index: i}})
+	}
+
+	ss.SetScores("", map[string]SemanticScore{"blank": {Score: 1}})
+	ss.SetCachedResults(" \t", []list.Rank{{Index: 99}})
+	if got := len(ss.getScores().byTerm); got != semanticCacheMaxTerms {
+		t.Fatalf("blank score term changed cache size=%d, want %d", got, semanticCacheMaxTerms)
+	}
+	if got := len(ss.getCache().results); got != semanticCacheMaxTerms {
+		t.Fatalf("blank result term changed cache size=%d, want %d", got, semanticCacheMaxTerms)
+	}
+	if _, ok := ss.getScores().byTerm[""]; ok {
+		t.Fatal("empty score term was cached")
+	}
+	if _, ok := ss.getCache().results[" \t"]; ok {
+		t.Fatal("whitespace result term was cached")
+	}
+
+	targets := []string{"second", "first"}
+	ranks := ss.Filter(" \t", targets)
+	if len(ranks) != len(targets) {
+		t.Fatalf("whitespace filter returned %d ranks, want all %d targets", len(ranks), len(targets))
+	}
+	for i, rank := range ranks {
+		if rank.Index != i {
+			t.Fatalf("whitespace filter rank %d index=%d, want original index %d", i, rank.Index, i)
+		}
+	}
+	if pending := ss.GetPendingTerm(); pending != "" {
+		t.Fatalf("whitespace filter left pending semantic term %q", pending)
 	}
 }
 
@@ -983,6 +1028,22 @@ func TestModelClearsPendingSemanticFilterAfterEmbedError(t *testing.T) {
 	}
 }
 
+func TestStartSemanticFilterRejectsWhitespaceQuery(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.list.Filter = m.semanticSearch.Filter
+	m.list.SetFilterText(" \t")
+	m.list.SetFilterState(list.FilterApplied)
+	m.semanticSearch.SetIndex(search.NewVectorIndex(3), &mockEmbedder{dim: 3})
+
+	if cmd := m.startSemanticFilter(" \t"); cmd != nil {
+		t.Fatal("whitespace-only query scheduled a semantic embedding")
+	}
+	if m.semanticFilterBuilding {
+		t.Fatal("whitespace-only query marked a semantic filter build active")
+	}
+}
+
 func newProgrammaticSemanticRefilterModel(t *testing.T) *Model {
 	t.Helper()
 	issues := []model.Issue{
@@ -1053,6 +1114,18 @@ func TestProgrammaticSemanticRefiltersSchedulePendingWorkBeforeEarlyReturn(t *te
 			},
 			key: tea.KeyMsg{Type: tea.KeyEnter},
 		},
+		{
+			name: "time travel input",
+			setup: func(m *Model) {
+				// A successful time-travel submission rebuilds the list before
+				// this input-specific branch returns. Seed that same pending state
+				// without depending on the test checkout's git history.
+				m.applyFilter()
+				m.showTimeTravelPrompt = true
+				m.focused = focusTimeTravelInput
+			},
+			key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1070,6 +1143,215 @@ func TestProgrammaticSemanticRefiltersSchedulePendingWorkBeforeEarlyReturn(t *te
 			}
 		})
 	}
+}
+
+func TestTimeTravelInputPreservesTextInputCommandWithoutSemanticWork(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.showTimeTravelPrompt = true
+	m.focused = focusTimeTravelInput
+	m.timeTravelInput.Focus()
+	if m.semanticSearch != nil {
+		m.semanticSearch.ClearPending()
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("time-travel input discarded the textinput paste command")
+	}
+}
+
+func TestLabelPickerPreservesTextInputCommandWithoutSemanticWork(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.labelPicker = NewLabelPickerModel([]string{"backend"}, map[string]int{"backend": 1}, m.theme)
+	m.showLabelPicker = true
+	m.focused = focusLabelPicker
+	_ = m.labelPicker.Focus()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("label picker discarded the textinput paste command")
+	}
+}
+
+func TestHistorySearchPreservesTextInputCommandWithoutSemanticWork(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.isHistoryView = true
+	m.focused = focusHistory
+	m.historyView.StartSearch()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("history search discarded the textinput paste command")
+	}
+}
+
+func TestEmbeddedTextInputNonKeyFollowUpsAreRouted(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   embeddedTextInputTarget
+		activate func(*Model)
+	}{
+		{
+			name:   "time travel",
+			target: embeddedTextInputTimeTravel,
+			activate: func(m *Model) {
+				m.showTimeTravelPrompt = true
+				m.focused = focusTimeTravelInput
+				_ = m.timeTravelInput.Focus()
+			},
+		},
+		{
+			name:   "label picker",
+			target: embeddedTextInputLabelPicker,
+			activate: func(m *Model) {
+				m.labelPicker = NewLabelPickerModel([]string{"backend"}, map[string]int{"backend": 1}, m.theme)
+				m.showLabelPicker = true
+				m.focused = focusLabelPicker
+				_ = m.labelPicker.Focus()
+			},
+		},
+		{
+			name:   "history search",
+			target: embeddedTextInputHistorySearch,
+			activate: func(m *Model) {
+				m.isHistoryView = true
+				m.focused = focusHistory
+				_ = m.historyView.StartSearch()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			tt.activate(m)
+
+			initialCmd := m.beginEmbeddedTextInputSession(tt.target, func() tea.Msg {
+				return textinput.Blink()
+			})
+			if initialCmd == nil {
+				t.Fatal("scoped non-key command is nil")
+			}
+			initialMsg := initialCmd()
+			msg, ok := initialMsg.(embeddedTextInputMsg)
+			if !ok {
+				t.Fatalf("scoped command returned %T, want embeddedTextInputMsg", initialMsg)
+			}
+
+			updated, followUp := m.Update(msg)
+			m = updated.(*Model)
+			if followUp == nil {
+				t.Fatal("active input dropped the non-key blink message or its follow-up command")
+			}
+			if m.embeddedTextInputSession != msg.session {
+				t.Fatalf("active session changed: got %+v, want %+v", m.embeddedTextInputSession, msg.session)
+			}
+		})
+	}
+}
+
+func TestEmbeddedTextInputBatchChildrenRetainSessionRecursively(t *testing.T) {
+	session := embeddedTextInputSession{target: embeddedTextInputTimeTravel, generation: 7}
+	wrapped := wrapEmbeddedTextInputCmd(session, func() tea.Msg {
+		return tea.BatchMsg{
+			func() tea.Msg { return "first" },
+			func() tea.Msg {
+				return tea.BatchMsg{
+					func() tea.Msg { return "nested" },
+				}
+			},
+		}
+	})
+
+	wrappedMsg := wrapped()
+	batch, ok := wrappedMsg.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("wrapped command returned %#v, want two-command tea.BatchMsg", wrappedMsg)
+	}
+	first, ok := batch[0]().(embeddedTextInputMsg)
+	if !ok || first.session != session || first.msg != "first" {
+		t.Fatalf("first child lost session: %#v", first)
+	}
+	nestedResult := batch[1]()
+	nested, ok := nestedResult.(tea.BatchMsg)
+	if !ok || len(nested) != 1 {
+		t.Fatalf("nested child returned %#v, want one-command tea.BatchMsg", nestedResult)
+	}
+	nestedMsg, ok := nested[0]().(embeddedTextInputMsg)
+	if !ok || nestedMsg.session != session || nestedMsg.msg != "nested" {
+		t.Fatalf("nested child lost session: %#v", nestedMsg)
+	}
+}
+
+func TestEmbeddedTextInputDropsMessageFromEarlierActivation(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.showTimeTravelPrompt = true
+	m.focused = focusTimeTravelInput
+	_ = m.timeTravelInput.Focus()
+	_ = m.beginEmbeddedTextInputSession(embeddedTextInputTimeTravel, nil)
+	staleSession := m.embeddedTextInputSession
+
+	m.timeTravelInput.Blur()
+	m.showTimeTravelPrompt = false
+	m.focused = focusList
+	m.endEmbeddedTextInputSession(embeddedTextInputTimeTravel)
+
+	m.showTimeTravelPrompt = true
+	m.focused = focusTimeTravelInput
+	_ = m.beginEmbeddedTextInputSession(embeddedTextInputTimeTravel, m.timeTravelInput.Focus())
+	if m.embeddedTextInputSession == staleSession {
+		t.Fatal("reopened input reused its previous session")
+	}
+	m.timeTravelInput.SetValue("fresh")
+
+	updated, cmd := m.Update(embeddedTextInputMsg{
+		session: staleSession,
+		msg:     tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("stale")},
+	})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("stale input message returned a follow-up command")
+	}
+	if got := m.timeTravelInput.Value(); got != "fresh" {
+		t.Fatalf("stale input message mutated reopened input: got %q", got)
+	}
+}
+
+func TestEmbeddedTextInputOpenPathsReturnFocusCommands(t *testing.T) {
+	t.Run("time travel", func(t *testing.T) {
+		m := NewModel(nil, nil, "")
+		m.focused = focusList
+		_, cmd := m.handleListKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+		if cmd == nil {
+			t.Fatal("time-travel open discarded its focus command")
+		}
+	})
+
+	t.Run("history search", func(t *testing.T) {
+		m := NewModel(nil, nil, "")
+		m.isHistoryView = true
+		m.focused = focusHistory
+		_, cmd := m.handleHistoryKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+		if cmd == nil {
+			t.Fatal("history search open discarded its focus command")
+		}
+	})
+
+	t.Run("label picker", func(t *testing.T) {
+		m := NewModel([]model.Issue{{ID: "issue-1", Title: "Issue", Labels: []string{"backend"}}}, nil, "")
+		m.focused = focusList
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+		m = updated.(*Model)
+		if !m.showLabelPicker || m.focused != focusLabelPicker {
+			t.Fatal("label picker did not open")
+		}
+		if cmd == nil {
+			t.Fatal("label picker open discarded its focus command")
+		}
+	})
 }
 
 func TestSemanticIndexPersistenceIsAsyncSerializedAndGenerationSafe(t *testing.T) {

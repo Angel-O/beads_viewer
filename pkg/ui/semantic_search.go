@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,10 +44,6 @@ type semanticScoreCache struct {
 }
 
 const semanticCacheMaxTerms = 20
-
-func semanticCacheNeedsReset(size int, termExists bool) bool {
-	return !termExists && size >= semanticCacheMaxTerms
-}
 
 type metricsCacheHolder struct {
 	cache search.MetricsCache
@@ -112,19 +109,51 @@ func (s *SemanticSearch) getScores() *semanticScoreCache {
 	return v.(*semanticScoreCache)
 }
 
+// prepareSemanticCacheTermLocked applies one distinct-term boundary to both
+// rank and score caches. SetScores and SetCachedResults are intentionally
+// separate API calls, so evicting only the cache touched first can leave the
+// two views out of sync at the capacity boundary.
+func (s *SemanticSearch) prepareSemanticCacheTermLocked(term string) {
+	scores := s.getScores()
+	results := s.getCache()
+	if _, ok := scores.byTerm[term]; ok {
+		return
+	}
+	if _, ok := results.results[term]; ok {
+		return
+	}
+
+	distinctTerms := len(scores.byTerm)
+	for cachedTerm := range results.results {
+		if _, ok := scores.byTerm[cachedTerm]; !ok {
+			distinctTerms++
+		}
+	}
+	if distinctTerms < semanticCacheMaxTerms {
+		return
+	}
+
+	s.scores.Store(&semanticScoreCache{byTerm: make(map[string]map[string]SemanticScore)})
+	s.cache.Store(&semanticResultCache{
+		results:     make(map[string][]list.Rank),
+		pendingTerm: results.pendingTerm,
+		lastQuery:   results.lastQuery,
+	})
+}
+
 // SetScores stores the latest scores for a given term.
 func (s *SemanticSearch) SetScores(term string, scores map[string]SemanticScore) {
+	if strings.TrimSpace(term) == "" {
+		return
+	}
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 
+	s.prepareSemanticCacheTermLocked(term)
 	current := s.getScores()
 	byTerm := make(map[string]map[string]SemanticScore, len(current.byTerm)+1)
 	for cachedTerm, cachedScores := range current.byTerm {
 		byTerm[cachedTerm] = cachedScores
-	}
-	_, termExists := byTerm[term]
-	if semanticCacheNeedsReset(len(byTerm), termExists) {
-		byTerm = make(map[string]map[string]SemanticScore)
 	}
 	if scores == nil {
 		scores = make(map[string]SemanticScore)
@@ -198,8 +227,12 @@ func (s *SemanticSearch) ResetCache() {
 
 // SetCachedResults stores semantic filter results and clears pending state if matching
 func (s *SemanticSearch) SetCachedResults(term string, results []list.Rank) {
+	if strings.TrimSpace(term) == "" {
+		return
+	}
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
+	s.prepareSemanticCacheTermLocked(term)
 	c := s.getCache()
 
 	// Only clear pending if this is the term that was pending
@@ -217,12 +250,6 @@ func (s *SemanticSearch) SetCachedResults(term string, results []list.Rank) {
 	// Copy existing cache entries (keep a small LRU-like cache)
 	for k, v := range c.results {
 		newCache.results[k] = v
-	}
-	// Limit cache size to prevent memory bloat
-	_, termExists := newCache.results[term]
-	if semanticCacheNeedsReset(len(newCache.results), termExists) {
-		// Clear old entries (simple approach: clear all)
-		newCache.results = make(map[string][]list.Rank)
 	}
 	newCache.results[term] = results
 	s.cache.Store(newCache)
@@ -343,9 +370,13 @@ func (s *SemanticSearch) setSnapshotDocuments(ids []string, docs map[string]stri
 // This is non-blocking: returns cached results or fuzzy fallback immediately,
 // and marks the term as pending for async computation.
 func (s *SemanticSearch) Filter(term string, targets []string) []list.Rank {
-	if term == "" {
+	if strings.TrimSpace(term) == "" {
 		// Preserve existing sort order when the user hasn't entered a query yet.
-		return list.DefaultFilter(term, targets)
+		ranks := make([]list.Rank, len(targets))
+		for i := range ranks {
+			ranks[i].Index = i
+		}
+		return ranks
 	}
 
 	snap := s.Snapshot()

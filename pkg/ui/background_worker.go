@@ -40,7 +40,13 @@ const (
 	WorkerStopped
 )
 
-const backgroundWorkerShutdownTimeout = 500 * time.Millisecond
+const (
+	backgroundWorkerShutdownTimeout = 500 * time.Millisecond
+	// Priority-aware replacement is intentionally a one-slot mailbox. With a
+	// larger channel, removing and requeueing only the head can reorder the
+	// untouched suffix, while draining the suffix races the UI's direct receiver.
+	backgroundWorkerMessageBuffer = 1
+)
 
 // WorkerLogLevel controls background worker log verbosity.
 type WorkerLogLevel int
@@ -254,7 +260,6 @@ type IdleGCConfig struct {
 type WorkerConfig struct {
 	BeadsPath     string
 	DebounceDelay time.Duration
-	MessageBuffer int // Buffer size for worker -> UI messages (default: 8)
 
 	IdleGC *IdleGCConfig
 
@@ -278,9 +283,6 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 
 	if cfg.DebounceDelay == 0 {
 		cfg.DebounceDelay = envDurationMilliseconds("BV_DEBOUNCE_MS", 200*time.Millisecond)
-	}
-	if cfg.MessageBuffer <= 0 {
-		cfg.MessageBuffer = envPositiveIntOr("BV_CHANNEL_BUFFER", 8)
 	}
 	if cfg.HeartbeatInterval == 0 {
 		cfg.HeartbeatInterval = envDurationSeconds("BV_HEARTBEAT_INTERVAL_S", 5*time.Second)
@@ -336,7 +338,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		maxRecoveries:     cfg.MaxRecoveries,
 		generation:        1, // Generation zero is reserved for non-worker messages.
 		state:             WorkerIdle,
-		msgCh:             make(chan tea.Msg, cfg.MessageBuffer),
+		msgCh:             make(chan tea.Msg, backgroundWorkerMessageBuffer),
 		ctx:               ctx,
 		cancel:            cancel,
 		done:              make(chan struct{}),
@@ -542,6 +544,11 @@ func (w *BackgroundWorker) Start() error {
 		return nil // Already started
 	}
 	w.started = true
+	// Publish the latch that belongs to this Start attempt before releasing the
+	// mutex. Stop must never capture the constructor's never-closed placeholder
+	// while Start is between watcher startup and process-loop launch.
+	done := make(chan struct{})
+	w.done = done
 	now := time.Now()
 	if w.startTime.IsZero() {
 		w.startTime = now
@@ -551,6 +558,10 @@ func (w *BackgroundWorker) Start() error {
 	idleGCEnabled := w.idleGCEnabled
 	idleGCGCPercent := w.idleGCGCPercent
 	idleGCCheckEvery := w.idleGCCheckEvery
+	hasWatcher := w.watcher != nil
+	if !hasWatcher {
+		close(done)
+	}
 	w.mu.Unlock()
 
 	w.openTraceFile()
@@ -563,15 +574,34 @@ func (w *BackgroundWorker) Start() error {
 		idleGCGCPercent = 0
 	}
 
-	if w.watcher != nil {
-		if err := w.watcher.Start(); err != nil {
-			// Reset started flag so caller can retry or Stop() won't block
-			w.mu.Lock()
+	if hasWatcher {
+		// Serialize the external watcher transition with Stop. Otherwise Stop can
+		// observe started=true in the gap before watcher.Start, stop a not-yet-live
+		// watcher, and then have this goroutine start it after shutdown.
+		w.mu.Lock()
+		if w.state == WorkerStopped || w.ctx.Err() != nil {
 			w.started = false
+			// No process loop has been launched yet, so Start still owns this
+			// attempt's latch and can release a concurrent Stop immediately.
+			close(done)
 			w.mu.Unlock()
 			w.closeTraceFile()
-			return err
+			return fmt.Errorf("worker was stopped during start")
 		}
+		watcherErr := w.watcher.Start()
+		if watcherErr != nil {
+			// Reset started flag so caller can retry or Stop() won't block
+			w.started = false
+			close(done)
+			w.mu.Unlock()
+			w.closeTraceFile()
+			return watcherErr
+		}
+		// Launch while holding w.mu: after unlock, Stop may win the mutex, but it
+		// will always observe a loop responsible for closing this exact latch.
+		w.lastHeartbeat = time.Now()
+		go w.runProcessLoop(done)
+		w.mu.Unlock()
 
 		if idleGCEnabled && idleGCGCPercent > 0 {
 			w.mu.Lock()
@@ -585,10 +615,20 @@ func (w *BackgroundWorker) Start() error {
 			go w.idleGCLoop(idleGCCheckEvery)
 		}
 
-		w.startLoop()
 		w.startWatchdog()
 	} else {
 		// No watcher - close done channel immediately so Stop() doesn't block
+		// and re-check the lifecycle after opening the trace. Stop can run in the
+		// gap between the first unlock and openTraceFile; without this check Start
+		// could reopen the trace (and launch idle-GC work) after shutdown.
+		w.mu.Lock()
+		if w.state == WorkerStopped || w.ctx.Err() != nil {
+			w.started = false
+			w.mu.Unlock()
+			w.closeTraceFile()
+			return fmt.Errorf("worker was stopped during start")
+		}
+		w.mu.Unlock()
 		if idleGCEnabled && idleGCGCPercent > 0 {
 			w.mu.Lock()
 			if w.state != WorkerStopped && w.started && !w.idleGCAppliedGCPercent {
@@ -601,7 +641,6 @@ func (w *BackgroundWorker) Start() error {
 			go w.idleGCLoop(idleGCCheckEvery)
 		}
 
-		close(w.done)
 	}
 
 	return nil
@@ -660,26 +699,6 @@ func (w *BackgroundWorker) Stop() {
 
 	w.logEvent(LogLevelInfo, "worker_stop", nil)
 	w.closeTraceFile()
-}
-
-func (w *BackgroundWorker) startLoop() {
-	if w == nil {
-		return
-	}
-
-	w.mu.Lock()
-	if w.state == WorkerStopped {
-		w.mu.Unlock()
-		return
-	}
-
-	done := make(chan struct{})
-
-	w.done = done
-	w.lastHeartbeat = time.Now()
-	w.mu.Unlock()
-
-	go w.runProcessLoop(done)
 }
 
 func (w *BackgroundWorker) runProcessLoop(done chan struct{}) {
@@ -840,20 +859,38 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 		}
 	}
 
+	var watcherErr error
+	w.mu.Lock()
+	if w.state == WorkerStopped || w.ctx.Err() != nil {
+		w.mu.Unlock()
+		return
+	}
 	if w.watcher != nil {
+		// Keep Stop excluded across the stop/start pair. If Stop wins the mutex
+		// first, the state check above aborts; if recovery wins, Stop runs next and
+		// shuts down the freshly restarted watcher.
 		w.watcher.Stop()
-		if err := w.watcher.Start(); err != nil {
-			w.send(SnapshotErrorMsg{
-				Err:              fmt.Errorf("background worker recovery failed (watcher start): %w", err),
-				Recoverable:      false,
-				WorkerGeneration: generation,
-			})
-			w.Stop()
-			return
-		}
+		watcherErr = w.watcher.Start()
+	}
+	if watcherErr == nil {
+		// Install and launch the replacement loop before Stop can observe the
+		// restarted watcher. The new loop owns closing this exact latch.
+		nextDone := make(chan struct{})
+		w.done = nextDone
+		w.lastHeartbeat = time.Now()
+		go w.runProcessLoop(nextDone)
+	}
+	w.mu.Unlock()
+	if watcherErr != nil {
+		w.send(SnapshotErrorMsg{
+			Err:              fmt.Errorf("background worker recovery failed (watcher start): %w", watcherErr),
+			Recoverable:      false,
+			WorkerGeneration: generation,
+		})
+		w.Stop()
+		return
 	}
 
-	w.startLoop()
 	w.ForceRefresh()
 }
 
@@ -1460,7 +1497,7 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool) snapshotBuildResu
 	// Load issues from file with panic recovery
 	var issues []model.Issue
 	var pooledRefs []*model.Issue
-	var loadWarnings []string
+	loadWarningCount := 0
 	var loadStart time.Time
 	if profileSnapshot {
 		loadStart = time.Now()
@@ -1469,8 +1506,8 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool) snapshotBuildResu
 		var err error
 		var loaded loader.PooledIssues
 		opts := loader.ParseOptions{
-			WarningHandler: func(msg string) {
-				loadWarnings = append(loadWarnings, msg)
+			WarningHandler: func(string) {
+				loadWarningCount++
 			},
 			BufferSize: envMaxLineSizeBytes(),
 		}
@@ -1502,19 +1539,23 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool) snapshotBuildResu
 	// Check if content is unchanged (dedup optimization)
 	w.mu.RLock()
 	lastHash := w.lastHash
+	prevSnapshot := w.snapshot
 	w.mu.RUnlock()
 
-	if !forceNext && hash == lastHash && lastHash != "" {
+	loadMetadataUnchanged := prevSnapshot != nil &&
+		prevSnapshot.SourceIssueCountHint == sourceLineCount &&
+		prevSnapshot.LoadWarningCount == loadWarningCount &&
+		prevSnapshot.DatasetTier == tier &&
+		prevSnapshot.LoadedOpenOnly == loadOpenOnly &&
+		prevSnapshot.RecipeName == recipeID &&
+		prevSnapshot.RecipeHash == recipeHash
+	if !forceNext && hash == lastHash && lastHash != "" && loadMetadataUnchanged {
 		w.logEvent(LogLevelDebug, "snapshot_deduped", map[string]any{
 			"hash": hashPrefix(hash),
 		})
 		loader.ReturnIssuePtrsToPool(pooledRefs)
 		return snapshotBuildResult{clearError: true}
 	}
-
-	w.mu.RLock()
-	prevSnapshot := w.snapshot
-	w.mu.RUnlock()
 
 	var diff *analysis.IssueDiff
 	if prevSnapshot != nil {
@@ -1562,7 +1603,7 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool) snapshotBuildResu
 	// Store hash in snapshot for external access
 	if snapshot != nil {
 		snapshot.DataHash = hash
-		snapshot.LoadWarningCount = len(loadWarnings)
+		snapshot.LoadWarningCount = loadWarningCount
 		snapshot.RecipeName = recipeID
 		snapshot.RecipeHash = recipeHash
 		snapshot.attachPooledIssues(pooledRefs)
@@ -1704,14 +1745,6 @@ func envMaxLineSizeBytes() int {
 	return mb * 1024 * 1024
 }
 
-func envPositiveIntOr(name string, fallback int) int {
-	n, ok := envPositiveInt(name)
-	if !ok {
-		return fallback
-	}
-	return n
-}
-
 func envBool(name string) bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
 	if v == "" {
@@ -1846,59 +1879,76 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 	w.sendMu.Lock()
 	defer w.sendMu.Unlock()
 
-	for {
-		// Reject invalidated work before it consumes the single authoritative
-		// message slot. The UI repeats this fence because recovery can advance the
-		// generation immediately after this check.
+	// Reject invalidated work before it consumes queue capacity. The UI repeats
+	// this fence because recovery can advance the generation immediately after
+	// this check.
+	if !w.workerMessageIsCurrent(msg) {
+		w.releaseDroppedMessage(msg)
+		return
+	}
+
+	select {
+	case w.msgCh <- msg:
+		return
+	case <-w.ctx.Done():
+		w.releaseDroppedMessage(msg)
+		return
+	default:
+	}
+
+	// The one-slot mailbox is full. Serialize the remove/compare/replace
+	// operation so a lower-priority error or Phase 2 update cannot evict the
+	// authoritative SnapshotReady message.
+	var queued tea.Msg
+	select {
+	case queued = <-w.msgCh:
+	case <-w.ctx.Done():
+		w.releaseDroppedMessage(msg)
+		return
+	default:
+		// The UI waiter made room after the failed send; retry once through the
+		// normal path while still holding sendMu.
 		if !w.workerMessageIsCurrent(msg) {
 			w.releaseDroppedMessage(msg)
 			return
 		}
-
 		select {
 		case w.msgCh <- msg:
-			return
 		case <-w.ctx.Done():
 			w.releaseDroppedMessage(msg)
-			return
-		default:
 		}
+		return
+	}
 
-		// Channel is full. Serialize the remove/compare/replace operation so a
-		// lower-priority error or Phase 2 update can never evict SnapshotReady.
-		var queued tea.Msg
+	if w.workerMessageIsCurrent(queued) && workerMessagePriority(queued) > workerMessagePriority(msg) {
 		select {
-		case queued = <-w.msgCh:
+		case w.msgCh <- queued:
 		case <-w.ctx.Done():
-			w.releaseDroppedMessage(msg)
-			return
-		default:
-			// A UI waiter made room after the failed send; retry immediately.
-			continue
+			w.releaseDroppedMessage(queued)
 		}
+		w.releaseDroppedMessage(msg)
+		return
+	}
 
-		queuedIsCurrent := w.workerMessageIsCurrent(queued)
-		if queuedIsCurrent && workerMessagePriority(queued) > workerMessagePriority(msg) {
-			// Preserve the higher-priority queued message and discard the incoming
-			// one. msgCh is empty here, and sendMu excludes another worker sender.
-			select {
-			case w.msgCh <- queued:
-			case <-w.ctx.Done():
-				w.releaseDroppedMessage(queued)
-			}
-			w.releaseDroppedMessage(msg)
-			return
-		}
-
-		w.releaseDroppedMessage(queued)
+	w.releaseDroppedMessage(queued)
+	select {
+	case w.msgCh <- msg:
+	case <-w.ctx.Done():
+		w.releaseDroppedMessage(msg)
 	}
 }
 
 func workerMessagePriority(msg tea.Msg) int {
-	switch msg.(type) {
+	switch typed := msg.(type) {
 	case SnapshotReadyMsg:
 		return 2
 	case SnapshotErrorMsg:
+		// A recoverable error may be superseded by the last usable snapshot. A
+		// terminal error must win, because it is the UI's signal to detach the
+		// stopped worker and fall back to synchronous refreshes.
+		if !typed.Recoverable {
+			return 3
+		}
 		return 1
 	case Phase2UpdateMsg:
 		return 0

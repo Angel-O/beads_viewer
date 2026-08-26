@@ -198,3 +198,46 @@ func TestHistoryViewKeys(t *testing.T) {
 		t.Fatalf("expected confidence to change after 'c' key")
 	}
 }
+
+func TestForceRefreshUsesExistingBackgroundWorkerWaiter(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.backgroundWorker = worker
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("force refresh started an additional worker-channel waiter")
+	}
+	if m.statusMsg != "Refreshing…" || m.statusIsError {
+		t.Fatalf("refresh status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestForceRefreshDetachesStoppedBackgroundWorker(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	worker.Stop()
+
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.backgroundWorker = worker
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("unavailable stopped-worker refresh unexpectedly scheduled work")
+	}
+	if m.backgroundWorker != nil {
+		t.Fatal("stopped background worker remained installed")
+	}
+	if m.statusMsg != "Refresh unavailable" || !m.statusIsError {
+		t.Fatalf("stopped-worker refresh status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}

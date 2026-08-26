@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/cass"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -777,17 +778,17 @@ func (h *HistoryModel) ToggleExpand() {
 // Search and Filter methods (bv-nkrj)
 
 // StartSearch activates the search input
-func (h *HistoryModel) StartSearch() {
+func (h *HistoryModel) StartSearch() tea.Cmd {
 	h.searchActive = true
 	h.searchMode = searchModeAll
-	h.searchInput.Focus()
+	return h.searchInput.Focus()
 }
 
 // StartSearchWithMode activates search with a specific mode
-func (h *HistoryModel) StartSearchWithMode(mode historySearchMode) {
+func (h *HistoryModel) StartSearchWithMode(mode historySearchMode) tea.Cmd {
 	h.searchActive = true
 	h.searchMode = mode
-	h.searchInput.Focus()
+	cmd := h.searchInput.Focus()
 
 	// Set appropriate placeholder based on mode
 	switch mode {
@@ -802,6 +803,7 @@ func (h *HistoryModel) StartSearchWithMode(mode historySearchMode) {
 	default:
 		h.searchInput.Placeholder = "Search commits, beads, authors..."
 	}
+	return cmd
 }
 
 // CancelSearch cancels the search and clears the query
@@ -837,9 +839,11 @@ func (h *HistoryModel) SearchQuery() string {
 	return h.searchInput.Value()
 }
 
-// UpdateSearchInput updates the search input model (call from Update)
-func (h *HistoryModel) UpdateSearchInput(msg interface{}) {
-	h.searchInput, _ = h.searchInput.Update(msg)
+// UpdateSearchInput updates the search input model (call from Update) and
+// returns any follow-up command, such as an asynchronous clipboard paste.
+func (h *HistoryModel) UpdateSearchInput(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	h.searchInput, cmd = h.searchInput.Update(msg)
 
 	// Check if query changed and apply filter
 	currentQuery := h.searchInput.Value()
@@ -847,6 +851,7 @@ func (h *HistoryModel) UpdateSearchInput(msg interface{}) {
 		h.lastSearchQuery = currentQuery
 		h.applySearchFilter()
 	}
+	return cmd
 }
 
 // applySearchFilter filters the data based on current search query

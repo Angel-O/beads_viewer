@@ -73,6 +73,33 @@ const (
 	focusUpdateModal // Self-update modal (bv-182)
 )
 
+// embeddedTextInputTarget identifies one of the text inputs owned by Model.
+// Bubble Tea commands may complete after focus has moved elsewhere, so the
+// target alone is not enough to route their follow-up messages safely.
+type embeddedTextInputTarget uint8
+
+const (
+	embeddedTextInputNone embeddedTextInputTarget = iota
+	embeddedTextInputTimeTravel
+	embeddedTextInputLabelPicker
+	embeddedTextInputHistorySearch
+)
+
+// embeddedTextInputSession identifies one specific activation of an embedded
+// text input. The generation prevents a delayed command from an earlier open
+// from being delivered after the same input has been closed and reopened.
+type embeddedTextInputSession struct {
+	target     embeddedTextInputTarget
+	generation uint64
+}
+
+// embeddedTextInputMsg carries a component command result back to the exact
+// text input session that produced it.
+type embeddedTextInputMsg struct {
+	session embeddedTextInputSession
+	msg     tea.Msg
+}
+
 // SortMode represents the current list sorting mode (bv-3ita)
 type SortMode int
 
@@ -234,13 +261,34 @@ func loadIssuesForReload(path string, opts loader.ParseOptions) (loader.PooledIs
 }
 
 // StartBackgroundWorkerCmd starts the background worker and triggers an initial refresh.
+type backgroundWorkerStartErrorMsg struct {
+	worker *BackgroundWorker
+	err    error
+}
+
+// backgroundWorkerMsg binds a channel result to the worker whose waiter
+// produced it. Worker generations are local to each instance, so generation
+// numbers alone cannot reject a late completion after the model installs a new
+// worker that also starts at generation 1.
+type backgroundWorkerMsg struct {
+	worker *BackgroundWorker
+	msg    tea.Msg
+}
+
 func StartBackgroundWorkerCmd(w *BackgroundWorker) tea.Cmd {
 	return func() tea.Msg {
 		if w == nil {
 			return nil
 		}
 		if err := w.Start(); err != nil {
-			return SnapshotErrorMsg{Err: fmt.Errorf("starting background worker: %w", err), Recoverable: false}
+			// Init starts the worker and its first channel waiter concurrently. A
+			// failed Start cannot publish on that channel, so stop it to release the
+			// waiter and return a distinct result that must not re-arm the chain.
+			w.Stop()
+			return backgroundWorkerStartErrorMsg{
+				worker: w,
+				err:    fmt.Errorf("starting background worker: %w", err),
+			}
 		}
 		w.HandleRefreshRequest(RefreshRequestMsg{})
 		return nil
@@ -253,11 +301,31 @@ func WaitForBackgroundWorkerMsgCmd(w *BackgroundWorker) tea.Cmd {
 		if w == nil {
 			return nil
 		}
+		wrap := func(msg tea.Msg) tea.Msg {
+			if msg == nil {
+				return nil
+			}
+			return backgroundWorkerMsg{worker: w, msg: msg}
+		}
+		// Prefer an already-buffered result even after Stop has closed Done. Both
+		// cases can be ready simultaneously for terminal recovery failures.
 		select {
 		case msg := <-w.Messages():
-			return msg
+			return wrap(msg)
+		default:
+		}
+		select {
+		case msg := <-w.Messages():
+			return wrap(msg)
 		case <-w.Done():
-			return nil
+			// A sender may have published immediately before cancellation while the
+			// select chose Done. Drain once more before ending the waiter chain.
+			select {
+			case msg := <-w.Messages():
+				return wrap(msg)
+			default:
+				return nil
+			}
 		}
 	}
 }
@@ -478,6 +546,8 @@ type Model struct {
 	// Focus and View State
 	focused                  focus
 	focusBeforeHelp          focus // Stores focus before opening help overlay
+	embeddedTextInputSession embeddedTextInputSession
+	embeddedTextInputGen     uint64
 	isSplitView              bool
 	splitPaneRatio           float64 // Ratio of list pane width (0.2-0.8), default 0.4
 	isBoardView              bool
@@ -846,7 +916,7 @@ func (m *Model) startSemanticHybridBuild() tea.Cmd {
 }
 
 func (m *Model) startSemanticFilter(term string) tea.Cmd {
-	if m.semanticSearch == nil || term == "" || m.list.FilterState() == list.Unfiltered ||
+	if m.semanticSearch == nil || strings.TrimSpace(term) == "" || m.list.FilterState() == list.Unfiltered ||
 		m.list.FilterInput.Value() != term || !m.semanticSearch.Snapshot().Ready {
 		return nil
 	}
@@ -897,6 +967,19 @@ func (m *Model) rejectWorkerGeneration(generation uint64) bool {
 		return true
 	}
 	return m.lastWorkerGeneration != 0 && generation < m.lastWorkerGeneration
+}
+
+// installBackgroundWorker establishes a new worker identity and resets the
+// sequence fences owned by the previous instance. Worker-local generation and
+// snapshot counters restart from one; stale completions remain excluded by the
+// backgroundWorkerMsg pointer-identity fence in Update.
+func (m *Model) installBackgroundWorker(worker *BackgroundWorker) {
+	if worker == nil || m.backgroundWorker == worker {
+		return
+	}
+	m.backgroundWorker = worker
+	m.lastWorkerGeneration = 0
+	m.lastAppliedSnapshotVer = 0
 }
 
 func (m *Model) acceptWorkerGeneration(generation uint64) {
@@ -1522,7 +1605,6 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		beadsPath:               beadsPath,
 		watcher:                 fileWatcher,
 		snapshotInitPending:     backgroundWorker != nil,
-		backgroundWorker:        backgroundWorker,
 		instanceLock:            instLock,
 		list:                    l,
 		listItemsBuffer:         items,
@@ -1597,6 +1679,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		tutorialModel: NewTutorialModel(theme),
 	}
 
+	m.installBackgroundWorker(backgroundWorker)
 	m.registerKeyBindings()
 	return &m
 }
@@ -1667,6 +1750,112 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// wrapEmbeddedTextInputCmd scopes every message produced by cmd to session.
+// Batch children are commands themselves, so each child must be wrapped too;
+// otherwise Bubble Tea would execute them later and lose the input identity.
+func wrapEmbeddedTextInputCmd(session embeddedTextInputSession, cmd tea.Cmd) tea.Cmd {
+	if cmd == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return wrapEmbeddedTextInputMsg(session, cmd())
+	}
+}
+
+func wrapEmbeddedTextInputMsg(session embeddedTextInputSession, msg tea.Msg) tea.Msg {
+	switch msg := msg.(type) {
+	case nil:
+		return nil
+	case tea.BatchMsg:
+		wrapped := make(tea.BatchMsg, 0, len(msg))
+		for _, child := range msg {
+			if childCmd := wrapEmbeddedTextInputCmd(session, child); childCmd != nil {
+				wrapped = append(wrapped, childCmd)
+			}
+		}
+		if len(wrapped) == 0 {
+			return nil
+		}
+		return wrapped
+	default:
+		return embeddedTextInputMsg{session: session, msg: msg}
+	}
+}
+
+func (m *Model) beginEmbeddedTextInputSession(target embeddedTextInputTarget, cmd tea.Cmd) tea.Cmd {
+	m.embeddedTextInputGen++
+	if m.embeddedTextInputGen == 0 {
+		// Keep zero reserved for the inactive session after uint64 wraparound.
+		m.embeddedTextInputGen++
+	}
+	m.embeddedTextInputSession = embeddedTextInputSession{
+		target:     target,
+		generation: m.embeddedTextInputGen,
+	}
+	return wrapEmbeddedTextInputCmd(m.embeddedTextInputSession, cmd)
+}
+
+func (m *Model) scopeEmbeddedTextInputCmd(target embeddedTextInputTarget, cmd tea.Cmd) tea.Cmd {
+	if m.embeddedTextInputSession.target != target || m.embeddedTextInputSession.generation == 0 {
+		return m.beginEmbeddedTextInputSession(target, cmd)
+	}
+	return wrapEmbeddedTextInputCmd(m.embeddedTextInputSession, cmd)
+}
+
+func (m *Model) endEmbeddedTextInputSession(target embeddedTextInputTarget) {
+	if m.embeddedTextInputSession.target == target {
+		m.embeddedTextInputSession = embeddedTextInputSession{}
+	}
+}
+
+func (m *Model) embeddedTextInputSessionIsActive(session embeddedTextInputSession) bool {
+	if session.generation == 0 || session != m.embeddedTextInputSession {
+		return false
+	}
+	switch session.target {
+	case embeddedTextInputTimeTravel:
+		return m.focused == focusTimeTravelInput && m.showTimeTravelPrompt && m.timeTravelInput.Focused()
+	case embeddedTextInputLabelPicker:
+		return m.focused == focusLabelPicker && m.showLabelPicker && m.labelPicker.input.Focused()
+	case embeddedTextInputHistorySearch:
+		return m.focused == focusHistory && m.isHistoryView &&
+			m.historyView.IsSearchActive() && m.historyView.searchInput.Focused()
+	default:
+		return false
+	}
+}
+
+func (m *Model) updateHistorySearchInput(msg tea.Msg) tea.Cmd {
+	cmd := m.historyView.UpdateSearchInput(msg)
+	query := m.historyView.SearchQuery()
+	if query != "" {
+		m.statusMsg = fmt.Sprintf("🔍 Filtering: %s", query)
+	} else {
+		m.statusMsg = "🔍 Type to search..."
+	}
+	m.statusIsError = false
+	return cmd
+}
+
+func (m *Model) updateEmbeddedTextInput(msg embeddedTextInputMsg) tea.Cmd {
+	if !m.embeddedTextInputSessionIsActive(msg.session) {
+		return nil
+	}
+
+	var cmd tea.Cmd
+	switch msg.session.target {
+	case embeddedTextInputTimeTravel:
+		m.timeTravelInput, cmd = m.timeTravelInput.Update(msg.msg)
+	case embeddedTextInputLabelPicker:
+		cmd = m.labelPicker.UpdateInput(msg.msg)
+	case embeddedTextInputHistorySearch:
+		cmd = m.updateHistorySearchInput(msg.msg)
+	default:
+		return nil
+	}
+	return wrapEmbeddedTextInputCmd(msg.session, cmd)
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
@@ -1679,6 +1868,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case embeddedTextInputMsg:
+		return m, m.updateEmbeddedTextInput(msg)
+
+	case backgroundWorkerMsg:
+		if msg.worker == nil || m.backgroundWorker != msg.worker {
+			if msg.worker != nil {
+				msg.worker.releaseDroppedMessage(msg.msg)
+			}
+			return m, nil
+		}
+		return m.Update(msg.msg)
+
+	case backgroundWorkerStartErrorMsg:
+		// Start runs asynchronously. If the user replaced or disabled this worker
+		// before its failure arrived, the completion no longer owns model state.
+		if m.backgroundWorker != msg.worker {
+			return m, nil
+		}
+		m.backgroundWorker = nil
+		if m.snapshotInitPending && m.snapshot == nil {
+			m.snapshotInitPending = false
+		}
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Background reload error: %v", msg.err)
+			m.statusIsError = true
+		}
+		return m, nil
+
 	case UpdateMsg:
 		if !updater.IsNewerThanCurrent(msg.TagName) {
 			m.updateAvailable = false
@@ -2624,6 +2841,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.statusIsError = true
 		}
+		if !msg.Recoverable {
+			failedWorker := m.backgroundWorker
+			m.backgroundWorker = nil
+			if failedWorker != nil {
+				failedWorker.Stop()
+			}
+			return m, nil
+		}
 		if m.backgroundWorker != nil {
 			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
 		}
@@ -2699,6 +2924,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, WatchFileCmd(m.watcher))
 			}
 			return m, tea.Batch(cmds...)
+		}
+		// A synchronous reload after background mode stops must not retain the
+		// previous worker snapshot. Its later Phase 2 completion would otherwise
+		// clone stale list/tree/board surfaces through DataSnapshot.WithPhase2
+		// while pairing them with the newly loaded issues and analysis.
+		oldSnapshot := m.snapshot
+		m.snapshot = nil
+		if oldSnapshot != nil && oldSnapshot.hasPooledIssues() {
+			go oldSnapshot.releasePooledIssues()
 		}
 		if len(m.pooledIssues) > 0 {
 			loader.ReturnIssuePtrsToPool(m.pooledIssues)
@@ -3011,11 +3245,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.watcher.Stop()
 					}
 					m.watcher = nil
-					m.backgroundWorker = bw
+					m.installBackgroundWorker(bw)
 					m.snapshotInitPending = true
 					autoEnabled = true
 					cmds = append(cmds, StartBackgroundWorkerCmd(m.backgroundWorker))
 					cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+					cmds = append(cmds, workerPollTickCmd())
 				} else {
 					m.statusMsg += fmt.Sprintf("; background mode unavailable: %v", err)
 				}
@@ -3358,10 +3593,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Refreshing…"
 			m.statusIsError = false
 
-			if m.backgroundWorker != nil {
+			if m.backgroundWorker != nil && m.backgroundWorker.State() != WorkerStopped {
 				m.backgroundWorker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
-				cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+				// Init (or background auto-enable) owns exactly one standing waiter;
+				// every worker message handler re-arms that chain. Starting another
+				// receiver here lets consecutive worker messages be delivered to
+				// Update out of order because tea.Batch runs commands concurrently.
 				return m, tea.Batch(cmds...)
+			}
+			if m.backgroundWorker != nil {
+				m.backgroundWorker = nil
 			}
 
 			if m.beadsPath == "" && m.watcher == nil {
@@ -3373,7 +3614,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{} })
 			return m, tea.Batch(cmds...)
 		}
-
 		// Handle shortcuts sidebar toggle (; or F2) - bv-3qi5
 		if (msg.String() == ";" || msg.String() == "f2") && m.list.FilterState() != list.Filtering {
 			m.showShortcutsSidebar = !m.showShortcutsSidebar
@@ -3554,8 +3794,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
-			m = m.handleTimeTravelInputKeys(msg)
-			return m, nil
+			var inputCmd tea.Cmd
+			m, inputCmd = m.handleTimeTravelInputKeys(msg)
+			return m, tea.Batch(inputCmd, m.pendingSemanticFilterCmd())
 		}
 
 		// Search/file-tree submodes must consume keys before the global key block.
@@ -3572,8 +3813,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
-			m = m.handleHistoryKeys(msg)
-			return m, nil
+			var inputCmd tea.Cmd
+			m, inputCmd = m.handleHistoryKeys(msg)
+			return m, tea.Batch(inputCmd, m.pendingSemanticFilterCmd())
 		}
 		// The label picker overlay has an always-focused text input. Like the
 		// search submodes above, it must consume keys BEFORE the global key
@@ -3585,8 +3827,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
-			m = m.handleLabelPickerKeys(msg)
-			return m, m.pendingSemanticFilterCmd()
+			var inputCmd tea.Cmd
+			m, inputCmd = m.handleLabelPickerKeys(msg)
+			return m, tea.Batch(inputCmd, m.pendingSemanticFilterCmd())
 		}
 
 		// Handle keys when not filtering
@@ -3770,8 +4013,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.pendingSemanticFilterCmd()
 
 			case focusLabelPicker:
-				m = m.handleLabelPickerKeys(msg)
-				return m, m.pendingSemanticFilterCmd()
+				m, cmd = m.handleLabelPickerKeys(msg)
+				return m, tea.Batch(cmd, m.pendingSemanticFilterCmd())
 
 			case focusInsights:
 				// Insights uses h/l for panel nav — intercept those.
@@ -3907,7 +4150,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Let other view-toggle keys (b/a/i/E/etc.) fall through.
 				// In search or file-tree mode, all keys go to the handler.
 				if m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus() {
-					m = m.handleHistoryKeys(msg)
+					m, cmd = m.handleHistoryKeys(msg)
+					cmds = append(cmds, cmd)
 					viewToggleHandled = true
 				} else {
 					switch keyStr {
@@ -3915,7 +4159,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						"j", "k", "up", "down",
 						"J", "K", "v", "tab", "enter",
 						"y", "c", "F", "o", "/":
-						m = m.handleHistoryKeys(msg)
+						m, cmd = m.handleHistoryKeys(msg)
+						cmds = append(cmds, cmd)
 						viewToggleHandled = true
 					}
 				}
@@ -4218,7 +4463,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.labelPicker.SetSize(m.width, m.height-1)
 				m.showLabelPicker = true
 				m.focused = focusLabelPicker
-				return m, nil
+				focusCmd := m.beginEmbeddedTextInputSession(
+					embeddedTextInputLabelPicker,
+					m.labelPicker.Focus(),
+				)
+				return m, tea.Batch(focusCmd, m.pendingSemanticFilterCmd())
 
 			case "O":
 				// Open in terminal editor (bv-134)
@@ -4229,7 +4478,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Remaining list-level keys handled by handleListKeys
-			m = m.handleListKeys(msg)
+			m, cmd = m.handleListKeys(msg)
+			cmds = append(cmds, cmd)
 		}
 
 	case tea.MouseMsg:
@@ -4692,31 +4942,28 @@ func (m *Model) handleActionableKeys(msg tea.KeyMsg) *Model {
 	return m
 }
 
-// handleHistoryKeys handles keyboard input when history view is focused
-func (m *Model) handleHistoryKeys(msg tea.KeyMsg) *Model {
+// handleHistoryKeys handles keyboard input when history view is focused. It
+// returns commands produced by the embedded text input (notably clipboard
+// paste commands) so the Bubble Tea runtime can execute them.
+func (m *Model) handleHistoryKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	// Handle search input when active (bv-nkrj)
 	if m.historyView.IsSearchActive() {
 		switch msg.String() {
 		case "esc":
 			m.historyView.CancelSearch()
+			m.endEmbeddedTextInputSession(embeddedTextInputHistorySearch)
 			m.statusMsg = "🔍 Search cancelled"
 			m.statusIsError = false
-			return m
+			return m, nil
 		case "enter":
 			// Confirm search (blur input, keep current query/filter active)
 			m.historyView.FinishSearch()
-			return m
+			m.endEmbeddedTextInputSession(embeddedTextInputHistorySearch)
+			return m, nil
 		default:
 			// Forward to search input
-			m.historyView.UpdateSearchInput(msg)
-			query := m.historyView.SearchQuery()
-			if query != "" {
-				m.statusMsg = fmt.Sprintf("🔍 Filtering: %s", query)
-			} else {
-				m.statusMsg = "🔍 Type to search..."
-			}
-			m.statusIsError = false
-			return m
+			inputCmd := m.updateHistorySearchInput(msg)
+			return m, m.scopeEmbeddedTextInputCmd(embeddedTextInputHistorySearch, inputCmd)
 		}
 	}
 
@@ -4725,10 +4972,10 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) *Model {
 		switch msg.String() {
 		case "j", "down":
 			m.historyView.MoveDownFileTree()
-			return m
+			return m, nil
 		case "k", "up":
 			m.historyView.MoveUpFileTree()
-			return m
+			return m, nil
 		case "enter", "l":
 			// Expand directory or select file for filtering
 			node := m.historyView.SelectedFileNode()
@@ -4742,11 +4989,11 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) *Model {
 					m.statusIsError = false
 				}
 			}
-			return m
+			return m, nil
 		case "h":
 			// Collapse directory
 			m.historyView.CollapseFileNode()
-			return m
+			return m, nil
 		case "esc":
 			// If filter is active, clear it; otherwise close file tree
 			if m.historyView.GetFileFilter() != "" {
@@ -4757,20 +5004,21 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) *Model {
 				m.statusMsg = "📁 File tree: press Tab to return focus"
 			}
 			m.statusIsError = false
-			return m
+			return m, nil
 		case "tab":
 			// Switch focus away from file tree
 			m.historyView.SetFileTreeFocus(false)
-			return m
+			return m, nil
 		}
 	}
 
 	switch msg.String() {
 	case "/":
 		// Start search (bv-nkrj)
-		m.historyView.StartSearch()
+		focusCmd := m.historyView.StartSearch()
 		m.statusMsg = "🔍 Type to search commits, beads, authors..."
 		m.statusIsError = false
+		return m, m.beginEmbeddedTextInputSession(embeddedTextInputHistorySearch, focusCmd)
 	case "v":
 		// Toggle between Bead mode and Git mode (bv-tl3n)
 		m.historyView.ToggleViewMode()
@@ -4961,7 +5209,7 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) *Model {
 		m.isHistoryView = false
 		m.focused = focusList
 	}
-	return m
+	return m, nil
 }
 
 // getCommitURL returns the GitHub/GitLab commit URL for a SHA (bv-xf4p)
@@ -5178,11 +5426,15 @@ func (m *Model) handleRepoPickerKeys(msg tea.KeyMsg) *Model {
 	return m
 }
 
-// handleLabelPickerKeys handles keyboard input when label picker is focused (bv-126)
-func (m *Model) handleLabelPickerKeys(msg tea.KeyMsg) *Model {
+// handleLabelPickerKeys handles keyboard input when label picker is focused
+// (bv-126) and preserves commands returned by its embedded text input.
+func (m *Model) handleLabelPickerKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	var inputCmd tea.Cmd
 	switch msg.String() {
 	case "esc":
 		m.showLabelPicker = false
+		m.labelPicker.Blur()
+		m.endEmbeddedTextInputSession(embeddedTextInputLabelPicker)
 		m.focused = focusList
 	case "j", "down", "ctrl+n":
 		m.labelPicker.MoveDown()
@@ -5196,12 +5448,15 @@ func (m *Model) handleLabelPickerKeys(msg tea.KeyMsg) *Model {
 			m.statusIsError = false
 		}
 		m.showLabelPicker = false
+		m.labelPicker.Blur()
+		m.endEmbeddedTextInputSession(embeddedTextInputLabelPicker)
 		m.focused = focusList
 	default:
 		// Pass other keys to text input for fuzzy search
-		m.labelPicker.UpdateInput(msg)
+		inputCmd = m.labelPicker.UpdateInput(msg)
+		inputCmd = m.scopeEmbeddedTextInputCmd(embeddedTextInputLabelPicker, inputCmd)
 	}
-	return m
+	return m, inputCmd
 }
 
 // handleInsightsKeys handles keyboard input when insights panel is focused
@@ -5256,8 +5511,10 @@ func (m *Model) handleInsightsKeys(msg tea.KeyMsg) *Model {
 	return m
 }
 
-// handleListKeys handles keyboard input when the list is focused
-func (m *Model) handleListKeys(msg tea.KeyMsg) *Model {
+// handleListKeys handles keyboard input when the list is focused and returns
+// any command needed by a newly focused embedded component.
+func (m *Model) handleListKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg.String() {
 	case "enter":
 		if !m.isSplitView {
@@ -5313,8 +5570,11 @@ func (m *Model) handleListKeys(msg tea.KeyMsg) *Model {
 			// Show input prompt for revision
 			m.showTimeTravelPrompt = true
 			m.timeTravelInput.SetValue("")
-			m.timeTravelInput.Focus()
 			m.focused = focusTimeTravelInput
+			cmd = m.beginEmbeddedTextInputSession(
+				embeddedTextInputTimeTravel,
+				m.timeTravelInput.Focus(),
+			)
 		}
 	case "T":
 		// Quick time-travel with default HEAD~5
@@ -5363,11 +5623,12 @@ func (m *Model) handleListKeys(msg tea.KeyMsg) *Model {
 			}
 		}
 	}
-	return m
+	return m, cmd
 }
 
 // handleTimeTravelInputKeys handles keyboard input for the time-travel revision prompt
-func (m *Model) handleTimeTravelInputKeys(msg tea.KeyMsg) *Model {
+func (m *Model) handleTimeTravelInputKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg.String() {
 	case "enter":
 		// Submit the revision
@@ -5377,18 +5638,21 @@ func (m *Model) handleTimeTravelInputKeys(msg tea.KeyMsg) *Model {
 		}
 		m.showTimeTravelPrompt = false
 		m.timeTravelInput.Blur()
+		m.endEmbeddedTextInputSession(embeddedTextInputTimeTravel)
 		m.focused = focusList
 		m.enterTimeTravelMode(revision)
 	case "esc":
 		// Cancel
 		m.showTimeTravelPrompt = false
 		m.timeTravelInput.Blur()
+		m.endEmbeddedTextInputSession(embeddedTextInputTimeTravel)
 		m.focused = focusList
 	default:
 		// Update the textinput
-		m.timeTravelInput, _ = m.timeTravelInput.Update(msg)
+		m.timeTravelInput, cmd = m.timeTravelInput.Update(msg)
+		cmd = m.scopeEmbeddedTextInputCmd(embeddedTextInputTimeTravel, cmd)
 	}
-	return m
+	return m, cmd
 }
 
 // restoreFocusFromHelp returns the exact focus that opened the help overlay.
