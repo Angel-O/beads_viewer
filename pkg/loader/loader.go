@@ -1213,6 +1213,7 @@ func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseO
 		lineNum++
 		nl := bytes.IndexByte(chunk, '\n')
 		var line []byte
+		hasNewline := nl >= 0
 		if nl < 0 {
 			line = chunk
 			chunk = nil
@@ -1229,8 +1230,9 @@ func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseO
 			continue
 		}
 
-		// bufio.Reader.ReadLine strips the trailing CR of a CRLF line ending.
-		if n := len(line); n > 0 && line[n-1] == '\r' {
+		// bufio.Reader.ReadLine strips CR only when it is immediately before a
+		// consumed newline. A bare CR on the final unterminated line is content.
+		if n := len(line); hasNewline && n > 0 && line[n-1] == '\r' {
 			line = line[:n-1]
 		}
 

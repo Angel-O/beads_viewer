@@ -371,6 +371,33 @@ func TestBackgroundWorkerSendDoesNotLetErrorEvictSnapshotReady(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorkerSendLetsSnapshotReadyReplaceError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	generation := worker.Generation()
+	worker.msgCh <- SnapshotErrorMsg{
+		Err:              errors.New("older reload error"),
+		Recoverable:      true,
+		WorkerGeneration: generation,
+	}
+	snapshot := &DataSnapshot{DataHash: "recovered"}
+	worker.send(SnapshotReadyMsg{
+		Snapshot:         snapshot,
+		SnapshotVer:      8,
+		WorkerGeneration: generation,
+	})
+
+	queued := <-worker.msgCh
+	got, ok := queued.(SnapshotReadyMsg)
+	if !ok || got.Snapshot != snapshot || got.SnapshotVer != 8 {
+		t.Fatalf("queued message=%#v, want replacement SnapshotReadyMsg", queued)
+	}
+}
+
 func TestBackgroundWorkerSendDropsStaleGenerationError(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
 	if err != nil {
@@ -1877,6 +1904,33 @@ func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T)
 	m = newM.(*Model)
 	if !m.snapshot.phase2Ready {
 		t.Fatal("matching Phase2UpdateMsg did not mark current snapshot ready")
+	}
+}
+
+func TestBackgroundWorker_RunPhase2AnalysisDropsInvalidatedGeneration(t *testing.T) {
+	issues := []model.Issue{{ID: "root", Title: "Root", Status: model.StatusOpen, IssueType: model.TypeTask}}
+	snapshot := NewSnapshotBuilder(issues).Build()
+	snapshot.Analysis.WaitForPhase2()
+	snapshot.DataHash = "stale-phase2-generation"
+	snapshot.phase2Ready = false
+
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 1})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.snapshot = snapshot
+	staleGeneration := worker.Generation()
+	mutateWorkerForTest(worker, func() {
+		worker.generation++
+	})
+
+	worker.runPhase2Analysis(snapshot, 9, staleGeneration)
+
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("invalidated Phase 2 generation published a message: %#v", unexpected)
+	default:
 	}
 }
 

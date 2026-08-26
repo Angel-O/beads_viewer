@@ -444,6 +444,7 @@ type Model struct {
 	snapshotInitPending bool
 	// backgroundWorker manages async data loading (nil if background mode disabled)
 	backgroundWorker       *BackgroundWorker
+	lastWorkerGeneration   uint64
 	lastAppliedSnapshotVer uint64
 	workerSpinnerIdx       int // Spinner frame for background worker activity (bv-9nfy)
 	lastForceRefresh       time.Time
@@ -527,6 +528,9 @@ type Model struct {
 	semanticDataGeneration  uint64
 	semanticIndexBuildGen   uint64
 	semanticIndexBuildData  uint64
+	semanticIndexSaver      semanticIndexSaveFunc
+	semanticIndexSaveActive *semanticIndexSaveRequest
+	semanticIndexSavePending *semanticIndexSaveRequest
 	semanticSearch          *SemanticSearch
 	semanticHybridEnabled   bool
 	semanticHybridPreset    search.PresetName
@@ -765,6 +769,10 @@ func (m *Model) beginSemanticDatasetUpdate() {
 	m.semanticIndexBuilding = false
 	m.semanticIndexBuildGen++
 	m.semanticIndexBuildData = 0
+	// A save that has not started yet is obsolete as soon as its dataset is.
+	// An active save cannot be cancelled safely; serialization ensures a later
+	// accepted generation will be persisted after it completes.
+	m.semanticIndexSavePending = nil
 	m.semanticHybridBuilding = false
 	m.semanticHybridBuildGen++
 	m.semanticHybridBuildData = 0
@@ -789,6 +797,39 @@ func (m *Model) startSemanticIndexBuild() tea.Cmd {
 	m.semanticIndexBuildGen++
 	m.semanticIndexBuildData = m.semanticDataGeneration
 	return BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticDataGeneration, m.semanticIndexBuildGen)
+}
+
+func (m *Model) queueSemanticIndexSave(request semanticIndexSaveRequest) tea.Cmd {
+	if m.semanticIndexSaveActive != nil {
+		// Only the newest accepted build needs to follow the active write. Keeping
+		// one pending request both bounds memory and guarantees the final on-disk
+		// index is the newest accepted generation.
+		m.semanticIndexSavePending = &request
+		return nil
+	}
+	save := m.semanticIndexSaver
+	if save == nil {
+		save = saveSemanticIndex
+	}
+	m.semanticIndexSaveActive = &request
+	return saveSemanticIndexCmd(request, save)
+}
+
+func (m *Model) finishSemanticIndexSave(msg semanticIndexSaveDoneMsg) tea.Cmd {
+	active := m.semanticIndexSaveActive
+	if active == nil || msg.DataGeneration != active.DataGeneration ||
+		msg.BuildGeneration != active.BuildGeneration || msg.IndexPath != active.IndexPath {
+		return nil
+	}
+	m.semanticIndexSaveActive = nil
+
+	pending := m.semanticIndexSavePending
+	m.semanticIndexSavePending = nil
+	if pending == nil || pending.DataGeneration != m.semanticDataGeneration ||
+		pending.BuildGeneration != m.semanticIndexBuildGen {
+		return nil
+	}
+	return m.queueSemanticIndexSave(*pending)
 }
 
 func (m *Model) startSemanticHybridBuild() tea.Cmd {
@@ -846,6 +887,22 @@ func (m *Model) pendingSemanticFilterCmd() tea.Cmd {
 	return tea.Tick(150*time.Millisecond-elapsed, func(time.Time) tea.Msg {
 		return semanticDebounceTickMsg{}
 	})
+}
+
+func (m *Model) rejectWorkerGeneration(generation uint64) bool {
+	if generation == 0 {
+		return m.lastWorkerGeneration != 0
+	}
+	if m.backgroundWorker != nil && generation != m.backgroundWorker.Generation() {
+		return true
+	}
+	return m.lastWorkerGeneration != 0 && generation < m.lastWorkerGeneration
+}
+
+func (m *Model) acceptWorkerGeneration(generation uint64) {
+	if generation > m.lastWorkerGeneration {
+		m.lastWorkerGeneration = generation
+	}
 }
 
 type snapshotListFilterMsg struct {
@@ -1485,6 +1542,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		keyRegistry:             keyRegistry,
 		currentFilter:           "all",
 		semanticSearch:          semanticSearch,
+		semanticIndexSaver:      saveSemanticIndex,
 		semanticDataGeneration:  1,
 		semanticQueryGeneration: 1,
 		semanticHybridEnabled:   false,
@@ -1805,17 +1863,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusIsError = true
 				break
 			}
-			// Persistence occurs only after this attempt wins the model fence. This
-			// prevents an older, slower build from overwriting the current index.
-			if err := msg.Index.Save(msg.IndexPath); err != nil {
-				m.semanticSearchEnabled = false
-				m.list.Filter = list.DefaultFilter
-				m.invalidateSemanticFilter()
-				filterState := m.list.FilterState()
-				m.refilterListSynchronously(filterState, m.list.FilterInput.Value(), m.selectedListIssueID(filterState != list.Unfiltered, m.list.FilterInput.Value()))
-				m.statusMsg = fmt.Sprintf("Semantic search unavailable: save index: %v", err)
-				m.statusIsError = true
-				break
+			// Persist only after this attempt wins the model fence, and perform the
+			// physical writes serially outside Update. A newer accepted build replaces
+			// the single pending request and is therefore always the final disk write.
+			if saveCmd := m.queueSemanticIndexSave(semanticIndexSaveRequest{
+				DataGeneration:  msg.DataGeneration,
+				BuildGeneration: msg.BuildGeneration,
+				Index:           msg.Index,
+				IndexPath:       msg.IndexPath,
+			}); saveCmd != nil {
+				cmds = append(cmds, saveCmd)
 			}
 		}
 		if m.semanticSearch != nil {
@@ -1837,6 +1894,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			filterText := m.list.FilterInput.Value()
 			selectedID := m.selectedListIssueID(true, filterText)
 			m.refilterListSynchronously(filterState, filterText, selectedID)
+		}
+
+	case semanticIndexSaveDoneMsg:
+		active := m.semanticIndexSaveActive
+		if active == nil || msg.DataGeneration != active.DataGeneration ||
+			msg.BuildGeneration != active.BuildGeneration || msg.IndexPath != active.IndexPath {
+			break
+		}
+		isCurrent := msg.DataGeneration == m.semanticDataGeneration &&
+			msg.BuildGeneration == m.semanticIndexBuildGen
+		nextSaveCmd := m.finishSemanticIndexSave(msg)
+		if msg.Error != nil && isCurrent {
+			m.semanticSearchEnabled = false
+			m.list.Filter = list.DefaultFilter
+			m.invalidateSemanticFilter()
+			filterState := m.list.FilterState()
+			filterText := m.list.FilterInput.Value()
+			selectedID := m.selectedListIssueID(filterState != list.Unfiltered, filterText)
+			m.refilterListSynchronously(filterState, filterText, selectedID)
+			m.statusMsg = fmt.Sprintf("Semantic search unavailable: save index: %v", msg.Error)
+			m.statusIsError = true
+		}
+		if nextSaveCmd != nil {
+			cmds = append(cmds, nextSaveCmd)
 		}
 
 	case HybridMetricsReadyMsg:
@@ -2072,7 +2153,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Verify this update matches the exact current snapshot. Data hashes can
 		// repeat on a forced refresh and cached analyses can share a Stats pointer,
 		// so worker-emitted messages also carry the monotonic snapshot version.
-		if m.snapshot == nil || m.snapshot.DataHash != msg.DataHash ||
+		if m.rejectWorkerGeneration(msg.WorkerGeneration) ||
+			m.snapshot == nil || m.snapshot.DataHash != msg.DataHash ||
 			msg.Stats == nil || m.snapshot.Analysis != msg.Stats ||
 			(msg.Snapshot != nil && m.snapshot != msg.Snapshot) ||
 			(m.lastAppliedSnapshotVer != 0 && msg.SnapshotVer == 0) ||
@@ -2083,6 +2165,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		m.acceptWorkerGeneration(msg.WorkerGeneration)
 
 		// Mark snapshot as Phase 2 ready
 		m.snapshot.phase2Ready = true
@@ -2136,6 +2219,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.rejectWorkerGeneration(msg.WorkerGeneration) {
+			msg.Snapshot.releasePooledIssues()
+			if m.backgroundWorker != nil {
+				return m, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+			}
+			return m, nil
+		}
 		if (m.lastAppliedSnapshotVer != 0 && msg.SnapshotVer == 0) ||
 			(msg.SnapshotVer != 0 && msg.SnapshotVer <= m.lastAppliedSnapshotVer) {
 			msg.Snapshot.releasePooledIssues()
@@ -2147,6 +2237,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.SnapshotVer != 0 {
 			m.lastAppliedSnapshotVer = msg.SnapshotVer
 		}
+		m.acceptWorkerGeneration(msg.WorkerGeneration)
 
 		firstSnapshot := m.snapshotInitPending && m.snapshot == nil
 		m.snapshotInitPending = false
@@ -2511,6 +2602,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SnapshotErrorMsg:
 		// Background worker encountered an error loading/processing data
 		// If recoverable, we'll try again on next file change.
+		if m.rejectWorkerGeneration(msg.WorkerGeneration) {
+			if m.backgroundWorker != nil {
+				cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		m.acceptWorkerGeneration(msg.WorkerGeneration)
 		if m.snapshotInitPending && m.snapshot == nil {
 			m.snapshotInitPending = false
 		}
@@ -3062,7 +3160,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showLabelDrilldown = false
 				m.labelDrilldownLabel = ""
 				m.labelDrilldownIssues = nil
-				return m, nil
+				return m, m.pendingSemanticFilterCmd()
 			case "g":
 				// Show graph analysis sub-view (bv-109)
 				if m.labelDrilldownLabel != "" {
@@ -3117,7 +3215,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusMsg = fmt.Sprintf("Filtered to label %s (attention #%d)", label, idx+1)
 					m.statusIsError = false
 				}
-				return m, nil
+				return m, m.pendingSemanticFilterCmd()
 			}
 		}
 
@@ -3195,7 +3293,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m = m.handleRepoPickerKeys(msg)
-			return m, nil
+			return m, m.pendingSemanticFilterCmd()
 		}
 
 		// Handle recipe picker overlay before global keys (esc/q/etc.)
@@ -3204,7 +3302,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m = m.handleRecipePickerKeys(msg)
-			return m, nil
+			return m, m.pendingSemanticFilterCmd()
 		}
 
 		// Handle quit confirmation first
@@ -3421,6 +3519,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.updateListDelegate()
+			if pendingCmd := m.pendingSemanticFilterCmd(); pendingCmd != nil {
+				cmds = append(cmds, pendingCmd)
+			}
 			return m, tea.Batch(cmds...)
 		}
 
@@ -3481,7 +3582,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 			m = m.handleLabelPickerKeys(msg)
-			return m, nil
+			return m, m.pendingSemanticFilterCmd()
 		}
 
 		// Handle keys when not filtering
@@ -3658,15 +3759,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.focused {
 			case focusRecipePicker:
 				m = m.handleRecipePickerKeys(msg)
-				return m, nil
+				return m, m.pendingSemanticFilterCmd()
 
 			case focusRepoPicker:
 				m = m.handleRepoPickerKeys(msg)
-				return m, nil
+				return m, m.pendingSemanticFilterCmd()
 
 			case focusLabelPicker:
 				m = m.handleLabelPickerKeys(msg)
-				return m, nil
+				return m, m.pendingSemanticFilterCmd()
 
 			case focusInsights:
 				// Insights uses h/l for panel nav — intercept those.
@@ -3718,7 +3819,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currentFilter = "label:" + selectedLabel
 					m.applyFilter()
 					m.focused = focusList
-					return m, cmd
+					return m, tea.Batch(cmd, m.pendingSemanticFilterCmd())
 				}
 				// Open detail modal on 'h'
 				if keyStr == "h" && len(m.labelDashboard.labels) > 0 {

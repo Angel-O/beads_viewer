@@ -42,6 +42,8 @@ type semanticScoreCache struct {
 	byTerm map[string]map[string]SemanticScore
 }
 
+const semanticCacheMaxTerms = 20
+
 type metricsCacheHolder struct {
 	cache search.MetricsCache
 }
@@ -116,7 +118,7 @@ func (s *SemanticSearch) SetScores(term string, scores map[string]SemanticScore)
 	for cachedTerm, cachedScores := range current.byTerm {
 		byTerm[cachedTerm] = cachedScores
 	}
-	if len(byTerm) >= 20 {
+	if _, exists := byTerm[term]; !exists && len(byTerm) >= semanticCacheMaxTerms {
 		byTerm = make(map[string]map[string]SemanticScore)
 	}
 	if scores == nil {
@@ -212,7 +214,7 @@ func (s *SemanticSearch) SetCachedResults(term string, results []list.Rank) {
 		newCache.results[k] = v
 	}
 	// Limit cache size to prevent memory bloat
-	if len(newCache.results) > 20 {
+	if _, exists := newCache.results[term]; !exists && len(newCache.results) >= semanticCacheMaxTerms {
 		// Clear old entries (simple approach: clear all)
 		newCache.results = make(map[string][]list.Rank)
 	}
@@ -525,6 +527,40 @@ type SemanticIndexReadyMsg struct {
 	NeedsSave       bool
 	Stats           search.IndexSyncStats
 	Error           error
+}
+
+type semanticIndexSaveRequest struct {
+	DataGeneration  uint64
+	BuildGeneration uint64
+	Index           *search.VectorIndex
+	IndexPath       string
+}
+
+type semanticIndexSaveDoneMsg struct {
+	DataGeneration  uint64
+	BuildGeneration uint64
+	IndexPath       string
+	Error           error
+}
+
+type semanticIndexSaveFunc func(*search.VectorIndex, string) error
+
+func saveSemanticIndex(idx *search.VectorIndex, path string) error {
+	return idx.Save(path)
+}
+
+func saveSemanticIndexCmd(request semanticIndexSaveRequest, save semanticIndexSaveFunc) tea.Cmd {
+	if request.Index == nil || request.IndexPath == "" || save == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return semanticIndexSaveDoneMsg{
+			DataGeneration:  request.DataGeneration,
+			BuildGeneration: request.BuildGeneration,
+			IndexPath:       request.IndexPath,
+			Error:           save(request.Index, request.IndexPath),
+		}
+	}
 }
 
 // SemanticFilterResultMsg is emitted when async semantic filter results are ready.

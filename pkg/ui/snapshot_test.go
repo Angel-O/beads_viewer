@@ -995,6 +995,115 @@ func TestSnapshotSwapRejectsOutOfOrderVersionAndReleasesLease(t *testing.T) {
 	}
 }
 
+func TestSnapshotSwapRejectsPreRecoveryGenerationBeforeReplacementArrives(t *testing.T) {
+	cfg := snapshotBuildConfigDefault()
+	cfg.SkipPhase2 = true
+	current := NewSnapshotBuilder([]model.Issue{{
+		ID: "current", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	current.Analysis = nil
+
+	worker := &BackgroundWorker{generation: 1}
+	m := NewModel(copyIssues(current.Issues), nil, "")
+	m.backgroundWorker = worker
+	updated, _ := m.Update(SnapshotReadyMsg{
+		Snapshot:         current,
+		SnapshotVer:      1,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if m.snapshot != current || m.lastWorkerGeneration != 1 {
+		t.Fatalf("generation-1 snapshot was not accepted: snapshot=%p generation=%d", m.snapshot, m.lastWorkerGeneration)
+	}
+
+	// Recovery advances the worker before any generation-2 message reaches the
+	// model. A queued generation-1 message with a newer snapshot version must
+	// still be rejected against the worker's authoritative generation.
+	worker.mu.Lock()
+	worker.generation = 2
+	worker.mu.Unlock()
+	stale := NewSnapshotBuilder([]model.Issue{{
+		ID: "stale", Title: "Stale", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	stale.Analysis = nil
+	releases := 0
+	stale.pooledIssues = &pooledIssueLease{
+		refs: []*model.Issue{{ID: "pooled-stale"}},
+		release: func([]*model.Issue) {
+			releases++
+		},
+	}
+	updated, waitCmd := m.Update(SnapshotReadyMsg{
+		Snapshot:         stale,
+		SnapshotVer:      2,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if waitCmd == nil {
+		t.Fatal("stale generation rejection did not re-arm the worker wait command")
+	}
+	if m.snapshot != current || m.lastAppliedSnapshotVer != 1 || m.lastWorkerGeneration != 1 {
+		t.Fatal("stale pre-recovery message changed the accepted snapshot fence")
+	}
+	if releases != 1 || stale.hasPooledIssues() {
+		t.Fatalf("stale generation lease release count=%d active=%v, want 1/false", releases, stale.hasPooledIssues())
+	}
+
+	m.statusMsg = "current status"
+	updated, waitCmd = m.Update(SnapshotErrorMsg{
+		Err:              fmt.Errorf("stale generation error"),
+		Recoverable:      true,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if waitCmd == nil {
+		t.Fatal("stale generation error did not re-arm the worker wait command")
+	}
+	if m.statusMsg != "current status" || m.lastWorkerGeneration != 1 {
+		t.Fatal("stale generation error changed current model state")
+	}
+
+	replacement := NewSnapshotBuilder([]model.Issue{{
+		ID: "replacement", Title: "Replacement", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:         replacement,
+		SnapshotVer:      3,
+		WorkerGeneration: 2,
+	})
+	m = updated.(*Model)
+	if m.snapshot != replacement || m.lastWorkerGeneration != 2 || m.lastAppliedSnapshotVer != 3 {
+		t.Fatal("current post-recovery snapshot was not accepted")
+	}
+
+	replacement.phase2Ready = false
+	updated, waitCmd = m.Update(Phase2UpdateMsg{
+		DataHash:         replacement.DataHash,
+		Stats:            replacement.Analysis,
+		Snapshot:         replacement,
+		SnapshotVer:      3,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if waitCmd == nil {
+		t.Fatal("stale generation Phase 2 update did not re-arm the worker wait command")
+	}
+	if replacement.phase2Ready {
+		t.Fatal("stale generation Phase 2 update marked the current snapshot ready")
+	}
+	updated, _ = m.Update(Phase2UpdateMsg{
+		DataHash:         replacement.DataHash,
+		Stats:            replacement.Analysis,
+		Snapshot:         replacement,
+		SnapshotVer:      3,
+		WorkerGeneration: 2,
+	})
+	m = updated.(*Model)
+	if !replacement.phase2Ready {
+		t.Fatal("current generation Phase 2 update was rejected")
+	}
+}
+
 func TestPhase2UpdateRejectsSameHashFromDifferentStats(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "root", Title: "Root", Status: model.StatusOpen, IssueType: model.TypeTask},

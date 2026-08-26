@@ -1044,6 +1044,12 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 
 // process builds a new snapshot from the current file.
 func (w *BackgroundWorker) process() {
+	w.processWithSnapshotBuilder(w.buildSnapshotResult)
+}
+
+// processWithSnapshotBuilder keeps the generation-fenced completion path
+// independently testable without relying on filesystem timing.
+func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotBuildResult) {
 	w.mu.Lock()
 	w.processScheduled = false
 	if w.state != WorkerIdle {
@@ -1079,7 +1085,7 @@ func (w *BackgroundWorker) process() {
 	// Load and build snapshot. Error publication is deliberately deferred until
 	// after the generation fence below: a timed-out build may continue after
 	// recovery has already started a replacement generation.
-	result := w.buildSnapshotResult(forceNext)
+	result := build(forceNext)
 	snapshot := result.snapshot
 
 	w.mu.Lock()

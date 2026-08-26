@@ -2,11 +2,15 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // =============================================================================
@@ -517,6 +521,47 @@ func TestSemanticSearchCacheManagement(t *testing.T) {
 	}
 }
 
+func TestSemanticSearchCachesShareDistinctTermEvictionBoundary(t *testing.T) {
+	ss := NewSemanticSearch()
+	for i := 0; i < semanticCacheMaxTerms; i++ {
+		term := fmt.Sprintf("term-%02d", i)
+		ss.SetScores(term, map[string]SemanticScore{"issue": {Score: float64(i)}})
+		ss.SetCachedResults(term, []list.Rank{{Index: i}})
+	}
+
+	// Replacing one of the twenty distinct terms must not evict either cache.
+	ss.SetScores("term-00", map[string]SemanticScore{"issue": {Score: 99}})
+	ss.SetCachedResults("term-00", []list.Rank{{Index: 99}})
+	if got := len(ss.getScores().byTerm); got != semanticCacheMaxTerms {
+		t.Fatalf("score cache size after replacement=%d, want %d", got, semanticCacheMaxTerms)
+	}
+	if got := len(ss.getCache().results); got != semanticCacheMaxTerms {
+		t.Fatalf("result cache size after replacement=%d, want %d", got, semanticCacheMaxTerms)
+	}
+	if got := ss.getScores().byTerm["term-00"]["issue"].Score; got != 99 {
+		t.Fatalf("replacement score=%v, want 99", got)
+	}
+	if got := ss.getCache().results["term-00"][0].Index; got != 99 {
+		t.Fatalf("replacement rank index=%d, want 99", got)
+	}
+
+	// The twenty-first distinct term resets both caches at the same boundary.
+	ss.SetScores("overflow", map[string]SemanticScore{"issue": {Score: 101}})
+	ss.SetCachedResults("overflow", []list.Rank{{Index: 101}})
+	if got := len(ss.getScores().byTerm); got != 1 {
+		t.Fatalf("score cache size after overflow=%d, want 1", got)
+	}
+	if got := len(ss.getCache().results); got != 1 {
+		t.Fatalf("result cache size after overflow=%d, want 1", got)
+	}
+	if _, ok := ss.getScores().byTerm["term-00"]; ok {
+		t.Fatal("score cache retained an evicted term")
+	}
+	if _, ok := ss.getCache().results["term-00"]; ok {
+		t.Fatal("result cache retained an evicted term")
+	}
+}
+
 func TestSemanticSearchCachesResultsAndScoresPerTermAcrossABA(t *testing.T) {
 	ss := NewSemanticSearch()
 	idx := search.NewVectorIndex(2)
@@ -935,6 +980,214 @@ func TestModelClearsPendingSemanticFilterAfterEmbedError(t *testing.T) {
 	}
 	if cmd := m.pendingSemanticFilterCmd(); cmd != nil {
 		t.Fatal("embed error immediately rescheduled the failed query")
+	}
+}
+
+func newProgrammaticSemanticRefilterModel() *Model {
+	issues := []model.Issue{
+		{ID: "repo-a-1", Title: "Alpha backend", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"backend"}, SourceRepo: "repo-a"},
+		{ID: "repo-b-1", Title: "Alpha frontend", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"frontend"}, SourceRepo: "repo-b"},
+	}
+	m := NewModel(issues, nil, "")
+	idx := search.NewVectorIndex(3)
+	for _, issue := range issues {
+		_ = idx.Upsert(issue.ID, search.ContentHash{}, []float32{1, 0, 0})
+	}
+	m.semanticSearch.SetIndex(idx, &mockEmbedder{dim: 3})
+	m.semanticSearchEnabled = true
+	m.list.Filter = m.semanticSearch.Filter
+	m.list.SetFilterText("alpha")
+	m.list.SetFilterState(list.FilterApplied)
+	m.lastSearchTerm = "alpha"
+	m.semanticSearch.ClearPending()
+	return m
+}
+
+func TestProgrammaticSemanticRefiltersSchedulePendingWorkBeforeEarlyReturn(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*Model)
+		key   tea.KeyMsg
+	}{
+		{
+			name: "ctrl+s toggle",
+			setup: func(m *Model) {
+				m.semanticSearchEnabled = false
+				m.list.Filter = list.DefaultFilter
+				m.list.SetFilterText("alpha")
+				m.list.SetFilterState(list.FilterApplied)
+				m.semanticSearch.ClearPending()
+			},
+			key: tea.KeyMsg{Type: tea.KeyCtrlS},
+		},
+		{
+			name: "recipe picker",
+			setup: func(m *Model) {
+				m.recipePicker = NewRecipePickerModel([]recipe.Recipe{{Name: "everything"}}, m.theme)
+				m.showRecipePicker = true
+				m.focused = focusRecipePicker
+			},
+			key: tea.KeyMsg{Type: tea.KeyEnter},
+		},
+		{
+			name: "repo picker",
+			setup: func(m *Model) {
+				m.workspaceMode = true
+				m.availableRepos = []string{"repo-a", "repo-b"}
+				m.repoPicker = NewRepoPickerModel(m.availableRepos, m.theme)
+				m.repoPicker.selected["repo-b"] = false
+				m.showRepoPicker = true
+				m.focused = focusRepoPicker
+			},
+			key: tea.KeyMsg{Type: tea.KeyEnter},
+		},
+		{
+			name: "label picker",
+			setup: func(m *Model) {
+				m.labelPicker = NewLabelPickerModel([]string{"backend", "frontend"}, map[string]int{"backend": 1, "frontend": 1}, m.theme)
+				m.showLabelPicker = true
+				m.focused = focusLabelPicker
+			},
+			key: tea.KeyMsg{Type: tea.KeyEnter},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newProgrammaticSemanticRefilterModel()
+			tt.setup(m)
+
+			updated, cmd := m.Update(tt.key)
+			m = updated.(*Model)
+			if pending := m.semanticSearch.GetPendingTerm(); pending != "alpha" {
+				t.Fatalf("pending semantic term=%q, want alpha", pending)
+			}
+			if cmd == nil {
+				t.Fatal("programmatic refilter returned before scheduling pending semantic work")
+			}
+		})
+	}
+}
+
+func TestSemanticIndexPersistenceIsAsyncSerializedAndGenerationSafe(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.semanticSearchEnabled = true
+	m.semanticDataGeneration = 7
+	m.semanticIndexBuilding = true
+	m.semanticIndexBuildData = 7
+	m.semanticIndexBuildGen = 11
+
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	started := make(chan string, 2)
+	m.semanticIndexSaver = func(_ *search.VectorIndex, path string) error {
+		started <- path
+		switch path {
+		case "first-index":
+			<-firstRelease
+			return context.DeadlineExceeded
+		case "second-index":
+			<-secondRelease
+		}
+		return nil
+	}
+
+	firstIndex := search.NewVectorIndex(3)
+	updated, firstSaveCmd := m.Update(SemanticIndexReadyMsg{
+		DataGeneration:  7,
+		BuildGeneration: 11,
+		Index:           firstIndex,
+		Embedder:        &mockEmbedder{dim: 3},
+		IndexPath:       "first-index",
+		NeedsSave:       true,
+	})
+	m = updated.(*Model)
+	if firstSaveCmd == nil {
+		t.Fatal("accepted index did not schedule asynchronous persistence")
+	}
+	select {
+	case path := <-started:
+		t.Fatalf("Update invoked blocking saver synchronously for %q", path)
+	default:
+	}
+	if m.semanticSearch.Snapshot().Index != firstIndex {
+		t.Fatal("accepted in-memory index was not installed before persistence")
+	}
+
+	firstDone := make(chan tea.Msg, 1)
+	go func() { firstDone <- firstSaveCmd() }()
+	select {
+	case path := <-started:
+		if path != "first-index" {
+			t.Fatalf("first saver path=%q, want first-index", path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first asynchronous saver did not start")
+	}
+
+	// Accept a newer build while the first physical write is blocked. It must
+	// replace the pending request without starting a concurrent disk write.
+	m.semanticIndexBuilding = true
+	m.semanticIndexBuildData = 7
+	m.semanticIndexBuildGen = 12
+	secondIndex := search.NewVectorIndex(3)
+	updated, _ = m.Update(SemanticIndexReadyMsg{
+		DataGeneration:  7,
+		BuildGeneration: 12,
+		Index:           secondIndex,
+		Embedder:        &mockEmbedder{dim: 3},
+		IndexPath:       "second-index",
+		NeedsSave:       true,
+	})
+	m = updated.(*Model)
+	if m.semanticSearch.Snapshot().Index != secondIndex {
+		t.Fatal("newer accepted in-memory index was not installed")
+	}
+	if m.semanticIndexSavePending == nil || m.semanticIndexSavePending.BuildGeneration != 12 {
+		t.Fatal("newer accepted save did not replace the pending request")
+	}
+	select {
+	case path := <-started:
+		t.Fatalf("newer saver %q started concurrently with the blocked older save", path)
+	default:
+	}
+
+	close(firstRelease)
+	var firstResult tea.Msg
+	select {
+	case firstResult = <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first saver did not finish after release")
+	}
+	updated, secondSaveCmd := m.Update(firstResult)
+	m = updated.(*Model)
+	if !m.semanticSearchEnabled {
+		t.Fatal("stale save error disabled the newer accepted semantic index")
+	}
+	if secondSaveCmd == nil {
+		t.Fatal("completion of first save did not schedule the pending newer save")
+	}
+
+	secondDone := make(chan tea.Msg, 1)
+	go func() { secondDone <- secondSaveCmd() }()
+	select {
+	case path := <-started:
+		if path != "second-index" {
+			t.Fatalf("second saver path=%q, want second-index", path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second saver did not start after first completed")
+	}
+	close(secondRelease)
+	select {
+	case secondResult := <-secondDone:
+		updated, _ = m.Update(secondResult)
+		m = updated.(*Model)
+	case <-time.After(time.Second):
+		t.Fatal("second saver did not finish after release")
+	}
+	if m.semanticIndexSaveActive != nil || m.semanticIndexSavePending != nil {
+		t.Fatal("semantic save queue did not drain")
 	}
 }
 

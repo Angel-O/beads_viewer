@@ -185,6 +185,14 @@ func TestParallelDiff_NoTrailingNewline(t *testing.T) {
 	assertDiffEqual(t, "no-trailing-nl/pooled", data, true, nil)
 }
 
+func TestParallelDiff_FinalBareCarriageReturnIsContent(t *testing.T) {
+	data := []byte(`{"id":"CR","title":"bare CR is not CRLF","status":"open","issue_type":"task","priority":1}` + "\r")
+
+	for _, usePool := range []bool{false, true} {
+		assertDiffEqual(t, fmt.Sprintf("bare-cr/pooled=%v", usePool), data, usePool, nil)
+	}
+}
+
 func TestParallelDiff_DuplicateIntegrityPrecedesFilteringAndWarningsStayOrdered(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		`{"id":"same","title":"canonical","status":"open","issue_type":"task","priority":1}`,
