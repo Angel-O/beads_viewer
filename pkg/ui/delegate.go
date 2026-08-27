@@ -229,23 +229,35 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftFixedWidth += lipgloss.Width(searchBadge) + 1
 	}
 
+	diffBadge := i.DiffStatus.Badge()
+	if diffBadge != "" {
+		leftFixedWidth += lipgloss.Width(diffBadge) + 1
+	}
+
 	// ID width - use actual visual width, but cap reasonably
 	idWidth := lipgloss.Width(idStr)
 	if idWidth > 35 {
 		idWidth = 35
 		idStr = truncateRunesHelper(idStr, 35, "…")
 	}
-	leftFixedWidth += idWidth + 1
 
-	// Diff badge width adjustment
-	if badge := i.DiffStatus.Badge(); badge != "" {
-		leftFixedWidth += lipgloss.Width(badge) + 1
+	// Keep the fixed columns within the row when a narrow pane has a long issue
+	// ID. The title can shrink to a single cell before the ID is truncated.
+	fixedWithoutID := leftFixedWidth
+	maxIDWidth := width - fixedWithoutID - rightWidth - 2
+	if maxIDWidth < idWidth {
+		idWidth = maxIDWidth
+		if idWidth < 1 {
+			idWidth = 1
+		}
+		idStr = truncateRunesHelper(idStr, idWidth, "…")
 	}
+	leftFixedWidth = fixedWithoutID + idWidth + 1
 
 	// Title gets everything in between
 	titleWidth := width - leftFixedWidth - rightWidth - 2
-	if titleWidth < 5 {
-		titleWidth = 5
+	if titleWidth < 1 {
+		titleWidth = 1
 	}
 
 	// Truncate title if needed
@@ -330,8 +342,8 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	leftSide.WriteString(" ")
 
 	// Diff badge (time-travel mode)
-	if badge := i.DiffStatus.Badge(); badge != "" {
-		leftSide.WriteString(badge)
+	if diffBadge != "" {
+		leftSide.WriteString(diffBadge)
 		leftSide.WriteString(" ")
 	}
 

@@ -304,6 +304,64 @@ func TestFullScreenTreeAndTutorialLayoutAtNormalSize(t *testing.T) {
 	}
 }
 
+func TestShortcutsSidebarKeepsLongIssueRowsSingleLine(t *testing.T) {
+	issues := []model.Issue{
+		{
+			ID:        "repository-item-with-a-realistically-long-id-00",
+			Title:     "A title with enough realistic detail to exceed the narrowed list row",
+			Status:    model.StatusOpen,
+			Priority:  1,
+			IssueType: model.TypeTask,
+			Comments:  []*model.Comment{{ID: "comment-1", Text: "A comment"}},
+		},
+	}
+	m := sizedModel(t, issues, 220, 30)
+	items := m.list.Items()
+	item := items[0].(IssueItem)
+	item.IsQuickWin = false
+	item.IsBlocker = false
+	item.UnblocksCount = 0
+	item.DiffStatus = DiffStatusNew
+	items[0] = item
+	m.list.SetItems(items)
+	m.updateListDelegate()
+	countNonEmptyRows := func() int {
+		count := 0
+		for _, row := range strings.Split(ansi.Strip(m.list.View()), "\n") {
+			if strings.TrimSpace(row) != "" {
+				count++
+			}
+		}
+		return count
+	}
+	if got := countNonEmptyRows(); got != 1 {
+		t.Fatalf("long issue row wrapped before opening sidebar: got %d non-empty lines, want 1:\n%s", got, m.list.View())
+	}
+	updated, _ := m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open shortcuts sidebar")
+	}
+	if !strings.Contains(m.list.View(), "💬1") {
+		t.Fatalf("comment count indicator disappeared from the narrowed row:\n%s", m.list.View())
+	}
+	if !strings.Contains(m.list.View(), "🆕") {
+		t.Fatalf("diff badge disappeared from the narrowed row:\n%s", m.list.View())
+	}
+
+	rows := strings.Split(ansi.Strip(m.list.View()), "\n")
+	if got := countNonEmptyRows(); got != 1 {
+		t.Fatalf("long issue row wrapped after opening sidebar: got %d non-empty lines, want 1:\n%s", got, m.list.View())
+	}
+	for _, row := range rows {
+		if strings.TrimSpace(row) != "" {
+			if width := lipgloss.Width(row); width > m.list.Width() {
+				t.Fatalf("long issue row exceeds list width %d: got %d: %q", m.list.Width(), width, row)
+			}
+		}
+	}
+}
+
 func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
 	lastLine := func(view string) string {
 		lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
