@@ -50,6 +50,11 @@ type bdIssue struct {
 	Dependents   []bdRelation `json:"dependents"`
 }
 
+type bdComment struct {
+	ID      string `json:"id"`
+	IssueID string `json:"issue_id"`
+}
+
 type bdRelation struct {
 	ID             string `json:"id"`
 	Status         string `json:"status"`
@@ -252,7 +257,14 @@ func (a *app) run(arguments []string) int {
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
 	case "comments":
-		return a.commentsAdd(request)
+		switch request.subcommand {
+		case "add":
+			return a.commentsAdd(request)
+		case "edit":
+			return a.commentsEdit(request)
+		default:
+			return a.commentsDelete(request)
+		}
 	case "link":
 		if err := need("bv"); err != nil {
 			return a.fail(err)
@@ -639,6 +651,119 @@ func (a *app) commentsAdd(request request) int {
 		}
 	}
 	return a.runBDMutation(a.dir, args...)
+}
+
+func (a *app) commentsEdit(request request) int {
+	stdinData, err := a.prepareCommentEditInput(request)
+	if err != nil {
+		return a.fail(err)
+	}
+	if request.commentStdin {
+		a.stdin = bytes.NewReader(nil)
+	}
+	issue, err := a.validateCommentIssue(request.positionals[0])
+	if err != nil {
+		return a.fail(err)
+	}
+	if err := a.validateCommentIdentity(issue.ID, request.positionals[1]); err != nil {
+		return a.fail(err)
+	}
+	if request.commentStdin {
+		a.stdin = bytes.NewReader(stdinData)
+	}
+
+	args := appendJSON(nil, request.json)
+	args = append(args, "comments", "edit", issue.ID, request.positionals[1])
+	if request.commentStdin {
+		args = append(args, "--stdin")
+	} else if request.commentFile != "" {
+		args = append(args, "--file", request.commentFile)
+	} else {
+		if request.commentSeparator {
+			args = append(args, "--")
+		}
+		args = append(args, request.positionals[2:]...)
+	}
+	return a.runBDMutation(a.dir, args...)
+}
+
+func (a *app) commentsDelete(request request) int {
+	issue, err := a.validateCommentIssue(request.positionals[0])
+	if err != nil {
+		return a.fail(err)
+	}
+	if err := a.validateCommentIdentity(issue.ID, request.positionals[1]); err != nil {
+		return a.fail(err)
+	}
+
+	args := appendJSON(nil, request.json)
+	args = append(args, "comments", "delete", issue.ID, request.positionals[1])
+	return a.runBDMutation(a.dir, args...)
+}
+
+func (a *app) validateCommentIssue(id string) (bdIssue, error) {
+	issue, err := a.readIssue(id, false)
+	if err != nil {
+		return bdIssue{}, err
+	}
+	config, err := hub.Resolve(a.paths.Config)
+	if err != nil {
+		return bdIssue{}, fmt.Errorf("resolving Hub config: %w", err)
+	}
+	if err := hub.ValidateStoredIssue(issue.policyState(), config.Repositories); err != nil {
+		return bdIssue{}, fmt.Errorf("validating issue %s: %w", issue.ID, err)
+	}
+	currentContext, err := hub.Context(a.dir)
+	if err != nil {
+		return bdIssue{}, fmt.Errorf("resolving current repository context: %w", err)
+	}
+	for _, context := range hub.Contexts(issue.Labels) {
+		if context == currentContext {
+			return issue, nil
+		}
+	}
+	return bdIssue{}, fmt.Errorf("issue %s does not belong to current repository context %s", issue.ID, currentContext)
+}
+
+func (a *app) validateCommentIdentity(issueID, commentID string) error {
+	data, err := a.runBDCapture(a.dir, "--readonly", "--json", "comments", issueID)
+	if err != nil {
+		return fmt.Errorf("reading comments for issue %s: %w", issueID, err)
+	}
+	var comments []bdComment
+	if err := json.Unmarshal(data, &comments); err != nil {
+		return fmt.Errorf("decoding comments for issue %s: %w", issueID, err)
+	}
+	for _, comment := range comments {
+		if comment.ID == commentID && comment.IssueID == issueID {
+			return nil
+		}
+	}
+	return fmt.Errorf("comment %s was not found on issue %s", commentID, issueID)
+}
+
+func (a *app) prepareCommentEditInput(request request) ([]byte, error) {
+	if request.commentFile != "" {
+		data, err := os.ReadFile(request.commentFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading replacement text: %w", err)
+		}
+		return nil, validateCommentEditBody(string(data))
+	}
+	if request.commentStdin {
+		if a.stdin == nil {
+			return nil, errors.New("replacement text stdin is unavailable")
+		}
+		data, err := io.ReadAll(a.stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading replacement text from stdin: %w", err)
+		}
+		if err := validateCommentEditBody(string(data)); err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+	return nil, validateCommentEditBody(strings.Join(request.positionals[2:], " "))
 }
 
 func (a *app) compatibility() int {
