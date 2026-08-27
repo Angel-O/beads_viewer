@@ -729,6 +729,21 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestCommentEditFromListUsesEditFlow(t *testing.T) {
+	m := commentActionModel()
+	m.focused = focusList
+	m.insightsDetailID = ""
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if !m.showCommentPrompt || m.showCommentDeleteConfirm || m.commentAction != "edit" {
+		t.Fatalf("list edit flow = prompt:%v delete:%v action:%q", m.showCommentPrompt, m.showCommentDeleteConfirm, m.commentAction)
+	}
+}
+
 func TestCommentMutationsIgnoredInTimeTravelMode(t *testing.T) {
 	for _, action := range []string{"e", "d"} {
 		m := commentActionModel()

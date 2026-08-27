@@ -5734,8 +5734,10 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 	case "C":
 		// Copy selected issue to clipboard
 		m.copyIssueToClipboard()
-	case "e", "d":
-		m.beginCommentAction(msg.String())
+	case "e":
+		m.beginCommentAction("edit")
+	case "d":
+		m.beginCommentAction("delete")
 	// Note: "O" (open in editor) is handled at the Update level for tea.Cmd support (bv-134)
 	case "h":
 		// Toggle history view
