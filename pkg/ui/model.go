@@ -5907,6 +5907,14 @@ func (m Model) selectedComment() *model.Comment {
 }
 
 func (m Model) handleCommentSelectionKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if (m.commentAction == "edit" && msg.String() == "e") || (m.commentAction == "delete" && msg.String() == "d") {
+		m.showCommentSelection = false
+		m.commentIssueID = ""
+		m.commentTargetID = ""
+		m.commentAction = ""
+		m.focused = m.commentOrigin
+		return m, nil
+	}
 	switch msg.String() {
 	case "j", "down":
 		if issue := m.selectedCommentIssue(); issue != nil && m.commentSelectionCursor < len(issue.Comments)-1 {
@@ -5966,7 +5974,7 @@ func (m Model) handleCommentDeleteConfirmKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("Deleting comment %s...", m.commentTargetID)
 		m.statusIsError = false
 		return m, runWBDCommentsDelete(m.commentIssueID, m.commentTargetID, repositoryPath, m.commentMutationRunner)
-	case "n", "N", "esc":
+	case "n", "N", "esc", "d":
 		m.showCommentDeleteConfirm = false
 		m.commentIssueID = ""
 		m.commentTargetID = ""

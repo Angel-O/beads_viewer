@@ -748,6 +748,35 @@ func TestCommentEditFromListUsesEditFlow(t *testing.T) {
 	}
 }
 
+func TestCommentActionKeysToggleSelectionClosed(t *testing.T) {
+	for _, key := range []string{"e", "d"} {
+		m := commentActionModel()
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = updated.(Model)
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = updated.(Model)
+
+		if cmd != nil || m.showCommentSelection || m.commentAction != "" || m.focused != focusDetail {
+			t.Fatalf("action %q did not toggle selection closed: cmd=%v shown=%v action=%q focus=%v", key, cmd != nil, m.showCommentSelection, m.commentAction, m.focused)
+		}
+	}
+}
+
+func TestCommentEditKeyRemainsTextInputAfterSelection(t *testing.T) {
+	m := commentActionModel()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	m.commentInput.SetValue("")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+
+	if !m.showCommentPrompt || m.commentInput.Value() != "e" {
+		t.Fatalf("edit key in textarea = shown:%v text:%q", m.showCommentPrompt, m.commentInput.Value())
+	}
+}
+
 func TestCommentMutationsIgnoredInTimeTravelMode(t *testing.T) {
 	for _, action := range []string{"e", "d"} {
 		m := commentActionModel()
@@ -782,7 +811,17 @@ func TestCommentDeleteRequiresConfirmationAndRefreshes(t *testing.T) {
 	if strings.Contains(ansi.Strip(m.renderCommentDeleteConfirm()), "c1") {
 		t.Fatalf("delete confirmation exposed internal comment ID: %q", ansi.Strip(m.renderCommentDeleteConfirm()))
 	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
+	if m.showCommentDeleteConfirm || cmd != nil || called || m.focused != focusDetail {
+		t.Fatalf("delete toggle mutated state: shown:%v cmd:%v called:%v focus:%v", m.showCommentDeleteConfirm, cmd != nil, called, m.focused)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
 	if m.showCommentDeleteConfirm || cmd != nil || called || m.focused != focusDetail {
 		t.Fatalf("delete cancel mutated state: shown:%v cmd:%v called:%v focus:%v", m.showCommentDeleteConfirm, cmd != nil, called, m.focused)
