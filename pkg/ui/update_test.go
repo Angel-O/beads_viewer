@@ -184,14 +184,16 @@ func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	argsPath := filepath.Join(binDir, "args")
-	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\n"
+	cwdPath := filepath.Join(binDir, "cwd")
+	repositoryPath := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\npwd > '" + cwdPath + "'\n"
 	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake wbd: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	body := "- item\n- [ ] task\n  - nested\n"
 
-	message := runWBDCommentsAdd("work-1", body, nil)()
+	message := runWBDCommentsAdd("work-1", body, repositoryPath, nil)()
 	added, ok := message.(commentAddedMsg)
 	if !ok || added.err != nil {
 		t.Fatalf("comment command result = %#v, want successful commentAddedMsg", message)
@@ -205,6 +207,21 @@ func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("wbd argv = %#v, want %#v", got, want)
 	}
+	rawCWD, err := os.ReadFile(cwdPath)
+	if err != nil {
+		t.Fatalf("read wbd cwd: %v", err)
+	}
+	gotCWD, err := filepath.EvalSymlinks(strings.TrimSpace(string(rawCWD)))
+	if err != nil {
+		t.Fatalf("resolve wbd cwd: %v", err)
+	}
+	wantCWD, err := filepath.EvalSymlinks(repositoryPath)
+	if err != nil {
+		t.Fatalf("resolve repository path: %v", err)
+	}
+	if gotCWD != wantCWD {
+		t.Fatalf("wbd cwd = %q, want %q", gotCWD, wantCWD)
+	}
 }
 
 func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
@@ -213,13 +230,34 @@ func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	argsPath := filepath.Join(binDir, "args")
-	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\n"
+	cwdPath := filepath.Join(binDir, "cwd")
+	repositoryPath := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\npwd > '" + cwdPath + "'\n"
 	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake wbd: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	message := runWBDCommentsEdit("canonical-1", "comment-7", "replacement\ntext", nil)()
+	assertCommandDir := func() {
+		t.Helper()
+		rawCWD, err := os.ReadFile(cwdPath)
+		if err != nil {
+			t.Fatalf("read wbd cwd: %v", err)
+		}
+		gotCWD, err := filepath.EvalSymlinks(strings.TrimSpace(string(rawCWD)))
+		if err != nil {
+			t.Fatalf("resolve wbd cwd: %v", err)
+		}
+		wantCWD, err := filepath.EvalSymlinks(repositoryPath)
+		if err != nil {
+			t.Fatalf("resolve repository path: %v", err)
+		}
+		if gotCWD != wantCWD {
+			t.Fatalf("wbd cwd = %q, want %q", gotCWD, wantCWD)
+		}
+	}
+
+	message := runWBDCommentsEdit("canonical-1", "comment-7", "replacement\ntext", repositoryPath, nil)()
 	if result, ok := message.(commentMutationMsg); !ok || result.err != nil {
 		t.Fatalf("edit command result = %#v, want success", message)
 	}
@@ -232,8 +270,9 @@ func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("edit wbd argv = %#v, want %#v", got, want)
 	}
+	assertCommandDir()
 
-	message = runWBDCommentsDelete("canonical-1", "comment-7", nil)()
+	message = runWBDCommentsDelete("canonical-1", "comment-7", repositoryPath, nil)()
 	if result, ok := message.(commentMutationMsg); !ok || result.err != nil {
 		t.Fatalf("delete command result = %#v, want success", message)
 	}
@@ -245,6 +284,41 @@ func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
 	want = []string{"--json", "comments", "delete", "canonical-1", "comment-7"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("delete wbd argv = %#v, want %#v", got, want)
+	}
+	assertCommandDir()
+}
+
+func TestCommentAddWithoutRegisteredRepositoryPathDoesNotInvokeWBD(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake wbd uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	markerPath := filepath.Join(binDir, "invoked")
+	script := "#!/bin/sh\ntouch '" + markerPath + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake wbd: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := commentActionModel()
+	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
+	m.repositoryCatalog = model.RepositoryCatalog{{
+		ID:   "ctx:repo",
+		Name: "repo",
+		Kind: model.RepositoryIdentityHubContext,
+	}}
+	m.issueMap["A"].Labels = []string{"ctx:repo"}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	m = updated.(Model)
+	m.commentInput.SetValue("body")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+	if cmd != nil || m.commentSubmitting || !m.statusIsError || !strings.Contains(m.statusMsg, "has no registered path") {
+		t.Fatalf("missing path state: cmd=%v submitting=%v error=%v status=%q", cmd != nil, m.commentSubmitting, m.statusIsError, m.statusMsg)
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("wbd was invoked despite missing repository path: stat err=%v", err)
 	}
 }
 

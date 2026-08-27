@@ -156,12 +156,13 @@ type commentPasteMsg struct {
 	msg tea.Msg
 }
 
-func runWBDCommentsAdd(issueID, text string, runner func(string, string) error) tea.Cmd {
+func runWBDCommentsAdd(issueID, text, repositoryPath string, runner func(string, string) error) tea.Cmd {
 	return func() tea.Msg {
 		if runner != nil {
 			return commentAddedMsg{issueID: issueID, err: runner(issueID, text)}
 		}
 		command := exec.Command("wbd", "--json", "comments", "add", issueID, "--", text)
+		command.Dir = repositoryPath
 		output, err := command.CombinedOutput()
 		if err != nil {
 			detail := strings.TrimSpace(string(output))
@@ -174,7 +175,7 @@ func runWBDCommentsAdd(issueID, text string, runner func(string, string) error) 
 	}
 }
 
-func runWBDCommentMutation(action, issueID, commentID, text string, runner func(string, string, string, string) error) tea.Cmd {
+func runWBDCommentMutation(action, issueID, commentID, text, repositoryPath string, runner func(string, string, string, string) error) tea.Cmd {
 	return func() tea.Msg {
 		if runner != nil {
 			return commentMutationMsg{action: action, issueID: issueID, commentID: commentID, err: runner(action, issueID, commentID, text)}
@@ -183,7 +184,9 @@ func runWBDCommentMutation(action, issueID, commentID, text string, runner func(
 		if action == "edit" {
 			args = append(args, "--", text)
 		}
-		output, err := exec.Command("wbd", args...).CombinedOutput()
+		command := exec.Command("wbd", args...)
+		command.Dir = repositoryPath
+		output, err := command.CombinedOutput()
 		if err != nil {
 			detail := strings.TrimSpace(string(output))
 			if detail == "" {
@@ -195,12 +198,29 @@ func runWBDCommentMutation(action, issueID, commentID, text string, runner func(
 	}
 }
 
-func runWBDCommentsEdit(issueID, commentID, text string, runner func(string, string, string, string) error) tea.Cmd {
-	return runWBDCommentMutation("edit", issueID, commentID, text, runner)
+func runWBDCommentsEdit(issueID, commentID, text, repositoryPath string, runner func(string, string, string, string) error) tea.Cmd {
+	return runWBDCommentMutation("edit", issueID, commentID, text, repositoryPath, runner)
 }
 
-func runWBDCommentsDelete(issueID, commentID string, runner func(string, string, string, string) error) tea.Cmd {
-	return runWBDCommentMutation("delete", issueID, commentID, "", runner)
+func runWBDCommentsDelete(issueID, commentID, repositoryPath string, runner func(string, string, string, string) error) tea.Cmd {
+	return runWBDCommentMutation("delete", issueID, commentID, "", repositoryPath, runner)
+}
+
+func (m Model) commentRepositoryPath(issueID string) (string, error) {
+	issue := m.issueMap[issueID]
+	if issue == nil {
+		return "", fmt.Errorf("cannot mutate comment for %s: issue is unavailable", issueID)
+	}
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.activeRepos)
+	if presentation.ID == "" || presentation.ID == contextlessRepositoryID {
+		return "", fmt.Errorf("cannot mutate comment for %s: no registered repository path; register its Hub context and retry", issueID)
+	}
+	for _, repository := range m.repositoryCatalog {
+		if repository.ID == presentation.ID && strings.TrimSpace(repository.Path) != "" {
+			return repository.Path, nil
+		}
+	}
+	return "", fmt.Errorf("cannot mutate comment for %s: repository %s has no registered path; register it and retry", issueID, presentation.Name)
 }
 
 // Phase2ReadyMsg is sent when async graph analysis Phase 2 completes
@@ -5928,12 +5948,22 @@ func (m Model) handleCommentSelectionKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 func (m Model) handleCommentDeleteConfirmKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
+		repositoryPath := ""
+		if m.commentMutationRunner == nil {
+			var err error
+			repositoryPath, err = m.commentRepositoryPath(m.commentIssueID)
+			if err != nil {
+				m.statusMsg = err.Error()
+				m.statusIsError = true
+				return m, nil
+			}
+		}
 		m.showCommentDeleteConfirm = false
 		m.focused = m.commentOrigin
 		m.commentSubmitting = true
 		m.statusMsg = fmt.Sprintf("Deleting comment %s...", m.commentTargetID)
 		m.statusIsError = false
-		return m, runWBDCommentsDelete(m.commentIssueID, m.commentTargetID, m.commentMutationRunner)
+		return m, runWBDCommentsDelete(m.commentIssueID, m.commentTargetID, repositoryPath, m.commentMutationRunner)
 	case "n", "N", "esc":
 		m.showCommentDeleteConfirm = false
 		m.commentIssueID = ""
@@ -5976,13 +6006,23 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.statusIsError = true
 				return m, nil
 			}
+			repositoryPath := ""
+			if m.commentMutationRunner == nil {
+				var err error
+				repositoryPath, err = m.commentRepositoryPath(m.commentIssueID)
+				if err != nil {
+					m.statusMsg = err.Error()
+					m.statusIsError = true
+					return m, nil
+				}
+			}
 			m.showCommentPrompt = false
 			m.commentInput.Blur()
 			m.focused = m.commentOrigin
 			m.commentSubmitting = true
 			m.statusMsg = fmt.Sprintf("Editing comment %s...", m.commentTargetID)
 			m.statusIsError = false
-			return m, runWBDCommentsEdit(m.commentIssueID, m.commentTargetID, inputText, m.commentMutationRunner)
+			return m, runWBDCommentsEdit(m.commentIssueID, m.commentTargetID, inputText, repositoryPath, m.commentMutationRunner)
 		}
 		text := strings.TrimSpace(inputText)
 		if text == "" {
@@ -5990,13 +6030,23 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.statusIsError = true
 			return m, nil
 		}
+		repositoryPath := ""
+		if m.commentRunner == nil {
+			var err error
+			repositoryPath, err = m.commentRepositoryPath(m.commentIssueID)
+			if err != nil {
+				m.statusMsg = err.Error()
+				m.statusIsError = true
+				return m, nil
+			}
+		}
 		m.showCommentPrompt = false
 		m.commentInput.Blur()
 		m.focused = m.commentOrigin
 		m.commentSubmitting = true
 		m.statusMsg = fmt.Sprintf("Adding comment to %s...", m.commentIssueID)
 		m.statusIsError = false
-		return m, runWBDCommentsAdd(m.commentIssueID, text, m.commentRunner)
+		return m, runWBDCommentsAdd(m.commentIssueID, text, repositoryPath, m.commentRunner)
 	case "esc":
 		m.showCommentPrompt = false
 		m.commentInput.Blur()
