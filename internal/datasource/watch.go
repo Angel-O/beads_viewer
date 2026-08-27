@@ -327,10 +327,14 @@ func (m *AutoRefreshManager) handleChange(changed DataSource) {
 		}
 	}
 
-	// Re-select best source
-	newSelected, err := SelectBestSourceWithOptions(m.sources, m.opts)
+	// Re-select best source. SelectionOptions.Logger is caller-controlled and
+	// may re-enter CurrentSource, so buffer its messages while m.mu is held and
+	// deliver them only after releasing the non-reentrant lock.
+	selectionOpts, flushSelectionLogs := bufferSelectionLogging(m.opts)
+	newSelected, err := SelectBestSourceWithOptions(m.sources, selectionOpts)
 	if err != nil {
 		m.mu.Unlock()
+		flushSelectionLogs()
 		return
 	}
 
@@ -338,6 +342,7 @@ func (m *AutoRefreshManager) handleChange(changed DataSource) {
 	if m.currentSource != nil && m.currentSource.Path == newSelected.Path &&
 		m.currentSource.ModTime.Equal(newSelected.ModTime) {
 		m.mu.Unlock()
+		flushSelectionLogs()
 		return
 	}
 
@@ -355,6 +360,7 @@ func (m *AutoRefreshManager) handleChange(changed DataSource) {
 	}
 	m.mu.Unlock()
 
+	flushSelectionLogs()
 	if callback != nil {
 		callback(newSelected, reason)
 	}
@@ -370,10 +376,13 @@ func (m *AutoRefreshManager) ForceRefresh() error {
 		ValidateSource(&m.sources[i])
 	}
 
-	// Re-select
-	newSelected, err := SelectBestSourceWithOptions(m.sources, m.opts)
+	// Re-select without invoking caller-controlled logging under m.mu. See
+	// handleChange for the re-entrancy hazard.
+	selectionOpts, flushSelectionLogs := bufferSelectionLogging(m.opts)
+	newSelected, err := SelectBestSourceWithOptions(m.sources, selectionOpts)
 	if err != nil {
 		m.mu.Unlock()
+		flushSelectionLogs()
 		return err
 	}
 
@@ -385,9 +394,28 @@ func (m *AutoRefreshManager) ForceRefresh() error {
 	callback := m.onSourceChange
 	m.mu.Unlock()
 
+	flushSelectionLogs()
 	if callback != nil {
 		callback(newSelected, "force refresh")
 	}
 
 	return nil
+}
+
+func bufferSelectionLogging(opts SelectionOptions) (SelectionOptions, func()) {
+	logger := opts.Logger
+	var logs []string
+	if opts.Verbose && logger != nil {
+		opts.Logger = func(message string) {
+			logs = append(logs, message)
+		}
+	}
+	return opts, func() {
+		if logger == nil {
+			return
+		}
+		for _, message := range logs {
+			logger(message)
+		}
+	}
 }

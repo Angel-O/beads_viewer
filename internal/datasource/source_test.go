@@ -809,6 +809,47 @@ func TestAutoRefreshManager_HandleChangeCallbackCanReadCurrentSource(t *testing.
 	}
 }
 
+func TestAutoRefreshManager_HandleChangeLoggerCanReadCurrentSource(t *testing.T) {
+	source := createValidJSONLSource(t)
+	manager := &AutoRefreshManager{
+		currentSource: &DataSource{
+			Type:    source.Type,
+			Path:    source.Path,
+			ModTime: source.ModTime.Add(-time.Minute),
+			Valid:   true,
+		},
+		sources: []DataSource{source},
+	}
+	manager.opts = DefaultSelectionOptions()
+	manager.opts.Verbose = true
+	logged := make(chan struct{}, 1)
+	manager.opts.Logger = func(string) {
+		_ = manager.CurrentSource()
+		select {
+		case logged <- struct{}{}:
+		default:
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		manager.handleChange(source)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("handleChange deadlocked while its selection logger read CurrentSource")
+	}
+
+	select {
+	case <-logged:
+	default:
+		t.Fatal("handleChange returned without invoking its selection logger")
+	}
+}
+
 func TestSourceWatcher_AddSourceLoggerCanReadSources(t *testing.T) {
 	source := createValidJSONLSource(t)
 	sw, err := NewSourceWatcher(nil, nil, DefaultWatcherOptions())
@@ -896,6 +937,43 @@ func TestAutoRefreshManager_ForceRefreshCallbackCanReadCurrentSource(t *testing.
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("ForceRefresh returned without invoking source change callback")
+	}
+}
+
+func TestAutoRefreshManager_ForceRefreshLoggerCanReadCurrentSource(t *testing.T) {
+	source := createValidJSONLSource(t)
+	manager := &AutoRefreshManager{
+		sources: []DataSource{source},
+	}
+	manager.opts = DefaultSelectionOptions()
+	manager.opts.Verbose = true
+	logged := make(chan struct{}, 1)
+	manager.opts.Logger = func(string) {
+		_ = manager.CurrentSource()
+		select {
+		case logged <- struct{}{}:
+		default:
+		}
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- manager.ForceRefresh()
+	}()
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("ForceRefresh failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ForceRefresh deadlocked while its selection logger read CurrentSource")
+	}
+
+	select {
+	case <-logged:
+	default:
+		t.Fatal("ForceRefresh returned without invoking its selection logger")
 	}
 }
 
