@@ -1,6 +1,7 @@
 package datasource
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -282,6 +283,50 @@ func TestSQLiteReader_EscapesURIControlCharsInPath(t *testing.T) {
 				t.Fatalf("opened wrong SQLite database: got issue %q", issue.ID)
 			}
 		})
+	}
+}
+
+func TestSQLiteReader_ConfiguresEveryPooledConnection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pool.db")
+	createContractTestSQLiteDB(t, dbPath)
+
+	r, err := NewSQLiteReader(DataSource{Type: SourceTypeSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteReader: %v", err)
+	}
+	defer r.Close()
+
+	r.db.SetMaxOpenConns(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	first, err := r.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire first pooled connection: %v", err)
+	}
+	defer first.Close()
+	second, err := r.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire second pooled connection: %v", err)
+	}
+	defer second.Close()
+
+	for i, conn := range []*sql.Conn{first, second} {
+		var busyTimeout int
+		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			t.Fatalf("connection %d busy_timeout: %v", i+1, err)
+		}
+		if busyTimeout != 5000 {
+			t.Errorf("connection %d busy_timeout = %d, want 5000", i+1, busyTimeout)
+		}
+
+		var queryOnly int
+		if err := conn.QueryRowContext(ctx, "PRAGMA query_only").Scan(&queryOnly); err != nil {
+			t.Fatalf("connection %d query_only: %v", i+1, err)
+		}
+		if queryOnly != 1 {
+			t.Errorf("connection %d query_only = %d, want 1", i+1, queryOnly)
+		}
 	}
 }
 

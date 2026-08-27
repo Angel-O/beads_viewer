@@ -39,20 +39,6 @@ func NewSQLiteReader(source DataSource) (*SQLiteReader, error) {
 		return nil, fmt.Errorf("cannot connect to database: %w", err)
 	}
 
-	// Set pragmas for read performance
-	pragmas := []string{
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA cache_size = -64000",   // 64MB cache
-		"PRAGMA mmap_size = 268435456", // 256MB mmap
-		"PRAGMA temp_store = MEMORY",
-		"PRAGMA query_only = ON",
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			// Non-fatal, just log
-		}
-	}
-
 	return &SQLiteReader{
 		db:   db,
 		path: source.Path,
@@ -60,7 +46,18 @@ func NewSQLiteReader(source DataSource) (*SQLiteReader, error) {
 }
 
 func sqliteReadOnlyDSN(path string) string {
-	return sqliteFileDSN(path, "mode=ro")
+	query := url.Values{}
+	query.Set("mode", "ro")
+	// SAFETY: SQLite PRAGMAs are connection-local. database/sql may open new
+	// pooled connections after NewSQLiteReader returns, so configuring one
+	// borrowed connection with db.Exec does not configure the pool. modernc's
+	// repeated _pragma DSN parameter applies each setting to every connection.
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "cache_size(-64000)") // 64MB cache
+	query.Add("_pragma", "mmap_size(268435456)") // 256MB mmap
+	query.Add("_pragma", "temp_store(MEMORY)")
+	query.Add("_pragma", "query_only(1)")
+	return sqliteFileDSN(path, query.Encode())
 }
 
 func sqliteFileDSN(path, rawQuery string) string {
