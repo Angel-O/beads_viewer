@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -83,11 +84,18 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--priority", value: "<0-4|P0-P4>", description: "Exact priority."},
 			{name: "--label", value: "<label>", description: "Require a label; repeatable."},
 			{name: "--limit", value: "<1-1000>", description: "Maximum results.", defaultText: "underlying client default"},
+			{name: "--paginate", description: "Use the bounded keyset-pagination JSON contract; requires --limit."},
+			{name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous paginated request."},
+			{name: "--sort", value: "<field:desc>", description: "Deterministic order: created_at:desc|updated_at:desc|closed_at:desc."},
+			{name: "--after-created-at", value: "<RFC3339>", description: "Only created_at strictly after this instant."},
+			{name: "--after-updated-at", value: "<RFC3339>", description: "Only updated_at strictly after this instant."},
+			{name: "--after-closed-at", value: "<RFC3339>", description: "Only closed_at strictly after this instant."},
+			{name: "--brief", description: "Use the fixed compact issue projection."},
 			{name: "--ready", description: "Only actionable issues with no active blockers."},
 			{name: "--all-contexts", description: "Do not add the current-context filter."},
 			{name: "--json", description: "Emit JSON."},
 		},
-		examples: []string{`wbd list --ready --limit 20 --json`, `wbd list --all-contexts --status open,in_progress --json`},
+		examples: []string{`wbd list --ready --limit 20 --json`, `wbd list --all-contexts --status open,in_progress --json`, `wbd list --paginate --limit 50 --sort updated_at:desc --brief --json`},
 	},
 	"show": {
 		path: "show", usage: "wbd show <id> [--json]", summary: "Show one issue without changing context registration.",
@@ -204,6 +212,14 @@ type request struct {
 	commentFile      string
 	commentStdin     bool
 	commentSeparator bool
+	listPaginate     bool
+	listLimitSet     bool
+	listCursor       string
+	listSort         string
+	listAfterCreated string
+	listAfterUpdated string
+	listAfterClosed  string
+	listBrief        bool
 }
 
 func commandName(arguments []string) (string, error) {
@@ -654,6 +670,18 @@ func parseList(result request, arguments []string) (request, error) {
 			}
 			result.args = append(result.args, argument)
 			continue
+		case "--paginate":
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.listPaginate = true
+			continue
+		case "--brief":
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.listBrief = true
+			continue
 		}
 		flag, value, consumed, matched, err := optionValueFor("list", argument, arguments)
 		if err != nil {
@@ -677,6 +705,21 @@ func parseList(result request, arguments []string) (request, error) {
 				err = validateLabels(value, false)
 			case "--limit":
 				err = validateLimit(value)
+				result.listLimitSet = true
+			case "--cursor":
+				result.listCursor = value
+			case "--sort":
+				err = validateListSort(value)
+				result.listSort = value
+			case "--after-created-at":
+				err = validateAfterTimestamp(flag, value)
+				result.listAfterCreated = value
+			case "--after-updated-at":
+				err = validateAfterTimestamp(flag, value)
+				result.listAfterUpdated = value
+			case "--after-closed-at":
+				err = validateAfterTimestamp(flag, value)
+				result.listAfterClosed = value
 			}
 			if err != nil {
 				return result, err
@@ -689,7 +732,28 @@ func parseList(result request, arguments []string) (request, error) {
 		}
 		return result, fmt.Errorf("list does not accept positional arguments: %s", argument)
 	}
+	if result.listPaginate && !result.listLimitSet {
+		return result, errors.New("--paginate requires --limit so the page is bounded")
+	}
+	if result.listCursor != "" && !result.listLimitSet {
+		return result, errors.New("--cursor requires --limit so the page is bounded")
+	}
 	return result, nil
+}
+
+func validateListSort(value string) error {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 || parts[1] != "desc" || !oneOf(parts[0], "created_at", "updated_at", "closed_at") {
+		return fmt.Errorf("invalid sort %q; use created_at:desc, updated_at:desc, or closed_at:desc", value)
+	}
+	return nil
+}
+
+func validateAfterTimestamp(flag, value string) error {
+	if _, err := time.Parse(time.RFC3339, value); err != nil {
+		return fmt.Errorf("invalid %s %q; use an RFC3339 timestamp such as 2026-08-27T12:00:00Z", flag, value)
+	}
+	return nil
 }
 
 func parseShow(result request, arguments []string) (request, error) {
