@@ -4111,7 +4111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.beginCommentAction("delete")
 					return m, nil
 				}
-				if keyStr == "#" {
+				if keyStr == "n" {
 					m.beginComment()
 					return m, nil
 				}
@@ -4143,7 +4143,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (enabling cross-view switching, e.g. 'g' from board -> graph).
 			// ═══════════════════════════════════════════════════════════════
 			switch msg.String() {
-			case "#":
+			case "n":
 				if m.focused != focusList && m.focused != focusDetail {
 					return m, nil
 				}
@@ -7884,9 +7884,9 @@ func (m *Model) renderFooter() string {
 		} else if m.isSplitView {
 			keyHints = append(keyHints, keyStyle.Render("tab")+" focus", keyStyle.Render("C")+" copy", keyStyle.Render("x")+" export", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else if m.showDetails {
-			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("#")+" comment", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("n")+" comment", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 		} else {
-			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("#")+" comment", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("n")+" comment", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 			if m.workspaceMode || m.hubRepositoryMode {
 				keyHints = append(keyHints, keyStyle.Render("w")+" repos")
 			}

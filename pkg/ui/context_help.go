@@ -120,6 +120,7 @@ const contextHelpList = `## List View
   h         History view
 
 **Actions**
+  n         Add comment
   U         Self-update bv
   V         Preview cass sessions`
 
@@ -257,7 +258,8 @@ const contextHelpDetail = `## Detail View
   Esc       Return to previous view
   Tab       Switch to split view
 
-**Actions (from list view)**
+**Actions**
+  n         Add comment
   O         Open in editor
   C         Copy issue ID
 

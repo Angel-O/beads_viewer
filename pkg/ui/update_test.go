@@ -152,7 +152,7 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 		return nil
 	})
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	if !m.showCommentPrompt || m.focused != focusCommentInput || cmd != nil {
 		t.Fatalf("comment prompt did not open: shown=%v focus=%v cmd=%v", m.showCommentPrompt, m.focused, cmd != nil)
@@ -309,7 +309,7 @@ func TestCommentAddWithoutRegisteredRepositoryPathDoesNotInvokeWBD(t *testing.T)
 	}}
 	m.issueMap["A"].Labels = []string{"ctx:repo"}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	m.commentInput.SetValue("body")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
@@ -335,7 +335,7 @@ func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 			m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 			m.width, m.height = test.width, test.height
 			m.hubRepositoryMode = true
-			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 			m = updated.(Model)
 
 			beforeModal := m.renderCommentPrompt()
@@ -416,7 +416,9 @@ func TestCommentEditorSemicolonAndEnterStayInEditor(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 	m.width, m.height = 80, 30
 	m.hubRepositoryMode = true
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("first")})
 	m = updated.(Model)
@@ -426,7 +428,7 @@ func TestCommentEditorSemicolonAndEnterStayInEditor(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("second")})
 	m = updated.(Model)
-	if m.commentInput.Value() != "first;\nsecond" || m.showShortcutsSidebar || !m.showCommentPrompt {
+	if m.commentInput.Value() != "nfirst;\nsecond" || m.showShortcutsSidebar || !m.showCommentPrompt {
 		t.Fatalf("editor input = %q sidebar=%v modal=%v", m.commentInput.Value(), m.showShortcutsSidebar, m.showCommentPrompt)
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -444,14 +446,14 @@ func TestCommentEditorRecomputesWidthAfterResizeAndReopen(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 	m.width, m.height = 100, 30
 	m.hubRepositoryMode = true
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	firstWidth := m.commentEditorWidth
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	if firstWidth == m.commentEditorWidth || m.commentEditorWidth != commentEditorWidth(28) {
 		t.Fatalf("reopened editor width = %d, first=%d want %d", m.commentEditorWidth, firstWidth, commentEditorWidth(28))
@@ -467,7 +469,7 @@ func TestCommentEditorResizesWhileOpenAndDeliversSnapshot(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 	m.width, m.height = 80, 30
 	m.hubRepositoryMode = true
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
 	m = updated.(Model)
@@ -496,7 +498,7 @@ func TestCommentEditorSuppressesExistingSidebarWithoutOverflow(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.showShortcutsSidebar = true
 	m.applyContentSizing()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	view := m.View()
 	if !m.showShortcutsSidebar || strings.Contains(view, "Shortcuts") {
@@ -548,7 +550,7 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 		}
 		return nil
 	})
-	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updatedModel.(Model)
 	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
 	m = updatedModel.(Model)
@@ -598,7 +600,7 @@ func TestCommentsAddTargetsDirectInsightsDetail(t *testing.T) {
 		return nil
 	})
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	if !m.showCommentPrompt || m.commentIssueID != "B" {
 		t.Fatalf("comment prompt targeted %q, want B", m.commentIssueID)
@@ -621,10 +623,57 @@ func TestCommentsShortcutIgnoredOutsideListAndDetail(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.hubRepositoryMode = true
 	m.focused = focusGraph
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	if m.showCommentPrompt || cmd != nil {
 		t.Fatalf("comment shortcut acted outside list/detail: shown=%v cmd=%v", m.showCommentPrompt, cmd != nil)
+	}
+}
+
+func TestCommentsShortcutUsesNOnlyInListAndDetail(t *testing.T) {
+	newModel := func() Model {
+		m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+		m.width, m.height = 120, 40
+		m.hubRepositoryMode = true
+		return m
+	}
+
+	for _, test := range []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{name: "list", setup: func(*Model) {}},
+		{name: "detail", setup: func(m *Model) {
+			m.focused = focusDetail
+			m.showDetails = true
+			m.insightsDetailID = "A"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := newModel()
+			test.setup(&m)
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+			m = updated.(Model)
+			if m.showCommentPrompt {
+				t.Fatal("# still opens the comment editor")
+			}
+
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+			m = updated.(Model)
+			if !m.showCommentPrompt || m.focused != focusCommentInput {
+				t.Fatalf("n did not open the comment editor: shown=%v focus=%v", m.showCommentPrompt, m.focused)
+			}
+		})
+	}
+
+	m := newModel()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = updated.(Model)
+	if m.showCommentPrompt || m.list.FilterInput.Value() != "n" {
+		t.Fatalf("active list search did not receive n normally: prompt=%v query=%q", m.showCommentPrompt, m.list.FilterInput.Value())
 	}
 }
 
@@ -633,7 +682,7 @@ func TestCommentsAddFailureDoesNotRequestRefresh(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.hubRepositoryMode = true
 	m.SetCommentRunner(func(string, string) error { return errors.New("permission denied") })
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
 	m = updated.(Model)
@@ -658,7 +707,7 @@ func TestCommentsAddPromptCancelDoesNotSubmit(t *testing.T) {
 		submitted = true
 		return nil
 	})
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(Model)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)

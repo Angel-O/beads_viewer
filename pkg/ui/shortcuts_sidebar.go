@@ -271,6 +271,7 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			title:    "Actions",
 			contexts: []string{"list", "detail", "split"},
 			items: []shortcutItem{
+				{"n", "Add comment"},
 				{"t/T", "Time-travel"},
 				{"x", "Export .md"},
 				{"y", "Copy ID"},
