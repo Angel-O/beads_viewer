@@ -169,15 +169,18 @@ func checkForUpdates(client *http.Client, url string) (string, string, error) {
 		}
 		return "", "", err
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return "", "", fmt.Errorf("github api returned status: %s", resp.Status)
 	}
 
 	rel, err := decodeReleaseMetadata(resp.Body)
+	closeErr := resp.Body.Close()
 	if err != nil {
 		return "", "", fmt.Errorf("decode latest release metadata: %w", err)
+	}
+	if closeErr != nil {
+		return "", "", fmt.Errorf("close latest release response: %w", closeErr)
 	}
 	if err := validateReleaseIdentity(&rel); err != nil {
 		return "", "", err
@@ -566,6 +569,9 @@ func parseGitHubHTTPSURL(rawURL, field string) (*url.URL, error) {
 func validateReleaseIdentity(release *Release) error {
 	if release == nil {
 		return fmt.Errorf("release metadata is nil")
+	}
+	if release.TagName != strings.TrimSpace(release.TagName) {
+		return fmt.Errorf("release tag %q has surrounding whitespace", release.TagName)
 	}
 	if release.Draft {
 		return fmt.Errorf("release %q is still a draft", release.TagName)

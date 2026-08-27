@@ -170,6 +170,16 @@ func TestValidateReleaseForUpdate(t *testing.T) {
 	}
 }
 
+func TestValidateReleaseIdentityRejectsTagWhitespace(t *testing.T) {
+	release := &Release{
+		TagName: " v99.0.0 ",
+		HTMLURL: "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/%20v99.0.0%20",
+	}
+	if err := validateReleaseIdentity(release); err == nil {
+		t.Fatal("release tag with surrounding whitespace was accepted")
+	}
+}
+
 func TestReleaseFindersHandleNilReceiver(t *testing.T) {
 	var release *Release
 	if release.FindPlatformAsset() != nil {

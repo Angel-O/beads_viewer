@@ -127,6 +127,43 @@ func TestUpdateMsgClearsStaleEqualVersionNotice(t *testing.T) {
 	}
 }
 
+func TestUpdateCompleteClearsNoticeOnlyAfterSuccess(t *testing.T) {
+	tests := []struct {
+		name      string
+		success   bool
+		version   string
+		wantClear bool
+	}{
+		{name: "successful install", success: true, version: "v9.9.9", wantClear: true},
+		{name: "failed install", success: false, version: "v9.9.9", wantClear: false},
+		{name: "stale successful install", success: true, version: "v9.9.8", wantClear: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+			m.updateAvailable = true
+			m.updateTag = "v9.9.9"
+			m.updateURL = "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v9.9.9"
+
+			updated, _ := m.Update(UpdateCompleteMsg{Success: tt.success, NewVersion: tt.version})
+			m = updated.(*Model)
+
+			if tt.wantClear {
+				if m.updateAvailable || m.updateTag != "" || m.updateURL != "" {
+					t.Fatalf("successful update left a repeatable notice: available=%v tag=%q url=%q",
+						m.updateAvailable, m.updateTag, m.updateURL)
+				}
+				return
+			}
+			if !m.updateAvailable || m.updateTag != "v9.9.9" || m.updateURL == "" {
+				t.Fatalf("failed update cleared the retry notice: available=%v tag=%q url=%q",
+					m.updateAvailable, m.updateTag, m.updateURL)
+			}
+		})
+	}
+}
+
 func TestHistoryViewToggle(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "bv-1", Title: "Test Issue", Status: model.StatusOpen},

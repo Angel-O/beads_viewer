@@ -447,8 +447,8 @@ func TestUpdateModal_View_DownloadingState(t *testing.T) {
 	if !strings.Contains(view, "Updating") {
 		t.Error("expected 'Updating' in view")
 	}
-	if !strings.Contains(view, "Downloading") {
-		t.Error("expected 'Downloading' in view")
+	if !strings.Contains(view, "Applying") {
+		t.Error("expected 'Applying' in view")
 	}
 }
 

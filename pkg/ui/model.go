@@ -2029,6 +2029,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateURL = msg.URL
 
 	case UpdateCompleteMsg:
+		// The running process still reports its old compiled-in version after a
+		// successful self-update. Clear the notice now so the user cannot launch
+		// the same update a second time and replace the useful pre-update backup
+		// with a backup of the already-updated binary.
+		if msg.Success && msg.NewVersion == m.updateTag {
+			m.updateAvailable = false
+			m.updateTag = ""
+			m.updateURL = ""
+		}
 		// Forward to the update modal
 		if m.showUpdateModal {
 			m.updateModal, cmd = m.updateModal.Update(msg)

@@ -285,7 +285,10 @@ func (m UpdateModal) View() string {
 		b.WriteString(headerStyle.Render("Updating..."))
 		b.WriteString("\n\n")
 		b.WriteString(m.renderSpinner())
-		b.WriteString(" Downloading ")
+		// PerformUpdateCmd currently reports completion atomically, so this state
+		// spans the download, verification, extraction, and installation steps.
+		// Do not claim the updater is still downloading after it has moved on.
+		b.WriteString(" Applying ")
 		b.WriteString(newVersionStyle.Render(m.newVersion))
 		b.WriteString("...\n\n")
 		b.WriteString(m.renderProgressBar())
