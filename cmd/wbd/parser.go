@@ -27,7 +27,7 @@ type commandSpec struct {
 
 var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
-	"compatibility", "list", "show", "update", "dep", "dep add", "dep remove",
+	"compatibility", "list", "show", "update", "claim", "unclaim", "dep", "dep add", "dep remove",
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
 }
 
@@ -45,7 +45,6 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--description", value: "<text>", description: "Issue description."},
 			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo.", defaultText: "task"},
 			{name: "--priority", value: "<0-4|P0-P4>", description: "Priority, where 0 is highest.", defaultText: "2"},
-			{name: "--assignee", value: "<identity>", description: "Explicit assignee; never inferred from owner, creator, or environment."},
 			{name: "--labels", value: "<label,...>", description: "Ordinary labels; repeatable; ctx: labels are wrapper-owned."},
 			{name: "--context", value: "<ctx-id>", description: "Complete explicit target set; repeat for todo or epic."},
 			{name: "--contextless", description: "Create a contextless todo."},
@@ -53,7 +52,7 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--json", description: "Emit JSON."},
 		},
 		examples: []string{
-			`wbd create "Implement refresh" --type task --assignee agent-7 --json`,
+			`wbd create "Implement refresh" --type task --json`,
 			`wbd create "Investigate refresh" --type todo --contextless --json`,
 		},
 	},
@@ -102,17 +101,30 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
 	},
 	"update": {
-		path: "update", usage: "wbd update <id> <mutation> [--json]", summary: "Update explicit fields; omitted fields, including assignee, are preserved.",
+		path: "update", usage: "wbd update <id> <mutation> [--json]", summary: "Update issue fields other than claim ownership.",
 		options: []optionSpec{
 			{name: "--title", value: "<text>", description: "New title."},
 			{name: "--description", value: "<text>", description: "New description."},
 			{name: "--priority", value: "<0-4|P0-P4>", description: "New priority."},
 			{name: "--status", value: "<status>", description: "open|in_progress|blocked|deferred; use close for closed."},
-			{name: "--assignee", value: "<identity>", description: `Set explicitly; pass --assignee "" to clear.`, allowEmpty: true},
 			{name: "--add-label", value: "<label,...>", description: "Add ordinary labels; repeatable; ctx: labels are wrapper-owned."},
 			{name: "--json", description: "Emit JSON."},
 		},
-		examples: []string{`wbd update <id> --status in_progress --assignee agent-7 --json`, `wbd update <id> --assignee "" --json`},
+		examples: []string{`wbd update <id> --status blocked --json`},
+	},
+	"claim": {
+		path: "claim", usage: "wbd claim <id> [--json]", summary: "Atomically claim one issue for the invoking actor.",
+		options:  []optionSpec{{name: "--json", description: "Emit JSON."}},
+		examples: []string{`wbd claim <id> --json`},
+	},
+	"unclaim": {
+		path: "unclaim", usage: "wbd unclaim <id> [options]", summary: "Release your claim, or explicitly recover one abandoned claim.",
+		options: []optionSpec{
+			{name: "--reason", value: "<text>", description: "Reason for releasing the claim."},
+			{name: "--force", description: "Force-clear a different actor's abandoned claim; requires this exact issue ID."},
+			{name: "--json", description: "Emit JSON."},
+		},
+		examples: []string{`wbd unclaim <id> --reason "Agent crashed" --json`, `wbd unclaim <id> --force --reason "Abandoned claim" --json`},
 	},
 	"dep": {
 		path: "dep", usage: "wbd dep add|remove <issue-id> <depends-on-id> [options]", summary: "Manage dependency edges.",
@@ -208,6 +220,7 @@ type request struct {
 	contexts         []string
 	contextless      bool
 	fromTodo         string
+	force            bool
 	commentAuthor    string
 	commentFile      string
 	commentStdin     bool
@@ -288,6 +301,10 @@ func parse(arguments []string) (request, error) {
 		return parseShow(result, arguments)
 	case "update":
 		return parseUpdate(result, arguments)
+	case "claim":
+		return parseClaim(result, arguments)
+	case "unclaim":
+		return parseUnclaim(result, arguments)
 	case "dep":
 		return parseDep(result, arguments)
 	case "close", "reopen":
@@ -641,8 +658,6 @@ func validateCreateOption(flag, value string, seen map[string]bool) error {
 		return validatePriority(value)
 	case "--labels":
 		return validateLabels(value, true)
-	case "--assignee":
-		return validateAssignee(value)
 	}
 	return nil
 }
@@ -808,8 +823,6 @@ func parseUpdate(result request, arguments []string) (request, error) {
 				}
 			case "--add-label":
 				err = validateLabels(value, true)
-			case "--assignee":
-				err = validateAssignee(value)
 			}
 			if err != nil {
 				return result, err
@@ -828,6 +841,72 @@ func parseUpdate(result request, arguments []string) (request, error) {
 	}
 	if len(result.positionals) != 1 || mutations == 0 {
 		return result, errors.New(usageFor("update"))
+	}
+	return result, nil
+}
+
+func parseClaim(result request, arguments []string) (request, error) {
+	for _, argument := range arguments {
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for claim: %s", argument)
+		}
+		if err := safeID("claim", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 1 {
+		return result, errors.New(usageFor("claim"))
+	}
+	return result, nil
+}
+
+func parseUnclaim(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if argument == "--force" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.force = true
+			continue
+		}
+		flag, value, consumed, matched, err := optionValueFor("unclaim", argument, arguments)
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if err := markSeen(seen, flag); err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for unclaim: %s", argument)
+		}
+		if err := safeID("unclaim", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 1 {
+		return result, errors.New(usageFor("unclaim"))
 	}
 	return result, nil
 }
@@ -951,10 +1030,6 @@ func safeOptionValue(option optionSpec, value string) error {
 		return nil
 	}
 	return safeValue(option.name, value)
-}
-
-func validateAssignee(value string) error {
-	return validateIdentity("assignee", value)
 }
 
 func validateCommentAuthor(value string) error {

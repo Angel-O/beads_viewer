@@ -187,26 +187,16 @@ func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 	}
 }
 
-func TestCreateAndNewForwardExplicitAssignee(t *testing.T) {
+func TestCreateAndNewRejectAssigneeMutation(t *testing.T) {
 	for _, command := range []string{"create", "new"} {
 		t.Run(command, func(t *testing.T) {
 			test := newAppTest(t, true)
-			setResponses(t, map[string]string{command: `[{"id":"work-1","assignee":"agent-7","owner":"team-owner","created_by":"audit-actor"}]`})
-			code, stdout, stderr := test.run(command, "Assigned work", "--assignee", "agent-7", "--json")
-			if code != 0 || stderr != "" {
+			code, _, stderr := test.run(command, "Assigned work", "--assignee", "agent-7", "--json")
+			if code != 1 || !strings.Contains(stderr, "unsupported option") {
 				t.Fatalf("code = %d, stderr = %q", code, stderr)
 			}
-			for _, field := range []string{`"assignee":"agent-7"`, `"owner":"team-owner"`, `"created_by":"audit-actor"`} {
-				if !strings.Contains(stdout, field) {
-					t.Errorf("JSON output dropped %s: %s", field, stdout)
-				}
-			}
-			calls := test.calls()
-			if len(calls) != 1 || !slices.Contains(calls[0].Args, "--assignee") || !slices.Contains(calls[0].Args, "agent-7") {
-				t.Fatalf("calls = %#v", calls)
-			}
-			if slices.Contains(calls[0].Args, "--owner") || slices.Contains(calls[0].Args, "--created-by") {
-				t.Fatalf("assignee was mapped to audit metadata: %#v", calls[0].Args)
+			if calls := test.calls(); len(calls) != 0 {
+				t.Fatalf("assignee mutation delegated: %#v", calls)
 			}
 		})
 	}
@@ -293,7 +283,7 @@ func TestCreateFromTodoUsesOneGraphMutation(t *testing.T) {
 		"show:todo-1":  `[{"id":"todo-1","title":"Capture","status":"open","priority":2,"issue_type":"todo"}]`,
 		"create:graph": `{"ids":{"result":"work-1"}}`,
 	})
-	code, stdout, stderr := test.run("create", "Implement", "--type", "task", "--context", "ctx:target", "--from-todo", "todo-1", "--labels", "team", "--assignee", "agent-7")
+	code, stdout, stderr := test.run("create", "Implement", "--type", "task", "--context", "ctx:target", "--from-todo", "todo-1", "--labels", "team")
 	if code != 0 {
 		t.Fatalf("run code = %d, stderr = %q", code, stderr)
 	}
@@ -308,7 +298,7 @@ func TestCreateFromTodoUsesOneGraphMutation(t *testing.T) {
 	if err := json.Unmarshal(calls[1].Plan, &plan); err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Nodes) != 1 || !reflect.DeepEqual(plan.Nodes[0].Labels, []string{"team", "ctx:target"}) || plan.Nodes[0].Assignee != "agent-7" {
+	if len(plan.Nodes) != 1 || !reflect.DeepEqual(plan.Nodes[0].Labels, []string{"team", "ctx:target"}) {
 		t.Fatalf("graph nodes = %#v", plan.Nodes)
 	}
 	if len(plan.Edges) != 1 || plan.Edges[0].Type != "discovered-from" || plan.Edges[0].ToID != "todo-1" {
@@ -316,35 +306,165 @@ func TestCreateFromTodoUsesOneGraphMutation(t *testing.T) {
 	}
 }
 
-func TestUpdateAssigneeSetClearAndPreservation(t *testing.T) {
-	tests := []struct {
-		name      string
-		arguments []string
-		wantTail  []string
-	}{
-		{name: "assign", arguments: []string{"update", "work-1", "--assignee", "agent-7", "--json"}, wantTail: []string{"update", "work-1", "--assignee", "agent-7"}},
-		{name: "reassign", arguments: []string{"update", "work-1", "--assignee=agent-8"}, wantTail: []string{"update", "work-1", "--assignee", "agent-8"}},
-		{name: "clear separate", arguments: []string{"update", "work-1", "--assignee", "", "--json"}, wantTail: []string{"update", "work-1", "--assignee", ""}},
-		{name: "clear equals", arguments: []string{"update", "work-1", "--assignee="}, wantTail: []string{"update", "work-1", "--assignee", ""}},
-		{name: "status preserves", arguments: []string{"update", "work-1", "--status", "in_progress"}, wantTail: []string{"update", "work-1", "--status", "in_progress"}},
+func TestClaimAndUnclaimUseSafeOwnershipOperations(t *testing.T) {
+	t.Run("claim delegates to atomic backend claim", func(t *testing.T) {
+		test := newAppTest(t, false)
+		code, _, stderr := test.run("claim", "work-1", "--json")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		want := []string{"--db", test.store, "--json", "update", "work-1", "--claim"}
+		if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls = %#v, want %#v", calls, want)
+		}
+		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+			t.Fatalf("successful claim did not signal Viewer: %v", err)
+		}
+	})
+
+	t.Run("unclaim requires one exact issue and can force recovery", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{
+			"show:work-1": `[{"id":"work-1","title":"Issue","status":"blocked","assignee":"agent-7","priority":2,"issue_type":"task"}]`,
+		})
+		code, _, stderr := test.run("unclaim", "work-1", "--force", "--reason", "Agent crashed", "--json")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		normalize := []string{"--db", test.store, "--json", "update", "work-1", "--status", "open"}
+		unclaim := []string{"--db", test.store, "--json", "unclaim", "work-1", "--reason", "Agent crashed", "--force"}
+		if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "show:work-1" || !reflect.DeepEqual(calls[1].Args, normalize) || !reflect.DeepEqual(calls[2].Args, unclaim) {
+			t.Fatalf("calls = %#v, want show, %#v, and %#v", calls, normalize, unclaim)
+		}
+		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+			t.Fatalf("successful unclaim did not signal Viewer: %v", err)
+		}
+	})
+}
+
+func TestForcedRecoveryRequiresExactCanonicalID(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"show:work": `[{"id":"work-123","title":"Issue","status":"blocked","priority":2,"issue_type":"task"}]`,
+	})
+	code, _, stderr := test.run("unclaim", "work", "--force", "--json")
+	if code != 1 || !strings.Contains(stderr, "exact canonical issue ID") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	for _, testCase := range tests {
+	if calls := test.calls(); len(calls) != 1 || fakeCommandKey(calls[0].Args) != "show:work" {
+		t.Fatalf("non-canonical recovery reached mutation: %#v", calls)
+	}
+}
+
+func TestForcedRecoveryRejectsUnassignedAndClosedIssues(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		issue string
+		want  string
+	}{
+		{name: "unassigned", issue: `{"id":"work-1","title":"Issue","status":"blocked","priority":2,"issue_type":"task"}`, want: "issue is unassigned"},
+		{name: "closed", issue: `{"id":"work-1","title":"Issue","status":"closed","assignee":"agent-7","priority":2,"issue_type":"task"}`, want: "closed"},
+		{name: "unsupported status", issue: `{"id":"work-1","title":"Issue","status":"pinned","assignee":"agent-7","priority":2,"issue_type":"task"}`, want: "pinned"},
+	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			test := newAppTest(t, false)
-			code, _, stderr := test.run(testCase.arguments...)
-			if code != 0 {
+			setResponses(t, map[string]string{"show:work-1": "[" + testCase.issue + "]"})
+			code, _, stderr := test.run("unclaim", "work-1", "--force", "--json")
+			if code != 1 || !strings.Contains(stderr, testCase.want) {
 				t.Fatalf("code = %d, stderr = %q", code, stderr)
 			}
+			if calls := test.calls(); len(calls) != 1 || fakeCommandKey(calls[0].Args) != "show:work-1" {
+				t.Fatalf("rejected recovery mutated issue: %#v", calls)
+			}
+		})
+	}
+}
+
+func TestForcedRecoveryUsesNativeUnclaimForReleasableStatuses(t *testing.T) {
+	for _, status := range []string{"open", "in_progress"} {
+		t.Run(status, func(t *testing.T) {
+			test := newAppTest(t, false)
+			setResponses(t, map[string]string{
+				"show:work-1": fmt.Sprintf(`[{"id":"work-1","title":"Issue","status":%q,"assignee":"agent-7","priority":2,"issue_type":"task"}]`, status),
+			})
+			if code, _, stderr := test.run("unclaim", "work-1", "--force", "--json"); code != 0 || stderr != "" {
+				t.Fatalf("recovery code = %d, stderr = %q", code, stderr)
+			}
 			calls := test.calls()
-			mutation := calls[len(calls)-1]
-			if !reflect.DeepEqual(mutation.Args[len(mutation.Args)-len(testCase.wantTail):], testCase.wantTail) {
-				t.Fatalf("calls = %#v, want tail %#v", calls, testCase.wantTail)
+			want := []string{"--db", test.store, "--json", "unclaim", "work-1", "--force"}
+			if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:work-1" || !reflect.DeepEqual(calls[1].Args, want) {
+				t.Fatalf("calls = %#v, want show and %#v", calls, want)
 			}
-			if testCase.name == "status preserves" && slices.Contains(mutation.Args, "--assignee") {
-				t.Fatalf("status-only update changed assignee: %#v", mutation.Args)
+		})
+	}
+}
+
+func TestForcedRecoveryStopsWhenNormalizationFails(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"show:work-1": `[{"id":"work-1","title":"Issue","status":"blocked","assignee":"agent-7","priority":2,"issue_type":"task"}]`,
+	})
+	setExitCodes(t, map[string]int{"update": 9})
+	code, _, stderr := test.run("unclaim", "work-1", "--force", "--json")
+	if code != 1 || !strings.Contains(stderr, "normalizing work-1 for forced unclaim") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	calls := test.calls()
+	if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:work-1" || fakeCommandKey(calls[1].Args) != "update" {
+		t.Fatalf("normalization failure reached unclaim: %#v", calls)
+	}
+	assertNoViewerSignal(t, test)
+}
+
+func TestForcedRecoveryPropagatesNativeUnclaimFailure(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"show:work-1": `[{"id":"work-1","title":"Issue","status":"blocked","assignee":"agent-7","priority":2,"issue_type":"task"}]`,
+	})
+	setExitCodes(t, map[string]int{"unclaim": 9})
+	code, _, stderr := test.run("unclaim", "work-1", "--force", "--json")
+	if code != 9 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	calls := test.calls()
+	if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "show:work-1" || fakeCommandKey(calls[1].Args) != "update" || fakeCommandKey(calls[2].Args) != "unclaim" {
+		t.Fatalf("native unclaim failure calls = %#v", calls)
+	}
+	if !slices.Contains(calls[1].Args, "open") {
+		t.Fatalf("normalization call = %#v", calls[1].Args)
+	}
+	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+		t.Fatalf("normalization signal missing after partial recovery: %v", err)
+	}
+}
+
+func TestForcedRecoverySupportsBlockedAndDeferredBeforeClose(t *testing.T) {
+	for _, status := range []string{"blocked", "deferred"} {
+		t.Run(status, func(t *testing.T) {
+			test := newAppTest(t, false)
+			setResponses(t, map[string]string{
+				"show:work-1": fmt.Sprintf(`[{"id":"work-1","title":"Issue","status":%q,"assignee":"agent-7","priority":2,"issue_type":"task"}]`, status),
+			})
+			if code, _, stderr := test.run("claim", "work-1", "--json"); code != 0 || stderr != "" {
+				t.Fatalf("claim code = %d, stderr = %q", code, stderr)
 			}
-			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
-				t.Fatalf("successful assignee mutation did not signal Viewer: %v", err)
+			if code, _, stderr := test.run("update", "work-1", "--status", status, "--json"); code != 0 || stderr != "" {
+				t.Fatalf("status transition code = %d, stderr = %q", code, stderr)
+			}
+			if code, _, stderr := test.run("unclaim", "work-1", "--force", "--json"); code != 0 || stderr != "" {
+				t.Fatalf("recovery code = %d, stderr = %q", code, stderr)
+			}
+			if code, _, stderr := test.run("close", "work-1", "--reason", "Recovered work is complete", "--json"); code != 0 || stderr != "" {
+				t.Fatalf("close code = %d, stderr = %q", code, stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 7 || fakeCommandKey(calls[0].Args) != "update" || fakeCommandKey(calls[1].Args) != "show:work-1" || fakeCommandKey(calls[2].Args) != "update" || fakeCommandKey(calls[3].Args) != "show:work-1" || fakeCommandKey(calls[4].Args) != "update" || fakeCommandKey(calls[5].Args) != "unclaim" || fakeCommandKey(calls[6].Args) != "close:work-1" {
+				t.Fatalf("lifecycle calls = %#v", calls)
+			}
+			if !slices.Contains(calls[2].Args, status) || !slices.Contains(calls[4].Args, "open") || !slices.Contains(calls[5].Args, "--force") {
+				t.Fatalf("lifecycle mutations = %#v", calls)
 			}
 		})
 	}
@@ -674,6 +794,8 @@ func TestCompatibilityUnreadableAuthoritativeDataFails(t *testing.T) {
 func TestParserRejectsRemovedAndInvalidCompositions(t *testing.T) {
 	tests := [][]string{
 		{"update", "item-1", "--type", "bug"},
+		{"create", "Title", "--assignee", "agent-7"},
+		{"update", "item-1", "--assignee", "agent-7"},
 		{"dep", "add", "item-1", "item-2", "--type", "supersedes"},
 		{"create", "Title", "--context", "ctx:a", "--contextless"},
 		{"create", "Title", "--type", "custom-kind"},
@@ -1314,7 +1436,7 @@ func TestHelpPrecedesArgumentsJSONAndExecutableChecks(t *testing.T) {
 func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 	values := map[string]string{
 		"--prefix": "item", "--description": "details", "--type": "task", "--priority": "2",
-		"--assignee": "agent-7", "--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
+		"--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
 		"--title": "title", "--status": "open", "--label": "team", "--limit": "20", "--add-label": "team",
 		"--cursor": "opaque-token", "--sort": "updated_at:desc", "--after-created-at": "2026-08-27T12:00:00Z",
 		"--after-updated-at": "2026-08-27T12:00:00Z", "--after-closed-at": "2026-08-27T12:00:00Z",
@@ -1337,10 +1459,6 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 		}
 	}
 
-	flag, value, _, matched, err := optionValueFor("update", "--assignee=", nil)
-	if err != nil || !matched || flag != "--assignee" || value != "" {
-		t.Fatalf("clear-assignee specification not honored: flag=%q value=%q matched=%v err=%v", flag, value, matched, err)
-	}
 }
 
 func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
@@ -1352,6 +1470,8 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"list", "--paginate", "--limit", "2", "--brief", "--json"},
 		{"show", "work-1", "--json"},
 		{"update", "work-1", "--title", "Title", "--json"},
+		{"claim", "work-1", "--json"},
+		{"unclaim", "work-1", "--json"},
 		{"dep", "add", "work-1", "work-2", "--json"},
 		{"dep", "remove", "work-1", "work-2", "--json"},
 		{"close", "work-1", "--json"},
@@ -1768,8 +1888,6 @@ func TestRejectsWrapperOwnedLabelsAndUnsafeValues(t *testing.T) {
 		{"create", "title", "--labels", `quoted"label`},
 		{"list", "--limit", "1001"},
 		{"update", "bead-1", "--status", "closed"},
-		{"create", "title", "--assignee", "bad\nidentity"},
-		{"update", "bead-1", "--assignee", "bad\tidentity"},
 		{"show", "-bead-1"},
 	}
 	for _, arguments := range tests {
@@ -1783,45 +1901,27 @@ func TestRejectsWrapperOwnedLabelsAndUnsafeValues(t *testing.T) {
 	}
 }
 
-func TestAssigneeValidationRejectsPseudoIdentitiesBeforeDelegation(t *testing.T) {
-	invalid := []struct {
-		name  string
-		value string
-	}{
-		{name: "spaces", value: "   "},
-		{name: "unicode whitespace", value: "\u2003\u00a0"},
-		{name: "escape", value: "agent\x1b[31m"},
-		{name: "delete", value: "agent\x7f"},
-	}
-	for _, command := range []string{"create", "update"} {
-		for _, testCase := range invalid {
-			t.Run(command+"_"+testCase.name, func(t *testing.T) {
-				arguments := []string{command, "work-1", "--assignee", testCase.value}
-				if command == "create" {
-					arguments[1] = "Title"
-				}
-				if _, err := parse(arguments); err == nil {
-					t.Fatalf("parse accepted assignee %q", testCase.value)
-				}
-
-				test := newAppTest(t, true)
-				code, _, stderr := test.run(arguments...)
-				if code != 1 || stderr == "" {
-					t.Fatalf("code = %d, stderr = %q", code, stderr)
-				}
-				if calls := test.calls(); len(calls) != 0 {
-					t.Fatalf("invalid assignee delegated to child: %#v", calls)
-				}
-			})
-		}
+func TestClaimRecoveryValidationRejectsBroadRequests(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"claim"},
+		{"claim", "work-1", "--assignee", "agent-7"},
+		{"unclaim"},
+		{"unclaim", "work-1", "work-2", "--force"},
+		{"unclaim", "work-1", "--unknown"},
+	} {
+		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
+			if _, err := parse(arguments); err == nil {
+				t.Fatalf("parse(%#v) succeeded", arguments)
+			}
+		})
 	}
 
-	request, err := parse([]string{"update", "work-1", "--assignee="})
+	request, err := parse([]string{"unclaim", "work-1", "--force", "--reason", "Agent crashed", "--json"})
 	if err != nil {
-		t.Fatalf("clear assignee rejected: %v", err)
+		t.Fatalf("force recovery rejected: %v", err)
 	}
-	if !reflect.DeepEqual(request.args, []string{"--assignee", ""}) {
-		t.Fatalf("clear assignee args = %#v", request.args)
+	if !request.force || !reflect.DeepEqual(request.positionals, []string{"work-1"}) || !reflect.DeepEqual(request.args, []string{"--reason", "Agent crashed"}) {
+		t.Fatalf("recovery request = %#v", request)
 	}
 }
 
@@ -1844,6 +1944,8 @@ func TestSuccessfulMutationsSignalViewer(t *testing.T) {
 		{"list"},
 		{"create", "New issue"},
 		{"update", "bead-1", "--status", "in_progress"},
+		{"claim", "bead-1"},
+		{"unclaim", "bead-1"},
 		{"dep", "add", "bead-1", "bead-2"},
 		{"close", "bead-1", "--reason", "done"},
 		{"reopen", "bead-1", "--reason", "again"},
