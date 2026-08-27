@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
@@ -161,6 +163,45 @@ func TestUpdateCompleteClearsNoticeOnlyAfterSuccess(t *testing.T) {
 					m.updateAvailable, m.updateTag, m.updateURL)
 			}
 		})
+	}
+}
+
+func TestUpdateStateRefreshesVisibleDetailNotice(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.isSplitView = true
+	m.viewport.Width = 120
+	m.viewport.Height = 40
+	m.updateViewportContent()
+
+	updated, _ := m.Update(UpdateMsg{
+		TagName: "v9.9.9",
+		URL:     "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v9.9.9",
+	})
+	m = updated.(*Model)
+	if view := m.viewport.View(); !strings.Contains(view, "v9.9.9") {
+		t.Fatalf("visible detail pane did not refresh after update discovery: %q", view)
+	}
+
+	updated, _ = m.Update(UpdateCompleteMsg{Success: true, NewVersion: "v9.9.9"})
+	m = updated.(*Model)
+	if view := m.viewport.View(); strings.Contains(view, "v9.9.9") {
+		t.Fatalf("visible detail pane retained completed update notice: %q", view)
+	}
+}
+
+func TestUpdateModalTickIsForwardedByModel(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.showUpdateModal = true
+	m.updateModal = NewUpdateModal("v9.9.9", "", m.theme)
+	m.updateModal.state = UpdateStateDownloading
+
+	updated, cmd := m.Update(updateTickMsg(time.Now()))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("parent model dropped the update modal's repaint tick")
+	}
+	if m.updateModal.state != UpdateStateDownloading {
+		t.Fatalf("tick changed update state to %v", m.updateModal.state)
 	}
 }
 

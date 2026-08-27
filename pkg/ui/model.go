@@ -2022,11 +2022,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateAvailable = false
 			m.updateTag = ""
 			m.updateURL = ""
+			m.refreshVisibleUpdateNotice()
 			return m, nil
 		}
 		m.updateAvailable = true
 		m.updateTag = msg.TagName
 		m.updateURL = msg.URL
+		m.refreshVisibleUpdateNotice()
 
 	case UpdateCompleteMsg:
 		// The running process still reports its old compiled-in version after a
@@ -2037,6 +2039,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateAvailable = false
 			m.updateTag = ""
 			m.updateURL = ""
+			m.refreshVisibleUpdateNotice()
 		}
 		// Forward to the update modal
 		if m.showUpdateModal {
@@ -2046,6 +2049,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UpdateProgressMsg:
 		// Forward to the update modal
+		if m.showUpdateModal {
+			m.updateModal, cmd = m.updateModal.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+
+	case updateTickMsg:
+		// Keep the modal's elapsed time and spinner repainting while the update
+		// command runs. The modal stops the tick chain after completion.
 		if m.showUpdateModal {
 			m.updateModal, cmd = m.updateModal.Update(msg)
 			cmds = append(cmds, cmd)
@@ -9117,6 +9128,12 @@ func (m *Model) showSelfUpdateModal() {
 	m.updateModal.SetSize(m.width, m.height)
 	m.showUpdateModal = true
 	m.focused = focusUpdateModal
+}
+
+func (m *Model) refreshVisibleUpdateNotice() {
+	if m.isSplitView || m.showDetails {
+		m.updateViewportContent()
+	}
 }
 
 // getCassSessionCount returns the cached session count for the selected bead (bv-y836)

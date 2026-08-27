@@ -47,6 +47,14 @@ type UpdateCompleteMsg struct {
 	RequireRoot bool
 }
 
+type updateTickMsg time.Time
+
+func updateTickCmd() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(now time.Time) tea.Msg {
+		return updateTickMsg(now)
+	})
+}
+
 // UpdateModal displays the update confirmation and progress.
 type UpdateModal struct {
 	currentVersion string
@@ -149,7 +157,7 @@ func (m UpdateModal) Update(msg tea.Msg) (UpdateModal, tea.Cmd) {
 					// User confirmed update
 					m.state = UpdateStateDownloading
 					m.startTime = time.Now()
-					return m, PerformUpdateCmd(m.newVersion)
+					return m, tea.Batch(PerformUpdateCmd(m.newVersion), updateTickCmd())
 				}
 				// Cancel - will be handled by parent
 				return m, nil
@@ -157,7 +165,7 @@ func (m UpdateModal) Update(msg tea.Msg) (UpdateModal, tea.Cmd) {
 				// Quick confirm
 				m.state = UpdateStateDownloading
 				m.startTime = time.Now()
-				return m, PerformUpdateCmd(m.newVersion)
+				return m, tea.Batch(PerformUpdateCmd(m.newVersion), updateTickCmd())
 			case "n", "N":
 				// Quick cancel - will be handled by parent
 				return m, nil
@@ -170,6 +178,11 @@ func (m UpdateModal) Update(msg tea.Msg) (UpdateModal, tea.Cmd) {
 				// Will be handled by parent to close modal
 				return m, nil
 			}
+		}
+
+	case updateTickMsg:
+		if m.IsInProgress() {
+			return m, updateTickCmd()
 		}
 
 	case UpdateProgressMsg:
@@ -291,8 +304,10 @@ func (m UpdateModal) View() string {
 		b.WriteString(" Applying ")
 		b.WriteString(newVersionStyle.Render(m.newVersion))
 		b.WriteString("...\n\n")
-		b.WriteString(m.renderProgressBar())
-		b.WriteString("\n\n")
+		if m.progress.TotalBytes > 0 {
+			b.WriteString(m.renderProgressBar())
+			b.WriteString("\n\n")
+		}
 		elapsed := time.Since(m.startTime).Round(time.Second)
 		b.WriteString(subtextStyle.Render(fmt.Sprintf("Elapsed: %s", elapsed)))
 

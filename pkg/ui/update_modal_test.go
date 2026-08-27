@@ -203,6 +203,8 @@ func TestUpdateModal_Update_QuickConfirmY(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected command to be returned for update")
+	} else {
+		requireUpdateCommandBatch(t, cmd)
 	}
 	if updated.startTime.IsZero() {
 		t.Error("expected startTime to be set")
@@ -221,6 +223,21 @@ func TestUpdateModal_Update_QuickConfirmUpperY(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected command to be returned")
+	} else {
+		requireUpdateCommandBatch(t, cmd)
+	}
+}
+
+func requireUpdateCommandBatch(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("update confirmation returned %T, want tea.BatchMsg", msg)
+	}
+	if len(batch) != 2 {
+		t.Fatalf("update confirmation scheduled %d commands, want update plus repaint tick", len(batch))
 	}
 }
 
@@ -253,6 +270,8 @@ func TestUpdateModal_Update_EnterConfirmsUpdate(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected command to be returned")
+	} else {
+		requireUpdateCommandBatch(t, cmd)
 	}
 }
 
@@ -284,6 +303,23 @@ func TestUpdateModal_Update_IgnoresKeysWhenInProgress(t *testing.T) {
 
 	if updated.state != UpdateStateDownloading {
 		t.Errorf("expected state to remain Downloading, got %v", updated.state)
+	}
+}
+
+func TestUpdateModalTickContinuesOnlyWhileUpdateIsInProgress(t *testing.T) {
+	theme := DefaultTheme(lipgloss.NewRenderer(nil))
+	m := NewUpdateModal("v1.0.0", "", theme)
+	m.state = UpdateStateDownloading
+
+	updated, cmd := m.Update(updateTickMsg(time.Now()))
+	if cmd == nil {
+		t.Fatal("in-progress update tick did not schedule the next repaint")
+	}
+
+	updated.state = UpdateStateSuccess
+	_, cmd = updated.Update(updateTickMsg(time.Now()))
+	if cmd != nil {
+		t.Fatal("completed update continued scheduling repaint ticks")
 	}
 }
 
@@ -449,6 +485,9 @@ func TestUpdateModal_View_DownloadingState(t *testing.T) {
 	}
 	if !strings.Contains(view, "Applying") {
 		t.Error("expected 'Applying' in view")
+	}
+	if strings.Contains(view, "[                    ]") {
+		t.Error("view rendered a permanently empty progress bar without progress data")
 	}
 }
 
