@@ -300,17 +300,22 @@ func (s *GraphStats) PageRankValue(id string) (float64, bool) {
 	return v, ok
 }
 
+// Phase-2 metric maps are built off-lock and published once under mu. They are
+// immutable after publication, so iterator methods can capture a map pointer
+// under RLock and invoke caller-controlled callbacks after releasing the lock.
+
 // PageRankAll iterates over all PageRank scores.
 // The callback receives each (id, score) pair. Return false to stop iteration.
 // Time complexity: O(n) for full iteration
-// Thread-safe: Yes (holds RLock during iteration)
+// Thread-safe: Yes (captures the immutable published map under RLock)
 func (s *GraphStats) PageRankAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.pageRank == nil {
+	values := s.pageRank
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.pageRank {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -333,11 +338,12 @@ func (s *GraphStats) BetweennessValue(id string) (float64, bool) {
 // BetweennessAll iterates over all betweenness scores.
 func (s *GraphStats) BetweennessAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.betweenness == nil {
+	values := s.betweenness
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.betweenness {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -359,11 +365,12 @@ func (s *GraphStats) EigenvectorValue(id string) (float64, bool) {
 // EigenvectorAll iterates over all eigenvector scores.
 func (s *GraphStats) EigenvectorAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.eigenvector == nil {
+	values := s.eigenvector
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.eigenvector {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -385,11 +392,12 @@ func (s *GraphStats) HubValue(id string) (float64, bool) {
 // HubsAll iterates over all hub scores.
 func (s *GraphStats) HubsAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.hubs == nil {
+	values := s.hubs
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.hubs {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -411,11 +419,12 @@ func (s *GraphStats) AuthorityValue(id string) (float64, bool) {
 // AuthoritiesAll iterates over all authority scores.
 func (s *GraphStats) AuthoritiesAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.authorities == nil {
+	values := s.authorities
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.authorities {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -437,11 +446,12 @@ func (s *GraphStats) CriticalPathValue(id string) (float64, bool) {
 // CriticalPathAll iterates over all critical path scores.
 func (s *GraphStats) CriticalPathAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.criticalPathScore == nil {
+	values := s.criticalPathScore
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.criticalPathScore {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -463,11 +473,12 @@ func (s *GraphStats) CoreNumberValue(id string) (int, bool) {
 // CoreNumberAll iterates over all k-core numbers.
 func (s *GraphStats) CoreNumberAll(fn func(id string, core int) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.coreNumber == nil {
+	values := s.coreNumber
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, core := range s.coreNumber {
+	for id, core := range values {
 		if !fn(id, core) {
 			return
 		}
@@ -489,11 +500,12 @@ func (s *GraphStats) SlackValue(id string) (float64, bool) {
 // SlackAll iterates over all slack values.
 func (s *GraphStats) SlackAll(fn func(id string, slack float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.slack == nil {
+	values := s.slack
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, slack := range s.slack {
+	for id, slack := range values {
 		if !fn(id, slack) {
 			return
 		}
