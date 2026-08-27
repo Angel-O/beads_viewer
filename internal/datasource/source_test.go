@@ -809,6 +809,62 @@ func TestAutoRefreshManager_HandleChangeCallbackCanReadCurrentSource(t *testing.
 	}
 }
 
+func TestSourceWatcher_AddSourceLoggerCanReadSources(t *testing.T) {
+	source := createValidJSONLSource(t)
+	sw, err := NewSourceWatcher(nil, nil, DefaultWatcherOptions())
+	if err != nil {
+		t.Fatalf("NewSourceWatcher: %v", err)
+	}
+	defer sw.Stop()
+
+	sw.verbose = true
+	sw.logger = func(string) {
+		_ = sw.Sources()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sw.AddSource(source)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AddSource: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("AddSource deadlocked while its logger read Sources")
+	}
+}
+
+func TestSourceWatcher_RemoveSourceLoggerCanReadSources(t *testing.T) {
+	source := createValidJSONLSource(t)
+	sw, err := NewSourceWatcher([]DataSource{source}, nil, DefaultWatcherOptions())
+	if err != nil {
+		t.Fatalf("NewSourceWatcher: %v", err)
+	}
+	defer sw.Stop()
+
+	sw.verbose = true
+	sw.logger = func(string) {
+		_ = sw.Sources()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sw.RemoveSource(source.Path)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RemoveSource: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("RemoveSource deadlocked while its logger read Sources")
+	}
+}
+
 func TestAutoRefreshManager_ForceRefreshCallbackCanReadCurrentSource(t *testing.T) {
 	source := createValidJSONLSource(t)
 	manager := &AutoRefreshManager{

@@ -181,22 +181,29 @@ func (sw *SourceWatcher) run() {
 // AddSource adds a new source to watch
 func (sw *SourceWatcher) AddSource(source DataSource) error {
 	sw.mu.Lock()
-	defer sw.mu.Unlock()
 
 	// Check if already watching
 	for _, s := range sw.sources {
 		if s.Path == source.Path {
+			sw.mu.Unlock()
 			return nil
 		}
 	}
 
 	if err := sw.watcher.Add(source.Path); err != nil {
+		sw.mu.Unlock()
 		return fmt.Errorf("failed to watch %s: %w", source.Path, err)
 	}
 
 	sw.sources = append(sw.sources, source)
-	if sw.verbose {
-		sw.logger(fmt.Sprintf("Added watch: %s", source.Path))
+	verbose := sw.verbose
+	logger := sw.logger
+	sw.mu.Unlock()
+
+	// SAFETY: logger is caller-controlled and may re-enter Sources, AddSource,
+	// or RemoveSource. Invoke it only after releasing the non-reentrant mutex.
+	if verbose {
+		logger(fmt.Sprintf("Added watch: %s", source.Path))
 	}
 
 	return nil
@@ -205,9 +212,9 @@ func (sw *SourceWatcher) AddSource(source DataSource) error {
 // RemoveSource stops watching a source
 func (sw *SourceWatcher) RemoveSource(path string) error {
 	sw.mu.Lock()
-	defer sw.mu.Unlock()
 
 	if err := sw.watcher.Remove(path); err != nil {
+		sw.mu.Unlock()
 		return fmt.Errorf("failed to remove watch %s: %w", path, err)
 	}
 
@@ -220,8 +227,13 @@ func (sw *SourceWatcher) RemoveSource(path string) error {
 	}
 
 	delete(sw.lastChange, path)
-	if sw.verbose {
-		sw.logger(fmt.Sprintf("Removed watch: %s", path))
+	verbose := sw.verbose
+	logger := sw.logger
+	sw.mu.Unlock()
+
+	// SAFETY: see AddSource. No external callback may run while sw.mu is held.
+	if verbose {
+		logger(fmt.Sprintf("Removed watch: %s", path))
 	}
 
 	return nil
