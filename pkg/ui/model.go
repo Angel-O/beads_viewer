@@ -61,9 +61,9 @@ func commentEditorWidth(terminalWidth int) int {
 
 func commentHintText(width int) string {
 	if width < 30 {
-		return "Ctrl+S save · Esc\nEnter=nl · Arrows\nCtrl+C quit"
+		return "Ctrl+S save · Esc\nEnter=nl\nCtrl+C quit"
 	}
-	return "Ctrl+S submit · Enter newline · Arrows · Esc cancel · Ctrl+C quit"
+	return "Ctrl+S submit · Enter newline · Esc cancel · Ctrl+C quit"
 }
 
 // focus represents which UI element has keyboard focus
