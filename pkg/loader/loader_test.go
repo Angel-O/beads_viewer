@@ -1304,14 +1304,23 @@ func TestGetBeadsDir_EmptyRepoPath_UsesCwd(t *testing.T) {
 	}
 	defer os.Chdir(oldCwd)
 
-	expected := filepath.Join(tmpDir, ".beads")
+	canonicalTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to canonicalize temp directory: %v", err)
+	}
 
 	result, err := loader.GetBeadsDir("")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if result != expected {
-		t.Errorf("Empty repoPath should use cwd: got %s, want %s", result, expected)
+	canonicalResultDir, err := filepath.EvalSymlinks(filepath.Dir(result))
+	if err != nil {
+		t.Fatalf("Failed to canonicalize result directory: %v", err)
+	}
+	canonicalResult := filepath.Join(canonicalResultDir, filepath.Base(result))
+	expected := filepath.Join(canonicalTmpDir, ".beads")
+	if canonicalResult != expected {
+		t.Errorf("Empty repoPath should use cwd: got %s, want %s", canonicalResult, expected)
 	}
 }
 
