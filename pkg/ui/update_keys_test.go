@@ -169,6 +169,7 @@ func TestUpdateCompleteClearsNoticeOnlyAfterSuccess(t *testing.T) {
 func TestUpdateStateRefreshesVisibleDetailNotice(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 	m.isSplitView = true
+	m.focused = focusDetail
 	m.viewport.Width = 120
 	m.viewport.Height = 40
 	m.updateViewportContent()
@@ -194,8 +195,10 @@ func TestUpdateModalTickIsForwardedByModel(t *testing.T) {
 	m.showUpdateModal = true
 	m.updateModal = NewUpdateModal("v9.9.9", "", m.theme)
 	m.updateModal.state = UpdateStateDownloading
+	m.updateModal.startTime = time.Now()
+	m.focused = focusUpdateModal
 
-	updated, cmd := m.Update(updateTickMsg(time.Now()))
+	updated, cmd := m.Update(updateTickMsg{startedAt: m.updateModal.startTime})
 	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("parent model dropped the update modal's repaint tick")

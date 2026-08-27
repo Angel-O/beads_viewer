@@ -204,7 +204,7 @@ func TestUpdateModal_Update_QuickConfirmY(t *testing.T) {
 	if cmd == nil {
 		t.Error("expected command to be returned for update")
 	} else {
-		requireUpdateCommandBatch(t, cmd)
+		requireUpdateCommandBatch(t, cmd, updated.startTime)
 	}
 	if updated.startTime.IsZero() {
 		t.Error("expected startTime to be set")
@@ -224,11 +224,11 @@ func TestUpdateModal_Update_QuickConfirmUpperY(t *testing.T) {
 	if cmd == nil {
 		t.Error("expected command to be returned")
 	} else {
-		requireUpdateCommandBatch(t, cmd)
+		requireUpdateCommandBatch(t, cmd, updated.startTime)
 	}
 }
 
-func requireUpdateCommandBatch(t *testing.T, cmd tea.Cmd) {
+func requireUpdateCommandBatch(t *testing.T, cmd tea.Cmd, wantStart time.Time) {
 	t.Helper()
 
 	msg := cmd()
@@ -238,6 +238,14 @@ func requireUpdateCommandBatch(t *testing.T, cmd tea.Cmd) {
 	}
 	if len(batch) != 2 {
 		t.Fatalf("update confirmation scheduled %d commands, want update plus repaint tick", len(batch))
+	}
+	tickResult := batch[1]()
+	tick, ok := tickResult.(updateTickMsg)
+	if !ok {
+		t.Fatalf("second update command returned %T, want updateTickMsg", tickResult)
+	}
+	if tick.startedAt != wantStart {
+		t.Fatal("initial repaint tick was not bound to the current update run")
 	}
 }
 
@@ -271,7 +279,7 @@ func TestUpdateModal_Update_EnterConfirmsUpdate(t *testing.T) {
 	if cmd == nil {
 		t.Error("expected command to be returned")
 	} else {
-		requireUpdateCommandBatch(t, cmd)
+		requireUpdateCommandBatch(t, cmd, updated.startTime)
 	}
 }
 
@@ -310,16 +318,30 @@ func TestUpdateModalTickContinuesOnlyWhileUpdateIsInProgress(t *testing.T) {
 	theme := DefaultTheme(lipgloss.NewRenderer(nil))
 	m := NewUpdateModal("v1.0.0", "", theme)
 	m.state = UpdateStateDownloading
+	m.startTime = time.Now()
 
-	updated, cmd := m.Update(updateTickMsg(time.Now()))
+	updated, cmd := m.Update(updateTickMsg{startedAt: m.startTime})
 	if cmd == nil {
 		t.Fatal("in-progress update tick did not schedule the next repaint")
 	}
 
 	updated.state = UpdateStateSuccess
-	_, cmd = updated.Update(updateTickMsg(time.Now()))
+	_, cmd = updated.Update(updateTickMsg{startedAt: updated.startTime})
 	if cmd != nil {
 		t.Fatal("completed update continued scheduling repaint ticks")
+	}
+}
+
+func TestUpdateModalIgnoresTickFromPreviousRun(t *testing.T) {
+	theme := DefaultTheme(lipgloss.NewRenderer(nil))
+	m := NewUpdateModal("v1.0.0", "", theme)
+	m.state = UpdateStateDownloading
+	m.startTime = time.Now()
+
+	staleStart := m.startTime.Add(-time.Second)
+	_, cmd := m.Update(updateTickMsg{startedAt: staleStart})
+	if cmd != nil {
+		t.Fatal("stale tick joined the current update's repaint loop")
 	}
 }
 

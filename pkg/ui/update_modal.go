@@ -47,11 +47,13 @@ type UpdateCompleteMsg struct {
 	RequireRoot bool
 }
 
-type updateTickMsg time.Time
+type updateTickMsg struct {
+	startedAt time.Time
+}
 
-func updateTickCmd() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(now time.Time) tea.Msg {
-		return updateTickMsg(now)
+func updateTickCmd(startedAt time.Time) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return updateTickMsg{startedAt: startedAt}
 	})
 }
 
@@ -157,7 +159,7 @@ func (m UpdateModal) Update(msg tea.Msg) (UpdateModal, tea.Cmd) {
 					// User confirmed update
 					m.state = UpdateStateDownloading
 					m.startTime = time.Now()
-					return m, tea.Batch(PerformUpdateCmd(m.newVersion), updateTickCmd())
+					return m, tea.Batch(PerformUpdateCmd(m.newVersion), updateTickCmd(m.startTime))
 				}
 				// Cancel - will be handled by parent
 				return m, nil
@@ -165,7 +167,7 @@ func (m UpdateModal) Update(msg tea.Msg) (UpdateModal, tea.Cmd) {
 				// Quick confirm
 				m.state = UpdateStateDownloading
 				m.startTime = time.Now()
-				return m, tea.Batch(PerformUpdateCmd(m.newVersion), updateTickCmd())
+				return m, tea.Batch(PerformUpdateCmd(m.newVersion), updateTickCmd(m.startTime))
 			case "n", "N":
 				// Quick cancel - will be handled by parent
 				return m, nil
@@ -181,8 +183,8 @@ func (m UpdateModal) Update(msg tea.Msg) (UpdateModal, tea.Cmd) {
 		}
 
 	case updateTickMsg:
-		if m.IsInProgress() {
-			return m, updateTickCmd()
+		if m.IsInProgress() && msg.startedAt == m.startTime {
+			return m, updateTickCmd(m.startTime)
 		}
 
 	case UpdateProgressMsg:
