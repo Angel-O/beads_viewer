@@ -699,6 +699,10 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	if !m.showCommentSelection || m.focused != focusCommentSelection || cmd != nil {
 		t.Fatalf("edit selection did not open: shown=%v focus=%v cmd=%v", m.showCommentSelection, m.focused, cmd != nil)
 	}
+	selection := ansi.Strip(m.renderCommentSelection())
+	if strings.Contains(selection, "c1") || strings.Contains(selection, "c2") || !strings.Contains(selection, "alice: first") {
+		t.Fatalf("comment selection exposed IDs or omitted useful context: %q", selection)
+	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -706,8 +710,8 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	if !m.showCommentPrompt || m.focused != focusCommentInput || m.commentTargetID != "c2" || m.commentInput.Value() != "second\nwith Markdown" {
 		t.Fatalf("edit target = prompt:%v focus:%v id:%q text:%q", m.showCommentPrompt, m.focused, m.commentTargetID, m.commentInput.Value())
 	}
-	if !strings.Contains(ansi.Strip(m.renderCommentPrompt()), "Comment c2") {
-		t.Fatalf("edit prompt did not identify target comment: %q", ansi.Strip(m.renderCommentPrompt()))
+	if strings.Contains(ansi.Strip(m.renderCommentPrompt()), "Comment c2") {
+		t.Fatalf("edit prompt exposed internal comment ID: %q", ansi.Strip(m.renderCommentPrompt()))
 	}
 	if strings.Contains(m.View(), "Shortcuts") {
 		t.Fatal("comment editor exposed shortcuts sidebar")
@@ -774,6 +778,9 @@ func TestCommentDeleteRequiresConfirmationAndRefreshes(t *testing.T) {
 	m = updated.(Model)
 	if !m.showCommentDeleteConfirm || m.focused != focusCommentDeleteConfirm || called {
 		t.Fatalf("delete confirmation = shown:%v focus:%v called:%v", m.showCommentDeleteConfirm, m.focused, called)
+	}
+	if strings.Contains(ansi.Strip(m.renderCommentDeleteConfirm()), "c1") {
+		t.Fatalf("delete confirmation exposed internal comment ID: %q", ansi.Strip(m.renderCommentDeleteConfirm()))
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)

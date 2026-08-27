@@ -9583,7 +9583,7 @@ func (m Model) renderCommentSelection() string {
 			if len([]rune(text)) > 48 {
 				text = string([]rune(text)[:47]) + "..."
 			}
-			line := fmt.Sprintf("%s%d  %s  %s: %s", marker, i+1, comment.ID, comment.Author, text)
+			line := fmt.Sprintf("%s%d  %s: %s", marker, i+1, comment.Author, text)
 			lines = append(lines, ansi.Truncate(line, contentWidth, "..."))
 		}
 	}
@@ -9598,7 +9598,7 @@ func (m Model) renderCommentSelection() string {
 func (m Model) renderCommentDeleteConfirm() string {
 	t := m.theme
 	contentWidth := min(max(1, m.width-10), 64)
-	selection := ansi.Truncate(fmt.Sprintf("Bead %s  Comment %s", m.commentIssueID, m.commentTargetID), contentWidth, "...")
+	selection := ansi.Truncate("Bead "+m.commentIssueID, contentWidth, "...")
 	content := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).Render("Delete comment?") + "\n\n" +
 		selection + "\n\n" +
 		t.Renderer.NewStyle().Foreground(t.Subtext).Render("y/Enter delete  n/Esc cancel")
@@ -9637,9 +9637,6 @@ func (m Model) renderCommentPrompt() string {
 		title = "Edit comment"
 	}
 	subtitle := "Bead " + m.commentIssueID
-	if m.commentAction == "edit" {
-		subtitle += "  Comment " + m.commentTargetID
-	}
 	content := titleStyle.Render(title) + "\n" +
 		subtitleStyle.Render(subtitle) + "\n\n" +
 		editorStyle.Render(editorView) + "\n" +
