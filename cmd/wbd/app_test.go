@@ -19,11 +19,12 @@ import (
 )
 
 type childCall struct {
-	Name string            `json:"name"`
-	Args []string          `json:"args"`
-	Env  map[string]string `json:"env"`
-	Dir  string            `json:"dir"`
-	Plan json.RawMessage   `json:"plan,omitempty"`
+	Name  string            `json:"name"`
+	Args  []string          `json:"args"`
+	Env   map[string]string `json:"env"`
+	Dir   string            `json:"dir"`
+	Plan  json.RawMessage   `json:"plan,omitempty"`
+	Stdin string            `json:"stdin,omitempty"`
 }
 
 type failingOutput struct{}
@@ -56,6 +57,11 @@ func fakeChild() {
 		Env:  environment,
 		Dir:  directory,
 	}
+	key := fakeCommandKey(call.Args)
+	if key == "comments:edit:work-1:comment-1" && slices.Contains(call.Args, "--stdin") {
+		data, _ := io.ReadAll(os.Stdin)
+		call.Stdin = string(data)
+	}
 	if key := fakeCommandKey(call.Args); key == "create:graph" {
 		for index, argument := range call.Args {
 			if argument == "--graph" && index+1 < len(call.Args) {
@@ -84,7 +90,6 @@ func fakeChild() {
 			os.Exit(94)
 		}
 	}
-	key := fakeCommandKey(call.Args)
 	response := responses[key]
 	if response == "" && strings.HasPrefix(key, "show:") {
 		id := strings.TrimPrefix(key, "show:")
@@ -118,6 +123,18 @@ func fakeCommandKey(arguments []string) string {
 		default:
 			if arguments[0] == "show" && len(arguments) > 1 {
 				return "show:" + arguments[1]
+			}
+			if arguments[0] == "comments" && len(arguments) > 1 {
+				if arguments[1] == "edit" && len(arguments) > 3 {
+					return "comments:edit:" + arguments[2] + ":" + arguments[3]
+				}
+				if arguments[1] == "delete" && len(arguments) > 3 {
+					return "comments:delete:" + arguments[2] + ":" + arguments[3]
+				}
+				if arguments[1] == "add" && len(arguments) > 2 {
+					return "comments:add:" + arguments[2]
+				}
+				return "comments:" + arguments[1]
 			}
 			if arguments[0] == "config" && len(arguments) > 1 {
 				return "config:" + arguments[1]
@@ -1266,7 +1283,7 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"close", "work-1", "--json"},
 		{"reopen", "work-1", "--json"},
 		{"comments", "add", "work-1", "A comment", "--json"},
-		{"comments", "edit", "work-1", "comment-1", "Replacement", "--json"},
+		{"comments", "edit", "work-1", "comment-1", "replacement", "--json"},
 		{"comments", "delete", "work-1", "comment-1", "--json"},
 		{"compatibility", "--json"},
 	}
@@ -1300,83 +1317,6 @@ func TestCommentsAddAcceptsMultiWordTextAndSeparator(t *testing.T) {
 	}
 }
 
-func TestCommentsEditAndDeleteParseContracts(t *testing.T) {
-	edit, err := parse([]string{"comments", "edit", "work-1", "comment-1", "Replacement", "text", "--json"})
-	if err != nil {
-		t.Fatalf("edit rejected: %v", err)
-	}
-	if !reflect.DeepEqual(edit.positionals, []string{"work-1", "comment-1", "Replacement", "text"}) || !edit.json {
-		t.Fatalf("edit request = %#v, want issue/comment/replacement and JSON", edit)
-	}
-	deleteRequest, err := parse([]string{"--json", "comments", "delete", "work-1", "comment-1"})
-	if err != nil {
-		t.Fatalf("delete rejected: %v", err)
-	}
-	if !reflect.DeepEqual(deleteRequest.positionals, []string{"work-1", "comment-1"}) || !deleteRequest.json {
-		t.Fatalf("delete request = %#v, want issue/comment and JSON", deleteRequest)
-	}
-	for _, arguments := range [][]string{
-		{"comments", "edit", "work-1", "comment-1"},
-		{"comments", "delete", "work-1"},
-		{"comments", "delete", "work-1", "comment-1", "extra"},
-	} {
-		if _, err := parse(arguments); err == nil {
-			t.Fatalf("accepted invalid comment mutation: %#v", arguments)
-		}
-	}
-}
-
-func TestCommentsEditAndDeleteForwardThroughHubValidation(t *testing.T) {
-	for _, testCase := range []struct {
-		name     string
-		args     []string
-		wantTail []string
-	}{
-		{name: "edit", args: []string{"--json", "comments", "edit", "work-1", "comment-1", "Replacement", "text"}, wantTail: []string{"--json", "comments", "edit", "work-1", "comment-1", "--", "Replacement", "text"}},
-		{name: "delete", args: []string{"--json", "comments", "delete", "work-1", "comment-1"}, wantTail: []string{"--json", "comments", "delete", "work-1", "comment-1"}},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			test := newAppTest(t, true)
-			context := contextForTest(t, test.repository)
-			writeHubConfig(t, test, map[string]string{context: test.repository})
-			setResponses(t, map[string]string{
-				"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
-			})
-			code, _, stderr := test.run(testCase.args...)
-			if code != 0 || stderr != "" {
-				t.Fatalf("code = %d, stderr = %q", code, stderr)
-			}
-			calls := test.calls()
-			if len(calls) != 2 {
-				t.Fatalf("calls = %#v", calls)
-			}
-			got := calls[1].Args
-			if !reflect.DeepEqual(got[len(got)-len(testCase.wantTail):], testCase.wantTail) {
-				t.Fatalf("mutation args = %#v, want tail %#v", got, testCase.wantTail)
-			}
-			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
-				t.Fatalf("successful comment mutation did not signal Viewer: %v", err)
-			}
-		})
-	}
-
-	t.Run("invalid context does not mutate", func(t *testing.T) {
-		test := newAppTest(t, true)
-		writeHubConfig(t, test, map[string]string{"ctx:registered": test.repository})
-		setResponses(t, map[string]string{
-			"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:missing"]}]`,
-		})
-		code, _, stderr := test.run("--json", "comments", "delete", "work-1", "comment-1")
-		if code != 1 || !strings.Contains(stderr, `"code":"unregistered_context"`) {
-			t.Fatalf("code = %d, stderr = %q", code, stderr)
-		}
-		if calls := test.calls(); len(calls) != 1 {
-			t.Fatalf("invalid comment mutation reached child: %#v", calls)
-		}
-		assertNoViewerSignal(t, test)
-	})
-}
-
 func TestCommentsAddAcceptsMultilineMarkdownBody(t *testing.T) {
 	body := "## Example\r\n\r\n```go\r\n\tfmt.Println(\"hello\")\r\n```\r\n"
 	request, err := parse([]string{"comments", "add", "work-1", body, "--json"})
@@ -1399,6 +1339,37 @@ func TestCommentsAddRejectsEmptyAndOtherControlCharactersInBody(t *testing.T) {
 		if _, err := parse([]string{"comments", "add", "work-1", body}); err == nil {
 			t.Errorf("comment body %q was accepted", body)
 		}
+	}
+}
+
+func TestCommentsEditAndDeleteParsing(t *testing.T) {
+	body := "## Replacement\r\n\r\n```go\r\n\tfmt.Println(\"hello\")\r\n```\r\n"
+	request, err := parse([]string{"comments", "edit", "work-1", "comment-1", body, "--json"})
+	if err != nil {
+		t.Fatalf("multiline edit rejected: %v", err)
+	}
+	if request.subcommand != "edit" || !request.json || !reflect.DeepEqual(request.positionals, []string{"work-1", "comment-1", body}) {
+		t.Fatalf("edit request = %#v", request)
+	}
+
+	for _, arguments := range [][]string{
+		{"comments", "edit", "work-1", "comment-1", "--stdin", "--json"},
+		{"comments", "edit", "work-1", "comment-1", "--file", "replacement.md", "--json"},
+		{"comments", "edit", "work-1", "comment-1", "--", "--starts-with-a-dash"},
+	} {
+		if _, err := parse(arguments); err != nil {
+			t.Errorf("edit invocation %v rejected: %v", arguments, err)
+		}
+	}
+	for _, body := range []string{"", "   ", "\n\t\r"} {
+		if _, err := parse([]string{"comments", "edit", "work-1", "comment-1", body}); err == nil {
+			t.Errorf("blank replacement %q was accepted", body)
+		}
+	}
+
+	request, err = parse([]string{"comments", "delete", "work-1", "comment-1", "--json"})
+	if err != nil || request.subcommand != "delete" || !request.json || !reflect.DeepEqual(request.positionals, []string{"work-1", "comment-1"}) {
+		t.Fatalf("delete request = %#v, err=%v", request, err)
 	}
 }
 
@@ -1502,6 +1473,172 @@ func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
 		}
 		assertNoViewerSignal(t, test)
 	})
+}
+
+func TestCommentsEditAndDeleteValidateAndForward(t *testing.T) {
+	context := ""
+	for _, testCase := range []struct {
+		name      string
+		arguments []string
+		response  string
+		want      []string
+	}{
+		{
+			name:      "edit",
+			arguments: []string{"--json", "comments", "edit", "work-1", "comment-1", "## New body\r\n\r\ntext\r\n"},
+			response:  `{"author":"original","created_at":"2026-08-27T00:00:00Z","id":"comment-1","issue_id":"work-1","text":"## New body\r\n\r\ntext\r\n","schema_version":1}`,
+			want:      []string{"--db", "", "--json", "comments", "edit", "work-1", "comment-1", "## New body\r\n\r\ntext\r\n"},
+		},
+		{
+			name:      "delete",
+			arguments: []string{"--json", "comments", "delete", "work-1", "comment-1"},
+			response:  `{"comment_id":"comment-1","issue_id":"work-1","schema_version":1}`,
+			want:      []string{"--db", "", "--json", "comments", "delete", "work-1", "comment-1"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context = contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			mutationKey := "comments:delete:work-1:comment-1"
+			if testCase.name == "edit" {
+				mutationKey = "comments:edit:work-1:comment-1"
+			}
+			setResponses(t, map[string]string{
+				"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+				"comments:work-1": `[{"id":"comment-1","issue_id":"work-1"}]`,
+				mutationKey:       testCase.response,
+			})
+			for index := range testCase.want {
+				if testCase.want[index] == "" {
+					testCase.want[index] = test.store
+				}
+			}
+
+			code, stdout, stderr := test.run(testCase.arguments...)
+			if code != 0 || stderr != "" || stdout != testCase.response {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 3 {
+				t.Fatalf("calls = %#v", calls)
+			}
+			if !reflect.DeepEqual(calls[2].Args, testCase.want) {
+				t.Fatalf("mutation args = %#v, want %#v", calls[2].Args, testCase.want)
+			}
+			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+				t.Fatalf("successful comment mutation did not signal Viewer: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommentsEditValidatesInputSourcesAndPreservesStdin(t *testing.T) {
+	test := newAppTest(t, true)
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	setResponses(t, map[string]string{
+		"show:work-1":                    fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		"comments:work-1":                `[{"id":"comment-1","issue_id":"work-1"}]`,
+		"comments:edit:work-1:comment-1": `{"schema_version":1}`,
+	})
+	body := "# Exact\r\n\r\nbody\r\n"
+	test.app.stdin = strings.NewReader(body)
+	code, _, stderr := test.run("--json", "comments", "edit", "work-1", "comment-1", "--stdin")
+	if code != 0 || stderr != "" {
+		t.Fatalf("stdin edit code=%d stderr=%q", code, stderr)
+	}
+	calls := test.calls()
+	if !reflect.DeepEqual(calls[2].Args, []string{"--db", test.store, "--json", "comments", "edit", "work-1", "comment-1", "--stdin"}) {
+		t.Fatalf("stdin mutation args = %#v", calls[2].Args)
+	}
+	if calls[2].Stdin != body {
+		t.Fatalf("stdin body = %q, want %q", calls[2].Stdin, body)
+	}
+}
+
+func TestCommentsEditRejectsBlankFileAndStdinBeforeDelegation(t *testing.T) {
+	for _, source := range []string{"file", "stdin"} {
+		t.Run(source, func(t *testing.T) {
+			test := newAppTest(t, true)
+			arguments := []string{"--json", "comments", "edit", "work-1", "comment-1"}
+			if source == "file" {
+				path := filepath.Join(t.TempDir(), "replacement.md")
+				if err := os.WriteFile(path, []byte(" \r\n\t"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				arguments = append(arguments, "--file", path)
+			} else {
+				test.app.stdin = strings.NewReader(" \r\n\t")
+				arguments = append(arguments, "--stdin")
+			}
+
+			code, _, stderr := test.run(arguments...)
+			if code != 1 || !strings.Contains(stderr, "non-whitespace") {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			if calls := test.calls(); len(calls) != 0 {
+				t.Fatalf("blank replacement was delegated: %#v", calls)
+			}
+			assertNoViewerSignal(t, test)
+		})
+	}
+}
+
+func TestCommentsMutationsRejectInvalidIdentityAndContext(t *testing.T) {
+	t.Run("comment is scoped to issue", func(t *testing.T) {
+		test := newAppTest(t, true)
+		context := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{context: test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+			"comments:work-1": `[{"id":"comment-1","issue_id":"other-issue"}]`,
+		})
+
+		code, _, stderr := test.run("--json", "comments", "delete", "work-1", "comment-1")
+		if code != 1 || !strings.Contains(stderr, "comment-1") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 2 {
+			t.Fatalf("invalid comment was delegated: %#v", calls)
+		}
+		assertNoViewerSignal(t, test)
+	})
+
+	t.Run("issue must belong to current repository context", func(t *testing.T) {
+		test := newAppTest(t, true)
+		current := contextForTest(t, test.repository)
+		writeHubConfig(t, test, map[string]string{current: test.repository, "ctx:other": "/other"})
+		setResponses(t, map[string]string{
+			"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:other"]}]`,
+		})
+
+		code, _, stderr := test.run("--json", "comments", "delete", "work-1", "comment-1")
+		if code != 1 || !strings.Contains(stderr, "current repository context") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 1 {
+			t.Fatalf("context-mismatched issue was delegated: %#v", calls)
+		}
+		assertNoViewerSignal(t, test)
+	})
+}
+
+func TestCommentsMutationFailureDoesNotSignalViewer(t *testing.T) {
+	test := newAppTest(t, true)
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	setResponses(t, map[string]string{
+		"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		"comments:work-1": `[{"id":"comment-1","issue_id":"work-1"}]`,
+	})
+	setExitCodes(t, map[string]int{"comments:delete:work-1:comment-1": 9})
+
+	code, _, stderr := test.run("--json", "comments", "delete", "work-1", "comment-1")
+	if code != 9 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	assertNoViewerSignal(t, test)
 }
 
 func TestAssigneeJSONSurvivesScopedAndAllContextReads(t *testing.T) {

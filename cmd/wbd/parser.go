@@ -140,11 +140,15 @@ var commandSpecs = map[string]commandSpec{
 		},
 	},
 	"comments edit": {
-		path: "comments edit", usage: "wbd comments edit <issue-id> <comment-id> <replacement-text...>", summary: "Edit one comment on an authoritative Hub issue.",
-		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
+		path: "comments edit", usage: "wbd comments edit <issue-id> <comment-id> (<text...> | --stdin | --file <path>) [options]", summary: "Edit a comment on an authoritative Hub issue.",
+		options: []optionSpec{
+			{name: "--file", value: "<path>", description: "Read replacement text from a file instead of positional text."},
+			{name: "--stdin", description: "Read replacement text from standard input instead of positional text."},
+			{name: "--json", description: "Emit JSON."},
+		},
 	},
 	"comments delete": {
-		path: "comments delete", usage: "wbd comments delete <issue-id> <comment-id>", summary: "Delete one comment from an authoritative Hub issue.",
+		path: "comments delete", usage: "wbd comments delete <issue-id> <comment-id> [options]", summary: "Delete a comment from an authoritative Hub issue.",
 		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
 	},
 	"link": {path: "link", usage: "wbd link <bead-id> [commit]", summary: "Correlate current-context concrete work with a commit."},
@@ -198,6 +202,7 @@ type request struct {
 	fromTodo         string
 	commentAuthor    string
 	commentFile      string
+	commentStdin     bool
 	commentSeparator bool
 }
 
@@ -272,14 +277,18 @@ func parse(arguments []string) (request, error) {
 	case "close", "reopen":
 		return parseClose(result, arguments)
 	case "comments":
-		if len(arguments) == 0 || arguments[0] != "add" && arguments[0] != "edit" && arguments[0] != "delete" {
+		if len(arguments) == 0 || !oneOf(arguments[0], "add", "edit", "delete") {
 			return result, errors.New(usageFor("comments"))
 		}
 		result.subcommand = arguments[0]
-		if result.subcommand == "add" {
+		switch result.subcommand {
+		case "add":
 			return parseCommentsAdd(result, arguments[1:])
+		case "edit":
+			return parseCommentsEdit(result, arguments[1:])
+		default:
+			return parseCommentsDelete(result, arguments[1:])
 		}
-		return parseCommentsMutation(result, arguments[1:])
 	case "link":
 		if result.json || len(arguments) < 1 || len(arguments) > 2 {
 			return result, errors.New(usageFor("link"))
@@ -314,48 +323,6 @@ func parse(arguments []string) (request, error) {
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands())
-	}
-	return result, nil
-}
-
-func parseCommentsMutation(result request, arguments []string) (request, error) {
-	path := "comments " + result.subcommand
-	separator := false
-	for len(arguments) > 0 {
-		argument := arguments[0]
-		arguments = arguments[1:]
-		if !separator && argument == "--" {
-			if result.subcommand == "delete" {
-				return result, errors.New(usageFor(path))
-			}
-			separator = true
-			result.commentSeparator = true
-			continue
-		}
-		if !separator && argument == "--json" {
-			if err := setJSON(&result); err != nil {
-				return result, err
-			}
-			continue
-		}
-		if !separator && strings.HasPrefix(argument, "-") {
-			return result, fmt.Errorf("unsupported option for %s: %s", path, argument)
-		}
-		if len(result.positionals) < 2 {
-			if err := safeID(path, argument); err != nil {
-				return result, err
-			}
-		} else if result.subcommand == "edit" {
-			if err := validateCommentBody(argument); err != nil {
-				return result, err
-			}
-		} else {
-			return result, errors.New(usageFor(path))
-		}
-		result.positionals = append(result.positionals, argument)
-	}
-	if result.subcommand == "delete" && len(result.positionals) != 2 || result.subcommand == "edit" && len(result.positionals) < 3 {
-		return result, errors.New(usageFor(path))
 	}
 	return result, nil
 }
@@ -415,6 +382,95 @@ func parseCommentsAdd(result request, arguments []string) (request, error) {
 	}
 	if result.commentFile != "" && len(result.positionals) != 1 || result.commentFile == "" && len(result.positionals) < 2 {
 		return result, errors.New(usageFor("comments add"))
+	}
+	return result, nil
+}
+
+func parseCommentsEdit(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	separator := false
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if !separator && argument == "--" {
+			separator = true
+			result.commentSeparator = true
+			continue
+		}
+		if !separator && argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if !separator {
+			if argument == "--stdin" {
+				if err := markSeen(seen, argument); err != nil {
+					return result, err
+				}
+				result.commentStdin = true
+				continue
+			}
+			flag, value, consumed, matched, err := optionValueFor("comments edit", argument, arguments)
+			if err != nil {
+				return result, err
+			}
+			if matched {
+				arguments = arguments[consumed:]
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+				result.commentFile = value
+				continue
+			}
+		}
+		if strings.HasPrefix(argument, "-") && !separator {
+			return result, fmt.Errorf("unsupported option for comments edit: %s", argument)
+		}
+		if len(result.positionals) < 2 {
+			if err := safeID("comments edit", argument); err != nil {
+				return result, err
+			}
+		} else if err := validateCommentEditBody(argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+
+	if len(result.positionals) < 2 {
+		return result, errors.New(usageFor("comments edit"))
+	}
+	sourceSelected := result.commentFile != "" || result.commentStdin
+	if sourceSelected {
+		if len(result.positionals) != 2 || result.commentFile != "" && result.commentStdin {
+			return result, errors.New(usageFor("comments edit"))
+		}
+	} else if len(result.positionals) < 3 {
+		return result, errors.New(usageFor("comments edit"))
+	}
+	return result, nil
+}
+
+func parseCommentsDelete(result request, arguments []string) (request, error) {
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for comments delete: %s", argument)
+		}
+		if err := safeID("comments delete", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if len(result.positionals) != 2 {
+		return result, errors.New(usageFor("comments delete"))
 	}
 	return result, nil
 }
@@ -873,6 +929,18 @@ func validateCommentBody(value string) error {
 	for _, character := range value {
 		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
 			return errors.New("invalid control character in comments add")
+		}
+	}
+	return nil
+}
+
+func validateCommentEditBody(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("replacement text must contain non-whitespace characters")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return errors.New("invalid control character in comments edit")
 		}
 	}
 	return nil
