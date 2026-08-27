@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 )
@@ -132,12 +133,14 @@ func (a *app) run(arguments []string) int {
 	if info, statErr := os.Stat(a.paths.Store); statErr != nil || !info.IsDir() {
 		return a.fail(errors.New("store is missing; run 'wbd bootstrap'"))
 	}
-	if err := need("bd"); err != nil {
-		return a.fail(err)
-	}
 	request, err := parse(arguments)
 	if err != nil {
 		return a.fail(err)
+	}
+	if !usesDatabaseList(request) {
+		if err := need("bd"); err != nil {
+			return a.fail(err)
+		}
 	}
 
 	switch request.command {
@@ -170,6 +173,9 @@ func (a *app) run(arguments []string) int {
 	case "compatibility":
 		return a.compatibility()
 	case "list":
+		if usesDatabaseList(request) {
+			return a.list(request)
+		}
 		args := appendJSON(nil, request.json)
 		args = append(args, "list")
 		if !request.allContexts {
@@ -358,6 +364,105 @@ func (a *app) run(arguments []string) int {
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
+}
+
+func usesDatabaseList(request request) bool {
+	return request.listPaginate || request.listCursor != "" || request.listSort != "" ||
+		request.listAfterCreated != "" || request.listAfterUpdated != "" ||
+		request.listAfterClosed != "" || request.listBrief
+}
+
+func (a *app) list(request request) int {
+	if !request.json {
+		return a.fail(errors.New("database-backed list options require --json"))
+	}
+	if request.listPaginate && !request.listLimitSet {
+		return a.fail(errors.New("--paginate requires --limit so the page is bounded"))
+	}
+
+	options := hub.ListOptions{AllContexts: request.allContexts, Limit: 0, Paginate: request.listPaginate || request.listCursor != "", Cursor: request.listCursor, Sort: request.listSort, Brief: request.listBrief}
+	if request.listLimitSet {
+		value := listArgumentValue(request.args, "--limit")
+		limit, err := strconv.Atoi(value)
+		if err != nil {
+			return a.fail(fmt.Errorf("invalid list limit %q: %w", value, err))
+		}
+		options.Limit = limit
+	}
+	for index := 0; index+1 < len(request.args); index++ {
+		if request.args[index] == "--status" {
+			options.Statuses = strings.Split(request.args[index+1], ",")
+			index++
+		}
+	}
+	options.IssueType = listArgumentValue(request.args, "--type")
+	priorityValue := listArgumentValue(request.args, "--priority")
+	if value := priorityValue; value != "" {
+		value = strings.TrimPrefix(value, "P")
+		priority, err := strconv.Atoi(value)
+		if err != nil {
+			return a.fail(fmt.Errorf("invalid list priority %q: %w", value, err))
+		}
+		options.Priority = &priority
+	}
+	for index := 0; index+1 < len(request.args); index++ {
+		if request.args[index] == "--label" {
+			options.Labels = append(options.Labels, strings.Split(request.args[index+1], ",")...)
+			index++
+		}
+	}
+	for index, argument := range request.args {
+		if argument == "--ready" {
+			options.Ready = true
+		}
+		if index+1 >= len(request.args) {
+			continue
+		}
+		switch argument {
+		case "--after-created-at":
+			value, err := time.Parse(time.RFC3339, request.args[index+1])
+			if err != nil {
+				return a.fail(fmt.Errorf("invalid %s: %w", argument, err))
+			}
+			options.AfterCreatedAt = &value
+		case "--after-updated-at":
+			value, err := time.Parse(time.RFC3339, request.args[index+1])
+			if err != nil {
+				return a.fail(fmt.Errorf("invalid %s: %w", argument, err))
+			}
+			options.AfterUpdatedAt = &value
+		case "--after-closed-at":
+			value, err := time.Parse(time.RFC3339, request.args[index+1])
+			if err != nil {
+				return a.fail(fmt.Errorf("invalid %s: %w", argument, err))
+			}
+			options.AfterClosedAt = &value
+		}
+	}
+	if !request.allContexts {
+		registration, err := a.register()
+		if err != nil {
+			return a.fail(err)
+		}
+		options.Context = registration.Context
+	}
+	page, err := hub.ListIssues(a.paths.Store, options)
+	if err != nil {
+		return a.fail(err)
+	}
+	if page.Pagination != nil {
+		return a.writeJSON(map[string]any{"issues": page.Issues, "pagination": page.Pagination})
+	}
+	return a.writeJSON(page.Issues)
+}
+
+func listArgumentValue(arguments []string, flag string) string {
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == flag {
+			return arguments[index+1]
+		}
+	}
+	return ""
 }
 
 func helpTarget(arguments []string) (string, bool, error) {

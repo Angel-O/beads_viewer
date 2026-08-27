@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
+	_ "modernc.org/sqlite"
 )
 
 type childCall struct {
@@ -677,6 +679,10 @@ func TestParserRejectsRemovedAndInvalidCompositions(t *testing.T) {
 		{"create", "Title", "--type", "custom-kind"},
 		{"replace", "item-1", "--context", "ctx:a", "--from-todo", "todo-1"},
 		{"compatibility"},
+		{"list", "--paginate"},
+		{"list", "--cursor", "opaque-token"},
+		{"list", "--sort", "updated_at:asc"},
+		{"list", "--after-updated-at", "yesterday"},
 	}
 	for _, arguments := range tests {
 		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
@@ -715,6 +721,71 @@ func TestListScopingAndAllContexts(t *testing.T) {
 			t.Fatalf("all-context list unexpectedly configured hub: %v", err)
 		}
 	})
+}
+
+func TestPaginatedListUsesDatabaseAndEmitsMetadata(t *testing.T) {
+	test := newAppTest(t, false)
+	db, err := sql.Open("sqlite", filepath.Join(test.store, "beads.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			status TEXT NOT NULL,
+			priority INTEGER NOT NULL,
+			issue_type TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			closed_at DATETIME,
+			tombstone INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) VALUES
+			('one', 'One', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+			('two', 'Two', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z'),
+			('three', 'Three', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-03T00:00:00Z'),
+			('archived', 'Archived', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-04T00:00:00Z');
+		UPDATE issues SET tombstone = 1 WHERE id = 'archived'`)
+	if closeErr := db.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "2", "--sort", "updated_at:desc", "--brief", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var response struct {
+		Issues     []hub.ListIssue    `json:"issues"`
+		Pagination hub.ListPagination `json:"pagination"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{response.Issues[0].ID, response.Issues[1].ID}; !reflect.DeepEqual(got, []string{"three", "two"}) {
+		t.Fatalf("page IDs = %#v", got)
+	}
+	if !response.Pagination.HasMore || response.Pagination.NextCursor == "" {
+		t.Fatalf("pagination = %#v", response.Pagination)
+	}
+	if calls := test.calls(); len(calls) != 0 {
+		t.Fatalf("database-backed list invoked child commands: %#v", calls)
+	}
+
+	code, stdout, stderr = test.run("list", "--all-contexts", "--limit", "2", "--sort", "updated_at:desc", "--brief", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("unpaginated code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var unpaginated []hub.ListIssue
+	if err := json.Unmarshal([]byte(stdout), &unpaginated); err != nil {
+		t.Fatalf("unpaginated response = %q: %v", stdout, err)
+	}
+	if len(unpaginated) != 2 || unpaginated[0].ID != "three" || unpaginated[1].ID != "two" {
+		t.Fatalf("unpaginated issues = %#v", unpaginated)
+	}
 }
 
 func TestLinkDelegatesToBVWithRegistrationAndIsolation(t *testing.T) {
@@ -1245,6 +1316,8 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 		"--prefix": "item", "--description": "details", "--type": "task", "--priority": "2",
 		"--assignee": "agent-7", "--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
 		"--title": "title", "--status": "open", "--label": "team", "--limit": "20", "--add-label": "team",
+		"--cursor": "opaque-token", "--sort": "updated_at:desc", "--after-created-at": "2026-08-27T12:00:00Z",
+		"--after-updated-at": "2026-08-27T12:00:00Z", "--after-closed-at": "2026-08-27T12:00:00Z",
 		"--reason": "done", "--author": "agent-7", "--file": "notes.txt",
 	}
 	for _, path := range commandOrder {
@@ -1276,6 +1349,7 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"new", "Title", "--contextless", "--json"},
 		{"replace", "old-1", "--contextless", "--json"},
 		{"list", "--ready", "--all-contexts", "--json"},
+		{"list", "--paginate", "--limit", "2", "--brief", "--json"},
 		{"show", "work-1", "--json"},
 		{"update", "work-1", "--title", "Title", "--json"},
 		{"dep", "add", "work-1", "work-2", "--json"},

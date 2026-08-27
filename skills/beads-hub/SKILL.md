@@ -47,6 +47,21 @@ Assign only from an explicit stable identity: `wbd update <id> --status in_progr
 
 Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
+For a bounded agent query against a SQLite-backed Hub, use the fixed brief
+projection and keyset cursor. The `after-*` filters are strict (`>`), and the
+cursor is opaque and must be sent back with the same filters and sort:
+
+```sh
+wbd list --paginate --limit 50 --sort updated_at:desc --brief --json
+wbd list --paginate --limit 50 --sort updated_at:desc --cursor <next_cursor> --brief --json
+```
+
+The paginated response is an object with `issues` and `pagination`; ordinary
+unpaginated `wbd list --json` remains the legacy JSON array. Supported orders
+are `created_at:desc`, `updated_at:desc`, and `closed_at:desc`. The fixed
+`--brief` issue shape is exactly `id`, `title`, `status`, `priority`,
+`issue_type`, and `updated_at`.
+
 For post-merge correlation and closure of concrete private work, load
 [`beads-hub-closeout`](../beads-hub-closeout/SKILL.md). It keeps private
 identities out of Git-visible metadata and requires verified merge reachability
