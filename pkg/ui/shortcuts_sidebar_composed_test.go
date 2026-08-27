@@ -167,6 +167,62 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 	}
 }
 
+func TestTimeTravelShortcutsSidebarComposition(t *testing.T) {
+	maxLineWidth := func(s string) int {
+		mx := 0
+		for _, line := range strings.Split(s, "\n") {
+			if width := lipgloss.Width(line); width > mx {
+				mx = width
+			}
+		}
+		return mx
+	}
+
+	for _, test := range []struct {
+		name  string
+		width int
+	}{
+		{name: "wide", width: 120},
+		{name: "narrow", width: 80},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(2), test.width, 30)
+			updated, _ := m.Update(keyMsg("t"))
+			m = updated.(Model)
+			if !m.showTimeTravelPrompt || m.showShortcutsSidebar {
+				t.Fatalf("opening time-travel prompt changed initial state: prompt=%v sidebar=%v", m.showTimeTravelPrompt, m.showShortcutsSidebar)
+			}
+			updated, _ = m.Update(keyMsg(";"))
+			m = updated.(Model)
+			if !m.showTimeTravelPrompt || !m.showShortcutsSidebar {
+				t.Fatalf("semicolon did not keep the time-travel prompt/sidebar state: prompt=%v sidebar=%v", m.showTimeTravelPrompt, m.showShortcutsSidebar)
+			}
+			if test.width == 80 {
+				updated, _ = m.Update(keyMsg("HEAD~1"))
+				m = updated.(Model)
+			}
+
+			// Rebuild the same pre-clamp composition performed by View(). This catches
+			// narrow prompt content overflowing before View() truncates it.
+			m.shortcutsSidebar.SetFocus(m.focused)
+			m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
+			composed := lipgloss.JoinHorizontal(lipgloss.Top, m.renderTimeTravelPrompt(), m.shortcutsSidebar.View())
+			plainComposed := ansi.Strip(composed)
+			if !strings.Contains(plainComposed, "Shortcuts") || !strings.Contains(plainComposed, "Navigation") {
+				t.Fatalf("sidebar title/content missing from time-travel composition:\n%s", plainComposed)
+			}
+			if got := maxLineWidth(composed); got > m.width {
+				t.Fatalf("time-travel/sidebar pre-clamp composition exceeds terminal width: got %d, want at most %d", got, m.width)
+			}
+
+			view := m.View()
+			if !strings.Contains(ansi.Strip(view), "Navigation") {
+				t.Fatal("time-travel prompt clipped the shortcuts sidebar content")
+			}
+		})
+	}
+}
+
 func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
 	maxLineWidth := func(s string) int {
 		maxWidth := 0
