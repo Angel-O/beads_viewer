@@ -632,9 +632,14 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	if !m.showCommentPrompt || m.focused != focusCommentInput || m.commentTargetID != "c2" || m.commentInput.Value() != "second\nwith Markdown" {
 		t.Fatalf("edit target = prompt:%v focus:%v id:%q text:%q", m.showCommentPrompt, m.focused, m.commentTargetID, m.commentInput.Value())
 	}
+	if !strings.Contains(ansi.Strip(m.renderCommentPrompt()), "Comment c2") {
+		t.Fatalf("edit prompt did not identify target comment: %q", ansi.Strip(m.renderCommentPrompt()))
+	}
 	if strings.Contains(m.View(), "Shortcuts") {
 		t.Fatal("comment editor exposed shortcuts sidebar")
 	}
+	expectedText := "  replacement \nline  "
+	m.commentInput.SetValue(expectedText)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	m = updated.(Model)
 	if cmd == nil || !m.commentSubmitting || m.focused != focusDetail {
@@ -642,11 +647,23 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	}
 	updated, refreshCmd := m.Update(cmd())
 	m = updated.(Model)
-	if gotAction != "edit" || gotIssue != "A" || gotComment != "c2" || gotText != "second\nwith Markdown" {
+	if gotAction != "edit" || gotIssue != "A" || gotComment != "c2" || gotText != expectedText {
 		t.Fatalf("mutation = %q %q %q %q", gotAction, gotIssue, gotComment, gotText)
 	}
 	if refreshCmd == nil || m.statusIsError || !strings.Contains(m.View(), "Shortcuts") {
 		t.Fatalf("edit result refresh=%v error=%v sidebar=%v", refreshCmd != nil, m.statusIsError, strings.Contains(m.View(), "Shortcuts"))
+	}
+}
+
+func TestCommentMutationsIgnoredInTimeTravelMode(t *testing.T) {
+	for _, action := range []string{"e", "d"} {
+		m := commentActionModel()
+		m.timeTravelMode = true
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+		m = updated.(Model)
+		if cmd != nil || m.showCommentSelection || m.showCommentPrompt || m.showCommentDeleteConfirm {
+			t.Fatalf("time-travel action %q mutated comment state: cmd=%v selection=%v prompt=%v confirm=%v", action, cmd != nil, m.showCommentSelection, m.showCommentPrompt, m.showCommentDeleteConfirm)
+		}
 	}
 }
 

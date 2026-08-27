@@ -5842,6 +5842,9 @@ func (m *Model) beginCommentAction(action string) {
 	if m.commentSubmitting {
 		return
 	}
+	if m.timeTravelMode {
+		return
+	}
 	if !m.hubRepositoryMode {
 		m.statusMsg = "Comments require Hub mode; run wbv --hub"
 		m.statusIsError = true
@@ -5966,7 +5969,22 @@ func (m *Model) resizeCommentEditor() {
 func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s":
-		text := strings.TrimSpace(m.commentInput.Value())
+		inputText := m.commentInput.Value()
+		if m.commentAction == "edit" {
+			if strings.TrimSpace(inputText) == "" {
+				m.statusMsg = "Comment cannot be empty"
+				m.statusIsError = true
+				return m, nil
+			}
+			m.showCommentPrompt = false
+			m.commentInput.Blur()
+			m.focused = m.commentOrigin
+			m.commentSubmitting = true
+			m.statusMsg = fmt.Sprintf("Editing comment %s...", m.commentTargetID)
+			m.statusIsError = false
+			return m, runWBDCommentsEdit(m.commentIssueID, m.commentTargetID, inputText, m.commentMutationRunner)
+		}
+		text := strings.TrimSpace(inputText)
 		if text == "" {
 			m.statusMsg = "Comment cannot be empty"
 			m.statusIsError = true
@@ -5976,11 +5994,6 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.commentInput.Blur()
 		m.focused = m.commentOrigin
 		m.commentSubmitting = true
-		if m.commentAction == "edit" {
-			m.statusMsg = fmt.Sprintf("Editing comment %s...", m.commentTargetID)
-			m.statusIsError = false
-			return m, runWBDCommentsEdit(m.commentIssueID, m.commentTargetID, text, m.commentMutationRunner)
-		}
 		m.statusMsg = fmt.Sprintf("Adding comment to %s...", m.commentIssueID)
 		m.statusIsError = false
 		return m, runWBDCommentsAdd(m.commentIssueID, text, m.commentRunner)
@@ -9571,8 +9584,12 @@ func (m Model) renderCommentPrompt() string {
 	if m.commentAction == "edit" {
 		title = "Edit comment"
 	}
+	subtitle := "Bead " + m.commentIssueID
+	if m.commentAction == "edit" {
+		subtitle += "  Comment " + m.commentTargetID
+	}
 	content := titleStyle.Render(title) + "\n" +
-		subtitleStyle.Render("Bead "+m.commentIssueID) + "\n\n" +
+		subtitleStyle.Render(subtitle) + "\n\n" +
 		editorStyle.Render(editorView) + "\n" +
 		hintStyle.Render(commentHintText(m.commentEditorWidth))
 	return lipgloss.Place(m.width, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
