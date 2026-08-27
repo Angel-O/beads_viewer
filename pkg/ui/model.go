@@ -9655,6 +9655,19 @@ func (m Model) renderCommentPrompt() string {
 // renderTimeTravelPrompt renders the time-travel revision input overlay
 func (m Model) renderTimeTravelPrompt() string {
 	t := m.theme
+	availableWidth := m.mainContentWidth()
+	contentWidth := availableWidth - 8 // Account for the prompt's padding and border.
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	inputWidth := contentWidth - lipgloss.Width(m.timeTravelInput.Prompt) - 1 // Reserve the prompt prefix and cursor.
+	if inputWidth < 1 {
+		inputWidth = 1
+	}
+	if m.timeTravelInput.Width > inputWidth {
+		m.timeTravelInput.Width = inputWidth
+	}
+	contentStyle := t.Renderer.NewStyle().MaxWidth(contentWidth)
 
 	boxStyle := t.Renderer.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -9681,17 +9694,17 @@ func (m Model) renderTimeTravelPrompt() string {
 		Foreground(t.Base.GetForeground())
 
 	// Build content
-	content := titleStyle.Render("⏱️  Time-Travel Mode") + "\n\n" +
-		subtitleStyle.Render("Compare current state with a historical revision") + "\n\n" +
+	content := contentStyle.Render(titleStyle.Render("⏱️  Time-Travel Mode")) + "\n\n" +
+		contentStyle.Render(subtitleStyle.Render("Compare current state with a historical revision")) + "\n\n" +
 		m.timeTravelInput.View() + "\n\n" +
-		exampleStyle.Render("Examples: HEAD~5, main, v1.0.0, 2024-01-01, abc123") + "\n\n" +
-		textStyle.Render("Press ") + keyStyle.Render("Enter") + textStyle.Render(" to compare, ") +
-		keyStyle.Render("Esc") + textStyle.Render(" to cancel")
+		contentStyle.Render(exampleStyle.Render("Examples: HEAD~5, main, v1.0.0, 2024-01-01, abc123")) + "\n\n" +
+		contentStyle.Render(textStyle.Render("Press ")+keyStyle.Render("Enter")+textStyle.Render(" to compare, ")+
+			keyStyle.Render("Esc")+textStyle.Render(" to cancel"))
 
 	box := boxStyle.Render(content)
 
 	return lipgloss.Place(
-		m.width,
+		availableWidth,
 		m.height-1,
 		lipgloss.Center,
 		lipgloss.Center,
