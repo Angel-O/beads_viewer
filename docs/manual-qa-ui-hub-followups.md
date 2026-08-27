@@ -279,6 +279,8 @@ wbd create --help
 wbd update --help
 wbd list --help
 wbd dep --help
+wbd claim --help
+wbd unclaim --help
 wbd unlink --help
 ```
 
@@ -286,40 +288,43 @@ wbd unlink --help
 - [ ] Help is printed to stdout.
 - [ ] Help does not mutate or require opening the Hub store.
 - [ ] Displayed options match accepted options.
-- [ ] Help explains explicit assignee behavior, assignment clearing, status-only
-      preservation, and exact full-SHA unlinking.
+- [ ] Help explains safe claim ownership, abandoned-claim recovery, and exact
+      full-SHA unlinking.
 
-### Assignees
+### Claim ownership
 
 Use a disposable test record:
 
 ```bash
-wbd create "Manual QA assignee" --type task --assignee "qa-user" --json
+wbd create "Manual QA claim" --type task --json
 wbd show <returned-id> --json
 ```
 
-- [ ] `assignee` is `qa-user`.
-- [ ] `assignee`, `owner`, and `created_by` remain distinct fields.
+- [ ] The new issue is unassigned.
+- [ ] `--assignee` is rejected by `wbd create` and `wbd update`.
 
 Then run:
 
 ```bash
-wbd update <returned-id> --status in_progress --json
+wbd claim <returned-id> --json
 wbd show <returned-id> --json
 ```
 
-- [ ] The status-only update preserves `qa-user`.
+- [ ] The issue is `in_progress` and assigned to the invoking actor.
 
 Then run:
 
 ```bash
-wbd update <returned-id> --assignee "qa-user-2" --json
-wbd update <returned-id> --assignee "" --json
+wbd unclaim <returned-id> --reason "Manual QA abandoned" --json
 wbd show <returned-id> --json
 ```
 
-- [ ] Explicit reassignment works.
-- [ ] An empty explicit assignee clears the assignment.
+- [ ] The issue is `open` and unassigned.
+- [ ] `wbd unclaim <id> --force --reason "..." --json` is available for one
+      explicitly identified abandoned claim.
+- [ ] Forced recovery requires the exact canonical issue ID, clears claims from
+      `blocked` and `deferred` work, and returns it to `open`.
+- [ ] The recovered issue can then be closed normally after verification.
 - [ ] Viewer refreshes after each successful mutation.
 - [ ] TUI details show the assigned identity or `Unassigned` correctly.
 

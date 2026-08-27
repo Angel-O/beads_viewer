@@ -44,6 +44,7 @@ type bdIssue struct {
 	Title        string       `json:"title"`
 	Description  string       `json:"description"`
 	Status       string       `json:"status"`
+	Assignee     string       `json:"assignee"`
 	Priority     int          `json:"priority"`
 	IssueType    string       `json:"issue_type"`
 	Labels       []string     `json:"labels"`
@@ -77,7 +78,6 @@ type graphNode struct {
 	Title       string   `json:"title"`
 	Type        string   `json:"type"`
 	Description string   `json:"description,omitempty"`
-	Assignee    string   `json:"assignee,omitempty"`
 	Priority    int      `json:"priority"`
 	Labels      []string `json:"labels,omitempty"`
 }
@@ -205,6 +205,18 @@ func (a *app) run(arguments []string) int {
 		}
 		args := appendJSON(nil, request.json)
 		args = append(args, "update", request.positionals[0])
+		args = append(args, request.args...)
+		return a.runBDMutation(a.dir, args...)
+	case "claim":
+		args := appendJSON(nil, request.json)
+		args = append(args, "update", request.positionals[0], "--claim")
+		return a.runBDMutation(a.dir, args...)
+	case "unclaim":
+		if request.force {
+			return a.forceUnclaim(request)
+		}
+		args := appendJSON(nil, request.json)
+		args = append(args, "unclaim", request.positionals[0])
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
 	case "dep":
@@ -544,10 +556,12 @@ Creation targeting:
   --contextless          Create a todo without repository context.
   --from-todo <todo-id>  Create concrete work discovered from a todo.
 
-Assignment:
-  --assignee <identity>  Assign explicitly on create or update; never inferred.
-  --assignee ""          Clear an assignment with update.
-  A status-only update preserves the existing assignee.
+Claim ownership:
+  wbd claim <id>         Atomically assign the invoking actor and start work.
+  wbd unclaim <id>       Release your own claim and return work to open.
+  wbd unclaim <id> --force --reason "..."
+                         Recover one abandoned claim by exact issue ID.
+  create and update never accept --assignee; use claim instead.
 
 Commands:
 `)
@@ -626,8 +640,8 @@ func (a *app) create(request request) int {
 	plan := graphPlan{
 		Nodes: []graphNode{{
 			Key: "result", Title: request.positionals[0], Type: admitted.Kind,
-			Description: requestValue(request.args, "--description", ""), Assignee: requestValue(request.args, "--assignee", ""),
-			Priority: priority, Labels: admitted.Labels,
+			Description: requestValue(request.args, "--description", ""),
+			Priority:    priority, Labels: admitted.Labels,
 		}},
 		Edges: []graphEdge{{FromKey: "result", ToID: todo.ID, Type: "discovered-from"}},
 	}
@@ -1002,10 +1016,44 @@ func (a *app) readIssue(id string, includeDependents bool) (bdIssue, error) {
 	if err := json.Unmarshal(data, &issues); err != nil {
 		return bdIssue{}, fmt.Errorf("decoding issue %s: %w", id, err)
 	}
-	if len(issues) != 1 || issues[0].ID != id || issues[0].IssueType == "" || issues[0].Status == "" {
+	if len(issues) != 1 || issues[0].IssueType == "" || issues[0].Status == "" {
 		return bdIssue{}, fmt.Errorf("issue %s returned an invalid authoritative record", id)
 	}
+	if issues[0].ID != id {
+		return bdIssue{}, fmt.Errorf("issue %s is not the exact canonical issue ID; use %s", id, issues[0].ID)
+	}
 	return issues[0], nil
+}
+
+func (a *app) forceUnclaim(request request) int {
+	issue, err := a.readIssue(request.positionals[0], false)
+	if err != nil {
+		return a.fail(err)
+	}
+
+	if issue.Assignee == "" {
+		return a.fail(fmt.Errorf("cannot force unclaim %s: issue is unassigned", issue.ID))
+	}
+	if !oneOf(issue.Status, "open", "in_progress", "blocked", "deferred") {
+		return a.fail(fmt.Errorf("cannot force unclaim %s: status %q is not recoverable", issue.ID, issue.Status))
+	}
+
+	// The backend unclaim verb only accepts open/in_progress rows. Normalize
+	// frozen claimed work without emitting a second JSON result, then delegate
+	// the release itself so started_at, leases, and unclaimed events are handled
+	// by the backend's native lifecycle operation.
+	if issue.Status == "blocked" || issue.Status == "deferred" {
+		if _, err := a.runBDCapture(a.dir, "--json", "update", issue.ID, "--status", "open"); err != nil {
+			return a.fail(fmt.Errorf("normalizing %s for forced unclaim: %w", issue.ID, err))
+		}
+		a.signalMutation("forced recovery normalization")
+	}
+
+	args := appendJSON(nil, request.json)
+	args = append(args, "unclaim", issue.ID)
+	args = append(args, request.args...)
+	args = append(args, "--force")
+	return a.runBDMutation(a.dir, args...)
 }
 
 func (a *app) runGraph(plan graphPlan, key string) (string, error) {

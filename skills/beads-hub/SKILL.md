@@ -27,7 +27,7 @@ Omitted targeting uses the current repository context. Repeat `--context <ctx-id
 
 ```sh
 wbd context
-wbd create "Implement token refresh" --type task --priority 2 --assignee <identity> --json
+wbd create "Implement token refresh" --type task --priority 2 --json
 
 # Repository-related discovery that may later become project work.
 wbd create "Investigate flaky authentication" --type todo --context <auth-context> --json
@@ -43,7 +43,7 @@ wbd link <work-id> HEAD
 wbd unlink <work-id> <full-commit-sha>
 ```
 
-Assign only from an explicit stable identity: `wbd update <id> --status in_progress --assignee <identity> --json`. A status-only update preserves the current assignee; `wbd update <id> --assignee "" --json` clears it. Never infer an assignee from owner, creator, Git, environment, or Viewer claim text.
+Claim ownership only through the safe claim operation: `wbd claim <id> --json`. It atomically assigns the invoking backend actor and moves the issue to `in_progress`; it never accepts an arbitrary identity. A status-only `wbd update` does not claim work. Release your own claim with `wbd unclaim <id> --reason "..." --json`. To recover one abandoned claim, use the exact canonical issue ID with `wbd unclaim <id> --force --reason "..." --json`; forced recovery clears claims even when the issue is `blocked` or `deferred` and returns it to `open`. Do not use force for live work. `create` and ordinary `update` never accept `--assignee`.
 
 Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
