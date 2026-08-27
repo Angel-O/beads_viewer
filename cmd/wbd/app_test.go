@@ -1266,6 +1266,8 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"close", "work-1", "--json"},
 		{"reopen", "work-1", "--json"},
 		{"comments", "add", "work-1", "A comment", "--json"},
+		{"comments", "edit", "work-1", "comment-1", "Replacement", "--json"},
+		{"comments", "delete", "work-1", "comment-1", "--json"},
 		{"compatibility", "--json"},
 	}
 	for _, arguments := range tests {
@@ -1296,6 +1298,83 @@ func TestCommentsAddAcceptsMultiWordTextAndSeparator(t *testing.T) {
 	if !request.commentSeparator {
 		t.Fatal("separator was not preserved in parsed request")
 	}
+}
+
+func TestCommentsEditAndDeleteParseContracts(t *testing.T) {
+	edit, err := parse([]string{"comments", "edit", "work-1", "comment-1", "Replacement", "text", "--json"})
+	if err != nil {
+		t.Fatalf("edit rejected: %v", err)
+	}
+	if !reflect.DeepEqual(edit.positionals, []string{"work-1", "comment-1", "Replacement", "text"}) || !edit.json {
+		t.Fatalf("edit request = %#v, want issue/comment/replacement and JSON", edit)
+	}
+	deleteRequest, err := parse([]string{"--json", "comments", "delete", "work-1", "comment-1"})
+	if err != nil {
+		t.Fatalf("delete rejected: %v", err)
+	}
+	if !reflect.DeepEqual(deleteRequest.positionals, []string{"work-1", "comment-1"}) || !deleteRequest.json {
+		t.Fatalf("delete request = %#v, want issue/comment and JSON", deleteRequest)
+	}
+	for _, arguments := range [][]string{
+		{"comments", "edit", "work-1", "comment-1"},
+		{"comments", "delete", "work-1"},
+		{"comments", "delete", "work-1", "comment-1", "extra"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Fatalf("accepted invalid comment mutation: %#v", arguments)
+		}
+	}
+}
+
+func TestCommentsEditAndDeleteForwardThroughHubValidation(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		args     []string
+		wantTail []string
+	}{
+		{name: "edit", args: []string{"--json", "comments", "edit", "work-1", "comment-1", "Replacement", "text"}, wantTail: []string{"--json", "comments", "edit", "work-1", "comment-1", "--", "Replacement", "text"}},
+		{name: "delete", args: []string{"--json", "comments", "delete", "work-1", "comment-1"}, wantTail: []string{"--json", "comments", "delete", "work-1", "comment-1"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			setResponses(t, map[string]string{
+				"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+			})
+			code, _, stderr := test.run(testCase.args...)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 2 {
+				t.Fatalf("calls = %#v", calls)
+			}
+			got := calls[1].Args
+			if !reflect.DeepEqual(got[len(got)-len(testCase.wantTail):], testCase.wantTail) {
+				t.Fatalf("mutation args = %#v, want tail %#v", got, testCase.wantTail)
+			}
+			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+				t.Fatalf("successful comment mutation did not signal Viewer: %v", err)
+			}
+		})
+	}
+
+	t.Run("invalid context does not mutate", func(t *testing.T) {
+		test := newAppTest(t, true)
+		writeHubConfig(t, test, map[string]string{"ctx:registered": test.repository})
+		setResponses(t, map[string]string{
+			"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:missing"]}]`,
+		})
+		code, _, stderr := test.run("--json", "comments", "delete", "work-1", "comment-1")
+		if code != 1 || !strings.Contains(stderr, `"code":"unregistered_context"`) {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 1 {
+			t.Fatalf("invalid comment mutation reached child: %#v", calls)
+		}
+		assertNoViewerSignal(t, test)
+	})
 }
 
 func TestCommentsAddAcceptsMultilineMarkdownBody(t *testing.T) {

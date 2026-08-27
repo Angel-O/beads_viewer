@@ -207,6 +207,47 @@ func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
 	}
 }
 
+func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake wbd uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	argsPath := filepath.Join(binDir, "args")
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake wbd: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	message := runWBDCommentsEdit("canonical-1", "comment-7", "replacement\ntext", nil)()
+	if result, ok := message.(commentMutationMsg); !ok || result.err != nil {
+		t.Fatalf("edit command result = %#v, want success", message)
+	}
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read edit args: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+	want := []string{"--json", "comments", "edit", "canonical-1", "comment-7", "--", "replacement\ntext"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("edit wbd argv = %#v, want %#v", got, want)
+	}
+
+	message = runWBDCommentsDelete("canonical-1", "comment-7", nil)()
+	if result, ok := message.(commentMutationMsg); !ok || result.err != nil {
+		t.Fatalf("delete command result = %#v, want success", message)
+	}
+	raw, err = os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read delete args: %v", err)
+	}
+	got = strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+	want = []string{"--json", "comments", "delete", "canonical-1", "comment-7"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("delete wbd argv = %#v, want %#v", got, want)
+	}
+}
+
 func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -549,6 +590,168 @@ func TestCommentsAddPromptCancelDoesNotSubmit(t *testing.T) {
 	m = updated.(Model)
 	if m.showCommentPrompt || m.focused != focusList || cmd != nil || submitted || m.commentSubmitting {
 		t.Fatalf("cancel mutated comment state: shown=%v focus=%v cmd=%v submitted=%v submitting=%v", m.showCommentPrompt, m.focused, cmd != nil, submitted, m.commentSubmitting)
+	}
+}
+
+func commentActionModel() Model {
+	issue := model.Issue{
+		ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask,
+		Comments: []*model.Comment{
+			{ID: "c1", IssueID: "A", Author: "alice", Text: "first"},
+			{ID: "c2", IssueID: "A", Author: "bob", Text: "second\nwith Markdown"},
+		},
+	}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.width, m.height = 100, 30
+	m.hubRepositoryMode = true
+	m.focused = focusDetail
+	m.insightsDetailID = "A"
+	m.showShortcutsSidebar = true
+	m.applyContentSizing()
+	return m
+}
+
+func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
+	m := commentActionModel()
+	m.beadsPath = filepath.Join(t.TempDir(), "issues.jsonl")
+	var gotAction, gotIssue, gotComment, gotText string
+	m.SetCommentMutationRunner(func(action, issueID, commentID, text string) error {
+		gotAction, gotIssue, gotComment, gotText = action, issueID, commentID, text
+		return nil
+	})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	if !m.showCommentSelection || m.focused != focusCommentSelection || cmd != nil {
+		t.Fatalf("edit selection did not open: shown=%v focus=%v cmd=%v", m.showCommentSelection, m.focused, cmd != nil)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.showCommentPrompt || m.focused != focusCommentInput || m.commentTargetID != "c2" || m.commentInput.Value() != "second\nwith Markdown" {
+		t.Fatalf("edit target = prompt:%v focus:%v id:%q text:%q", m.showCommentPrompt, m.focused, m.commentTargetID, m.commentInput.Value())
+	}
+	if strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("comment editor exposed shortcuts sidebar")
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+	if cmd == nil || !m.commentSubmitting || m.focused != focusDetail {
+		t.Fatalf("edit did not submit: cmd=%v submitting=%v focus=%v", cmd != nil, m.commentSubmitting, m.focused)
+	}
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if gotAction != "edit" || gotIssue != "A" || gotComment != "c2" || gotText != "second\nwith Markdown" {
+		t.Fatalf("mutation = %q %q %q %q", gotAction, gotIssue, gotComment, gotText)
+	}
+	if refreshCmd == nil || m.statusIsError || !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatalf("edit result refresh=%v error=%v sidebar=%v", refreshCmd != nil, m.statusIsError, strings.Contains(m.View(), "Shortcuts"))
+	}
+}
+
+func TestCommentDeleteRequiresConfirmationAndRefreshes(t *testing.T) {
+	m := commentActionModel()
+	m.beadsPath = filepath.Join(t.TempDir(), "issues.jsonl")
+	called := false
+	m.SetCommentMutationRunner(func(action, issueID, commentID, text string) error {
+		called = true
+		if action != "delete" || issueID != "A" || commentID != "c1" || text != "" {
+			t.Fatalf("delete mutation = %q %q %q %q", action, issueID, commentID, text)
+		}
+		return nil
+	})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if !m.showCommentDeleteConfirm || m.focused != focusCommentDeleteConfirm || called {
+		t.Fatalf("delete confirmation = shown:%v focus:%v called:%v", m.showCommentDeleteConfirm, m.focused, called)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.showCommentDeleteConfirm || cmd != nil || called || m.focused != focusDetail {
+		t.Fatalf("delete cancel mutated state: shown:%v cmd:%v called:%v focus:%v", m.showCommentDeleteConfirm, cmd != nil, called, m.focused)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = updated.(Model)
+	if cmd == nil || !m.commentSubmitting || called {
+		t.Fatalf("confirmed delete = cmd:%v submitting:%v called:%v", cmd != nil, m.commentSubmitting, called)
+	}
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if !called || refreshCmd == nil || m.statusIsError || m.focused != focusDetail || !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatalf("delete result called:%v refresh:%v error:%v focus:%v sidebar:%v", called, refreshCmd != nil, m.statusIsError, m.focused, strings.Contains(m.View(), "Shortcuts"))
+	}
+}
+
+func TestCommentActionCancellationAndFailureDoNotRefresh(t *testing.T) {
+	m := commentActionModel()
+	called := false
+	m.SetCommentMutationRunner(func(string, string, string, string) error {
+		called = true
+		return errors.New("permission denied")
+	})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.showCommentSelection || cmd != nil || called || m.focused != focusDetail {
+		t.Fatalf("selection cancel = shown:%v cmd:%v called:%v focus:%v", m.showCommentSelection, cmd != nil, called, m.focused)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.showCommentPrompt || cmd != nil || called || m.focused != focusDetail {
+		t.Fatalf("editor cancel = shown:%v cmd:%v called:%v focus:%v", m.showCommentPrompt, cmd != nil, called, m.focused)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("replacement")})
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+	updated, refreshCmd := m.Update(cmd())
+	m = updated.(Model)
+	if !called || refreshCmd != nil || !m.statusIsError || !strings.Contains(m.statusMsg, "permission denied") {
+		t.Fatalf("failed edit = called:%v refresh:%v error:%v status:%q", called, refreshCmd != nil, m.statusIsError, m.statusMsg)
+	}
+}
+
+func TestCommentActionOverlayResizesAndRestoresSidebar(t *testing.T) {
+	m := commentActionModel()
+	m.width, m.height = 28, 18
+	m.applyContentSizing()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(Model)
+	for _, line := range strings.Split(m.View(), "\n") {
+		if lipgloss.Width(line) > m.width {
+			t.Fatalf("selection overlay overflowed width %d: %d columns", m.width, lipgloss.Width(line))
+		}
+	}
+	if strings.Contains(m.View(), "Shortcuts") {
+		t.Fatal("selection overlay exposed shortcuts sidebar")
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	if m.width != 80 || !m.showCommentSelection {
+		t.Fatalf("resize changed selection state: width=%d shown=%v", m.width, m.showCommentSelection)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.focused != focusDetail || !strings.Contains(m.View(), "Shortcuts") {
+		t.Fatalf("selection cancel did not restore detail/sidebar: focus=%v sidebar=%v", m.focused, strings.Contains(m.View(), "Shortcuts"))
 	}
 }
 

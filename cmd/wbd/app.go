@@ -252,7 +252,10 @@ func (a *app) run(arguments []string) int {
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
 	case "comments":
-		return a.commentsAdd(request)
+		if request.subcommand == "add" {
+			return a.commentsAdd(request)
+		}
+		return a.commentsMutation(request)
 	case "link":
 		if err := need("bv"); err != nil {
 			return a.fail(err)
@@ -637,6 +640,28 @@ func (a *app) commentsAdd(request request) int {
 		if request.commentAuthor != "" {
 			args = append(args, "--author", request.commentAuthor)
 		}
+	}
+	return a.runBDMutation(a.dir, args...)
+}
+
+func (a *app) commentsMutation(request request) int {
+	issue, err := a.readIssue(request.positionals[0], false)
+	if err != nil {
+		return a.fail(err)
+	}
+	config, err := hub.Resolve(a.paths.Config)
+	if err != nil {
+		return a.fail(fmt.Errorf("resolving Hub config: %w", err))
+	}
+	if err := hub.ValidateStoredIssue(issue.policyState(), config.Repositories); err != nil {
+		return a.fail(fmt.Errorf("validating issue %s: %w", issue.ID, err))
+	}
+
+	args := appendJSON(nil, request.json)
+	args = append(args, "comments", request.subcommand, issue.ID, request.positionals[1])
+	if request.subcommand == "edit" {
+		args = append(args, "--")
+		args = append(args, request.positionals[2:]...)
 	}
 	return a.runBDMutation(a.dir, args...)
 }

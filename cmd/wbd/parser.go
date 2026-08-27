@@ -27,7 +27,7 @@ type commandSpec struct {
 var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "dep", "dep add", "dep remove",
-	"close", "reopen", "comments", "comments add", "link", "unlink",
+	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
 }
 
 var commandSpecs = map[string]commandSpec{
@@ -129,7 +129,7 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{{name: "--reason", value: "<text>", description: "Reopen reason."}, {name: "--json", description: "Emit JSON."}},
 	},
 	"comments": {
-		path: "comments", usage: "wbd comments add <issue-id> (<text...> | --file <path>)", summary: "Manage comments on authoritative Hub issues.",
+		path: "comments", usage: "wbd comments add|edit|delete ...", summary: "Manage comments on authoritative Hub issues.",
 	},
 	"comments add": {
 		path: "comments add", usage: "wbd comments add <issue-id> (<text...> | --file <path>) [options]", summary: "Add a comment to an authoritative Hub issue.",
@@ -138,6 +138,14 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--file", value: "<path>", description: "Read comment text from a file instead of positional text."},
 			{name: "--json", description: "Emit JSON."},
 		},
+	},
+	"comments edit": {
+		path: "comments edit", usage: "wbd comments edit <issue-id> <comment-id> <replacement-text...>", summary: "Edit one comment on an authoritative Hub issue.",
+		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
+	},
+	"comments delete": {
+		path: "comments delete", usage: "wbd comments delete <issue-id> <comment-id>", summary: "Delete one comment from an authoritative Hub issue.",
+		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
 	},
 	"link": {path: "link", usage: "wbd link <bead-id> [commit]", summary: "Correlate current-context concrete work with a commit."},
 	"unlink": {
@@ -264,11 +272,14 @@ func parse(arguments []string) (request, error) {
 	case "close", "reopen":
 		return parseClose(result, arguments)
 	case "comments":
-		if len(arguments) == 0 || arguments[0] != "add" {
+		if len(arguments) == 0 || arguments[0] != "add" && arguments[0] != "edit" && arguments[0] != "delete" {
 			return result, errors.New(usageFor("comments"))
 		}
 		result.subcommand = arguments[0]
-		return parseCommentsAdd(result, arguments[1:])
+		if result.subcommand == "add" {
+			return parseCommentsAdd(result, arguments[1:])
+		}
+		return parseCommentsMutation(result, arguments[1:])
 	case "link":
 		if result.json || len(arguments) < 1 || len(arguments) > 2 {
 			return result, errors.New(usageFor("link"))
@@ -303,6 +314,48 @@ func parse(arguments []string) (request, error) {
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands())
+	}
+	return result, nil
+}
+
+func parseCommentsMutation(result request, arguments []string) (request, error) {
+	path := "comments " + result.subcommand
+	separator := false
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if !separator && argument == "--" {
+			if result.subcommand == "delete" {
+				return result, errors.New(usageFor(path))
+			}
+			separator = true
+			result.commentSeparator = true
+			continue
+		}
+		if !separator && argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if !separator && strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for %s: %s", path, argument)
+		}
+		if len(result.positionals) < 2 {
+			if err := safeID(path, argument); err != nil {
+				return result, err
+			}
+		} else if result.subcommand == "edit" {
+			if err := validateCommentBody(argument); err != nil {
+				return result, err
+			}
+		} else {
+			return result, errors.New(usageFor(path))
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if result.subcommand == "delete" && len(result.positionals) != 2 || result.subcommand == "edit" && len(result.positionals) < 3 {
+		return result, errors.New(usageFor(path))
 	}
 	return result, nil
 }

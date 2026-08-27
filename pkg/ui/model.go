@@ -94,6 +94,8 @@ const (
 	focusCassModal   // Cass session preview modal (bv-5bqh)
 	focusUpdateModal // Self-update modal (bv-182)
 	focusCommentInput
+	focusCommentSelection
+	focusCommentDeleteConfirm
 )
 
 // SortMode represents the current list sorting mode (bv-3ita)
@@ -143,6 +145,13 @@ type commentAddedMsg struct {
 	err     error
 }
 
+type commentMutationMsg struct {
+	action    string
+	issueID   string
+	commentID string
+	err       error
+}
+
 type commentPasteMsg struct {
 	msg tea.Msg
 }
@@ -163,6 +172,35 @@ func runWBDCommentsAdd(issueID, text string, runner func(string, string) error) 
 		}
 		return commentAddedMsg{issueID: issueID}
 	}
+}
+
+func runWBDCommentMutation(action, issueID, commentID, text string, runner func(string, string, string, string) error) tea.Cmd {
+	return func() tea.Msg {
+		if runner != nil {
+			return commentMutationMsg{action: action, issueID: issueID, commentID: commentID, err: runner(action, issueID, commentID, text)}
+		}
+		args := []string{"--json", "comments", action, issueID, commentID}
+		if action == "edit" {
+			args = append(args, "--", text)
+		}
+		output, err := exec.Command("wbd", args...).CombinedOutput()
+		if err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			}
+			return commentMutationMsg{action: action, issueID: issueID, commentID: commentID, err: fmt.Errorf("wbd comments %s failed: %s", action, detail)}
+		}
+		return commentMutationMsg{action: action, issueID: issueID, commentID: commentID}
+	}
+}
+
+func runWBDCommentsEdit(issueID, commentID, text string, runner func(string, string, string, string) error) tea.Cmd {
+	return runWBDCommentMutation("edit", issueID, commentID, text, runner)
+}
+
+func runWBDCommentsDelete(issueID, commentID string, runner func(string, string, string, string) error) tea.Cmd {
+	return runWBDCommentMutation("delete", issueID, commentID, "", runner)
 }
 
 // Phase2ReadyMsg is sent when async graph analysis Phase 2 completes
@@ -705,16 +743,22 @@ type Model struct {
 	showTimeTravelPrompt bool
 
 	// Comment input prompt
-	commentInput        textarea.Model
-	commentPanelWidth   int
-	commentPanelHeight  int
-	commentEditorWidth  int
-	commentEditorHeight int
-	showCommentPrompt   bool
-	commentIssueID      string
-	commentOrigin       focus
-	commentSubmitting   bool
-	commentRunner       func(string, string) error
+	commentInput             textarea.Model
+	commentPanelWidth        int
+	commentPanelHeight       int
+	commentEditorWidth       int
+	commentEditorHeight      int
+	showCommentPrompt        bool
+	commentIssueID           string
+	commentOrigin            focus
+	commentSubmitting        bool
+	commentRunner            func(string, string) error
+	commentMutationRunner    func(string, string, string, string) error
+	showCommentSelection     bool
+	showCommentDeleteConfirm bool
+	commentSelectionCursor   int
+	commentTargetID          string
+	commentAction            string
 
 	// Status message (for temporary feedback)
 	statusMsg     string
@@ -1696,12 +1740,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commentAddedMsg:
 		m.commentSubmitting = false
 		m.commentIssueID = ""
+		m.commentAction = ""
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Comment failed: %v", msg.err)
 			m.statusIsError = true
 			break
 		}
 		m.statusMsg = fmt.Sprintf("Comment added to %s", msg.issueID)
+		m.statusIsError = false
+		if m.backgroundWorker != nil {
+			m.backgroundWorker.ForceSourceRefresh()
+			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
+		} else if m.beadsPath != "" {
+			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
+		}
+	case commentMutationMsg:
+		m.commentSubmitting = false
+		m.commentIssueID = ""
+		m.commentTargetID = ""
+		m.commentAction = ""
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Comment %s failed: %v", msg.action, msg.err)
+			m.statusIsError = true
+			break
+		}
+		m.statusMsg = fmt.Sprintf("Comment %s on %s", msg.action, msg.issueID)
 		m.statusIsError = false
 		if m.backgroundWorker != nil {
 			m.backgroundWorker.ForceSourceRefresh()
@@ -3048,6 +3111,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.handleCommentInputKeys(msg)
 		}
+		if m.showCommentSelection {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m.handleCommentSelectionKeys(msg)
+		}
+		if m.showCommentDeleteConfirm {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m.handleCommentDeleteConfirmKeys(msg)
+		}
 		// Clear status message on any keypress
 		m.statusMsg = ""
 		m.statusIsError = false
@@ -4008,6 +4083,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case focusDetail:
+				if keyStr == "e" {
+					m.beginCommentAction("edit")
+					return m, nil
+				}
+				if keyStr == "d" {
+					m.beginCommentAction("delete")
+					return m, nil
+				}
 				if keyStr == "#" {
 					m.beginComment()
 					return m, nil
@@ -5631,6 +5714,8 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 	case "C":
 		// Copy selected issue to clipboard
 		m.copyIssueToClipboard()
+	case "e", "d":
+		m.beginCommentAction(msg.String())
 	// Note: "O" (open in editor) is handled at the Update level for tea.Cmd support (bv-134)
 	case "h":
 		// Toggle history view
@@ -5737,11 +5822,125 @@ func (m *Model) beginComment() {
 	}
 	m.commentIssueID = issueItem.Issue.ID
 	m.commentOrigin = m.focused
+	m.commentAction = ""
+	m.commentTargetID = ""
 	m.resizeCommentEditor()
 	m.commentInput.SetValue("")
 	m.commentInput.Focus()
 	m.showCommentPrompt = true
 	m.focused = focusCommentInput
+}
+
+func (m *Model) selectedCommentIssue() *model.Issue {
+	if m.commentIssueID == "" {
+		return nil
+	}
+	return m.issueMap[m.commentIssueID]
+}
+
+func (m *Model) beginCommentAction(action string) {
+	if m.commentSubmitting {
+		return
+	}
+	if !m.hubRepositoryMode {
+		m.statusMsg = "Comments require Hub mode; run wbv --hub"
+		m.statusIsError = true
+		return
+	}
+	var issue *model.Issue
+	if m.focused == focusDetail && m.insightsDetailID != "" {
+		issue = m.issueMap[m.insightsDetailID]
+	} else if selected := m.list.SelectedItem(); selected != nil {
+		if item, ok := selected.(IssueItem); ok {
+			issue = &item.Issue
+		}
+	}
+	if issue == nil || issue.ID == "" {
+		m.statusMsg = "No issue selected"
+		m.statusIsError = true
+		return
+	}
+	if len(issue.Comments) == 0 {
+		m.statusMsg = "No comments to select"
+		m.statusIsError = true
+		return
+	}
+	m.commentIssueID = issue.ID
+	m.commentOrigin = m.focused
+	m.commentAction = action
+	m.commentSelectionCursor = 0
+	m.showCommentSelection = true
+	m.focused = focusCommentSelection
+}
+
+func (m Model) selectedComment() *model.Comment {
+	issue := m.selectedCommentIssue()
+	if issue == nil || m.commentSelectionCursor < 0 || m.commentSelectionCursor >= len(issue.Comments) {
+		return nil
+	}
+	return issue.Comments[m.commentSelectionCursor]
+}
+
+func (m Model) handleCommentSelectionKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		if issue := m.selectedCommentIssue(); issue != nil && m.commentSelectionCursor < len(issue.Comments)-1 {
+			m.commentSelectionCursor++
+		}
+	case "k", "up":
+		if m.commentSelectionCursor > 0 {
+			m.commentSelectionCursor--
+		}
+	case "enter":
+		comment := m.selectedComment()
+		if comment == nil || comment.ID == "" {
+			m.statusMsg = "Selected comment has no usable ID"
+			m.statusIsError = true
+			return m, nil
+		}
+		m.commentTargetID = comment.ID
+		m.showCommentSelection = false
+		if m.commentAction == "edit" {
+			m.resizeCommentEditor()
+			m.commentInput.SetValue(comment.Text)
+			m.commentInput.Focus()
+			m.showCommentPrompt = true
+			m.focused = focusCommentInput
+		} else {
+			m.showCommentDeleteConfirm = true
+			m.focused = focusCommentDeleteConfirm
+		}
+	case "esc":
+		m.showCommentSelection = false
+		m.commentIssueID = ""
+		m.commentTargetID = ""
+		m.commentAction = ""
+		m.focused = m.commentOrigin
+		m.statusMsg = "Comment action cancelled"
+		m.statusIsError = false
+	}
+	return m, nil
+}
+
+func (m Model) handleCommentDeleteConfirmKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.showCommentDeleteConfirm = false
+		m.focused = m.commentOrigin
+		m.commentSubmitting = true
+		m.statusMsg = fmt.Sprintf("Deleting comment %s...", m.commentTargetID)
+		m.statusIsError = false
+		return m, runWBDCommentsDelete(m.commentIssueID, m.commentTargetID, m.commentMutationRunner)
+	case "n", "N", "esc":
+		m.showCommentDeleteConfirm = false
+		m.commentIssueID = ""
+		m.commentTargetID = ""
+		m.commentAction = ""
+		m.focused = m.commentOrigin
+		m.statusMsg = "Comment deletion cancelled"
+		m.statusIsError = false
+	}
+	return m, nil
 }
 
 func (m *Model) resizeCommentEditor() {
@@ -5777,6 +5976,11 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.commentInput.Blur()
 		m.focused = m.commentOrigin
 		m.commentSubmitting = true
+		if m.commentAction == "edit" {
+			m.statusMsg = fmt.Sprintf("Editing comment %s...", m.commentTargetID)
+			m.statusIsError = false
+			return m, runWBDCommentsEdit(m.commentIssueID, m.commentTargetID, text, m.commentMutationRunner)
+		}
 		m.statusMsg = fmt.Sprintf("Adding comment to %s...", m.commentIssueID)
 		m.statusIsError = false
 		return m, runWBDCommentsAdd(m.commentIssueID, text, m.commentRunner)
@@ -5786,6 +5990,8 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.commentInput.SetValue("")
 		m.focused = m.commentOrigin
 		m.commentIssueID = ""
+		m.commentTargetID = ""
+		m.commentAction = ""
 		m.statusMsg = "Comment cancelled"
 		m.statusIsError = false
 		return m, nil
@@ -5802,6 +6008,11 @@ func (m Model) handleCommentInputKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 // SetCommentRunner replaces the external comment command for tests.
 func (m *Model) SetCommentRunner(runner func(string, string) error) {
 	m.commentRunner = runner
+}
+
+// SetCommentMutationRunner replaces edit/delete commands for tests.
+func (m *Model) SetCommentMutationRunner(runner func(string, string, string, string) error) {
+	m.commentMutationRunner = runner
 }
 
 // restoreFocusFromHelp returns the appropriate focus based on current view state.
@@ -5959,6 +6170,10 @@ func (m Model) View() string {
 		body = m.renderLabelDrilldown()
 	} else if m.showAlertsPanel {
 		body = m.renderAlertsPanel()
+	} else if m.showCommentSelection {
+		body = m.renderCommentSelection()
+	} else if m.showCommentDeleteConfirm {
+		body = m.renderCommentDeleteConfirm()
 	} else if m.showCommentPrompt {
 		body = m.renderCommentPrompt()
 	} else if m.showTimeTravelPrompt {
@@ -6016,7 +6231,7 @@ func (m Model) View() string {
 	}
 
 	// Add shortcuts sidebar if enabled (bv-3qi5)
-	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial && !m.showCommentPrompt {
+	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial && !m.showCommentPrompt && !m.showCommentSelection && !m.showCommentDeleteConfirm {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
 		m.shortcutsSidebar.SetFocus(m.focused)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
@@ -7582,6 +7797,10 @@ func (m *Model) renderFooter() string {
 		if m.semanticSearchEnabled {
 			keyHints = append(keyHints, keyStyle.Render("H")+" hybrid", keyStyle.Render("alt+h")+" preset")
 		}
+	} else if m.showCommentSelection {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" select", keyStyle.Render("Enter")+" continue", keyStyle.Render("Esc")+" cancel")
+	} else if m.showCommentDeleteConfirm {
+		keyHints = append(keyHints, keyStyle.Render("y/Enter")+" delete", keyStyle.Render("n/Esc")+" cancel")
 	} else if m.showCommentPrompt {
 		keyHints = append(keyHints, keyStyle.Render("Ctrl+S")+" submit", keyStyle.Render("Enter")+" newline", keyStyle.Render("Esc")+" cancel", keyStyle.Render("Ctrl+C")+" quit")
 	} else if m.showTimeTravelPrompt {
@@ -8563,7 +8782,7 @@ func (m Model) handleLeftClick(x, y int) Model {
 	// so there is nothing meaningful to focus or select.
 	if m.showQuitConfirm || m.showAgentPrompt || m.showCassModal ||
 		m.showUpdateModal || m.showLabelHealthDetail || m.showLabelGraphAnalysis ||
-		m.showLabelDrilldown || m.showAlertsPanel || m.showCommentPrompt || m.showTimeTravelPrompt ||
+		m.showLabelDrilldown || m.showAlertsPanel || m.showCommentPrompt || m.showCommentSelection || m.showCommentDeleteConfirm || m.showTimeTravelPrompt ||
 		m.showRecipePicker || m.showRepoPicker || m.showTypePicker || m.showLabelPicker ||
 		m.showHelp || m.showTutorial {
 		return m
@@ -8813,11 +9032,12 @@ func (m *Model) updateViewportContent() {
 	// Comments
 	if len(item.Comments) > 0 {
 		sb.WriteString(fmt.Sprintf("### Comments (%d)\n", len(item.Comments)))
-		for _, comment := range item.Comments {
+		for index, comment := range item.Comments {
 			if comment == nil {
 				continue
 			}
-			sb.WriteString(fmt.Sprintf("> **%s** (%s)\n> \n> %s\n\n",
+			sb.WriteString(fmt.Sprintf("> **[%d] %s** (%s)\n> \n> %s\n\n",
+				index+1,
 				comment.Author,
 				FormatTimeRel(comment.CreatedAt),
 				strings.ReplaceAll(comment.Text, "\n", "\n> ")))
@@ -9208,6 +9428,10 @@ func (f focus) String() string {
 		return "update_modal"
 	case focusCommentInput:
 		return "comment_input"
+	case focusCommentSelection:
+		return "comment_selection"
+	case focusCommentDeleteConfirm:
+		return "comment_delete_confirm"
 	default:
 		return "unknown"
 	}
@@ -9276,6 +9500,47 @@ func (m *Model) generateExportFilename() string {
 	return fmt.Sprintf("beads_report_%s_%s.md", projectName, timestamp)
 }
 
+func (m Model) renderCommentSelection() string {
+	t := m.theme
+	issue := m.selectedCommentIssue()
+	contentWidth := min(max(1, m.width-10), 84)
+	var lines []string
+	if issue != nil {
+		for i, comment := range issue.Comments {
+			if comment == nil {
+				continue
+			}
+			marker := "  "
+			if i == m.commentSelectionCursor {
+				marker = "> "
+			}
+			text := strings.ReplaceAll(strings.TrimSpace(comment.Text), "\n", " ")
+			if len([]rune(text)) > 48 {
+				text = string([]rune(text)[:47]) + "..."
+			}
+			line := fmt.Sprintf("%s%d  %s  %s: %s", marker, i+1, comment.ID, comment.Author, text)
+			lines = append(lines, ansi.Truncate(line, contentWidth, "..."))
+		}
+	}
+	content := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).Render("Select comment to "+m.commentAction) + "\n" +
+		t.Renderer.NewStyle().Foreground(t.Subtext).Render("Bead "+m.commentIssueID) + "\n\n" +
+		strings.Join(lines, "\n") + "\n\n" +
+		t.Renderer.NewStyle().Foreground(t.Subtext).Render("j/k select  Enter continue  Esc cancel")
+	box := t.Renderer.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Primary).Padding(1, 2).Width(contentWidth).Render(content)
+	return lipgloss.Place(m.width, max(1, m.height-1), lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m Model) renderCommentDeleteConfirm() string {
+	t := m.theme
+	contentWidth := min(max(1, m.width-10), 64)
+	selection := ansi.Truncate(fmt.Sprintf("Bead %s  Comment %s", m.commentIssueID, m.commentTargetID), contentWidth, "...")
+	content := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true).Render("Delete comment?") + "\n\n" +
+		selection + "\n\n" +
+		t.Renderer.NewStyle().Foreground(t.Subtext).Render("y/Enter delete  n/Esc cancel")
+	box := t.Renderer.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Primary).Padding(1, 2).Width(contentWidth).Render(content)
+	return lipgloss.Place(m.width, max(1, m.height-1), lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m Model) renderCommentPrompt() string {
 	t := m.theme
 	boxStyle := t.Renderer.NewStyle().
@@ -9302,7 +9567,11 @@ func (m Model) renderCommentPrompt() string {
 		editorLines = editorLines[:m.commentEditorHeight]
 	}
 	editorView = strings.Join(editorLines, "\n")
-	content := titleStyle.Render("Add comment") + "\n" +
+	title := "Add comment"
+	if m.commentAction == "edit" {
+		title = "Edit comment"
+	}
+	content := titleStyle.Render(title) + "\n" +
 		subtitleStyle.Render("Bead "+m.commentIssueID) + "\n\n" +
 		editorStyle.Render(editorView) + "\n" +
 		hintStyle.Render(commentHintText(m.commentEditorWidth))
