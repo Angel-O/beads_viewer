@@ -52,6 +52,9 @@ func TestFindRelatedWorkAtPinsOpenWindowsAndMetadata(t *testing.T) {
 	if !zeroResult.GeneratedAt.IsZero() {
 		t.Fatalf("zero generated_at was replaced with %v", zeroResult.GeneratedAt)
 	}
+	if len(zeroResult.Concurrent) != 1 || zeroResult.Concurrent[0].BeadID != "peer" {
+		t.Fatalf("pre-activity reference produced invalid open windows: %#v", zeroResult.Concurrent)
+	}
 }
 
 func TestFindRelatedWork_FileOverlap(t *testing.T) {

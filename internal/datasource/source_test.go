@@ -843,6 +843,48 @@ func TestAutoRefreshManager_ForceRefreshCallbackCanReadCurrentSource(t *testing.
 	}
 }
 
+func TestAutoRefreshManager_ForceRefreshPublishesUnchangedSelection(t *testing.T) {
+	source := createValidJSONLSource(t)
+	manager := &AutoRefreshManager{
+		currentSource: &DataSource{
+			Type:       source.Type,
+			Path:       source.Path,
+			Priority:   source.Priority,
+			ModTime:    source.ModTime.Add(-time.Hour),
+			Valid:      true,
+			IssueCount: source.IssueCount,
+			Size:       0,
+		},
+		sources: []DataSource{source},
+		opts:    DefaultSelectionOptions(),
+	}
+
+	callbackCount := 0
+	manager.onSourceChange = func(newSource DataSource, reason string) {
+		callbackCount++
+		if newSource.Path != source.Path {
+			t.Errorf("callback path = %q, want %q", newSource.Path, source.Path)
+		}
+		if reason != "force refresh" {
+			t.Errorf("callback reason = %q, want %q", reason, "force refresh")
+		}
+	}
+
+	if err := manager.ForceRefresh(); err != nil {
+		t.Fatalf("ForceRefresh failed: %v", err)
+	}
+	if callbackCount != 1 {
+		t.Fatalf("callback count = %d, want 1 for an unchanged selected path", callbackCount)
+	}
+	got := manager.CurrentSource()
+	if got.Path != source.Path {
+		t.Fatalf("current source path = %q, want %q", got.Path, source.Path)
+	}
+	if got.Size != source.Size || !got.ModTime.Equal(source.ModTime) {
+		t.Fatalf("current source metadata = size %d, modtime %v; want size %d, modtime %v", got.Size, got.ModTime, source.Size, source.ModTime)
+	}
+}
+
 func createValidJSONLSource(t *testing.T) DataSource {
 	t.Helper()
 

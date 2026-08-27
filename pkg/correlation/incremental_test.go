@@ -174,6 +174,46 @@ func TestMergeReports_Basic(t *testing.T) {
 	}
 }
 
+func TestMergeReportsDoesNotAliasNestedCachedHistory(t *testing.T) {
+	created := BeadEvent{BeadID: "bv-1", EventType: EventCreated, Author: "original-event"}
+	claimToClose := 2 * time.Hour
+	existing := &HistoryReport{
+		Histories: map[string]BeadHistory{
+			"bv-1": {
+				BeadID:     "bv-1",
+				Events:     []BeadEvent{created},
+				Milestones: BeadMilestones{Created: &created},
+				Commits: []CorrelatedCommit{{
+					SHA:   "commit-1",
+					Files: []FileChange{{Path: "original.go"}},
+				}},
+				CycleTime: &CycleTime{ClaimToClose: &claimToClose},
+			},
+		},
+	}
+
+	merged := mergeReports(existing, []BeadInfo{{ID: "bv-1"}}, nil, nil)
+	history := merged.Histories["bv-1"]
+	history.Events[0].Author = "mutated-event"
+	history.Milestones.Created.Author = "mutated-milestone"
+	history.Commits[0].Files[0].Path = "mutated.go"
+	*history.CycleTime.ClaimToClose = 99 * time.Hour
+
+	original := existing.Histories["bv-1"]
+	if original.Events[0].Author != "original-event" {
+		t.Fatalf("merged event mutated cached event: %+v", original.Events[0])
+	}
+	if original.Milestones.Created.Author != "original-event" {
+		t.Fatalf("merged milestone mutated cached milestone: %+v", original.Milestones.Created)
+	}
+	if got := original.Commits[0].Files[0].Path; got != "original.go" {
+		t.Fatalf("merged commit files mutated cached files: %q", got)
+	}
+	if got := *original.CycleTime.ClaimToClose; got != 2*time.Hour {
+		t.Fatalf("merged cycle time mutated cached cycle time: %v", got)
+	}
+}
+
 func TestMergeReports_NewBeads(t *testing.T) {
 	existing := &HistoryReport{
 		GeneratedAt:     time.Now(),

@@ -3430,10 +3430,12 @@ For contributors writing tests, see the comprehensive **[Testing Guide](docs/tes
 
 ### Design & Implementation
 The updater (`pkg/updater/updater.go`) is architected for silence and safety:
-1.  **Non-Blocking Concurrency:** The check runs in a detached goroutine with a strict **2-second timeout**. It never delays your startup time or UI interactivity.
-2.  **Semantic Versioning:** It doesn't just match strings. A custom SemVer comparator ensures you are only notified about strictly *newer* releases, handling complex edge cases like release candidates vs. stable builds.
-3.  **Resilience:** It gracefully handles network partitions, GitHub API rate limits (403/429), and timeouts by silently failing. You will never see a crash or error log due to an update check.
-4.  **Unobtrusive Notification:** When an update is found, `bv` doesn't pop a modal. It simply renders a subtle **Update Available** indicator (`⭐`) in the footer, letting you choose when to upgrade.
+1.  **Non-Blocking Concurrency:** The TUI runs the check as a background command with a strict **10-second timeout**. It never delays startup or UI input handling.
+2.  **Semantic Versioning:** It doesn't just match strings. A validated SemVer comparator only accepts strictly *newer* stable releases, handles prerelease precedence correctly, and ignores build metadata when determining precedence.
+3.  **Installability Before Notification:** A newer tag is not enough. The release must have an uploaded asset for the current OS/architecture, bounded non-zero sizes, HTTPS URLs bound to this repository/tag, and valid GitHub SHA-256 digests. The check also downloads and authenticates the small checksum manifest, then requires its platform entry to agree with the asset digest before `bv` advertises the update.
+4.  **Fail-Closed Integrity:** Installation verifies the checksum manifest against GitHub's digest, requires the selected archive to agree with both checksum sources, and confirms the downloaded binary reports the expected version before replacing the current executable.
+5.  **Quiet Background Failure, Honest Explicit Checks:** TUI startup silently ignores network partitions, rate limits, and timeouts. Explicit `bv --check-update` calls surface those failures instead of claiming the installed version is current when GitHub was never checked successfully.
+6.  **Unobtrusive Notification:** When an update is found, `bv` doesn't pop a modal. It simply renders a subtle **Update Available** indicator (`⭐`) in the footer, letting you choose when to upgrade.
 
 ---
 

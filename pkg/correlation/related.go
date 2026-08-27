@@ -410,6 +410,9 @@ func (hr *HistoryReport) findConcurrent(targetID string, target BeadHistory, opt
 	if targetStart.IsZero() {
 		return []RelatedWorkBead{}
 	}
+	if targetEnd.Before(targetStart) {
+		targetEnd = targetStart
+	}
 
 	// Expand window by concurrency window option
 	windowStart := targetStart.Add(-opts.ConcurrencyWindow)
@@ -446,6 +449,9 @@ func (hr *HistoryReport) findConcurrent(targetID string, target BeadHistory, opt
 
 		if beadStart.IsZero() {
 			continue
+		}
+		if beadEnd.Before(beadStart) {
+			beadEnd = beadStart
 		}
 
 		// Check for overlap

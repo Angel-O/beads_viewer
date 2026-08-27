@@ -168,6 +168,34 @@ func TestBuildCausalityChain_NotFound(t *testing.T) {
 	}
 }
 
+func TestBuildCausalityChainAtClosedWithoutRetainedEventsIsComplete(t *testing.T) {
+	pinned := testTime(24)
+	report := &HistoryReport{
+		DataHash: "empty-history-hash",
+		Histories: map[string]BeadHistory{
+			"bv-closed": {
+				BeadID: "bv-closed",
+				Title:  "Closed without retained events",
+				Status: "closed",
+			},
+		},
+	}
+
+	result := report.BuildCausalityChainAt("bv-closed", CausalityOptions{IncludeCommits: false}, pinned)
+	if result == nil {
+		t.Fatal("expected causality result")
+	}
+	if !result.Chain.IsComplete {
+		t.Fatal("closed status must remain complete when no lifecycle events were retained")
+	}
+	if result.Chain.TotalTime != 0 {
+		t.Fatalf("empty closed history total time = %v, want 0", result.Chain.TotalTime)
+	}
+	if got, want := result.Insights.Summary, "Completed in 0m with 0 commits"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
 func TestBuildCausalityChain_WithCommits(t *testing.T) {
 	report := &HistoryReport{
 		DataHash: "test-hash",

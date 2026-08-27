@@ -1,12 +1,48 @@
 package updater
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func rewriteGitHubDownloadsToServer(t *testing.T, client *http.Client, serverURL string) {
+	t.Helper()
+	target, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clonedURL := *req.URL
+		clone.URL = &clonedURL
+		if req.URL.Hostname() == "github.com" && strings.Contains(req.URL.Path, "/releases/download/") {
+			clone.URL.Scheme = target.Scheme
+			clone.URL.Host = target.Host
+			if strings.HasSuffix(req.URL.Path, "/checksums.txt") {
+				clone.URL.Path = "/checksums"
+			}
+		}
+		return base.RoundTrip(clone)
+	})
+}
 
 // TestIsGitHubHost verifies the domain allow-list for token transmission.
 func TestIsGitHubHost(t *testing.T) {
@@ -39,9 +75,38 @@ func TestIsGitHubHost(t *testing.T) {
 }
 
 func TestCheckForUpdates_Network(t *testing.T) {
-	// Assume current version is v0.9.2 from version.go (hardcoded knowledge, but acceptable for unit tests)
-	// Better: we can't easily mock version.Version without changing that package or doing link-time substitution.
-	// Instead, we'll construct scenarios based on whatever version.Version is, assuming it's valid.
+	// We cannot replace version.Version without link-time substitution, so the
+	// fixtures use an obviously newer tag and an obviously older tag.
+
+	validChecksumBody := strings.TrimPrefix(testSHA256DigestA, "sha256:") + "  " + stableAssetName() + "\n"
+	installableReleaseBody := func(tag, checksumBody string) string {
+		checksumHash := sha256.Sum256([]byte(checksumBody))
+		release := Release{
+			TagName: tag,
+			HTMLURL: "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/" + tag,
+			Assets: []Asset{
+				{
+					Name:               stableAssetName(),
+					BrowserDownloadURL: "https://github.com/Dicklesworthstone/beads_viewer/releases/download/" + tag + "/" + stableAssetName(),
+					Size:               1024,
+					Digest:             testSHA256DigestA,
+					State:              "uploaded",
+				},
+				{
+					Name:               "checksums.txt",
+					BrowserDownloadURL: "https://github.com/Dicklesworthstone/beads_viewer/releases/download/" + tag + "/checksums.txt",
+					Size:               int64(len(checksumBody)),
+					Digest:             "sha256:" + hex.EncodeToString(checksumHash[:]),
+					State:              "uploaded",
+				},
+			},
+		}
+		data, err := json.Marshal(release)
+		if err != nil {
+			t.Fatalf("marshal release fixture: %v", err)
+		}
+		return string(data)
+	}
 
 	tests := []struct {
 		name           string
@@ -50,18 +115,29 @@ func TestCheckForUpdates_Network(t *testing.T) {
 		expectTag      string
 		expectURL      string
 		expectErr      bool
+		checksumBody   string
 	}{
 		{
 			name:           "Newer version available",
-			responseBody:   `{"tag_name": "v99.0.0", "html_url": "http://example.com/release"}`,
+			responseBody:   installableReleaseBody("v99.0.0", validChecksumBody),
 			responseStatus: http.StatusOK,
 			expectTag:      "v99.0.0",
-			expectURL:      "http://example.com/release",
+			expectURL:      "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v99.0.0",
 			expectErr:      false,
+			checksumBody:   validChecksumBody,
+		},
+		{
+			name:           "Newer release manifest disagrees with asset digest",
+			responseBody:   installableReleaseBody("v99.0.0", strings.TrimPrefix(testSHA256DigestB, "sha256:")+"  "+stableAssetName()+"\n"),
+			responseStatus: http.StatusOK,
+			expectTag:      "",
+			expectURL:      "",
+			expectErr:      true,
+			checksumBody:   strings.TrimPrefix(testSHA256DigestB, "sha256:") + "  " + stableAssetName() + "\n",
 		},
 		{
 			name:           "Same version (no update)",
-			responseBody:   `{"tag_name": "v0.0.0", "html_url": "http://example.com/release"}`, // Assumes current > v0.0.0
+			responseBody:   `{"tag_name":"v0.0.0","html_url":"https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.0.0"}`, // Assumes current > v0.0.0
 			responseStatus: http.StatusOK,
 			expectTag:      "",
 			expectURL:      "",
@@ -73,7 +149,15 @@ func TestCheckForUpdates_Network(t *testing.T) {
 			responseStatus: http.StatusForbidden,
 			expectTag:      "",
 			expectURL:      "",
-			expectErr:      false, // Should swallow error
+			expectErr:      true,
+		},
+		{
+			name:           "Rate limit (429)",
+			responseBody:   `{"message":"rate limit exceeded"}`,
+			responseStatus: http.StatusTooManyRequests,
+			expectTag:      "",
+			expectURL:      "",
+			expectErr:      true,
 		},
 		{
 			name:           "Server error (500)",
@@ -91,18 +175,58 @@ func TestCheckForUpdates_Network(t *testing.T) {
 			expectURL:      "",
 			expectErr:      true,
 		},
+		{
+			name:           "Invalid release tag",
+			responseBody:   `{"tag_name":"v99.0.0.1","html_url":"https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v99.0.0.1"}`,
+			responseStatus: http.StatusOK,
+			expectTag:      "",
+			expectURL:      "",
+			expectErr:      true,
+		},
+		{
+			name:           "Newer release missing platform asset",
+			responseBody:   `{"tag_name":"v99.0.0","html_url":"https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v99.0.0","assets":[{"name":"checksums.txt","browser_download_url":"https://github.com/Dicklesworthstone/beads_viewer/releases/download/v99.0.0/checksums.txt","size":256,"digest":"` + testSHA256DigestB + `","state":"uploaded"}]}`,
+			responseStatus: http.StatusOK,
+			expectTag:      "",
+			expectURL:      "",
+			expectErr:      true,
+		},
+		{
+			name:           "Newer release missing checksum asset",
+			responseBody:   `{"tag_name":"v99.0.0","html_url":"https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v99.0.0","assets":[{"name":"` + stableAssetName() + `","browser_download_url":"https://github.com/Dicklesworthstone/beads_viewer/releases/download/v99.0.0/` + stableAssetName() + `","size":1024,"digest":"` + testSHA256DigestA + `","state":"uploaded"}]}`,
+			responseStatus: http.StatusOK,
+			expectTag:      "",
+			expectURL:      "",
+			expectErr:      true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/checksums" {
+					w.WriteHeader(http.StatusOK)
+					if _, err := w.Write([]byte(tt.checksumBody)); err != nil {
+						t.Errorf("write checksum response: %v", err)
+					}
+					return
+				}
+				if got := r.Header.Get("Accept"); got != "application/vnd.github+json" {
+					t.Errorf("Accept header = %q", got)
+				}
+				if got := r.Header.Get("X-GitHub-Api-Version"); got != githubAPIVersion {
+					t.Errorf("X-GitHub-Api-Version header = %q", got)
+				}
 				w.WriteHeader(tt.responseStatus)
-				w.Write([]byte(tt.responseBody))
+				if _, err := w.Write([]byte(tt.responseBody)); err != nil {
+					t.Errorf("write response: %v", err)
+				}
 			}))
 			defer server.Close()
 
 			client := server.Client()
 			client.Timeout = 1 * time.Second
+			rewriteGitHubDownloadsToServer(t, client, server.URL)
 
 			tag, url, err := checkForUpdates(client, server.URL)
 

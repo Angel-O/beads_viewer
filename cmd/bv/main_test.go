@@ -638,6 +638,11 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 			want: []string{"--update-dry-run"},
 		},
 		{
+			name: "update dry-run stays non-robot with structured-output alias",
+			args: []string{"--update-dry-run", "--json"},
+			want: []string{"--update-dry-run", "--format=json"},
+		},
+		{
 			name: "upgrade --rollback maps to --rollback",
 			args: []string{"upgrade", "--rollback"},
 			want: []string{"--rollback"},
@@ -657,6 +662,34 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requireArgs(t, rewriteAgentIntentArgs(tt.args), tt.want)
+		})
+	}
+}
+
+func TestReadUpdateConfirmation(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		want      bool
+		wantError bool
+	}{
+		{name: "blank line accepts default", input: "\n", want: true},
+		{name: "yes accepts", input: " YES \n", want: true},
+		{name: "single y at EOF accepts", input: "y", want: true},
+		{name: "no cancels", input: "n\n", want: false},
+		{name: "arbitrary response cancels", input: "later\n", want: false},
+		{name: "empty EOF fails closed", input: "", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readUpdateConfirmation(strings.NewReader(tt.input))
+			if (err != nil) != tt.wantError {
+				t.Fatalf("readUpdateConfirmation error = %v, wantError %v", err, tt.wantError)
+			}
+			if got != tt.want {
+				t.Fatalf("readUpdateConfirmation = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }

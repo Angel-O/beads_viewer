@@ -161,10 +161,12 @@ func (s Suggestion) WithAction(cmd string) Suggestion {
 
 // WithMetadata adds metadata to the suggestion
 func (s Suggestion) WithMetadata(key string, value interface{}) Suggestion {
-	if s.Metadata == nil {
-		s.Metadata = make(map[string]interface{})
+	metadata := make(map[string]interface{}, len(s.Metadata)+1)
+	for existingKey, existingValue := range s.Metadata {
+		metadata[existingKey] = existingValue
 	}
-	s.Metadata[key] = value
+	metadata[key] = value
+	s.Metadata = metadata
 	return s
 }
 

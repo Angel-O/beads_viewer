@@ -115,10 +115,11 @@ func (hr *HistoryReport) BuildCausalityChainAt(beadID string, opts CausalityOpti
 	}
 
 	chain := &CausalChain{
-		BeadID: beadID,
-		Title:  history.Title,
-		Status: history.Status,
-		Events: []CausalEvent{},
+		BeadID:     beadID,
+		Title:      history.Title,
+		Status:     history.Status,
+		Events:     []CausalEvent{},
+		IsComplete: isCompleteCausalStatus(history.Status),
 	}
 
 	// Collect all events with their timestamps
@@ -231,8 +232,6 @@ func (hr *HistoryReport) BuildCausalityChainAt(beadID string, opts CausalityOpti
 	if len(chain.Events) > 0 {
 		chain.StartTime = chain.Events[0].Timestamp
 		chain.EndTime = chain.Events[len(chain.Events)-1].Timestamp
-		status := normalizeStatus(history.Status)
-		chain.IsComplete = status == "closed" || status == "tombstone"
 		if !chain.IsComplete {
 			chain.EndTime = now
 			if chain.EndTime.Before(chain.StartTime) {
@@ -256,6 +255,11 @@ func (hr *HistoryReport) BuildCausalityChainAt(beadID string, opts CausalityOpti
 		Chain:       chain,
 		Insights:    insights,
 	}
+}
+
+func isCompleteCausalStatus(status string) bool {
+	normalized := normalizeStatus(status)
+	return normalized == "closed" || normalized == "tombstone"
 }
 
 func causalEventOrder(eventType CausalEventType) int {

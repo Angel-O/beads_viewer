@@ -999,11 +999,27 @@ func hasNonRobotPrimaryArg(args []string) bool {
 	for _, arg := range args {
 		name := strings.TrimPrefix(strings.SplitN(arg, "=", 2)[0], "--")
 		switch name {
-		case "version", "help", "check-update", "update", "rollback", "pages", "export-pages", "preview-pages", "export-md", "export-graph":
+		case "version", "help", "check-update", "update", "update-dry-run", "rollback", "pages", "export-pages", "preview-pages", "export-md", "export-graph":
 			return true
 		}
 	}
 	return false
+}
+
+func readUpdateConfirmation(input io.Reader) (bool, error) {
+	response, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read update confirmation: %w", err)
+	}
+
+	response = strings.ToLower(strings.TrimSpace(response))
+	if response == "" {
+		if errors.Is(err, io.EOF) {
+			return false, fmt.Errorf("no update confirmation received")
+		}
+		return true, nil
+	}
+	return response == "y" || response == "yes", nil
 }
 
 func agentIntentCommandNames() []string {
@@ -1996,7 +2012,7 @@ func main() {
 			}
 			if available {
 				fmt.Printf("New version available: %s (current: %s)\n", newVersion, version.Version)
-				fmt.Printf("Download: %s\n", releaseURL)
+				fmt.Printf("Release: %s\n", releaseURL)
 				fmt.Println("\nRun 'bv --update' to update automatically")
 			} else {
 				fmt.Printf("bv is up to date (version %s)\n", version.Version)
@@ -2014,25 +2030,26 @@ func main() {
 			}
 
 			newVersion := release.TagName
-			if !updater.IsNewerThanCurrent(newVersion) {
+			newer, err := updater.CheckNewerThanCurrent(newVersion)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Cannot compare release versions: %v\n", err)
+				os.Exit(1)
+			}
+			if !newer {
 				fmt.Printf("bv is already up to date (version %s)\n", version.Version)
 				os.Exit(0)
 			}
+			if err := updater.ValidateReleaseForUpdate(release); err != nil {
+				fmt.Fprintf(os.Stderr, "Latest release cannot be installed automatically: %v\n", err)
+				os.Exit(1)
+			}
 
 			fmt.Printf("[dry-run] Would update bv from %s to %s\n", version.Version, newVersion)
-			if asset := release.FindPlatformAsset(); asset != nil {
-				fmt.Printf("[dry-run] Would download %s (%d bytes) for %s/%s\n",
-					asset.Name, asset.Size, runtime.GOOS, runtime.GOARCH)
-				fmt.Printf("[dry-run] From: %s\n", asset.BrowserDownloadURL)
-			} else {
-				fmt.Fprintf(os.Stderr, "[dry-run] No matching release asset found for %s/%s\n",
-					runtime.GOOS, runtime.GOARCH)
-			}
-			if checksum := release.FindChecksumAsset(); checksum != nil {
-				fmt.Printf("[dry-run] Would verify SHA-256 checksum via %s\n", checksum.Name)
-			} else {
-				fmt.Println("[dry-run] Warning: no checksum file found; download integrity could not be verified")
-			}
+			asset := release.FindPlatformAsset()
+			fmt.Printf("[dry-run] Would download %s (%d bytes) for %s/%s\n",
+				asset.Name, asset.Size, runtime.GOOS, runtime.GOARCH)
+			fmt.Printf("[dry-run] From: %s\n", asset.BrowserDownloadURL)
+			fmt.Printf("[dry-run] Would verify SHA-256 checksum via %s\n", release.FindChecksumAsset().Name)
 			fmt.Println("[dry-run] No changes made. Run 'bv upgrade' to apply.")
 			os.Exit(0)
 		}
@@ -2046,24 +2063,35 @@ func main() {
 			}
 
 			newVersion := release.TagName
-			if !updater.IsNewerThanCurrent(newVersion) {
+			newer, err := updater.CheckNewerThanCurrent(newVersion)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Cannot compare release versions: %v\n", err)
+				os.Exit(1)
+			}
+			if !newer {
 				fmt.Printf("bv is already up to date (version %s)\n", version.Version)
 				os.Exit(0)
+			}
+			if err := updater.ValidateReleaseForUpdate(release); err != nil {
+				fmt.Fprintf(os.Stderr, "Latest release cannot be installed automatically: %v\n", err)
+				os.Exit(1)
 			}
 
 			// Confirm unless --yes is provided
 			if !*yesFlag {
 				fmt.Printf("Update bv from %s to %s? [Y/n]: ", version.Version, newVersion)
-				var response string
-				fmt.Scanln(&response)
-				response = strings.ToLower(strings.TrimSpace(response))
-				if response != "" && response != "y" && response != "yes" {
+				confirmed, err := readUpdateConfirmation(os.Stdin)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Cannot read update confirmation: %v\n", err)
+					os.Exit(1)
+				}
+				if !confirmed {
 					fmt.Println("Update cancelled")
 					os.Exit(0)
 				}
 			}
 
-			result, err := updater.PerformUpdate(release, *yesFlag)
+			result, err := updater.PerformUpdate(release, os.Stdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 				if result != nil && result.BackupPath != "" {

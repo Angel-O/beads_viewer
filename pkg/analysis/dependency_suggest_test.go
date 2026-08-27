@@ -3,6 +3,7 @@ package analysis
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -491,6 +492,47 @@ func TestDetectMissingDependencies_DeterminismWithTimestamps(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestDetectMissingDependencies_IsInvariantToInputOrder(t *testing.T) {
+	config := DefaultDependencySuggestionConfig()
+	config.MinKeywordOverlap = 2
+	config.MinConfidence = 0.1
+
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	issues := []model.Issue{
+		{
+			ID:          "older-low-priority",
+			Title:       "Build API",
+			Description: "authentication tokens",
+			Status:      model.StatusOpen,
+			CreatedAt:   now.Add(-time.Hour),
+			Priority:    3,
+		},
+		{
+			ID:        "newer-high-priority",
+			Title:     "Authentication tokens tests",
+			Status:    model.StatusOpen,
+			CreatedAt: now,
+			Priority:  1,
+		},
+	}
+
+	forward := DetectMissingDependencies(issues, config)
+	reversed := DetectMissingDependencies([]model.Issue{issues[1], issues[0]}, config)
+
+	if len(forward) != 1 {
+		t.Fatalf("forward suggestions = %d, want 1", len(forward))
+	}
+	for i := range forward {
+		forward[i].GeneratedAt = time.Time{}
+	}
+	for i := range reversed {
+		reversed[i].GeneratedAt = time.Time{}
+	}
+	if !reflect.DeepEqual(forward, reversed) {
+		t.Fatalf("input order changed suggestions:\nforward = %#v\nreversed = %#v", forward, reversed)
 	}
 }
 

@@ -2777,6 +2777,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				filteredItems = make([]list.Item, 0, len(msg.Snapshot.ListItems))
 				filteredIssues = make([]model.Issue, 0, len(msg.Snapshot.ListItems))
+				filterNow := time.Now()
 
 				for _, item := range msg.Snapshot.ListItems {
 					issue := item.Issue
@@ -2798,22 +2799,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case "closed":
 						include = isClosedLikeStatus(issue.Status)
 					case "ready":
-						// Ready = Open/InProgress AND NO Open Blockers
-						// Exclude draft/deferred - not ready for execution
-						if !isClosedLikeStatus(issue.Status) && issue.Status != model.StatusBlocked &&
-							issue.Status != model.StatusDraft && issue.Status != model.StatusDeferred {
-							isBlocked := false
-							for _, dep := range issue.Dependencies {
-								if dep == nil || !dep.Type.IsBlocking() {
-									continue
-								}
-								if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-									isBlocked = true
-									break
-								}
-							}
-							include = !isBlocked
-						}
+						include = isIssueReadyAt(issue, m.issueMap, filterNow)
 					default:
 						if strings.HasPrefix(m.currentFilter, "label:") {
 							label := strings.TrimPrefix(m.currentFilter, "label:")
@@ -7606,21 +7592,7 @@ func (m *Model) matchesCurrentFilter(issue model.Issue) bool {
 	case "closed":
 		return isClosedLikeStatus(issue.Status)
 	case "ready":
-		// Ready = Open/InProgress AND NO Open Blockers
-		// Exclude draft/deferred - not ready for execution
-		if isClosedLikeStatus(issue.Status) || issue.Status == model.StatusBlocked ||
-			issue.Status == model.StatusDraft || issue.Status == model.StatusDeferred {
-			return false
-		}
-		for _, dep := range issue.Dependencies {
-			if dep == nil || !dep.Type.IsBlocking() {
-				continue
-			}
-			if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-				return false
-			}
-		}
-		return true
+		return isIssueReadyAt(issue, m.issueMap, time.Now())
 	default:
 		if strings.HasPrefix(m.currentFilter, "label:") {
 			label := strings.TrimPrefix(m.currentFilter, "label:")

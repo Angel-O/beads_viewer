@@ -335,6 +335,53 @@ func mergeReports(existing *HistoryReport, beads []BeadInfo, newEvents []BeadEve
 	return mergeReportsThrough(existing, beads, newEvents, newCommits, "")
 }
 
+func cloneBeadEvent(event *BeadEvent) *BeadEvent {
+	if event == nil {
+		return nil
+	}
+	cloned := *event
+	return &cloned
+}
+
+func cloneBeadMilestones(milestones BeadMilestones) BeadMilestones {
+	return BeadMilestones{
+		Created:  cloneBeadEvent(milestones.Created),
+		Claimed:  cloneBeadEvent(milestones.Claimed),
+		Closed:   cloneBeadEvent(milestones.Closed),
+		Reopened: cloneBeadEvent(milestones.Reopened),
+	}
+}
+
+func cloneDuration(duration *time.Duration) *time.Duration {
+	if duration == nil {
+		return nil
+	}
+	cloned := *duration
+	return &cloned
+}
+
+func cloneCycleTime(cycleTime *CycleTime) *CycleTime {
+	if cycleTime == nil {
+		return nil
+	}
+	return &CycleTime{
+		ClaimToClose:  cloneDuration(cycleTime.ClaimToClose),
+		CreateToClose: cloneDuration(cycleTime.CreateToClose),
+		CreateToClaim: cloneDuration(cycleTime.CreateToClaim),
+	}
+}
+
+func cloneCorrelatedCommits(commits []CorrelatedCommit) []CorrelatedCommit {
+	cloned := make([]CorrelatedCommit, len(commits))
+	for i := range commits {
+		cloned[i] = commits[i]
+		if commits[i].Files != nil {
+			cloned[i].Files = append([]FileChange(nil), commits[i].Files...)
+		}
+	}
+	return cloned
+}
+
 func mergeReportsThrough(existing *HistoryReport, beads []BeadInfo, newEvents []BeadEvent, newCommits []CorrelatedCommit, latestProcessedSHA string) *HistoryReport {
 	// Create a deep copy of existing histories
 	histories := make(map[string]BeadHistory, len(existing.Histories))
@@ -342,17 +389,15 @@ func mergeReportsThrough(existing *HistoryReport, beads []BeadInfo, newEvents []
 		// Deep copy the history
 		eventsCopy := make([]BeadEvent, len(h.Events))
 		copy(eventsCopy, h.Events)
-		commitsCopy := make([]CorrelatedCommit, len(h.Commits))
-		copy(commitsCopy, h.Commits)
 
 		histories[id] = BeadHistory{
 			BeadID:     h.BeadID,
 			Title:      h.Title,
 			Status:     h.Status,
 			Events:     eventsCopy,
-			Milestones: h.Milestones,
-			Commits:    commitsCopy,
-			CycleTime:  h.CycleTime,
+			Milestones: cloneBeadMilestones(h.Milestones),
+			Commits:    cloneCorrelatedCommits(h.Commits),
+			CycleTime:  cloneCycleTime(h.CycleTime),
 			LastAuthor: h.LastAuthor,
 		}
 	}
@@ -416,7 +461,6 @@ func mergeReportsThrough(existing *HistoryReport, beads []BeadInfo, newEvents []
 			histories[beadID] = h
 		}
 	}
-
 
 	// Build a stable reverse index; HistoryReport exposes these map-derived
 	// values as arrays in robot JSON.

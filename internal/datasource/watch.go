@@ -365,11 +365,12 @@ func (m *AutoRefreshManager) ForceRefresh() error {
 		return err
 	}
 
-	var callback func(newSource DataSource, reason string)
-	if m.currentSource == nil || m.currentSource.Path != newSelected.Path {
-		m.currentSource = &newSelected
-		callback = m.onSourceChange
-	}
+	// A forced refresh is also a forced publication. The selected path may be
+	// unchanged while its contents, validation result, modtime, or size changed;
+	// suppressing the callback in that case leaves the UI on the old snapshot
+	// and also leaves currentSource carrying stale metadata.
+	m.currentSource = &newSelected
+	callback := m.onSourceChange
 	m.mu.Unlock()
 
 	if callback != nil {

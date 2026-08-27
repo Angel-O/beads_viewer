@@ -214,6 +214,9 @@ func TestSuggestion_WithMetadata(t *testing.T) {
 	if s3.Metadata["confidence_source"] != "keyword_match" {
 		t.Error("Chained WithMetadata() should add new key")
 	}
+	if _, exists := s2.Metadata["confidence_source"]; exists {
+		t.Error("Chained WithMetadata() should not mutate the previous suggestion")
+	}
 
 	// Various types
 	s4 := s.WithMetadata("count", 42).WithMetadata("score", 0.95).WithMetadata("active", true)

@@ -63,6 +63,25 @@ func isClosedLikeStatus(status model.Status) bool {
 	return status == model.StatusClosed || status == model.StatusTombstone
 }
 
+// isIssueReadyAt centralizes the TUI's ready semantics. Only open or
+// in-progress issues are executable work, and an otherwise-ready issue with a
+// future defer_until is withheld until that instant passes (parity with br
+// ready and the actionable recipe).
+func isIssueReadyAt(issue model.Issue, issueMap map[string]*model.Issue, now time.Time) bool {
+	if !issue.Status.IsOpen() || issue.IsDeferredAt(now) {
+		return false
+	}
+	for _, dep := range issue.Dependencies {
+		if dep == nil || !dep.Type.IsBlocking() {
+			continue
+		}
+		if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
+			return false
+		}
+	}
+	return true
+}
+
 type snapshotBuildConfig struct {
 	PrecomputeTriage      bool
 	PrecomputeTree        bool
@@ -417,6 +436,7 @@ func (b *SnapshotBuilder) WithPreviousSnapshot(prev *DataSnapshot, diff *analysi
 // or call GetGraphStats().WaitForPhase2() if you need Phase 2 data immediately.
 func (b *SnapshotBuilder) Build() *DataSnapshot {
 	issues := b.issues
+	now := time.Now()
 
 	// Apply default sorting to match the legacy reload path:
 	// Open first, then priority (ascending), then created date (newest first).
@@ -469,21 +489,8 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		cOpen++
 		if issue.Status == model.StatusBlocked {
 			cBlocked++
-			continue
 		}
-
-		// Check if blocked by open dependencies
-		isBlocked := false
-		for _, dep := range issue.Dependencies {
-			if dep == nil || !dep.Type.IsBlocking() {
-				continue
-			}
-			if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-				isBlocked = true
-				break
-			}
-		}
-		if !isBlocked {
+		if isIssueReadyAt(*issue, issueMap, now) {
 			cReady++
 		}
 	}
@@ -526,7 +533,7 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 
 	// Compute triage insights (may be skipped for large/huge datasets; bv-9thm).
 	if b.cfg.PrecomputeTriage {
-		triageResult := analysis.ComputeTriageFromAnalyzer(b.analyzer, graphStats, issues, analysis.TriageOptions{}, time.Now())
+		triageResult := analysis.ComputeTriageFromAnalyzer(b.analyzer, graphStats, issues, analysis.TriageOptions{}, now)
 		triageScores = make(map[string]float64, len(triageResult.Recommendations))
 		triageReasons = make(map[string]analysis.TriageReasons, len(triageResult.Recommendations))
 		quickWinSet = make(map[string]bool, len(triageResult.QuickWins))
@@ -633,7 +640,7 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		TreeNodeMap:    treeNodeMap,
 		BoardState:     boardState,
 		graphLayout:    graphLayout,
-		CreatedAt:      time.Now(),
+		CreatedAt:      now,
 		RecipeName:     recipeName(b.recipe),
 		RecipeHash:     recipeFingerprint(b.recipe),
 		phase2Ready:    graphStats.IsPhase2Ready(),
@@ -1148,8 +1155,9 @@ func deepCopyTree(roots []*IssueTreeNode, nodeMap map[string]*IssueTreeNode, iss
 }
 
 // deepCopyListItems creates a deep copy of a ListItems slice.
-// Each IssueItem contains mutable fields (SearchComponents map, TriageReasons slice)
-// that must be copied to prevent race conditions between snapshots.
+// Each IssueItem contains mutable issue backing state plus mutable adapter
+// fields (SearchComponents map, TriageReasons slice) that must be copied to
+// prevent race conditions between snapshots.
 func deepCopyListItems(items []IssueItem) []IssueItem {
 	if len(items) == 0 {
 		return nil
@@ -1157,6 +1165,7 @@ func deepCopyListItems(items []IssueItem) []IssueItem {
 	cloned := make([]IssueItem, len(items))
 	for i := range items {
 		cloned[i] = items[i]
+		cloned[i].Issue = items[i].Issue.Clone()
 		// Deep copy the mutable SearchComponents map
 		if len(items[i].SearchComponents) > 0 {
 			cloned[i].SearchComponents = make(map[string]float64, len(items[i].SearchComponents))
@@ -1312,7 +1321,7 @@ func (s *DataSnapshot) WithPhase2(stats *analysis.GraphStats, insights analysis.
 		Issues:         issuesClone,
 		IssueMap:       clonedIssueMap,
 		pooledIssues:   s.pooledIssues,
-		ViewIssues:     s.ViewIssues,
+		ViewIssues:     cloneIssuesForAsync(s.ViewIssues),
 		ListItems:      listItems, // Deep copy - contains mutable SearchComponents/TriageReasons
 		listModelItems: listModelItems,
 		listIndexByID:  listIndexByID,

@@ -18,8 +18,13 @@ import (
 )
 
 const (
-	vectorIndexMagic   = "BVVI"
-	vectorIndexVersion = uint16(1)
+	vectorIndexMagic         = "BVVI"
+	vectorIndexVersion       = uint16(1)
+	vectorIndexHeaderSize    = int64(16)
+	maxVectorIndexDimension  = uint32(1 << 20) // 4 MiB per float32 vector
+	maxVectorIndexEntries    = uint32(1 << 20)
+	maxVectorIndexFileSize   = int64(512 << 20)
+	minVectorEntryOverhead   = int64(2 + 1 + sha256.Size) // id length, non-empty id, content hash
 )
 
 type ContentHash [32]byte
@@ -77,6 +82,17 @@ func LoadVectorIndex(path string) (*VectorIndex, error) {
 	}
 	defer func() { _ = f.Close() }()
 
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat vector index: %w", err)
+	}
+	if info.Size() < vectorIndexHeaderSize {
+		return nil, fmt.Errorf("vector index too small: %d bytes", info.Size())
+	}
+	if info.Size() > maxVectorIndexFileSize {
+		return nil, fmt.Errorf("vector index too large: %d bytes (max %d)", info.Size(), maxVectorIndexFileSize)
+	}
+
 	r := bufio.NewReader(f)
 
 	var magic [4]byte
@@ -111,6 +127,19 @@ func LoadVectorIndex(path string) (*VectorIndex, error) {
 	}
 	if dimU32 == 0 {
 		return nil, fmt.Errorf("invalid dim 0")
+	}
+	if dimU32 > maxVectorIndexDimension {
+		return nil, fmt.Errorf("vector dimension %d exceeds maximum %d", dimU32, maxVectorIndexDimension)
+	}
+	if count > maxVectorIndexEntries {
+		return nil, fmt.Errorf("vector entry count %d exceeds maximum %d", count, maxVectorIndexEntries)
+	}
+	if count > 0 {
+		minEntrySize := minVectorEntryOverhead + int64(dimU32)*4
+		available := info.Size() - vectorIndexHeaderSize
+		if int64(count) > available/minEntrySize {
+			return nil, fmt.Errorf("vector index header declares %d entries but file can contain at most %d", count, available/minEntrySize)
+		}
 	}
 
 	idx := NewVectorIndex(int(dimU32))
@@ -170,6 +199,30 @@ func (idx *VectorIndex) Save(path string) error {
 		idx.idsDirty = false
 	}
 	ids := idx.idsCache
+	if idx.Dim <= 0 || uint64(idx.Dim) > uint64(maxVectorIndexDimension) {
+		return fmt.Errorf("vector dimension %d exceeds supported range 1..%d", idx.Dim, maxVectorIndexDimension)
+	}
+	if uint64(len(ids)) > uint64(maxVectorIndexEntries) {
+		return fmt.Errorf("vector entry count %d exceeds maximum %d", len(ids), maxVectorIndexEntries)
+	}
+
+	encodedSize := vectorIndexHeaderSize
+	for _, issueID := range ids {
+		entry, ok := idx.entries[issueID]
+		if !ok {
+			continue
+		}
+		if len(issueID) > math.MaxUint16 {
+			return fmt.Errorf("issue id too long: %d", len(issueID))
+		}
+		if len(entry.Vector) != idx.Dim {
+			return fmt.Errorf("vector dim mismatch for %s: %d != %d", issueID, len(entry.Vector), idx.Dim)
+		}
+		encodedSize += int64(2+len(issueID)+sha256.Size) + int64(idx.Dim)*4
+		if encodedSize > maxVectorIndexFileSize {
+			return fmt.Errorf("encoded vector index exceeds maximum size %d", maxVectorIndexFileSize)
+		}
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -210,9 +263,6 @@ func (idx *VectorIndex) Save(path string) error {
 		if !ok {
 			continue
 		}
-		if len(issueID) > math.MaxUint16 {
-			return fmt.Errorf("issue id too long: %d", len(issueID))
-		}
 
 		if err := binary.Write(w, binary.LittleEndian, uint16(len(issueID))); err != nil {
 			return fmt.Errorf("write id len: %w", err)
@@ -222,9 +272,6 @@ func (idx *VectorIndex) Save(path string) error {
 		}
 		if _, err := w.Write(entry.ContentHash[:]); err != nil {
 			return fmt.Errorf("write content hash: %w", err)
-		}
-		if len(entry.Vector) != idx.Dim {
-			return fmt.Errorf("vector dim mismatch for %s: %d != %d", issueID, len(entry.Vector), idx.Dim)
 		}
 		for _, v := range entry.Vector {
 			if err := binary.Write(w, binary.LittleEndian, math.Float32bits(v)); err != nil {

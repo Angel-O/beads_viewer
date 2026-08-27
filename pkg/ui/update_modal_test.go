@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -34,6 +36,18 @@ func TestNewUpdateModal_InitialState(t *testing.T) {
 	}
 	if m.IsInProgress() {
 		t.Error("expected IsInProgress() to return false")
+	}
+}
+
+func TestValidateConfirmedRelease(t *testing.T) {
+	if err := validateConfirmedRelease(&updater.Release{TagName: "v1.2.3"}, "v1.2.3"); err != nil {
+		t.Fatalf("matching release rejected: %v", err)
+	}
+	if err := validateConfirmedRelease(&updater.Release{TagName: "v1.2.4"}, "v1.2.3"); err == nil {
+		t.Fatal("changed release accepted without renewed confirmation")
+	}
+	if err := validateConfirmedRelease(nil, "v1.2.3"); err == nil {
+		t.Fatal("nil release accepted")
 	}
 }
 
@@ -575,6 +589,34 @@ func TestUpdateModal_RenderProgressBar_Complete(t *testing.T) {
 
 	if !strings.Contains(bar, "100%") {
 		t.Errorf("expected 100%% in progress bar, got %s", bar)
+	}
+}
+
+func TestUpdateModal_RenderProgressBar_ClampsOutOfRangeProgress(t *testing.T) {
+	theme := DefaultTheme(lipgloss.NewRenderer(nil))
+
+	tests := []struct {
+		name       string
+		downloaded int64
+		total      int64
+		want       string
+	}{
+		{name: "negative downloaded bytes", downloaded: -1, total: 100, want: "0%"},
+		{name: "download exceeds total", downloaded: 101, total: 100, want: "100%"},
+		{name: "negative total is indeterminate", downloaded: 1, total: -1, want: "[                    ]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewUpdateModal("v1.0.0", "", theme)
+			m.progress.BytesDownloaded = tt.downloaded
+			m.progress.TotalBytes = tt.total
+
+			bar := m.renderProgressBar()
+			if !strings.Contains(bar, tt.want) {
+				t.Fatalf("progress bar %q does not contain %q", bar, tt.want)
+			}
+		})
 	}
 }
 

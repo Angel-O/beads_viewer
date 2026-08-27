@@ -170,6 +170,7 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 			}
 
 			// Check for exact title mentions / ID mentions
+			title1Lower := strings.ToLower(issue1.Title)
 			title2Lower := strings.ToLower(issue2.Title)
 			id1Lower := strings.ToLower(issue1.ID)
 			id2Lower := strings.ToLower(issue2.ID)
@@ -181,13 +182,11 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 				baseConf += config.ExactMatchBonus * 2
 			}
 
-			// Title words of issue1 mentioned in issue2's title
-			// Use the keywords map for O(1) check? No, iterating kws of issue1 is fast.
-			for _, word := range keywords[i] {
-				if len(word) >= 5 && strings.Contains(title2Lower, word) {
-					baseConf += config.ExactMatchBonus
-					break
-				}
+			// Treat title overlap symmetrically so confidence does not depend on
+			// the input slice order.
+			if titleContainsKeyword(title2Lower, keywords[i]) ||
+				titleContainsKeyword(title1Lower, keywords[j]) {
+				baseConf += config.ExactMatchBonus
 			}
 
 			// Label overlap bonus
@@ -201,9 +200,12 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 				continue
 			}
 
-			// Determine direction
+			// Determine direction with a total ordering. Older work is treated as
+			// the prerequisite; creation-time ties prefer higher priority, then ID.
+			// This makes contradictory age/priority signals deterministic instead
+			// of allowing the caller's slice order to reverse the suggestion.
 			var from, to *model.Issue
-			if issue1.CreatedAt.Before(issue2.CreatedAt) || issue1.Priority < issue2.Priority {
+			if dependencyPrerequisiteLess(issue1, issue2) {
 				from, to = issue2, issue1
 			} else {
 				from, to = issue1, issue2
@@ -252,6 +254,25 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 	}
 
 	return suggestions
+}
+
+func titleContainsKeyword(titleLower string, keywords []string) bool {
+	for _, word := range keywords {
+		if len(word) >= 5 && strings.Contains(titleLower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func dependencyPrerequisiteLess(a, b *model.Issue) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.Before(b.CreatedAt)
+	}
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	return a.ID < b.ID
 }
 
 // findSharedKeys returns keys present in both maps

@@ -183,6 +183,41 @@ func TestSnapshotBuilder_WithDependencies(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilder_ReadyUsesExecutableStatusesAndDeferral(t *testing.T) {
+	deferUntil := time.Now().Add(time.Hour)
+	issues := []model.Issue{
+		{ID: "ready", Title: "Ready", Status: model.StatusOpen},
+		{ID: "active", Title: "Active", Status: model.StatusInProgress},
+		{ID: "scheduled", Title: "Scheduled", Status: model.StatusOpen, DeferUntil: &deferUntil},
+		{ID: "draft", Title: "Draft", Status: model.StatusDraft},
+		{ID: "deferred", Title: "Deferred", Status: model.StatusDeferred},
+		{ID: "blocked", Title: "Blocked", Status: model.StatusBlocked},
+		{ID: "pinned", Title: "Pinned", Status: model.StatusPinned},
+		{ID: "hooked", Title: "Hooked", Status: model.StatusHooked},
+		{ID: "review", Title: "Review", Status: model.StatusReview},
+	}
+
+	snapshot := NewSnapshotBuilder(issues).Build()
+	if snapshot.CountReady != 2 {
+		t.Fatalf("CountReady = %d, want the executable open and in-progress issues", snapshot.CountReady)
+	}
+	if snapshot.CountBlocked != 1 {
+		t.Fatalf("CountBlocked = %d, want 1", snapshot.CountBlocked)
+	}
+
+	m := Model{currentFilter: "ready", issueMap: snapshot.IssueMap}
+	for _, id := range []string{"ready", "active"} {
+		if !m.matchesCurrentFilter(*snapshot.IssueMap[id]) {
+			t.Errorf("ready filter rejected executable issue %q", id)
+		}
+	}
+	for _, id := range []string{"scheduled", "draft", "deferred", "blocked", "pinned", "hooked", "review"} {
+		if m.matchesCurrentFilter(*snapshot.IssueMap[id]) {
+			t.Errorf("ready filter accepted non-executable issue %q", id)
+		}
+	}
+}
+
 func TestSnapshotBuilder_TombstoneCounts(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "open-1", Title: "Open", Status: model.StatusOpen},
@@ -1587,7 +1622,16 @@ func TestWithPhase2_ReturnsNewPointer(t *testing.T) {
 // alias the original snapshot's mutable issue backing structures.
 func TestWithPhase2_DetachesMutableIssueState(t *testing.T) {
 	issues := []model.Issue{
-		{ID: "A", Title: "Issue A", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{
+			ID:        "A",
+			Title:     "Issue A",
+			Status:    model.StatusOpen,
+			IssueType: model.TypeTask,
+			Labels:    []string{"original"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "B", Type: model.DepRelated},
+			},
+		},
 		{ID: "B", Title: "Issue B", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}
 
@@ -1613,9 +1657,49 @@ func TestWithPhase2_DetachesMutableIssueState(t *testing.T) {
 		t.Error("WithPhase2 should rebuild IssueMap to avoid stale pointers into the old slice")
 	}
 
-	original.Issues[0].Title = "mutated old snapshot"
+	original.IssueMap["A"].Title = "mutated old snapshot"
 	if got := newSnapshot.IssueMap["A"].Title; got == "mutated old snapshot" {
 		t.Error("mutating the old snapshot should not affect the cloned Phase 2 snapshot")
+	}
+
+	findListItem := func(items []IssueItem, id string) *IssueItem {
+		for i := range items {
+			if items[i].Issue.ID == id {
+				return &items[i]
+			}
+		}
+		return nil
+	}
+	oldItem := findListItem(original.ListItems, "A")
+	newItem := findListItem(newSnapshot.ListItems, "A")
+	if oldItem == nil || newItem == nil {
+		t.Fatal("expected A in both snapshots' list items")
+	}
+	oldItem.Issue.Labels[0] = "mutated old list item"
+	oldItem.Issue.Dependencies[0].DependsOnID = "mutated-old-dependency"
+	if got := newItem.Issue.Labels[0]; got != "original" {
+		t.Errorf("new list item label = %q, want detached original value", got)
+	}
+	if got := newItem.Issue.Dependencies[0].DependsOnID; got != "B" {
+		t.Errorf("new list item dependency = %q, want detached original value", got)
+	}
+
+	findViewIssue := func(view []model.Issue, id string) *model.Issue {
+		for i := range view {
+			if view[i].ID == id {
+				return &view[i]
+			}
+		}
+		return nil
+	}
+	oldView := findViewIssue(original.ViewIssues, "A")
+	newView := findViewIssue(newSnapshot.ViewIssues, "A")
+	if oldView == nil || newView == nil {
+		t.Fatal("expected A in both snapshots' view issues")
+	}
+	oldView.Labels[0] = "mutated old view"
+	if got := newView.Labels[0]; got != "original" {
+		t.Errorf("new view issue label = %q, want detached original value", got)
 	}
 }
 
