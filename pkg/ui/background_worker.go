@@ -183,6 +183,9 @@ type BackgroundWorker struct {
 	maxRecoveries     int
 
 	// State
+	// SAFETY: never invoke logging, callbacks, channel operations, or other
+	// caller-controlled work while holding mu. Go's package logger ultimately
+	// calls a replaceable io.Writer, which may re-enter worker accessors.
 	mu                sync.RWMutex
 	sendMu            sync.Mutex // Serializes priority-aware replacement in msgCh.
 	state             WorkerState
@@ -901,10 +904,10 @@ func (w *BackgroundWorker) TriggerRefresh() {
 	if w.state == WorkerProcessing || w.processScheduled {
 		w.dirty = true
 		coalesced := w.coalesceCount.Add(1)
+		w.mu.Unlock()
 		w.logEvent(LogLevelDebug, "coalesce", map[string]any{
 			"count": coalesced,
 		})
-		w.mu.Unlock()
 		return
 	}
 	w.processScheduled = true
@@ -928,10 +931,10 @@ func (w *BackgroundWorker) ForceRefresh() {
 	if w.state == WorkerProcessing || w.processScheduled {
 		w.dirty = true
 		coalesced := w.coalesceCount.Add(1)
+		w.mu.Unlock()
 		w.logEvent(LogLevelDebug, "coalesce", map[string]any{
 			"count": coalesced,
 		})
-		w.mu.Unlock()
 		return
 	}
 	w.processScheduled = true
@@ -1101,10 +1104,10 @@ func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotB
 	w.processingStart = now
 	w.lastHeartbeat = now
 	gen := w.generation
+	w.mu.Unlock()
 	w.logEvent(LogLevelDebug, "state_change", map[string]any{
 		"state": "processing",
 	})
-	w.mu.Unlock()
 
 	processStart := time.Now()
 	queueDepth := w.pendingChanges.Swap(0)
@@ -1162,10 +1165,10 @@ func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotB
 	coalesced := w.coalesceCount.Load()
 	w.state = WorkerIdle
 	w.lastHeartbeat = time.Now()
+	w.mu.Unlock()
 	w.logEvent(LogLevelDebug, "state_change", map[string]any{
 		"state": "idle",
 	})
-	w.mu.Unlock()
 	if previousSnapshot != nil && previousSnapshot != snapshot {
 		previousSnapshot.releasePooledIssues()
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -2046,6 +2047,61 @@ func TestBackgroundWorker_TriggerRefreshCoalescesWhileProcessScheduled(t *testin
 	}
 	if got := worker.Metrics().ProcessingCount; got != 0 {
 		t.Fatalf("ProcessingCount=%d, want 0", got)
+	}
+}
+
+type workerLockProbeWriter struct {
+	worker     *BackgroundWorker
+	observed   atomic.Int64
+	violations atomic.Int64
+}
+
+func (w *workerLockProbeWriter) Write(p []byte) (int, error) {
+	if !strings.Contains(string(p), `"component":"background_worker"`) {
+		return len(p), nil
+	}
+	w.observed.Add(1)
+	if !w.worker.mu.TryRLock() {
+		w.violations.Add(1)
+		return len(p), nil
+	}
+	w.worker.mu.RUnlock()
+	return len(p), nil
+}
+
+func TestBackgroundWorker_LogSinkRunsOutsideStateLock(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: ""})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.logLevel = LogLevelDebug
+
+	probe := &workerLockProbeWriter{worker: worker}
+	originalOutput := log.Writer()
+	log.SetOutput(probe)
+	t.Cleanup(func() { log.SetOutput(originalOutput) })
+
+	mutateWorkerForTest(worker, func() {
+		worker.processScheduled = true
+	})
+	worker.TriggerRefresh()
+	worker.ForceRefresh()
+
+	mutateWorkerForTest(worker, func() {
+		worker.state = WorkerIdle
+		worker.dirty = false
+		worker.processScheduled = true
+	})
+	worker.processWithSnapshotBuilder(func(bool) snapshotBuildResult {
+		return snapshotBuildResult{}
+	})
+
+	if got := probe.observed.Load(); got < 4 {
+		t.Fatalf("observed background-worker log writes = %d, want at least 4", got)
+	}
+	if got := probe.violations.Load(); got != 0 {
+		t.Fatalf("background-worker log sink invoked while state lock held %d times", got)
 	}
 }
 
