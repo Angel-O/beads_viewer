@@ -207,6 +207,7 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 	}{
 		{ContextList, "j/k"},
 		{ContextList, "Enter"},
+		{ContextList, "n         Add comment"},
 		{ContextGraph, "h/l"},
 		{ContextGraph, "f"},
 		{ContextTree, "/"},
@@ -214,6 +215,7 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 		{ContextTree, "E / Escape"},
 		{ContextBoard, "h/l"},
 		{ContextDetail, "Esc"},
+		{ContextDetail, "n         Add comment"},
 		{ContextSplit, "Tab"},
 		{ContextFilter, "/"},
 	}

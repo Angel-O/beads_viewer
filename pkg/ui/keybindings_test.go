@@ -1124,6 +1124,7 @@ func TestKeyDispatch_DirectTutorialEntryClearsStaleHelpFocus(t *testing.T) {
 func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{
+		"n|list,detail|Add comment":            false,
 		"E|list,detail|Enter Tree (uppercase)": false,
 		"o|list,board,tree|Open issues only":   false,
 		"c|list,board,tree|Closed issues only": false,
@@ -1138,6 +1139,9 @@ func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 		"esc|tree|Clear search or exit Tree":   false,
 	}
 	for _, doc := range docs {
+		if doc.Key == "#" && doc.Desc == "Add comment" {
+			t.Errorf("authoritative key docs retain removed # comment shortcut")
+		}
 		key := doc.Key + "|" + doc.Context + "|" + doc.Desc
 		if _, ok := wants[key]; ok {
 			wants[key] = true

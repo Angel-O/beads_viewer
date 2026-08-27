@@ -324,7 +324,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"x", "Export to markdown", "Actions", "list,detail"},
 		{"y", "Copy issue ID", "Actions", "all"},
 		{"C", "Copy full issue", "Actions", "detail"},
-		{"#", "Add comment", "Actions", "list,detail"},
+		{"n", "Add comment", "Actions", "list,detail"},
 		{"e", "Edit comment", "Actions", "list,detail"},
 		{"d", "Delete comment", "Actions", "list,detail"},
 		{"O", "Open in $EDITOR", "Actions", "detail"},
