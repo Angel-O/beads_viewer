@@ -66,15 +66,6 @@ func commentHintText(width int) string {
 	return "Ctrl+S submit · Enter newline · Arrows · Esc cancel · Ctrl+C quit"
 }
 
-func isCommentAddKey(key string) bool {
-	switch key {
-	case "#", "shift+3", "shift+#":
-		return true
-	default:
-		return false
-	}
-}
-
 // focus represents which UI element has keyboard focus
 type focus int
 
@@ -4100,7 +4091,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.beginCommentAction("delete")
 					return m, nil
 				}
-				if isCommentAddKey(keyStr) {
+				if keyStr == "#" {
 					m.beginComment()
 					return m, nil
 				}
@@ -4131,15 +4122,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// other views when the key isn't claimed by their handler
 			// (enabling cross-view switching, e.g. 'g' from board -> graph).
 			// ═══════════════════════════════════════════════════════════════
-			if isCommentAddKey(msg.String()) {
+			switch msg.String() {
+			case "#":
 				if m.focused != focusList && m.focused != focusDetail {
 					return m, nil
 				}
 				m.beginComment()
 				return m, nil
-			}
 
-			switch msg.String() {
 			case "b":
 				m.clearAttentionOverlay()
 				m.isBoardView = !m.isBoardView
@@ -5724,10 +5714,8 @@ func (m Model) handleListKeys(msg tea.KeyMsg) Model {
 	case "C":
 		// Copy selected issue to clipboard
 		m.copyIssueToClipboard()
-	case "e":
-		m.beginCommentAction("edit")
-	case "d":
-		m.beginCommentAction("delete")
+	case "e", "d":
+		m.beginCommentAction(msg.String())
 	// Note: "O" (open in editor) is handled at the Update level for tea.Cmd support (bv-134)
 	case "h":
 		// Toggle history view

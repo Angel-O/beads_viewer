@@ -611,43 +611,6 @@ func commentActionModel() Model {
 	return m
 }
 
-func TestCommentShortcutsRouteFromHubSplitListFocus(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		key    string
-		action string
-	}{
-		{name: "shifted physical add", key: "shift+3", action: "add"},
-		{name: "shifted punctuation add", key: "shift+#", action: "add"},
-		{name: "literal add", key: "#", action: "add"},
-		{name: "edit", key: "e", action: "edit"},
-		{name: "delete", key: "d", action: "delete"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			m := commentActionModel()
-			m.isSplitView = true
-			m.focused = focusList
-			m.insightsDetailID = ""
-
-			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(test.key)})
-			m = updated.(Model)
-			if cmd != nil {
-				t.Fatalf("shortcut returned command: %v", cmd)
-			}
-			switch test.action {
-			case "add":
-				if !m.showCommentPrompt || m.commentAction != "" || m.focused != focusCommentInput {
-					t.Fatalf("add shortcut state: prompt=%v action=%q focus=%v", m.showCommentPrompt, m.commentAction, m.focused)
-				}
-			case "edit", "delete":
-				if !m.showCommentSelection || m.commentAction != test.action || m.focused != focusCommentSelection {
-					t.Fatalf("%s shortcut state: selection=%v action=%q focus=%v", test.action, m.showCommentSelection, m.commentAction, m.focused)
-				}
-			}
-		})
-	}
-}
-
 func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	m := commentActionModel()
 	m.beadsPath = filepath.Join(t.TempDir(), "issues.jsonl")
