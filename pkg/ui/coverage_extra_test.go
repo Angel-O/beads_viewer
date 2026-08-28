@@ -586,33 +586,27 @@ func TestRepositoryScopeBadgeTakesPriorityOverNarrowStatus(t *testing.T) {
 	}
 }
 
-func TestRenderFooter_FreshnessIndicatorLevels(t *testing.T) {
+func TestRenderFooter_DoesNotClassifySnapshotAgeAsFreshness(t *testing.T) {
+	for _, hubMode := range []bool{false, true} {
+		m := NewModel(nil, nil, "")
+		m.width = 140
+		m.currentFilter = "all"
+		m.hubRepositoryMode = hubMode
+		m.backgroundWorker = &BackgroundWorker{}
+		// An unchanged event-driven snapshot remains current regardless of when it
+		// was built. Worker errors and health are reported independently below.
+		m.snapshot = &DataSnapshot{CreatedAt: time.Now().Add(-3 * time.Minute)}
+
+		out := m.renderFooter()
+		if strings.Contains(out, "⚠") || strings.Contains(out, "STALE") || strings.Contains(out, "✗") {
+			t.Fatalf("hub=%v: old unchanged snapshot produced a freshness indicator: %q", hubMode, out)
+		}
+	}
+
 	m := NewModel(nil, nil, "")
 	m.width = 140
 	m.currentFilter = "all"
-
 	m.backgroundWorker = &BackgroundWorker{}
-	m.snapshot = &DataSnapshot{CreatedAt: time.Now()}
-
-	// Fresh (<30s): no indicator
-	out := m.renderFooter()
-	if strings.Contains(out, "⚠") || strings.Contains(out, "STALE") || strings.Contains(out, "✗") {
-		t.Fatalf("expected no freshness indicator when fresh, got: %q", out)
-	}
-
-	// Warn (>=30s)
-	m.snapshot.CreatedAt = time.Now().Add(-45 * time.Second)
-	out = m.renderFooter()
-	if !strings.Contains(out, "⚠") || strings.Contains(out, "STALE") {
-		t.Fatalf("expected warning freshness indicator, got: %q", out)
-	}
-
-	// Stale (>=2m)
-	m.snapshot.CreatedAt = time.Now().Add(-3 * time.Minute)
-	out = m.renderFooter()
-	if !strings.Contains(out, "STALE") {
-		t.Fatalf("expected stale freshness indicator, got: %q", out)
-	}
 
 	// Error (>=3 consecutive errors)
 	m.backgroundWorker.lastError = &WorkerError{
@@ -620,9 +614,9 @@ func TestRenderFooter_FreshnessIndicatorLevels(t *testing.T) {
 		Time:    time.Now().Add(-5 * time.Second),
 		Retries: 3,
 	}
-	out = m.renderFooter()
+	out := m.renderFooter()
 	if !strings.Contains(out, "✗") || !strings.Contains(out, "3x") {
-		t.Fatalf("expected error freshness indicator, got: %q", out)
+		t.Fatalf("expected repeated worker error indicator, got: %q", out)
 	}
 }
 

@@ -232,7 +232,7 @@ go tool pprof -top "$(command -v bv)" /tmp/bv-idle.pprof
 
 Compare `BV_BACKGROUND_MODE=0` and `BV_BACKGROUND_MODE=1` with the same data. For Hub testing, use a synthetic Hub config and compare `BV_HUB_AUTO_REFRESH=0` and `BV_HUB_AUTO_REFRESH=1`; do not profile a user's live store when a temporary fixture can reproduce the behavior.
 
-Bubble Tea redraws after every message, so periodic status commands must use an idle cadence rather than an animation cadence. The worker uses fast polling only while processing and checks health and freshness less often while idle. The focused redraw benchmark makes the cost of an unnecessary periodic message measurable:
+Bubble Tea redraws after every message, so periodic status commands must use an idle cadence rather than an animation cadence. The worker uses fast polling only while processing and checks worker health less often while idle. The focused redraw benchmark makes the cost of an unnecessary periodic message measurable:
 
 ```bash
 go test ./pkg/ui -run '^$' -bench BenchmarkModelIdleWorkerRedraw -benchmem
