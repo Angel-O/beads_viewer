@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const testIssuePrefix = "team-hub"
+
 func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 	t.Run("allows ID-free reviewed range", func(t *testing.T) {
 		repository := syntheticRepository(t, "docs: harden closeout validation")
@@ -34,7 +36,7 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 	}{
 		{
 			name: "active branch",
-			leak: "feature/global-synthetic",
+			leak: "feature/team-hub-synthetic",
 			setup: func(t *testing.T, repository, leak string) {
 				git(t, repository, "checkout", "--quiet", "-b", leak)
 				commit(t, repository, "docs: safe target change")
@@ -42,7 +44,7 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 		},
 		{
 			name: "tag on reviewed range",
-			leak: "global-synthetic-tag",
+			leak: "team-hub-synthetic-tag",
 			setup: func(t *testing.T, repository, leak string) {
 				commit(t, repository, "docs: safe target change")
 				git(t, repository, "tag", leak)
@@ -57,7 +59,7 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 		},
 		{
 			name: "new commit body",
-			leak: "global-synthetic-body",
+			leak: "team-hub-synthetic-body",
 			setup: func(t *testing.T, repository, leak string) {
 				commit(t, repository, "docs: synthetic body\n\nprivate marker "+leak)
 			},
@@ -119,6 +121,6 @@ func git(t *testing.T, repository string, arguments ...string) {
 }
 
 func runMetadataValidation(repository string) ([]byte, error) {
-	command := exec.Command("bash", "validate.sh", "--metadata-only", repository, "refs/heads/baseline")
+	command := exec.Command("bash", "validate.sh", "--metadata-only", repository, testIssuePrefix, "refs/heads/baseline")
 	return command.CombinedOutput()
 }

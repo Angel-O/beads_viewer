@@ -23,15 +23,15 @@ require_before() {
 }
 
 validate_metadata_value() {
-  local kind=$1 value=$2
-  if grep -Eq 'global-[a-z0-9][a-z0-9-]*|ctx:[a-z0-9][a-z0-9-]*' <<<"$value"; then
+  local kind=$1 value=$2 prefix=$3
+  if grep -Eq "${prefix}-[a-z0-9][a-z0-9-]*|ctx:[a-z0-9][a-z0-9-]*" <<<"$value"; then
     printf 'private Hub identity detected in Git %s metadata\n' "$kind" >&2
     return 1
   fi
 }
 
 validate_repository_metadata() {
-  local repository=$1 base=${2:-} branch commits messages tags commit commit_tags
+  local repository=$1 base=${2:-} prefix=$3 branch commits messages tags commit commit_tags
   branch=$(git -C "$repository" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   if [[ -z $branch ]]; then
     printf '%s\n' 'cannot validate Git metadata without an active branch' >&2
@@ -63,17 +63,68 @@ validate_repository_metadata() {
     fi
   done <<<"$commits"
 
-  validate_metadata_value branch "$branch"
-  validate_metadata_value tag "$tags"
-  validate_metadata_value commit "$messages"
+  validate_metadata_value branch "$branch" "$prefix"
+  validate_metadata_value tag "$tags" "$prefix"
+  validate_metadata_value commit "$messages" "$prefix"
+}
+
+hub_prefix_valid() {
+  local prefix=$1
+  [[ ${#prefix} -le 32 && $prefix =~ ^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$ && $prefix != *--* ]]
+}
+
+detect_hub_prefix() {
+  local store output prefix
+  store=${HOME:?HOME must be set}/.local/share/beads/hub/.beads
+  for command in bd jq; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      printf 'cannot detect the Hub issue prefix: %s is required\n' "$command" >&2
+      return 1
+    fi
+  done
+  output=$(env \
+    -u BD_DB \
+    -u BEADS_DB \
+    -u BD_GLOBAL \
+    -u BEADS_DOLT_DATA_DIR \
+    -u BEADS_DOLT_PORT \
+    -u BEADS_DOLT_PROXIED_SERVER \
+    -u BEADS_DOLT_SERVER_DATABASE \
+    -u BEADS_DOLT_SERVER_HOST \
+    -u BEADS_DOLT_SERVER_MODE \
+    -u BEADS_DOLT_SERVER_PORT \
+    -u BEADS_DOLT_SERVER_SOCKET \
+    -u BEADS_DOLT_SHARED_SERVER \
+    BEADS_DIR="$store" \
+    bd --db "$store" --json config get issue_prefix 2>/dev/null) || {
+      printf '%s\n' 'cannot detect the configured Hub issue prefix' >&2
+      return 1
+    }
+  prefix=$(printf '%s\n' "$output" | jq -er '
+    if type == "object" and .key == "issue_prefix" and
+       .schema_version == 1 and
+       (.value | type) == "string" and (.value | length) > 0 and
+       (keys | sort) == ["key", "schema_version", "value"]
+    then .value
+    else error("invalid issue_prefix response")
+    end
+  ') || {
+    printf '%s\n' 'cannot parse the configured Hub issue prefix' >&2
+    return 1
+  }
+  if ! hub_prefix_valid "$prefix"; then
+    printf '%s\n' 'the configured Hub issue prefix is invalid' >&2
+    return 1
+  fi
+  printf '%s\n' "$prefix"
 }
 
 if [[ ${1:-} == "--metadata-only" ]]; then
-  if [[ $# -lt 2 || $# -gt 3 ]]; then
-    printf '%s\n' 'usage: validate.sh --metadata-only <repository> [reference]' >&2
+  if [[ $# -lt 3 || $# -gt 4 ]] || ! hub_prefix_valid "$3"; then
+    printf '%s\n' 'usage: validate.sh --metadata-only <repository> <issue-prefix> [reference]' >&2
     exit 2
   fi
-  validate_repository_metadata "$2" "${3:-}"
+  validate_repository_metadata "$2" "${4:-}" "$3"
   printf '%s\n' 'Git metadata privacy validation passed'
   exit 0
 fi
@@ -83,8 +134,9 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 skills_root=$(dirname -- "$script_dir")
 hub_skill=$skills_root/beads-hub/SKILL.md
 closeout_skill=$script_dir/SKILL.md
+hub_prefix=$(detect_hub_prefix)
 
-validate_repository_metadata "$repo_root"
+validate_repository_metadata "$repo_root" "" "$hub_prefix"
 
 require_text "$hub_skill" '[`beads-hub-closeout`](../beads-hub-closeout/SKILL.md)'
 require_text "$closeout_skill" '^[0-9a-fA-F]{40}$'
@@ -93,8 +145,8 @@ require_text "$closeout_skill" 'pull --ff-only "$remote" "$reference_branch"'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd show "$bead_id" --json)'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
 require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd close "$bead_id"'
-require_text "$closeout_skill" 'It rejects private identity patterns in the active branch name,'
-require_text "$closeout_skill" 'commits unique to its configured upstream or reference, and tags on those'
+require_text "$closeout_skill" 'It reads the persisted Hub issue prefix at'
+require_text "$closeout_skill" 'runtime and rejects that prefix and `ctx:` identities in the active branch'
 require_before "$closeout_skill" '## Synchronize Reference' 'pull --ff-only "$remote" "$reference_branch"'
 require_before "$closeout_skill" 'git merge-base --is-ancestor "$merge_sha" FETCH_HEAD' 'pull --ff-only "$remote" "$reference_branch"'
 require_before "$closeout_skill" 'Recheck that the reference checkout is still on the resolved branch and' 'pull --ff-only "$remote" "$reference_branch"'
