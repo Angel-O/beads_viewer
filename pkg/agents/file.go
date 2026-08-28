@@ -376,6 +376,63 @@ func writeNewFileExclusive(filePath string, content []byte) error {
 	return writeFileDirectExclusive(filePath, content)
 }
 
+// writeNewFileExclusiveUsing tries a hard-link publication first (one-shot
+// no-replace create on filesystems that support it). os.ErrExist is returned
+// unchanged. Any other link failure falls back to writeFileDirectExclusive so
+// exFAT/FAT32 and injectable test failures keep the same no-replacement
+// guarantee. link is injectable so tests can force the fallback path.
+func writeNewFileExclusiveUsing(filePath string, content []byte, link func(string, string) error) error {
+	dir := filepath.Dir(filePath)
+	tmp, err := os.CreateTemp(dir, ".bv-create-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	var createdInfo os.FileInfo
+	closed := false
+	linked := false
+	defer func() {
+		if !closed {
+			_ = tmp.Close()
+		}
+		if linked {
+			_ = os.Remove(tmpPath)
+			return
+		}
+		removeAgentReplacementIfSame(tmpPath, createdInfo)
+	}()
+	if info, statErr := tmp.Stat(); statErr == nil {
+		createdInfo = info
+	}
+	if _, err := tmp.Write(content); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	closed = true
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := link(tmpPath, filePath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("link new file: %w", err)
+		}
+		if fallbackErr := writeFileDirectExclusive(filePath, content); fallbackErr != nil {
+			return fmt.Errorf("link new file: %v; exclusive create fallback: %w", err, fallbackErr)
+		}
+		return nil
+	}
+	linked = true
+	if err := syncAgentParentDirectory(filePath); err != nil {
+		return fmt.Errorf("sync destination directory: %w", err)
+	}
+	return nil
+}
+
 func writeFileDirectExclusive(filePath string, content []byte) error {
 	file, err := os.CreateTemp(filepath.Dir(filePath), ".bv-create-*")
 	if err != nil {

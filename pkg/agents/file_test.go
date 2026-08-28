@@ -602,6 +602,38 @@ func TestWriteNewFileExclusiveUsesNoReplacementCreate(t *testing.T) {
 	}
 }
 
+func TestWriteNewFileExclusiveFallsBackWhenHardLinksAreUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "AGENTS.md")
+	want := []byte("# Complete instructions\n")
+	linkUnsupported := func(string, string) error {
+		return errors.New("hard links are unsupported")
+	}
+
+	if err := writeNewFileExclusiveUsing(filePath, want, linkUnsupported); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("fallback content=%q, want %q", got, want)
+	}
+
+	err = writeNewFileExclusiveUsing(filePath, []byte("replacement"), linkUnsupported)
+	if err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("fallback existing-path error=%v, want os.ErrExist", err)
+	}
+	got, err = os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("fallback replaced existing content: got %q, want %q", got, want)
+	}
+}
+
 func TestVerifyBlurbPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 

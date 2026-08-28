@@ -842,6 +842,9 @@ func (s graphStatsCacheSoA) validate() error {
 	if len(s.Nodes) != s.NodeCount {
 		return fmt.Errorf("node dictionary length %d does not match node_count %d", len(s.Nodes), s.NodeCount)
 	}
+	if math.IsNaN(s.Density) || math.IsInf(s.Density, 0) || s.Density < 0 || s.Density > 1 {
+		return fmt.Errorf("density %g is outside [0,1]", s.Density)
+	}
 	nodeSet := make(map[string]struct{}, len(s.Nodes))
 	for i, node := range s.Nodes {
 		if node == "" {
