@@ -97,7 +97,7 @@ var commandSpecs = map[string]commandSpec{
 		examples: []string{`wbd list --ready --limit 20 --json`, `wbd list --all-contexts --status open,in_progress --json`, `wbd list --paginate --limit 50 --sort updated_at:desc --brief --json`},
 	},
 	"show": {
-		path: "show", usage: "wbd show <id> [--json]", summary: "Show one issue without changing context registration.",
+		path: "show", usage: "wbd show <id> [--json]", summary: "Show one issue without changing context registration; use comments to read its comments.",
 		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
 	},
 	"update": {
@@ -149,7 +149,7 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{{name: "--reason", value: "<text>", description: "Reopen reason."}, {name: "--json", description: "Emit JSON."}},
 	},
 	"comments": {
-		path: "comments", usage: "wbd comments add|edit|delete ...", summary: "Manage comments on authoritative Hub issues.",
+		path: "comments", usage: "wbd comments <issue-id> --json | wbd comments add|edit|delete ...", summary: "Read or manage comments on authoritative Hub issues.",
 	},
 	"comments add": {
 		path: "comments add", usage: "wbd comments add <issue-id> (<text...> | --file <path>) [options]", summary: "Add a comment to an authoritative Hub issue.",
@@ -310,8 +310,11 @@ func parse(arguments []string) (request, error) {
 	case "close", "reopen":
 		return parseClose(result, arguments)
 	case "comments":
-		if len(arguments) == 0 || !oneOf(arguments[0], "add", "edit", "delete") {
+		if len(arguments) == 0 {
 			return result, errors.New(usageFor("comments"))
+		}
+		if !oneOf(arguments[0], "add", "edit", "delete") {
+			return parseCommentsRead(result, arguments)
 		}
 		result.subcommand = arguments[0]
 		switch result.subcommand {
@@ -356,6 +359,28 @@ func parse(arguments []string) (request, error) {
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands())
+	}
+	return result, nil
+}
+
+func parseCommentsRead(result request, arguments []string) (request, error) {
+	for _, argument := range arguments {
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for comments: %s", argument)
+		}
+		if err := safeID("comments", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if !result.json || len(result.positionals) != 1 {
+		return result, errors.New(usageFor("comments"))
 	}
 	return result, nil
 }
