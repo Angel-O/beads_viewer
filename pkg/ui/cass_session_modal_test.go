@@ -174,15 +174,24 @@ func TestCassSessionModal_Update_CopyCommand(t *testing.T) {
 		t.Fatal("copy feedback should wait for the asynchronous result")
 	}
 
-	modal, _ = modal.Update(cassClipboardCopyMsg{})
+	modal, _ = modal.Update(cassClipboardCopyMsg{modalToken: modal.copyToken})
 	if !modal.copied {
 		t.Fatal("successful copy result should enable feedback")
 	}
 
 	failed := NewCassSessionModal("bv-copy", result, theme)
-	failed, _ = failed.Update(cassClipboardCopyMsg{err: fmt.Errorf("clipboard unavailable")})
+	failed, _ = failed.Update(cassClipboardCopyMsg{
+		modalToken: failed.copyToken,
+		err:        fmt.Errorf("clipboard unavailable"),
+	})
 	if failed.copied {
 		t.Fatal("failed copy result must not enable feedback")
+	}
+
+	reopened := NewCassSessionModal("bv-copy", result, theme)
+	reopened, _ = reopened.Update(cassClipboardCopyMsg{modalToken: modal.copyToken})
+	if reopened.copied {
+		t.Fatal("late copy result from a dismissed modal must be ignored")
 	}
 }
 
