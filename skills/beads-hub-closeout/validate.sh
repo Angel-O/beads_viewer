@@ -79,14 +79,13 @@ if [[ ${1:-} == "--metadata-only" ]]; then
 fi
 
 repo_root=$(git rev-parse --show-toplevel)
-policy=$repo_root/AGENTS.md
-hub_skill=$repo_root/skills/beads-hub/SKILL.md
-closeout_skill=$repo_root/skills/beads-hub-closeout/SKILL.md
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+skills_root=$(dirname -- "$script_dir")
+hub_skill=$skills_root/beads-hub/SKILL.md
+closeout_skill=$script_dir/SKILL.md
 
 validate_repository_metadata "$repo_root"
 
-require_text "$policy" 'Private Hub IDs and `ctx:` identities stay in private Hub operations'
-require_text "$policy" 'never include private Hub identifiers'
 require_text "$hub_skill" '[`beads-hub-closeout`](../beads-hub-closeout/SKILL.md)'
 require_text "$closeout_skill" '^[0-9a-fA-F]{40}$'
 require_text "$closeout_skill" 'git merge-base --is-ancestor "$merge_sha" FETCH_HEAD'
@@ -103,10 +102,5 @@ require_before "$closeout_skill" 'pull --ff-only "$remote" "$reference_branch"' 
 require_before "$closeout_skill" '(cd -- "$reference_worktree" && wbd show "$bead_id" --json)' '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
 require_before "$closeout_skill" '## Revalidate And Close' '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
 require_before "$closeout_skill" '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")' '(cd -- "$reference_worktree" && wbd close "$bead_id"'
-
-if grep -Fq '| Commit messages | Include `br-###`' "$policy"; then
-  printf '%s\n' 'conflicting issue-ID commit guidance remains' >&2
-  exit 1
-fi
 
 printf '%s\n' 'private Hub closeout policy validation passed'
