@@ -1178,6 +1178,107 @@ func TestModelStopReturnsSnapshotPooledIssuesWithoutWorker(t *testing.T) {
 	}
 }
 
+func TestTargetedCommentRefreshTransfersPoolOwnershipAcrossWorkerReplacement(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pooled := loader.GetIssue()
+	pooled.ID = "targeted-refresh"
+	pooled.Comments = append(pooled.Comments, &model.Comment{ID: "old", Text: "old"})
+	source := &DataSnapshot{
+		Issues:       []model.Issue{{ID: "issue-1"}},
+		pooledIssues: []*model.Issue{pooled},
+	}
+	worker.mu.Lock()
+	worker.snapshot = source
+	worker.mu.Unlock()
+
+	m := Model{backgroundWorker: worker, snapshot: source.WithCommentUpdate("issue-1", nil)}
+	m.snapshot.pooledIssues = m.takeSnapshotPooledIssues(source)
+	if source.pooledIssues != nil || len(m.snapshot.pooledIssues) != 1 {
+		t.Fatal("targeted refresh did not transfer pool ownership")
+	}
+
+	// The worker can replace and discard its original pointer before the UI
+	// processes another snapshot; the replacement must remain the sole owner.
+	worker.mu.Lock()
+	worker.snapshot = &DataSnapshot{}
+	worker.mu.Unlock()
+	worker.Stop()
+	if pooled.ID != "targeted-refresh" {
+		t.Fatalf("worker returned transferred pooled issue after replacement: %q", pooled.ID)
+	}
+
+	m.Stop()
+	if pooled.ID != "" || len(pooled.Comments) != 0 {
+		t.Fatalf("model did not return transferred pooled issue exactly once: id=%q comments=%d", pooled.ID, len(pooled.Comments))
+	}
+}
+
+func TestTargetedCommentRefreshTransfersPoolOwnershipWithoutWorker(t *testing.T) {
+	pooled := loader.GetIssue()
+	pooled.ID = "targeted-refresh-no-worker"
+	source := &DataSnapshot{
+		Issues:       []model.Issue{{ID: "issue-1"}},
+		pooledIssues: []*model.Issue{pooled},
+	}
+	m := NewModel(source.Issues, nil, "")
+	m.snapshot = source
+	m.issues = source.Issues
+	m.issueMap = map[string]*model.Issue{"issue-1": &m.issues[0]}
+
+	if err := m.applyTargetedCommentRefresh(targetedCommentRefreshMsg{issueID: "issue-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if source.pooledIssues != nil || len(m.snapshot.pooledIssues) != 1 {
+		t.Fatal("no-worker targeted refresh did not transfer pool ownership")
+	}
+
+	m.Stop()
+	if pooled.ID != "" {
+		t.Fatalf("no-worker model did not return transferred pooled issue: %q", pooled.ID)
+	}
+}
+
+func TestTargetedCommentRefreshPoolTransferRacesWorkerStop(t *testing.T) {
+	for attempt := 0; attempt < 25; attempt++ {
+		worker, err := NewBackgroundWorker(WorkerConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pooled := loader.GetIssue()
+		pooled.ID = "targeted-refresh-race"
+		source := &DataSnapshot{
+			Issues:       []model.Issue{{ID: "issue-1"}},
+			pooledIssues: []*model.Issue{pooled},
+		}
+		worker.mu.Lock()
+		worker.snapshot = source
+		worker.mu.Unlock()
+
+		target := source.WithCommentUpdate("issue-1", nil)
+		transferred := make(chan []*model.Issue, 1)
+		stopped := make(chan struct{})
+		go func() {
+			transferred <- worker.takeSnapshotPooledIssues(source)
+		}()
+		go func() {
+			worker.Stop()
+			close(stopped)
+		}()
+		target.pooledIssues = <-transferred
+		<-stopped
+
+		m := Model{snapshot: target}
+		m.Stop()
+		if pooled.ID != "" || len(pooled.Comments) != 0 {
+			t.Fatalf("attempt %d returned pooled issue incorrectly: id=%q comments=%d", attempt, pooled.ID, len(pooled.Comments))
+		}
+	}
+}
+
 func TestBackgroundWorker_TriggerRefresh(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")

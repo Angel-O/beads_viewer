@@ -166,7 +166,7 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	}
 	updated, refreshCmd := m.Update(cmd())
 	m = updated.(Model)
-	if gotID != "A" || gotText != strings.TrimSpace(body) || m.commentSubmitting || m.statusIsError || refreshCmd == nil {
+	if gotID != "A" || gotText != strings.TrimSpace(body) || m.commentSubmitting || refreshCmd == nil {
 		t.Fatalf("comment result = id %q text %q submitting=%v error=%v", gotID, gotText, m.commentSubmitting, m.statusIsError)
 	}
 	if !strings.Contains(m.View(), "Shortcuts") {
@@ -185,8 +185,9 @@ func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
 	binDir := t.TempDir()
 	argsPath := filepath.Join(binDir, "args")
 	cwdPath := filepath.Join(binDir, "cwd")
+	envPath := filepath.Join(binDir, "env")
 	repositoryPath := t.TempDir()
-	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\npwd > '" + cwdPath + "'\n"
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\npwd > '" + cwdPath + "'\nprintf '%s' \"${WBD_SUPPRESS_VIEWER_SIGNAL-}\" > '" + envPath + "'\n"
 	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake wbd: %v", err)
 	}
@@ -222,6 +223,9 @@ func TestRunWBDCommentsAddSeparatesMultilineTaskListBody(t *testing.T) {
 	if gotCWD != wantCWD {
 		t.Fatalf("wbd cwd = %q, want %q", gotCWD, wantCWD)
 	}
+	if got, err := os.ReadFile(envPath); err != nil || string(got) != "1" {
+		t.Fatalf("TUI comment signal marker = %q, err=%v; want 1", got, err)
+	}
 }
 
 func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
@@ -231,8 +235,9 @@ func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
 	binDir := t.TempDir()
 	argsPath := filepath.Join(binDir, "args")
 	cwdPath := filepath.Join(binDir, "cwd")
+	envPath := filepath.Join(binDir, "env")
 	repositoryPath := t.TempDir()
-	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\npwd > '" + cwdPath + "'\n"
+	script := "#!/bin/sh\nprintf '%s\\000' \"$@\" > '" + argsPath + "'\npwd > '" + cwdPath + "'\nprintf '%s' \"${WBD_SUPPRESS_VIEWER_SIGNAL-}\" > '" + envPath + "'\n"
 	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake wbd: %v", err)
 	}
@@ -271,6 +276,9 @@ func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
 		t.Fatalf("edit wbd argv = %#v, want %#v", got, want)
 	}
 	assertCommandDir()
+	if got, err := os.ReadFile(envPath); err != nil || string(got) != "1" {
+		t.Fatalf("TUI comment signal marker = %q, err=%v; want 1", got, err)
+	}
 
 	message = runWBDCommentsDelete("canonical-1", "comment-7", repositoryPath, nil)()
 	if result, ok := message.(commentMutationMsg); !ok || result.err != nil {
@@ -286,6 +294,9 @@ func TestRunWBDCommentMutationsUseNarrowContract(t *testing.T) {
 		t.Fatalf("delete wbd argv = %#v, want %#v", got, want)
 	}
 	assertCommandDir()
+	if got, err := os.ReadFile(envPath); err != nil || string(got) != "1" {
+		t.Fatalf("TUI comment signal marker = %q, err=%v; want 1", got, err)
+	}
 }
 
 func TestCommentAddWithoutRegisteredRepositoryPathDoesNotInvokeWBD(t *testing.T) {
@@ -583,6 +594,152 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 	}
 }
 
+func installTargetedCommentWBD(t *testing.T, showPayload, commentsPayload string, failShow bool) (string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake wbd uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	showPath := filepath.Join(binDir, "show.json")
+	commentsPath := filepath.Join(binDir, "comments.json")
+	callsPath := filepath.Join(binDir, "calls")
+	if err := os.WriteFile(showPath, []byte(showPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commentsPath, []byte(commentsPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	showResult := "cat '" + showPath + "'"
+	if failShow {
+		showResult = "printf '%s\\n' 'show unavailable' >&2; exit 1"
+	}
+	script := "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> '" + callsPath + "'\n"
+	script += "if [ \"$1\" = \"show\" ]; then " + showResult + "\n"
+	script += "elif [ \"$1\" = \"comments\" ]; then cat '" + commentsPath + "'\n"
+	script += "else exit 2\nfi\n"
+	if err := os.WriteFile(filepath.Join(binDir, "wbd"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return callsPath, binDir
+}
+
+func targetedCommentModel(t *testing.T) Model {
+	t.Helper()
+	issues := []model.Issue{
+		{ID: "A", Title: "Top", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeTask},
+		{ID: "B", Title: "Selected", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, Labels: []string{"ctx:repo"}, Comments: []*model.Comment{{ID: "old", IssueID: "B", Author: "tester", Text: "old", CreatedAt: time.Date(2026, time.August, 28, 0, 0, 0, 0, time.UTC)}}},
+	}
+	m := NewModel(issues, nil, filepath.Join(t.TempDir(), "issues.jsonl"))
+	m.width, m.height = 120, 40
+	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:repo", Name: "repo", Path: t.TempDir(), Kind: model.RepositoryIdentityHubContext}}
+	m.list.Select(1)
+	m.isSplitView = true
+	m.showDetails = true
+	m.updateViewportContent()
+	m.viewport.SetYOffset(1)
+	return m
+}
+
+func TestTargetedCommentRefreshPreservesNonTopSelectionForAddEditDelete(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		action      string
+		message     tea.Msg
+		showPayload string
+		comments    string
+		wantText    string
+		wantCount   int
+	}{
+		{name: "add", action: "add", message: commentAddedMsg{issueID: "B"}, showPayload: `[{"id":"B","comment_count":1}]`, comments: `[{"id":"new","issue_id":"B","author":"tester","text":"new body","created_at":"2026-08-28T00:00:00Z"}]`, wantText: "new body", wantCount: 1},
+		{name: "edit", action: "edit", message: commentMutationMsg{action: "edit", issueID: "B", commentID: "old"}, showPayload: `[{"id":"B","comment_count":1}]`, comments: `[{"id":"old","issue_id":"B","author":"tester","text":"edited body","created_at":"2026-08-28T00:00:00Z"}]`, wantText: "edited body", wantCount: 1},
+		{name: "delete", action: "delete", message: commentMutationMsg{action: "delete", issueID: "B", commentID: "old"}, showPayload: `[{"id":"B","comment_count":0}]`, comments: `[]`, wantCount: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := targetedCommentModel(t)
+			callsPath, _ := installTargetedCommentWBD(t, test.showPayload, test.comments, false)
+			selectedBefore := m.list.SelectedItem().(IssueItem).Issue.ID
+			indexBefore := m.list.Index()
+			offsetBefore := m.viewport.YOffset
+
+			updated, cmd := m.Update(test.message)
+			m = updated.(Model)
+			if cmd == nil {
+				t.Fatal("successful comment action returned no targeted refresh command")
+			}
+			updated, fallback := m.Update(cmd())
+			m = updated.(Model)
+			if fallback != nil {
+				t.Fatalf("targeted refresh unexpectedly requested fallback: status=%q", m.statusMsg)
+			}
+			issue := m.issueMap["B"]
+			if issue == nil || len(issue.Comments) != test.wantCount || (test.wantCount > 0 && issue.Comments[0].Text != test.wantText) {
+				t.Fatalf("targeted comments = %#v, want count=%d text=%q", issue, test.wantCount, test.wantText)
+			}
+			if got := m.list.SelectedItem().(IssueItem).Issue.ID; got != selectedBefore || m.list.Index() != indexBefore || m.viewport.YOffset != offsetBefore {
+				t.Fatalf("selection moved after %s: issue=%q index=%d offset=%d, want %q/%d/%d", test.action, got, m.list.Index(), m.viewport.YOffset, selectedBefore, indexBefore, offsetBefore)
+			}
+			calls, err := os.ReadFile(callsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Split(strings.TrimSpace(string(calls)), "\n"); len(got) != 2 || got[0] != "show B" || got[1] != "comments B" {
+				t.Fatalf("targeted wbd calls = %#v, want show/comments only", got)
+			}
+		})
+	}
+}
+
+func TestTargetedCommentRefreshFailureFallsBackOnce(t *testing.T) {
+	m := targetedCommentModel(t)
+	callsPath, _ := installTargetedCommentWBD(t, `[{"id":"B","comment_count":1}]`, `[{"id":"B","issue_id":"B","id":"c","created_at":"2026-08-28T00:00:00Z"}]`, true)
+	updated, targetCmd := m.Update(commentAddedMsg{issueID: "B"})
+	m = updated.(Model)
+	if targetCmd == nil {
+		t.Fatal("comment action returned no targeted command")
+	}
+	updated, fallback := m.Update(targetCmd())
+	m = updated.(Model)
+	if fallback == nil || !strings.Contains(m.statusMsg, "targeted refresh") || !strings.Contains(m.statusMsg, "full refresh") {
+		t.Fatalf("targeted failure did not request actionable fallback: cmd=%v status=%q", fallback != nil, m.statusMsg)
+	}
+	if _, ok := fallback().(FileChangedMsg); !ok {
+		t.Fatalf("no-worker fallback = %T, want FileChangedMsg", fallback())
+	}
+	calls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(calls), "show B"); got != 1 {
+		t.Fatalf("targeted show invoked %d times, want one", got)
+	}
+}
+
+func TestTargetedCommentRefreshDecodeFailureFallsBack(t *testing.T) {
+	m := targetedCommentModel(t)
+	_, _ = installTargetedCommentWBD(t, "not-json", `[]`, false)
+	updated, targetCmd := m.Update(commentMutationMsg{action: "delete", issueID: "B", commentID: "old"})
+	m = updated.(Model)
+	updated, fallback := m.Update(targetCmd())
+	m = updated.(Model)
+	if fallback == nil || !strings.Contains(m.statusMsg, "show decode failed") || !strings.Contains(m.statusMsg, "full refresh") {
+		t.Fatalf("decode failure did not request fallback: cmd=%v status=%q", fallback != nil, m.statusMsg)
+	}
+}
+
+func TestTargetedCommentRefreshRoutingFailureFallsBack(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "B", Title: "Selected", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, filepath.Join(t.TempDir(), "issues.jsonl"))
+	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
+	m.hubRepositoryMode = true
+	updated, fallback := m.Update(commentAddedMsg{issueID: "B"})
+	m = updated.(Model)
+	if fallback == nil || !strings.Contains(m.statusMsg, "no registered repository path") || !strings.Contains(m.statusMsg, "full refresh") {
+		t.Fatalf("routing failure did not fall back with context: cmd=%v status=%q", fallback != nil, m.statusMsg)
+	}
+}
+
 func TestCommentsAddTargetsDirectInsightsDetail(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
@@ -777,7 +934,7 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	if gotAction != "edit" || gotIssue != "A" || gotComment != "c2" || gotText != expectedText {
 		t.Fatalf("mutation = %q %q %q %q", gotAction, gotIssue, gotComment, gotText)
 	}
-	if refreshCmd == nil || m.statusIsError || !strings.Contains(m.View(), "Shortcuts") {
+	if refreshCmd == nil || !strings.Contains(m.View(), "Shortcuts") {
 		t.Fatalf("edit result refresh=%v error=%v sidebar=%v", refreshCmd != nil, m.statusIsError, strings.Contains(m.View(), "Shortcuts"))
 	}
 }
@@ -887,7 +1044,7 @@ func TestCommentDeleteRequiresConfirmationAndRefreshes(t *testing.T) {
 	}
 	updated, refreshCmd := m.Update(cmd())
 	m = updated.(Model)
-	if !called || refreshCmd == nil || m.statusIsError || m.focused != focusDetail || !strings.Contains(m.View(), "Shortcuts") {
+	if !called || refreshCmd == nil || m.focused != focusDetail || !strings.Contains(m.View(), "Shortcuts") {
 		t.Fatalf("delete result called:%v refresh:%v error:%v focus:%v sidebar:%v", called, refreshCmd != nil, m.statusIsError, m.focused, strings.Contains(m.View(), "Shortcuts"))
 	}
 }

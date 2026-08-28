@@ -788,6 +788,30 @@ drainedMessages:
 	w.closeTraceFile()
 }
 
+// takeSnapshotPooledIssues transfers ownership of a snapshot's pooled issue
+// references while holding the worker lock. Snapshot clones must not mutate
+// pooledIssues directly because the worker may be stopping or draining a
+// dropped snapshot concurrently.
+func (w *BackgroundWorker) takeSnapshotPooledIssues(snapshot *DataSnapshot) []*model.Issue {
+	if w == nil || snapshot == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	pooled := snapshot.pooledIssues
+	snapshot.pooledIssues = nil
+	return pooled
+}
+
+func (w *BackgroundWorker) snapshotHasPooledIssues(snapshot *DataSnapshot) bool {
+	if w == nil || snapshot == nil {
+		return false
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return len(snapshot.pooledIssues) > 0
+}
+
 func (w *BackgroundWorker) startLoop() {
 	if w == nil {
 		return
@@ -2397,17 +2421,18 @@ func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
 
 func (w *BackgroundWorker) releaseDroppedWorkerMessage(msg tea.Msg) {
 	ready, ok := msg.(SnapshotReadyMsg)
-	if !ok || ready.Snapshot == nil || len(ready.Snapshot.pooledIssues) == 0 {
+	if !ok || ready.Snapshot == nil {
 		return
 	}
-	w.mu.RLock()
+	w.mu.Lock()
 	current := w.snapshot
-	w.mu.RUnlock()
 	if ready.Snapshot == current {
+		w.mu.Unlock()
 		return
 	}
 	pooled := ready.Snapshot.pooledIssues
 	ready.Snapshot.pooledIssues = nil
+	w.mu.Unlock()
 	loader.ReturnIssuePtrsToPool(pooled)
 }
 

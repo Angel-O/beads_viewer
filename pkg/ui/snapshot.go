@@ -1169,9 +1169,11 @@ func (s *DataSnapshot) WithPhase2(stats *analysis.GraphStats, insights analysis.
 	return &DataSnapshot{
 		// Clone mutable Phase 1 data so the new snapshot stays immutable even if
 		// legacy UI state continues mutating its own slices or maps.
-		Issues:       issuesClone,
-		IssueMap:     clonedIssueMap,
-		pooledIssues: s.pooledIssues,
+		Issues:   issuesClone,
+		IssueMap: clonedIssueMap,
+		// Pool ownership is transferred by the model while coordinating with the
+		// background worker; snapshot cloning itself remains side-effect free.
+		pooledIssues: nil,
 		ViewIssues:   s.ViewIssues,
 		ListItems:    deepCopyListItems(s.ListItems),   // Deep copy - contains mutable SearchComponents/TriageReasons
 		TreeRoots:    treeRoots,                        // Deep copy - tree view mutates these
@@ -1205,6 +1207,88 @@ func (s *DataSnapshot) WithPhase2(stats *analysis.GraphStats, insights analysis.
 		TruncatedCount:       s.TruncatedCount,
 		LargeDatasetWarning:  s.LargeDatasetWarning,
 		LoadWarningCount:     s.LoadWarningCount,
+		IssueDiff:            s.IssueDiff,
+		IssueDiffStats:       s.IssueDiffStats,
+		IncrementalListUsed:  s.IncrementalListUsed,
+		LoadError:            s.LoadError,
+		ErrorTime:            s.ErrorTime,
+		StaleWarning:         s.StaleWarning,
+	}
+}
+
+// WithCommentUpdate returns a detached snapshot with only one issue's comments
+// replaced. Analysis and all other issue fields remain unchanged.
+func (s *DataSnapshot) WithCommentUpdate(issueID string, comments []*model.Comment) *DataSnapshot {
+	if s == nil {
+		return nil
+	}
+	issues := cloneIssuesForAsync(s.Issues)
+	for i := range issues {
+		if issues[i].ID == issueID {
+			issues[i].Comments = cloneIssueComments(comments)
+		}
+	}
+	issueMap := make(map[string]*model.Issue, len(issues))
+	for i := range issues {
+		issueMap[issues[i].ID] = &issues[i]
+	}
+
+	viewIssues := cloneIssuesForAsync(s.ViewIssues)
+	for i := range viewIssues {
+		if viewIssues[i].ID == issueID {
+			viewIssues[i].Comments = cloneIssueComments(comments)
+		}
+	}
+
+	listItems := deepCopyListItems(s.ListItems)
+	for i := range listItems {
+		if listItems[i].Issue.ID == issueID {
+			listItems[i].Issue.Comments = cloneIssueComments(comments)
+		}
+	}
+	boardState := deepCopyBoardState(s.BoardState)
+	if boardState != nil {
+		for column := range boardState.ByStatus {
+			updateIssueComments(boardState.ByStatus[column], issueID, comments)
+			updateIssueComments(boardState.ByPriority[column], issueID, comments)
+			updateIssueComments(boardState.ByType[column], issueID, comments)
+		}
+	}
+	treeRoots, treeNodeMap := deepCopyTree(s.TreeRoots, s.TreeNodeMap, issueMap)
+
+	return &DataSnapshot{
+		Issues:               issues,
+		IssueMap:             issueMap,
+		pooledIssues:         nil,
+		ViewIssues:           viewIssues,
+		ListItems:            listItems,
+		Analyzer:             s.Analyzer,
+		Analysis:             s.Analysis,
+		insights:             s.insights,
+		CountOpen:            s.CountOpen,
+		CountReady:           s.CountReady,
+		CountBlocked:         s.CountBlocked,
+		CountClosed:          s.CountClosed,
+		TriageScores:         s.TriageScores,
+		TriageReasons:        s.TriageReasons,
+		QuickWinSet:          s.QuickWinSet,
+		BlockerSet:           s.BlockerSet,
+		UnblocksMap:          s.UnblocksMap,
+		TreeRoots:            treeRoots,
+		TreeNodeMap:          treeNodeMap,
+		BoardState:           boardState,
+		graphLayout:          s.graphLayout,
+		CreatedAt:            s.CreatedAt,
+		DataHash:             s.DataHash,
+		RecipeName:           s.RecipeName,
+		RecipeHash:           s.RecipeHash,
+		DatasetTier:          s.DatasetTier,
+		SourceIssueCountHint: s.SourceIssueCountHint,
+		LoadedOpenOnly:       s.LoadedOpenOnly,
+		TruncatedCount:       s.TruncatedCount,
+		LargeDatasetWarning:  s.LargeDatasetWarning,
+		LoadWarningCount:     s.LoadWarningCount,
+		phase2Ready:          s.phase2Ready,
 		IssueDiff:            s.IssueDiff,
 		IssueDiffStats:       s.IssueDiffStats,
 		IncrementalListUsed:  s.IncrementalListUsed,

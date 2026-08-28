@@ -169,6 +169,15 @@ func (g *GraphModel) SetProjectedIssues(issues []model.Issue, issueMap map[strin
 	g.refreshSearchMatches()
 }
 
+// UpdateIssueComments refreshes graph detail copies without rebuilding graph
+// relationships or changing graph navigation state.
+func (g *GraphModel) UpdateIssueComments(issueID string, comments []*model.Comment) {
+	updateIssueComments(g.issues, issueID, comments)
+	if issue := g.issueMap[issueID]; issue != nil {
+		issue.Comments = cloneIssueComments(comments)
+	}
+}
+
 func (g *GraphModel) rebuildGraph() {
 	size := len(g.issues)
 	g.issueMap = make(map[string]*model.Issue, size)

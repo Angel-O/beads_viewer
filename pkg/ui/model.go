@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -152,6 +154,14 @@ type commentMutationMsg struct {
 	err       error
 }
 
+type targetedCommentRefreshMsg struct {
+	action       string
+	issueID      string
+	comments     []*model.Comment
+	commentCount int
+	err          error
+}
+
 type commentPasteMsg struct {
 	msg tea.Msg
 }
@@ -163,6 +173,7 @@ func runWBDCommentsAdd(issueID, text, repositoryPath string, runner func(string,
 		}
 		command := exec.Command("wbd", "--json", "comments", "add", issueID, "--", text)
 		command.Dir = repositoryPath
+		command.Env = append(os.Environ(), "WBD_SUPPRESS_VIEWER_SIGNAL=1")
 		output, err := command.CombinedOutput()
 		if err != nil {
 			detail := strings.TrimSpace(string(output))
@@ -186,6 +197,7 @@ func runWBDCommentMutation(action, issueID, commentID, text, repositoryPath stri
 		}
 		command := exec.Command("wbd", args...)
 		command.Dir = repositoryPath
+		command.Env = append(os.Environ(), "WBD_SUPPRESS_VIEWER_SIGNAL=1")
 		output, err := command.CombinedOutput()
 		if err != nil {
 			detail := strings.TrimSpace(string(output))
@@ -206,6 +218,101 @@ func runWBDCommentsDelete(issueID, commentID, repositoryPath string, runner func
 	return runWBDCommentMutation("delete", issueID, commentID, "", repositoryPath, runner)
 }
 
+type targetedCommentIssue struct {
+	ID           string `json:"id"`
+	CommentCount *int   `json:"comment_count"`
+}
+
+func runTargetedCommentRefresh(action, issueID, repositoryPath string) tea.Cmd {
+	return func() tea.Msg {
+		showCommand := exec.Command("wbd", "show", issueID, "--json")
+		showCommand.Dir = repositoryPath
+		showOutput, err := showCommand.CombinedOutput()
+		if err != nil {
+			return targetedCommentRefreshMsg{action: action, issueID: issueID, err: fmt.Errorf("targeted refresh show failed: %s", commandErrorDetail(err, showOutput))}
+		}
+		showRecord, err := decodeTargetedCommentIssue(showOutput, issueID)
+		if err != nil {
+			return targetedCommentRefreshMsg{action: action, issueID: issueID, err: fmt.Errorf("targeted refresh show decode failed: %w", err)}
+		}
+
+		commentsCommand := exec.Command("wbd", "comments", issueID, "--json")
+		commentsCommand.Dir = repositoryPath
+		commentsOutput, err := commentsCommand.CombinedOutput()
+		if err != nil {
+			return targetedCommentRefreshMsg{action: action, issueID: issueID, err: fmt.Errorf("targeted refresh comments failed: %s", commandErrorDetail(err, commentsOutput))}
+		}
+		comments, err := decodeTargetedComments(commentsOutput, issueID)
+		if err != nil {
+			return targetedCommentRefreshMsg{action: action, issueID: issueID, err: fmt.Errorf("targeted refresh comments decode failed: %w", err)}
+		}
+		if showRecord.CommentCount == nil {
+			return targetedCommentRefreshMsg{action: action, issueID: issueID, err: errors.New("targeted refresh show omitted comment_count")}
+		}
+		if *showRecord.CommentCount != len(comments) {
+			return targetedCommentRefreshMsg{action: action, issueID: issueID, err: fmt.Errorf("targeted refresh count mismatch: show reported %d comments, authoritative read returned %d", *showRecord.CommentCount, len(comments))}
+		}
+		return targetedCommentRefreshMsg{action: action, issueID: issueID, comments: comments, commentCount: *showRecord.CommentCount}
+	}
+}
+
+func commandErrorDetail(err error, output []byte) string {
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		return err.Error()
+	}
+	return detail
+}
+
+func decodeTargetedCommentIssue(data []byte, issueID string) (targetedCommentIssue, error) {
+	var records []targetedCommentIssue
+	if err := json.Unmarshal(data, &records); err != nil {
+		return targetedCommentIssue{}, err
+	}
+	if len(records) != 1 {
+		return targetedCommentIssue{}, fmt.Errorf("expected one issue, got %d", len(records))
+	}
+	if records[0].ID != issueID {
+		return targetedCommentIssue{}, fmt.Errorf("returned issue %q, want exact issue %q", records[0].ID, issueID)
+	}
+	if records[0].CommentCount == nil || *records[0].CommentCount < 0 {
+		return targetedCommentIssue{}, errors.New("comment_count is missing or invalid")
+	}
+	return records[0], nil
+}
+
+func decodeTargetedComments(data []byte, issueID string) ([]*model.Comment, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed[0] != '[' {
+		return nil, errors.New("expected a JSON array")
+	}
+	var decoded []model.Comment
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, err
+	}
+	comments := make([]*model.Comment, len(decoded))
+	seen := make(map[string]bool, len(decoded))
+	for i := range decoded {
+		comment := decoded[i]
+		if comment.ID == "" {
+			return nil, fmt.Errorf("comment at index %d has no stable ID", i)
+		}
+		if seen[comment.ID] {
+			return nil, fmt.Errorf("comment %s is duplicated", comment.ID)
+		}
+		if comment.IssueID != issueID {
+			return nil, fmt.Errorf("comment %s belongs to issue %s, not %s", comment.ID, comment.IssueID, issueID)
+		}
+		if comment.CreatedAt.IsZero() {
+			return nil, fmt.Errorf("comment %s has no created_at timestamp", comment.ID)
+		}
+		seen[comment.ID] = true
+		commentCopy := comment
+		comments[i] = &commentCopy
+	}
+	return comments, nil
+}
+
 func (m Model) commentRepositoryPath(issueID string) (string, error) {
 	issue := m.issueMap[issueID]
 	if issue == nil {
@@ -221,6 +328,115 @@ func (m Model) commentRepositoryPath(issueID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("cannot mutate comment for %s: repository %s has no registered path; register it and retry", issueID, presentation.Name)
+}
+
+func (m *Model) commentRefreshCmd(issueID, action string) tea.Cmd {
+	repositoryPath, err := m.commentRepositoryPath(issueID)
+	if err != nil {
+		return m.commentRefreshFallbackCmd(issueID, action, err)
+	}
+	return runTargetedCommentRefresh(action, issueID, repositoryPath)
+}
+
+func (m *Model) commentRefreshFallbackCmd(issueID, action string, targetedErr error) tea.Cmd {
+	m.statusMsg = fmt.Sprintf("Comment %s on %s; targeted refresh failed: %v; requesting full refresh", action, issueID, targetedErr)
+	m.statusIsError = true
+	if m.backgroundWorker != nil {
+		m.backgroundWorker.ForceSourceRefresh()
+		return WaitForBackgroundWorkerMsgCmd(m.backgroundWorker)
+	}
+	if m.beadsPath != "" {
+		return func() tea.Msg { return FileChangedMsg{refreshBDExport: true} }
+	}
+	return nil
+}
+
+func (m *Model) applyTargetedCommentRefresh(msg targetedCommentRefreshMsg) error {
+	if msg.commentCount != len(msg.comments) {
+		return fmt.Errorf("targeted refresh count mismatch: show reported %d comments, read returned %d", msg.commentCount, len(msg.comments))
+	}
+	found := false
+	for _, issue := range m.issues {
+		if issue.ID == msg.issueID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("targeted refresh issue %s is not present in the current model", msg.issueID)
+	}
+
+	if m.snapshot != nil {
+		source := m.snapshot
+		updated := source.WithCommentUpdate(msg.issueID, msg.comments)
+		updated.pooledIssues = m.takeSnapshotPooledIssues(source)
+		m.snapshot = updated
+		m.issues = m.snapshot.Issues
+		m.issueMap = m.snapshot.IssueMap
+	} else {
+		updateIssueComments(m.issues, msg.issueID, msg.comments)
+		if m.issueMap == nil {
+			m.issueMap = make(map[string]*model.Issue, len(m.issues))
+		}
+		for i := range m.issues {
+			if m.issues[i].ID == msg.issueID {
+				m.issueMap[msg.issueID] = &m.issues[i]
+				break
+			}
+		}
+	}
+	updateIssueComments(m.repositoryIssues, msg.issueID, msg.comments)
+	updateIssueComments(m.repositoryCatalogIssues, msg.issueID, msg.comments)
+	updateIssueComments(m.labelDrilldownIssues, msg.issueID, msg.comments)
+	for label, issues := range m.labelDrilldownCache {
+		updateIssueComments(issues, msg.issueID, msg.comments)
+		m.labelDrilldownCache[label] = issues
+	}
+
+	items := m.list.Items()
+	for i, item := range items {
+		issueItem, ok := item.(IssueItem)
+		if !ok || issueItem.Issue.ID != msg.issueID {
+			continue
+		}
+		issueItem.Issue.Comments = cloneIssueComments(msg.comments)
+		if m.list.FilterState() == list.Unfiltered {
+			items[i] = issueItem
+			continue
+		}
+		filterCmd := m.list.SetItem(i, issueItem)
+		if filterCmd != nil {
+			filterMsg := filterCmd()
+			m.list, _ = m.list.Update(filterMsg)
+		}
+	}
+
+	m.board.issueMap = m.issueMap
+	m.graphView.issueMap = m.issueMap
+	m.board.UpdateIssueComments(msg.issueID, msg.comments)
+	m.graphView.UpdateIssueComments(msg.issueID, msg.comments)
+	m.tree.UpdateIssueComments(msg.issueID, msg.comments)
+	if node := m.tree.issueMap[msg.issueID]; node != nil {
+		node.Issue = m.issueMap[msg.issueID]
+	}
+	m.flowMatrix.UpdateIssueComments(msg.issueID, msg.comments)
+	m.insightsPanel.issueMap = m.issueMap
+	if m.isSplitView || m.showDetails {
+		m.updateViewportContent()
+	}
+	return nil
+}
+
+func (m *Model) takeSnapshotPooledIssues(snapshot *DataSnapshot) []*model.Issue {
+	if snapshot == nil {
+		return nil
+	}
+	if m.backgroundWorker != nil {
+		return m.backgroundWorker.takeSnapshotPooledIssues(snapshot)
+	}
+	pooled := snapshot.pooledIssues
+	snapshot.pooledIssues = nil
+	return pooled
 }
 
 // Phase2ReadyMsg is sent when async graph analysis Phase 2 completes
@@ -573,6 +789,31 @@ func cloneIssuesForAsync(issues []model.Issue) []model.Issue {
 		clones[i] = issues[i].Clone()
 	}
 	return clones
+}
+
+func cloneIssueComments(comments []*model.Comment) []*model.Comment {
+	if comments == nil {
+		return nil
+	}
+	cloned := make([]*model.Comment, len(comments))
+	for i, comment := range comments {
+		if comment != nil {
+			commentCopy := *comment
+			cloned[i] = &commentCopy
+		}
+	}
+	return cloned
+}
+
+func updateIssueComments(issues []model.Issue, issueID string, comments []*model.Comment) bool {
+	updated := false
+	for i := range issues {
+		if issues[i].ID == issueID {
+			issues[i].Comments = cloneIssueComments(comments)
+			updated = true
+		}
+	}
+	return updated
 }
 
 // Model is the main Bubble Tea model for the beads viewer
@@ -1060,7 +1301,15 @@ func (m *Model) issuesForAsync() []model.Issue {
 	if m == nil {
 		return nil
 	}
-	if (m.snapshot != nil && len(m.snapshot.pooledIssues) > 0) || len(m.pooledIssues) > 0 {
+	snapshotHasPooledIssues := false
+	if m.snapshot != nil {
+		if m.backgroundWorker != nil {
+			snapshotHasPooledIssues = m.backgroundWorker.snapshotHasPooledIssues(m.snapshot)
+		} else {
+			snapshotHasPooledIssues = len(m.snapshot.pooledIssues) > 0
+		}
+	}
+	if snapshotHasPooledIssues || len(m.pooledIssues) > 0 {
 		return cloneIssuesForAsync(m.issues)
 	}
 	return m.issues
@@ -1760,12 +2009,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = fmt.Sprintf("Comment added to %s", msg.issueID)
 		m.statusIsError = false
-		if m.backgroundWorker != nil {
-			m.backgroundWorker.ForceSourceRefresh()
-			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
-		} else if m.beadsPath != "" {
-			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
-		}
+		cmds = append(cmds, m.commentRefreshCmd(msg.issueID, "add"))
 	case commentMutationMsg:
 		m.commentSubmitting = false
 		m.commentIssueID = ""
@@ -1778,12 +2022,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = fmt.Sprintf("Comment %s on %s", msg.action, msg.issueID)
 		m.statusIsError = false
-		if m.backgroundWorker != nil {
-			m.backgroundWorker.ForceSourceRefresh()
-			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
-		} else if m.beadsPath != "" {
-			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
+		cmds = append(cmds, m.commentRefreshCmd(msg.issueID, msg.action))
+
+	case targetedCommentRefreshMsg:
+		if msg.err == nil {
+			if err := m.applyTargetedCommentRefresh(msg); err == nil {
+				break
+			} else {
+				msg.err = err
+			}
 		}
+		cmds = append(cmds, m.commentRefreshFallbackCmd(msg.issueID, msg.action, msg.err))
 
 	case commentPasteMsg:
 		if m.focused == focusCommentInput && m.showCommentPrompt {
@@ -2047,7 +2296,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Create new immutable snapshot with Phase 2 data (bv-b5q1)
 		ins := msg.Insights
 		if m.snapshot != nil {
-			newSnap := m.snapshot.WithPhase2(msg.Stats, ins, m.issues, m.analyzer)
+			source := m.snapshot
+			newSnap := source.WithPhase2(msg.Stats, ins, m.issues, m.analyzer)
+			newSnap.pooledIssues = m.takeSnapshotPooledIssues(source)
 			m.snapshot = newSnap
 			m.triageScores = newSnap.TriageScores
 			m.triageReasons = newSnap.TriageReasons
@@ -2246,8 +2497,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.SnapshotVer > 0 && msg.SnapshotVer <= m.lastSnapshotVersion {
 			if m.backgroundWorker == nil || m.backgroundWorker.GetSnapshot() != msg.Snapshot {
-				pooled := msg.Snapshot.pooledIssues
-				msg.Snapshot.pooledIssues = nil
+				pooled := m.takeSnapshotPooledIssues(msg.Snapshot)
 				loader.ReturnIssuePtrsToPool(pooled)
 			}
 			if m.backgroundWorker != nil {
@@ -2311,8 +2561,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.backgroundWorker.recordUIUpdateLatency(time.Since(latencyStart))
 			}
 		}
-		if oldSnapshot != nil && len(oldSnapshot.pooledIssues) > 0 {
-			go loader.ReturnIssuePtrsToPool(oldSnapshot.pooledIssues)
+		if oldSnapshot != nil {
+			pooled := m.takeSnapshotPooledIssues(oldSnapshot)
+			if len(pooled) > 0 {
+				go loader.ReturnIssuePtrsToPool(pooled)
+			}
 		}
 
 		// Update legacy fields for backwards compatibility during migration

@@ -216,6 +216,14 @@ type IssueTreeNode struct {
 	OmittedParent bool             // Canonical parent exists but is outside the projection
 }
 
+// UpdateIssueComments refreshes tree node data without rebuilding its
+// hierarchy or changing the current tree selection.
+func (t *TreeModel) UpdateIssueComments(issueID string, comments []*model.Comment) {
+	if node := t.issueMap[issueID]; node != nil && node.Issue != nil {
+		node.Issue.Comments = cloneIssueComments(comments)
+	}
+}
+
 // TreeModel manages the hierarchical tree view state
 type TreeModel struct {
 	roots          []*IssueTreeNode          // Root nodes (issues with no parent)
