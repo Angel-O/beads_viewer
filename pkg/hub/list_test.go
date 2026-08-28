@@ -1,277 +1,136 @@
 package hub
 
 import (
-	"database/sql"
 	"encoding/json"
-	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
-	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-func TestListIssuesKeysetPagesSurviveInsertionAndTieBreakByID(t *testing.T) {
-	dbPath := createListTestDB(t)
-	db, err := sql.Open("sqlite", dbPath)
+func TestDecodeListResponsePreservesOpaqueCursorAndProjectsFullIssueShape(t *testing.T) {
+	data, err := DecodeListResponse([]byte(`{"issues":[{"id":"one","title":"One","description":"Details","status":"closed","priority":1,"issue_type":"bug","assignee":"agent","labels":["team"],"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00.123456789Z","closed_at":"2026-08-03T02:00:00+02:00","extra":{"drop":true}}],"pagination":{"limit":1,"has_more":true,"next_cursor":"opaque:/+= token"}}`), true, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`
-		INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at, closed_at) VALUES
-		('a', 'A', 'closed', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'),
-		('b', 'B', 'closed', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z', '2026-08-03T00:00:00Z'),
-		('c', 'C', 'closed', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
-		('open', 'Open', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-04T00:00:00Z', NULL),
-		('archived', 'Archived', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-05T00:00:00Z', NULL)`)
-	if err != nil {
-		db.Close()
+	var response struct {
+		Issues     []ListIssue `json:"issues"`
+		Pagination struct {
+			Limit      int    `json:"limit"`
+			HasMore    bool   `json:"has_more"`
+			NextCursor string `json:"next_cursor"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
+	if response.Pagination.NextCursor != "opaque:/+= token" {
+		t.Fatalf("response = %s", data)
 	}
-
-	first, err := ListIssues(filepath.Dir(dbPath), ListOptions{Statuses: []string{"closed"}, Sort: "closed_at:desc", Limit: 2, Paginate: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(first.Issues); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Fatalf("first page IDs = %#v", got)
-	}
-	if first.Pagination == nil || !first.Pagination.HasMore || first.Pagination.NextCursor == "" {
-		t.Fatalf("first pagination = %#v", first.Pagination)
-	}
-
-	db, err = sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at, closed_at) VALUES ('new', 'New', 'closed', 2, 'task', '2026-08-05T00:00:00Z', '2026-08-05T00:00:00Z', '2026-08-05T00:00:00Z')`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	second, err := ListIssues(filepath.Dir(dbPath), ListOptions{Statuses: []string{"closed"}, Sort: "closed_at:desc", Limit: 2, Paginate: true, Cursor: first.Pagination.NextCursor})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(second.Issues); !reflect.DeepEqual(got, []string{"c"}) {
-		t.Fatalf("second page IDs = %#v, want [c] after insertion: %#v", got, second)
+	want := `{"issues":[{"id":"one","title":"One","description":"Details","status":"closed","priority":1,"issue_type":"bug","assignee":"agent","labels":["team"],"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00.123456789Z","closed_at":"2026-08-03T02:00:00+02:00"}],"pagination":{"limit":1,"has_more":true,"next_cursor":"opaque:/+= token"}}` + "\n"
+	if string(data) != want {
+		t.Fatalf("full response = %s, want %s", data, want)
 	}
 }
 
-func TestListIssuesFiltersStrictRFC3339BoundaryAndBriefProjection(t *testing.T) {
-	dbPath := createListTestDB(t)
-	db, err := sql.Open("sqlite", dbPath)
+func TestDecodeListResponseBriefProjectionIsFixed(t *testing.T) {
+	data, err := DecodeListResponse([]byte(`[{"id":"one","title":"One","status":"open","priority":2,"issue_type":"task","updated_at":"2026-08-28T00:00:00Z","description":"drop","labels":["drop"]}]`), false, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`
-		INSERT INTO issues (id, title, status, priority, issue_type, assignee, created_at, updated_at, closed_at) VALUES
-		('equal', 'Equal', 'open', 1, 'bug', 'agent', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z', NULL),
-		('after', 'After', 'open', 2, 'task', '', '2026-08-01T00:00:01Z', '2026-08-02T00:00:01Z', NULL),
-		('tomb', 'Tombstone', 'tombstone', 0, 'task', '', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', NULL),
-		('archived', 'Archived', 'open', 0, 'task', '', '2026-09-02T00:00:00Z', '2026-09-02T00:00:00Z', NULL);
-		UPDATE issues SET tombstone = 1 WHERE id = 'archived'`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	cutoff := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
-	page, err := ListIssues(filepath.Dir(dbPath), ListOptions{AfterCreatedAt: &cutoff, Limit: 10, Sort: "updated_at:desc", Brief: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(page.Issues); !reflect.DeepEqual(got, []string{"after"}) {
-		t.Fatalf("strict after IDs = %#v", got)
-	}
-	data, err := json.Marshal(page.Issues[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != `{"id":"after","title":"After","status":"open","priority":2,"issue_type":"task","updated_at":"2026-08-02T00:00:01Z"}` {
-		t.Fatalf("brief projection = %s", data)
+	want := `[{"id":"one","title":"One","status":"open","priority":2,"issue_type":"task","updated_at":"2026-08-28T00:00:00Z"}]` + "\n"
+	if string(data) != want {
+		t.Fatalf("brief response = %s, want %s", data, want)
 	}
 }
 
-func TestListIssuesReadyIgnoresArchivedBlockers(t *testing.T) {
-	dbPath := createListTestDB(t)
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
+func TestDecodeListResponseRejectsMissingRequiredFields(t *testing.T) {
+	validFull := map[string]any{
+		"id": "one", "title": "One", "status": "open", "priority": 0,
+		"issue_type": "task", "created_at": "2026-08-01T00:00:00Z",
+		"updated_at": "2026-08-02T00:00:00Z",
 	}
-	_, err = db.Exec(`
-		INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) VALUES
-		('dependent', 'Dependent', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
-		('archived-blocker', 'Archived blocker', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z');
-		UPDATE issues SET tombstone = 1 WHERE id = 'archived-blocker';
-		INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES ('dependent', 'archived-blocker', 'blocks')`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	page, err := ListIssues(filepath.Dir(dbPath), ListOptions{Ready: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(page.Issues); !reflect.DeepEqual(got, []string{"dependent"}) {
-		t.Fatalf("ready issue IDs = %#v", got)
-	}
-}
-
-func TestListIssuesRejectsMalformedAndIncompatibleCursors(t *testing.T) {
-	dbPath := createListTestDB(t)
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`
-		INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) VALUES
-		('one', 'One', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
-		('two', 'Two', 'open', 2, 'task', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	page, err := ListIssues(filepath.Dir(dbPath), ListOptions{Sort: "updated_at:desc", Limit: 1, Paginate: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.Pagination == nil || !page.Pagination.HasMore || page.Pagination.NextCursor == "" {
-		t.Fatalf("first pagination = %#v", page.Pagination)
-	}
-	_, err = ListIssues(filepath.Dir(dbPath), ListOptions{Sort: "closed_at:desc", Limit: 1, Paginate: true, Cursor: page.Pagination.NextCursor})
-	if err == nil || !strings.Contains(err.Error(), "cursor was created for") {
-		t.Fatalf("incompatible cursor error = %v", err)
-	}
-	_, err = ListIssues(filepath.Dir(dbPath), ListOptions{Limit: 1, Paginate: true, Cursor: "not-a-cursor"})
-	if err == nil || !strings.Contains(err.Error(), "invalid cursor") {
-		t.Fatalf("malformed cursor error = %v", err)
+	for _, testCase := range []struct {
+		name  string
+		brief bool
+		field string
+	}{
+		{name: "full missing id", field: "id"},
+		{name: "full missing title", field: "title"},
+		{name: "full missing status", field: "status"},
+		{name: "full missing priority", field: "priority"},
+		{name: "full missing issue type", field: "issue_type"},
+		{name: "full missing created timestamp", field: "created_at"},
+		{name: "full missing updated timestamp", field: "updated_at"},
+		{name: "brief missing id", brief: true, field: "id"},
+		{name: "brief missing title", brief: true, field: "title"},
+		{name: "brief missing status", brief: true, field: "status"},
+		{name: "brief missing priority", brief: true, field: "priority"},
+		{name: "brief missing issue type", brief: true, field: "issue_type"},
+		{name: "brief missing updated timestamp", brief: true, field: "updated_at"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			row := make(map[string]any, len(validFull))
+			for key, value := range validFull {
+				row[key] = value
+			}
+			delete(row, testCase.field)
+			data, err := json.Marshal([]any{row})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeListResponse(data, false, 0, testCase.brief); err == nil || !strings.Contains(err.Error(), testCase.field) {
+				t.Fatalf("DecodeListResponse missing %s error = %v", testCase.field, err)
+			}
+		})
 	}
 }
 
-func TestListIssuesExplicitPaginationReportsTerminalAndEmptyPages(t *testing.T) {
-	dbPath := createListTestDB(t)
-	empty, err := ListIssues(filepath.Dir(dbPath), ListOptions{Limit: 2, Paginate: true})
+func TestDecodeListResponseDistinguishesZeroPriorityAndOwnerAssigneeDrift(t *testing.T) {
+	data, err := DecodeListResponse([]byte(`[{"id":"one","title":"One","status":"open","priority":0,"issue_type":"task","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","owner":"team-owner"}]`), false, 0, false)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("priority zero with owner-only row rejected: %v", err)
 	}
-	if empty.Pagination == nil || empty.Pagination.HasMore || empty.Pagination.NextCursor != "" {
-		t.Fatalf("empty pagination = %#v", empty.Pagination)
+	want := `[{"id":"one","title":"One","description":"","status":"open","priority":0,"issue_type":"task","assignee":"","labels":[],"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","closed_at":null}]` + "\n"
+	if string(data) != want {
+		t.Fatalf("owner-only full response = %s, want %s", data, want)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) VALUES ('only', 'Only', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminal, err := ListIssues(filepath.Dir(dbPath), ListOptions{Limit: 2, Paginate: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if terminal.Pagination == nil || terminal.Pagination.HasMore || terminal.Pagination.NextCursor != "" {
-		t.Fatalf("terminal pagination = %#v", terminal.Pagination)
+	missingPriority := []byte(`[{"id":"one","title":"One","status":"open","issue_type":"task","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z"}]`)
+	if _, err := DecodeListResponse(missingPriority, false, 0, false); err == nil || !strings.Contains(err.Error(), `"priority"`) {
+		t.Fatalf("missing priority error = %v", err)
 	}
 }
 
-func TestListIssuesPreservesFractionalPrecisionAndNormalizesCutoffs(t *testing.T) {
-	dbPath := createListTestDB(t)
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatal(err)
+func TestDecodeListResponseRejectsMalformedEnvelopes(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "array for page", data: `[]`},
+		{name: "missing pagination", data: `{"issues":[]}`},
+		{name: "null issues", data: `{"issues":null,"pagination":{"limit":1,"has_more":false}}`},
+		{name: "missing metadata", data: `{"issues":[],"pagination":{}}`},
+		{name: "wrong limit", data: `{"issues":[],"pagination":{"limit":2,"has_more":false}}`},
+		{name: "missing cursor", data: `{"issues":[],"pagination":{"limit":1,"has_more":true}}`},
+		{name: "terminal cursor", data: `{"issues":[],"pagination":{"limit":1,"has_more":false,"next_cursor":"unexpected"}}`},
+		{name: "non-object issue", data: `{"issues":[1],"pagination":{"limit":1,"has_more":false}}`},
+		{name: "trailing output", data: `{"issues":[],"pagination":{"limit":1,"has_more":false}} noise`},
 	}
-	_, err = db.Exec(`
-		INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) VALUES
-		('fraction-low', 'Fraction low', 'open', 2, 'task', '2026-08-01T00:00:00.123456789Z', '2026-08-01T00:00:00.123456789Z'),
-		('fraction-high', 'Fraction high', 'open', 2, 'task', '2026-08-01T00:00:00.123456790Z', '2026-08-01T00:00:00.123456790Z')`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := ListIssues(filepath.Dir(dbPath), ListOptions{Limit: 1, Paginate: true, Sort: "updated_at:desc"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(first.Issues); !reflect.DeepEqual(got, []string{"fraction-high"}) {
-		t.Fatalf("fractional first page IDs = %#v", got)
-	}
-	second, err := ListIssues(filepath.Dir(dbPath), ListOptions{Limit: 1, Paginate: true, Sort: "updated_at:desc", Cursor: first.Pagination.NextCursor})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(second.Issues); !reflect.DeepEqual(got, []string{"fraction-low"}) {
-		t.Fatalf("fractional second page IDs = %#v", got)
-	}
-
-	cutoff := time.Date(2026, time.August, 1, 2, 0, 0, 123456789, time.FixedZone("cutoff", 2*60*60))
-	filtered, err := ListIssues(filepath.Dir(dbPath), ListOptions{AfterUpdatedAt: &cutoff, Sort: "updated_at:desc"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := issueIDs(filtered.Issues); !reflect.DeepEqual(got, []string{"fraction-high"}) {
-		t.Fatalf("timezone-equivalent cutoff IDs = %#v", got)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := DecodeListResponse([]byte(testCase.data), true, 1, false); err == nil {
+				t.Fatalf("DecodeListResponse(%s) succeeded", testCase.data)
+			}
+		})
 	}
 }
 
-func createListTestDB(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "beads.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
+func TestBackendListSort(t *testing.T) {
+	for input, want := range map[string]string{"created_at:desc": "created", "updated_at:desc": "updated", "closed_at:desc": "closed"} {
+		if got := BackendListSort(input); got != want {
+			t.Errorf("BackendListSort(%q) = %q, want %q", input, got, want)
+		}
 	}
-	_, err = db.Exec(`
-		CREATE TABLE issues (
-			id TEXT PRIMARY KEY,
-			title TEXT NOT NULL,
-			description TEXT,
-			status TEXT NOT NULL,
-			priority INTEGER,
-			issue_type TEXT,
-			assignee TEXT,
-			created_at DATETIME,
-			updated_at DATETIME,
-			closed_at DATETIME,
-			tombstone INTEGER NOT NULL DEFAULT 0
-		);
-		CREATE TABLE labels (issue_id TEXT NOT NULL, label TEXT NOT NULL);
-		CREATE TABLE dependencies (issue_id TEXT NOT NULL, depends_on_id TEXT NOT NULL, type TEXT);
-	`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
+	if strings.Contains(BackendListSort("updated_at:desc"), ":") {
+		t.Fatal("backend sort retained wbd syntax")
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func issueIDs(issues []ListIssue) []string {
-	ids := make([]string, len(issues))
-	for index, issue := range issues {
-		ids[index] = issue.ID
-	}
-	return ids
 }

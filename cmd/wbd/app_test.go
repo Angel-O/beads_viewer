@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,9 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
-	_ "modernc.org/sqlite"
 )
 
 type childCall struct {
@@ -93,12 +92,18 @@ func fakeChild() {
 		}
 	}
 	response := responses[key]
+	if response == "" && key == "list" {
+		response = `[]`
+	}
 	if response == "" && strings.HasPrefix(key, "show:") {
 		id := strings.TrimPrefix(key, "show:")
 		response = fmt.Sprintf(`[{"id":%q,"title":"Issue","status":"open","priority":2,"issue_type":"task"}]`, id)
 	}
 	if response != "" {
 		_, _ = io.WriteString(os.Stdout, response)
+	}
+	if notice := os.Getenv("WBD_CHILD_STDERR"); notice != "" {
+		_, _ = io.WriteString(os.Stderr, notice)
 	}
 	code, _ := strconv.Atoi(os.Getenv("WBD_CHILD_EXIT"))
 	exitCodes := make(map[string]int)
@@ -815,6 +820,35 @@ func TestParserRejectsRemovedAndInvalidCompositions(t *testing.T) {
 	}
 }
 
+func TestParserRejectsInvalidBoundedListCompositions(t *testing.T) {
+	tests := []struct {
+		name      string
+		arguments []string
+		message   string
+	}{
+		{name: "created aliases conflict", arguments: []string{"list", "--created-after", "2026-08-01T00:00:00Z", "--after-created-at", "2026-08-01T00:00:00Z"}, message: "cannot be specified together"},
+		{name: "updated aliases conflict", arguments: []string{"list", "--updated-after", "2026-08-01T00:00:00Z", "--after-updated-at", "2026-08-01T00:00:00Z"}, message: "cannot be specified together"},
+		{name: "closed aliases conflict", arguments: []string{"list", "--closed-after", "2026-08-01T00:00:00Z", "--after-closed-at", "2026-08-01T00:00:00Z"}, message: "cannot be specified together"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := parse(testCase.arguments)
+			if err == nil || !strings.Contains(err.Error(), testCase.message) {
+				t.Fatalf("parse(%#v) error = %v, want substring %q", testCase.arguments, err, testCase.message)
+			}
+		})
+	}
+	for _, arguments := range [][]string{
+		{"list", "--ready", "--json"},
+		{"list", "--paginate", "--limit", "2", "--ready", "--json"},
+		{"list", "--cursor", "opaque", "--limit", "2", "--ready", "--json"},
+	} {
+		if _, err := parse(arguments); err != nil {
+			t.Fatalf("supported ready invocation %v rejected: %v", arguments, err)
+		}
+	}
+}
+
 func TestListScopingAndAllContexts(t *testing.T) {
 	t.Run("scoped registers and owns first label", func(t *testing.T) {
 		test := newAppTest(t, true)
@@ -823,7 +857,7 @@ func TestListScopingAndAllContexts(t *testing.T) {
 			t.Fatalf("run code = %d, stderr = %q", code, stderr)
 		}
 		context := contextForTest(t, test.repository)
-		want := []string{"--db", test.store, "--json", "list", "--label", context, "--label", "team", "--status", "open,blocked", "--limit", "25"}
+		want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--label", context, "--sort", "updated", "--label", "team", "--status", "open,blocked", "--limit", "25"}
 		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
 			t.Fatalf("calls = %#v, want args %#v", calls, want)
 		}
@@ -835,7 +869,7 @@ func TestListScopingAndAllContexts(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("run code = %d, stderr = %q", code, stderr)
 		}
-		want := []string{"--db", test.store, "list", "--ready"}
+		want := []string{"--db", test.store, "list", "--no-directory-labels", "--ready"}
 		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
 			t.Fatalf("calls = %#v, want args %#v", calls, want)
 		}
@@ -843,71 +877,479 @@ func TestListScopingAndAllContexts(t *testing.T) {
 			t.Fatalf("all-context list unexpectedly configured hub: %v", err)
 		}
 	})
+	t.Run("all contexts keeps status filters", func(t *testing.T) {
+		test := newAppTest(t, false)
+		code, _, stderr := test.run("list", "--all-contexts", "--status", "open", "--json")
+		if code != 0 {
+			t.Fatalf("run code = %d, stderr = %q", code, stderr)
+		}
+		want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--sort", "updated", "--status", "open"}
+		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls = %#v, want args %#v", calls, want)
+		}
+	})
 }
 
-func TestPaginatedListUsesDatabaseAndEmitsMetadata(t *testing.T) {
-	test := newAppTest(t, false)
-	db, err := sql.Open("sqlite", filepath.Join(test.store, "beads.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`
-		CREATE TABLE issues (
-			id TEXT PRIMARY KEY,
-			title TEXT NOT NULL,
-			status TEXT NOT NULL,
-			priority INTEGER NOT NULL,
-			issue_type TEXT NOT NULL,
-			created_at DATETIME NOT NULL,
-			updated_at DATETIME NOT NULL,
-			closed_at DATETIME,
-			tombstone INTEGER NOT NULL DEFAULT 0
-		);
-		INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at) VALUES
-			('one', 'One', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
-			('two', 'Two', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z'),
-			('three', 'Three', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-03T00:00:00Z'),
-			('archived', 'Archived', 'open', 2, 'task', '2026-08-01T00:00:00Z', '2026-08-04T00:00:00Z');
-		UPDATE issues SET tombstone = 1 WHERE id = 'archived'`)
-	if closeErr := db.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "2", "--sort", "updated_at:desc", "--brief", "--json")
+func TestPaginatedListDelegatesExactArgumentsAndProjectsBrief(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{"list": `{"issues":[{"id":"one","title":"One","status":"open","priority":2,"issue_type":"task","updated_at":"2026-08-28T00:00:00Z","description":"drop"}],"pagination":{"limit":2,"has_more":true,"next_cursor":"opaque:/+= token"}}`})
+	code, stdout, stderr := test.run("list", "--paginate", "--limit", "2", "--cursor", "opaque incoming:/+=", "--sort", "updated_at:desc", "--after-created-at", "2026-08-01T00:00:00Z", "--after-updated-at", "2026-08-02T00:00:00Z", "--after-closed-at", "2026-08-03T00:00:00Z", "--status", "open,blocked", "--type", "task", "--priority", "P2", "--label", "team", "--brief", "--json")
 	if code != 0 || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	var response struct {
-		Issues     []hub.ListIssue    `json:"issues"`
-		Pagination hub.ListPagination `json:"pagination"`
+	context := contextForTest(t, test.repository)
+	want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--label", context, "--paginate", "--brief", "--limit", "2", "--cursor", "opaque incoming:/+=", "--sort", "updated", "--created-after", "2026-08-01T00:00:00Z", "--updated-after", "2026-08-02T00:00:00Z", "--closed-after", "2026-08-03T00:00:00Z", "--status", "open,blocked", "--type", "task", "--priority", "P2", "--label", "team"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls = %#v, want args %#v", calls, want)
 	}
-	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+	wantOutput := `{"issues":[{"id":"one","title":"One","status":"open","priority":2,"issue_type":"task","updated_at":"2026-08-28T00:00:00Z"}],"pagination":{"limit":2,"has_more":true,"next_cursor":"opaque:/+= token"}}` + "\n"
+	if stdout != wantOutput {
+		t.Fatalf("stdout = %q, want %q", stdout, wantOutput)
+	}
+}
+
+func TestStructuredListDefaultsPopulationSortAndForwardsReady(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `{"issues":[],"pagination":{"limit":2,"has_more":false}}`})
+	code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "2", "--ready", "--json")
+	if code != 0 || stderr != "" || stdout != `{"issues":[],"pagination":{"limit":2,"has_more":false}}`+"\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--paginate", "--sort", "updated", "--limit", "2", "--ready"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls = %#v, want args %#v", calls, want)
+	}
+}
+
+func TestListDateOptionsForwardCanonicalFlagsVerbatim(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		arguments []string
+		want      []string
+	}{
+		{name: "canonical fractional offset", arguments: []string{"--created-after", "2026-08-01T02:00:00.123456789+02:00", "--updated-after", "2026-08-02T00:00:00.000000001Z", "--closed-after", "2026-08-03T00:00:00Z"}, want: []string{"--created-after", "2026-08-01T02:00:00.123456789+02:00", "--updated-after", "2026-08-02T00:00:00.000000001Z", "--closed-after", "2026-08-03T00:00:00Z"}},
+		{name: "documented aliases", arguments: []string{"--after-created-at", "2026-08-01T00:00:00Z", "--after-updated-at", "2026-08-02T00:00:00Z", "--after-closed-at", "2026-08-03T00:00:00Z"}, want: []string{"--created-after", "2026-08-01T00:00:00Z", "--updated-after", "2026-08-02T00:00:00Z", "--closed-after", "2026-08-03T00:00:00Z"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, false)
+			setResponses(t, map[string]string{"list": `[]`})
+			arguments := append([]string{"list", "--all-contexts", "--json"}, testCase.arguments...)
+			code, _, stderr := test.run(arguments...)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			want := append([]string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--sort", "updated"}, testCase.want...)
+			if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+				t.Fatalf("calls = %#v, want args %#v", calls, want)
+			}
+		})
+	}
+}
+
+func TestPaginatedListForwardsSuccessfulChildStderrSeparately(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `{"issues":[{"id":"one","title":"One","status":"open","priority":2,"issue_type":"task","created_at":"2026-08-27T00:00:00Z","updated_at":"2026-08-28T00:00:00Z"}],"pagination":{"limit":1,"has_more":false}}`})
+	t.Setenv("WBD_CHILD_STDERR", "routing notice: using Hub context\n")
+	code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "1", "--sort", "updated_at:desc", "--json")
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	wantOutput := `{"issues":[{"id":"one","title":"One","description":"","status":"open","priority":2,"issue_type":"task","assignee":"","labels":[],"created_at":"2026-08-27T00:00:00Z","updated_at":"2026-08-28T00:00:00Z","closed_at":null}],"pagination":{"limit":1,"has_more":false}}` + "\n"
+	if stdout != wantOutput {
+		t.Fatalf("stdout = %q, want %q", stdout, wantOutput)
+	}
+	if stderr != "routing notice: using Hub context\n" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestPaginatedListAllContextsPreservesTerminalAndEmptyEnvelope(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `{"issues":[],"pagination":{"limit":5,"has_more":false}}`})
+	code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "5", "--sort", "closed_at:desc", "--json")
+	if code != 0 || stderr != "" || stdout != `{"issues":[],"pagination":{"limit":5,"has_more":false}}`+"\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--paginate", "--limit", "5", "--sort", "closed"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls = %#v, want args %#v", calls, want)
+	}
+}
+
+func TestListRejectsMalformedOrFailedBackendWithoutStdout(t *testing.T) {
+	t.Run("malformed envelope", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{"list": `[{"id":"wrong-shape"}]`})
+		code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "1", "--sort", "updated_at:desc", "--json")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "decoding bd list response") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+	t.Run("successful child diagnostics survive schema failure", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{"list": `{"issues":[{"id":"broken","title":"Broken","status":"open","issue_type":"task","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z"}],"pagination":{"limit":1,"has_more":false}}`})
+		t.Setenv("WBD_CHILD_STDERR", "backend diagnostic: partial result\n")
+		code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "1", "--sort", "updated_at:desc", "--json")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "backend diagnostic: partial result") || !strings.Contains(stderr, `"message":"decoding bd list response`) {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+	t.Run("child failure", func(t *testing.T) {
+		test := newAppTest(t, false)
+		setResponses(t, map[string]string{"list": `{"issues":[{"id":"must-not-leak"}],"pagination":{"limit":1,"has_more":false}}`})
+		setExitCodes(t, map[string]int{"list": 23})
+		code, stdout, stderr := test.run("list", "--all-contexts", "--paginate", "--limit", "1", "--sort", "updated_at:desc", "--json")
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "listing Hub issues") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+}
+
+func TestLegacyJSONListStillDelegatesBareArray(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `[{"id":"legacy","title":"Legacy","description":"details","status":"open","priority":2,"issue_type":"task","assignee":"","labels":[],"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","closed_at":null,"backend_field":true}]`})
+	code, stdout, stderr := test.run("list", "--all-contexts", "--json")
+	wantOutput := `[{"id":"legacy","title":"Legacy","description":"details","status":"open","priority":2,"issue_type":"task","assignee":"","labels":[],"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","closed_at":null}]` + "\n"
+	if code != 0 || stderr != "" || stdout != wantOutput {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--sort", "updated"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls = %#v, want args %#v", calls, want)
+	}
+}
+
+func TestPlainJSONListUsesMergedPopulationAndUpdatedOrder(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `[
+{"id":"closed","title":"Closed","status":"closed","priority":4,"issue_type":"task","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-04T00:00:00Z"},
+{"id":"pinned","title":"Pinned","status":"pinned","priority":0,"issue_type":"task","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-03T00:00:00Z"},
+{"id":"hidden-type","title":"Hidden type","status":"open","priority":1,"issue_type":"agent","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z"},
+{"id":"wisp","title":"Wisp","status":"open","priority":3,"issue_type":"task","ephemeral":true,"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-01T00:00:00Z"}
+]`})
+	code, stdout, stderr := test.run("list", "--all-contexts", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var issues []struct {
+		ID        string `json:"id"`
+		Priority  int    `json:"priority"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &issues); err != nil {
+		t.Fatalf("decode plain JSON list: %v; stdout=%q", err, stdout)
+	}
+	got := make([]string, len(issues))
+	for index, issue := range issues {
+		got[index] = issue.ID
+	}
+	if !reflect.DeepEqual(got, []string{"closed", "pinned", "hidden-type", "wisp"}) {
+		t.Fatalf("plain list IDs=%v", got)
+	}
+	for index := 1; index < len(issues); index++ {
+		previous, err := time.Parse(time.RFC3339Nano, issues[index-1].UpdatedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current, err := time.Parse(time.RFC3339Nano, issues[index].UpdatedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if previous.Before(current) {
+			t.Fatalf("plain list is not updated-desc: %q before %q", issues[index-1].UpdatedAt, issues[index].UpdatedAt)
+		}
+	}
+	want := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--sort", "updated"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls=%#v, want=%#v", calls, want)
+	}
+}
+
+func TestWBDProductionBackendList(t *testing.T) {
+	backend := os.Getenv("WBD_BACKEND_BD")
+	if backend == "" {
+		t.Skip("backend bd not provided; cross-worktree verification: WBD_BACKEND_BD=/absolute/path/to/bd go test ./cmd/wbd -run '^TestWBDProductionBackendList$' -v")
+	}
+	backend, err := filepath.Abs(backend)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := []string{response.Issues[0].ID, response.Issues[1].ID}; !reflect.DeepEqual(got, []string{"three", "two"}) {
-		t.Fatalf("page IDs = %#v", got)
-	}
-	if !response.Pagination.HasMore || response.Pagination.NextCursor == "" {
-		t.Fatalf("pagination = %#v", response.Pagination)
-	}
-	if calls := test.calls(); len(calls) != 0 {
-		t.Fatalf("database-backed list invoked child commands: %#v", calls)
+	if info, err := os.Stat(backend); err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		t.Fatalf("WBD_BACKEND_BD must name an executable bd binary: %s", backend)
 	}
 
-	code, stdout, stderr = test.run("list", "--all-contexts", "--limit", "2", "--sort", "updated_at:desc", "--brief", "--json")
-	if code != 0 || stderr != "" {
-		t.Fatalf("unpaginated code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	bin := t.TempDir()
+	wbd := filepath.Join(bin, "wbd")
+	build := exec.Command("go", "build", "-o", wbd, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build wbd: %v\n%s", err, output)
 	}
-	var unpaginated []hub.ListIssue
-	if err := json.Unmarshal([]byte(stdout), &unpaginated); err != nil {
-		t.Fatalf("unpaginated response = %q: %v", stdout, err)
+	if err := os.Symlink(backend, filepath.Join(bin, "bd")); err != nil {
+		t.Fatal(err)
 	}
-	if len(unpaginated) != 2 || unpaginated[0].ID != "three" || unpaginated[1].ID != "two" {
-		t.Fatalf("unpaginated issues = %#v", unpaginated)
+	home := t.TempDir()
+	environment := append(os.Environ(), "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	store := filepath.Join(home, ".local", "share", "beads", "hub", ".beads")
+	workspace := t.TempDir()
+	runIntegrationCommand(t, environment, workspace, wbd, "bootstrap")
+	repository := newGitRepository(t)
+	writeDirectoryLabelConfig(t, repository, "configured-directory")
+	closedCandidate := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "plain closed candidate", "--priority", "4", "--json").stdout)
+	runIntegrationCommand(t, environment, repository, wbd, "close", closedCandidate, "--json")
+	createBackendCandidate := func(title string, arguments ...string) string {
+		commandArguments := append([]string{"--db", store, "create", title}, arguments...)
+		commandArguments = append(commandArguments, "--json")
+		return integrationIssueID(t, runIntegrationCommand(t, environment, repository, filepath.Join(bin, "bd"), commandArguments...).stdout)
 	}
+	pinnedCandidate := createBackendCandidate("plain pinned candidate", "--status", "pinned", "--priority", "0")
+	hiddenTypeCandidate := createBackendCandidate("plain hidden type candidate", "--type", "agent", "--priority", "1")
+	wispCandidate := createBackendCandidate("plain wisp candidate", "--ephemeral", "--priority", "3")
+	one := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "production list one", "--labels", "updated-page", "--json").stdout)
+	two := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "production list two", "--labels", "updated-page", "--json").stdout)
+
+	first := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "updated-page", "--paginate", "--limit", "1", "--json")
+	page := integrationPage(t, first)
+	if len(page.Issues) != 1 || page.Pagination.Limit != 1 || !page.Pagination.HasMore || page.Pagination.NextCursor == "" {
+		t.Fatalf("unexpected first page: stdout=%s stderr=%s", first.stdout, first.stderr)
+	}
+	cursor := page.Pagination.NextCursor
+	inserted := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "inserted after updated page", "--labels", "updated-page", "--json").stdout)
+	second := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "updated-page", "--paginate", "--limit", "1", "--cursor", cursor, "--json")
+	page = integrationPage(t, second)
+	if len(page.Issues) != 1 || page.Pagination.HasMore || page.Pagination.NextCursor != "" {
+		t.Fatalf("unexpected terminal page: stdout=%s stderr=%s", second.stdout, second.stderr)
+	}
+	if ids := integrationPageIDs(t, page); slices.Contains(ids, inserted) || !slices.Contains([]string{one, two}, ids[0]) {
+		t.Fatalf("updated page after insertion = %v; inserted=%s original=%v", ids, inserted, []string{one, two})
+	}
+
+	closedOne := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "closed page one", "--labels", "closed-page", "--json").stdout)
+	closedTwo := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "closed page two", "--labels", "closed-page", "--json").stdout)
+	runIntegrationCommand(t, environment, repository, wbd, "close", closedOne, "--json")
+	runIntegrationCommand(t, environment, repository, wbd, "close", closedTwo, "--json")
+	closedFirst := integrationPage(t, runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "closed-page", "--status", "closed", "--paginate", "--limit", "1", "--sort", "closed_at:desc", "--json"))
+	closedInserted := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "inserted after closed page", "--labels", "closed-page", "--json").stdout)
+	runIntegrationCommand(t, environment, repository, wbd, "close", closedInserted, "--json")
+	closedSecond := integrationPage(t, runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "closed-page", "--status", "closed", "--paginate", "--limit", "1", "--sort", "closed_at:desc", "--cursor", closedFirst.Pagination.NextCursor, "--json"))
+	if ids := integrationPageIDs(t, closedSecond); len(ids) != 1 || slices.Contains(ids, closedInserted) || !slices.Contains([]string{closedOne, closedTwo}, ids[0]) {
+		t.Fatalf("closed page after insertion = %v; inserted=%s", ids, closedInserted)
+	}
+	var closedPopulation []hub.ListIssue
+	population := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "closed-page", "--brief", "--json")
+	if err := json.Unmarshal(population.stdout, &closedPopulation); err != nil {
+		t.Fatalf("decode default candidate population: %v, stdout=%s", err, population.stdout)
+	}
+	if ids := listIssueIDs(closedPopulation); !slices.Contains(ids, closedOne) || !slices.Contains(ids, closedTwo) || !slices.Contains(ids, closedInserted) {
+		t.Fatalf("default structured candidate population = %v, want all closed IDs", ids)
+	}
+
+	blocker := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "ready blocker", "--labels", "ready-page", "--json").stdout)
+	dependent := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "ready dependent", "--labels", "ready-page", "--json").stdout)
+	runIntegrationCommand(t, environment, repository, wbd, "dep", "add", dependent, blocker, "--json")
+	ready := integrationPage(t, runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "ready-page", "--paginate", "--limit", "10", "--ready", "--json"))
+	if ids := integrationPageIDs(t, ready); !slices.Contains(ids, blocker) || slices.Contains(ids, dependent) {
+		t.Fatalf("blocked ready page IDs = %v, blocker=%s dependent=%s", ids, blocker, dependent)
+	}
+	runIntegrationCommand(t, environment, repository, wbd, "close", blocker, "--json")
+	ready = integrationPage(t, runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "ready-page", "--paginate", "--limit", "10", "--ready", "--json"))
+	if ids := integrationPageIDs(t, ready); !slices.Contains(ids, dependent) {
+		t.Fatalf("unblocked ready page IDs = %v, want %s", ids, dependent)
+	}
+
+	boundary := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "timezone boundary", "--labels", "date-boundary", "--json").stdout)
+	boundaryList := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "date-boundary", "--sort", "created_at:desc", "--json")
+	var boundaryIssues []hub.ListIssue
+	if err := json.Unmarshal(boundaryList.stdout, &boundaryIssues); err != nil || len(boundaryIssues) != 1 || boundaryIssues[0].ID != boundary {
+		t.Fatalf("boundary seed: err=%v stdout=%s stderr=%s", err, boundaryList.stdout, boundaryList.stderr)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, boundaryIssues[0].CreatedAt)
+	if err != nil {
+		t.Fatalf("parse boundary created_at %q: %v", boundaryIssues[0].CreatedAt, err)
+	}
+	equivalentOffset := createdAt.In(time.FixedZone("test-offset", 2*60*60)).Format(time.RFC3339Nano)
+	strict := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "date-boundary", "--created-after", equivalentOffset, "--json")
+	var strictIssues []hub.ListIssue
+	if err := json.Unmarshal(strict.stdout, &strictIssues); err != nil || len(strictIssues) != 0 {
+		t.Fatalf("equivalent-offset strict boundary: err=%v stdout=%s stderr=%s", err, strict.stdout, strict.stderr)
+	}
+
+	brief := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "date-boundary", "--brief", "--json")
+	assertIntegrationIssueKeys(t, brief.stdout, []string{"id", "issue_type", "priority", "status", "title", "updated_at"})
+	assertIntegrationIssueKeys(t, boundaryList.stdout, []string{"assignee", "closed_at", "created_at", "description", "id", "issue_type", "labels", "priority", "status", "title", "updated_at"})
+
+	otherRepository := newGitRepository(t)
+	git(t, otherRepository, "remote", "set-url", "origin", "git@github.com:Example/Other_Project.git")
+	other := integrationIssueID(t, runIntegrationCommand(t, environment, otherRepository, wbd, "create", "other context", "--labels", "scope-check", "--json").stdout)
+	current := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "current context", "--labels", "scope-check", "--json").stdout)
+	otherUnlabelled := integrationIssueID(t, runIntegrationCommand(t, environment, otherRepository, wbd, "create", "other unlabelled", "--json").stdout)
+	currentUnlabelled := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "current unlabelled", "--json").stdout)
+	currentUserLabel := integrationIssueID(t, runIntegrationCommand(t, environment, repository, wbd, "create", "current user label", "--labels", "user-scope", "--json").stdout)
+	var scopedIssues, allIssues []hub.ListIssue
+	scoped := runIntegrationCommand(t, environment, repository, wbd, "list", "--label", "scope-check", "--brief", "--json")
+	all := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--label", "scope-check", "--brief", "--json")
+	if err := json.Unmarshal(scoped.stdout, &scopedIssues); err != nil {
+		t.Fatalf("decode scoped issues: %v, stdout=%s", err, scoped.stdout)
+	}
+	if err := json.Unmarshal(all.stdout, &allIssues); err != nil {
+		t.Fatalf("decode all-context issues: %v, stdout=%s", err, all.stdout)
+	}
+	if got := listIssueIDs(scopedIssues); !reflect.DeepEqual(got, []string{current}) {
+		t.Fatalf("scoped IDs = %v, want [%s]", got, current)
+	}
+	if got := listIssueIDs(allIssues); !slices.Contains(got, current) || !slices.Contains(got, other) {
+		t.Fatalf("all-context IDs = %v, want %s and %s", got, current, other)
+	}
+	plainPopulation := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--json")
+	var plainIssues []hub.ListIssue
+	if err := json.Unmarshal(plainPopulation.stdout, &plainIssues); err != nil {
+		t.Fatalf("decode plain merged population: %v, stdout=%s", err, plainPopulation.stdout)
+	}
+	wantPlain := map[string]int{closedCandidate: 4, pinnedCandidate: 0, hiddenTypeCandidate: 1, wispCandidate: 3}
+	foundPlain := make(map[string]hub.ListIssue, len(wantPlain))
+	for _, issue := range plainIssues {
+		if priority, wanted := wantPlain[issue.ID]; wanted {
+			if issue.Priority != priority {
+				t.Fatalf("plain candidate %s priority=%d, want %d", issue.ID, issue.Priority, priority)
+			}
+			foundPlain[issue.ID] = issue
+		}
+	}
+	if len(foundPlain) != len(wantPlain) {
+		missing := make([]string, 0, len(wantPlain)-len(foundPlain))
+		for id := range wantPlain {
+			if _, ok := foundPlain[id]; !ok {
+				missing = append(missing, id)
+			}
+		}
+		t.Fatalf("plain JSON population omitted candidates %v; output=%v", missing, listIssueIDs(plainIssues))
+	}
+	for index := 1; index < len(plainIssues); index++ {
+		previous, err := time.Parse(time.RFC3339Nano, plainIssues[index-1].UpdatedAt)
+		if err != nil {
+			t.Fatalf("parse plain previous updated_at: %v", err)
+		}
+		current, err := time.Parse(time.RFC3339Nano, plainIssues[index].UpdatedAt)
+		if err != nil {
+			t.Fatalf("parse plain current updated_at: %v", err)
+		}
+		if previous.Before(current) {
+			t.Fatalf("plain JSON order is not updated-desc: %s before %s", plainIssues[index-1].UpdatedAt, plainIssues[index].UpdatedAt)
+		}
+	}
+	var directIssues []struct {
+		ID string `json:"id"`
+	}
+	direct := runIntegrationCommand(t, environment, repository, filepath.Join(bin, "bd"), "--db", store, "list", "--json", "--all", "--include-all-types")
+	if err := json.Unmarshal(direct.stdout, &directIssues); err != nil {
+		t.Fatalf("decode directory-filtered backend list: %v, stdout=%s", err, direct.stdout)
+	}
+	if len(directIssues) != 0 {
+		t.Fatalf("directory label configuration did not filter the direct backend list: %v", directIssues)
+	}
+	var allUnlabelled, scopedUnlabelled, userLabel []hub.ListIssue
+	allUnlabelledResult := runIntegrationCommand(t, environment, repository, wbd, "list", "--all-contexts", "--json")
+	if err := json.Unmarshal(allUnlabelledResult.stdout, &allUnlabelled); err != nil {
+		t.Fatalf("decode all-context unlabelled list: %v, stdout=%s", err, allUnlabelledResult.stdout)
+	}
+	if got := listIssueIDs(allUnlabelled); !slices.Contains(got, currentUnlabelled) || !slices.Contains(got, otherUnlabelled) {
+		t.Fatalf("all-context list was narrowed by directory labels: IDs=%v, want %s and %s", got, currentUnlabelled, otherUnlabelled)
+	}
+	scopedUnlabelledResult := runIntegrationCommand(t, environment, repository, wbd, "list", "--json")
+	if err := json.Unmarshal(scopedUnlabelledResult.stdout, &scopedUnlabelled); err != nil {
+		t.Fatalf("decode current-context list: %v, stdout=%s", err, scopedUnlabelledResult.stdout)
+	}
+	if got := listIssueIDs(scopedUnlabelled); !slices.Contains(got, currentUnlabelled) || slices.Contains(got, otherUnlabelled) {
+		t.Fatalf("current-context list IDs=%v, want current=%s and not other=%s", got, currentUnlabelled, otherUnlabelled)
+	}
+	userLabelResult := runIntegrationCommand(t, environment, repository, wbd, "list", "--label", "user-scope", "--json")
+	if err := json.Unmarshal(userLabelResult.stdout, &userLabel); err != nil {
+		t.Fatalf("decode user-label list: %v, stdout=%s", err, userLabelResult.stdout)
+	}
+	if got := listIssueIDs(userLabel); !reflect.DeepEqual(got, []string{currentUserLabel}) {
+		t.Fatalf("user-label list IDs=%v, want [%s]", got, currentUserLabel)
+	}
+}
+
+type integrationListPage struct {
+	Issues     []json.RawMessage `json:"issues"`
+	Pagination struct {
+		Limit      int    `json:"limit"`
+		HasMore    bool   `json:"has_more"`
+		NextCursor string `json:"next_cursor"`
+	} `json:"pagination"`
+}
+
+func integrationPage(t *testing.T, result integrationCommandResult) integrationListPage {
+	t.Helper()
+	var page integrationListPage
+	if err := json.Unmarshal(result.stdout, &page); err != nil {
+		t.Fatalf("decode page: %v\nstdout=%s\nstderr=%s", err, result.stdout, result.stderr)
+	}
+	return page
+}
+
+func integrationPageIDs(t *testing.T, page integrationListPage) []string {
+	t.Helper()
+	ids := make([]string, len(page.Issues))
+	for index, issue := range page.Issues {
+		ids[index] = integrationIssueID(t, issue)
+	}
+	return ids
+}
+
+func integrationIssueID(t *testing.T, data []byte) string {
+	t.Helper()
+	var issue struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &issue); err != nil || issue.ID == "" {
+		t.Fatalf("decode issue ID: err=%v data=%s", err, data)
+	}
+	return issue.ID
+}
+
+func assertIntegrationIssueKeys(t *testing.T, data []byte, want []string) {
+	t.Helper()
+	var issues []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &issues); err != nil || len(issues) != 1 {
+		t.Fatalf("decode issue keys: err=%v data=%s", err, data)
+	}
+	got := make([]string, 0, len(issues[0]))
+	for key := range issues[0] {
+		got = append(got, key)
+	}
+	slices.Sort(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("issue keys = %v, want %v", got, want)
+	}
+}
+
+func listIssueIDs(issues []hub.ListIssue) []string {
+	ids := make([]string, len(issues))
+	for index := range issues {
+		ids[index] = issues[index].ID
+	}
+	return ids
+}
+
+type integrationCommandResult struct {
+	stdout []byte
+	stderr []byte
+}
+
+func runIntegrationCommand(t *testing.T, environment []string, directory, name string, arguments ...string) integrationCommandResult {
+	t.Helper()
+	command := exec.Command(name, arguments...)
+	command.Dir = directory
+	command.Env = environment
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	if err != nil {
+		t.Fatalf("%s %s: %v\nstdout=%s\nstderr=%s", name, strings.Join(arguments, " "), err, stdout.Bytes(), stderr.Bytes())
+	}
+	return integrationCommandResult{stdout: stdout.Bytes(), stderr: stderr.Bytes()}
 }
 
 func TestLinkDelegatesToBVWithRegistrationAndIsolation(t *testing.T) {
@@ -1454,7 +1896,8 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 		"--prefix": "item", "--description": "details", "--type": "task", "--priority": "2",
 		"--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
 		"--title": "title", "--status": "open", "--label": "team", "--limit": "20", "--add-label": "team",
-		"--cursor": "opaque-token", "--sort": "updated_at:desc", "--after-created-at": "2026-08-27T12:00:00Z",
+		"--cursor": "opaque-token", "--sort": "updated_at:desc", "--created-after": "2026-08-27T12:00:00Z",
+		"--updated-after": "2026-08-27T12:00:00Z", "--closed-after": "2026-08-27T12:00:00Z", "--after-created-at": "2026-08-27T12:00:00Z",
 		"--after-updated-at": "2026-08-27T12:00:00Z", "--after-closed-at": "2026-08-27T12:00:00Z",
 		"--reason": "done", "--author": "agent-7", "--file": "notes.txt",
 	}
@@ -1483,7 +1926,7 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"new", "Title", "--contextless", "--json"},
 		{"replace", "old-1", "--contextless", "--json"},
 		{"list", "--ready", "--all-contexts", "--json"},
-		{"list", "--paginate", "--limit", "2", "--brief", "--json"},
+		{"list", "--paginate", "--limit", "2", "--sort", "updated_at:desc", "--brief", "--json"},
 		{"show", "work-1", "--json"},
 		{"update", "work-1", "--title", "Title", "--json"},
 		{"claim", "work-1", "--json"},
@@ -1992,15 +2435,22 @@ func TestAssigneeJSONSurvivesScopedAndAllContextReads(t *testing.T) {
 			if arguments[0] == "show" {
 				key = "show:work-1"
 			}
-			setResponses(t, map[string]string{key: `[{"id":"work-1","assignee":"agent-7","owner":"team-owner","created_by":"audit-actor"}]`})
+			setResponses(t, map[string]string{key: `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","assignee":"agent-7","owner":"team-owner","created_by":"audit-actor"}]`})
 			code, stdout, stderr := test.run(arguments...)
 			if code != 0 || stderr != "" {
 				t.Fatalf("code=%d stderr=%q", code, stderr)
 			}
-			for _, field := range []string{`"assignee":"agent-7"`, `"owner":"team-owner"`, `"created_by":"audit-actor"`} {
+			fields := []string{`"assignee":"agent-7"`}
+			if arguments[0] == "show" {
+				fields = append(fields, `"owner":"team-owner"`, `"created_by":"audit-actor"`)
+			}
+			for _, field := range fields {
 				if !strings.Contains(stdout, field) {
 					t.Errorf("output dropped %s: %s", field, stdout)
 				}
+			}
+			if arguments[0] == "list" && (strings.Contains(stdout, `"owner"`) || strings.Contains(stdout, `"created_by"`)) {
+				t.Errorf("list exposed incidental backend fields: %s", stdout)
 			}
 		})
 	}
@@ -2265,6 +2715,18 @@ func newGitRepository(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return canonical
+}
+
+func writeDirectoryLabelConfig(t *testing.T, repository, label string) {
+	t.Helper()
+	configPath := filepath.Join(repository, ".beads", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir project config: %v", err)
+	}
+	contents := fmt.Sprintf("directory:\n  labels:\n    %q: %q\n", filepath.Base(repository), label)
+	if err := os.WriteFile(configPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
 }
 
 func git(t *testing.T, directory string, arguments ...string) {

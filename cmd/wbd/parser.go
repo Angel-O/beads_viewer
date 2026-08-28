@@ -85,10 +85,13 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--limit", value: "<1-1000>", description: "Maximum results.", defaultText: "underlying client default"},
 			{name: "--paginate", description: "Use the bounded keyset-pagination JSON contract; requires --limit."},
 			{name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous paginated request."},
-			{name: "--sort", value: "<field:desc>", description: "Deterministic order: created_at:desc|updated_at:desc|closed_at:desc."},
-			{name: "--after-created-at", value: "<RFC3339>", description: "Only created_at strictly after this instant."},
-			{name: "--after-updated-at", value: "<RFC3339>", description: "Only updated_at strictly after this instant."},
-			{name: "--after-closed-at", value: "<RFC3339>", description: "Only closed_at strictly after this instant."},
+			{name: "--sort", value: "<field:desc>", description: "Deterministic order: created_at:desc|updated_at:desc|closed_at:desc.", defaultText: "updated_at:desc for structured JSON lists"},
+			{name: "--created-after", value: "<RFC3339>", description: "Only created_at strictly after this instant."},
+			{name: "--updated-after", value: "<RFC3339>", description: "Only updated_at strictly after this instant."},
+			{name: "--closed-after", value: "<RFC3339>", description: "Only closed_at strictly after this instant."},
+			{name: "--after-created-at", value: "<RFC3339>", description: "Alias for --created-after."},
+			{name: "--after-updated-at", value: "<RFC3339>", description: "Alias for --updated-after."},
+			{name: "--after-closed-at", value: "<RFC3339>", description: "Alias for --closed-after."},
 			{name: "--brief", description: "Use the fixed compact issue projection."},
 			{name: "--ready", description: "Only actionable issues with no active blockers."},
 			{name: "--all-contexts", description: "Do not add the current-context filter."},
@@ -751,13 +754,22 @@ func parseList(result request, arguments []string) (request, error) {
 			case "--sort":
 				err = validateListSort(value)
 				result.listSort = value
-			case "--after-created-at":
+			case "--created-after", "--after-created-at":
+				if result.listAfterCreated != "" {
+					return result, errors.New("--created-after and --after-created-at cannot be specified together")
+				}
 				err = validateAfterTimestamp(flag, value)
 				result.listAfterCreated = value
-			case "--after-updated-at":
+			case "--updated-after", "--after-updated-at":
+				if result.listAfterUpdated != "" {
+					return result, errors.New("--updated-after and --after-updated-at cannot be specified together")
+				}
 				err = validateAfterTimestamp(flag, value)
 				result.listAfterUpdated = value
-			case "--after-closed-at":
+			case "--closed-after", "--after-closed-at":
+				if result.listAfterClosed != "" {
+					return result, errors.New("--closed-after and --after-closed-at cannot be specified together")
+				}
 				err = validateAfterTimestamp(flag, value)
 				result.listAfterClosed = value
 			}
