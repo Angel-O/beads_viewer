@@ -47,6 +47,24 @@ Claim ownership only through the safe claim operation: `wbd claim <id> --json`. 
 
 Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
+Read authoritative comments for one exact canonical issue ID with the
+read-only command below. It validates the issue's stored Hub membership and
+checks it against the registered repository catalog before delegating to the
+backend:
+
+```sh
+wbd comments <issue-id> --json
+```
+
+The result is always a JSON array. Each comment contains `id`, `issue_id`,
+`author`, `created_at`, and `text`; an issue with no comments returns `[]`.
+`wbd show <issue-id> --json` may report `comment_count` with
+`comments_omitted: true`; use the command above for the comment bodies.
+All comment actions validate the authoritative issue's stored Hub membership
+against the registered repository catalog. They are not restricted to the
+current checkout: an exact canonical issue ID may target any policy-valid Hub
+issue, including one belonging to another registered repository context.
+
 For a bounded agent query against a SQLite-backed Hub, use the fixed brief
 projection and keyset cursor. The `after-*` filters are strict (`>`), and the
 cursor is opaque and must be sent back with the same filters and sort:

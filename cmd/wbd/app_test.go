@@ -1369,7 +1369,7 @@ func TestHelpExplainsIssueTypesAndTargetingWithoutStore(t *testing.T) {
 			if code != 0 || stderr != "" {
 				t.Fatalf("code = %d, stderr = %q", code, stderr)
 			}
-			for _, want := range []string{"Capture something not yet concrete project work", "--contextless", "--from-todo", "cannot own commit correlations", "link", "unlink", "exact full SHA", "idempotent"} {
+			for _, want := range []string{"Capture something not yet concrete project work", "--contextless", "--from-todo", "cannot own commit correlations", "link", "unlink", "exact full SHA", "idempotent", "wbd comments <issue-id> --json", "comments_omitted"} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("help does not contain %q:\n%s", want, stdout)
 				}
@@ -1378,6 +1378,22 @@ func TestHelpExplainsIssueTypesAndTargetingWithoutStore(t *testing.T) {
 				t.Fatalf("help invoked child commands: %#v", calls)
 			}
 		})
+	}
+}
+
+func TestCommentsAggregateHelpExposesReadAndMutationForms(t *testing.T) {
+	test := newAppTestWithoutStore(t)
+	code, stdout, stderr := test.run("comments", "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"<issue-id> --json", "add|edit|delete", "--help"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("comments help does not contain %q:\n%s", want, stdout)
+		}
+	}
+	if calls := test.calls(); len(calls) != 0 {
+		t.Fatalf("comments help invoked child commands: %#v", calls)
 	}
 }
 
@@ -1476,6 +1492,7 @@ func TestDocumentedBooleanOptionsAreAcceptedByParser(t *testing.T) {
 		{"dep", "remove", "work-1", "work-2", "--json"},
 		{"close", "work-1", "--json"},
 		{"reopen", "work-1", "--json"},
+		{"comments", "work-1", "--json"},
 		{"comments", "add", "work-1", "A comment", "--json"},
 		{"comments", "edit", "work-1", "comment-1", "replacement", "--json"},
 		{"comments", "delete", "work-1", "comment-1", "--json"},
@@ -1581,12 +1598,13 @@ func TestSingularCommentCommandIsNotSupported(t *testing.T) {
 }
 
 func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
-	t.Run("forwards comment and signals Viewer", func(t *testing.T) {
+	t.Run("forwards comment for another registered context and signals Viewer", func(t *testing.T) {
 		test := newAppTest(t, true)
-		context := contextForTest(t, test.repository)
-		writeHubConfig(t, test, map[string]string{context: test.repository})
+		current := contextForTest(t, test.repository)
+		other := "ctx:other"
+		writeHubConfig(t, test, map[string]string{current: test.repository, other: "/other"})
 		setResponses(t, map[string]string{
-			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+			"show:work-1": fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, other),
 		})
 
 		code, _, stderr := test.run("--json", "comments", "add", "work-1", "Needs review", "--author", "agent-7")
@@ -1670,7 +1688,6 @@ func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
 }
 
 func TestCommentsEditAndDeleteValidateAndForward(t *testing.T) {
-	context := ""
 	for _, testCase := range []struct {
 		name      string
 		arguments []string
@@ -1692,14 +1709,15 @@ func TestCommentsEditAndDeleteValidateAndForward(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			test := newAppTest(t, true)
-			context = contextForTest(t, test.repository)
-			writeHubConfig(t, test, map[string]string{context: test.repository})
+			current := contextForTest(t, test.repository)
+			other := "ctx:other"
+			writeHubConfig(t, test, map[string]string{current: test.repository, other: "/other"})
 			mutationKey := "comments:delete:work-1:comment-1"
 			if testCase.name == "edit" {
 				mutationKey = "comments:edit:work-1:comment-1"
 			}
 			setResponses(t, map[string]string{
-				"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+				"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, other),
 				"comments:work-1": `[{"id":"comment-1","issue_id":"work-1"}]`,
 				mutationKey:       testCase.response,
 			})
@@ -1722,6 +1740,155 @@ func TestCommentsEditAndDeleteValidateAndForward(t *testing.T) {
 			}
 			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
 				t.Fatalf("successful comment mutation did not signal Viewer: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommentsReadParsingRequiresOneIssueAndJSON(t *testing.T) {
+	request, err := parse([]string{"comments", "work-1", "--json"})
+	if err != nil {
+		t.Fatalf("read invocation rejected: %v", err)
+	}
+	if request.subcommand != "" || !request.json || !reflect.DeepEqual(request.positionals, []string{"work-1"}) {
+		t.Fatalf("read request = %#v", request)
+	}
+	for _, arguments := range [][]string{
+		{"comments", "work-1"},
+		{"comments", "work-1", "work-2", "--json"},
+		{"comments", "work-1", "--all-contexts", "--json"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Errorf("invalid read invocation accepted: %v", arguments)
+		}
+	}
+}
+
+func TestCommentsReadDelegatesExactCanonicalReadAndReturnsStableFields(t *testing.T) {
+	test := newAppTest(t, true)
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	setResponses(t, map[string]string{
+		"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+		"comments:work-1": `[{"id":"comment-1","issue_id":"work-1","author":"agent-7","created_at":"2026-08-27T12:00:00Z","text":"Needs review"}]`,
+	})
+
+	code, stdout, stderr := test.run("comments", "work-1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var comments []bdComment
+	if err := json.Unmarshal([]byte(stdout), &comments); err != nil {
+		t.Fatalf("comments output = %q: %v", stdout, err)
+	}
+	if !reflect.DeepEqual(comments, []bdComment{{ID: "comment-1", IssueID: "work-1", Author: "agent-7", CreatedAt: "2026-08-27T12:00:00Z", Text: "Needs review"}}) {
+		t.Fatalf("comments = %#v", comments)
+	}
+	calls := test.calls()
+	want := []string{"--db", test.store, "--readonly", "--json", "comments", "work-1"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[1].Args, want) {
+		t.Fatalf("calls = %#v, want read delegation %#v", calls, want)
+	}
+	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); !os.IsNotExist(err) {
+		t.Fatalf("read command signaled Viewer: %v", err)
+	}
+}
+
+func TestCommentsReadAllowsIssueInAnotherRegisteredContext(t *testing.T) {
+	test := newAppTest(t, true)
+	current := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{current: test.repository, "ctx:other": "/other"})
+	setResponses(t, map[string]string{
+		"show:work-1":     `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:other"]}]`,
+		"comments:work-1": `[{"id":"comment-1","issue_id":"work-1","author":"agent-7","created_at":"2026-08-27T12:00:00Z","text":"Needs review"}]`,
+	})
+
+	code, stdout, stderr := test.run("comments", "work-1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var comments []bdComment
+	if err := json.Unmarshal([]byte(stdout), &comments); err != nil {
+		t.Fatalf("comments output = %q: %v", stdout, err)
+	}
+	if !reflect.DeepEqual(comments, []bdComment{{ID: "comment-1", IssueID: "work-1", Author: "agent-7", CreatedAt: "2026-08-27T12:00:00Z", Text: "Needs review"}}) {
+		t.Fatalf("comments = %#v", comments)
+	}
+	want := []string{"--db", test.store, "--readonly", "--json", "comments", "work-1"}
+	if calls := test.calls(); len(calls) != 2 || !reflect.DeepEqual(calls[1].Args, want) {
+		t.Fatalf("calls = %#v, want read delegation %#v", calls, want)
+	}
+	assertNoViewerSignal(t, test)
+}
+
+func TestCommentsReadRejectsUnregisteredContextBeforeCommentRead(t *testing.T) {
+	test := newAppTest(t, true)
+	current := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{current: test.repository})
+	setResponses(t, map[string]string{
+		"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:missing"]}]`,
+	})
+
+	code, _, stderr := test.run("comments", "work-1", "--json")
+	if code != 1 || !strings.Contains(stderr, `"code":"unregistered_context"`) {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if calls := test.calls(); len(calls) != 1 {
+		t.Fatalf("unregistered-context read delegated comments query: %#v", calls)
+	}
+	assertNoViewerSignal(t, test)
+}
+
+func TestCommentsReadReturnsEmptyArrayForEmptyBackendResults(t *testing.T) {
+	for _, response := range []string{"[]", "null", "\n"} {
+		t.Run(fmt.Sprintf("response-%d", len(response)), func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			setResponses(t, map[string]string{
+				"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+				"comments:work-1": response,
+			})
+
+			code, stdout, stderr := test.run("comments", "work-1", "--json")
+			if code != 0 || stdout != "[]\n" || stderr != "" {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestCommentsReadReportsBackendAndMalformedResultErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  string
+		exitCode  int
+		wantError string
+	}{
+		{name: "backend failure", exitCode: 9, wantError: "exit status 9"},
+		{name: "malformed JSON", response: `{`, wantError: "decoding comments for issue work-1"},
+		{name: "wrong issue", response: `[{"id":"comment-1","issue_id":"other","created_at":"2026-08-27T12:00:00Z"}]`, wantError: "belongs to issue other"},
+		{name: "missing timestamp", response: `[{"id":"comment-1","issue_id":"work-1"}]`, wantError: "no created_at timestamp"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			setResponses(t, map[string]string{
+				"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+				"comments:work-1": testCase.response,
+			})
+			if testCase.exitCode != 0 {
+				setExitCodes(t, map[string]int{"comments:work-1": testCase.exitCode})
+			}
+
+			code, stdout, stderr := test.run("comments", "work-1", "--json")
+			if code != 1 || stdout != "" || !strings.Contains(stderr, testCase.wantError) || !json.Valid([]byte(stderr)) {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); !os.IsNotExist(err) {
+				t.Fatalf("failed read signaled Viewer: %v", err)
 			}
 		})
 	}
@@ -1779,7 +1946,7 @@ func TestCommentsEditRejectsBlankFileAndStdinBeforeDelegation(t *testing.T) {
 	}
 }
 
-func TestCommentsMutationsRejectInvalidIdentityAndContext(t *testing.T) {
+func TestCommentsMutationRejectsInvalidCommentIdentity(t *testing.T) {
 	t.Run("comment is scoped to issue", func(t *testing.T) {
 		test := newAppTest(t, true)
 		context := contextForTest(t, test.repository)
@@ -1795,24 +1962,6 @@ func TestCommentsMutationsRejectInvalidIdentityAndContext(t *testing.T) {
 		}
 		if calls := test.calls(); len(calls) != 2 {
 			t.Fatalf("invalid comment was delegated: %#v", calls)
-		}
-		assertNoViewerSignal(t, test)
-	})
-
-	t.Run("issue must belong to current repository context", func(t *testing.T) {
-		test := newAppTest(t, true)
-		current := contextForTest(t, test.repository)
-		writeHubConfig(t, test, map[string]string{current: test.repository, "ctx:other": "/other"})
-		setResponses(t, map[string]string{
-			"show:work-1": `[{"id":"work-1","status":"open","issue_type":"task","labels":["ctx:other"]}]`,
-		})
-
-		code, _, stderr := test.run("--json", "comments", "delete", "work-1", "comment-1")
-		if code != 1 || !strings.Contains(stderr, "current repository context") {
-			t.Fatalf("code=%d stderr=%q", code, stderr)
-		}
-		if calls := test.calls(); len(calls) != 1 {
-			t.Fatalf("context-mismatched issue was delegated: %#v", calls)
 		}
 		assertNoViewerSignal(t, test)
 	})

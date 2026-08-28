@@ -53,8 +53,11 @@ type bdIssue struct {
 }
 
 type bdComment struct {
-	ID      string `json:"id"`
-	IssueID string `json:"issue_id"`
+	ID        string `json:"id"`
+	IssueID   string `json:"issue_id"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Text      string `json:"text"`
 }
 
 type bdRelation struct {
@@ -276,6 +279,8 @@ func (a *app) run(arguments []string) int {
 		return a.runBDMutation(a.dir, args...)
 	case "comments":
 		switch request.subcommand {
+		case "":
+			return a.commentsRead(request)
 		case "add":
 			return a.commentsAdd(request)
 		case "edit":
@@ -579,6 +584,8 @@ Global options:
 
 link resolves a ref and adds a correlation. unlink requires an exact full SHA.
 Both correlation commands return JSON; unlink is idempotent when not found.
+show reports comment_count and may set comments_omitted=true; use
+wbd comments <issue-id> --json for the authoritative Hub comments.
 Use --json for other queries and mutations except context.
 `)
 }
@@ -739,16 +746,9 @@ func (a *app) replace(request request) int {
 }
 
 func (a *app) commentsAdd(request request) int {
-	issue, err := a.readIssue(request.positionals[0], false)
+	issue, err := a.validateCommentIssue(request.positionals[0])
 	if err != nil {
 		return a.fail(err)
-	}
-	config, err := hub.Resolve(a.paths.Config)
-	if err != nil {
-		return a.fail(fmt.Errorf("resolving Hub config: %w", err))
-	}
-	if err := hub.ValidateStoredIssue(issue.policyState(), config.Repositories); err != nil {
-		return a.fail(fmt.Errorf("validating issue %s: %w", issue.ID, err))
 	}
 
 	args := appendJSON(nil, request.json)
@@ -820,6 +820,47 @@ func (a *app) commentsDelete(request request) int {
 	return a.runBDMutation(a.dir, args...)
 }
 
+func (a *app) commentsRead(request request) int {
+	issue, err := a.validateCommentIssue(request.positionals[0])
+	if err != nil {
+		return a.fail(err)
+	}
+	data, err := a.runBDCapture(a.dir, "--readonly", "--json", "comments", issue.ID)
+	if err != nil {
+		return a.fail(fmt.Errorf("reading comments for issue %s: %w", issue.ID, err))
+	}
+	comments, err := decodeComments(data, issue.ID)
+	if err != nil {
+		return a.fail(fmt.Errorf("decoding comments for issue %s: %w", issue.ID, err))
+	}
+	return a.writeJSON(comments)
+}
+
+func decodeComments(data []byte, issueID string) ([]bdComment, error) {
+	if strings.TrimSpace(string(data)) == "" {
+		return []bdComment{}, nil
+	}
+	var comments []bdComment
+	if err := json.Unmarshal(data, &comments); err != nil {
+		return nil, err
+	}
+	if comments == nil {
+		return []bdComment{}, nil
+	}
+	for index, comment := range comments {
+		if comment.ID == "" {
+			return nil, fmt.Errorf("comment at index %d has no stable ID", index)
+		}
+		if comment.IssueID != issueID {
+			return nil, fmt.Errorf("comment %s belongs to issue %s, not %s", comment.ID, comment.IssueID, issueID)
+		}
+		if comment.CreatedAt == "" {
+			return nil, fmt.Errorf("comment %s has no created_at timestamp", comment.ID)
+		}
+	}
+	return comments, nil
+}
+
 func (a *app) validateCommentIssue(id string) (bdIssue, error) {
 	issue, err := a.readIssue(id, false)
 	if err != nil {
@@ -832,16 +873,7 @@ func (a *app) validateCommentIssue(id string) (bdIssue, error) {
 	if err := hub.ValidateStoredIssue(issue.policyState(), config.Repositories); err != nil {
 		return bdIssue{}, fmt.Errorf("validating issue %s: %w", issue.ID, err)
 	}
-	currentContext, err := hub.Context(a.dir)
-	if err != nil {
-		return bdIssue{}, fmt.Errorf("resolving current repository context: %w", err)
-	}
-	for _, context := range hub.Contexts(issue.Labels) {
-		if context == currentContext {
-			return issue, nil
-		}
-	}
-	return bdIssue{}, fmt.Errorf("issue %s does not belong to current repository context %s", issue.ID, currentContext)
+	return issue, nil
 }
 
 func (a *app) validateCommentIdentity(issueID, commentID string) error {
