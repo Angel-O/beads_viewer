@@ -175,9 +175,32 @@ func (a *app) run(arguments []string) int {
 	case "list":
 		return a.list(request)
 	case "show":
-		args := appendJSON(nil, request.json)
-		args = append(args, "show", request.positionals[0])
-		return a.runBD(a.dir, args...)
+		if !request.json {
+			if request.expandDependencies {
+				return a.fail(errors.New("--expand-dependencies requires --json"))
+			}
+			return a.runBD(a.dir, "show", request.positionals[0])
+		}
+		data, childStderr, err := a.runBDCaptureWithStderr(a.dir, "--json", "show", request.positionals[0])
+		if err != nil {
+			return a.fail(fmt.Errorf("reading issue %s: %w", request.positionals[0], err))
+		}
+		response, err := projectShowResponse(data, request.positionals[0], request.expandDependencies)
+		if err != nil {
+			if diagnostics := strings.TrimSpace(string(childStderr)); diagnostics != "" {
+				err = fmt.Errorf("%w: backend diagnostics: %s", err, diagnostics)
+			}
+			return a.fail(fmt.Errorf("decoding bd show response: %w", err))
+		}
+		if _, err := a.stdout.Write(response); err != nil {
+			return a.fail(fmt.Errorf("writing show response: %w", err))
+		}
+		if len(childStderr) > 0 {
+			if _, err := a.stderr.Write(childStderr); err != nil {
+				return a.fail(fmt.Errorf("writing show diagnostics: %w", err))
+			}
+		}
+		return 0
 	case "update":
 		if requestValue(request.args, "--status", "") != "" {
 			issue, issueErr := a.readIssue(request.positionals[0], true)
@@ -559,6 +582,9 @@ link resolves a ref and adds a correlation. unlink requires an exact full SHA.
 Both correlation commands return JSON; unlink is idempotent when not found.
 show reports comment_count and may set comments_omitted=true; use
 wbd comments <issue-id> --json for the authoritative Hub comments.
+JSON show responses keep the primary issue fully detailed, while dependency
+and dependent issues are compacted to id, title, status, priority, issue_type,
+and dependency_type. Use --expand-dependencies to restore their full objects.
 Use --json for other queries and mutations except context.
 `)
 }
@@ -1028,6 +1054,101 @@ func (a *app) readIssue(id string, includeDependents bool) (bdIssue, error) {
 		return bdIssue{}, fmt.Errorf("issue %s is not the exact canonical issue ID; use %s", id, issues[0].ID)
 	}
 	return issues[0], nil
+}
+
+type compactShowDependency struct {
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	Priority       int    `json:"priority"`
+	IssueType      string `json:"issue_type"`
+	DependencyType string `json:"dependency_type"`
+}
+
+func projectShowResponse(data []byte, issueID string, expandDependencies bool) ([]byte, error) {
+	var issues []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &issues); err != nil {
+		return nil, err
+	}
+	if len(issues) != 1 {
+		return nil, fmt.Errorf("expected exactly one issue, got %d", len(issues))
+	}
+	issue := issues[0]
+	var returnedID string
+	if err := decodeShowString(issue, "id", &returnedID); err != nil {
+		return nil, err
+	}
+	if returnedID != issueID {
+		return nil, fmt.Errorf("response returned issue %s, want %s", returnedID, issueID)
+	}
+	for _, field := range []string{"status", "issue_type"} {
+		var value string
+		if err := decodeShowString(issue, field, &value); err != nil {
+			return nil, err
+		}
+		if value == "" {
+			return nil, fmt.Errorf("issue field %s is empty", field)
+		}
+	}
+	if expandDependencies {
+		return data, nil
+	}
+
+	for _, field := range []string{"dependencies", "dependents"} {
+		raw, ok := issue[field]
+		if !ok {
+			continue
+		}
+		compact, err := compactShowDependencies(raw, field)
+		if err != nil {
+			return nil, err
+		}
+		issue[field] = compact
+	}
+	return json.Marshal(issues)
+}
+
+func decodeShowString(issue map[string]json.RawMessage, field string, target *string) error {
+	raw, ok := issue[field]
+	if !ok {
+		return fmt.Errorf("issue is missing %s", field)
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		return fmt.Errorf("issue field %s: %w", field, err)
+	}
+	return nil
+}
+
+func compactShowDependencies(raw json.RawMessage, field string) (json.RawMessage, error) {
+	var relations []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &relations); err != nil {
+		return nil, fmt.Errorf("issue field %s: %w", field, err)
+	}
+	if relations == nil {
+		return []byte("[]"), nil
+	}
+	compact := make([]compactShowDependency, 0, len(relations))
+	for index, relation := range relations {
+		for _, required := range []string{"id", "title", "status", "priority", "issue_type", "dependency_type"} {
+			if _, ok := relation[required]; !ok {
+				return nil, fmt.Errorf("issue field %s relation %d is missing %s", field, index, required)
+			}
+		}
+		var dependency compactShowDependency
+		encoded, err := json.Marshal(relation)
+		if err != nil {
+			return nil, fmt.Errorf("encoding %s relation %d: %w", field, index, err)
+		}
+		if err := json.Unmarshal(encoded, &dependency); err != nil {
+			return nil, fmt.Errorf("decoding %s relation %d: %w", field, index, err)
+		}
+		compact = append(compact, dependency)
+	}
+	encoded, err := json.Marshal(compact)
+	if err != nil {
+		return nil, fmt.Errorf("encoding %s: %w", field, err)
+	}
+	return encoded, nil
 }
 
 func (a *app) forceUnclaim(request request) int {

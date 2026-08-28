@@ -60,6 +60,13 @@ The result is always a JSON array. Each comment contains `id`, `issue_id`,
 `author`, `created_at`, and `text`; an issue with no comments returns `[]`.
 `wbd show <issue-id> --json` may report `comment_count` with
 `comments_omitted: true`; use the command above for the comment bodies.
+The primary issue remains fully detailed, including its `issue_type` and
+`ctx:` labels. Dependency and dependent issue objects are compact by default,
+with exactly `id`, `title`, `status`, `priority`, `issue_type`, and
+`dependency_type`; `parent`, dependency counts, and comment metadata remain at
+the top level. Use `wbd show <issue-id> --json --expand-dependencies` when the
+full nested dependency objects are required. Dependency arrays have
+deterministic ordering in either form.
 All comment actions validate the authoritative issue's stored Hub membership
 against the registered repository catalog. They are not restricted to the
 current checkout: an exact canonical issue ID may target any policy-valid Hub

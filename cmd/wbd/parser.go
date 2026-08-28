@@ -100,8 +100,11 @@ var commandSpecs = map[string]commandSpec{
 		examples: []string{`wbd list --ready --limit 20 --json`, `wbd list --all-contexts --status open,in_progress --json`, `wbd list --paginate --limit 50 --sort updated_at:desc --brief --json`},
 	},
 	"show": {
-		path: "show", usage: "wbd show <id> [--json]", summary: "Show one issue without changing context registration; use comments to read its comments.",
-		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
+		path: "show", usage: "wbd show <id> [options]", summary: "Show one issue without changing context registration; use comments to read its comments.",
+		options: []optionSpec{
+			{name: "--expand-dependencies", description: "Restore fully expanded dependency and dependent objects; requires --json."},
+			{name: "--json", description: "Emit JSON."},
+		},
 	},
 	"update": {
 		path: "update", usage: "wbd update <id> <mutation> [--json]", summary: "Update issue fields other than claim ownership.",
@@ -213,29 +216,30 @@ func usageFor(path string) string {
 }
 
 type request struct {
-	command          string
-	subcommand       string
-	args             []string
-	positionals      []string
-	json             bool
-	allContexts      bool
-	prefix           string
-	contexts         []string
-	contextless      bool
-	fromTodo         string
-	force            bool
-	commentAuthor    string
-	commentFile      string
-	commentStdin     bool
-	commentSeparator bool
-	listPaginate     bool
-	listLimitSet     bool
-	listCursor       string
-	listSort         string
-	listAfterCreated string
-	listAfterUpdated string
-	listAfterClosed  string
-	listBrief        bool
+	command            string
+	subcommand         string
+	args               []string
+	positionals        []string
+	json               bool
+	allContexts        bool
+	prefix             string
+	contexts           []string
+	contextless        bool
+	fromTodo           string
+	force              bool
+	commentAuthor      string
+	commentFile        string
+	commentStdin       bool
+	commentSeparator   bool
+	listPaginate       bool
+	listLimitSet       bool
+	listCursor         string
+	listSort           string
+	listAfterCreated   string
+	listAfterUpdated   string
+	listAfterClosed    string
+	listBrief          bool
+	expandDependencies bool
 }
 
 func commandName(arguments []string) (string, error) {
@@ -809,11 +813,17 @@ func validateAfterTimestamp(flag, value string) error {
 }
 
 func parseShow(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
 	for _, argument := range arguments {
 		if argument == "--json" {
 			if err := setJSON(&result); err != nil {
 				return result, err
 			}
+		} else if argument == "--expand-dependencies" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.expandDependencies = true
 		} else if strings.HasPrefix(argument, "-") {
 			return result, fmt.Errorf("unsupported option for show: %s", argument)
 		} else if err := safeID("show", argument); err != nil {

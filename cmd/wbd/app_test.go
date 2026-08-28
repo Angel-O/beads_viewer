@@ -1823,6 +1823,172 @@ func TestHelpExplainsIssueTypesAndTargetingWithoutStore(t *testing.T) {
 	}
 }
 
+func TestShowParserAndHelpExposeDependencyExpansion(t *testing.T) {
+	request, err := parse([]string{"show", "work-1", "--expand-dependencies", "--json"})
+	if err != nil {
+		t.Fatalf("parse show expansion: %v", err)
+	}
+	if !request.json || !request.expandDependencies || !reflect.DeepEqual(request.positionals, []string{"work-1"}) {
+		t.Fatalf("parsed request = %#v", request)
+	}
+	if _, err := parse([]string{"show", "work-1", "--expand-dependencies", "--expand-dependencies"}); err == nil {
+		t.Fatal("duplicate expansion option was accepted")
+	}
+
+	test := newAppTestWithoutStore(t)
+	code, stdout, stderr := test.run("show", "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"--expand-dependencies", "requires --json", "fully expanded"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("show help does not contain %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestShowCompactsDependenciesWithoutChangingPrimaryIssue(t *testing.T) {
+	full := `[{
+"id":"work-1","title":"Primary","description":"Details","status":"open","priority":1,"issue_type":"task",
+"labels":["ctx:project","team"],"parent":"parent-1","dependency_count":3,"dependent_count":2,
+"comment_count":4,"comments_omitted":true,
+"dependencies":[
+ {"id":"blocked-1","title":"Blocked","status":"open","priority":0,"issue_type":"bug","owner":"agent","dependency_type":"blocks","created_at":"old"},
+ {"id":"related-1","title":"Related","status":"closed","priority":3,"issue_type":"feature","dependency_type":"related","notes":"extra"}
+],
+"dependents":[
+ {"id":"child-1","title":"Child","status":"in_progress","priority":2,"issue_type":"task","dependency_type":"parent-child","description":"extra"}
+] }]`
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"show:work-1": full})
+	code, stdout, stderr := test.run("show", "work-1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var issues []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &issues); err != nil {
+		t.Fatalf("decode compact response: %v\n%s", err, stdout)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues = %#v", issues)
+	}
+	issue := issues[0]
+	for _, field := range []string{"description", "issue_type", "labels", "parent", "dependency_count", "dependent_count", "comment_count", "comments_omitted"} {
+		if _, ok := issue[field]; !ok {
+			t.Errorf("primary issue lost %s", field)
+		}
+	}
+	var commentsOmitted bool
+	if err := json.Unmarshal(issue["comments_omitted"], &commentsOmitted); err != nil || !commentsOmitted {
+		t.Errorf("comments_omitted = %v, err = %v", commentsOmitted, err)
+	}
+	var labels []string
+	if err := json.Unmarshal(issue["labels"], &labels); err != nil || !reflect.DeepEqual(labels, []string{"ctx:project", "team"}) {
+		t.Errorf("primary labels = %#v, err = %v", labels, err)
+	}
+	for _, field := range []string{"dependencies", "dependents"} {
+		var relations []map[string]json.RawMessage
+		if err := json.Unmarshal(issue[field], &relations); err != nil {
+			t.Fatalf("decode %s: %v", field, err)
+		}
+		for index, relation := range relations {
+			keys := make([]string, 0, len(relation))
+			for key := range relation {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			if want := []string{"dependency_type", "id", "issue_type", "priority", "status", "title"}; !reflect.DeepEqual(keys, want) {
+				t.Errorf("%s[%d] keys = %v, want %v", field, index, keys, want)
+			}
+		}
+	}
+
+	var dependencies []map[string]any
+	if err := json.Unmarshal(issue["dependencies"], &dependencies); err != nil {
+		t.Fatal(err)
+	}
+	if dependencies[0]["dependency_type"] != "blocks" || dependencies[1]["dependency_type"] != "related" {
+		t.Fatalf("dependency ordering/types = %#v", dependencies)
+	}
+	var dependents []map[string]any
+	if err := json.Unmarshal(issue["dependents"], &dependents); err != nil {
+		t.Fatal(err)
+	}
+	if dependents[0]["dependency_type"] != "parent-child" || issue["parent"] == nil {
+		t.Fatalf("parent relationship was not preserved: parent=%s dependents=%#v", issue["parent"], dependents)
+	}
+}
+
+func TestShowNoDependenciesKeepsEmptyArrays(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"show:work-1": `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","dependencies":[],"dependents":[],"dependency_count":0,"dependent_count":0}]`})
+	code, stdout, stderr := test.run("show", "work-1", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, `"dependencies":[]`) || !strings.Contains(stdout, `"dependents":[]`) {
+		t.Fatalf("empty relation arrays not preserved: %s", stdout)
+	}
+}
+
+func TestShowExpansionRestoresBackendResponse(t *testing.T) {
+	full := `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","labels":["ctx:project"],"dependencies":[{"id":"dep-1","title":"Dependency","status":"open","priority":1,"issue_type":"bug","created_at":"when","dependency_type":"blocks"}],"dependency_count":1,"dependent_count":0,"comments_omitted":true}]`
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"show:work-1": full})
+	code, stdout, stderr := test.run("show", "work-1", "--json", "--expand-dependencies")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if stdout != full {
+		t.Fatalf("expanded response = %q, want exact backend response %q", stdout, full)
+	}
+}
+
+func TestShowMalformedJSONReportsOnlyJSONErrorOnStderr(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"show:work-1": `[{"id":"work-1"`})
+	code, stdout, stderr := test.run("show", "work-1", "--json")
+	if code != 1 || stdout != "" {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	var response map[string]map[string]string
+	if err := json.Unmarshal([]byte(stderr), &response); err != nil {
+		t.Fatalf("stderr is not JSON: %v (%q)", err, stderr)
+	}
+	if response["error"]["code"] != "invalid_request" || response["error"]["message"] == "" {
+		t.Fatalf("error response = %#v", response)
+	}
+}
+
+func TestShowMalformedSuccessfulOutputIncludesBackendDiagnosticsInJSONError(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"show:work-1": `[{"id":"work-1"`})
+	t.Setenv("WBD_CHILD_STDERR", "backend warning\n")
+	code, stdout, stderr := test.run("show", "work-1", "--json")
+	if code != 1 || stdout != "" {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	var response map[string]map[string]string
+	if err := json.Unmarshal([]byte(stderr), &response); err != nil {
+		t.Fatalf("stderr is not JSON: %v (%q)", err, stderr)
+	}
+	if !strings.Contains(response["error"]["message"], "backend warning") {
+		t.Fatalf("structured error omitted backend diagnostics: %#v", response)
+	}
+}
+
+func TestShowMalformedDependencyReportsOnlyJSONErrorOnStderr(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"show:work-1": `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","dependencies":[{"id":"dep-1","title":"Dependency"}]}]`})
+	code, stdout, stderr := test.run("show", "work-1", "--json")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "missing status") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !json.Valid([]byte(stderr)) {
+		t.Fatalf("stderr is not JSON: %q", stderr)
+	}
+}
+
 func TestCommentsAggregateHelpExposesReadAndMutationForms(t *testing.T) {
 	test := newAppTestWithoutStore(t)
 	code, stdout, stderr := test.run("comments", "--help")
