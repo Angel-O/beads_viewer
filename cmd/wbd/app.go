@@ -1347,6 +1347,7 @@ func (a *app) runBDCommentMutation(directory string, arguments ...string) int {
 	if code != 0 {
 		return code
 	}
+	// Only TUI comment commands set this internal marker; external wbd calls still notify Viewer.
 	if os.Getenv("WBD_SUPPRESS_VIEWER_SIGNAL") != "1" {
 		a.signalMutation("comment mutation")
 	}

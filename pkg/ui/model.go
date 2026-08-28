@@ -173,6 +173,7 @@ func runWBDCommentsAdd(issueID, text, repositoryPath string, runner func(string,
 		}
 		command := exec.Command("wbd", "--json", "comments", "add", issueID, "--", text)
 		command.Dir = repositoryPath
+		// Internal TUI/wbd handshake: targeted refresh replaces the redundant global Viewer signal.
 		command.Env = append(os.Environ(), "WBD_SUPPRESS_VIEWER_SIGNAL=1")
 		output, err := command.CombinedOutput()
 		if err != nil {
@@ -197,6 +198,7 @@ func runWBDCommentMutation(action, issueID, commentID, text, repositoryPath stri
 		}
 		command := exec.Command("wbd", args...)
 		command.Dir = repositoryPath
+		// Internal TUI/wbd handshake: targeted refresh replaces the redundant global Viewer signal.
 		command.Env = append(os.Environ(), "WBD_SUPPRESS_VIEWER_SIGNAL=1")
 		output, err := command.CombinedOutput()
 		if err != nil {
