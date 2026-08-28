@@ -470,6 +470,55 @@ func TestWatcher_StartStop(t *testing.T) {
 	w.Stop()
 }
 
+func TestWatcher_DoneFollowsRunLifecycle(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test.jsonl")
+	if err := os.WriteFile(tmpFile, []byte("initial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWatcher(tmpFile, WithForcePoll(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-w.Done():
+	default:
+		t.Fatal("Done should be closed before the watcher starts")
+	}
+
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	firstRunDone := w.Done()
+	select {
+	case <-firstRunDone:
+		t.Fatal("Done closed while the watcher was running")
+	default:
+	}
+
+	w.Stop()
+	select {
+	case <-firstRunDone:
+	default:
+		t.Fatal("Done remained open after Stop")
+	}
+
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	secondRunDone := w.Done()
+	if secondRunDone == firstRunDone {
+		t.Fatal("restart reused the previous run's Done channel")
+	}
+	select {
+	case <-secondRunDone:
+		t.Fatal("restarted watcher exposed a closed Done channel")
+	default:
+	}
+}
+
 func TestWatcher_RestartPollingUsesPerRunContext(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.jsonl")

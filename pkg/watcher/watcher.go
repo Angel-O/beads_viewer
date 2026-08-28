@@ -22,6 +22,12 @@ var (
 	ErrAlreadyStarted = errors.New("watcher already started")
 )
 
+var stoppedWatcherDone = func() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
 // WatcherOption configures a Watcher.
 type WatcherOption func(*Watcher)
 
@@ -234,6 +240,21 @@ func (w *Watcher) IsStarted() bool {
 // This is an alternative to using the OnChange callback.
 func (w *Watcher) Changed() <-chan struct{} {
 	return w.changeCh
+}
+
+// Done is closed when the current watcher run stops. A watcher that has not
+// started (or has already stopped) returns an already-closed channel. Callers
+// waiting on Changed should also select on Done so Stop cannot strand them.
+func (w *Watcher) Done() <-chan struct{} {
+	w.mu.RLock()
+	ctx := w.ctx
+	started := w.started
+	w.mu.RUnlock()
+
+	if !started || ctx == nil {
+		return stoppedWatcherDone
+	}
+	return ctx.Done()
 }
 
 // Path returns the watched file path.
