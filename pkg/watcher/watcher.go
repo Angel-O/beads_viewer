@@ -87,11 +87,17 @@ type Watcher struct {
 	lastMtime   time.Time
 	lastSize    int64
 
-	ctx      context.Context
-	cancel   context.CancelFunc
-	started  bool
-	mu       sync.RWMutex
-	changeCh chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
+	started bool
+	// SAFETY: every producer captures runGeneration at Start. State mutation and
+	// change-channel publication must re-check that generation while holding mu,
+	// so work from a stopped run cannot cross a later Stop/Start boundary. Each
+	// fsnotify loop also receives its run's channels directly; it must never read
+	// w.fsWatcher after launch and accidentally attach to a replacement watcher.
+	runGeneration uint64
+	mu            sync.RWMutex
+	changeCh      chan struct{}
 }
 
 // NewWatcher creates a new file watcher for the given path.
@@ -165,6 +171,8 @@ func (w *Watcher) Start() error {
 
 	w.ctx, w.cancel = newRunContext()
 	runCtx := w.ctx
+	w.runGeneration++
+	runGeneration := w.runGeneration
 
 	// Try to use fsnotify
 	if !forcePoll && !w.useFallback {
@@ -178,7 +186,7 @@ func (w *Watcher) Start() error {
 			} else {
 				w.fsWatcher = fsw
 				w.useFallback = false
-				go w.watchFsnotify(runCtx)
+				go w.watchFsnotify(runCtx, runGeneration, fsw.Events, fsw.Errors)
 			}
 		} else {
 			w.useFallback = true
@@ -189,7 +197,7 @@ func (w *Watcher) Start() error {
 
 	// Start polling as fallback or primary
 	if w.useFallback {
-		go w.watchPolling(runCtx)
+		go w.watchPolling(runCtx, runGeneration)
 	}
 
 	w.started = true
@@ -208,6 +216,7 @@ func (w *Watcher) Stop() {
 	if !w.started {
 		return
 	}
+	w.started = false
 
 	if w.cancel != nil {
 		w.cancel()
@@ -219,7 +228,17 @@ func (w *Watcher) Stop() {
 	}
 
 	w.debouncer.Cancel()
-	w.started = false
+
+	// An event published before Stop acquired mu may still be buffered even
+	// though the old consumer has already exited. Drain it before a later Start
+	// installs another run that consumes the same coalescing channel.
+	for {
+		select {
+		case <-w.changeCh:
+		default:
+			return
+		}
+	}
 }
 
 // IsPolling returns true if the watcher is using polling mode.
@@ -295,18 +314,13 @@ func newRunContext() (context.Context, context.CancelFunc) {
 }
 
 // watchFsnotify monitors using fsnotify events.
-func (w *Watcher) watchFsnotify(ctx context.Context) {
+func (w *Watcher) watchFsnotify(
+	ctx context.Context,
+	runGeneration uint64,
+	events <-chan fsnotify.Event,
+	errors <-chan error,
+) {
 	targetFile := filepath.Base(w.path)
-
-	// Capture channel references to avoid race with Stop() setting fsWatcher to nil
-	w.mu.RLock()
-	if w.fsWatcher == nil {
-		w.mu.RUnlock()
-		return
-	}
-	events := w.fsWatcher.Events
-	errors := w.fsWatcher.Errors
-	w.mu.RUnlock()
 
 	for {
 		select {
@@ -324,21 +338,22 @@ func (w *Watcher) watchFsnotify(ctx context.Context) {
 				continue
 			}
 
-			w.handleFsnotifyFileEvent(event.Op)
+			w.handleFsnotifyFileEvent(runGeneration, event.Op)
 
 		case err, ok := <-errors:
 			if !ok {
 				return
 			}
-			w.onError(err)
+			w.reportError(runGeneration, err)
 		}
 	}
 }
 
-func (w *Watcher) handleFsnotifyFileEvent(op fsnotify.Op) {
+func (w *Watcher) handleFsnotifyFileEvent(runGeneration uint64, op fsnotify.Op) {
 	if op&fsnotify.Remove != 0 {
-		if w.recordMissing() {
-			w.onError(ErrFileRemoved)
+		hadFile, active := w.recordMissing(runGeneration)
+		if active && hadFile {
+			w.reportError(runGeneration, ErrFileRemoved)
 		}
 		return
 	}
@@ -349,23 +364,28 @@ func (w *Watcher) handleFsnotifyFileEvent(op fsnotify.Op) {
 	info, err := os.Stat(w.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if op&fsnotify.Rename != 0 && w.recordMissing() {
-				w.onError(ErrFileRemoved)
+			if op&fsnotify.Rename != 0 {
+				hadFile, active := w.recordMissing(runGeneration)
+				if active && hadFile {
+					w.reportError(runGeneration, ErrFileRemoved)
+				}
 			}
 		} else if os.IsPermission(err) {
-			w.onError(ErrPermission)
+			w.reportError(runGeneration, ErrPermission)
 		} else {
-			w.onError(err)
+			w.reportError(runGeneration, err)
 		}
 		return
 	}
 
-	w.recordStat(info.ModTime(), info.Size())
-	w.debouncer.Trigger(w.notifyChange)
+	if _, active := w.recordStat(runGeneration, info.ModTime(), info.Size()); !active {
+		return
+	}
+	w.scheduleChange(runGeneration)
 }
 
 // watchPolling monitors using periodic stat checks.
-func (w *Watcher) watchPolling(ctx context.Context) {
+func (w *Watcher) watchPolling(ctx context.Context, runGeneration uint64) {
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
@@ -378,67 +398,108 @@ func (w *Watcher) watchPolling(ctx context.Context) {
 			info, err := os.Stat(w.path)
 			if err != nil {
 				if os.IsNotExist(err) {
-					hadFile := w.recordMissing()
-					if hadFile {
-						w.onError(ErrFileRemoved)
+					hadFile, active := w.recordMissing(runGeneration)
+					if active && hadFile {
+						w.reportError(runGeneration, ErrFileRemoved)
 					}
 				} else if os.IsPermission(err) {
-					w.onError(ErrPermission)
+					w.reportError(runGeneration, ErrPermission)
 				} else {
-					w.onError(err)
+					w.reportError(runGeneration, err)
 				}
 				continue
 			}
 
-			changed := w.recordStat(info.ModTime(), info.Size())
+			changed, active := w.recordStat(runGeneration, info.ModTime(), info.Size())
 
-			if changed {
-				w.debouncer.Trigger(w.notifyChange)
+			if active && changed {
+				w.scheduleChange(runGeneration)
 			}
 		}
 	}
 }
 
-func (w *Watcher) recordMissing() bool {
+// scheduleChange serializes access to the shared debouncer with Stop and
+// Start. Without this fence, a producer delayed after recordStat could resume
+// in a later run and cancel that run's legitimate debounce timer.
+func (w *Watcher) scheduleChange(runGeneration uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.runIsActiveLocked(runGeneration) {
+		return
+	}
+	w.debouncer.Trigger(func() {
+		w.notifyChange(runGeneration)
+	})
+}
 
-	hadFile := w.lastExists
+func (w *Watcher) recordMissing(runGeneration uint64) (hadFile, active bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.runIsActiveLocked(runGeneration) {
+		return false, false
+	}
+
+	hadFile = w.lastExists
 	w.lastExists = false
 	w.lastMtime = time.Time{}
 	w.lastSize = 0
-	return hadFile
+	return hadFile, true
 }
 
-func (w *Watcher) recordStat(mtime time.Time, size int64) bool {
+func (w *Watcher) recordStat(runGeneration uint64, mtime time.Time, size int64) (changed, active bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.runIsActiveLocked(runGeneration) {
+		return false, false
+	}
 
-	changed := !w.lastExists || !mtime.Equal(w.lastMtime) || size != w.lastSize
+	changed = !w.lastExists || !mtime.Equal(w.lastMtime) || size != w.lastSize
 	w.lastExists = true
 	w.lastMtime = mtime
 	w.lastSize = size
-	return changed
+	return changed, true
 }
 
 // notifyChange invokes the onChange callback and signals the change channel.
-func (w *Watcher) notifyChange() {
+func (w *Watcher) notifyChange(runGeneration uint64) {
 	w.mu.RLock()
-	started := w.started
+	active := w.runIsActiveLocked(runGeneration)
+	onChange := w.onChange
 	w.mu.RUnlock()
 
-	// Don't notify if watcher has been stopped - avoid calling callbacks
-	// after Stop() has been called. This is best-effort; there's a small
-	// race window, but callbacks are idempotent so it's harmless.
-	if !started {
+	if !active {
 		return
 	}
 
-	w.onChange()
+	// User callbacks must run without mu: they may call Stop or other Watcher
+	// methods. Such a callback may overlap a concurrent Stop once admitted, but
+	// its generation is checked again before any internal publication.
+	onChange()
 
-	// Non-blocking send to change channel
+	// Check and publish atomically with respect to Stop/Start. Stop holds the
+	// same mutex while invalidating the run and draining any queued old event.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.runIsActiveLocked(runGeneration) {
+		return
+	}
 	select {
 	case w.changeCh <- struct{}{}:
 	default:
 	}
+}
+
+func (w *Watcher) reportError(runGeneration uint64, err error) {
+	w.mu.RLock()
+	active := w.runIsActiveLocked(runGeneration)
+	onError := w.onError
+	w.mu.RUnlock()
+	if active {
+		onError(err)
+	}
+}
+
+func (w *Watcher) runIsActiveLocked(runGeneration uint64) bool {
+	return w.started && w.runGeneration == runGeneration
 }

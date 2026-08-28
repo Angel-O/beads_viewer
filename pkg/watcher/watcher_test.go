@@ -415,17 +415,30 @@ func TestWatcher_FsnotifyCreateRefreshesRemovedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.recordStat(info.ModTime(), info.Size())
-	if !w.recordMissing() {
+	w.mu.Lock()
+	w.started = true
+	w.runGeneration++
+	runGeneration := w.runGeneration
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.started = false
+		w.mu.Unlock()
+	}()
+
+	if _, active := w.recordStat(runGeneration, info.ModTime(), info.Size()); !active {
+		t.Fatal("test run should be active")
+	}
+	if hadFile, active := w.recordMissing(runGeneration); !active || !hadFile {
 		t.Fatal("initial removal should report that the file existed")
 	}
 
 	if err := os.WriteFile(tmpFile, []byte("recreated"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	w.handleFsnotifyFileEvent(fsnotify.Create)
+	w.handleFsnotifyFileEvent(runGeneration, fsnotify.Create)
 
-	if !w.recordMissing() {
+	if hadFile, active := w.recordMissing(runGeneration); !active || !hadFile {
 		t.Fatal("recreated file should be tracked as present before the next removal")
 	}
 }
@@ -564,6 +577,100 @@ func TestWatcher_RestartPollingUsesPerRunContext(t *testing.T) {
 			t.Fatal("timeout waiting for change after watcher restart")
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+func TestWatcher_RestartRejectsQueuedAndLatePriorRunChanges(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test.jsonl")
+	if err := os.WriteFile(tmpFile, []byte("initial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var callbacks atomic.Int32
+	w, err := NewWatcher(tmpFile,
+		WithForcePoll(true),
+		WithPollInterval(time.Hour),
+		WithDebounceDuration(5*time.Millisecond),
+		WithOnChange(func() { callbacks.Add(1) }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.RLock()
+	firstRun := w.runGeneration
+	w.mu.RUnlock()
+
+	// Queue an event with no consumer. Stop must remove it before the next run.
+	w.notifyChange(firstRun)
+	w.Stop()
+
+	if err := w.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	w.mu.RLock()
+	secondRun := w.runGeneration
+	baselineMtime := w.lastMtime
+	baselineSize := w.lastSize
+	w.mu.RUnlock()
+	if secondRun == firstRun {
+		t.Fatal("restart did not advance watcher generation")
+	}
+
+	select {
+	case <-w.Changed():
+		t.Fatal("restarted watcher received an event queued by the prior run")
+	default:
+	}
+
+	// A stale producer must not touch the shared debouncer after restart. If it
+	// did, it would cancel the active generation's pending timer.
+	w.scheduleChange(secondRun)
+	w.scheduleChange(firstRun)
+	select {
+	case <-w.Changed():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stale producer canceled the active generation's debounce timer")
+	}
+	if got := callbacks.Load(); got != 2 {
+		t.Fatalf("debounced active producer callback count=%d, want 2", got)
+	}
+
+	// A producer that was delayed across Stop/Start cannot mutate the new
+	// baseline, invoke callbacks, or publish on the shared change channel.
+	if changed, active := w.recordStat(firstRun, baselineMtime.Add(time.Hour), baselineSize+1); changed || active {
+		t.Fatalf("stale recordStat returned changed=%v active=%v", changed, active)
+	}
+	w.notifyChange(firstRun)
+	w.mu.RLock()
+	gotMtime := w.lastMtime
+	gotSize := w.lastSize
+	w.mu.RUnlock()
+	if !gotMtime.Equal(baselineMtime) || gotSize != baselineSize {
+		t.Fatal("stale producer changed the restarted watcher's file baseline")
+	}
+	if got := callbacks.Load(); got != 2 {
+		t.Fatalf("stale producer invoked callback; callback count=%d", got)
+	}
+	select {
+	case <-w.Changed():
+		t.Fatal("stale producer published into the restarted run")
+	default:
+	}
+
+	// The active generation still publishes normally.
+	w.notifyChange(secondRun)
+	select {
+	case <-w.Changed():
+	default:
+		t.Fatal("active watcher generation failed to publish")
+	}
+	if got := callbacks.Load(); got != 3 {
+		t.Fatalf("active producer callback count=%d, want 3", got)
 	}
 }
 
