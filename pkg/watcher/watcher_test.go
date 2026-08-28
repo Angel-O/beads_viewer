@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -440,6 +441,58 @@ func TestWatcher_FsnotifyCreateRefreshesRemovedState(t *testing.T) {
 
 	if hadFile, active := w.recordMissing(runGeneration); !active || !hadFile {
 		t.Fatal("recreated file should be tracked as present before the next removal")
+	}
+}
+
+func TestWatcher_FsnotifyRunUsesCapturedChannels(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test.jsonl")
+	if err := os.WriteFile(tmpFile, []byte("initial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWatcher(tmpFile, WithDebounceDuration(5*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.debouncer.Cancel()
+
+	// Establish an active generation without publishing an fsWatcher through
+	// the owner. The loop must use only the channels captured by Start; reading
+	// w.fsWatcher after launch would make it return early here.
+	w.mu.Lock()
+	w.started = true
+	w.runGeneration++
+	runGeneration := w.runGeneration
+	w.fsWatcher = nil
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.started = false
+		w.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan fsnotify.Event, 1)
+	errors := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.watchFsnotify(ctx, runGeneration, events, errors)
+	}()
+
+	events <- fsnotify.Event{Name: tmpFile, Op: fsnotify.Write}
+	select {
+	case <-w.Changed():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("fsnotify loop ignored the channels captured for its run")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("fsnotify loop did not stop after cancellation")
 	}
 }
 
