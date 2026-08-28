@@ -2228,9 +2228,7 @@ func TestCommentsAddValidatesIssueBeforeMutation(t *testing.T) {
 		if !reflect.DeepEqual(calls[1].Args, want) {
 			t.Fatalf("comment args = %#v, want %#v", calls[1].Args, want)
 		}
-		if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
-			t.Fatalf("successful comment did not signal Viewer: %v", err)
-		}
+		assertViewerSignal(t, test)
 	})
 
 	t.Run("forwards multiline Markdown as one argument in JSON mode", func(t *testing.T) {
@@ -2347,9 +2345,35 @@ func TestCommentsEditAndDeleteValidateAndForward(t *testing.T) {
 			if !reflect.DeepEqual(calls[2].Args, testCase.want) {
 				t.Fatalf("mutation args = %#v, want %#v", calls[2].Args, testCase.want)
 			}
-			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
-				t.Fatalf("successful comment mutation did not signal Viewer: %v", err)
+			assertViewerSignal(t, test)
+		})
+	}
+}
+
+func TestCommentMutationSuppressionMarkerSkipsViewerSignal(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		args []string
+	}{
+		{name: "add", args: []string{"--json", "comments", "add", "work-1", "Needs review"}},
+		{name: "edit", args: []string{"--json", "comments", "edit", "work-1", "comment-1", "Updated"}},
+		{name: "delete", args: []string{"--json", "comments", "delete", "work-1", "comment-1"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			context := contextForTest(t, test.repository)
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+			setResponses(t, map[string]string{
+				"show:work-1":     fmt.Sprintf(`[{"id":"work-1","status":"open","issue_type":"task","labels":[%q]}]`, context),
+				"comments:work-1": `[{"id":"comment-1","issue_id":"work-1","created_at":"2026-08-28T00:00:00Z"}]`,
+			})
+			t.Setenv("WBD_SUPPRESS_VIEWER_SIGNAL", "1")
+
+			code, _, stderr := test.run(testCase.args...)
+			if code != 0 || stderr != "" {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
 			}
+			assertNoViewerSignal(t, test)
 		})
 	}
 }
@@ -3013,5 +3037,12 @@ func assertNoViewerSignal(t *testing.T, test *appTest) {
 	t.Helper()
 	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); !os.IsNotExist(err) {
 		t.Fatalf("unexpected Viewer signal: %v", err)
+	}
+}
+
+func assertViewerSignal(t *testing.T, test *appTest) {
+	t.Helper()
+	if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
+		t.Fatalf("Viewer signal missing: %v", err)
 	}
 }

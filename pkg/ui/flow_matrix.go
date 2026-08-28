@@ -61,6 +61,13 @@ func (m *FlowMatrixModel) SetData(flow *analysis.CrossLabelFlow, issues []model.
 	m.computeStats()
 }
 
+// UpdateIssueComments refreshes flow drilldown copies without recomputing flow
+// metrics or changing dashboard navigation.
+func (m *FlowMatrixModel) UpdateIssueComments(issueID string, comments []*model.Comment) {
+	updateIssueComments(m.issues, issueID, comments)
+	updateIssueComments(m.drilldownIssues, issueID, comments)
+}
+
 // SetSize sets the available rendering dimensions
 func (m *FlowMatrixModel) SetSize(width, height int) {
 	m.width = width

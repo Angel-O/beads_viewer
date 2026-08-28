@@ -60,6 +60,26 @@ func TestDataSnapshot_GetIssue(t *testing.T) {
 	}
 }
 
+func TestDataSnapshotWithCommentUpdateDoesNotMutatePoolOwnership(t *testing.T) {
+	pooled := &model.Issue{ID: "pooled"}
+	source := &DataSnapshot{
+		Issues:       []model.Issue{{ID: "issue-1"}},
+		pooledIssues: []*model.Issue{pooled},
+	}
+	comments := []*model.Comment{{ID: "comment-1", IssueID: "issue-1", Text: "updated"}}
+	updated := source.WithCommentUpdate("issue-1", comments)
+
+	if updated == nil || updated.pooledIssues != nil {
+		t.Fatal("targeted snapshot unexpectedly claimed pooled ownership")
+	}
+	if len(source.pooledIssues) != 1 || source.pooledIssues[0] != pooled {
+		t.Fatal("source snapshot ownership changed during cloning")
+	}
+	if got := updated.IssueMap["issue-1"].Comments[0].Text; got != "updated" {
+		t.Fatalf("updated comments = %q, want updated", got)
+	}
+}
+
 func TestDataSnapshot_Age(t *testing.T) {
 	now := time.Now()
 	s := &DataSnapshot{CreatedAt: now.Add(-5 * time.Second)}

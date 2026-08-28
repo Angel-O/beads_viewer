@@ -768,7 +768,7 @@ func (a *app) commentsAdd(request request) int {
 			args = append(args, "--author", request.commentAuthor)
 		}
 	}
-	return a.runBDMutation(a.dir, args...)
+	return a.runBDCommentMutation(a.dir, args...)
 }
 
 func (a *app) commentsEdit(request request) int {
@@ -802,7 +802,7 @@ func (a *app) commentsEdit(request request) int {
 		}
 		args = append(args, request.positionals[2:]...)
 	}
-	return a.runBDMutation(a.dir, args...)
+	return a.runBDCommentMutation(a.dir, args...)
 }
 
 func (a *app) commentsDelete(request request) int {
@@ -816,7 +816,7 @@ func (a *app) commentsDelete(request request) int {
 
 	args := appendJSON(nil, request.json)
 	args = append(args, "comments", "delete", issue.ID, request.positionals[1])
-	return a.runBDMutation(a.dir, args...)
+	return a.runBDCommentMutation(a.dir, args...)
 }
 
 func (a *app) commentsRead(request request) int {
@@ -1460,6 +1460,18 @@ func (a *app) runBDMutation(directory string, arguments ...string) int {
 		return code
 	}
 	a.signalMutation("mutation")
+	return 0
+}
+
+func (a *app) runBDCommentMutation(directory string, arguments ...string) int {
+	code := a.runBD(directory, arguments...)
+	if code != 0 {
+		return code
+	}
+	// Only TUI comment commands set this internal marker; external wbd calls still notify Viewer.
+	if os.Getenv("WBD_SUPPRESS_VIEWER_SIGNAL") != "1" {
+		a.signalMutation("comment mutation")
+	}
 	return 0
 }
 

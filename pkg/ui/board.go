@@ -515,6 +515,26 @@ func (b *BoardModel) SetCanonicalIssues(issues []model.Issue) {
 	b.lastDetailID = ""
 }
 
+// UpdateIssueComments refreshes card and detail copies without regrouping or
+// changing the current board selection.
+func (b *BoardModel) UpdateIssueComments(issueID string, comments []*model.Comment) {
+	updateIssueComments(b.allIssues, issueID, comments)
+	for column := range b.columns {
+		updateIssueComments(b.columns[column], issueID, comments)
+	}
+	if issue := b.issueMap[issueID]; issue != nil {
+		issue.Comments = cloneIssueComments(comments)
+	}
+	if b.boardState != nil {
+		for column := range b.boardState.ByStatus {
+			updateIssueComments(b.boardState.ByStatus[column], issueID, comments)
+			updateIssueComments(b.boardState.ByPriority[column], issueID, comments)
+			updateIssueComments(b.boardState.ByType[column], issueID, comments)
+		}
+	}
+	b.lastDetailID = ""
+}
+
 func (b BoardModel) hasOpenBlocker(issue model.Issue) bool {
 	for _, dependency := range issue.Dependencies {
 		if dependency == nil || !dependency.Type.IsBlocking() {
