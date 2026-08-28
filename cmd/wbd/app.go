@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 )
@@ -140,10 +139,8 @@ func (a *app) run(arguments []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	if !usesDatabaseList(request) {
-		if err := need("bd"); err != nil {
-			return a.fail(err)
-		}
+	if err := need("bd"); err != nil {
+		return a.fail(err)
 	}
 
 	switch request.command {
@@ -176,20 +173,7 @@ func (a *app) run(arguments []string) int {
 	case "compatibility":
 		return a.compatibility()
 	case "list":
-		if usesDatabaseList(request) {
-			return a.list(request)
-		}
-		args := appendJSON(nil, request.json)
-		args = append(args, "list")
-		if !request.allContexts {
-			registration, registerErr := a.register()
-			if registerErr != nil {
-				return a.fail(registerErr)
-			}
-			args = append(args, "--label", registration.Context)
-		}
-		args = append(args, request.args...)
-		return a.runBD(a.dir, args...)
+		return a.list(request)
 	case "show":
 		args := appendJSON(nil, request.json)
 		args = append(args, "show", request.positionals[0])
@@ -383,94 +367,83 @@ func (a *app) run(arguments []string) int {
 	}
 }
 
-func usesDatabaseList(request request) bool {
-	return request.listPaginate || request.listCursor != "" || request.listSort != "" ||
-		request.listAfterCreated != "" || request.listAfterUpdated != "" ||
-		request.listAfterClosed != "" || request.listBrief
-}
-
 func (a *app) list(request request) int {
-	if !request.json {
-		return a.fail(errors.New("database-backed list options require --json"))
+	paginated := request.listPaginate || request.listCursor != ""
+	structured := paginated || request.listSort != "" || request.listAfterCreated != "" ||
+		request.listAfterUpdated != "" || request.listAfterClosed != "" || request.listBrief
+	if structured && !request.json {
+		return a.fail(errors.New("structured list options require --json"))
 	}
-	if request.listPaginate && !request.listLimitSet {
-		return a.fail(errors.New("--paginate requires --limit so the page is bounded"))
-	}
-
-	options := hub.ListOptions{AllContexts: request.allContexts, Limit: 0, Paginate: request.listPaginate || request.listCursor != "", Cursor: request.listCursor, Sort: request.listSort, Brief: request.listBrief}
-	if request.listLimitSet {
-		value := listArgumentValue(request.args, "--limit")
-		limit, err := strconv.Atoi(value)
-		if err != nil {
-			return a.fail(fmt.Errorf("invalid list limit %q: %w", value, err))
-		}
-		options.Limit = limit
-	}
-	for index := 0; index+1 < len(request.args); index++ {
-		if request.args[index] == "--status" {
-			options.Statuses = strings.Split(request.args[index+1], ",")
-			index++
-		}
-	}
-	options.IssueType = listArgumentValue(request.args, "--type")
-	priorityValue := listArgumentValue(request.args, "--priority")
-	if value := priorityValue; value != "" {
-		value = strings.TrimPrefix(value, "P")
-		priority, err := strconv.Atoi(value)
-		if err != nil {
-			return a.fail(fmt.Errorf("invalid list priority %q: %w", value, err))
-		}
-		options.Priority = &priority
-	}
-	for index := 0; index+1 < len(request.args); index++ {
-		if request.args[index] == "--label" {
-			options.Labels = append(options.Labels, strings.Split(request.args[index+1], ",")...)
-			index++
-		}
-	}
-	for index, argument := range request.args {
-		if argument == "--ready" {
-			options.Ready = true
-		}
-		if index+1 >= len(request.args) {
-			continue
-		}
-		switch argument {
-		case "--after-created-at":
-			value, err := time.Parse(time.RFC3339, request.args[index+1])
-			if err != nil {
-				return a.fail(fmt.Errorf("invalid %s: %w", argument, err))
-			}
-			options.AfterCreatedAt = &value
-		case "--after-updated-at":
-			value, err := time.Parse(time.RFC3339, request.args[index+1])
-			if err != nil {
-				return a.fail(fmt.Errorf("invalid %s: %w", argument, err))
-			}
-			options.AfterUpdatedAt = &value
-		case "--after-closed-at":
-			value, err := time.Parse(time.RFC3339, request.args[index+1])
-			if err != nil {
-				return a.fail(fmt.Errorf("invalid %s: %w", argument, err))
-			}
-			options.AfterClosedAt = &value
-		}
+	args := appendJSON(nil, request.json)
+	args = append(args, "list", "--no-directory-labels")
+	if request.json {
+		args = append(args, "--all", "--include-all-types")
 	}
 	if !request.allContexts {
 		registration, err := a.register()
 		if err != nil {
 			return a.fail(err)
 		}
-		options.Context = registration.Context
+		args = append(args, "--label", registration.Context)
 	}
-	page, err := hub.ListIssues(a.paths.Store, options)
+	if paginated {
+		args = append(args, "--paginate")
+	}
+	if request.listBrief {
+		args = append(args, "--brief")
+	}
+	if request.json && request.listSort == "" {
+		args = append(args, "--sort", hub.BackendListSort("updated_at:desc"))
+	}
+	for index := 0; index < len(request.args); index++ {
+		argument := request.args[index]
+		switch argument {
+		case "--sort":
+			args = append(args, "--sort", hub.BackendListSort(request.args[index+1]))
+			index++
+		case "--created-after", "--after-created-at":
+			args = append(args, "--created-after", request.args[index+1])
+			index++
+		case "--updated-after", "--after-updated-at":
+			args = append(args, "--updated-after", request.args[index+1])
+			index++
+		case "--closed-after", "--after-closed-at":
+			args = append(args, "--closed-after", request.args[index+1])
+			index++
+		default:
+			args = append(args, argument)
+		}
+	}
+	if !request.json {
+		return a.runBD(a.dir, args...)
+	}
+
+	data, childStderr, err := a.runBDCaptureWithStderr(a.dir, args...)
 	if err != nil {
-		return a.fail(err)
+		return a.fail(fmt.Errorf("listing Hub issues: %w", err))
 	}
-	if page.Pagination != nil {
-		return a.writeJSON(map[string]any{"issues": page.Issues, "pagination": page.Pagination})
+	limit := 0
+	if paginated {
+		limit, _ = strconv.Atoi(listArgumentValue(request.args, "--limit"))
 	}
-	return a.writeJSON(page.Issues)
+	response, err := hub.DecodeListResponse(data, paginated, limit, request.listBrief)
+	if err != nil {
+		if len(childStderr) > 0 {
+			if _, writeErr := a.stderr.Write(childStderr); writeErr != nil {
+				return a.fail(fmt.Errorf("writing list diagnostics: %w", writeErr))
+			}
+		}
+		return a.fail(fmt.Errorf("decoding bd list response: %w", err))
+	}
+	if _, err := a.stdout.Write(response); err != nil {
+		return a.fail(fmt.Errorf("writing list response: %w", err))
+	}
+	if len(childStderr) > 0 {
+		if _, err := a.stderr.Write(childStderr); err != nil {
+			return a.fail(fmt.Errorf("writing list diagnostics: %w", err))
+		}
+	}
+	return 0
 }
 
 func listArgumentValue(arguments []string, flag string) string {
@@ -1125,6 +1098,11 @@ func (a *app) runGraph(plan graphPlan, key string) (string, error) {
 }
 
 func (a *app) runBDCapture(directory string, arguments ...string) ([]byte, error) {
+	output, _, err := a.runBDCaptureWithStderr(directory, arguments...)
+	return output, err
+}
+
+func (a *app) runBDCaptureWithStderr(directory string, arguments ...string) ([]byte, []byte, error) {
 	arguments = append([]string{"--db", a.paths.Store}, arguments...)
 	command := exec.Command("bd", arguments...)
 	command.Dir = directory
@@ -1138,9 +1116,9 @@ func (a *app) runBDCapture(directory string, arguments ...string) ([]byte, error
 		if detail == "" {
 			detail = err.Error()
 		}
-		return nil, errors.New(detail)
+		return nil, nil, errors.New(detail)
 	}
-	return output, nil
+	return output, stderr.Bytes(), nil
 }
 
 func (a *app) signalMutation(operation string) {

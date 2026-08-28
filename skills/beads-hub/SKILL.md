@@ -65,20 +65,46 @@ against the registered repository catalog. They are not restricted to the
 current checkout: an exact canonical issue ID may target any policy-valid Hub
 issue, including one belonging to another registered repository context.
 
-For a bounded agent query against a SQLite-backed Hub, use the fixed brief
-projection and keyset cursor. The `after-*` filters are strict (`>`), and the
-cursor is opaque and must be sent back with the same filters and sort:
+For an agent query against the Hub's production embedded-Dolt backend, every
+`wbd list --json` request uses the merged public candidate population: closed,
+pinned, hidden issue types, and wisps are included, while tombstones remain
+excluded. The wrapper passes `--all --include-all-types
+--no-directory-labels` to `bd`, and defaults the backend order to
+`updated:desc` when no sort is supplied. The unpaginated result remains a bare
+JSON array.
+
+The fixed full issue shape is exactly `id`, `title`, `description`, `status`,
+`priority`, `issue_type`, `assignee`, `labels`, `created_at`, `updated_at`, and
+`closed_at`. `description`, `assignee`, `labels`, and `closed_at` may be empty,
+omitted, or null in the backend response; wbd emits their stable keys with
+empty strings, `[]`, or `null` as appropriate. `id`, `title`, `status`,
+`priority`, `issue_type`, `created_at`, and `updated_at` are required. The
+fixed `--brief` shape is exactly `id`, `title`, `status`, `priority`,
+`issue_type`, and `updated_at`.
+
+By default, wbd adds the registered current repository context as a label
+filter. `--all-contexts` omits that filter. User-supplied labels remain active
+in either mode. Directory-label configuration never narrows a delegated wbd
+list because wbd disables the backend's implicit directory-label filter.
+
+For a bounded query, use the keyset cursor. The `*-after` filters are strict
+(`>`), and the cursor is opaque and must be sent back with the same filters and
+sort:
 
 ```sh
 wbd list --paginate --limit 50 --sort updated_at:desc --brief --json
 wbd list --paginate --limit 50 --sort updated_at:desc --cursor <next_cursor> --brief --json
 ```
 
-The paginated response is an object with `issues` and `pagination`; ordinary
-unpaginated `wbd list --json` remains the legacy JSON array. Supported orders
-are `created_at:desc`, `updated_at:desc`, and `closed_at:desc`. The fixed
-`--brief` issue shape is exactly `id`, `title`, `status`, `priority`,
-`issue_type`, and `updated_at`.
+The paginated response is an object with `issues` and `pagination`. Supported
+orders are `created_at:desc`, `updated_at:desc`, and `closed_at:desc`. Date
+filters are `--created-after`, `--updated-after`, and `--closed-after`; the
+older `--after-*-at` spellings remain aliases.
+
+Keyset pagination resumes after the last returned sort key and issue ID, so an
+insertion outside the cursor position is not repeated. It is not a snapshot:
+rows inserted, removed, or changed between requests may affect later pages,
+and changing a row's sort key can move it relative to the cursor.
 
 For post-merge correlation and closure of concrete private work, load
 [`beads-hub-closeout`](../beads-hub-closeout/SKILL.md). It keeps private
