@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -163,10 +164,26 @@ func TestCassSessionModal_Update_CopyCommand(t *testing.T) {
 		t.Errorf("Search command should contain keywords, got: %s", modal.searchCmd)
 	}
 
-	// Press 'y' to copy - note: actual clipboard copy may fail in test environment
-	// but the copied flag should be set if successful, we mainly test it doesn't panic
-	modal, _ = modal.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	// Can't reliably test clipboard in CI, just verify no panic
+	// Pressing 'y' must schedule the potentially blocking helper rather than run
+	// it on Bubble Tea's Update loop.
+	modal, cmd := modal.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Fatal("copy should return an asynchronous Bubble Tea command")
+	}
+	if modal.copied {
+		t.Fatal("copy feedback should wait for the asynchronous result")
+	}
+
+	modal, _ = modal.Update(cassClipboardCopyMsg{})
+	if !modal.copied {
+		t.Fatal("successful copy result should enable feedback")
+	}
+
+	failed := NewCassSessionModal("bv-copy", result, theme)
+	failed, _ = failed.Update(cassClipboardCopyMsg{err: fmt.Errorf("clipboard unavailable")})
+	if failed.copied {
+		t.Fatal("failed copy result must not enable feedback")
+	}
 }
 
 func TestCassSessionModal_View_RendersCorrectly(t *testing.T) {

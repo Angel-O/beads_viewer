@@ -375,15 +375,15 @@ func TestHandleGraphBoardActionableKeys(t *testing.T) {
 	// Focus board navigation paths
 	m.isBoardView = true
 	m.focused = focusBoard
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	// Navigate back to Open column (with items) - Status mode shows all columns (bv-tf6j)
 	m.board.JumpToFirstColumn()
 	// Enter should exit board when selection exists
 	m.board.MoveToTop()
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.isBoardView {
 		t.Fatalf("enter should exit board view")
 	}
@@ -686,7 +686,7 @@ func TestGraphConnectorDown(t *testing.T) {
 
 func TestCopyIssueToClipboardNoSelection(t *testing.T) {
 	m := NewModel(nil, nil, "")
-	m.copyIssueToClipboard()
+	_ = m.copyIssueToClipboard()
 	if !m.statusIsError || !strings.Contains(m.statusMsg, "No issue selected") {
 		t.Fatalf("expected error status for missing selection")
 	}
@@ -879,10 +879,10 @@ func TestBoardAndInsightsExtraKeys(t *testing.T) {
 	// Board page up/down coverage
 	m.isBoardView = true
 	m.focused = focusBoard
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyCtrlU})
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyHome})
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyEnd})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyEnd})
 
 	// Insights escape and tab navigation
 	m.focused = focusInsights
@@ -988,6 +988,37 @@ func TestWatchFileCmdDetectsChange(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(FileChangedMsg); !ok {
 		t.Fatalf("expected FileChangedMsg, got %T", msg)
+	}
+}
+
+func TestWatchFileCmdReturnsWhenWatcherStops(t *testing.T) {
+	tmp := t.TempDir()
+	file := filepath.Join(tmp, "file.txt")
+	if err := os.WriteFile(file, []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	w, err := watcher.NewWatcher(file, watcher.WithForcePoll(true))
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	if err := w.Start(); err != nil {
+		t.Fatalf("start watcher: %v", err)
+	}
+
+	result := make(chan tea.Msg, 1)
+	go func() {
+		result <- WatchFileCmd(w)()
+	}()
+	w.Stop()
+
+	select {
+	case msg := <-result:
+		if msg != nil {
+			t.Fatalf("stopped watcher returned unexpected message %T", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WatchFileCmd remained blocked after watcher stop")
 	}
 }
 
@@ -1588,6 +1619,51 @@ Description.
 	}
 	if !strings.Contains(resultModel.statusMsg, "No changes") {
 		t.Fatalf("expected 'No changes' message, got %q", resultModel.statusMsg)
+	}
+}
+
+func TestEditorExitMsgRunsBRUpdateAsynchronously(t *testing.T) {
+	original := `---
+title: Test
+priority: 1
+status: open
+assignee:
+type: task
+---
+
+Description.
+`
+	edited := strings.Replace(original, "title: Test", "title: Updated", 1)
+	tmpFile, err := os.CreateTemp("", "bv-test-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel([]model.Issue{{
+		ID:        "t1",
+		Title:     "Test",
+		Priority:  1,
+		Status:    model.StatusOpen,
+		IssueType: model.TypeTask,
+	}}, nil, "")
+	result, cmd := m.Update(editorExitMsg{
+		issueID:  "t1",
+		tmpFile:  tmpFile.Name(),
+		original: original,
+	})
+	if cmd == nil {
+		t.Fatal("changed editor content should schedule br update asynchronously")
+	}
+	resultModel := result.(*Model)
+	if resultModel.statusIsError || !strings.Contains(resultModel.statusMsg, "Updating 1 field") {
+		t.Fatalf("expected in-progress update status, got %q", resultModel.statusMsg)
 	}
 }
 

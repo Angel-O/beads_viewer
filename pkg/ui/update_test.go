@@ -52,7 +52,7 @@ func TestCopyIssueToClipboardInvalidItem(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.list.SetItems([]list.Item{badItem{}})
 	m.list.Select(0)
-	m.copyIssueToClipboard()
+	_ = m.copyIssueToClipboard()
 	if !m.statusIsError || m.statusMsg == "" {
 		t.Fatalf("expected error copying invalid item, got %q", m.statusMsg)
 	}

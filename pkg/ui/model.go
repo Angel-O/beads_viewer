@@ -30,7 +30,6 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
 
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -171,6 +170,38 @@ type editorExitMsg struct {
 	err      error  // Non-nil if the editor process failed
 }
 
+type brUpdateResultMsg struct {
+	issueID    string
+	fieldCount int
+	output     string
+	err        error
+}
+
+const brUpdateTimeout = 30 * time.Second
+
+func runBRUpdateCmd(issueID string, brArgs []string, fieldCount int) tea.Cmd {
+	cmdArgs := append([]string{"update", issueID}, brArgs...)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), brUpdateTimeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, "br", cmdArgs...)
+		// Bound the rare case where a killed br child leaves a descendant holding
+		// the CombinedOutput pipes open.
+		cmd.WaitDelay = 2 * time.Second
+		output, err := cmd.CombinedOutput()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("br update timed out: %w", ctxErr)
+		}
+		return brUpdateResultMsg{
+			issueID:    issueID,
+			fieldCount: fieldCount,
+			output:     strings.TrimSpace(string(output)),
+			err:        err,
+		}
+	}
+}
+
 // semanticDebounceTickMsg is sent after debounce delay to trigger semantic computation
 type semanticDebounceTickMsg struct{}
 
@@ -230,8 +261,12 @@ func ReadyTimeoutCmd() tea.Cmd {
 // WatchFileCmd returns a command that waits for file changes and sends FileChangedMsg
 func WatchFileCmd(w *watcher.Watcher) tea.Cmd {
 	return func() tea.Msg {
-		<-w.Changed()
-		return FileChangedMsg{}
+		select {
+		case <-w.Changed():
+			return FileChangedMsg{}
+		case <-w.Done():
+			return nil
+		}
 	}
 }
 
@@ -713,8 +748,10 @@ type Model struct {
 	showTimeTravelPrompt bool
 
 	// Status message (for temporary feedback)
-	statusMsg     string
-	statusIsError bool
+	statusMsg          string
+	statusIsError      bool
+	clipboardRequestID uint64
+	brUpdateInFlight   bool
 
 	// Workspace mode state
 	workspaceMode    bool            // True when viewing multiple repos
@@ -1992,6 +2029,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case embeddedTextInputMsg:
 		return m, m.updateEmbeddedTextInput(msg)
 
+	case cassClipboardCopyMsg:
+		// A copy may finish after its modal has been dismissed. Only the modal
+		// instance that is still visible owns the completion feedback.
+		if !m.showCassModal {
+			return m, nil
+		}
+		m.cassModal, cmd = m.cassModal.Update(msg)
+		return m, cmd
+
+	case clipboardStatusMsg:
+		if msg.requestID != m.clipboardRequestID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("❌ Clipboard error: %v", msg.err)
+			m.statusIsError = true
+		} else {
+			m.statusMsg = msg.success
+			m.statusIsError = false
+		}
+		return m, nil
+
+	case brUpdateResultMsg:
+		m.brUpdateInFlight = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("❌ br update failed: %v", msg.err)
+			if msg.output != "" {
+				m.statusMsg += " — " + msg.output
+			}
+			m.statusIsError = true
+		} else {
+			m.statusMsg = fmt.Sprintf("✅ Updated %d field(s) for %s", msg.fieldCount, msg.issueID)
+			m.statusIsError = false
+		}
+		return m, nil
+
 	case backgroundWorkerMsg:
 		if msg.worker == nil || m.backgroundWorker != msg.worker {
 			if msg.worker != nil {
@@ -2164,18 +2237,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		cmdArgs := append([]string{"update", msg.issueID}, brArgs...)
-		brCmd := exec.Command("br", cmdArgs...)
-		output, brErr := brCmd.CombinedOutput()
-		if brErr != nil {
-			m.statusMsg = fmt.Sprintf("❌ br update failed: %v — %s", brErr, strings.TrimSpace(string(output)))
-			m.statusIsError = true
-			return m, nil
-		}
 		fieldCount := len(brArgs) / 2
-		m.statusMsg = fmt.Sprintf("✅ Updated %d field(s) for %s", fieldCount, msg.issueID)
+		m.statusMsg = fmt.Sprintf("Updating %d field(s) for %s...", fieldCount, msg.issueID)
 		m.statusIsError = false
-		return m, nil
+		m.brUpdateInFlight = true
+		return m, runBRUpdateCmd(msg.issueID, brArgs, fieldCount)
 
 	case ReadyTimeoutMsg:
 		// bv-7wl7: Legacy fallback handler (no longer used).
@@ -3952,8 +4018,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "ctrl+c" {
 				return m, m.quitCommand()
 			}
-			m = m.handleBoardKeys(msg)
-			return m, nil
+			m, cmd = m.handleBoardKeys(msg)
+			return m, cmd
 		}
 		if m.focused == focusHistory && m.historyReportIsCurrent() &&
 			(m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus()) {
@@ -4203,7 +4269,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					"tab", "enter", "ctrl+j", "ctrl+k":
 					// Cancel any pending combo when pressing other keys
 					m.pendingComboKey = ""
-					m = m.handleBoardKeys(msg)
+					m, cmd = m.handleBoardKeys(msg)
+					cmds = append(cmds, cmd)
 					viewToggleHandled = true
 				}
 
@@ -4786,7 +4853,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleBoardKeys handles keyboard input when the board is focused (bv-yg39)
-func (m *Model) handleBoardKeys(msg tea.KeyMsg) *Model {
+func (m *Model) handleBoardKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	var cmd tea.Cmd
 	key := msg.String()
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -4811,7 +4879,7 @@ func (m *Model) handleBoardKeys(msg tea.KeyMsg) *Model {
 				m.board.AppendSearchChar(rune(key[0]))
 			}
 		}
-		return m
+		return m, nil
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -4821,7 +4889,7 @@ func (m *Model) handleBoardKeys(msg tea.KeyMsg) *Model {
 		m.board.ClearWaitingForG()
 		if key == "g" {
 			m.board.MoveToTop()
-			return m
+			return m, nil
 		}
 		// Not a second 'g', fall through to normal handling
 	}
@@ -4886,13 +4954,10 @@ func (m *Model) handleBoardKeys(msg tea.KeyMsg) *Model {
 	// Copy ID to clipboard (bv-yg39)
 	case "y":
 		if selected := m.board.SelectedIssue(); selected != nil {
-			if err := clipboard.WriteAll(selected.ID); err != nil {
-				m.statusMsg = fmt.Sprintf("❌ Clipboard error: %v", err)
-				m.statusIsError = true
-			} else {
-				m.statusMsg = fmt.Sprintf("📋 Copied %s to clipboard", selected.ID)
-				m.statusIsError = false
-			}
+			cmd = m.copyTextToClipboardCmd(
+				selected.ID,
+				fmt.Sprintf("📋 Copied %s to clipboard", selected.ID),
+			)
 		}
 
 	// Global filter keys (bv-naov) - consistent with list view
@@ -4974,7 +5039,7 @@ func (m *Model) handleBoardKeys(msg tea.KeyMsg) *Model {
 			m.updateViewportContent()
 		}
 	}
-	return m
+	return m, cmd
 }
 
 // handleGraphKeys handles keyboard input when the graph view is focused
@@ -5266,13 +5331,10 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			}
 		}
 		if sha != "" {
-			if err := clipboard.WriteAll(sha); err != nil {
-				m.statusMsg = fmt.Sprintf("❌ Clipboard error: %v", err)
-				m.statusIsError = true
-			} else {
-				m.statusMsg = fmt.Sprintf("📋 Copied %s to clipboard", shortSHA)
-				m.statusIsError = false
-			}
+			cmd = m.copyTextToClipboardCmd(
+				sha,
+				fmt.Sprintf("📋 Copied %s to clipboard", shortSHA),
+			)
 		} else {
 			m.statusMsg = "❌ No commit selected"
 			m.statusIsError = true
@@ -5740,7 +5802,7 @@ func (m *Model) handleListKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		}
 	case "C":
 		// Copy selected issue to clipboard
-		m.copyIssueToClipboard()
+		cmd = m.copyIssueToClipboard()
 	// Note: "O" (open in editor) is handled at the Update level for tea.Cmd support (bv-134)
 	case "h":
 		// Toggle history view
@@ -5769,13 +5831,10 @@ func (m *Model) handleListKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			m.statusMsg = "❌ No issue selected"
 			m.statusIsError = true
 		} else if issueItem, ok := selectedItem.(IssueItem); ok {
-			if err := clipboard.WriteAll(issueItem.Issue.ID); err != nil {
-				m.statusMsg = fmt.Sprintf("❌ Clipboard error: %v", err)
-				m.statusIsError = true
-			} else {
-				m.statusMsg = fmt.Sprintf("📋 Copied %s to clipboard", issueItem.Issue.ID)
-				m.statusIsError = false
-			}
+			cmd = m.copyTextToClipboardCmd(
+				issueItem.Issue.ID,
+				fmt.Sprintf("📋 Copied %s to clipboard", issueItem.Issue.ID),
+			)
 		}
 	}
 	return m, cmd
@@ -9002,20 +9061,26 @@ func (m Model) renderTimeTravelPrompt() string {
 	)
 }
 
-// copyIssueToClipboard copies the selected issue to clipboard as Markdown
-func (m *Model) copyIssueToClipboard() {
+func (m *Model) copyTextToClipboardCmd(text, success string) tea.Cmd {
+	m.clipboardRequestID++
+	return copyToClipboardStatusCmd(text, success, m.clipboardRequestID)
+}
+
+// copyIssueToClipboard formats the selected issue as Markdown and returns a
+// bounded asynchronous clipboard command.
+func (m *Model) copyIssueToClipboard() tea.Cmd {
 	selectedItem := m.list.SelectedItem()
 	if selectedItem == nil {
 		m.statusMsg = "❌ No issue selected"
 		m.statusIsError = true
-		return
+		return nil
 	}
 
 	issueItem, ok := selectedItem.(IssueItem)
 	if !ok {
 		m.statusMsg = "❌ Invalid item type"
 		m.statusIsError = true
-		return
+		return nil
 	}
 	issue := issueItem.Issue
 
@@ -9054,16 +9119,10 @@ func (m *Model) copyIssueToClipboard() {
 		}
 	}
 
-	// Copy to clipboard
-	err := clipboard.WriteAll(sb.String())
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("❌ Clipboard error: %v", err)
-		m.statusIsError = true
-		return
-	}
-
-	m.statusMsg = fmt.Sprintf("📋 Copied %s to clipboard", issue.ID)
-	m.statusIsError = false
+	return m.copyTextToClipboardCmd(
+		sb.String(),
+		fmt.Sprintf("📋 Copied %s to clipboard", issue.ID),
+	)
 }
 
 // showCassSessionModal shows the cass session preview modal for the selected issue (bv-5bqh)
@@ -9466,6 +9525,12 @@ func startAllowlistedGUIEditor(kind allowlistedGUIEditorKind, targetFile string)
 // For GUI editors it launches them in the background as before.
 // Uses m.beadsPath which respects issues.jsonl (canonical per beads upstream).
 func (m *Model) openInEditor() tea.Cmd {
+	if m.brUpdateInFlight {
+		m.statusMsg = "⏳ Finish the current br update before editing another issue"
+		m.statusIsError = false
+		return nil
+	}
+
 	// Use the configured beadsPath instead of hardcoded path
 	beadsFile := m.beadsPath
 	if beadsFile == "" {
