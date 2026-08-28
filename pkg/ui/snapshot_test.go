@@ -33,28 +33,6 @@ func TestDataSnapshot_Empty(t *testing.T) {
 	}
 }
 
-func TestFreshnessThresholds_FromEnv(t *testing.T) {
-	t.Setenv("BV_FRESHNESS_WARN_S", "15")
-	t.Setenv("BV_FRESHNESS_STALE_S", "90")
-
-	if got := freshnessWarnThreshold(); got != 15*time.Second {
-		t.Errorf("freshnessWarnThreshold()=%v, want %v", got, 15*time.Second)
-	}
-	if got := freshnessStaleThreshold(); got != 90*time.Second {
-		t.Errorf("freshnessStaleThreshold()=%v, want %v", got, 90*time.Second)
-	}
-
-	t.Setenv("BV_FRESHNESS_WARN_S", "-1")
-	t.Setenv("BV_FRESHNESS_STALE_S", "nope")
-
-	if got := freshnessWarnThreshold(); got != 30*time.Second {
-		t.Errorf("freshnessWarnThreshold() invalid env=%v, want %v", got, 30*time.Second)
-	}
-	if got := freshnessStaleThreshold(); got != 2*time.Minute {
-		t.Errorf("freshnessStaleThreshold() invalid env=%v, want %v", got, 2*time.Minute)
-	}
-}
-
 func TestDataSnapshot_GetIssue(t *testing.T) {
 	issue := model.Issue{ID: "test-1", Title: "Test Issue"}
 	s := &DataSnapshot{

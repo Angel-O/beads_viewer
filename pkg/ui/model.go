@@ -258,7 +258,7 @@ type editorExitMsg struct {
 // semanticDebounceTickMsg is sent after debounce delay to trigger semantic computation
 type semanticDebounceTickMsg struct{}
 
-// workerPollTickMsg drives a small background-mode status refresh (spinner + freshness) (bv-9nfy).
+// workerPollTickMsg drives a small background-mode status refresh (spinner + worker health) (bv-9nfy).
 type workerPollTickMsg struct {
 	generation uint64
 }
@@ -275,18 +275,10 @@ const comboTimeout = 200 * time.Millisecond
 var workerSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const (
-	freshnessErrorRetries = 3
-	workerActivePoll      = 120 * time.Millisecond
-	workerIdlePoll        = 5 * time.Second
+	workerErrorRetries = 3
+	workerActivePoll   = 120 * time.Millisecond
+	workerIdlePoll     = 5 * time.Second
 )
-
-func freshnessWarnThreshold() time.Duration {
-	return envDurationSeconds("BV_FRESHNESS_WARN_S", 30*time.Second)
-}
-
-func freshnessStaleThreshold() time.Duration {
-	return envDurationSeconds("BV_FRESHNESS_STALE_S", 2*time.Minute)
-}
 
 func workerPollInterval(state WorkerState) time.Duration {
 	if state == WorkerProcessing {
@@ -6723,8 +6715,6 @@ func (m *Model) renderHelpOverlay() string {
 
 	statusSection := []struct{ key, desc string }{
 		{"◌ metrics", "Phase 2 metrics computing"},
-		{"⚠ age", "Snapshot getting stale"},
-		{"⚠ STALE", "Snapshot is stale"},
 		{"✗ bg", "Background worker errors"},
 		{"↻ recov", "Worker self-healed"},
 		{"⚠ dead", "Worker unresponsive"},
@@ -7560,7 +7550,7 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// FRESHNESS / WORKER BADGE - Staleness + errors + background worker activity (bv-h305)
+	// WORKER STATUS BADGE - Errors + background worker activity (bv-h305)
 	// ─────────────────────────────────────────────────────────────────────────
 	workerSection := ""
 	if m.backgroundWorker != nil {
@@ -7577,13 +7567,6 @@ func (m *Model) renderFooter() string {
 			default:
 				return fmt.Sprintf("%dd", int(d.Hours()/24))
 			}
-		}
-
-		var snapshotAge time.Duration
-		hasSnapshotAge := false
-		if m.snapshot != nil && !m.snapshot.CreatedAt.IsZero() {
-			snapshotAge = time.Since(m.snapshot.CreatedAt)
-			hasSnapshotAge = true
 		}
 
 		state := m.backgroundWorker.State()
@@ -7611,7 +7594,7 @@ func (m *Model) renderFooter() string {
 			frame := workerSpinnerFrames[m.workerSpinnerIdx%len(workerSpinnerFrames)]
 			text = fmt.Sprintf("%s refreshing", frame)
 
-		case lastErr != nil && lastErr.Retries >= freshnessErrorRetries:
+		case lastErr != nil && lastErr.Retries >= workerErrorRetries:
 			style = lipgloss.NewStyle().
 				Background(ColorPrioCriticalBg).
 				Foreground(ColorPrioCritical).
@@ -7627,21 +7610,6 @@ func (m *Model) renderFooter() string {
 				Padding(0, 1)
 			text = fmt.Sprintf("⚠ bg %s (%s)", lastErr.Phase, formatAge(time.Since(lastErr.Time)))
 
-		case hasSnapshotAge && snapshotAge >= freshnessStaleThreshold():
-			style = lipgloss.NewStyle().
-				Background(ColorBgHighlight).
-				Foreground(ColorDanger).
-				Bold(true).
-				Padding(0, 1)
-			text = fmt.Sprintf("⚠ STALE: %s ago", formatAge(snapshotAge))
-
-		case hasSnapshotAge && snapshotAge >= freshnessWarnThreshold():
-			style = lipgloss.NewStyle().
-				Background(ColorBgHighlight).
-				Foreground(ColorWarning).
-				Padding(0, 1)
-			text = fmt.Sprintf("⚠ %s ago", formatAge(snapshotAge))
-
 		default:
 			if health.RecoveryCount > 0 {
 				style = lipgloss.NewStyle().
@@ -7650,7 +7618,7 @@ func (m *Model) renderFooter() string {
 					Padding(0, 1)
 				text = fmt.Sprintf("↻ recovered x%d", health.RecoveryCount)
 			} else {
-				// Fresh: no indicator.
+				// No worker status to report.
 				text = ""
 			}
 		}

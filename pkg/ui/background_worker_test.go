@@ -1968,6 +1968,8 @@ func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t 
 	issue := model.Issue{ID: "fixture-1", Title: "Fixture", Status: model.StatusOpen, IssueType: model.TypeTask}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.SetHistoryProvider(correlation.HistoryModeExternal, "fixture-hub.yaml")
+	m.backgroundWorker = &BackgroundWorker{}
+	m.snapshot = &DataSnapshot{CreatedAt: time.Now().Add(-3 * time.Minute)}
 	m.historyGeneration = 4
 	oldReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{}}
 	m.historyReport = oldReport
@@ -1976,6 +1978,9 @@ func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t 
 	m = updated.(Model)
 	if m.historyGeneration != 5 || !m.historyLoading || cmd == nil {
 		t.Fatalf("external refresh did not schedule one history generation: generation=%d loading=%v cmd=%v", m.historyGeneration, m.historyLoading, cmd)
+	}
+	if footer := m.renderFooter(); strings.Contains(footer, "⚠") || strings.Contains(footer, "STALE") {
+		t.Fatalf("external-only Hub refresh made unchanged snapshot look stale: %q", footer)
 	}
 
 	staleReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{"fixture-stale": {}}}
@@ -2233,7 +2238,7 @@ func TestModelWorkerPollKeepsAnimationActiveOnlyWhileProcessing(t *testing.T) {
 	updated, idleCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
 	m = updated.(Model)
 	if idleCmd == nil {
-		t.Fatal("idle worker did not schedule the next health and freshness check")
+		t.Fatal("idle worker did not schedule the next health check")
 	}
 	if m.workerSpinnerIdx != 0 {
 		t.Fatalf("idle spinner index = %d, want 0", m.workerSpinnerIdx)

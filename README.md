@@ -3553,8 +3553,8 @@ The analysis engine uses a **compact adjacency-list graph** (`compactDirectedGra
 **Q: I see `polling …` in the footer. Is that bad?**
 No — it just means `bv` is using polling instead of filesystem events for live reload (common on remote filesystems). Polling can add a small delay before updates appear.
 
-**Q: I see `⚠ STALE` / `✗ bg …` / `⚠ worker unresponsive` / `↻ recovered` in the footer.**
-These indicators mean the background worker hasn’t produced a fresh snapshot recently (or needed to self-heal). Try `Ctrl+R`/`F5`, check filesystem permissions/health, or temporarily disable background mode (`BV_BACKGROUND_MODE=0`) to fall back to synchronous reload.
+**Q: I see `✗ bg …` / `⚠ worker unresponsive` / `↻ recovered` in the footer.**
+These indicators report background worker errors or watchdog recovery. Try `Ctrl+R`/`F5`, check filesystem permissions/health, or temporarily disable background mode (`BV_BACKGROUND_MODE=0`) to fall back to synchronous reload. An unchanged event-driven snapshot is not classified by its age.
 
 **Q: I see "Cycles Detected" in the dashboard. What now?**
 A: A cycle (e.g., A → B → A) means your project logic is broken; no task can be finished first. Use the Insights Dashboard (`i`) to find the specific cycle members, then use `br` to remove one of the dependency links (e.g., `br unblock A --from B`).
@@ -3713,8 +3713,6 @@ bv has a comprehensive built-in help system:
 | `BV_CHANNEL_BUFFER` | Background worker message buffer size (worker → UI). | `8` |
 | `BV_HEARTBEAT_INTERVAL_S` | Background worker heartbeat interval (seconds). | `5` |
 | `BV_WATCHDOG_INTERVAL_S` | Background worker watchdog interval (seconds). | `10` |
-| `BV_FRESHNESS_WARN_S` | Snapshot staleness warning threshold (seconds). | `30` |
-| `BV_FRESHNESS_STALE_S` | Snapshot staleness critical threshold (seconds). | `120` |
 | `BV_MAX_LINE_SIZE_MB` | Max JSONL line size in MB (lines larger than this are skipped with a warning). | `10` |
 | `BV_NO_GITIGNORE` | Disable automatic ignore-file management for `.bv/` entirely (any non-empty value). See [Automatic `.bv/` ignore handling](#automatic-bv-ignore-handling). | (enabled) |
 | `BV_SKIP_PHASE2` | Skip Phase 2 graph metrics (centrality, cycles, critical path) (`1`/`0`). | (disabled) |
@@ -3795,8 +3793,6 @@ experimental:
 When background mode or live reload is enabled, the footer may display these indicators:
 
 - `◌ metrics…` — Phase 2 metrics are still computing; the UI renders immediately with Phase 1 data.
-- `⚠ 45s ago` — snapshot age warning (data is getting stale).
-- `⚠ STALE: 3m ago` — snapshot is stale.
 - `✗ bg <phase> (3x)` — background worker hit repeated errors building snapshots (phase shown; retry count in parentheses).
 - `↻ recovered xN` — watchdog recovered the background worker N times (transient failures/self-healing).
 - `⚠ worker unresponsive` — watchdog detected the worker is stuck and is recovering.
