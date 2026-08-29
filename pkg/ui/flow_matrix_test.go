@@ -5,8 +5,11 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // =============================================================================
@@ -318,8 +321,8 @@ func TestFlowMatrixModelSetDataEmpty(t *testing.T) {
 	m.SetSize(80, 24)
 
 	view := m.View()
-	if !strings.Contains(view, "No cross-label dependencies found") {
-		t.Error("View() should show 'no dependencies' for nil flow data")
+	if !strings.Contains(view, "No open cross-label blocking dependencies") {
+		t.Error("View() should show the empty flow state for nil flow data")
 	}
 	if got := lipgloss.Height(view); got != 24 {
 		t.Fatalf("empty flow height = %d, want 24", got)
@@ -412,28 +415,6 @@ func TestFlowMatrixModelBoundary(t *testing.T) {
 	}
 }
 
-func TestFlowMatrixModelTogglePanel(t *testing.T) {
-	theme := testFlowTheme()
-	m := ui.NewFlowMatrixModel(theme)
-
-	flow := &analysis.CrossLabelFlow{
-		Labels:     []string{"a", "b"},
-		FlowMatrix: [][]int{{0, 1}, {1, 0}},
-	}
-
-	m.SetData(flow, nil)
-	m.SetSize(80, 24)
-
-	m.TogglePanel()
-	view1 := m.View()
-	m.TogglePanel()
-	view2 := m.View()
-
-	if view1 == "" || view2 == "" {
-		t.Error("View() should not be empty after TogglePanel")
-	}
-}
-
 func TestFlowMatrixModelDrilldown(t *testing.T) {
 	theme := testFlowTheme()
 	m := ui.NewFlowMatrixModel(theme)
@@ -505,10 +486,133 @@ func TestFlowMatrixModelEmptyOperations(t *testing.T) {
 	m.GoToStart()
 	m.MoveUp()
 	m.MoveDown()
-	m.TogglePanel()
 	m.OpenDrilldown()
 
 	if m.SelectedLabel() != "" {
 		t.Errorf("SelectedLabel() = %q, want empty for empty model", m.SelectedLabel())
+	}
+}
+
+func TestFlowMatrixModelLinesFitConfiguredWidth(t *testing.T) {
+	theme := testFlowTheme()
+	m := ui.NewFlowMatrixModel(theme)
+	m.SetData(&analysis.CrossLabelFlow{
+		Labels: []string{"label-with-a-very-long-name", "another-long-label"},
+		FlowMatrix: [][]int{
+			{0, 5},
+			{2, 0},
+		},
+		TotalCrossLabelDeps: 7,
+		Dependencies: []analysis.LabelDependency{{
+			FromLabel: "label-with-a-very-long-name",
+			ToLabel:   "another-long-label",
+			BlockingPairs: []analysis.BlockingPair{{
+				BlockerID: "blocker", BlockedID: "blocked",
+				BlockerLabel: "label-with-a-very-long-name", BlockedLabel: "another-long-label",
+			}},
+		}},
+	}, []model.Issue{
+		{ID: "blocker", Title: "A deliberately long issue title that must be clipped", Status: model.StatusOpen},
+		{ID: "blocked", Title: "Another deliberately long issue title that must be clipped", Status: model.StatusOpen},
+	})
+
+	for _, width := range []int{27, 140} {
+		m.SetSize(width, 24)
+		for i, line := range strings.Split(m.View(), "\n") {
+			if got := lipgloss.Width(ansi.Strip(line)); got > width {
+				t.Errorf("width %d line %d has %d cells: %q", width, i, got, line)
+			}
+		}
+	}
+}
+
+func TestFlowMatrixModelTabDoesNotChangeView(t *testing.T) {
+	m := ui.NewFlowMatrixModel(testFlowTheme())
+	m.SetData(&analysis.CrossLabelFlow{
+		Labels:              []string{"backend", "frontend"},
+		FlowMatrix:          [][]int{{0, 1}, {0, 0}},
+		TotalCrossLabelDeps: 1,
+	}, nil)
+	m.SetSize(80, 24)
+	before := m.View()
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if after := m.View(); after != before {
+		t.Fatalf("Tab changed Flow view despite having no panel-focus behavior")
+	}
+	if strings.Contains(strings.ToLower(before), "tab") {
+		t.Fatalf("Flow view advertises Tab: %q", before)
+	}
+}
+
+func TestFlowMatrixModelZeroFlowDoesNotDrillDown(t *testing.T) {
+	m := ui.NewFlowMatrixModel(testFlowTheme())
+	m.SetData(&analysis.CrossLabelFlow{
+		Labels:              []string{"backend"},
+		FlowMatrix:          [][]int{{0}},
+		TotalCrossLabelDeps: 0,
+	}, []model.Issue{{ID: "unrelated", Title: "Unrelated label issue", Labels: []string{"backend"}, Status: model.StatusOpen}})
+	m.SetSize(80, 24)
+	view := m.View()
+
+	if !strings.Contains(view, "Flow counts open blocking cross-label dependencies") {
+		t.Fatalf("zero-flow view should explain its counting rule: %q", view)
+	}
+	if strings.Contains(view, "Unrelated label issue") {
+		t.Fatalf("zero-flow view showed a misleading drilldown issue: %q", view)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if issue := m.SelectedDrilldownIssue(); issue != nil {
+		t.Fatalf("zero-flow Enter opened %q", issue.ID)
+	}
+}
+
+func TestFlowMatrixModelDrilldownUsesDeterministicBlockingPairUnion(t *testing.T) {
+	m := ui.NewFlowMatrixModel(testFlowTheme())
+	m.SetData(&analysis.CrossLabelFlow{
+		Labels: []string{"a", "b", "c"},
+		FlowMatrix: [][]int{
+			{0, 1, 0},
+			{0, 0, 0},
+			{0, 0, 0},
+		},
+		TotalCrossLabelDeps: 2,
+		Dependencies: []analysis.LabelDependency{
+			{FromLabel: "c", ToLabel: "a", BlockingPairs: []analysis.BlockingPair{{
+				BlockerID: "c-blocker", BlockedID: "a-blocked", BlockerLabel: "c", BlockedLabel: "a",
+			}}},
+			{FromLabel: "a", ToLabel: "b", BlockingPairs: []analysis.BlockingPair{
+				{BlockerID: "a-blocker", BlockedID: "b-blocked", BlockerLabel: "a", BlockedLabel: "b"},
+				{BlockerID: "a-blocker", BlockedID: "b-blocked", BlockerLabel: "a", BlockedLabel: "b"},
+			}},
+		},
+	}, []model.Issue{
+		{ID: "z-unrelated", Title: "Unrelated label issue", Labels: []string{"a"}, Status: model.StatusOpen},
+		{ID: "b-blocked", Title: "b-blocked", Status: model.StatusOpen},
+		{ID: "a-blocker", Title: "a-blocker", Status: model.StatusOpen},
+		{ID: "a-blocked", Title: "a-blocked", Status: model.StatusOpen},
+		{ID: "c-blocker", Title: "c-blocker", Status: model.StatusOpen},
+	})
+	m.SetSize(100, 24)
+	m.OpenDrilldown()
+	view := m.View()
+
+	expectedOrder := []string{"a-blocked", "a-blocker", "b-blocked", "c-blocker"}
+	if !strings.Contains(view, "(4 issues)") {
+		t.Fatalf("drilldown count does not reflect deduplication: %q", view)
+	}
+	var renderedOrder []string
+	for _, line := range strings.Split(view, "\n") {
+		for _, id := range expectedOrder {
+			if strings.Contains(line, id) {
+				renderedOrder = append(renderedOrder, id)
+				break
+			}
+		}
+	}
+	if strings.Join(renderedOrder, "\x00") != strings.Join(expectedOrder, "\x00") {
+		t.Fatalf("drilldown issue order = %v, want %v", renderedOrder, expectedOrder)
+	}
+	if strings.Contains(view, "Unrelated label issue") {
+		t.Fatalf("drilldown included issue that only carries selected label: %q", view)
 	}
 }

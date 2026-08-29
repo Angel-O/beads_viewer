@@ -15,6 +15,7 @@ var ContextHelpContent = map[Context]string{
 	ContextTree:           contextHelpTree,
 	ContextBoard:          contextHelpBoard,
 	ContextInsights:       contextHelpInsights,
+	ContextFlowMatrix:     contextHelpFlowMatrix,
 	ContextHistory:        contextHelpHistory,
 	ContextDetail:         contextHelpDetail,
 	ContextSplit:          contextHelpSplit,
@@ -226,6 +227,23 @@ const contextHelpInsights = `## Insights Panel
 
   Enter     View selected issue
   Esc       Return to previous view`
+
+const contextHelpFlowMatrix = `## Dependency Flow
+
+**Navigation**
+  j/k       Move between labels
+  g/G       Jump to first/last label
+  Enter     Open cross-label issues
+
+**Understanding Flow**
+Flow counts open blocking dependencies
+that cross between different labels.
+The detail panel shows incoming and
+outgoing label totals.
+
+**Exit**
+  Esc / q   Return to the issue list
+  f         Close Flow view`
 
 const contextHelpHistory = `## History View
 
