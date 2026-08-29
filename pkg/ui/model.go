@@ -9224,6 +9224,62 @@ func (m *Model) updateViewportContent() {
 		sb.WriteString(fmt.Sprintf("**Labels:** %s\n\n", strings.Join(presentation.Labels, ", ")))
 	}
 
+	// Description
+	if item.Description != "" {
+		sb.WriteString("### Description\n")
+		sb.WriteString(item.Description + "\n\n")
+	}
+
+	// Comments
+	if len(item.Comments) > 0 {
+		sb.WriteString(fmt.Sprintf("### Comments (%d)\n", len(item.Comments)))
+		for index, comment := range item.Comments {
+			if comment == nil {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("> **[%d] %s** (%s)\n> \n> %s\n\n",
+				index+1,
+				comment.Author,
+				FormatTimeRel(comment.CreatedAt),
+				strings.ReplaceAll(comment.Text, "\n", "\n> ")))
+		}
+	}
+
+	// Design Notes
+	if item.Design != "" {
+		sb.WriteString("### Design Notes\n")
+		sb.WriteString(item.Design + "\n\n")
+	}
+
+	// Acceptance Criteria
+	if item.AcceptanceCriteria != "" {
+		sb.WriteString("### Acceptance Criteria\n")
+		sb.WriteString(item.AcceptanceCriteria + "\n\n")
+	}
+
+	// Notes
+	if item.Notes != "" {
+		sb.WriteString("### Notes\n")
+		sb.WriteString(item.Notes + "\n\n")
+	}
+
+	sb.WriteString(m.hubRelationshipMarkdown(item))
+
+	// Dependency Graph (Tree)
+	if len(item.Dependencies) > 0 {
+		rootNode := BuildDependencyTree(item.ID, m.issueMap, 3) // Max depth 3
+		treeStr := RenderDependencyTree(rootNode)
+		sb.WriteString("```\n" + treeStr + "```\n\n")
+	}
+
+	// History Section (if data is loaded)
+	if m.historyView.HasReport() {
+		historyMD := m.renderBeadHistoryMD(item.ID)
+		if historyMD != "" {
+			sb.WriteString(historyMD)
+		}
+	}
+
 	// Triage Insights (bv-151)
 	if issueItem.TriageScore > 0 || issueItem.TriageReason != "" || issueItem.UnblocksCount > 0 || issueItem.IsQuickWin || issueItem.IsBlocker {
 		sb.WriteString("### 🎯 Triage Insights\n")
@@ -9295,62 +9351,6 @@ func (m *Model) updateViewportContent() {
 	sb.WriteString(fmt.Sprintf("- **Impact Depth**: %.0f (downstream chain length)\n", imp))
 	sb.WriteString(fmt.Sprintf("- **Centrality**: PR %.4f • BW %.4f • EV %.4f\n", pr, bt, ev))
 	sb.WriteString(fmt.Sprintf("- **Flow Role**: Hub %.4f • Authority %.4f\n\n", hub, auth))
-
-	// Description
-	if item.Description != "" {
-		sb.WriteString("### Description\n")
-		sb.WriteString(item.Description + "\n\n")
-	}
-
-	// Design Notes
-	if item.Design != "" {
-		sb.WriteString("### Design Notes\n")
-		sb.WriteString(item.Design + "\n\n")
-	}
-
-	// Acceptance Criteria
-	if item.AcceptanceCriteria != "" {
-		sb.WriteString("### Acceptance Criteria\n")
-		sb.WriteString(item.AcceptanceCriteria + "\n\n")
-	}
-
-	// Notes
-	if item.Notes != "" {
-		sb.WriteString("### Notes\n")
-		sb.WriteString(item.Notes + "\n\n")
-	}
-
-	sb.WriteString(m.hubRelationshipMarkdown(item))
-
-	// Dependency Graph (Tree)
-	if len(item.Dependencies) > 0 {
-		rootNode := BuildDependencyTree(item.ID, m.issueMap, 3) // Max depth 3
-		treeStr := RenderDependencyTree(rootNode)
-		sb.WriteString("```\n" + treeStr + "```\n\n")
-	}
-
-	// Comments
-	if len(item.Comments) > 0 {
-		sb.WriteString(fmt.Sprintf("### Comments (%d)\n", len(item.Comments)))
-		for index, comment := range item.Comments {
-			if comment == nil {
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("> **[%d] %s** (%s)\n> \n> %s\n\n",
-				index+1,
-				comment.Author,
-				FormatTimeRel(comment.CreatedAt),
-				strings.ReplaceAll(comment.Text, "\n", "\n> ")))
-		}
-	}
-
-	// History Section (if data is loaded)
-	if m.historyView.HasReport() {
-		historyMD := m.renderBeadHistoryMD(item.ID)
-		if historyMD != "" {
-			sb.WriteString(historyMD)
-		}
-	}
 
 	rendered, err := m.renderer.Render(sb.String())
 	if err != nil {
