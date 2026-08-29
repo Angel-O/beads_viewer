@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 
@@ -23,10 +24,19 @@ type IssueDelegate struct {
 	RepositoryExtraWidth int  // Shared Hub +N sub-column width in cells
 	ShowSearchScores     bool // Show semantic/hybrid score badge when search is active
 	triageSlotWidth      int  // Shared visual width for the current list layout
+	layoutItems          []list.Item
+	useFullWidth         bool // Safe when the list is inside a wider body/panel
 	columns              *issueListColumns
 }
 
 const issueTypeIconSlotWidth = 2
+
+const (
+	// List metadata uses compact, fixed cells so filtered rows cannot change
+	// the start of the right-side columns or consume title space.
+	issueListAgeWidth      = 4
+	issueListCommentsWidth = 3
+)
 
 type issueListColumns struct {
 	width int
@@ -74,12 +84,13 @@ type issueListColumns struct {
 }
 
 // issueListColumns is the single list-level layout contract. It is computed
-// from all visible items, then consumed by both Render and the list header.
+// from the model's canonical issue catalog, then consumed by both Render and
+// the list header.
 func (d IssueDelegate) issueListColumnsFor(items []list.Item, listWidth int) *issueListColumns {
 	if listWidth <= 0 {
 		listWidth = 80
 	}
-	rowWidth := max(listWidth-1, 1)
+	rowWidth := d.rowWidthFor(listWidth)
 	columns := &issueListColumns{width: rowWidth, typeWidth: issueTypeIconSlotWidth}
 	issueItems := make([]IssueItem, 0, len(items))
 	for _, item := range items {
@@ -145,12 +156,9 @@ func (d IssueDelegate) issueListColumnsFor(items []list.Item, listWidth int) *is
 	if !columns.showLabels || rowWidth <= 140 {
 		columns.showLabels = false
 	}
-	columns.commentsWidth = 3
+	columns.commentsWidth = issueListCommentsWidth
 	columns.labelsWidth = 0
 	for _, i := range issueItems {
-		if columns.showComments && len(i.Issue.Comments) > 0 {
-			columns.commentsWidth = max(columns.commentsWidth, lipgloss.Width(fmt.Sprintf("💬%d", len(i.Issue.Comments))))
-		}
 		if columns.showLabels {
 			labels := i.Issue.Labels
 			if i.HubPresentation {
@@ -227,6 +235,16 @@ func (d IssueDelegate) issueListColumnsFor(items []list.Item, listWidth int) *is
 	return columns
 }
 
+func (d IssueDelegate) rowWidthFor(listWidth int) int {
+	if listWidth <= 0 {
+		listWidth = 80
+	}
+	if d.useFullWidth {
+		return max(listWidth, 1)
+	}
+	return max(listWidth-1, 1)
+}
+
 type issueListRightPart struct {
 	kind    string
 	start   int
@@ -238,7 +256,7 @@ func (d IssueDelegate) issueListRightParts(rowWidth int, columns *issueListColum
 	parts := make([]issueListRightPart, 0, 5)
 	if rowWidth > 60 {
 		parts = append(parts,
-			issueListRightPart{kind: "age", width: 8, visible: true},
+			issueListRightPart{kind: "age", width: issueListAgeWidth, visible: true},
 			issueListRightPart{kind: "comments", width: columns.commentsWidth, visible: true},
 		)
 	}
@@ -279,10 +297,82 @@ func (d IssueDelegate) columnsFor(m list.Model) *issueListColumns {
 	if width <= 0 {
 		width = 80
 	}
-	if d.columns != nil && d.columns.width == max(width-1, 1) {
+	if d.columns != nil && d.columns.width == d.rowWidthFor(width) {
 		return d.columns
 	}
-	return d.issueListColumnsFor(m.VisibleItems(), width)
+	items := d.layoutItems
+	if items == nil {
+		items = m.Items()
+	}
+	return d.issueListColumnsFor(items, width)
+}
+
+// formatIssueListAge is intentionally separate from FormatTimeRel. The list
+// has a small fixed metadata cell, while other views retain their full labels.
+func formatIssueListAge(createdAt time.Time) string {
+	return formatIssueListAgeAt(createdAt, time.Now())
+}
+
+func formatIssueListAgeAt(createdAt, now time.Time) string {
+	if createdAt.IsZero() {
+		return "n/a"
+	}
+
+	if createdAt.After(now) {
+		return "now"
+	}
+	calendarYears := now.Year() - createdAt.Year()
+	if calendarYears > 0 {
+		anniversary := createdAt.AddDate(calendarYears, 0, 0)
+		if anniversary.After(now) {
+			calendarYears--
+		}
+	}
+	if calendarYears >= 1 {
+		if calendarYears > 999 {
+			return "999+"
+		}
+		return fmt.Sprintf("%dy", calendarYears)
+	}
+
+	// The duration is bounded to less than one calendar year here, avoiding
+	// time.Duration saturation for historical timestamps.
+	age := now.Sub(createdAt)
+	switch {
+	case age < time.Minute:
+		return "now"
+	case age < time.Hour:
+		return fmt.Sprintf("%dm", int(age/time.Minute))
+	case age < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(age/time.Hour))
+	case age < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(age/(24*time.Hour)))
+	case age < 30*24*time.Hour:
+		return fmt.Sprintf("%dw", int(age/(7*24*time.Hour)))
+	case age < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo", int(age/(30*24*time.Hour)))
+	default:
+		// A leap-day timestamp can be just short of its calendar anniversary
+		// after 365 elapsed days. Keep that age bounded and understandable.
+		months := int(age / (30 * 24 * time.Hour))
+		if months < 1 {
+			months = 1
+		}
+		if months > 12 {
+			months = 12
+		}
+		return fmt.Sprintf("%dmo", months)
+	}
+}
+
+func formatIssueListComments(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	if count >= 10 {
+		return "💬+"
+	}
+	return fmt.Sprintf("💬%d", count)
 }
 
 func (d IssueDelegate) renderRightParts(i IssueItem, t Theme, columns *issueListColumns) []string {
@@ -291,11 +381,11 @@ func (d IssueDelegate) renderRightParts(i IssueItem, t Theme, columns *issueList
 		var value string
 		switch part.kind {
 		case "age":
-			age := truncateRunesHelper(FormatTimeRel(i.Issue.CreatedAt), part.width, "…")
+			age := truncateRunesHelper(formatIssueListAge(i.Issue.CreatedAt), part.width, "…")
 			value = t.MutedText.Render(padRight(age, part.width))
 		case "comments":
-			if len(i.Issue.Comments) > 0 {
-				value = t.InfoText.Render(fmt.Sprintf("💬%d", len(i.Issue.Comments)))
+			if commentCount := formatIssueListComments(len(i.Issue.Comments)); commentCount != "" {
+				value = t.InfoText.Render(commentCount)
 			} else {
 				value = strings.Repeat(" ", part.width)
 			}
@@ -434,7 +524,7 @@ func (d IssueDelegate) triageSlotWidthFor(items []list.Item, width int) int {
 	if width <= 0 {
 		width = 80
 	}
-	rowWidth := width - 1 // Render's edge-wrap guard
+	rowWidth := d.rowWidthFor(width)
 	maxReserve := 0
 	for _, item := range items {
 		i, ok := item.(IssueItem)
@@ -477,12 +567,7 @@ func (d IssueDelegate) triagePrefixWidth(i IssueItem, width int) int {
 func (d IssueDelegate) triageRightWidth(i IssueItem, width int) int {
 	rightWidth := 0
 	if width > 60 {
-		rightWidth += 9
-		if len(i.Issue.Comments) > 0 {
-			rightWidth += lipgloss.Width(fmt.Sprintf("💬%d", len(i.Issue.Comments))) + 1
-		} else {
-			rightWidth += 3
-		}
+		rightWidth += issueListAgeWidth + 1 + issueListCommentsWidth
 	}
 	if width > 120 {
 		rightWidth += 6
@@ -540,12 +625,7 @@ func (d IssueDelegate) rowWidthWithoutRepository(i IssueItem, width int) int {
 
 	rightWidth := 0
 	if width > 60 {
-		rightWidth += 9
-		if len(i.Issue.Comments) > 0 {
-			rightWidth += lipgloss.Width(fmt.Sprintf("💬%d", len(i.Issue.Comments))) + 1
-		} else {
-			rightWidth += 3
-		}
+		rightWidth += issueListAgeWidth + 1 + issueListCommentsWidth
 	}
 	if width > 120 {
 		rightWidth += 6
@@ -576,8 +656,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	if width <= 0 {
 		width = 80
 	}
-	// Reduce width by 1 to prevent terminal wrapping on the exact edge
-	width = width - 1
+	width = d.rowWidthFor(width)
 	columns := d.columnsFor(m)
 
 	isSelected := index == m.Index()

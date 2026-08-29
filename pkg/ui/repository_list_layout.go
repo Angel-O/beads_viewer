@@ -10,14 +10,19 @@ import (
 
 const repositoryListNameWidthCap = 16
 
-// repositoryListColumnWidths keeps the Hub repository column tied to the
-// active scope, not to whichever status-filtered rows happen to be visible.
+// repositoryListColumnWidths reserves the Hub repository column from the
+// catalog, not from whichever scope or filtered rows happen to be visible.
 func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 	if !m.hubRepositoryPresentation() || m.list.Width() <= 45 {
 		return 0, 0
 	}
 
-	repositories, includeContextless := m.repositoryListScopeCatalog()
+	repositories := make(model.RepositoryCatalog, 0, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind == model.RepositoryIdentityHubContext {
+			repositories = append(repositories, repository)
+		}
+	}
 	nameWidth := 0
 	for _, repository := range repositories {
 		name := repository.Name
@@ -26,9 +31,7 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		}
 		nameWidth = max(nameWidth, lipgloss.Width(name))
 	}
-	if includeContextless {
-		nameWidth = max(nameWidth, lipgloss.Width(contextlessRepositoryID))
-	}
+	nameWidth = max(nameWidth, lipgloss.Width(contextlessRepositoryID))
 	nameWidth = min(nameWidth, repositoryListNameWidthCap)
 	if nameWidth == 0 {
 		return 0, 0
@@ -39,7 +42,7 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 	// Variable row metadata must not steal width from an active repository
 	// label. Only the fixed minimum row determines when a narrow terminal
 	// requires truncation.
-	rowWidth := m.list.Width() - 1
+	rowWidth := delegate.rowWidthFor(m.list.Width())
 	minimum := IssueItem{Issue: model.Issue{IssueType: model.TypeTask, Status: model.StatusOpen}}
 	minimumReserve := delegate.rowWidthWithoutRepository(minimum, rowWidth)
 	availableNameWidth := rowWidth - minimumReserve - extraWidth - 3
@@ -58,7 +61,7 @@ func (m Model) repositoryListExtraWidth() int {
 	}
 
 	maxExtra := 0
-	for _, issue := range m.repositoryIssues {
+	for _, issue := range m.issues {
 		seen := make(map[string]struct{})
 		for _, label := range issue.Labels {
 			if _, known := knownContexts[label]; !known {
@@ -74,33 +77,4 @@ func (m Model) repositoryListExtraWidth() int {
 		return 0
 	}
 	return lipgloss.Width(fmt.Sprintf("+%d", maxExtra))
-}
-
-func (m Model) repositoryListScopeCatalog() (model.RepositoryCatalog, bool) {
-	includeContextless := false
-	selected := map[string]bool(nil)
-	switch m.hubScope.Mode {
-	case model.HubScopeContextless:
-		selected = make(map[string]bool)
-		includeContextless = true
-	case model.HubScopeSelectedContexts:
-		selected = make(map[string]bool, len(m.hubScope.Contexts))
-		for _, contextID := range m.hubScope.Contexts {
-			selected[contextID] = true
-		}
-		includeContextless = m.hubScope.IncludeContextless
-	default:
-		includeContextless = true
-	}
-
-	repositories := make(model.RepositoryCatalog, 0, len(m.repositoryCatalog))
-	for _, repository := range m.repositoryCatalog {
-		if repository.Kind != model.RepositoryIdentityHubContext {
-			continue
-		}
-		if selected == nil || selected[repository.ID] {
-			repositories = append(repositories, repository)
-		}
-	}
-	return repositories, includeContextless
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -53,6 +54,29 @@ func hasMarkerAt(line, marker string, offset int) bool {
 		searchStart = index + 1
 	}
 	return false
+}
+
+func listTitleWidth(columns *issueListColumns) int {
+	return max(columns.width-columns.titleStart-columns.rightWidth-1, 0)
+}
+
+func listColumnStarts(columns *issueListColumns) []int {
+	return []int{
+		columns.repoStart,
+		columns.typeStart,
+		columns.priorityStart,
+		columns.triageStart,
+		columns.statusStart,
+		columns.searchStart,
+		columns.idStart,
+		columns.diffStart,
+		columns.titleStart,
+		columns.ageStart,
+		columns.commentsStart,
+		columns.graphStart,
+		columns.assigneeStart,
+		columns.labelsStart,
+	}
 }
 
 func assertListHeaderOffsets(t *testing.T, view, issueID string, markers map[string]string) {
@@ -117,7 +141,7 @@ func TestListHeadersShareIssueDelegateDisplayCellOffsets(t *testing.T) {
 	single := m.renderListWithHeader()
 	assertListHeaderOffsets(t, single, issue.ID, markers)
 	header, row := listHeaderAndRow(t, single, issue.ID)
-	age := FormatTimeRel(created)
+	age := formatIssueListAge(created)
 	ageColumnOffset := displayOffset(row, age)
 	if displayOffset(header, "AGE") != ageColumnOffset {
 		t.Fatalf("AGE header does not align with its fixed age cell: header=%d row-cell=%d", displayOffset(header, "AGE"), ageColumnOffset)
@@ -238,6 +262,7 @@ func TestHeterogeneousListRowsUseOneHeaderContract(t *testing.T) {
 			"ID":    "alpha-1",
 			"DF":    "🆕",
 			"TITLE": "work alpha",
+			"AGE":   formatIssueListAge(created),
 			"CMT":   "💬2",
 			"ASGN":  "@alice",
 			"LBL":   "frontend",
@@ -297,16 +322,29 @@ func TestNarrowDiffSlotReservesIDAndRightMetadata(t *testing.T) {
 	l := list.New([]list.Item{item}, delegate, 0, 0)
 	l.SetWidth(72)
 	columns := delegate.issueListColumnsFor(l.VisibleItems(), l.Width())
+	if columns.width != l.Width()-1 {
+		t.Fatalf("standalone narrow contract width = %d, want guarded width %d", columns.width, l.Width()-1)
+	}
 
 	truncatedID := truncateRunesHelper(longID, 35, "…")
 	header := renderIssueListHeader(columns)
 	var buf strings.Builder
 	delegate.Render(&buf, l, 0, item)
 	row := buf.String()
+	for _, marker := range []string{"AGE", "CMT"} {
+		if !strings.Contains(header, marker) {
+			t.Fatalf("narrow header omitted required %s cell: %q", marker, header)
+		}
+	}
 	for headerMarker, rowMarker := range map[string]string{
-		"ID": truncatedID, "DF": "🆕", "TITLE": "keep", "AGE": FormatTimeRel(created),
+		"ID": truncatedID, "DF": "🆕", "TITLE": "keep", "AGE": formatIssueListAge(created), "CMT": "💬1",
 	} {
-		if displayOffset(header, headerMarker) != displayOffset(row, rowMarker) {
+		headerOffset := displayOffset(header, headerMarker)
+		rowOffset := displayOffset(row, rowMarker)
+		if headerOffset < 0 || rowOffset < 0 {
+			t.Fatalf("narrow %s marker missing: header=%q row=%q", headerMarker, header, row)
+		}
+		if headerOffset != rowOffset {
 			t.Fatalf("%s shifted in narrow diff row: header=%d row=%d\nheader=%q\nrow=%q", headerMarker, displayOffset(header, headerMarker), displayOffset(row, rowMarker), header, row)
 		}
 	}
@@ -342,14 +380,14 @@ func TestTitleAgeBoundaryKeepsOneDisplayCellGap(t *testing.T) {
 	listItems := []list.Item{item}
 	l := list.New(listItems, delegate, 0, 0)
 
-	for _, width := range []int{67, 68} {
+	for _, width := range []int{63, 64} {
 		l.SetWidth(width)
 		columns := delegate.issueListColumnsFor(l.VisibleItems(), l.Width())
 		header := renderIssueListHeader(columns)
 		var buf strings.Builder
 		delegate.Render(&buf, l, 0, item)
 		row := buf.String()
-		age := FormatTimeRel(created)
+		age := formatIssueListAge(created)
 		ageHeaderOffset := displayOffset(header, "AGE")
 		ageRowOffset := displayOffset(row, age)
 		if ageHeaderOffset != ageRowOffset {
@@ -361,7 +399,7 @@ func TestTitleAgeBoundaryKeepsOneDisplayCellGap(t *testing.T) {
 
 		titleAtStart := hasMarkerAt(header, "TITLE", columns.titleStart)
 		shortTitleAtStart := hasMarkerAt(header, "T", columns.titleStart)
-		if width == 67 {
+		if width == 63 {
 			if titleAtStart || shortTitleAtStart {
 				t.Fatalf("width %d should omit TITLE when no safe cell remains: %q", width, header)
 			}
@@ -391,8 +429,8 @@ func TestListHeaderOptionalSlotsFollowSharedResponsiveLayout(t *testing.T) {
 	}{
 		{width: 60},
 		{width: 62, wantComments: true},
-		{width: 101, wantComments: true},
-		{width: 102, wantComments: true, wantAssignee: true},
+		{width: 100, wantComments: true},
+		{width: 101, wantComments: true, wantAssignee: true},
 		{width: 142, wantComments: true, wantAssignee: true, wantLabels: true},
 	} {
 		m.list.SetSize(testCase.width, 10)
@@ -407,6 +445,389 @@ func TestListHeaderOptionalSlotsFollowSharedResponsiveLayout(t *testing.T) {
 		if got := strings.Contains(header, "LBL"); got != testCase.wantLabels {
 			t.Errorf("width %d LBL visibility=%v, want %v: %q", testCase.width, got, testCase.wantLabels, header)
 		}
+	}
+}
+
+func TestIssueListRowsRespectGuardedAndBoundedRightEdges(t *testing.T) {
+	item := newTestIssueItem("edge-1")
+	item.Issue.Title = "right edge"
+	item.Issue.CreatedAt = time.Now().Add(-2 * time.Hour)
+	item.Issue.Comments = make([]*model.Comment, 10)
+	theme := DefaultTheme(lipgloss.NewRenderer(nil))
+
+	for _, testCase := range []struct {
+		name         string
+		useFullWidth bool
+		listWidth    int
+	}{
+		{name: "guarded terminal list", listWidth: 180},
+		{name: "bounded body", useFullWidth: true, listWidth: 180},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			delegate := IssueDelegate{Theme: theme, useFullWidth: testCase.useFullWidth}
+			l := list.New([]list.Item{item}, delegate, 0, 0)
+			l.SetWidth(testCase.listWidth)
+			columns := delegate.issueListColumnsFor(l.Items(), l.Width())
+			var buf strings.Builder
+			delegate.Render(&buf, l, 0, item)
+			row := buf.String()
+			if got := lipgloss.Width(row); got > testCase.listWidth {
+				t.Fatalf("row width = %d, list width = %d: %q", got, testCase.listWidth, row)
+			}
+			if got := lipgloss.Width(row); got > columns.width {
+				t.Fatalf("row width = %d, contract width = %d: %q", got, columns.width, row)
+			}
+			if testCase.useFullWidth && columns.width != testCase.listWidth {
+				t.Fatalf("bounded contract width = %d, want %d", columns.width, testCase.listWidth)
+			}
+			if !testCase.useFullWidth && columns.width != testCase.listWidth-1 {
+				t.Fatalf("guarded contract width = %d, want %d", columns.width, testCase.listWidth-1)
+			}
+		})
+	}
+}
+
+func TestIssueListRightEdgeContractAcrossViewLayouts(t *testing.T) {
+	issue := model.Issue{
+		ID: "layout-edge", Title: "layout edge", Status: model.StatusOpen,
+		IssueType: model.TypeTask, CreatedAt: time.Now().Add(-2 * time.Hour),
+		Comments: []*model.Comment{{ID: "one"}},
+	}
+	assertLayout := func(t *testing.T, m Model, view string) {
+		t.Helper()
+		header, row := listHeaderAndRow(t, view, issue.ID)
+		for headerMarker, rowMarker := range map[string]string{
+			"AGE": "2h", "CMT": "💬1",
+		} {
+			if got, want := displayOffset(row, rowMarker), displayOffset(header, headerMarker); got != want {
+				t.Fatalf("%s offset = %d, want %d", rowMarker, got, want)
+			}
+		}
+	}
+	assertManagedWidth := func(t *testing.T, m Model) {
+		t.Helper()
+		delegate := m.issueListDelegate()
+		if !delegate.useFullWidth {
+			t.Fatal("model-managed List did not enable full-width mode")
+		}
+		if got, want := delegate.columns.width, m.list.Width(); got != want {
+			t.Fatalf("model-managed List width contract = %d, want full bounded width %d", got, want)
+		}
+		if got, want := lipgloss.Width(renderIssueListHeader(delegate.columns)), m.list.Width(); got != want {
+			t.Fatalf("model-managed header width = %d, want %d", got, want)
+		}
+		var buf strings.Builder
+		delegate.Render(&buf, m.list, 0, m.list.Items()[0])
+		if got, want := lipgloss.Width(buf.String()), m.list.Width(); got != want {
+			t.Fatalf("model-managed row width = %d, want %d", got, want)
+		}
+	}
+
+	t.Run("single", func(t *testing.T) {
+		m := sizedModel(t, []model.Issue{issue}, 80, 24)
+		if m.isSplitView {
+			t.Fatal("width 80 unexpectedly selected split view")
+		}
+		assertManagedWidth(t, m)
+		assertLayout(t, m, m.renderListWithHeader())
+	})
+
+	t.Run("split", func(t *testing.T) {
+		m := sizedModel(t, []model.Issue{issue}, 120, 24)
+		if !m.isSplitView {
+			t.Fatal("width 120 did not select split view")
+		}
+		assertManagedWidth(t, m)
+		assertLayout(t, m, m.renderSplitView())
+	})
+
+	t.Run("narrow", func(t *testing.T) {
+		m := sizedModel(t, []model.Issue{issue}, 72, 24)
+		if m.isSplitView {
+			t.Fatal("width 72 unexpectedly selected split view")
+		}
+		assertManagedWidth(t, m)
+		assertLayout(t, m, m.renderListWithHeader())
+	})
+
+	t.Run("shortcuts sidebar", func(t *testing.T) {
+		m := sizedModel(t, []model.Issue{issue}, 80, 24)
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
+		m = updated.(Model)
+		if !m.showShortcutsSidebar {
+			t.Fatal("shortcuts sidebar did not open")
+		}
+		assertManagedWidth(t, m)
+		assertLayout(t, m, m.renderListWithHeader())
+	})
+}
+
+func TestListMetadataBudgetImprovesTitleWidthAndIgnoresCommentPopulation(t *testing.T) {
+	item := newTestIssueItem("metadata-1")
+	item.Issue.Title = "A title with room to grow"
+	theme := DefaultTheme(lipgloss.NewRenderer(nil))
+	delegate := IssueDelegate{Theme: theme}
+	l := list.New([]list.Item{item}, delegate, 100, 10)
+
+	shortComments := delegate.issueListColumnsFor(l.Items(), l.Width())
+	item.Issue.Comments = make([]*model.Comment, 999)
+	longComments := delegate.issueListColumnsFor([]list.Item{item}, l.Width())
+	legacyRightWidth := 8 + 1 + 3 // Previous age cell plus one-comment CMT cell.
+
+	if shortComments.commentsWidth != issueListCommentsWidth || longComments.commentsWidth != issueListCommentsWidth {
+		t.Fatalf("comment width was not fixed: short=%d long=%d", shortComments.commentsWidth, longComments.commentsWidth)
+	}
+	if shortComments.rightWidth != longComments.rightWidth {
+		t.Fatalf("comment population changed right-side width: short=%d long=%d", shortComments.rightWidth, longComments.rightWidth)
+	}
+	if gain := listTitleWidth(shortComments) - (shortComments.width - shortComments.titleStart - legacyRightWidth - 1); gain < 2 {
+		t.Fatalf("title width gain = %d cells, want at least 2: columns=%+v", gain, shortComments)
+	}
+}
+
+func TestListMetadataValuesAlignAndKeepOldAgesLegible(t *testing.T) {
+	created := time.Now().Add(-100 * 365 * 24 * time.Hour)
+	items := []IssueItem{
+		newTestIssueItem("metadata-age"),
+		newTestIssueItem("metadata-many-comments"),
+	}
+	items[0].Issue.CreatedAt = created
+	items[0].Issue.Comments = nil
+	items[1].Issue.Comments = make([]*model.Comment, 1000)
+	listItems := []list.Item{items[0], items[1]}
+	theme := DefaultTheme(lipgloss.NewRenderer(nil))
+	delegate := IssueDelegate{Theme: theme}
+	l := list.New(listItems, delegate, 100, 10)
+	l.SetWidth(100)
+	columns := delegate.issueListColumnsFor(l.Items(), l.Width())
+	header := renderIssueListHeader(columns)
+
+	now := time.Date(2025, time.February, 28, 12, 0, 0, 0, time.UTC)
+	for _, testCase := range []struct {
+		name    string
+		created time.Time
+		want    string
+	}{
+		{name: "leap-day anniversary", created: time.Date(2024, time.February, 29, 12, 0, 0, 0, time.UTC), want: "12mo"},
+		{name: "old calendar age", created: time.Date(now.Year()-300, now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), want: "300y"},
+		{name: "large calendar age", created: time.Date(now.Year()-1000, now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), want: "999+"},
+	} {
+		if got := formatIssueListAgeAt(testCase.created, now); got != testCase.want {
+			t.Errorf("%s List age = %q, want %q", testCase.name, got, testCase.want)
+		}
+		if strings.Contains(formatIssueListAgeAt(testCase.created, now), "…") {
+			t.Errorf("%s List age was truncated: %q", testCase.name, formatIssueListAgeAt(testCase.created, now))
+		}
+	}
+	if got := formatIssueListComments(1000); got != "💬+" {
+		t.Fatalf("large comment count = %q, want compact marker", got)
+	}
+	for _, testCase := range []struct {
+		count int
+		want  string
+	}{
+		{count: 0, want: ""},
+		{count: 1, want: "💬1"},
+		{count: 9, want: "💬9"},
+		{count: 10, want: "💬+"},
+	} {
+		if got := formatIssueListComments(testCase.count); got != testCase.want {
+			t.Errorf("List comment count %d = %q, want %q", testCase.count, got, testCase.want)
+		}
+	}
+	for _, count := range []int{1, 9, 10} {
+		item := items[1]
+		item.Issue.Comments = make([]*model.Comment, count)
+		parts := delegate.renderRightParts(item, theme, columns)
+		if len(parts) < 2 || lipgloss.Width(parts[1]) != issueListCommentsWidth {
+			t.Errorf("comment count %d escaped fixed CMT cell: parts=%q", count, parts)
+		}
+	}
+
+	for index, item := range items {
+		var buf strings.Builder
+		delegate.Render(&buf, l, index, item)
+		row := buf.String()
+		age := formatIssueListAge(item.Issue.CreatedAt)
+		comments := formatIssueListComments(len(item.Issue.Comments))
+		if displayOffset(header, "AGE") != displayOffset(row, age) {
+			t.Errorf("row %d AGE is not aligned: header=%d row=%d", index, displayOffset(header, "AGE"), displayOffset(row, age))
+		}
+		if comments == "" {
+			rightParts := delegate.renderRightParts(item, theme, columns)
+			if len(rightParts) < 2 || lipgloss.Width(rightParts[1]) != columns.commentsWidth || strings.TrimSpace(rightParts[1]) != "" {
+				t.Errorf("row %d did not preserve its blank CMT slot: parts=%q", index, rightParts)
+			}
+		} else if displayOffset(header, "CMT") != displayOffset(row, comments) {
+			t.Errorf("row %d CMT is not aligned: header=%d row=%d", index, displayOffset(header, "CMT"), displayOffset(row, comments))
+		}
+	}
+	ageOffset := displayOffset(header, "AGE")
+	commentOffset := displayOffset(header, "CMT")
+	if commentOffset-ageOffset-lipgloss.Width("AGE") < 1 {
+		t.Fatalf("AGE/CMT header separator is missing: AGE=%d CMT=%d header=%q", ageOffset, commentOffset, header)
+	}
+}
+
+func TestListMetadataColumnsStayStableAcrossNavigationFiltersAndScopes(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "stable-long-id", Title: "Open item", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:short"}, Assignee: "alice", Comments: []*model.Comment{{ID: "one"}}},
+		{ID: "s", Title: "Closed item", Status: model.StatusClosed, IssueType: model.TypeBug, Labels: []string{"ctx:long"}, Comments: make([]*model.Comment, 999)},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:short", Name: "s", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:long", Name: "long-repository", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.list.SetSize(120, 1)
+	m.refreshRepositoryPresentation()
+
+	contract := func() (int, int, int) {
+		t.Helper()
+		columns := m.issueListDelegate().columns
+		return columns.titleStart, columns.ageStart, columns.commentsStart
+	}
+	wantTitle, wantAge, wantComments := contract()
+
+	m.list.Select(1)
+	if title, age, comments := contract(); title != wantTitle || age != wantAge || comments != wantComments {
+		t.Fatalf("selection moved List columns: got title=%d age=%d cmt=%d, want title=%d age=%d cmt=%d", title, age, comments, wantTitle, wantAge, wantComments)
+	}
+	m.list.NextPage()
+	if title, age, comments := contract(); title != wantTitle || age != wantAge || comments != wantComments {
+		t.Fatalf("page navigation moved List columns: got title=%d age=%d cmt=%d, want title=%d age=%d cmt=%d", title, age, comments, wantTitle, wantAge, wantComments)
+	}
+
+	m.list.SetFilterText("Closed")
+	m.updateListDelegate()
+	if title, age, comments := contract(); title != wantTitle || age != wantAge || comments != wantComments {
+		t.Fatalf("filter moved List columns: got title=%d age=%d cmt=%d, want title=%d age=%d cmt=%d", title, age, comments, wantTitle, wantAge, wantComments)
+	}
+
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:short"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	if title, age, comments := contract(); title != wantTitle || age != wantAge || comments != wantComments {
+		t.Fatalf("repository scope moved List columns: got title=%d age=%d cmt=%d, want title=%d age=%d cmt=%d", title, age, comments, wantTitle, wantAge, wantComments)
+	}
+}
+
+func TestListLayoutUsesCanonicalIssuesWhenFiltersRemoveWidestMetadata(t *testing.T) {
+	wideID := strings.Repeat("widest-id-", 5)
+	issues := []model.Issue{
+		{ID: wideID, Title: "Wide metadata owner", Status: model.StatusOpen, IssueType: model.TypeBug, Labels: []string{"ctx:wide", "sole-label"}, Assignee: "sole-assignee"},
+		{ID: "narrow", Title: "Narrow metadata", Status: model.StatusClosed, IssueType: model.TypeTask, Labels: []string{"ctx:narrow"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:wide", Name: "wide-repository", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:narrow", Name: "narrow", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.timeTravelMode = true
+	m.newIssueIDs = map[string]bool{wideID: true}
+	m.quickWinSet = map[string]bool{wideID: true}
+	m.unblocksMap = map[string][]string{wideID: {"one", "two", "three"}}
+	m.list.SetSize(180, 5)
+	items := m.list.Items()
+	for index, item := range items {
+		issueItem := item.(IssueItem)
+		if issueItem.Issue.ID == wideID {
+			issueItem.DiffStatus = DiffStatusNew
+			issueItem.IsQuickWin = true
+			issueItem.UnblocksCount = 3
+			items[index] = issueItem
+		}
+	}
+	m.list.SetItems(items)
+	m.refreshRepositoryPresentation()
+
+	contract := func() []int {
+		t.Helper()
+		return listColumnStarts(m.issueListDelegate().columns)
+	}
+	want := contract()
+
+	m.currentFilter = "closed"
+	m.applyFilter()
+	if got := contract(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("status filter changed List starts: got %v, want %v", got, want)
+	}
+
+	m.currentFilter = "all"
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeTask: true}
+	m.applyFilter()
+	if got := contract(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("type filter changed List starts: got %v, want %v", got, want)
+	}
+
+	m.activeIssueTypes = nil
+	m.currentFilter = "recipe:stable"
+	r := &recipe.Recipe{Filters: recipe.FilterConfig{Status: []string{"closed"}}}
+	m.activeRecipe = r
+	m.applyRecipe(r)
+	if got := contract(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("recipe filter changed List starts: got %v, want %v", got, want)
+	}
+
+	m.activeRecipe = nil
+	m.currentFilter = "all"
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:narrow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	if got := contract(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("scope filter changed List starts after removing widest ID/metadata owners: got %v, want %v", got, want)
+	}
+}
+
+func TestHubListExtraWidthUsesCanonicalIssuesAfterLargestIssueLeavesScope(t *testing.T) {
+	wideID := "wide-contexts"
+	issues := []model.Issue{
+		{ID: wideID, Title: "Wide contexts", Status: model.StatusOpen, Labels: []string{"ctx:wide"}},
+		{ID: "narrow-context", Title: "Narrow context", Status: model.StatusOpen, Labels: []string{"ctx:narrow"}},
+	}
+	catalog := model.RepositoryCatalog{
+		{ID: "ctx:wide", Name: "wide", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:narrow", Name: "narrow", Kind: model.RepositoryIdentityHubContext},
+	}
+	for index := 0; index < 12; index++ {
+		contextID := fmt.Sprintf("ctx:extra-%02d", index)
+		catalog = append(catalog, model.RepositoryCatalogEntry{ID: contextID, Name: contextID, Kind: model.RepositoryIdentityHubContext})
+		issues[0].Labels = append(issues[0].Labels, contextID)
+	}
+
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.repositoryCatalog = catalog
+	m.list.SetSize(120, 10)
+	m.refreshRepositoryPresentation()
+	_, wantExtra := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
+	if wantExtra != lipgloss.Width("+12") {
+		t.Fatalf("initial canonical +N width = %d, want %d", wantExtra, lipgloss.Width("+12"))
+	}
+
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:narrow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	_, gotExtra := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
+	if gotExtra != wantExtra {
+		t.Fatalf("+N width changed after removing largest multi-context issue: got %d, want %d", gotExtra, wantExtra)
+	}
+	if got := visibleIssueIDs(m); !reflect.DeepEqual(got, []string{"narrow-context"}) {
+		t.Fatalf("scope retained the wide multi-context issue: %v", got)
 	}
 }
 
@@ -503,7 +924,7 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 	}
 }
 
-func TestHubListRepositoryWidthUsesActiveScopeOnly(t *testing.T) {
+func TestHubListRepositoryWidthUsesStableCatalogPolicy(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "short", Title: "Short repository", Status: model.StatusOpen, Labels: []string{"ctx:s"}},
 		{ID: "inbox", Title: "Contextless", Status: model.StatusOpen},
@@ -525,8 +946,8 @@ func TestHubListRepositoryWidthUsesActiveScopeOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	nameWidth, _ := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
-	if nameWidth != lipgloss.Width("s") {
-		t.Fatalf("active short-scope repository width = %d, want %d", nameWidth, lipgloss.Width("s"))
+	if nameWidth != 12 {
+		t.Fatalf("stable repository width = %d, want 12", nameWidth)
 	}
 	if strings.Contains(m.list.View(), "beads_viewer") {
 		t.Fatalf("inactive repository widened or leaked into short scope:\n%s", m.list.View())
@@ -540,8 +961,8 @@ func TestHubListRepositoryWidthUsesActiveScopeOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	nameWidth, _ = contextless.repositoryListColumnWidths(IssueDelegate{Theme: contextless.theme})
-	if nameWidth != lipgloss.Width(contextlessRepositoryID) {
-		t.Fatalf("contextless repository width = %d, want %d", nameWidth, lipgloss.Width(contextlessRepositoryID))
+	if nameWidth != lipgloss.Width("beads_viewer") {
+		t.Fatalf("stable contextless repository width = %d, want %d", nameWidth, lipgloss.Width("beads_viewer"))
 	}
 }
 

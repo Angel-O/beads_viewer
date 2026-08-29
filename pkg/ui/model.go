@@ -1204,10 +1204,53 @@ func (m Model) issueListDelegate() IssueDelegate {
 		ShowRepositories:  m.hubRepositoryPresentation(),
 		ShowSearchScores:  m.shouldShowSearchScores(),
 	}
+	// Model-managed lists are sized by applyContentSizing to their exact body
+	// or panel bounds, including ordinary single-column and narrow layouts.
+	// Standalone IssueDelegate values retain the one-cell edge guard.
+	delegate.useFullWidth = true
 	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidths(delegate)
-	delegate.triageSlotWidth = delegate.triageSlotWidthFor(m.list.VisibleItems(), m.list.Width())
-	delegate.columns = delegate.issueListColumnsFor(m.list.VisibleItems(), m.list.Width())
+	// Build geometry from the complete model catalog, not the filtered or scoped
+	// list, so filtering cannot move shared row/header column starts.
+	delegate.layoutItems = m.issueListLayoutItems()
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(delegate.layoutItems, m.list.Width())
+	delegate.columns = delegate.issueListColumnsFor(delegate.layoutItems, m.list.Width())
 	return delegate
+}
+
+func (m *Model) issueListLayoutItems() []list.Item {
+	if len(m.issues) == 0 {
+		return m.list.Items()
+	}
+
+	current := make(map[string]IssueItem, len(m.list.Items()))
+	for _, item := range m.list.Items() {
+		issueItem, ok := item.(IssueItem)
+		if ok {
+			current[issueItem.Issue.ID] = issueItem
+		}
+	}
+
+	items := make([]list.Item, 0, len(m.issues))
+	for _, issue := range m.issues {
+		issueItem, ok := current[issue.ID]
+		if !ok {
+			issueItem = IssueItem{
+				Issue:      issue,
+				DiffStatus: m.getDiffStatus(issue.ID),
+				RepoPrefix: issueRepoKey(issue),
+			}
+			m.decorateIssueItem(&issueItem)
+			issueItem.TriageScore = m.triageScores[issue.ID]
+			issueItem.IsQuickWin = m.quickWinSet[issue.ID]
+			issueItem.IsBlocker = m.blockerSet[issue.ID]
+			issueItem.UnblocksCount = len(m.unblocksMap[issue.ID])
+		}
+		// Keep canonical issue metadata even when the current row is decorated
+		// for a filtered or scoped presentation.
+		issueItem.Issue = issue
+		items = append(items, issueItem)
+	}
+	return items
 }
 
 func (m *Model) updateListDelegate() {
