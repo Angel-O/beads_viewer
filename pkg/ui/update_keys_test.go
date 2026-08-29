@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -368,6 +369,118 @@ func TestTreeTransitionSynchronizesListSelection(t *testing.T) {
 				t.Fatalf("List -> Tree viewport offset = %d, want %d", offset, tc.wantOffset)
 			}
 		})
+	}
+}
+
+func TestGraphToTreeRevealsCollapsedDescendant(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "tree-root", Title: "Tree root", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeEpic},
+		{ID: "tree-parent", Title: "Tree parent", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeEpic, Dependencies: []*model.Dependency{{DependsOnID: "tree-root", Type: model.DepParentChild}}},
+		{ID: "tree-target", Title: "Tree target", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{DependsOnID: "tree-parent", Type: model.DepParentChild}}},
+	}
+
+	m := NewModel(issues, nil, "")
+	m.width, m.height = 120, 4
+	m.tree.Build(issues)
+	m.tree.issueMap["tree-parent"].Expanded = false
+	m.tree.rebuildFlatList()
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if !m.graphView.SelectByID("tree-target") {
+		t.Fatal("test graph selection failed")
+	}
+
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree || m.tree.GetSelectedID() != "tree-target" {
+		t.Fatalf("Graph -> Tree selection = %q, focus=%v, want tree-target/tree", m.tree.GetSelectedID(), m.focused)
+	}
+	if !m.tree.issueMap["tree-parent"].Expanded || m.tree.GetViewportOffset() == 0 || !strings.Contains(ansi.Strip(m.tree.View()), "tree-target") {
+		t.Fatalf("Graph -> Tree selection was not visible: offset=%d view=%q", m.tree.GetViewportOffset(), m.tree.View())
+	}
+}
+
+func TestGraphToTreeUsesProjectionFallback(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "aaa-excluded", Title: "Excluded root", Status: model.StatusOpen, Priority: 0},
+		{ID: "tree-root", Title: "Tree root", Status: model.StatusOpen, Priority: 1, Labels: []string{"focus"}},
+		{ID: "tree-cycle-a", Title: "Cycle A", Status: model.StatusOpen, Labels: []string{"focus"}, Dependencies: []*model.Dependency{{DependsOnID: "tree-cycle-b", Type: model.DepParentChild}}},
+		{ID: "tree-cycle-b", Title: "Cycle B", Status: model.StatusOpen, Labels: []string{"focus"}, Dependencies: []*model.Dependency{{DependsOnID: "tree-cycle-a", Type: model.DepParentChild}}},
+	}
+	m := NewModel(issues, nil, "")
+	r := &recipe.Recipe{Name: "focused", Filters: recipe.FilterConfig{Tags: []string{"focus"}}}
+	m.setActiveRecipe(r)
+	m.applyRecipe(r)
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if !m.graphView.SelectByID("tree-cycle-a") {
+		t.Fatal("test graph selection failed")
+	}
+
+	updated, _ = m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree || m.tree.GetSelectedID() != "tree-root" {
+		t.Fatalf("Graph -> Tree fallback = %q, focus=%v, want tree-root/tree", m.tree.GetSelectedID(), m.focused)
+	}
+}
+
+func TestTreeToGraphTransfersSelectionAndViewport(t *testing.T) {
+	issues := make([]model.Issue, 0, 21)
+	for i := 0; i < 20; i++ {
+		issues = append(issues, model.Issue{
+			ID: fmt.Sprintf("graph-node-%02d", i), Title: "Graph node", Status: model.StatusOpen,
+			Priority: 1, IssueType: model.TypeTask,
+		})
+	}
+	issues = append(issues, model.Issue{ID: "graph-target", Title: "Graph target", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask})
+
+	m := NewModel(issues, nil, "")
+	m.width, m.height = 120, 8
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if !m.tree.SelectByID("graph-target") {
+		t.Fatal("test tree selection failed")
+	}
+
+	updated, _ = m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("first Tree graph shortcut changed focus to %v", m.focused)
+	}
+	updated, _ = m.Update(comboTickMsg{key: "g"})
+	m = updated.(Model)
+	if m.focused != focusGraph || m.graphView.SelectedIssue() == nil || m.graphView.SelectedIssue().ID != "graph-target" {
+		t.Fatalf("Tree -> Graph selection = %#v, focus=%v, want graph-target/graph", m.graphView.SelectedIssue(), m.focused)
+	}
+	m.graphView.View(m.width, m.height)
+	if m.graphView.scrollOffset == 0 {
+		t.Fatalf("Tree -> Graph selection did not move destination viewport: offset=%d", m.graphView.scrollOffset)
+	}
+}
+
+func TestTreeToGraphUsesProjectionFallback(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "todo-note", Title: "Captured note", Status: model.StatusOpen, IssueType: "todo", Labels: []string{"focus"}},
+		{ID: "aaa-excluded", Title: "Excluded issue", Status: model.StatusOpen, Priority: 0},
+		{ID: "visible-a", Title: "Visible A", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"focus"}},
+		{ID: "visible-b", Title: "Visible B", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"focus"}},
+	}
+	m := NewModel(issues, nil, "")
+	r := &recipe.Recipe{Name: "focused", Filters: recipe.FilterConfig{Tags: []string{"focus"}}}
+	m.setActiveRecipe(r)
+	m.applyRecipe(r)
+	selectListIssueForTest(t, &m, "todo-note")
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.tree.GetSelectedID() != "todo-note" {
+		t.Fatalf("Tree setup selection = %q, want todo-note", m.tree.GetSelectedID())
+	}
+	updated, _ = m.Update(keyMsg("g"))
+	m = updated.(Model)
+	updated, _ = m.Update(comboTickMsg{key: "g"})
+	m = updated.(Model)
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "visible-a" {
+		t.Fatalf("Tree -> Graph fallback = %#v, want visible-a", selected)
 	}
 }
 

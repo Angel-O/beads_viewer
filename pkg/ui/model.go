@@ -2328,6 +2328,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Combo timeout expired (bv-6fm0). If pending key matches AND we're still
 		// in the same focus context, dispatch it as single key.
 		if m.pendingComboKey == msg.key && (m.pendingComboFocus == focusBoard || m.pendingComboFocus == focusTree) && m.focused == m.pendingComboFocus {
+			treeSelectedID := ""
+			if m.pendingComboFocus == focusTree {
+				treeSelectedID = m.tree.GetSelectedID()
+			}
 			// Clear pending state
 			m.pendingComboKey = ""
 			m.pendingComboTime = time.Time{}
@@ -2339,7 +2343,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isActionableView = false
 				m.isHistoryView = false
 				m.focused = focusGraph
-				m.applyFilter()
+				m.refreshBoardAndGraphForCurrentFilter()
+				if m.pendingComboFocus == focusTree {
+					if !m.graphView.SelectByID(treeSelectedID) {
+						m.graphView.selectFirst()
+					}
+				}
 			}
 		} else if m.pendingComboKey == msg.key {
 			// Focus changed or combo was cancelled - just clear pending state
@@ -4519,7 +4528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.isHistoryView = false
 					return m, nil
 				}
-				listSelectedID := m.selectedListIssueID()
+				selectedID := m.selectedListIssueID()
 				m.clearAttentionOverlay()
 				m.isGraphView = true
 				m.isBoardView = false
@@ -4527,7 +4536,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isHistoryView = false
 				m.focused = focusGraph
 				m.refreshBoardAndGraphForCurrentFilter()
-				if !m.graphView.SelectByID(listSelectedID) {
+				if !m.graphView.SelectByID(selectedID) {
 					m.graphView.selectFirst()
 				}
 				return m, nil
@@ -4556,9 +4565,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.focused == focusTree {
 					m.focused = focusList
 				} else {
-					listSelectedID := ""
-					if m.focused == focusList {
-						listSelectedID = m.selectedListIssueID()
+					selectedID := ""
+					switch m.focused {
+					case focusList:
+						selectedID = m.selectedListIssueID()
+					case focusGraph:
+						if selected := m.graphView.SelectedIssue(); selected != nil {
+							selectedID = selected.ID
+						}
 					}
 					m.isGraphView = false
 					m.isBoardView = false
@@ -4566,8 +4580,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.isHistoryView = false
 					m.rebuildRepositoryTree()
 					m.tree.SetSize(m.mainContentWidth(), m.height-1)
-					if listSelectedID != "" && m.tree.SelectByID(listSelectedID) {
-						m.tree.ensureCursorVisible()
+					if selectedID != "" {
+						m.tree.SelectByIDAndReveal(selectedID)
 					}
 					m.focused = focusTree
 				}
