@@ -143,7 +143,7 @@ func TestIssueDetailSectionOrder(t *testing.T) {
 	content := ansi.Strip(m.viewport.View())
 	orderedSections := []string{
 		"ID",
-		"Repositories:",
+		"Context:",
 		"Labels:",
 		"Description",
 		"Comments",

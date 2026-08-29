@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -204,6 +205,45 @@ func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
 		t.Fatalf("async scope = %#v, want ctx:alpha", scope)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+}
+
+func TestPendingDefaultScopeNormalizesActiveContextSort(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.sortMode = SortContextCreated
+	m.applyFilter()
+	for i, item := range m.list.Items() {
+		if item.(IssueItem).Issue.ID == "alpha" {
+			m.list.Select(i)
+			break
+		}
+	}
+	if m.SetDefaultRepositoryScope("ctx:alpha") {
+		t.Fatal("default applied before the initial catalog arrived")
+	}
+
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{
+		Generation: 1,
+		Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta"),
+	})
+	m = updated.(Model)
+	if m.sortMode != SortDefault {
+		t.Fatalf("sort mode after pending default scope = %v, want Default", m.sortMode)
+	}
+	if strings.Contains(m.renderFooter(), "Ctx +") {
+		t.Fatal("context sort badge remained after pending default scope narrowed to one context")
+	}
+	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || !slices.Equal(scope.Contexts, []string{"ctx:alpha"}) {
+		t.Fatalf("scope after pending default application = %#v", scope)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "alpha" {
+		t.Fatalf("selected issue after pending default application = %q, want alpha", selected)
+	}
 }
 
 func TestRejectedHubScopePreservesPendingDefault(t *testing.T) {
@@ -653,7 +693,7 @@ func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {
 	m.refreshRepositoryPresentation()
 
 	listDetail := m.viewport.View()
-	if !containsAll(listDetail, "Repositories:", "alpha/service", "Labels:", "backend") || strings.Contains(listDetail, "ctx:alpha") {
+	if !containsAll(listDetail, "Context:", "alpha/service", "Labels:", "backend") || strings.Contains(listDetail, "Repositories:") || strings.Contains(listDetail, "ctx:alpha") {
 		t.Fatalf("list detail presentation:\n%s", listDetail)
 	}
 
@@ -773,6 +813,313 @@ func TestHubCatalogRefreshPreservesActiveFuzzyResults(t *testing.T) {
 	}
 }
 
+func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Title: "Issue one", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
+		{ID: "two", Title: "Issue two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
+	}
+	oldCatalog := model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+	}
+	newCatalog := model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+	}
+
+	for _, mode := range []SortMode{SortContextCreated, SortContextPriority} {
+		for _, filtered := range []bool{false, true} {
+			name := mode.String()
+			if filtered {
+				name += "/filtered"
+			}
+			t.Run(name, func(t *testing.T) {
+				m := NewModel(issues, nil, "")
+				m.hubConfigPath = "hub.yaml"
+				m.repositoryCatalog = oldCatalog
+				m.sortMode = mode
+				m.applyFilter()
+				requireIssueIDs(t, visibleIssueIDs(m), "two", "one")
+				if filtered {
+					m.list.SetFilterText("")
+				}
+				m.list.Select(1)
+				if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+					t.Fatalf("selected before catalog refresh = %q, want one", selected)
+				}
+
+				updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: newCatalog})
+				m = updated.(Model)
+				requireIssueIDs(t, visibleIssueIDs(m), "one", "two")
+				if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+					t.Fatalf("selected after catalog refresh = %q, want one", selected)
+				}
+			})
+		}
+	}
+
+	t.Run("catalog shrink falls back to default", func(t *testing.T) {
+		m := NewModel(issues, nil, "")
+		m.hubConfigPath = "hub.yaml"
+		m.repositoryCatalog = oldCatalog
+		m.sortMode = SortContextCreated
+		m.applyFilter()
+		m.list.Select(1)
+		if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+			t.Fatalf("selected before catalog shrink = %q, want one", selected)
+		}
+
+		updated, _ := m.Update(RepositoryCatalogReadyMsg{
+			Generation: 2,
+			Catalog:    model.RepositoryCatalog{oldCatalog[0]},
+		})
+		m = updated.(Model)
+		if m.sortMode != SortDefault {
+			t.Fatalf("sort mode after catalog shrink = %v, want Default", m.sortMode)
+		}
+		requireIssueIDs(t, visibleIssueIDs(m), "one", "two")
+		if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+			t.Fatalf("selected after catalog shrink = %q, want one", selected)
+		}
+	})
+}
+
+func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:one": "/one"})
+	issues := []model.Issue{
+		{ID: "one", Title: "One", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
+		{ID: "two", Title: "Two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
+	}
+
+	for _, mode := range []SortMode{SortContextCreated, SortContextPriority} {
+		t.Run(mode.String(), func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			m.repositoryCatalog = model.RepositoryCatalog{
+				{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+				{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+			}
+			m.sortMode = mode
+			m.applyFilter()
+			m.list.Select(1)
+
+			m.SetHistoryProvider(correlation.HistoryModeExternal, configPath)
+			if m.sortMode != SortDefault {
+				t.Fatalf("sort mode after synchronous catalog reload = %v, want Default", m.sortMode)
+			}
+			requireIssueIDs(t, visibleIssueIDs(m), "one", "two")
+			if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+				t.Fatalf("selected issue after synchronous catalog reload = %q, want one", selected)
+			}
+		})
+	}
+}
+
+func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:one": "/one"})
+	issues := []model.Issue{
+		{ID: "one", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
+		{ID: "two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = configPath
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.sortMode = SortContextCreated
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:one", "ctx:two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	m.list.Select(1)
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "two" {
+		t.Fatalf("selected before synchronous catalog reload = %q, want two", selected)
+	}
+
+	m.SetHistoryProvider(correlation.HistoryModeExternal, configPath)
+	if got := m.HubScope(); got.Mode != model.HubScopeSelectedContexts || !slices.Equal(got.Contexts, []string{"ctx:one"}) {
+		t.Fatalf("scope after synchronous catalog reload = %#v", got)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "one")
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+		t.Fatalf("selected after removed context = %q, want one", selected)
+	}
+}
+
+func TestSetHubScopeNormalizesContextSortAndPreservesVisibleSelection(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Status: model.StatusOpen, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:one"}},
+		{ID: "two", Status: model.StatusOpen, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:two"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+	}
+	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:one", "ctx:two")); err != nil {
+		t.Fatal(err)
+	}
+	m.sortMode = SortContextCreated
+	m.applyFilter()
+	for i, item := range m.list.Items() {
+		if item.(IssueItem).Issue.ID == "one" {
+			m.list.Select(i)
+			break
+		}
+	}
+
+	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:one")); err != nil {
+		t.Fatal(err)
+	}
+	if m.sortMode != SortDefault {
+		t.Fatalf("sort mode after narrowing scope = %v, want Default", m.sortMode)
+	}
+	if strings.Contains(m.renderFooter(), SortContextCreated.String()) {
+		t.Fatal("context sort badge remained after narrowing scope")
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "one")
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+		t.Fatalf("selected issue after narrowing scope = %q, want one", selected)
+	}
+}
+
+func TestEnableWorkspaceModeNormalizesUnavailableContextSort(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     SortMode
+		issues   []model.Issue
+		selected string
+		want     []string
+	}{
+		{
+			name: "context created",
+			mode: SortContextCreated,
+			issues: []model.Issue{
+				{ID: "api-1", Status: model.StatusOpen, Priority: 1, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:one"}},
+				{ID: "api-2", Status: model.StatusOpen, Priority: 2, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:two"}},
+			},
+			selected: "api-2",
+			want:     []string{"api-1", "api-2"},
+		},
+		{
+			name: "context priority",
+			mode: SortContextPriority,
+			issues: []model.Issue{
+				{ID: "api-1", Status: model.StatusOpen, Priority: 1, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:one"}},
+				{ID: "api-2", Status: model.StatusOpen, Priority: 1, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:two"}},
+			},
+			selected: "api-1",
+			want:     []string{"api-2", "api-1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(tt.issues, nil, "")
+			m.repositoryCatalog = model.RepositoryCatalog{
+				{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+				{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+			}
+			m.sortMode = tt.mode
+			m.applyFilter()
+			for i, item := range m.list.Items() {
+				if item.(IssueItem).Issue.ID == tt.selected {
+					m.list.Select(i)
+					break
+				}
+			}
+
+			m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 1, RepoPrefixes: []string{"api"}})
+			if m.sortMode != SortDefault {
+				t.Fatalf("sort mode after workspace catalog replacement = %v, want Default", m.sortMode)
+			}
+			requireIssueIDs(t, visibleIssueIDs(m), tt.want...)
+			if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != tt.selected {
+				t.Fatalf("selected issue after workspace catalog replacement = %q, want %q", selected, tt.selected)
+			}
+			if m.contextSortModesAvailable() {
+				t.Fatal("workspace-prefix catalog was counted as Hub contexts")
+			}
+		})
+	}
+}
+
+func TestCandidateRefreshNormalizesWhenEffectiveContextDisappears(t *testing.T) {
+	m := NewModel([]model.Issue{{
+		ID: "both", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"},
+	}}, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:alpha")); err != nil {
+		t.Fatal(err)
+	}
+	m.sortMode = SortContextCreated
+	m.refreshRepositoryCandidates()
+	if m.sortMode != SortContextCreated {
+		t.Fatalf("sort mode with secondary effective context = %v, want Context + Created", m.sortMode)
+	}
+
+	m.issues[0].Labels = []string{"ctx:alpha"}
+	m.refreshRepositoryCandidates()
+	if m.sortMode != SortDefault {
+		t.Fatalf("sort mode after effective context disappeared = %v, want Default", m.sortMode)
+	}
+	if strings.Contains(m.renderFooter(), "Ctx +") {
+		t.Fatal("context sort badge remained after effective context disappeared")
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "both")
+}
+
+func TestAsyncCatalogScopeReconcilePreservesSelectionAfterContextFallback(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one-a", Status: model.StatusOpen, Priority: 1, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:one"}},
+		{ID: "one-b", Status: model.StatusOpen, Priority: 1, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:one"}},
+		{ID: "two", Status: model.StatusOpen, Priority: 1, Labels: []string{"ctx:two"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+	}
+	m.sortMode = SortContextPriority
+	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:one", "ctx:two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(scope); err != nil {
+		t.Fatal(err)
+	}
+	m.list.Select(0)
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one-a" {
+		t.Fatalf("selected before async catalog refresh = %q, want one-a", selected)
+	}
+
+	updated, _ := m.Update(RepositoryCatalogReadyMsg{
+		Generation: 1,
+		Catalog: model.RepositoryCatalog{
+			{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		},
+	})
+	m = updated.(Model)
+	if m.sortMode != SortDefault {
+		t.Fatalf("sort mode after scope reconciliation = %v, want Default", m.sortMode)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "one-b", "one-a")
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one-a" {
+		t.Fatalf("selected after async catalog refresh = %q, want one-a", selected)
+	}
+}
+
 func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	issues := []model.Issue{{
 		ID: "one", Title: "One", Status: model.StatusOpen,
@@ -859,7 +1206,7 @@ func TestHubContextlessListRowShowsNoContextBadge(t *testing.T) {
 	if row := m.list.View(); !strings.Contains(row, "[no-context]") {
 		t.Fatalf("contextless list row missing repository badge: %q", row)
 	}
-	if detail := m.viewport.View(); !strings.Contains(detail, "Repositories:") || !strings.Contains(detail, "no-context") || strings.Contains(detail, "Contextless") {
+	if detail := m.viewport.View(); !strings.Contains(detail, "Context:") || strings.Contains(detail, "Repositories:") || !strings.Contains(detail, "no-context") || strings.Contains(detail, "Contextless") {
 		t.Fatalf("contextless detail changed: %q", detail)
 	}
 }

@@ -26,6 +26,53 @@ type hubRelationshipEvidence struct {
 
 const contextlessRepositoryID = "no-context"
 
+func isContextSortMode(mode SortMode) bool {
+	return mode == SortContextCreated || mode == SortContextPriority
+}
+
+func (m Model) effectiveHubContextIDs() map[string]struct{} {
+	recognized := make(map[string]struct{}, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind == model.RepositoryIdentityHubContext {
+			recognized[repository.ID] = struct{}{}
+		}
+	}
+
+	effective := make(map[string]struct{}, len(recognized))
+	if m.hubScope.Mode == model.HubScopeSelectedContexts {
+		for _, contextID := range m.hubScope.Contexts {
+			effective[contextID] = struct{}{}
+		}
+	}
+	for _, issue := range m.repositoryCandidates() {
+		for _, label := range issue.Labels {
+			if _, ok := recognized[label]; ok {
+				effective[label] = struct{}{}
+			}
+		}
+	}
+	return effective
+}
+
+func (m Model) contextSortModesAvailable() bool {
+	if m.workspaceMode || !m.usesHubScope() {
+		return false
+	}
+	switch m.hubScope.Mode {
+	case model.HubScopeContextless:
+		return false
+	}
+	return len(m.effectiveHubContextIDs()) >= 2
+}
+
+func (m *Model) normalizeContextSortMode() bool {
+	if !isContextSortMode(m.sortMode) || m.contextSortModesAvailable() {
+		return false
+	}
+	m.sortMode = SortDefault
+	return true
+}
+
 func isHubContextLabel(label string) bool {
 	return strings.HasPrefix(label, "ctx:")
 }
@@ -283,15 +330,11 @@ func (m *Model) refreshRepositoryPresentation() {
 	hubMode := m.hubRepositoryPresentation()
 	if m.list.Width() > 0 {
 		items := m.list.Items()
-		for i := range items {
-			item, ok := items[i].(IssueItem)
-			if !ok {
-				continue
-			}
-			m.decorateIssueItem(&item)
-			items[i] = item
+		if isContextSortMode(m.sortMode) {
+			m.sortListItems(items)
+		} else {
+			m.setListItemsPreservingFilter(items)
 		}
-		m.setListItemsPreservingFilter(items)
 		m.updateListDelegate()
 		m.updateViewportContent()
 	}
@@ -602,6 +645,7 @@ func (m *Model) refreshRepositoryCandidates() {
 func (m *Model) syncRepositoryCandidates() {
 	m.repositoryIssues = m.repositoryCandidates()
 	m.repositoryIssueIDs = issueIDSet(m.repositoryIssues)
+	m.normalizeContextSortMode()
 }
 
 func (m *Model) recomputeRepositoryCounts() {
