@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -159,12 +160,11 @@ func TestRepoPickerCurrentOnlyRemainsSearchText(t *testing.T) {
 	}
 }
 
-func TestRepoPickerFooterFitsReducedModalWidth(t *testing.T) {
+func TestRepoPickerOmitsRedundantControlsLegend(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetSize(112, 24)
-	footer := "j/k: navigate | space: toggle | a: all/none | c: current only | /: search | enter: apply | esc: cancel"
-	if out := m.View(); !strings.Contains(out, footer) {
-		t.Fatalf("picker footer was truncated at the reduced modal width:\n%s", out)
+	if out := m.View(); strings.Contains(out, "j/k: navigate") {
+		t.Fatalf("picker retained redundant controls legend:\n%s", out)
 	}
 
 	m.SetSize(160, 24)
@@ -178,6 +178,55 @@ func TestRepoPickerFooterFitsReducedModalWidth(t *testing.T) {
 		return
 	}
 	t.Fatal("picker modal border was not rendered")
+}
+
+func TestRepoPickerStatusFooterContainsCompleteGuidance(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width = 120
+	m.height = 30
+	m.repoPicker = NewRepoPickerModel(testRepositoryCatalog(), m.theme)
+	m.showRepoPicker = true
+	m.focused = focusRepoPicker
+
+	footer := ansi.Strip(m.renderFooter())
+	for _, want := range []string{"j/k nav", "space toggle", "c:current only", "a all/none", "/ search", "enter apply", "esc back"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("repository picker footer missing %q: %q", want, footer)
+		}
+	}
+
+	m.repoPicker.BeginSearch()
+	footer = ansi.Strip(m.renderFooter())
+	for _, stale := range []string{"c:current only", "a all/none", "/ search"} {
+		if strings.Contains(footer, stale) {
+			t.Errorf("repository search footer advertises normal picker control %q: %q", stale, footer)
+		}
+	}
+	for _, want := range []string{"type search", "up/down nav", "enter apply", "esc clear"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("repository search footer missing %q: %q", want, footer)
+		}
+	}
+}
+
+func TestRepoPickerOpeningClearsStaleStatusForGuidance(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width = 120
+	m.height = 30
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = testRepositoryCatalog()
+	m.statusMsg = "stale notification"
+	m.statusIsError = true
+
+	updated, _ := m.Update(keyMsg("w"))
+	m = updated.(Model)
+	if !m.showRepoPicker || m.statusMsg != "" || m.statusIsError {
+		t.Fatalf("opening Repository Scope retained stale status: shown=%v status=%q error=%v", m.showRepoPicker, m.statusMsg, m.statusIsError)
+	}
+	footer := ansi.Strip(m.renderFooter())
+	if !strings.Contains(footer, "c:current only") || !strings.Contains(footer, "j/k nav") {
+		t.Fatalf("Repository Scope guidance was masked after opening: %q", footer)
+	}
 }
 
 func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {

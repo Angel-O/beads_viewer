@@ -3976,6 +3976,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "q":
 				// q closes current view or quits if at top level
+				if m.focused == focusSprint {
+					m.isSprintView = false
+					m.focused = focusList
+					return m, nil
+				}
 				if m.insightsDetailID != "" {
 					m.insightsDetailID = ""
 					m.showDetails = false
@@ -4031,13 +4036,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focused = focusList
 					return m, nil
 				}
-				if m.focused == focusSprint {
-					m.focused = focusList
-					return m, nil
-				}
 				return m, tea.Quit
 
 			case "esc":
+				if m.focused == focusSprint {
+					m.isSprintView = false
+					m.focused = focusList
+					return m, nil
+				}
 				// Escape closes modals and goes back
 				if m.insightsDetailID != "" {
 					m.insightsDetailID = ""
@@ -4296,7 +4302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
 					"G", "+", "-", "E", "esc", "/", "n", "N", "v", "o", "c", "r",
-					"enter", " ", "tab",
+					"enter", " ",
 					"ctrl+d", "ctrl+u", "pgup", "pgdown":
 					// Cancel any pending combo when pressing other keys
 					m.pendingComboKey = ""
@@ -4351,28 +4357,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			case focusDetail:
-				if keyStr == "e" {
+				switch keyStr {
+				case "e":
 					m.beginCommentAction("edit")
 					return m, nil
-				}
-				if keyStr == "d" {
+				case "d":
 					m.beginCommentAction("delete")
 					return m, nil
-				}
-				if keyStr == "n" {
+				case "n":
 					m.beginComment()
 					return m, nil
-				}
-				// Intercept "O" in detail view for editor dispatch (bv-134)
-				if keyStr == "O" {
+				case "O":
 					if editorCmd := m.openInEditor(); editorCmd != nil {
 						return m, editorCmd
 					}
 					return m, nil
+				case "j", "k", "up", "down", "left", "right",
+					"home", "end", "pgup", "pgdown", "ctrl+d", "ctrl+u":
+					m.viewport, cmd = m.viewport.Update(msg)
+					cmds = append(cmds, cmd)
+					return m, tea.Batch(cmds...)
+				case "C", "U", "x", "y", "t", "T":
+					if keyStr == "x" {
+						m.exportToMarkdown()
+						return m, nil
+					}
+					m = m.handleListKeys(msg)
+					return m, nil
+				case "a", "b", "g", "h", "i", "E":
+					// Shared view transitions remain available from Detail.
+				default:
+					// Detail must not fall through to List-only commands.
+					return m, nil
 				}
-				m.viewport, cmd = m.viewport.Update(msg)
-				cmds = append(cmds, cmd)
-				return m, tea.Batch(cmds...)
 
 			case focusList:
 				// Fall through to list-level view toggles below
@@ -4597,6 +4614,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "'":
+				if m.focused == focusDetail {
+					return m, nil
+				}
 				// Toggle recipe picker overlay
 				m.recipePickerOrigin = m.focused
 				m.resetRecipePicker()
@@ -4616,6 +4636,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "w":
+				if m.focused == focusDetail {
+					return m, nil
+				}
 				// Toggle the repository scope picker in Hub or workspace mode.
 				if !m.workspaceMode && !m.hubRepositoryMode {
 					m.statusMsg = "Repository filtering requires the Hub board; run wbv --hub"
@@ -4627,6 +4650,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusIsError = false
 					return m, nil
 				}
+				m.statusMsg = ""
+				m.statusIsError = false
 				m.repoPickerOrigin = m.focused
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
@@ -4647,6 +4672,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "l":
+				if m.focused == focusDetail {
+					return m, nil
+				}
 				// Open label picker for quick filter (bv-126)
 				if len(m.repositoryIssues) == 0 {
 					return m, nil
@@ -4673,8 +4701,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Remaining list-level keys handled by handleListKeys
-			m = m.handleListKeys(msg)
+			// Detail must not inherit List-level commands; other views retain
+			// their existing fallthrough behavior.
+			if m.focused != focusDetail {
+				m = m.handleListKeys(msg)
+			}
 		}
 
 	case tea.MouseMsg:
@@ -5100,21 +5131,6 @@ func (m Model) handleTreeKeys(msg tea.KeyMsg) Model {
 	case "E", "esc":
 		// Return to list view
 		m.focused = focusList
-	case "tab":
-		// Toggle detail panel (sync selection and jump to detail)
-		if m.isSplitView {
-			if selected := m.tree.SelectedIssue(); selected != nil {
-				// Sync detail panel with tree selection
-				for i, item := range m.list.Items() {
-					if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selected.ID {
-						m.list.Select(i)
-						break
-					}
-				}
-				m.updateViewportContent()
-				m.focused = focusDetail
-			}
-		}
 	}
 	return m
 }
@@ -5569,11 +5585,8 @@ func (m Model) handleFlowMatrixKeys(msg tea.KeyMsg) Model {
 		if m.flowMatrix.showDrilldown {
 			// Jump to selected issue from drilldown
 			if selectedIssue := m.flowMatrix.SelectedDrilldownIssue(); selectedIssue != nil {
-				for i, item := range m.list.Items() {
-					if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selectedIssue.ID {
-						m.list.Select(i)
-						break
-					}
+				if !m.selectListIssueByID(selectedIssue.ID) {
+					return m
 				}
 				m.focused = focusList
 				if m.isSplitView {
@@ -6546,7 +6559,12 @@ func (m Model) View() string {
 	// Add shortcuts sidebar if enabled (bv-3qi5)
 	if m.showShortcutsSidebar && !m.showQuitConfirm && !m.showHelp && !m.showTutorial && !m.showCommentPrompt && !m.showCommentSelection && !m.showCommentDeleteConfirm {
 		// Update sidebar focus for registry-based bindings (bv-xl6g)
-		m.shortcutsSidebar.SetFocus(m.focused)
+		m.shortcutsSidebar.SetSplitView(m.isSplitView)
+		sidebarFocus := m.focused
+		if m.showAttentionView {
+			sidebarFocus = focusAttention
+		}
+		m.shortcutsSidebar.SetFocus(sidebarFocus)
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 		sidebar := m.shortcutsSidebar.View()
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, sidebar)
@@ -6874,15 +6892,116 @@ func (m *Model) renderHelpOverlay() string {
 	}
 
 	// Define all sections
+	origin := m.focusBeforeHelp
+	if m.focused != focusHelp {
+		origin = m.focused
+	}
+	attentionHelp := m.showAttentionView
 	navSection := []struct{ key, desc string }{
 		{"j / ↓", "Move down"},
 		{"k / ↑", "Move up"},
-		{"G/end", "Go to last"},
+		{"Home/G", "First / last"},
 		{"Ctrl+d", "Page down"},
 		{"Ctrl+u", "Page up"},
-		{"Tab", "Switch focus"},
-		{"Enter", "View details"},
+		{"Enter", "Select / open"},
 		{"Esc", "Back / close"},
+	}
+	switch origin {
+	case focusDetail:
+		navSection = []struct{ key, desc string }{
+			{"j / ↓", "Scroll down"},
+			{"k / ↑", "Scroll up"},
+			{"Home", "Scroll to top"},
+			{"Ctrl+d", "Page down"},
+			{"Ctrl+u", "Page up"},
+			{"Esc", "Back / close"},
+		}
+	case focusBoard:
+		navSection = []struct{ key, desc string }{
+			{"h/l", "Move columns"},
+			{"j/k", "Move items"},
+			{"Home/G", "First / last"},
+			{"Ctrl+d", "Page down"},
+			{"Ctrl+u", "Page up"},
+			{"Tab", "Toggle detail"},
+			{"Enter", "Open issue"},
+			{"Esc", "Back / close"},
+		}
+	case focusGraph:
+		navSection = []struct{ key, desc string }{
+			{"h/l", "Move siblings"},
+			{"j/k", "Move nodes"},
+			{"Ctrl+d", "Page down"},
+			{"Ctrl+u", "Page up"},
+			{"Enter", "Open issue"},
+			{"Esc", "Exit Graph"},
+		}
+	case focusInsights:
+		navSection = []struct{ key, desc string }{
+			{"h/l", "Switch panels"},
+			{"j/k", "Move items"},
+			{"Ctrl+j/k", "Scroll details"},
+			{"Tab", "Next panel"},
+			{"Enter", "Open issue / cell"},
+			{"Esc", "Back / close"},
+		}
+	case focusHistory:
+		navSection = []struct{ key, desc string }{
+			{"j/k", "Navigate beads"},
+			{"J/K", "Scroll details"},
+			{"Tab", "Toggle focus"},
+			{"Enter", "Open selected bead"},
+			{"Esc", "Back / close"},
+		}
+	case focusActionable:
+		navSection = []struct{ key, desc string }{
+			{"j / ↓", "Move down"},
+			{"k / ↑", "Move up"},
+			{"Enter", "Open issue"},
+			{"Esc", "Back / close"},
+		}
+	case focusFlowMatrix:
+		navSection = []struct{ key, desc string }{
+			{"j / ↓", "Move down"},
+			{"k / ↑", "Move up"},
+			{"g/G", "First / last"},
+			{"Enter", "Drill into label"},
+			{"Esc / q", "Back / close"},
+			{"f", "Close Flow / drilldown"},
+		}
+		if m.flowMatrix.showDrilldown {
+			navSection[3] = struct{ key, desc string }{"Enter", "Open / jump to issue"}
+		}
+	case focusTree:
+		navSection = []struct{ key, desc string }{
+			{"j / ↓", "Move down"},
+			{"k / ↑", "Move up"},
+			{"Ctrl+d", "Page down"},
+			{"Ctrl+u", "Page up"},
+			{"Enter", "Toggle / select"},
+			{"Esc", "Exit Tree"},
+		}
+	}
+	if attentionHelp {
+		origin = focusAttention
+		navSection = []struct{ key, desc string }{
+			{"1-9", "Filter by ranked label"},
+			{"] / F4", "Close Attention"},
+			{"Esc / q", "Back / close"},
+		}
+	} else if origin == focusSprint {
+		navSection = []struct{ key, desc string }{
+			{"j / ↓", "Next sprint"},
+			{"k / ↑", "Previous sprint"},
+			{"P / Esc / q", "Close Sprint"},
+		}
+	}
+	if m.isSplitView && (origin == focusList || origin == focusDetail) {
+		remove := 1
+		if origin == focusList {
+			remove = 2
+		}
+		navSection = append(navSection[:len(navSection)-remove], struct{ key, desc string }{"Tab", "Switch pane"})
 	}
 
 	viewsSection := []struct{ key, desc string }{
@@ -6896,14 +7015,25 @@ func (m *Model) renderHelpOverlay() string {
 		{"[", "Label dashboard"},
 		{"]", "Attention view"},
 	}
+	if origin == focusTree {
+		viewsSection = []struct{ key, desc string }{
+			{"b", "Kanban board"},
+			{"i", "Insights"},
+			{"a", "Actionable"},
+			{"f", "Flow matrix"},
+			{"[", "Label dashboard"},
+			{"]", "Attention view"},
+			{"E", "Exit Tree"},
+		}
+	}
 
 	globalSection := []struct{ key, desc string }{
 		{"?", "This help"},
-		{";", "Shortcuts bar"},
+		{"F2/;", "Shortcuts sidebar"},
 		{"!", "Alerts panel"},
-		{"'", "Recipes"},
-		{"w", "Repo picker"},
-		{"I", "Exact issue-type picker"},
+		{"'", "Recipes (List)"},
+		{"w", "Repo picker (Hub)"},
+		{"I", "Issue types (List)"},
 		{"q", "Back / Quit"},
 		{"Ctrl+c", "Force quit"},
 	}
@@ -6920,7 +7050,16 @@ func (m *Model) renderHelpOverlay() string {
 		{"I", "Exact issue-type picker"},
 		{"s", "Cycle sort"},
 		{"S", "Triage sort"},
-		{"+/-", "Tree expand/collapse all"},
+	}
+	if origin == focusTree {
+		filterSection = []struct{ key, desc string }{
+			{"o", "Open issues"},
+			{"c", "Closed issues"},
+			{"r", "Ready (unblocked)"},
+			{"/", "Search Tree"},
+			{"n/N", "Next/prev match"},
+			{"+/-", "Expand/collapse all"},
+		}
 	}
 
 	graphSection := []struct{ key, desc string }{
@@ -6951,13 +7090,184 @@ func (m *Model) renderHelpOverlay() string {
 
 	actionsSection := []struct{ key, desc string }{
 		{"p", "Priority hints"},
-		{"Ctrl+R", "Force refresh"},
-		{"F5", "Force refresh"},
+		{"Ctrl+R/F5", "Force refresh"},
 		{"t", "Time-travel"},
 		{"T", "Quick time-travel"},
-		{"x", "Export markdown"},
-		{"C", "Copy to clipboard"},
+		{"x", "Export markdown (List/Detail/Split)"},
+		{"y", "Copy issue ID (List/Detail/Board)"},
+		{"C", "Copy full issue (List/Detail/Split)"},
 		{"O", "Open in editor"},
+	}
+	// Specialized views get only their own controls and genuinely reachable
+	// global controls instead of inheriting unrelated List sections.
+	specializedGlobal := []struct{ key, desc string }{
+		{"?", "This help"},
+		{"F2/;", "Shortcuts sidebar"},
+		{"`", "Full tutorial"},
+		{"Ctrl+R/F5", "Force refresh"},
+		{"Ctrl+c", "Force quit"},
+	}
+	reachableGlobal := append([]struct{ key, desc string }{}, specializedGlobal...)
+	reachableGlobal = append(reachableGlobal,
+		struct{ key, desc string }{"p", "Priority hints"},
+		struct{ key, desc string }{"!", "Alerts panel"},
+		struct{ key, desc string }{"q", "Back / close"},
+	)
+	var specializedPanels []string
+	switch origin {
+	case focusBoard:
+		boardControls := []struct{ key, desc string }{
+			{"h/l", "Move between columns"},
+			{"j/k", "Move within column"},
+			{"1-4", "Jump to column"},
+			{"H/L", "First / last column"},
+			{"0/$", "First / last item"},
+			{"gg/G", "Top / bottom"},
+			{"Tab", "Toggle detail"},
+			{"Ctrl+j/k", "Scroll detail"},
+			{"Enter", "Open issue"},
+			{"n/N", "Next / previous match"},
+			{"/", "Search cards"},
+			{"o/c/r", "Open / closed / ready filter"},
+			{"y", "Copy issue ID"},
+			{"s", "Cycle grouping"},
+			{"e", "Cycle empty columns"},
+			{"d", "Expand selected card"},
+		}
+		boardViews := []struct{ key, desc string }{
+			{"b", "Return to List"},
+			{"a", "Actionable"},
+			{"i", "Insights"},
+			{"E", "Tree view"},
+			{"f", "Flow matrix"},
+			{"[", "Label dashboard"},
+			{"]", "Attention view"},
+		}
+		specializedPanels = []string{
+			renderPanel("Board", "▦", 0, append(boardControls, boardViews...)),
+			renderPanel("Reachable", "🌐", 2, reachableGlobal),
+		}
+	case focusGraph:
+		graphControls := []struct{ key, desc string }{
+			{"hjkl", "Navigate graph"},
+			{"Ctrl+d/u", "Page down / up"},
+			{"PgUp/Dn", "Scroll graph"},
+			{"/", "Search ID / title"},
+			{"n/N", "Next / previous match"},
+			{"Enter", "Open selected issue"},
+			{"Esc", "Clear search / back"},
+			{"g", "Return to List"},
+			{"b", "Board view"},
+			{"a", "Actionable"},
+			{"i", "Insights"},
+			{"E", "Tree view"},
+			{"f", "Flow matrix"},
+			{"[", "Label dashboard"},
+			{"]", "Attention view"},
+		}
+		specializedPanels = []string{
+			renderPanel("Graph", "📊", 0, graphControls),
+			renderPanel("Reachable", "🌐", 2, reachableGlobal),
+		}
+	case focusInsights:
+		insightsControls := []struct{ key, desc string }{
+			{"h/l", "Switch panels"},
+			{"j/k", "Move items"},
+			{"Ctrl+j/k", "Scroll details"},
+			{"Tab", "Next panel"},
+			{"o", "Active work"},
+			{"r", "Ready-only toggle"},
+			{"e", "Toggle explanations"},
+			{"x", "Calculation proof"},
+			{"m", "Toggle heatmap"},
+			{"Enter", "Open issue / cell"},
+			{"Esc", "Back / close"},
+			{"i", "Return to List"},
+			{"b/g/a/E", "Switch views"},
+			{"f", "Flow matrix"},
+			{"[ / ]", "Labels / Attention"},
+		}
+		specializedPanels = []string{
+			renderPanel("Insights", "💡", 0, insightsControls),
+			renderPanel("Reachable", "🌐", 2, reachableGlobal),
+		}
+	case focusHistory:
+		historyControls := []struct{ key, desc string }{
+			{"j/k", "Navigate beads"},
+			{"J/K", "Scroll secondary pane"},
+			{"Tab", "Toggle focus"},
+			{"Enter", "Open selected bead"},
+			{"v", "Toggle Bead / Git mode"},
+			{"f/F", "Toggle file tree"},
+			{"/", "Search commits / beads"},
+			{"c", "Confidence filter"},
+			{"y", "Copy commit SHA"},
+			{"o", "Open commit in browser"},
+			{"g", "Graph view"},
+			{"h / Esc", "Return to List"},
+			{"b/i/a/E/[ / ]", "Switch views"},
+		}
+		specializedPanels = []string{
+			renderPanel("History", "📜", 0, historyControls),
+			renderPanel("Reachable", "🌐", 2, reachableGlobal),
+		}
+	case focusActionable:
+		actionableControls := []struct{ key, desc string }{
+			{"j/k", "Move through actionable items"},
+			{"Enter", "Open selected issue"},
+			{"a", "Return to List"},
+			{"b/g/h/i/E", "Switch views"},
+			{"f", "Flow matrix"},
+			{"[ / ]", "Labels / Attention"},
+		}
+		specializedPanels = []string{
+			renderPanel("Actionable", "✓", 0, actionableControls),
+			renderPanel("Reachable", "🌐", 2, reachableGlobal),
+		}
+	case focusDetail:
+		viewsSection = []struct{ key, desc string }{
+			{"a", "Actionable"},
+			{"b", "Board view"},
+			{"g", "Graph view"},
+			{"h", "History view"},
+			{"i", "Insights"},
+			{"E", "Tree view"},
+		}
+		actionsSection = []struct{ key, desc string }{
+			{"n", "Add comment"},
+			{"e/d", "Edit/delete comment"},
+			{"U", "Self-update check"},
+			{"t/T", "Time-travel"},
+			{"x", "Export markdown"},
+			{"y", "Copy issue ID"},
+			{"C", "Copy full issue"},
+			{"O", "Open in editor"},
+		}
+		specializedPanels = []string{
+			renderPanel("Navigation", "🧭", 0, navSection),
+			renderPanel("Views", "👁", 1, viewsSection),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+			renderPanel("Detail Actions", "⚡", 3, actionsSection),
+		}
+	case focusLabelDashboard:
+		labelNavigation := []struct{ key, desc string }{
+			{"j/k", "Move selection"},
+			{"Home/G", "First / last label"},
+			{"Enter", "Filter by label"},
+			{"h", "View label health"},
+			{"d", "Open issue drilldown"},
+			{"[/F3", "Close dashboard"},
+			{"Esc / q", "Return to List"},
+		}
+		specializedPanels = []string{
+			renderPanel("Label Dashboard", "🏷", 0, labelNavigation),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
+	case focusFlowMatrix:
+		specializedPanels = []string{
+			renderPanel("Dependency Flow", "🔀", 0, navSection),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
 	}
 
 	statusSection := []struct{ key, desc string }{
@@ -6968,17 +7278,34 @@ func (m *Model) renderHelpOverlay() string {
 		{"polling", "Live reload uses polling"},
 	}
 
-	// Build panels
+	// Build panels. Tree has its own navigation and must not inherit List/History
+	// controls such as Home, Tab, or unrelated Enter actions.
 	panels := []string{
 		renderPanel("Navigation", "🧭", 0, navSection),
 		renderPanel("Views", "👁", 1, viewsSection),
 		renderPanel("Global", "🌐", 2, globalSection),
-		renderPanel("Filters & Sort", "🔍", 3, filterSection),
+		renderPanel("List Filters & Sort", "🔍", 3, filterSection),
 		renderPanel("Graph View", "📊", 4, graphSection),
 		renderPanel("Insights", "💡", 5, insightsSection),
 		renderPanel("Status", "🩺", 2, statusSection),
 		renderPanel("History", "📜", 0, historySection),
-		renderPanel("Actions", "⚡", 1, actionsSection),
+		renderPanel("List / Detail", "⚡", 1, actionsSection),
+	}
+	if len(specializedPanels) > 0 {
+		panels = specializedPanels
+	}
+	if origin == focusTree {
+		panels = []string{
+			renderPanel("Navigation", "🧭", 0, navSection),
+			renderPanel("Views", "👁", 1, viewsSection),
+			renderPanel("Global", "🌐", 2, globalSection),
+			renderPanel("Tree Filters & Search", "🔍", 3, filterSection),
+		}
+	}
+	if attentionHelp {
+		panels = []string{renderPanel("Attention", "⚠", 0, navSection)}
+	} else if origin == focusSprint {
+		panels = []string{renderPanel("Sprint", "◷", 0, navSection)}
 	}
 
 	// Arrange panels into columns
@@ -7013,7 +7340,7 @@ func (m *Model) renderHelpOverlay() string {
 		Italic(true)
 
 	title := titleStyle.Render("⌨️  Keyboard Shortcuts")
-	subtitle := subtitleStyle.Render("Space: Tutorial │ ? or Esc to close")
+	subtitle := subtitleStyle.Render("Space: Tutorial │ Esc/?/q: close │ other keys: dismiss")
 	titleBar := lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", subtitle)
 
 	// Combine title and body
@@ -7704,12 +8031,6 @@ func (m *Model) renderFooter() string {
 	}
 
 	labelHint := ""
-	if m.focused != focusLabelDashboard && m.focused != focusFlowMatrix && !m.showAttentionView {
-		labelHint = lipgloss.NewStyle().
-			Foreground(ColorFooterHint).
-			Padding(0, 1).
-			Render("L:labels • h:detail")
-	}
 
 	// Board-specific hints (bv-yg39, bv-naov)
 	if m.isBoardView {
@@ -7734,21 +8055,9 @@ func (m *Model) renderFooter() string {
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).
 				Padding(0, 1).
-				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • L:labels • /:search • ?:help", filterInfo))
+				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • /:search • ?:help", filterInfo))
 		}
 	}
-	if m.focused == focusTree {
-		labelHint = lipgloss.NewStyle().
-			Foreground(ColorFooterHint).
-			Padding(0, 1).
-			Render(renderCompactNavigationHint(compactNavigationState{
-				view:          compactNavigationTree,
-				searchInput:   m.tree.IsSearchActive(),
-				searchQuery:   m.tree.SearchQuery() != "",
-				searchSubtree: m.tree.searchSubtrees,
-			}))
-	}
-
 	// ─────────────────────────────────────────────────────────────────────────
 	// STATS SECTION - Issue counts with visual indicators
 	// ─────────────────────────────────────────────────────────────────────────
@@ -7913,19 +8222,6 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// UPDATE BADGE - New version available
-	// ─────────────────────────────────────────────────────────────────────────
-	updateSection := ""
-	if m.updateAvailable {
-		updateStyle := lipgloss.NewStyle().
-			Background(ColorTypeFeature).
-			Foreground(ColorBg).
-			Bold(true).
-			Padding(0, 1)
-		updateSection = updateStyle.Render(fmt.Sprintf("⭐ Update %s", m.updateTag))
-	}
-
-	// ─────────────────────────────────────────────────────────────────────────
 	// LARGE DATASET WARNING - Tiered performance mode (bv-9thm)
 	// ─────────────────────────────────────────────────────────────────────────
 	datasetSection := ""
@@ -8036,11 +8332,15 @@ func (m *Model) renderFooter() string {
 
 	var keyHints []string
 	if m.showHelp {
-		keyHints = append(keyHints, "Press any key to close")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" scroll", keyStyle.Render("space")+" tutorial", keyStyle.Render("?/esc/q")+" close")
 	} else if m.showRecipePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showRepoPicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
+		if m.repoPicker.IsSearching() {
+			keyHints = append(keyHints, keyStyle.Render("type")+" search", keyStyle.Render("up/down")+" nav", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" clear")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("c")+":current only", keyStyle.Render("a")+" all/none", keyStyle.Render("/")+" search", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" back")
+		}
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
@@ -8048,30 +8348,51 @@ func (m *Model) renderFooter() string {
 	} else if m.showAttentionView {
 		keyHints = append(keyHints, keyStyle.Render("1-9")+" filter list by ranked label", keyStyle.Render("]/F4")+" close", keyStyle.Render("esc/q")+" back")
 	} else if m.focused == focusLabelDashboard {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+" close")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+":list")
 	} else if m.focused == focusInsights {
-		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("o")+" active", keyStyle.Render("r")+" ready", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
-		keyHints = append(keyHints, keyStyle.Render("A")+" attention", keyStyle.Render("F")+" flow")
+		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("o")+" active", keyStyle.Render("r")+" ready", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("i")+":list", keyStyle.Render("?")+" help")
 	} else if m.focused == focusFlowMatrix {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav")
+		keyHints = append(keyHints, keyStyle.Render("esc")+" back")
 		if m.flowMatrix.showDrilldown {
 			keyHints = append(keyHints, keyStyle.Render("⏎")+" jump/open")
 		} else if m.flowMatrix.flow != nil && m.flowMatrix.flow.TotalCrossLabelDeps > 0 {
 			keyHints = append(keyHints, keyStyle.Render("⏎")+" drill")
 		}
-		keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")
+		if m.flowMatrix.showDrilldown {
+			keyHints = append(keyHints, keyStyle.Render("f")+" close")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("f")+":list")
+		}
 	} else if m.isGraphView {
 		keyHints = append(keyHints, renderCompactNavigationHint(compactNavigationState{
 			view:        compactNavigationGraph,
 			searchInput: m.graphView.IsSearchInputActive(),
 			searchQuery: m.graphView.HasSearchQuery(),
 		}))
+	} else if m.focused == focusTree {
+		keyHints = append(keyHints, renderCompactNavigationHint(compactNavigationState{
+			view:          compactNavigationTree,
+			searchInput:   m.tree.IsSearchActive(),
+			searchQuery:   m.tree.SearchQuery() != "",
+			searchSubtree: m.tree.searchSubtrees,
+		}))
 	} else if m.isBoardView {
-		keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("G")+" bottom", keyStyle.Render("⏎")+" view", keyStyle.Render("b")+" list")
+		if m.board.IsSearchMode() {
+			keyHints = append(keyHints, keyStyle.Render("type")+" search", keyStyle.Render("n/N")+" match", keyStyle.Render("enter")+" done", keyStyle.Render("esc")+" cancel")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("tab")+":detail", keyStyle.Render("e")+":cycle empty", keyStyle.Render("⏎")+" view", keyStyle.Render("b")+":list")
+		}
 	} else if m.isActionableView {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" view", keyStyle.Render("a")+" list", keyStyle.Render("?")+" help")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" view", keyStyle.Render("a")+":list", keyStyle.Render("?")+" help")
 	} else if m.isHistoryView {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("tab")+" focus", keyStyle.Render("⏎")+" jump", keyStyle.Render("H")+" close")
+		if m.historyView.IsSearchActive() {
+			keyHints = append(keyHints, keyStyle.Render("type")+" search", keyStyle.Render("⏎")+" done", keyStyle.Render("esc")+" cancel")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("tab")+" focus", keyStyle.Render("⏎")+" jump", keyStyle.Render("h")+":list")
+		}
+	} else if m.isSprintView {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("P/Esc/q")+":list")
 	} else if m.list.FilterState() == list.Filtering {
 		mode := "fuzzy"
 		if m.semanticSearchEnabled {
@@ -8094,13 +8415,13 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("⏎")+" compare", keyStyle.Render("esc")+" cancel")
 	} else {
 		if m.timeTravelMode {
-			keyHints = append(keyHints, keyStyle.Render("t")+" exit diff", keyStyle.Render("C")+" copy", keyStyle.Render("abgi")+" views", keyStyle.Render("?")+" help")
-		} else if m.isSplitView {
-			keyHints = append(keyHints, keyStyle.Render("tab")+" focus", keyStyle.Render("C")+" copy", keyStyle.Render("x")+" export", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("t/T")+" exit diff", keyStyle.Render("C")+" full issue", keyStyle.Render("abgi")+" views", keyStyle.Render("?")+" help")
+		} else if m.isSplitView && m.focused != focusTree {
+			keyHints = append(keyHints, keyStyle.Render("tab")+" focus", keyStyle.Render("C")+" full issue", keyStyle.Render("?")+" help")
 		} else if m.showDetails {
-			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("n")+" comment", keyStyle.Render("C")+" copy", keyStyle.Render("O")+" edit", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("n")+" comment", keyStyle.Render("C")+" full issue", keyStyle.Render("O")+" edit", keyStyle.Render("?")+" help")
 		} else {
-			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("n")+" comment", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
+			keyHints = append(keyHints, keyStyle.Render("⏎")+" details", keyStyle.Render("n")+" comment", keyStyle.Render("t")+" diff", keyStyle.Render("S")+" triage", keyStyle.Render("l")+" labels", keyStyle.Render("I")+" types", keyStyle.Render(";")+":shortcuts", keyStyle.Render("Ctrl+R")+" refresh", keyStyle.Render("?")+" help")
 			if m.workspaceMode || m.hubRepositoryMode {
 				keyHints = append(keyHints, keyStyle.Render("w")+" repos")
 			}
@@ -8154,9 +8475,6 @@ func (m *Model) renderFooter() string {
 	if repoScopeSection != "" {
 		leftWidth += lipgloss.Width(repoScopeSection) + 1
 	}
-	if updateSection != "" {
-		leftWidth += lipgloss.Width(updateSection) + 1
-	}
 	if datasetSection != "" {
 		leftWidth += lipgloss.Width(datasetSection) + 1
 	}
@@ -8192,9 +8510,6 @@ func (m *Model) renderFooter() string {
 	}
 	if sessionSection != "" {
 		parts = append(parts, sessionSection)
-	}
-	if updateSection != "" {
-		parts = append(parts, updateSection)
 	}
 	if datasetSection != "" {
 		parts = append(parts, datasetSection)

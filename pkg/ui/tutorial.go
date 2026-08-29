@@ -996,17 +996,18 @@ func defaultTutorialPages() []TutorialPage {
 | Key | Action |
 |-----|--------|
 | **?** | Help overlay |
-| **q** | Quit |
+| **q** | Close the current view; quit from List |
 | **Esc** | Close/go back |
-| **b/g/i/h** | Switch views |
+| **b/g/i/h** | Switch views from List or Detail |
 
 ### Navigation
 | Key | Action |
 |-----|--------|
 | **j/k** | Move down/up |
 | **h/l** | Move left/right |
-| **g/G** | Top/bottom |
-| **Enter** | Select |
+| **Home/G** | List top/bottom |
+| **gg** | Board/Tree top |
+| **Enter** | Select, open, or drill where supported |
 
 ### Filtering
 | Key | Action |
@@ -1015,7 +1016,8 @@ func defaultTutorialPages() []TutorialPage {
 | **Ctrl+S** | Semantic search |
 | **H** | Hybrid ranking |
 | **Alt+H** | Hybrid preset |
-| **o/c/r/a** | Status filter |
+| **o/c/r** | Status filters (open/closed/ready) |
+| **a** | Actionable view from List or Detail |
 
 > Press **?** in any view for context help.`,
 		},
@@ -1124,7 +1126,7 @@ You're already running ` + "`bv`" + ` — you're ahead of the game!
 | **j / k** | Move down / up |
 | **Enter** | Open issue details |
 | **Esc** | Close overlay / go back |
-| **q** | Quit bv |
+| **q** | Close current view; quit from List |
 
 ### Switching Views
 
@@ -1294,8 +1296,7 @@ This issue is a high-priority auth bug that needs security review.
 
 | Key | Action |
 |-----|--------|
-| **L** | Open label picker (apply labels) |
-| **Shift+L** | Filter by label |
+| **l** | Filter List by label |
 | **[** | Switch to Labels dashboard view |
 
 ### Label Analytics
@@ -1374,8 +1375,9 @@ This surfaces issues that are both important AND blocking other work.
 
 | Key | Action |
 |-----|--------|
-| **p** | Change priority |
-| **s** | Change status |
+| **p** | Toggle priority hints |
+| **s** | Cycle list sort mode |
+| **S** | Apply triage sort |
 
 Or from the command line:
 
@@ -1426,10 +1428,7 @@ The **Graph view** visualizes these relationships:
 
 | Visual | Meaning |
 |--------|---------|
-| Node size | Priority (bigger = higher) |
-| Green node | Closed |
-| Blue node | In progress |
-| Red node | Blocked |
+| Status glyph | Issue status |
 | Arrow A→B | A blocks B |
 
 ### Navigation in Graph View
@@ -1441,7 +1440,7 @@ The **Graph view** visualizes these relationships:
 | **/** | Search bead ID or title |
 | **n/N** | Next/previous search match |
 | **Enter** | View selected issue |
-| **Esc** | Cancel/clear search, then return to list |
+| **Esc** | Clear search; press again to return to list |
 
 ### Why This Matters
 
@@ -1464,34 +1463,35 @@ const viewsNavFundamentalsContent = `## Navigation Fundamentals
 bv uses **vim-style navigation** throughout. If you know vim, you're already
 at home. If not, you'll pick it up in minutes.
 
-### Core Movement
+### Contextual Movement
 
 | Key | Action |
 |-----|--------|
 | **j** | Move down |
 | **k** | Move up |
-| **h** | Move left (in multi-column views) |
-| **l** | Move right (in multi-column views) |
+| **h** | Left/previous where shown |
+| **l** | Right/next where shown |
 
 ### Jump Commands
 
 | Key | Action |
 |-----|--------|
-| **g** | Jump to top |
-| **G** | Jump to bottom |
+| **Home** | Jump to top in List/Board |
+| **gg** | Jump to top in Board/Tree |
+| **G** | Jump to bottom in List/Board/Tree/Flow |
 | **Ctrl+d** | Half-page down |
 | **Ctrl+u** | Half-page up |
 
-### Universal Keys
+### Contextual Keys
 
-These work in every view:
+These vary by view:
 
 | Key | Action |
 |-----|--------|
 | **?** | Help overlay |
 | **Esc** | Close overlay / go back |
-| **Enter** | Select / open |
-| **q** | Quit bv |
+| **Enter** | Select, open, or drill where supported |
+| **q** | Close current view; quit from List |
 
 ### The Shortcuts Sidebar
 
@@ -1523,7 +1523,6 @@ Quickly narrow down what you see:
 | **o** | Open issues only |
 | **c** | Closed issues only |
 | **r** | Ready issues (no blockers) |
-| **a** | All issues (reset filter) |
 
 ### Searching
 
@@ -1533,12 +1532,11 @@ Quickly narrow down what you see:
 | **Ctrl+S** | Semantic search (meaning-based) |
 | **H** | Hybrid ranking (semantic + graph) |
 | **Alt+H** | Cycle hybrid preset |
-| **n/N** | Next/previous search result |
 
 ### Sorting
 
-Press **s** to cycle through sort modes: priority → created → updated.
-Press **S** (shift+s) to reverse the current sort order.
+Press **s** to cycle through the list sort modes.
+Press **S** to apply the triage sort recipe.
 
 ### When to Use List View
 
@@ -1577,7 +1575,9 @@ Press **Enter** on any issue to see its full details.
 | Key | Action |
 |-----|--------|
 | **O** | Open/edit in external editor |
-| **C** | Copy issue ID to clipboard |
+| **C** | Copy the full issue to clipboard |
+| **y** | Copy issue ID |
+| **x** | Export markdown |
 | **j/k** | Scroll content up/down |
 | **Esc** | Return to previous view |
 
@@ -1593,7 +1593,7 @@ Issue descriptions are rendered with full markdown support:
 // viewsSplitContent is the Split View page content.
 const viewsSplitContent = `## Split View
 
-Press **Tab** from Detail view to enter Split view — list and detail side by side.
+Split view appears automatically when the terminal is wider than 100 columns — list and detail side by side.
 
 ` + "```" + `
 ┌────────────────────┬────────────────────────────────┐
@@ -1612,7 +1612,9 @@ Press **Tab** from Detail view to enter Split view — list and detail side by s
 |-----|--------|
 | **Tab** | Switch focus between panes |
 | **j/k** | Navigate in focused pane |
-| **Esc** | Return to full list |
+| **C** | Copy the full issue |
+| **y** | Copy issue ID |
+| **x** | Export markdown |
 
 ### When to Use Split View
 
@@ -1646,8 +1648,11 @@ Press **b** to switch to the Kanban-style board.
 |-----|--------|
 | **h/l** | Move between columns |
 | **j/k** | Move within a column |
+| **tab** | Toggle detail panel |
 | **Enter** | View issue details |
-| **m** | Move issue to different status |
+| **s** | Cycle grouping mode |
+| **e** | Cycle empty-column mode |
+| **d** | Expand selected card |
 
 ### Visual Indicators
 
@@ -1688,8 +1693,7 @@ Press **g** to visualize issue dependencies as a graph.
 ### Reading the Graph
 
 - **Arrows point TO dependencies** (A → B means A *blocks* B)
-- **Node size** reflects priority
-- **Color** indicates status (green=closed, blue=in_progress, etc.)
+- **Status glyph** indicates the issue status
 - **Highlighted node** is your current selection
 
 ### Graph Navigation
@@ -1701,7 +1705,7 @@ Press **g** to visualize issue dependencies as a graph.
 | **/** | Search bead ID or title |
 | **n/N** | Next/previous search match |
 | **Enter** | Select node and view details |
-| **Esc** | Cancel/clear search, then return to list |
+| **Esc** | Clear search; press again to return to list |
 
 ### When to Use Graph View
 
@@ -1733,12 +1737,10 @@ The panel highlights issues that may need attention:
 - **Blocked chains**: Issues creating bottlenecks
 - **Priority inversions**: Low-priority items blocking high-priority
 
-### Visual Heatmap
+### Priority x Depth Heatmap
 
-Press **m** to toggle heatmap mode, which colors the list by:
-- Red = high attention needed
-- Yellow = moderate
-- Green = on track
+Press **m** to toggle the Priority x Depth heatmap. Use the arrows to move
+between cells and **Enter** to open a cell's issue.
 
 ### When to Use Insights
 
@@ -1770,25 +1772,20 @@ Press **h** to see the git-integrated timeline of your project.
 
 - **Git commits** with associated bead changes
 - **Bead-only changes** from ` + "`br`" + ` commands
-- **Time-travel preview**: See project state at any point
+- **Related beads**: Jump from a change to the affected issue
 
 ### History Navigation
 
 | Key | Action |
 |-----|--------|
 | **j/k** | Navigate timeline |
-| **Enter** | Preview project state at that commit |
-| **d** | Show diff for selected commit |
+| **Enter** | Jump to selected bead in the issue list |
 | **Esc** | Return to current state |
 
 ### Time Travel
 
-When you press **Enter** on a historical commit, bv shows you:
-- What issues existed at that moment
-- Their status at that time
-- The dependency graph as it was
-
-This is read-only — you're viewing the past, not changing it.
+Use **t** or **T** from the issue list to enter time travel. History **Enter**
+jumps to the selected bead; it does not enter time travel.
 
 > **Use case:** "What was our backlog like before the big refactor?"`
 
@@ -1868,9 +1865,9 @@ Time travel understands git references:
 ### Example: Sprint Retrospective
 
 ` + "```" + `
-1. Press T and enter "HEAD~50" (start of sprint)
+1. Press t and enter "HEAD~50" (start of sprint)
 2. See: 45 open issues, 12 blocked
-3. Press Esc to return to present
+3. Press t or T to return to present
 4. Now: 22 open, 3 blocked
 5. Diff shows: 23 closed, 9 unblocked!
 ` + "```" + `
@@ -1943,7 +1940,7 @@ Press **[** to open the Labels dashboard:
 
 ### Label Flow Analysis
 
-Press **f** in Labels view to see cross-label flow:
+From List view, press **f** to see cross-label flow:
 
 ` + "```" + `
 frontend → backend: 5 dependencies
@@ -1972,7 +1969,7 @@ Share your project status with people who don't use the terminal.
 
 ### Quick Markdown Export (x)
 
-Press **x** in any view to export current state to markdown:
+Press **x** from List, Detail, or Split view to export the current state to markdown:
 
 ` + "```markdown\n# Project Status - 2025-01-15\n\n## Open Issues (24)\n| ID | Priority | Title |\n|----|----------|-------|\n| bv-abc1 | P1 | Fix login timeout |\n...\n\n## Blocked Issues (5)\n...\n```" + `
 
@@ -2084,13 +2081,13 @@ Repository picker scope applies only to the interactive board. It does not chang
 > Press **→** to continue.`
 
 // advancedRecipesContent is the Recipes tutorial page.
-const advancedRecipesContent = `## Recipes (R)
+const advancedRecipesContent = `## Recipes (')
 
 Recipes are **saved filter combinations** — complex queries you use repeatedly.
 
 ### Opening the Recipe Picker
 
-Press **R** (capital R) to open recipes:
+Press **'** (single quote) to open the recipe picker:
 
 ` + "```" + `
 ┌─────────────────────────────────────────────────────┐
@@ -2302,7 +2299,7 @@ In bv, select the new issue and press **S** for triage suggestions:
 
 ### Step 4: Add Labels for Categorization
 
-Press **L** to open label picker, select:
+Press **l** to open the label filter, then select:
 - ` + "`bug`" + ` - It's a bug
 - ` + "`auth`" + ` - Affects authentication
 - ` + "`user-reported`" + ` - External report
@@ -2388,7 +2385,7 @@ Press **r** to show only unblocked issues:
 For each sprint candidate:
 1. Review in detail view (Enter)
 2. Discuss scope and estimates
-3. Add sprint label: **L** → "sprint-42"
+3. Filter by sprint label with **l** → "sprint-42"
 4. Optionally assign: update with --assignee
 
 ### Step 5: Export Sprint Plan
@@ -2438,7 +2435,7 @@ Tell them about the help system:
 
 Find a good starter issue:
 
-` + "```bash\n# In bv: press L, select \"good-first-issue\" label\nbr list --label=good-first-issue --status=open\n```" + `
+` + "```bash\n# In bv: press l, select \"good-first-issue\" label\nbr list --label=good-first-issue --status=open\n```" + `
 
 Starter issues should:
 - Have clear scope

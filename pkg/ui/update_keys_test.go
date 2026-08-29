@@ -9,7 +9,283 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestFooterShortcutLabelsMatchDispatch(t *testing.T) {
+	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}
+
+	list := NewModel(issues, nil, "")
+	list.width = 240
+	list.height = 40
+	footer := ansi.Strip(list.renderFooter())
+	for _, stale := range []string{"L:labels", "h:detail"} {
+		if strings.Contains(footer, stale) {
+			t.Errorf("List footer retains stale shortcut %q: %q", stale, footer)
+		}
+	}
+	if !strings.Contains(footer, ";:shortcuts") {
+		t.Errorf("List footer missing shortcuts-sidebar hint: %q", footer)
+	}
+
+	updated, _ := list.Update(keyMsg("b"))
+	board := updated.(Model)
+	if footer := ansi.Strip(board.renderFooter()); strings.Contains(footer, "L:labels") || !strings.Contains(footer, "tab:detail") || !strings.Contains(footer, "e:cycle empty") {
+		t.Fatalf("Board footer has incorrect contextual shortcuts: %q", footer)
+	}
+
+	insights := NewModel(issues, nil, "")
+	insights.width = 240
+	insights.height = 40
+	updated, _ = insights.Update(keyMsg("i"))
+	insights = updated.(Model)
+	footer = ansi.Strip(insights.renderFooter())
+	for _, want := range []string{"i:list"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("Insights footer missing %q: %q", want, footer)
+		}
+	}
+	for _, stale := range []string{"]/F4 attention", "f flow"} {
+		if strings.Contains(footer, stale) {
+			t.Errorf("Insights footer advertises cross-view shortcut %q: %q", stale, footer)
+		}
+	}
+
+	history := NewModel(issues, nil, "")
+	history.width = 240
+	history.height = 40
+	updated, _ = history.Update(keyMsg("h"))
+	history = updated.(Model)
+	footer = ansi.Strip(history.renderFooter())
+	if !strings.Contains(footer, "h:list") || strings.Contains(footer, "h/esc/q close") || strings.Contains(footer, "H close") {
+		t.Fatalf("History footer has incorrect close shortcut: %q", footer)
+	}
+
+	help := NewModel(issues, nil, "")
+	help.width = 240
+	help.height = 40
+	updated, _ = help.Update(keyMsg("?"))
+	help = updated.(Model)
+	footer = ansi.Strip(help.renderFooter())
+	for _, want := range []string{"j/k scroll", "space tutorial", "?/esc/q close"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("Help footer missing %q: %q", want, footer)
+		}
+	}
+	if strings.Contains(footer, "any key") {
+		t.Fatalf("Help footer claims every key closes it: %q", footer)
+	}
+
+	detail := NewModel(issues, nil, "")
+	detail.width = 80
+	detail.height = 40
+	updated, _ = detail.Update(keyMsg("enter"))
+	detail = updated.(Model)
+	footer = ansi.Strip(detail.renderFooter())
+	for _, stale := range []string{"y ID", "x export", "Ctrl+R refresh"} {
+		if strings.Contains(footer, stale) {
+			t.Errorf("Detail footer is too expansive and contains %q: %q", stale, footer)
+		}
+	}
+	if !strings.Contains(footer, "C full issue") || !strings.Contains(footer, "O edit") {
+		t.Errorf("Detail footer lost primary controls: %q", footer)
+	}
+
+	split := NewModel(issues, nil, "")
+	split.width = 240
+	split.height = 40
+	split.isSplitView = true
+	footer = ansi.Strip(split.renderFooter())
+	for _, stale := range []string{"y ID", "x export", "Ctrl+R refresh"} {
+		if strings.Contains(footer, stale) {
+			t.Errorf("Split footer is too expansive and contains %q: %q", stale, footer)
+		}
+	}
+	if !strings.Contains(footer, "tab focus") || !strings.Contains(footer, "C full issue") {
+		t.Errorf("Split footer lost primary controls: %q", footer)
+	}
+}
+
+func TestAlternateViewFootersUseListReturnHints(t *testing.T) {
+	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}
+	cases := []struct {
+		name  string
+		setup func(*Model)
+		want  string
+	}{
+		{name: "tree", setup: func(m *Model) { m.focused = focusTree }, want: "E:list"},
+		{name: "graph", setup: func(m *Model) { m.isGraphView = true }, want: "g:list"},
+		{name: "board", setup: func(m *Model) { m.isBoardView = true }, want: "b:list"},
+		{name: "actionable", setup: func(m *Model) { m.isActionableView = true }, want: "a:list"},
+		{name: "history", setup: func(m *Model) { m.isHistoryView = true }, want: "h:list"},
+		{name: "sprint", setup: func(m *Model) { m.isSprintView = true }, want: "P/Esc/q:list"},
+		{name: "insights", setup: func(m *Model) { m.focused = focusInsights }, want: "i:list"},
+		{name: "labels", setup: func(m *Model) { m.focused = focusLabelDashboard }, want: "[/F3:list"},
+		{name: "flow", setup: func(m *Model) { m.focused = focusFlowMatrix }, want: "f:list"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			m.width = 240
+			m.height = 40
+			tc.setup(&m)
+			footer := ansi.Strip(m.renderFooter())
+			if !strings.Contains(footer, tc.want) {
+				t.Fatalf("footer missing %q: %q", tc.want, footer)
+			}
+			if strings.Contains(footer, "E:exit") || strings.Contains(footer, "h/esc/q close") {
+				t.Fatalf("footer contains stale return hint: %q", footer)
+			}
+		})
+	}
+}
+
+func TestSearchFootersDoNotAdvertiseConsumedReturnKeys(t *testing.T) {
+	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}
+
+	graph := NewModel(issues, nil, "")
+	graph.isGraphView = true
+	graph.graphView.StartSearch()
+	if footer := ansi.Strip(graph.renderFooter()); strings.Contains(footer, "g:list") {
+		t.Fatalf("Graph search footer advertises a consumed return key: %q", footer)
+	}
+
+	board := NewModel(issues, nil, "")
+	board.isBoardView = true
+	board.board.StartSearch()
+	boardFooter := ansi.Strip(board.renderFooter())
+	if strings.Contains(boardFooter, "b:list") || strings.Contains(boardFooter, "tab:detail") || strings.Contains(boardFooter, "e:cycle empty") {
+		t.Fatalf("Board search footer advertises normal board controls: %q", boardFooter)
+	}
+	for _, want := range []string{"type search", "enter done", "esc canc"} {
+		if !strings.Contains(boardFooter, want) {
+			t.Fatalf("Board search footer missing %q: %q", want, boardFooter)
+		}
+	}
+
+	history := NewModel(issues, nil, "")
+	history.isHistoryView = true
+	history.historyView.StartSearch()
+	if footer := ansi.Strip(history.renderFooter()); strings.Contains(footer, "h:list") {
+		t.Fatalf("History search footer advertises a consumed return key: %q", footer)
+	}
+}
+
+func TestHelpUsesAttentionAndSprintOriginControls(t *testing.T) {
+	issues := []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}
+
+	attention := NewModel(issues, nil, "")
+	updated, _ := attention.Update(keyMsg("]"))
+	attention = updated.(Model)
+	updated, _ = attention.Update(keyMsg("?"))
+	attention = updated.(Model)
+	attentionHelp := ansi.Strip(attention.renderHelpOverlay())
+	for _, want := range []string{"1-9", "Close Attention", "Esc / q"} {
+		if !strings.Contains(attentionHelp, want) {
+			t.Errorf("Attention Help missing %q: %q", want, attentionHelp)
+		}
+	}
+	for _, stale := range []string{"Home/G", "Tab", "j/k"} {
+		if strings.Contains(attentionHelp, stale) {
+			t.Errorf("Attention Help advertises unrelated control %q: %q", stale, attentionHelp)
+		}
+	}
+
+	sprint := NewModel(issues, nil, "")
+	sprint.isSprintView = true
+	sprint.focused = focusSprint
+	updated, _ = sprint.Update(keyMsg("?"))
+	sprint = updated.(Model)
+	sprintHelp := ansi.Strip(sprint.renderHelpOverlay())
+	for _, want := range []string{"j /", "k /", "P / Esc", "Close Sprint"} {
+		if !strings.Contains(sprintHelp, want) {
+			t.Errorf("Sprint Help missing %q: %q", want, sprintHelp)
+		}
+	}
+	for _, stale := range []string{"Home/G", "Tab", "Enter", "Actionable"} {
+		if strings.Contains(sprintHelp, stale) {
+			t.Errorf("Sprint Help advertises unrelated control %q: %q", stale, sprintHelp)
+		}
+	}
+}
+
+func TestDetailDispatchAllowsDocumentedSharedActions(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	updated, _ := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusDetail {
+		t.Fatalf("expected Detail focus, got %v", m.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("C"))
+	m = updated.(Model)
+	if m.statusMsg == "" {
+		t.Fatal("Detail swallowed documented C copy action")
+	}
+
+	updated, _ = m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if m.focused != focusGraph || !m.isGraphView {
+		t.Fatalf("Detail swallowed documented Graph switch: focus=%v graph=%v", m.focused, m.isGraphView)
+	}
+}
+
+func TestDetailDispatchAllowsSelfUpdate(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.updateAvailable = true
+	m.updateTag = "v9.9.9"
+	updated, _ := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusDetail {
+		t.Fatalf("expected Detail focus, got %v", m.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("U"))
+	m = updated.(Model)
+	if !m.showUpdateModal || m.focused != focusUpdateModal {
+		t.Fatalf("Detail swallowed documented self-update action: modal=%v focus=%v", m.showUpdateModal, m.focused)
+	}
+}
+
+func TestDetailDispatchRejectsListOnlyCommands(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}, nil, "")
+	updated, _ := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusDetail {
+		t.Fatalf("expected Detail focus, got %v", m.focused)
+	}
+
+	for _, key := range []string{"'", "l", "I", "w", "o", "c", "r", "s", "S", "V", "U", "f", "[", "]"} {
+		t.Run(key, func(t *testing.T) {
+			beforeFilter := m.currentFilter
+			beforeSort := m.sortMode
+			updated, _ := m.Update(keyMsg(key))
+			result := updated.(Model)
+			if result.focused != focusDetail || result.showRecipePicker || result.showLabelPicker || result.showTypePicker || result.showRepoPicker || result.isActionableView || result.isBoardView || result.isGraphView || result.isHistoryView || result.focused == focusFlowMatrix || result.focused == focusLabelDashboard || result.showAttentionView {
+				t.Fatalf("Detail accepted List-only command: focus=%v recipe=%v label=%v type=%v repo=%v", result.focused, result.showRecipePicker, result.showLabelPicker, result.showTypePicker, result.showRepoPicker)
+			}
+			if result.currentFilter != beforeFilter || result.sortMode != beforeSort {
+				t.Fatalf("Detail List-only command changed list state: filter=%q sort=%v", result.currentFilter, result.sortMode)
+			}
+		})
+	}
+}
+
+func TestSplitHelpOmitsListEnterAndEscape(t *testing.T) {
+	m := sizedModel(t, []model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, 120, 30)
+	m.isSplitView = true
+	m.focused = focusList
+	updated, _ := m.Update(keyMsg("?"))
+	m = updated.(Model)
+	help := ansi.Strip(m.renderHelpOverlay())
+	if strings.Contains(help, "Select / open") || strings.Contains(help, "Back / close") {
+		t.Fatalf("Split Help retained List-only Enter/Esc guidance:\n%s", help)
+	}
+	if !strings.Contains(help, "Tab") {
+		t.Fatalf("Split Help lost pane-switch guidance:\n%s", help)
+	}
+}
 
 func TestListHelpRendersTreeAndExactTypePickerShortcuts(t *testing.T) {
 	m := NewModel(nil, nil, "")
@@ -492,8 +768,8 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	if !strings.Contains(view, "j/k nav") || !strings.Contains(view, "d drilldown") || !strings.Contains(view, "filter") {
 		t.Fatalf("expected label dashboard controls immediately, got %q", view)
 	}
-	if !strings.Contains(view, "[/F3 close") {
-		t.Fatalf("expected label dashboard toggle-close hint, got %q", view)
+	if !strings.Contains(view, "[/F3:list") {
+		t.Fatalf("expected label dashboard return hint, got %q", view)
 	}
 	if strings.Contains(view, "tab focus") {
 		t.Fatalf("split-view hints leaked into label dashboard: %q", view)
@@ -534,7 +810,7 @@ func TestFlowMatrixFooterStaysOnBottomRow(t *testing.T) {
 		t.Fatalf("Flow view lines = %d, want terminal height 40", len(lines))
 	}
 	footer := lines[len(lines)-1]
-	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "⏎ drill") || !strings.Contains(footer, "f close") {
+	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "⏎ drill") || !strings.Contains(footer, "f:list") {
 		t.Fatalf("bottom row missing Flow hints: %q", footer)
 	}
 	if strings.Count(view, "j/k nav") != 1 || strings.Contains(view, "Press Enter to see issues") {
@@ -560,7 +836,7 @@ func TestFlowMatrixZeroFlowFooterOmitsDrilldown(t *testing.T) {
 	if strings.Contains(footer, "drill") || strings.Contains(footer, "⏎") {
 		t.Fatalf("zero-flow footer advertises unavailable drilldown: %q", footer)
 	}
-	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "esc back") {
+	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "esc back") || !strings.Contains(footer, "f:list") {
 		t.Fatalf("zero-flow footer lost available Flow controls: %q", footer)
 	}
 }
@@ -591,6 +867,59 @@ func TestFlowMatrixDrilldownFooterDescribesIssueNavigation(t *testing.T) {
 	}
 	if strings.Contains(footer, "⏎ drill") {
 		t.Fatalf("drilldown footer still advertises label drilldown: %q", footer)
+	}
+	if !strings.Contains(footer, "esc back") || !strings.Contains(footer, "f close") {
+		t.Fatalf("drilldown footer lacks state-aware close controls: %q", footer)
+	}
+}
+
+func TestFlowEnterDoesNotOpenIssueExcludedByListFilter(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "backend", Title: "Backend", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "frontend", Title: "Frontend", Status: model.StatusOpen, Labels: []string{"frontend"}, Dependencies: []*model.Dependency{{DependsOnID: "backend", Type: model.DepBlocks}}},
+		{ID: "unrelated", Title: "Unrelated", Status: model.StatusClosed},
+	}
+	m := NewModel(issues, nil, "")
+	m.statusFilter = "closed"
+	m.applyFilter()
+	if got := m.selectedListIssueID(); got != "unrelated" {
+		t.Fatalf("filtered List selection = %q, want unrelated", got)
+	}
+
+	m.focused = focusFlowMatrix
+	m.refreshFlowMatrix()
+	m.flowMatrix.OpenDrilldown()
+	for i, issue := range m.flowMatrix.drilldownIssues {
+		if issue.Status == model.StatusOpen {
+			m.flowMatrix.drilldownCursor = i
+			break
+		}
+	}
+	selected := m.flowMatrix.SelectedDrilldownIssue()
+	if selected == nil || selected.ID == "unrelated" {
+		t.Fatalf("Flow drilldown did not select an excluded issue: %#v", selected)
+	}
+
+	updated, _ := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusFlowMatrix || !m.flowMatrix.showDrilldown || m.showDetails {
+		t.Fatalf("Flow opened stale Detail selection: focus=%v drilldown=%v details=%v selected=%q", m.focused, m.flowMatrix.showDrilldown, m.showDetails, m.selectedListIssueID())
+	}
+}
+
+func TestFlowHelpDescribesStateAwareEnterAction(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.focused = focusFlowMatrix
+
+	topLevel := ansi.Strip(m.renderHelpOverlay())
+	if !strings.Contains(topLevel, "Drill into label") || strings.Contains(topLevel, "Open / jump to issue") {
+		t.Fatalf("top-level Flow Help has incorrect Enter guidance:\n%s", topLevel)
+	}
+
+	m.flowMatrix.showDrilldown = true
+	drilldown := ansi.Strip(m.renderHelpOverlay())
+	if !strings.Contains(drilldown, "Open / jump to issue") || strings.Contains(drilldown, "Drill into label") {
+		t.Fatalf("Flow drilldown Help has incorrect Enter guidance:\n%s", drilldown)
 	}
 }
 

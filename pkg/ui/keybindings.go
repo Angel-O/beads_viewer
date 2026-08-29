@@ -251,6 +251,8 @@ func focusesForBindingDoc(doc KeyBindingDoc) []focus {
 			addFocus(focusFlowMatrix)
 		case "sprint":
 			addFocus(focusSprint)
+		case "attention":
+			addFocus(focusAttention)
 		}
 	}
 
@@ -270,6 +272,7 @@ func allDocumentedFocuses() []focus {
 		focusTree,
 		focusFlowMatrix,
 		focusSprint,
+		focusAttention,
 	}
 }
 
@@ -287,16 +290,23 @@ type KeyBindingDoc struct {
 func GetKeyBindingDocs() []KeyBindingDoc {
 	// Authoritative keybinding documentation - update when bindings change
 	return []KeyBindingDoc{
-		// Global Navigation
-		{"j", "Move down", "Navigation", "all"},
-		{"k", "Move up", "Navigation", "all"},
-		{"G", "Go to end", "Navigation", "all"},
-		{"gg", "Go to start", "Navigation", "all"},
-		{"ctrl+d", "Page down", "Navigation", "all"},
-		{"ctrl+u", "Page up", "Navigation", "all"},
-		{"enter", "Open details", "Navigation", "all"},
-		{"esc", "Back/close", "Navigation", "all"},
-		{"q", "Quit", "Navigation", "all"},
+		// Shared Navigation. Keep contexts explicit: overlays and search inputs
+		// consume these keys differently and are not registry view contexts.
+		{"j", "Move down", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"k", "Move up", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"home", "Go to start", "Navigation", "list,board,label-dashboard,flow"},
+		{"enter", "Open details", "Navigation", "list"},
+		{"G", "Go to end", "Navigation", "list,board,tree,flow,label-dashboard"},
+		{"gg", "Go to start", "Navigation", "board,tree"},
+		{"ctrl+d", "Page down", "Navigation", "list,detail,board,graph,tree"},
+		{"ctrl+u", "Page up", "Navigation", "list,detail,board,graph,tree"},
+		{"pgup", "Page up", "Navigation", "tree"},
+		{"pgdown", "Page down", "Navigation", "tree"},
+		{"esc", "Back/close", "Navigation", "list,detail,board,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"q", "Back/quit", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"ctrl+c", "Force quit", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
+		{"`", "Full tutorial", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
+		{"F2/;", "Shortcuts sidebar", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
 
 		// View Switching
 		{"a", "Actionable view", "Views", "list,detail"},
@@ -305,9 +315,26 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"h", "History view", "Views", "list,detail"},
 		{"i", "Insights panel", "Views", "list,detail"},
 		{"E", "Enter Tree (uppercase)", "Views", "list,detail"},
-		{"?", "Help overlay", "Views", "all"},
-		{";", "Shortcuts sidebar", "Views", "all"},
-		{"p", "Priority hints", "Views", "list,detail"},
+		{"?", "Help overlay", "Views", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
+		{"tab", "Switch panes in Split", "Views", "list,detail"},
+		{"p", "Priority hints", "Views", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
+		{"b", "Return to List", "Views", "board,graph,tree,insights,history,actionable,flow"},
+		{"g", "Return to List", "Views", "graph"},
+		{"i", "Return to List", "Views", "insights"},
+		{"h", "Return to List", "Views", "history"},
+		{"a", "Return to List", "Views", "actionable"},
+		{"E", "Exit Tree", "Views", "tree"},
+		{"f", "Flow matrix", "Views", "list,board,graph,tree,insights,actionable"},
+		{"[", "Label dashboard", "Views", "list,board,graph,tree,insights,history,actionable,flow"},
+		{"]", "Attention view", "Views", "list,board,graph,tree,insights,history,actionable,flow"},
+		{"[", "Close dashboard", "Views", "label-dashboard"},
+		{"]", "Close Attention", "Views", "attention"},
+		{"a", "Actionable view", "Views", "board,graph,insights,history,tree,flow"},
+		{"b", "Board view", "Views", "graph,tree,insights,history,actionable,flow"},
+		{"g", "Graph view", "Views", "insights,actionable"},
+		{"i", "Insights panel", "Views", "board,graph,tree,history,actionable,flow"},
+		{"E", "Enter Tree (uppercase)", "Views", "board,graph,insights,history,actionable,flow"},
+		{"h", "History view", "Views", "actionable,flow"},
 
 		// Filters
 		{"o", "Open issues only", "Filters", "list,board,tree"},
@@ -317,28 +344,37 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"I", "Exact issue-type picker", "Filters", "list"},
 		{"w", "Repository scope picker", "Filters", "list"},
 		{"/", "Search/filter", "Filters", "list"},
+		{"ctrl+s", "Semantic search toggle", "Filters", "list"},
+		{"H", "Hybrid search toggle", "Filters", "list"},
+		{"alt+h", "Hybrid preset", "Filters", "list"},
 
 		// Actions
-		{"t", "Time travel (forward)", "Actions", "list,detail"},
-		{"T", "Time travel (back)", "Actions", "list,detail"},
+		{"t", "Choose revision / exit diff", "Actions", "list,detail"},
+		{"T", "Quick HEAD~5 / exit diff", "Actions", "list,detail"},
 		{"x", "Export to markdown", "Actions", "list,detail"},
-		{"y", "Copy issue ID", "Actions", "all"},
-		{"C", "Copy full issue", "Actions", "detail"},
+		{"y", "Copy issue ID", "Actions", "list,detail,board"},
+		{"C", "Copy full issue", "Actions", "list,detail"},
 		{"n", "Add comment", "Actions", "list,detail"},
 		{"e", "Edit comment", "Actions", "list,detail"},
 		{"d", "Delete comment", "Actions", "list,detail"},
-		{"O", "Open in $EDITOR", "Actions", "detail"},
+		{"O", "Open in $EDITOR", "Actions", "list,detail"},
 		{"'", "Recipe picker", "Actions", "list"},
-		{"U", "Self-update check", "Actions", "all"},
+		{"U", "Self-update check", "Actions", "list,detail"},
 		{"V", "Cass sessions", "Actions", "list"},
+		{"s", "Cycle sort mode", "Actions", "list"},
+		{"S", "Apply triage sort", "Actions", "list"},
+		{"!", "Alerts panel", "Actions", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
+		{"Ctrl+R/F5", "Force refresh", "Actions", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"<", "Shrink list pane", "Actions", "list,detail"},
+		{">", "Expand list pane", "Actions", "list,detail"},
 
 		// Graph View
 		{"hjkl", "Navigate graph", "Graph", "graph"},
-		{"PgUp", "Scroll up", "Graph", "graph"},
-		{"PgDn", "Scroll down", "Graph", "graph"},
+		{"pgup/pgdown", "Scroll graph up/down", "Graph", "graph"},
 		{"/", "Search ID or title", "Graph", "graph"},
 		{"n/N", "Next/previous match", "Graph", "graph"},
-		{"Esc", "Clear search or exit", "Graph", "graph"},
+		{"enter", "Open selected issue", "Graph", "graph"},
+		{"esc", "Clear search or exit", "Graph", "graph"},
 
 		// Tree View
 		{"h", "Collapse or visit parent", "Tree", "tree"},
@@ -360,21 +396,57 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"tab", "Toggle detail", "Board", "board"},
 		{"ctrl+j", "Scroll detail down", "Board", "board"},
 		{"ctrl+k", "Scroll detail up", "Board", "board"},
+		{"enter", "Open selected issue", "Board", "board"},
+		{"n/N", "Next/previous match", "Board", "board"},
+		{"y", "Copy issue ID", "Board", "board"},
+		{"s", "Cycle grouping", "Board", "board"},
+		{"e", "Cycle empty columns", "Board", "board"},
+		{"d", "Expand selected card", "Board", "board"},
+		{"1-4", "Jump to column", "Board", "board"},
+		{"H/L", "First/last column", "Board", "board"},
+		{"0/$", "First/last item", "Board", "board"},
+		{"/", "Search cards", "Board", "board"},
 
 		// Insights View
 		{"h", "Previous panel", "Insights", "insights"},
 		{"l", "Next panel", "Insights", "insights"},
+		{"tab", "Next panel", "Insights", "insights"},
+		{"ctrl+j", "Scroll detail down", "Insights", "insights"},
+		{"ctrl+k", "Scroll detail up", "Insights", "insights"},
 		{"o", "Active work", "Filters", "insights"},
 		{"r", "Ready-only toggle", "Filters", "insights"},
 		{"e", "Toggle explanations", "Insights", "insights"},
 		{"x", "Calculation proof", "Insights", "insights"},
 		{"m", "Heatmap toggle", "Insights", "insights"},
+		{"enter", "Open selected issue", "Insights", "insights"},
+		{"] / F4", "Attention view", "Insights", "insights"},
 
 		// History View
 		{"v", "Toggle git/bead mode", "History", "history"},
 		{"tab", "Toggle focus", "History", "history"},
 		{"J", "Detail scroll down", "History", "history"},
 		{"K", "Detail scroll up", "History", "history"},
+		{"enter", "Open selected bead", "History", "history"},
+		{"y", "Copy commit SHA", "History", "history"},
 		{"o", "Open in browser", "History", "history"},
+		{"f/F", "Toggle file tree", "History", "history"},
+		{"g", "Graph view", "History", "history"},
+		{"h", "Exit History", "History", "history"},
+		{"/", "Search commits/beads", "History", "history"},
+		{"c", "Confidence filter", "History", "history"},
+
+		// Other Views
+		{"enter", "Apply label filter", "Labels", "label-dashboard"},
+		{"h", "Open label detail", "Labels", "label-dashboard"},
+		{"d", "Open label drilldown", "Labels", "label-dashboard"},
+		{"f3", "Close dashboard", "Labels", "label-dashboard"},
+		{"enter", "Open selected issue", "Actionable", "actionable"},
+		{"enter", "Drill down / open issue", "Flow", "flow"},
+		{"f", "Close Flow or drilldown", "Flow", "flow"},
+		{"P", "Close Sprint", "Sprint", "sprint"},
+		{"1-9", "Filter by ranked label", "Attention", "attention"},
+		{"d", "Close Attention", "Attention", "attention"},
+		{"] / F4", "Close Attention", "Attention", "attention"},
+		{"esc / q", "Back to previous view", "Attention", "attention"},
 	}
 }

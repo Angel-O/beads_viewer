@@ -517,10 +517,13 @@ func TestRenderFooterStatusAndBadges(t *testing.T) {
 		{ID: "web", Name: "web"},
 	}
 	footer = m.renderFooter()
-	for _, expect := range []string{"READY", "◉", "⭐", "📦", "api, web"} {
+	for _, expect := range []string{"READY", "◉", "📦", "api, web"} {
 		if !strings.Contains(footer, expect) {
 			t.Fatalf("footer missing %s: %s", expect, footer)
 		}
+	}
+	if strings.Contains(footer, "⭐") || strings.Contains(footer, "v9.9.9") {
+		t.Fatalf("footer rendered the update badge: %s", footer)
 	}
 }
 
@@ -724,6 +727,30 @@ func TestExportToMarkdownSmoke(t *testing.T) {
 	}
 }
 
+func TestDetailDispatchAllowsMarkdownExport(t *testing.T) {
+	tmp := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer os.Chdir(orig)
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	m := NewModel([]model.Issue{{ID: "R-1", Title: "Report me", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	updated, _ := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusDetail {
+		t.Fatalf("expected Detail focus, got %v", m.focused)
+	}
+	updated, _ = m.Update(keyMsg("x"))
+	m = updated.(Model)
+	if m.statusIsError || !strings.Contains(m.statusMsg, "Exported 1 issues") {
+		t.Fatalf("Detail x did not export: error=%v status=%q", m.statusIsError, m.statusMsg)
+	}
+}
+
 func TestGraphConnectorDown(t *testing.T) {
 	renderer := lipgloss.NewRenderer(nil)
 	theme := DefaultTheme(renderer)
@@ -866,10 +893,13 @@ func TestRenderFooter_CombinedIndicators(t *testing.T) {
 	}
 
 	out := m.renderFooter()
-	for _, expect := range []string{"READY", "metrics", "recovered x2", "polling", "⭐"} {
+	for _, expect := range []string{"READY", "metrics", "recovered x2", "polling"} {
 		if !strings.Contains(out, expect) {
 			t.Fatalf("footer missing %q: %q", expect, out)
 		}
+	}
+	if strings.Contains(out, "⭐") || strings.Contains(out, "v9.9.9") {
+		t.Fatalf("combined footer rendered the update badge: %q", out)
 	}
 }
 
@@ -1084,10 +1114,13 @@ func TestRenderFooterVariantsAndDiffStatus(t *testing.T) {
 	m.countClosed = 1
 
 	out = m.renderFooter()
-	for _, want := range []string{"⏱", "v9.9.9", "2 repos"} {
+	for _, want := range []string{"⏱", "2 repos"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("footer missing %q in %q", want, out)
 		}
+	}
+	if strings.Contains(out, "⭐") || strings.Contains(out, "v9.9.9") {
+		t.Fatalf("time-travel footer rendered the update badge: %q", out)
 	}
 
 	// Diff status mapping

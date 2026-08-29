@@ -10,26 +10,27 @@ import (
 // This is used when user triggers context-specific help (e.g., double-tap backtick).
 // Content should fit on one screen (~20 lines) without scrolling.
 var ContextHelpContent = map[Context]string{
-	ContextList:           contextHelpList,
-	ContextGraph:          contextHelpGraph,
-	ContextTree:           contextHelpTree,
-	ContextBoard:          contextHelpBoard,
-	ContextInsights:       contextHelpInsights,
-	ContextFlowMatrix:     contextHelpFlowMatrix,
-	ContextHistory:        contextHelpHistory,
-	ContextDetail:         contextHelpDetail,
-	ContextSplit:          contextHelpSplit,
-	ContextFilter:         contextHelpFilter,
-	ContextLabelPicker:    contextHelpLabelPicker,
-	ContextRepoPicker:     contextHelpRepoPicker,
-	ContextTypePicker:     contextHelpTypePicker,
-	ContextRecipePicker:   contextHelpRecipePicker,
-	ContextHelp:           contextHelpHelp,
-	ContextTimeTravel:     contextHelpTimeTravel,
-	ContextLabelDashboard: contextHelpLabelDashboard,
-	ContextAttention:      contextHelpAttention,
-	ContextAgentPrompt:    contextHelpAgentPrompt,
-	ContextCassSession:    contextHelpCassSession,
+	ContextList:            contextHelpList,
+	ContextGraph:           contextHelpGraph,
+	ContextTree:            contextHelpTree,
+	ContextBoard:           contextHelpBoard,
+	ContextInsights:        contextHelpInsights,
+	ContextFlowMatrix:      contextHelpFlowMatrix,
+	ContextHistory:         contextHelpHistory,
+	ContextDetail:          contextHelpDetail,
+	ContextSplit:           contextHelpSplit,
+	ContextFilter:          contextHelpFilter,
+	ContextLabelPicker:     contextHelpLabelPicker,
+	ContextRepoPicker:      contextHelpRepoPicker,
+	ContextTypePicker:      contextHelpTypePicker,
+	ContextRecipePicker:    contextHelpRecipePicker,
+	ContextHelp:            contextHelpHelp,
+	ContextTimeTravelInput: contextHelpTimeTravelInput,
+	ContextTimeTravel:      contextHelpTimeTravel,
+	ContextLabelDashboard:  contextHelpLabelDashboard,
+	ContextAttention:       contextHelpAttention,
+	ContextAgentPrompt:     contextHelpAgentPrompt,
+	ContextCassSession:     contextHelpCassSession,
 }
 
 // GetContextHelp returns the help content for a given context.
@@ -131,7 +132,7 @@ func renderCompactNavigationHint(state compactNavigationState) string {
 		}
 		return scopeHint + " • n/N:match • Esc:clear"
 	}
-	return "j/k:move • h/l:fold • o/c/r:filter • +/-:all • /:search • E:exit • ?:help"
+	return "j/k:move • h/l:fold • o/c/r:filter • +/-:all • /:search • E:list • ?:help"
 }
 
 // =============================================================================
@@ -143,7 +144,7 @@ const contextHelpList = `## List View
 **Navigation**
   j/k       Move up/down
   Enter     View issue details
-  g/G       Jump to top/bottom
+  Home/G    Jump to top/bottom
 
 **Filtering**
   o         Open issues only
@@ -194,7 +195,7 @@ const contextHelpTree = `## Tree View
   h/l       Collapse/expand or visit parent/child
   Enter     Toggle expansion; select during search
   Space     Toggle expansion
-  g/G       Jump to top/bottom
+  gg/G      Jump to top/bottom
   +/-       Expand/collapse all
 
 **Filtering**
@@ -230,7 +231,6 @@ const contextHelpBoard = `## Board View
 
 **Grouping**
   s         Cycle: Status/Priority/Type
-
 **Visual Indicators** (card borders)
   🔴 Red     Has blockers
   🟡 Yellow  High-impact (blocks others)
@@ -238,6 +238,7 @@ const contextHelpBoard = `## Board View
 
 **Actions**
   Tab       Toggle detail panel
+	  e         Cycle empty-column mode
   Ctrl+j/k  Scroll detail panel
   V         Preview cass sessions
   y         Copy issue ID
@@ -270,15 +271,17 @@ const contextHelpInsights = `## Insights Panel
 • Blocked chains: Bottlenecks
 • Priority inversions: Low blocking high
 
-  Enter     View selected issue
-  Esc       Return to previous view`
+	Enter     Open issue or heatmap cell
+	] / F4    Attention view
+	f         Flow matrix
+	Esc       Return to previous view`
 
 const contextHelpFlowMatrix = `## Dependency Flow
 
 **Navigation**
   j/k       Move between labels
   g/G       Jump to first/last label
-  Enter     Open cross-label issues
+  Enter     Drill into the selected label
 
 **Understanding Flow**
 Flow counts open blocking dependencies
@@ -287,8 +290,8 @@ The detail panel shows incoming and
 outgoing label totals.
 
 **Exit**
-  Esc / q   Return to the issue list
-  f         Close Flow view`
+  Esc / q   Return to the issue list (or close drilldown)
+  f         Close Flow or its drilldown`
 
 const contextHelpHistory = `## History View
 
@@ -310,21 +313,27 @@ const contextHelpHistory = `## History View
   📁 File     Touches associated files
 
 **Actions**
-  y         Copy commit SHA
-  o         Open commit in browser
-  Esc       Return to list`
+	 y         Copy commit SHA
+	 o         Open commit in browser
+	 h / Esc / q  Return to list`
 
 const contextHelpDetail = `## Detail View
 
 **Navigation**
-  j/k       Scroll content
-  Esc       Return to previous view
-  Tab       Switch to split view
+	 j/k       Scroll content
+	 Esc       Return to previous view
+
+**Switch Views**
+	 a/b/g/h/i  Actionable/board/graph/history/insights
+	 E          Tree view
+	 t/T        Time travel / quick HEAD~5
 
 **Actions**
-  n         Add comment
-  O         Open in editor
-  C         Copy issue ID
+	 n         Add comment
+	 O         Open in editor
+	 C         Copy full issue
+	 x         Export markdown
+	 y         Copy issue ID
 
 **Info Shown**
 • Full description (markdown)
@@ -333,10 +342,13 @@ const contextHelpDetail = `## Detail View
 
 const contextHelpSplit = `## Split View
 
+Split view is selected automatically when the terminal is
+wider than 100 columns.
+
 **Focus**
-  Tab       Switch panes
-  <         Shrink list pane
-  >         Expand list pane
+	 Tab       Switch panes
+	 <         Shrink list pane
+	 >         Expand list pane
 
 **Left Pane (List)**
   j/k       Navigate issues
@@ -344,49 +356,33 @@ const contextHelpSplit = `## Split View
 **Right Pane (Detail)**
   j/k       Scroll content
 
-**Exit**
-  Esc       Return to list view
-  Enter     Open full detail
+**Actions**
+	 C         Copy full issue
+	 x         Export markdown
+	 y         Copy issue ID
 
 Tip: Detail updates as you navigate`
 
 const contextHelpFilter = `## Filter Mode
 
-**Status Filters**
-  o         Open only
-  c         Closed only
-  r         Ready (no blockers)
-  a         All (clear filter)
+Type to edit the active List search filter.
 
-**Search**
-  /         Start fuzzy search
-  Ctrl+S    Semantic search (AI)
-  H         Hybrid ranking
-  Alt+H     Hybrid preset
-  n/N       Next/prev match
-  Esc       Clear search
-
-**Label Filters**
-  l         Open label picker
-
-**Issue Types**
-  I         Exact multi-select picker`
+**Input**
+	 /         Start fuzzy search
+	 Type      Add search text
+	 Backspace Remove search text
+	 Enter     Apply the filter
+	 Esc       Cancel the filter`
 
 const contextHelpLabelPicker = `## Label Picker
 
 **Navigation**
   j/k       Move selection
-  Enter     Apply label
-  Space     Toggle multi-select
+  Enter     Filter List by selected label
   Esc       Cancel
 
 **Search**
-  /         Filter labels
-
-**Actions**
-  n         Create new label
-  d         Delete label
-  e         Edit label`
+  Type      Filter labels by text`
 
 const contextHelpRepoPicker = `## Repository Scope
 
@@ -437,13 +433,13 @@ const contextHelpHelp = `## Help Overlay
 You're looking at the help overlay!
 
 **Navigation**
-  j/k       Scroll help content
-  Space     Open full tutorial
-  Esc/?     Close this overlay
+	 j/k       Scroll help content
+	 Space     Open full tutorial
+	 Esc/?/q   Close this overlay
+	 Other keys  Dismiss and return
 
 **Other Help**
-  ` + "`" + `         Full tutorial (any time)
-  ;         Toggle shortcuts sidebar`
+  ` + "`" + `         Full tutorial (any time)`
 
 const contextHelpTimeTravel = `## Time Travel Mode
 
@@ -458,10 +454,21 @@ point in history.
   Enter     View issue detail
 
 **Exit**
-  Esc       Return to present
+  t / T     Return to present
 
 Tip: Use History view (h) to pick
 different points in time`
+
+const contextHelpTimeTravelInput = `## Time Travel Input
+
+Enter a git revision to compare with the current state.
+
+**Input**
+	 Type      Enter a revision
+	 Enter     Compare with that revision
+	 Esc       Cancel
+
+Empty input uses HEAD~5.`
 
 const contextHelpLabelDashboard = `## Label Dashboard
 
@@ -473,13 +480,12 @@ Shows all labels with:
 
 **Navigation**
   j/k       Move selection
-  Enter     Drill into label
+  Enter     Filter List by selected label
   h         View label health
-  g         Label graph analysis
+  d         Open label issue drilldown
+  [ / F3    Close dashboard
   Esc       Return to list
-
-**Filtering**
-  /         Search labels`
+`
 
 const contextHelpAttention = `## Attention View
 
@@ -497,21 +503,22 @@ Labels are sorted by attention score based on:
   ] / F4    Toggle Attention closed
   Esc / q   Back to the previous view`
 
-const contextHelpAgentPrompt = `## AI Agent Prompt
+const contextHelpAgentPrompt = `## Agent Instructions Prompt
 
-**Input**
-Type your question or request
-for the AI agent.
+Offers to add beads_viewer instructions
+to AGENTS.md or CLAUDE.md.
 
-**Actions**
-  Enter     Submit prompt
-  Esc       Cancel
-  Ctrl+C    Clear input
+**Navigation**
+  h/l       Move between choices
+  Tab       Move to next choice
+  Enter     Confirm selected choice
+  Space     Confirm selected choice
 
-**Examples**
-• "Triage these issues"
-• "What should I work on?"
-• "Summarize blocked items"`
+**Direct Choices**
+  y         Add instructions
+  n         Decline
+  d         Don't ask again
+  Esc / q   Decline`
 
 const contextHelpGeneric = `## Quick Reference
 
@@ -523,12 +530,12 @@ const contextHelpGeneric = `## Quick Reference
 
 **Navigation**
   j/k       Move up/down
-  h/l       Move left/right
+  h/l       Contextual left/right navigation
   Enter     Select/open
 
 **Views**
-  b/g/i/h   Switch views
-  ;         Shortcuts sidebar`
+	 b/g/i/h   Switch views from List/Detail
+	 ;         Shortcuts sidebar`
 
 const contextHelpCassSession = `## Cass Session Preview
 
@@ -537,12 +544,11 @@ the selected bead via cass search.
 
 **Navigation**
   j/k       Move between sessions
-  Enter     Expand session details
-  Esc       Close modal
+  Enter     Close modal
+  Esc/V/q   Close modal
 
 **Actions**
-  y         Copy cass command
-  o         Open session file
+  y         Copy cass search command
 
 **Match Types**
   ID        Direct bead ID match
