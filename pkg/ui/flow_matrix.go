@@ -9,6 +9,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // FlowMatrixModel renders an interactive dependency flow dashboard
@@ -22,7 +23,6 @@ type FlowMatrixModel struct {
 	width        int
 	height       int
 	theme        Theme
-	focusPanel   int // 0 = labels list, 1 = detail panel
 	ready        bool
 
 	// Drill-down state
@@ -48,8 +48,7 @@ type labelFlowStats struct {
 // NewFlowMatrixModel creates a new flow matrix dashboard
 func NewFlowMatrixModel(theme Theme) FlowMatrixModel {
 	return FlowMatrixModel{
-		theme:      theme,
-		focusPanel: 0,
+		theme: theme,
 	}
 }
 
@@ -179,10 +178,8 @@ func (m *FlowMatrixModel) Update(msg tea.KeyMsg) tea.Cmd {
 			m.cursor = len(m.labelStats) - 1
 			m.ensureVisible()
 		}
-	case "tab":
-		m.focusPanel = (m.focusPanel + 1) % 2
 	case "enter":
-		if m.cursor < len(m.labelStats) {
+		if m.flow != nil && m.flow.TotalCrossLabelDeps > 0 && m.cursor < len(m.labelStats) {
 			m.openDrilldown()
 		}
 	case "ctrl+d":
@@ -251,7 +248,7 @@ func (m *FlowMatrixModel) ensureDrilldownVisible() {
 }
 
 func (m *FlowMatrixModel) visibleRows() int {
-	rows := m.height - 6 // header, footer, borders
+	rows := m.height - 4 // Flow header plus labels panel header and separator
 	if rows < 3 {
 		rows = 3
 	}
@@ -259,30 +256,48 @@ func (m *FlowMatrixModel) visibleRows() int {
 }
 
 func (m *FlowMatrixModel) openDrilldown() {
-	if m.cursor >= len(m.labelStats) {
+	if m.flow == nil || m.flow.TotalCrossLabelDeps == 0 || m.cursor >= len(m.labelStats) {
 		return
 	}
 	selectedLabel := m.labelStats[m.cursor].Label
 
-	// Find issues with this label that have cross-label dependencies
-	var relevant []model.Issue
-	for _, iss := range m.issues {
-		hasLabel := false
-		for _, l := range iss.Labels {
-			if l == selectedLabel {
-				hasLabel = true
-				break
+	// Use only the issues participating in cross-label blocking pairs. An issue
+	// can carry the selected label without being part of the selected flow.
+	issueIDs := make(map[string]struct{})
+	for _, dep := range m.flow.Dependencies {
+		for _, pair := range dep.BlockingPairs {
+			if pair.BlockerLabel != selectedLabel && pair.BlockedLabel != selectedLabel {
+				continue
+			}
+			if pair.BlockerID != "" {
+				issueIDs[pair.BlockerID] = struct{}{}
+			}
+			if pair.BlockedID != "" {
+				issueIDs[pair.BlockedID] = struct{}{}
 			}
 		}
-		if hasLabel {
-			relevant = append(relevant, iss)
+	}
+
+	ids := make([]string, 0, len(issueIDs))
+	for id := range issueIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	issueByID := make(map[string]model.Issue, len(m.issues))
+	for _, issue := range m.issues {
+		issueByID[issue.ID] = issue
+	}
+	relevant := make([]model.Issue, 0, len(ids))
+	for _, id := range ids {
+		if issue, ok := issueByID[id]; ok {
+			relevant = append(relevant, issue)
 		}
 	}
 
 	m.drilldownIssues = relevant
 	m.drilldownCursor = 0
 	m.drilldownScroll = 0
-	m.drilldownTitle = fmt.Sprintf("Issues with label: %s", selectedLabel)
+	m.drilldownTitle = fmt.Sprintf("Cross-label issues involving: %s", selectedLabel)
 	m.showDrilldown = true
 }
 
@@ -296,45 +311,16 @@ func (m *FlowMatrixModel) SelectedLabel() string {
 
 // View renders the flow matrix dashboard
 func (m FlowMatrixModel) View() string {
-	if !m.ready {
-		return m.renderFullHeight(m.theme.Base.Render("No cross-label dependencies found"))
+	if !m.ready || m.flow == nil || m.flow.TotalCrossLabelDeps == 0 {
+		return m.renderFullHeight(m.renderEmptyState())
 	}
 
 	if m.showDrilldown {
 		return m.renderFullHeight(m.renderDrilldown())
 	}
 
-	// Calculate panel widths with safety bounds
-	leftWidth := m.width * 35 / 100 // 35% for labels list
-	minLeftWidth := 25
-	minRightWidth := 30
-	sepWidth := 3 // border/separator space
-
-	// Ensure we don't exceed total width
-	if leftWidth < minLeftWidth {
-		leftWidth = minLeftWidth
-	}
-	rightWidth := m.width - leftWidth - sepWidth
-	if rightWidth < minRightWidth {
-		rightWidth = minRightWidth
-	}
-
-	// If total exceeds width, scale down proportionally
-	totalNeeded := leftWidth + rightWidth + sepWidth
-	if totalNeeded > m.width && m.width > 0 {
-		scale := float64(m.width-sepWidth) / float64(leftWidth+rightWidth)
-		leftWidth = int(float64(leftWidth) * scale)
-		rightWidth = m.width - leftWidth - sepWidth
-		if leftWidth < 10 {
-			leftWidth = 10
-		}
-		if rightWidth < 10 {
-			rightWidth = m.width - leftWidth - sepWidth
-			if rightWidth < 10 {
-				rightWidth = 10
-			}
-		}
-	}
+	// Reserve exactly three cells for the spaces and separator between panels.
+	leftWidth, rightWidth := m.flowPanelWidths()
 
 	// Build panels
 	leftPanel := m.renderLabelsPanel(leftWidth)
@@ -358,6 +344,12 @@ func (m FlowMatrixModel) View() string {
 	for len(rightLines) < maxLines {
 		rightLines = append(rightLines, strings.Repeat(" ", rightWidth))
 	}
+	for i := range leftLines {
+		leftLines[i] = fitFlowLine(leftLines[i], leftWidth)
+	}
+	for i := range rightLines {
+		rightLines[i] = fitFlowLine(rightLines[i], rightWidth)
+	}
 
 	var body strings.Builder
 	separator := m.theme.Renderer.NewStyle().
@@ -375,18 +367,58 @@ func (m FlowMatrixModel) View() string {
 		}
 	}
 
-	// Footer
-	footer := m.renderFooter()
-
-	return m.renderFullHeight(lipgloss.JoinVertical(lipgloss.Left, header, body.String(), footer))
+	return m.renderFullHeight(lipgloss.JoinVertical(lipgloss.Left, header, body.String()))
 }
 
 func (m FlowMatrixModel) renderFullHeight(content string) string {
+	content = fitFlowContent(content, m.width)
 	return lipgloss.NewStyle().
 		Width(m.width).
 		Height(m.height).
 		MaxHeight(m.height).
 		Render(content)
+}
+
+func (m FlowMatrixModel) flowPanelWidths() (int, int) {
+	if m.width < 5 {
+		return max(m.width, 0), 0
+	}
+	available := m.width - 3
+	left := available * 35 / 100
+	if left < 1 {
+		left = 1
+	}
+	if left >= available {
+		left = available - 1
+	}
+	return left, available - left
+}
+
+func fitFlowLine(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	line = ansi.Truncate(line, width, "")
+	if padding := width - lipgloss.Width(line); padding > 0 {
+		line += strings.Repeat(" ", padding)
+	}
+	return line
+}
+
+func fitFlowContent(content string, width int) string {
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = fitFlowLine(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m FlowMatrixModel) renderEmptyState() string {
+	return strings.Join([]string{
+		m.theme.Base.Render("No open cross-label blocking dependencies"),
+		"Flow counts open blocking cross-label dependencies between labels.",
+		"There is nothing to drill into for a label yet.",
+	}, "\n")
 }
 
 func (m FlowMatrixModel) renderHeader() string {
@@ -410,8 +442,8 @@ func (m FlowMatrixModel) renderHeader() string {
 		Foreground(m.theme.Border)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		headerLine,
-		borderStyle.Render(strings.Repeat("─", m.width)))
+		fitFlowLine(headerLine, m.width),
+		fitFlowLine(borderStyle.Render(strings.Repeat("─", max(m.width, 0))), m.width))
 }
 
 func (m FlowMatrixModel) renderLabelsPanel(width int) string {
@@ -420,19 +452,13 @@ func (m FlowMatrixModel) renderLabelsPanel(width int) string {
 	// Panel header
 	headerStyle := m.theme.Renderer.NewStyle().
 		Bold(true).
-		Foreground(m.theme.Secondary).
-		Width(width)
-
-	focusIndicator := " "
-	if m.focusPanel == 0 {
-		focusIndicator = "▸"
-	}
-	b.WriteString(headerStyle.Render(focusIndicator + " LABELS (by blocking power)"))
+		Foreground(m.theme.Secondary)
+	b.WriteString(fitFlowLine(headerStyle.Render("LABELS (by blocking power)"), width))
 	b.WriteString("\n")
 
 	// Separator
 	sepStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Border)
-	b.WriteString(sepStyle.Render(strings.Repeat("─", width)))
+	b.WriteString(fitFlowLine(sepStyle.Render(strings.Repeat("─", max(width, 0))), width))
 	b.WriteString("\n")
 
 	// Find max for bar scaling
@@ -451,18 +477,12 @@ func (m FlowMatrixModel) renderLabelsPanel(width int) string {
 		end = len(m.labelStats)
 	}
 
-	// Bar width
-	barWidth := width - 20 // space for label name and count
-	if barWidth < 5 {
-		barWidth = 5
-	}
-
 	for i := start; i < end; i++ {
 		stat := m.labelStats[i]
 		isSelected := i == m.cursor
 
 		// Build the row
-		row := m.renderLabelRow(stat, isSelected, barWidth, maxOut, width)
+		row := m.renderLabelRow(stat, isSelected, maxOut, width)
 		b.WriteString(row)
 		if i < end-1 {
 			b.WriteString("\n")
@@ -475,17 +495,18 @@ func (m FlowMatrixModel) renderLabelsPanel(width int) string {
 		b.WriteString(strings.Repeat(" ", width))
 	}
 
-	return b.String()
+	return fitFlowContent(b.String(), width)
 }
 
-func (m FlowMatrixModel) renderLabelRow(stat labelFlowStats, selected bool, barWidth, maxOut, totalWidth int) string {
-	// Label name (truncated if needed, using rune count for UTF-8 safety)
-	labelWidth := 12
-	label := stat.Label
-	labelRunes := []rune(label)
-	if len(labelRunes) > labelWidth {
-		label = string(labelRunes[:labelWidth-1]) + "…"
+func (m FlowMatrixModel) renderLabelRow(stat labelFlowStats, selected bool, maxOut, totalWidth int) string {
+	if totalWidth <= 0 {
+		return ""
 	}
+
+	countStr := fmt.Sprintf("%d", stat.OutgoingCount)
+	barWidth := max(totalWidth-12-lipgloss.Width(countStr)-2, 0)
+	labelWidth := min(12, max(totalWidth-lipgloss.Width(countStr)-barWidth-2, 0))
+	label := ansi.Truncate(stat.Label, labelWidth, "")
 
 	// Color based on bottleneck status
 	var labelColor lipgloss.AdaptiveColor
@@ -500,8 +521,8 @@ func (m FlowMatrixModel) renderLabelRow(stat labelFlowStats, selected bool, barW
 	}
 
 	labelStyle := m.theme.Renderer.NewStyle().
-		Foreground(labelColor).
-		Width(labelWidth)
+		Foreground(labelColor)
+	labelField := labelStyle.Render(label + strings.Repeat(" ", max(labelWidth-lipgloss.Width(label), 0)))
 
 	// Bar visualization
 	barFilled := 0
@@ -522,15 +543,13 @@ func (m FlowMatrixModel) renderLabelRow(stat labelFlowStats, selected bool, barW
 	barStyle := m.theme.Renderer.NewStyle().Foreground(labelColor)
 	emptyStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Border)
 
-	// Count
-	countStr := fmt.Sprintf("%3d", stat.OutgoingCount)
-
 	// Assemble row
 	row := fmt.Sprintf("%s %s%s %s",
-		labelStyle.Render(fmt.Sprintf("%-*s", labelWidth, label)),
+		labelField,
 		barStyle.Render(bar),
 		emptyStyle.Render(barEmpty),
 		countStr)
+	row = fitFlowLine(row, totalWidth)
 
 	// Selection highlight
 	if selected {
@@ -547,7 +566,7 @@ func (m FlowMatrixModel) renderDetailPanel(width int) string {
 	var b strings.Builder
 
 	if m.cursor >= len(m.labelStats) {
-		return "Select a label"
+		return fitFlowLine("Select a label", width)
 	}
 
 	stat := m.labelStats[m.cursor]
@@ -557,12 +576,12 @@ func (m FlowMatrixModel) renderDetailPanel(width int) string {
 		Bold(true).
 		Foreground(m.theme.Primary)
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("▸ %s", stat.Label)))
+	b.WriteString(fitFlowLine(headerStyle.Render(stat.Label), width))
 	b.WriteString("\n")
 
 	// Separator
 	sepStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Border)
-	b.WriteString(sepStyle.Render(strings.Repeat("─", width)))
+	b.WriteString(fitFlowLine(sepStyle.Render(strings.Repeat("─", max(width, 0))), width))
 	b.WriteString("\n\n")
 
 	// Stats summary
@@ -594,7 +613,7 @@ func (m FlowMatrixModel) renderDetailPanel(width int) string {
 	b.WriteString("\n")
 
 	// Two-column layout for blocks/blocked by
-	halfWidth := (width - 4) / 2
+	halfWidth := max((width-4)/2, 0)
 
 	// BLOCKS section
 	blocksHeader := m.theme.Renderer.NewStyle().
@@ -651,11 +670,7 @@ func (m FlowMatrixModel) renderDetailPanel(width int) string {
 
 	b.WriteString("\n")
 
-	// Hint
-	hintStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext).Italic(true)
-	b.WriteString(hintStyle.Render("Press Enter to see issues"))
-
-	return b.String()
+	return fitFlowContent(b.String(), width)
 }
 
 func (m FlowMatrixModel) getFlowCounts(sourceLabel string, targetLabels []string, outgoing bool) map[string]int {
@@ -738,17 +753,6 @@ func (m FlowMatrixModel) miniBar(count, maxWidth int) string {
 	return barStyle.Render(strings.Repeat("■", filled)) + strings.Repeat("·", maxWidth-filled)
 }
 
-func (m FlowMatrixModel) renderFooter() string {
-	borderStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Border)
-	helpStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
-
-	help := "j/k: navigate  Enter: drill down  Tab: switch panel  Esc: close"
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		borderStyle.Render(strings.Repeat("─", m.width)),
-		helpStyle.Render(help))
-}
-
 func (m FlowMatrixModel) renderDrilldown() string {
 	var b strings.Builder
 
@@ -761,16 +765,16 @@ func (m FlowMatrixModel) renderDrilldown() string {
 	b.WriteString(fmt.Sprintf(" (%d issues)\n", len(m.drilldownIssues)))
 
 	borderStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Border)
-	b.WriteString(borderStyle.Render(strings.Repeat("─", m.width)))
+	b.WriteString(fitFlowLine(borderStyle.Render(strings.Repeat("─", max(m.width, 0))), m.width))
 	b.WriteString("\n\n")
 
 	if len(m.drilldownIssues) == 0 {
 		b.WriteString("No issues found")
-		return b.String()
+		return fitFlowContent(b.String(), m.width)
 	}
 
-	// Visible rows
-	visible := m.height - 8
+	// Visible rows. The shared parent footer is outside this model.
+	visible := m.height - 4
 	if visible < 3 {
 		visible = 3
 	}
@@ -794,19 +798,11 @@ func (m FlowMatrixModel) renderDrilldown() string {
 		titleStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Base.GetForeground())
 
 		title := iss.Title
-		maxTitleLen := m.width - 25
-		if maxTitleLen < 20 {
-			maxTitleLen = 20
-		}
-		titleRunes := []rune(title)
-		if len(titleRunes) > maxTitleLen {
-			title = string(titleRunes[:maxTitleLen-1]) + "…"
-		}
-
 		row := fmt.Sprintf("%s %s %s",
 			statusStyle.Render(statusIndicator),
 			idStyle.Render(iss.ID),
 			titleStyle.Render(title))
+		row = fitFlowLine(row, m.width)
 
 		if selected {
 			selectStyle := m.theme.Renderer.NewStyle().
@@ -821,15 +817,7 @@ func (m FlowMatrixModel) renderDrilldown() string {
 		}
 	}
 
-	// Footer
-	b.WriteString("\n\n")
-	b.WriteString(borderStyle.Render(strings.Repeat("─", m.width)))
-	b.WriteString("\n")
-
-	helpStyle := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
-	b.WriteString(helpStyle.Render("j/k: navigate  Esc: back"))
-
-	return b.String()
+	return fitFlowContent(b.String(), m.width)
 }
 
 // MoveUp moves the cursor up by one
@@ -854,11 +842,6 @@ func (m *FlowMatrixModel) MoveDown() {
 	} else {
 		m.moveCursor(1)
 	}
-}
-
-// TogglePanel switches focus between the labels list and detail panel
-func (m *FlowMatrixModel) TogglePanel() {
-	m.focusPanel = (m.focusPanel + 1) % 2
 }
 
 // OpenDrilldown opens the drill-down view for the selected label

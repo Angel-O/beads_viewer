@@ -1586,7 +1586,7 @@ func TestKeyDispatch_FlowMatrixContextOnlySelectionSafety(t *testing.T) {
 
 	updated, _ := m.Update(keyMsg("f"))
 	m = updated.(Model)
-	for _, key := range []string{"j", "k", "G", "g", "enter", "tab"} {
+	for _, key := range []string{"j", "k", "G", "g", "enter"} {
 		updated, _ = m.Update(keyMsg(key))
 		m = updated.(Model)
 	}
@@ -1597,7 +1597,7 @@ func TestKeyDispatch_FlowMatrixContextOnlySelectionSafety(t *testing.T) {
 	if m.flowMatrix.showDrilldown {
 		t.Fatal("empty flow should not open a drilldown")
 	}
-	if got := m.flowMatrix.View(); !strings.Contains(got, "No cross-label dependencies found") {
+	if got := m.flowMatrix.View(); !strings.Contains(got, "No open cross-label blocking dependencies") {
 		t.Fatalf("context-only flow should render empty state; view = %q", got)
 	}
 }

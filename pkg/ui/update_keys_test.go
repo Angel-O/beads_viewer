@@ -337,11 +337,63 @@ func TestFlowMatrixFooterStaysOnBottomRow(t *testing.T) {
 		t.Fatalf("Flow view lines = %d, want terminal height 40", len(lines))
 	}
 	footer := lines[len(lines)-1]
-	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "tab panel") || !strings.Contains(footer, "f close") {
+	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "⏎ drill") || !strings.Contains(footer, "f close") {
 		t.Fatalf("bottom row missing Flow hints: %q", footer)
 	}
-	if strings.Contains(footer, "L:labels") || strings.Contains(footer, "h:detail") || strings.Contains(footer, "tab focus") {
+	if strings.Count(view, "j/k nav") != 1 || strings.Contains(view, "Press Enter to see issues") {
+		t.Fatalf("Flow should have one shared help legend and no internal hint: %q", view)
+	}
+	if strings.Contains(footer, "L:labels") || strings.Contains(footer, "h:detail") || strings.Contains(strings.ToLower(footer), "tab") {
 		t.Fatalf("underlying list/split hints leaked into Flow footer: %q", footer)
+	}
+}
+
+func TestFlowMatrixZeroFlowFooterOmitsDrilldown(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "backend", Title: "Backend", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "frontend", Title: "Frontend", Status: model.StatusOpen, Labels: []string{"frontend"}},
+	}, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m = updated.(Model)
+
+	lines := strings.Split(m.View(), "\n")
+	footer := lines[len(lines)-1]
+	if strings.Contains(footer, "drill") || strings.Contains(footer, "⏎") {
+		t.Fatalf("zero-flow footer advertises unavailable drilldown: %q", footer)
+	}
+	if !strings.Contains(footer, "j/k nav") || !strings.Contains(footer, "esc back") {
+		t.Fatalf("zero-flow footer lost available Flow controls: %q", footer)
+	}
+}
+
+func TestFlowMatrixDrilldownFooterDescribesIssueNavigation(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "backend", Title: "Backend", Status: model.StatusOpen, Labels: []string{"backend"}},
+		{ID: "frontend", Title: "Frontend", Status: model.StatusOpen, Labels: []string{"frontend"}, Dependencies: []*model.Dependency{{DependsOnID: "backend", Type: model.DepBlocks}}},
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if !m.flowMatrix.showDrilldown {
+		t.Fatal("Enter did not open Flow drilldown")
+	}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 40 {
+		t.Fatalf("Flow drilldown lines = %d, want terminal height 40", len(lines))
+	}
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "⏎ jump/open") {
+		t.Fatalf("drilldown footer missing selected-issue action: %q", footer)
+	}
+	if strings.Contains(footer, "⏎ drill") {
+		t.Fatalf("drilldown footer still advertises label drilldown: %q", footer)
 	}
 }
 

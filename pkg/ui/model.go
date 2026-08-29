@@ -4344,7 +4344,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "f", "g",
 					"j", "k", "up", "down",
 					"G", "end", "home",
-					"tab", "enter", "esc", "q":
+					"enter", "esc", "q":
 					m = m.handleFlowMatrixKeys(msg)
 					viewToggleHandled = true
 				}
@@ -5567,8 +5567,6 @@ func (m Model) handleFlowMatrixKeys(msg tea.KeyMsg) Model {
 		m.flowMatrix.MoveDown()
 	case "k", "up":
 		m.flowMatrix.MoveUp()
-	case "tab":
-		m.flowMatrix.TogglePanel()
 	case "enter":
 		// Open drilldown or jump to issue
 		if m.flowMatrix.showDrilldown {
@@ -8072,7 +8070,13 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("h/l")+" panels", keyStyle.Render("o")+" active", keyStyle.Render("r")+" ready", keyStyle.Render("e")+" explain", keyStyle.Render("⏎")+" jump", keyStyle.Render("?")+" help")
 		keyHints = append(keyHints, keyStyle.Render("A")+" attention", keyStyle.Render("F")+" flow")
 	} else if m.focused == focusFlowMatrix {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("tab")+" panel", keyStyle.Render("⏎")+" drill", keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav")
+		if m.flowMatrix.showDrilldown {
+			keyHints = append(keyHints, keyStyle.Render("⏎")+" jump/open")
+		} else if m.flowMatrix.flow != nil && m.flowMatrix.flow.TotalCrossLabelDeps > 0 {
+			keyHints = append(keyHints, keyStyle.Render("⏎")+" drill")
+		}
+		keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")
 	} else if m.isGraphView {
 		keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("H/L")+" scroll", keyStyle.Render("⏎")+" view", keyStyle.Render("g")+" list")
 	} else if m.isBoardView {
