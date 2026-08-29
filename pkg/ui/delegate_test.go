@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -155,5 +156,247 @@ func TestIssueDelegate_WideAssigneeKeepsSingleRowWidth(t *testing.T) {
 	}
 	if width := lipgloss.Width(out); width > 109 {
 		t.Fatalf("wide assignee row width = %d, want <= 109: %q", width, out)
+	}
+}
+
+func TestIssueDelegate_FixedTypeAndTriageSlotsAlignColumns(t *testing.T) {
+	items := []IssueItem{
+		newTestIssueItem("id-a"),
+		newTestIssueItem("界-id"),
+		newTestIssueItem("id-three"),
+		newTestIssueItem("id-four"),
+		newTestIssueItem("id-five"),
+	}
+	items[1].IsQuickWin = true
+	items[2].IsBlocker = true
+	items[2].UnblocksCount = 12
+	items[3].UnblocksCount = 3
+	items[4].Issue.IssueType = model.IssueType("unknown")
+	for index := range items {
+		items[index].Issue.Title = fmt.Sprintf("Title %d", index+1)
+	}
+
+	theme := DefaultTheme(lipgloss.NewRenderer(os.Stdout))
+	delegate := IssueDelegate{Theme: theme}
+	listItems := make([]list.Item, len(items))
+	for index := range items {
+		listItems[index] = items[index]
+	}
+	l := list.New(listItems, delegate, 0, 0)
+	l.SetWidth(120)
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(listItems, l.Width())
+
+	var statusColumn, idColumn int
+	wantIndicators := []string{"", "⭐", "🔓12", "↪3", ""}
+	for index, item := range items {
+		var buf bytes.Buffer
+		delegate.Render(&buf, l, index, item)
+		row := buf.String()
+
+		statusAt := strings.Index(row, "OPEN")
+		idAt := strings.Index(row, item.Issue.ID)
+		titleAt := strings.Index(row, item.Issue.Title)
+		if statusAt < 0 || idAt < 0 || titleAt < 0 {
+			t.Fatalf("row %d omitted a column: %q", index, row)
+		}
+		if indicator := wantIndicators[index]; indicator != "" && !strings.Contains(row, indicator) {
+			t.Fatalf("row %d omitted triage indicator %q: %q", index, indicator, row)
+		}
+		gotStatus := lipgloss.Width(row[:statusAt])
+		gotID := lipgloss.Width(row[:idAt])
+		gotTitle := lipgloss.Width(row[:titleAt])
+		if index == 0 {
+			statusColumn, idColumn = gotStatus, gotID
+			continue
+		}
+		if gotStatus != statusColumn || gotID != idColumn || gotTitle-gotID != lipgloss.Width(item.Issue.ID)+1 {
+			t.Fatalf("row %d columns = status:%d id:%d title:%d, want status:%d id:%d title offset:%d; row %q", index, gotStatus, gotID, gotTitle, statusColumn, idColumn, lipgloss.Width(item.Issue.ID)+1, row)
+		}
+	}
+}
+
+func TestIssueDelegate_NarrowTriageSlotsPreserveRowBudget(t *testing.T) {
+	items := []IssueItem{
+		newTestIssueItem("a"),
+		newTestIssueItem("b"),
+		newTestIssueItem("c"),
+		newTestIssueItem("d"),
+		newTestIssueItem("e"),
+	}
+	items[1].IsQuickWin = true
+	items[2].IsBlocker = true
+	items[2].UnblocksCount = 123456789
+	items[3].UnblocksCount = 45
+	items[4].Issue.IssueType = model.IssueType("unknown")
+	titles := []string{"¤", "§", "¶", "µ", "×"}
+	for index := range items {
+		items[index].Issue.Title = titles[index]
+		items[index].Issue.Comments = nil
+		items[index].Issue.Assignee = ""
+		items[index].Issue.Labels = nil
+	}
+
+	theme := DefaultTheme(lipgloss.NewRenderer(os.Stdout))
+	delegate := IssueDelegate{Theme: theme}
+	listItems := make([]list.Item, len(items))
+	for index := range items {
+		listItems[index] = items[index]
+	}
+	const listWidth = 24
+	l := list.New(listItems, delegate, 0, 0)
+	l.SetWidth(listWidth)
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(listItems, l.Width())
+
+	var statusColumn, idColumn, titleColumn int
+	wantIndicators := []string{"", "⭐", "🔓", "↪45", ""}
+	for index, item := range items {
+		var buf bytes.Buffer
+		delegate.Render(&buf, l, index, item)
+		row := buf.String()
+		if strings.Contains(row, "\n") {
+			t.Fatalf("row %d wrapped at narrow width: %q", index, row)
+		}
+		if width := lipgloss.Width(row); width > listWidth-1 {
+			t.Fatalf("row %d width = %d, want <= %d: %q", index, width, listWidth-1, row)
+		}
+
+		if indicator := wantIndicators[index]; indicator != "" && !strings.Contains(row, indicator) {
+			t.Fatalf("row %d omitted narrow triage indicator %q: %q", index, indicator, row)
+		}
+		if index == 2 && !strings.Contains(row, "…") {
+			t.Fatalf("multi-digit blocker indicator was not visibly truncated: %q", row)
+		}
+		if index == len(items)-1 && !strings.Contains(row, "•") {
+			t.Fatalf("fallback type icon omitted: %q", row)
+		}
+		statusAt := strings.Index(row, "OPEN")
+		idAt := strings.Index(row, item.Issue.ID)
+		titleAt := strings.Index(row, item.Issue.Title)
+		if statusAt < 0 || idAt < 0 || titleAt < 0 {
+			t.Fatalf("row %d omitted status, ID, or title marker: %q", index, row)
+		}
+		gotStatus := lipgloss.Width(row[:statusAt])
+		gotID := lipgloss.Width(row[:idAt])
+		gotTitle := lipgloss.Width(row[:titleAt])
+		if index == 0 {
+			statusColumn, idColumn, titleColumn = gotStatus, gotID, gotTitle
+			continue
+		}
+		if gotStatus != statusColumn || gotID != idColumn || gotTitle != titleColumn {
+			t.Fatalf("row %d columns = status:%d id:%d title:%d, want status:%d id:%d title:%d; row %q", index, gotStatus, gotID, gotTitle, statusColumn, idColumn, titleColumn, row)
+		}
+	}
+}
+
+func TestIssueDelegate_NarrowSharedSlotAccountsForOptionalPrefix(t *testing.T) {
+	items := []IssueItem{
+		newTestIssueItem("idA"),
+		newTestIssueItem("idB"),
+		newTestIssueItem("idC"),
+	}
+	titles := []string{"¤", "§", "¶"}
+	for index := range items {
+		items[index].Issue.Title = titles[index]
+	}
+	items[1].IsQuickWin = true
+	items[2].IsBlocker = true
+	items[2].UnblocksCount = 123456789
+	for index := range items {
+		items[index].Issue.Comments = nil
+		items[index].Issue.Assignee = ""
+		items[index].Issue.Labels = nil
+		items[index].DiffStatus = DiffStatusNew
+		items[index].SearchScore = 0.75
+		items[index].SearchScoreSet = true
+		items[index].RepositoryID = "ctx:beta"
+		items[index].RepositoryName = "beta"
+		items[index].RepositoryExtra = 1
+	}
+
+	theme := DefaultTheme(lipgloss.NewRenderer(os.Stdout))
+	delegate := IssueDelegate{
+		Theme:                theme,
+		ShowRepositories:     true,
+		RepositoryNameWidth:  12,
+		RepositoryExtraWidth: 2,
+		ShowSearchScores:     true,
+	}
+	listItems := make([]list.Item, len(items))
+	for index := range items {
+		listItems[index] = items[index]
+	}
+	const listWidth = 51
+	l := list.New(listItems, delegate, 0, 0)
+	l.SetWidth(listWidth)
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(listItems, l.Width())
+	if delegate.triageSlotWidth != 4 {
+		t.Fatalf("shared triage slot width = %d, want 4", delegate.triageSlotWidth)
+	}
+
+	var statusColumn, idColumn, titleColumn int
+	wantIndicators := []string{"", "⭐", "🔓"}
+	for index, item := range items {
+		var buf bytes.Buffer
+		delegate.Render(&buf, l, index, item)
+		row := buf.String()
+		if strings.Contains(row, "\n") || lipgloss.Width(row) > listWidth-1 {
+			t.Fatalf("row %d exceeded narrow row budget: %q", index, row)
+		}
+		if indicator := wantIndicators[index]; indicator != "" && !strings.Contains(row, indicator) {
+			t.Fatalf("row %d omitted indicator %q: %q", index, indicator, row)
+		}
+		if index == 2 {
+			if !strings.Contains(row, "…") || !strings.Contains(row, "[0.75]") || !strings.Contains(row, "🆕") {
+				t.Fatalf("row %d did not preserve truncated triage/search/diff metadata: %q", index, row)
+			}
+		}
+
+		statusAt := strings.Index(row, "OPEN")
+		idAt := strings.Index(row, item.Issue.ID)
+		titleAt := strings.Index(row, item.Issue.Title)
+		if statusAt < 0 || idAt < 0 || titleAt < 0 {
+			t.Fatalf("row %d omitted status, ID, or title marker: %q", index, row)
+		}
+		gotStatus := lipgloss.Width(row[:statusAt])
+		gotID := lipgloss.Width(row[:idAt])
+		gotTitle := lipgloss.Width(row[:titleAt])
+		if index == 0 {
+			statusColumn, idColumn, titleColumn = gotStatus, gotID, gotTitle
+			continue
+		}
+		if gotStatus != statusColumn || gotID != idColumn || gotTitle != titleColumn {
+			t.Fatalf("row %d columns = status:%d id:%d title:%d, want status:%d id:%d title:%d; row %q", index, gotStatus, gotID, gotTitle, statusColumn, idColumn, titleColumn, row)
+		}
+	}
+}
+
+func TestIssueDelegate_TriageSlotRecalculatesOnResizeAndReplacement(t *testing.T) {
+	item := newTestIssueItem("resize-id")
+	item.Issue.Title = "resize-title"
+	item.IsBlocker = true
+	item.UnblocksCount = 123456789
+
+	m := NewModel(nil, nil, "")
+	m.list.SetItems([]list.Item{item})
+	m.list.SetSize(24, 4)
+	m.updateListDelegate()
+	narrow := m.list.View()
+	if !strings.Contains(narrow, "🔓") || !strings.Contains(narrow, "…") {
+		t.Fatalf("narrow configured delegate did not retain a truncated indicator: %q", narrow)
+	}
+
+	m.list.SetSize(80, 4)
+	m.updateListDelegate()
+	wide := m.list.View()
+	if !strings.Contains(wide, "🔓123456789") {
+		t.Fatalf("resized delegate did not recalculate the full indicator slot: %q", wide)
+	}
+
+	replacement := newTestIssueItem("replacement-id")
+	replacement.Issue.Title = "replacement-title"
+	m.list.SetItems([]list.Item{replacement})
+	m.updateListDelegate()
+	if strings.Contains(m.list.View(), "🔓") {
+		t.Fatalf("item replacement retained stale triage content: %q", m.list.View())
 	}
 }
