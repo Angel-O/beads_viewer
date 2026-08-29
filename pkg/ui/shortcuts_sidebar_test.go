@@ -35,6 +35,23 @@ func TestShortcutsSidebarSetContext(t *testing.T) {
 	}
 }
 
+func TestGraphShortcutsOmitHorizontalScroll(t *testing.T) {
+	sidebar := NewShortcutsSidebar(Theme{Renderer: lipgloss.DefaultRenderer()})
+	sidebar.SetContext("graph")
+	for _, section := range sidebar.allSections() {
+		if section.title != "Graph" {
+			continue
+		}
+		for _, item := range section.items {
+			if item.key == "H/L" || strings.Contains(item.desc, "Scroll ←/→") {
+				t.Fatalf("Graph shortcuts advertise non-functional horizontal scrolling: %#v", item)
+			}
+		}
+		return
+	}
+	t.Fatal("Graph shortcuts section not found")
+}
+
 func TestShortcutsSidebarScrolling(t *testing.T) {
 	theme := Theme{Renderer: lipgloss.DefaultRenderer()}
 	sidebar := NewShortcutsSidebar(theme)

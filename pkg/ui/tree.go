@@ -557,11 +557,57 @@ func (t *TreeModel) View() string {
 		return t.renderEmptyState()
 	}
 
-	rows := []string{t.renderHeader()}
+	contentWidth, legend, sideBySide := t.statusLegendLayout()
+	tree := t.renderTreeContent(contentWidth)
+	if sideBySide {
+		if t.height <= 0 {
+			return lipgloss.JoinHorizontal(
+				lipgloss.Bottom,
+				t.theme.Renderer.NewStyle().Width(contentWidth).MaxWidth(contentWidth).Render(tree),
+				strings.Repeat(" ", statusLegendColumnGap),
+				legend,
+			)
+		}
+		viewportHeight := max(t.height-treeLegendSpacerRows, 0)
+		if viewportHeight == 0 || legend == "" {
+			return lipgloss.Place(contentWidth, t.height, lipgloss.Left, lipgloss.Top, tree)
+		}
+		tree = lipgloss.Place(contentWidth, viewportHeight, lipgloss.Left, lipgloss.Top, tree)
+		legend = lipgloss.Place(statusLegendWidth, viewportHeight, lipgloss.Right, lipgloss.Bottom, legend)
+		body := lipgloss.JoinHorizontal(
+			lipgloss.Bottom,
+			tree,
+			strings.Repeat(" ", statusLegendColumnGap),
+			legend,
+		)
+		return appendTreeLegendSpacer(body)
+	}
+	if legend == "" {
+		return tree
+	}
+	if t.height <= 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, tree, legend)
+	}
+	treeHeight := max(t.height-lipgloss.Height(legend)-treeLegendSpacerRows, 0)
+	tree = lipgloss.Place(contentWidth, treeHeight, lipgloss.Left, lipgloss.Top, tree)
+	return appendTreeLegendSpacer(lipgloss.JoinVertical(lipgloss.Left, tree, legend))
+}
+
+const treeLegendSpacerRows = 1
+
+func appendTreeLegendSpacer(body string) string {
+	if body == "" {
+		return ""
+	}
+	return body + strings.Repeat("\n", treeLegendSpacerRows)
+}
+
+func (t *TreeModel) renderTreeContent(width int) string {
+	rows := []string{t.renderHeader(width)}
 
 	if len(t.flatList) == 0 {
 		if t.height <= 0 || t.height > 1 {
-			rows = append(rows, t.renderNoMatches())
+			rows = append(rows, t.renderNoMatches(width))
 		}
 		return strings.Join(rows, "\n")
 	}
@@ -577,11 +623,11 @@ func (t *TreeModel) View() string {
 		}
 
 		isSelected := i == t.cursor
-		line := t.renderNode(node, isSelected)
+		line := t.renderNode(node, isSelected, width)
 
 		if isSelected {
 			// Highlight selected row using theme's Selected style
-			line = t.theme.Selected.Render(line)
+			line = t.renderSelectedRow(line, width)
 		}
 
 		rows = append(rows, line)
@@ -590,27 +636,67 @@ func (t *TreeModel) View() string {
 	// Add position indicator if scrolling is needed (bv-2nax)
 	// Only shows when there are more nodes than fit in the viewport
 	if t.showPositionIndicator() {
-		rows = append(rows, t.renderPositionIndicator(start, end))
+		rows = append(rows, t.renderPositionIndicator(start, end, width))
 	}
 
 	return strings.Join(rows, "\n")
 }
 
-func (t *TreeModel) renderHeader() string {
+func (t *TreeModel) renderSelectedRow(line string, width int) string {
+	decorationWidth := lipgloss.Width(t.theme.Selected.Render(""))
+	contentWidth := max(width-decorationWidth, 0)
+	line = ansi.Truncate(line, contentWidth, "")
+	return ansi.Truncate(t.theme.Selected.Render(line), width, "")
+}
+
+func (t *TreeModel) statusLegendLayout() (contentWidth int, legend string, sideBySide bool) {
+	width := t.layoutWidth()
+	if width >= statusLegendTreeMinWidth {
+		contentWidth = width - statusLegendWidth - statusLegendColumnGap
+		legend = truncateStatusLegendHeight(renderStatusLegend(statusLegendWidth, t.theme), max(t.height-treeLegendSpacerRows, 0))
+		return contentWidth, legend, true
+	}
+
+	legend = renderCompactStatusLegend(width, t.theme)
+	if t.height > 0 {
+		legend = truncateStatusLegendHeight(legend, max(t.height-2-treeLegendSpacerRows, 0))
+	}
+	return width, legend, false
+}
+
+func (t *TreeModel) layoutWidth() int {
+	if t.width <= 0 {
+		return statusLegendTreeMinWidth + statusLegendWidth + statusLegendColumnGap
+	}
+	return t.width
+}
+
+func (t *TreeModel) stackedStatusLegendHeight() int {
+	if t.layoutWidth() >= statusLegendTreeMinWidth {
+		return 0
+	}
+	legend := renderCompactStatusLegend(max(t.width, 1), t.theme)
+	if t.height > 0 {
+		legend = truncateStatusLegendHeight(legend, max(t.height-2-treeLegendSpacerRows, 0))
+	}
+	return lipgloss.Height(legend)
+}
+
+func (t *TreeModel) renderHeader(width int) string {
 	style := t.theme.Renderer.NewStyle().Foreground(t.theme.Primary).Bold(true)
 	if t.searchActive || t.searchQuery != "" {
 		position := "0/0"
 		if len(t.searchMatches) > 0 {
 			position = fmt.Sprintf("%d/%d", t.SearchCursorPos(), len(t.searchMatches))
 		}
-		return style.Render(t.fitSearchChrome(fmt.Sprintf("Tree View  /%s  [%s] %s", t.searchQuery, position, t.searchScopeLabel())))
+		return style.Render(t.fitSearchChrome(fmt.Sprintf("Tree View  /%s  [%s] %s", t.searchQuery, position, t.searchScopeLabel()), width))
 	}
-	return style.Render(t.fitSearchChrome("Tree View"))
+	return style.Render(t.fitSearchChrome("Tree View", width))
 }
 
-func (t *TreeModel) renderNoMatches() string {
+func (t *TreeModel) renderNoMatches(width int) string {
 	return t.theme.Renderer.NewStyle().Foreground(t.theme.Muted).
-		Render(t.fitSearchChrome(fmt.Sprintf("No Tree matches for %q [%s]. Escape clears search.", t.searchQuery, t.searchScopeLabel())))
+		Render(t.fitSearchChrome(fmt.Sprintf("No Tree matches for %q [%s]. Escape clears search.", t.searchQuery, t.searchScopeLabel()), width))
 }
 
 func (t *TreeModel) searchScopeLabel() string {
@@ -620,32 +706,32 @@ func (t *TreeModel) searchScopeLabel() string {
 	return "minimal"
 }
 
-func (t *TreeModel) fitSearchChrome(text string) string {
+func (t *TreeModel) fitSearchChrome(text string, width int) string {
 	text = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
 		}
 		return r
 	}, text)
-	if t.width <= 0 || lipgloss.Width(text) <= t.width {
+	if width <= 0 || lipgloss.Width(text) <= width {
 		return text
 	}
-	return ansi.Truncate(text, t.width, "…")
+	return ansi.Truncate(text, width, "…")
 }
 
 // renderPositionIndicator renders the scroll position indicator (bv-2nax).
 // Shows the current visible range in the format "[start-end of total]".
 // Uses 1-indexed numbers for user-friendly display.
-func (t *TreeModel) renderPositionIndicator(start, end int) string {
+func (t *TreeModel) renderPositionIndicator(start, end, width int) string {
 	total := len(t.flatList)
 	// Convert to 1-indexed for display
 	displayStart := start + 1
 	displayEnd := end
 
 	indicator := fmt.Sprintf(" [%d-%d of %d]", displayStart, displayEnd, total)
-	return t.theme.Renderer.NewStyle().
+	return ansi.Truncate(t.theme.Renderer.NewStyle().
 		Foreground(t.theme.Muted).
-		Render(indicator)
+		Render(indicator), width, "")
 }
 
 // visibleNodeCapacity returns the rows available for issues after reserving the
@@ -655,7 +741,7 @@ func (t *TreeModel) visibleNodeCapacity() int {
 	if t.height <= 0 {
 		return 20
 	}
-	capacity := t.height - 1
+	capacity := t.height - 1 - treeLegendSpacerRows - t.stackedStatusLegendHeight()
 	if t.showPositionIndicator() {
 		capacity--
 	}
@@ -668,7 +754,8 @@ func (t *TreeModel) visibleNodeCapacity() int {
 func (t *TreeModel) showPositionIndicator() bool {
 	// At least one issue row must remain visible alongside the header and
 	// indicator. Tiny views therefore prioritize content over the indicator.
-	return t.height >= 3 && len(t.flatList) > t.height-1
+	capacity := t.height - 1 - treeLegendSpacerRows - t.stackedStatusLegendHeight()
+	return t.height >= 3 && capacity > 1 && len(t.flatList) > capacity
 }
 
 // renderEmptyState renders the view when there are no issues.
@@ -697,7 +784,7 @@ func (t *TreeModel) renderEmptyState() string {
 }
 
 // renderNode renders a single tree node with tree characters and styling.
-func (t *TreeModel) renderNode(node *IssueTreeNode, isSelected bool) string {
+func (t *TreeModel) renderNode(node *IssueTreeNode, isSelected bool, width int) string {
 	if node == nil || node.Issue == nil {
 		return ""
 	}
@@ -744,7 +831,7 @@ func (t *TreeModel) renderNode(node *IssueTreeNode, isSelected bool) string {
 	// Title (truncated if needed)
 	title := issue.Title
 	// Use lipgloss.Width for proper display width (handles ANSI codes + Unicode)
-	maxTitleLen := t.width - lipgloss.Width(prefix) - 25 // Account for prefix, indicator, icon, priority, ID
+	maxTitleLen := width - lipgloss.Width(prefix) - 25 // Account for prefix, indicator, icon, priority, ID
 	if maxTitleLen < 20 {
 		maxTitleLen = 20
 	}
@@ -759,7 +846,7 @@ func (t *TreeModel) renderNode(node *IssueTreeNode, isSelected bool) string {
 	statusStyle := r.NewStyle().Foreground(statusColor)
 	sb.WriteString(statusStyle.Render(statusDot))
 
-	return sb.String()
+	return ansi.Truncate(sb.String(), width, "")
 }
 
 // buildTreePrefix builds the indentation and branch characters for a node.

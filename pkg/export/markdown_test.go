@@ -244,11 +244,16 @@ func TestGetStatusEmoji(t *testing.T) {
 		status   string
 		expected string
 	}{
-		{"open", "🟢"},
-		{"in_progress", "🔵"},
+		{"open", "🔵"},
+		{"in_progress", "🟡"},
 		{"blocked", "🔴"},
-		{"closed", "⚫"},
-		{"tombstone", "⚫"},
+		{"deferred", "⏸️"},
+		{"draft", "⏸️"},
+		{"pinned", "📌"},
+		{"hooked", "🪝"},
+		{"review", "👁️"},
+		{"closed", "✅"},
+		{"tombstone", "✅"},
 		{"unknown", "⚪"},
 		{"", "⚪"},
 	}
@@ -259,33 +264,37 @@ func TestGetStatusEmoji(t *testing.T) {
 			if got != tt.expected {
 				t.Errorf("getStatusEmoji(%q) = %q; want %q", tt.status, got, tt.expected)
 			}
+			if got != model.StatusIcon(tt.status) {
+				t.Errorf("getStatusEmoji(%q) = %q; want model.StatusIcon = %q", tt.status, got, model.StatusIcon(tt.status))
+			}
 		})
 	}
 }
 
 // ============================================================================
-// getTypeEmoji tests
+// IssueTypeIcon tests
 // ============================================================================
 
-func TestGetTypeEmoji(t *testing.T) {
+func TestIssueTypeIcon(t *testing.T) {
 	tests := []struct {
 		issueType string
 		expected  string
 	}{
 		{"bug", "🐛"},
 		{"feature", "✨"},
-		{"task", "📋"},
+		{"task", "🔧"},
 		{"epic", "🚀"}, // Changed from 🏔️ - VS-16 variation selector causes width issues
 		{"chore", "🧹"},
+		{"todo", "📝"},
 		{"unknown", "•"},
 		{"", "•"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.issueType, func(t *testing.T) {
-			got := getTypeEmoji(tt.issueType)
+			got := model.IssueTypeIcon(tt.issueType)
 			if got != tt.expected {
-				t.Errorf("getTypeEmoji(%q) = %q; want %q", tt.issueType, got, tt.expected)
+				t.Errorf("IssueTypeIcon(%q) = %q; want %q", tt.issueType, got, tt.expected)
 			}
 		})
 	}

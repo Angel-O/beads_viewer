@@ -1,10 +1,14 @@
 package export
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 func TestReplaceTitle_Basic(t *testing.T) {
@@ -116,6 +120,90 @@ func TestHasEmbeddedAssets(t *testing.T) {
 	result := HasEmbeddedAssets()
 	if !result {
 		t.Error("Expected HasEmbeddedAssets() to return true (assets are embedded)")
+	}
+}
+
+func TestEmbeddedGraphTypeIconsMatchCanonical(t *testing.T) {
+	content, err := ViewerAssetsFS.ReadFile("viewer_assets/graph.js")
+	if err != nil {
+		t.Fatalf("read embedded graph.js: %v", err)
+	}
+
+	entryRE := regexp.MustCompile(`(?m)^\s*(bug|feature|task|epic|chore|todo|default):\s*'([^']+)'`)
+	graphJS := string(content)
+	start := strings.Index(graphJS, "const TYPE_ICONS = {")
+	if start < 0 {
+		t.Fatal("graph.js is missing TYPE_ICONS declaration")
+	}
+	end := strings.Index(graphJS[start:], "};")
+	if end < 0 {
+		t.Fatal("graph.js TYPE_ICONS declaration is not terminated")
+	}
+	matches := entryRE.FindAllStringSubmatch(graphJS[start:start+end], -1)
+	if len(matches) != 7 {
+		t.Fatalf("found %d TYPE_ICONS entries, want 7", len(matches))
+	}
+
+	wants := []struct {
+		name      string
+		issueType string
+	}{
+		{name: "bug", issueType: "bug"},
+		{name: "feature", issueType: "feature"},
+		{name: "task", issueType: "task"},
+		{name: "epic", issueType: "epic"},
+		{name: "chore", issueType: "chore"},
+		{name: "todo", issueType: "todo"},
+		{name: "default", issueType: "unknown"},
+	}
+
+	got := make(map[string]string, len(matches))
+	for _, match := range matches {
+		var decoded string
+		if err := json.Unmarshal([]byte("\""+match[2]+"\""), &decoded); err != nil {
+			t.Fatalf("decode TYPE_ICONS.%s: %v", match[1], err)
+		}
+		got[match[1]] = decoded
+	}
+	for _, want := range wants {
+		if got[want.name] != model.IssueTypeIcon(want.issueType) {
+			t.Errorf("TYPE_ICONS.%s = %q, want %q", want.name, got[want.name], model.IssueTypeIcon(want.issueType))
+		}
+	}
+}
+
+func TestEmbeddedGraphDemoTypeIconsMatchCanonical(t *testing.T) {
+	content, err := ViewerAssetsFS.ReadFile("viewer_assets/graph-demo.html")
+	if err != nil {
+		t.Fatalf("read embedded graph-demo.html: %v", err)
+	}
+
+	demoHTML := string(content)
+	start := strings.Index(demoHTML, "const icons = {")
+	if start < 0 {
+		t.Fatal("graph-demo.html is missing its issue type icon declaration")
+	}
+	end := strings.Index(demoHTML[start:], "};")
+	if end < 0 {
+		t.Fatal("graph-demo.html issue type icon declaration is not terminated")
+	}
+	entryRE := regexp.MustCompile(`\b(bug|feature|task|epic|chore|todo|default):\s*'([^']+)'`)
+	matches := entryRE.FindAllStringSubmatch(demoHTML[start:start+end], -1)
+	if len(matches) != 7 {
+		t.Fatalf("found %d graph-demo.html issue type entries, want 7", len(matches))
+	}
+
+	for _, match := range matches {
+		issueType := match[1]
+		if issueType == "default" {
+			issueType = "unknown"
+		}
+		if got, want := match[2], model.IssueTypeIcon(issueType); got != want {
+			t.Errorf("graph-demo.html icons.%s = %q, want %q", match[1], got, want)
+		}
+	}
+	if !strings.Contains(demoHTML, "|| icons.default") {
+		t.Fatal("graph-demo.html issue type icon declaration is missing the canonical fallback")
 	}
 }
 

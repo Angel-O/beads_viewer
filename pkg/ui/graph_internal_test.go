@@ -1,13 +1,16 @@
 package ui
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSmartTruncateID(t *testing.T) {
@@ -289,6 +292,219 @@ func TestGraphModelSearchRespectsProjectedScopeAndTopology(t *testing.T) {
 
 	if !reflect.DeepEqual(g.sortedIDs, wantIDs) || !reflect.DeepEqual(g.blockers, wantBlockers) || !reflect.DeepEqual(g.dependents, wantDependents) {
 		t.Fatal("Graph search changed presentation nodes or topology")
+	}
+}
+
+func TestGraphLegendUsesExhaustiveStatusGlyphMapping(t *testing.T) {
+	g := NewGraphModel([]model.Issue{{ID: "open", Status: model.StatusOpen}}, nil, createTheme())
+	legend := renderStatusLegend(120, g.theme)
+	normalized := strings.Join(strings.Fields(legend), " ")
+
+	expected := []struct {
+		status model.Status
+		icon   string
+		label  string
+	}{
+		{model.StatusOpen, "🔵", "open"},
+		{model.StatusInProgress, "🟡", "in progress"},
+		{model.StatusBlocked, "🔴", "blocked"},
+		{model.StatusDeferred, "⏸️", "deferred/draft"},
+		{model.StatusDraft, "⏸️", "deferred/draft"},
+		{model.StatusPinned, "📌", "pinned"},
+		{model.StatusHooked, "🪝", "hooked"},
+		{model.StatusReview, "👁️", "review"},
+		{model.StatusClosed, "✅", "closed/tombstone"},
+		{model.StatusTombstone, "✅", "closed/tombstone"},
+	}
+	for _, tt := range expected {
+		if got := getStatusIcon(tt.status); got != tt.icon {
+			t.Errorf("getStatusIcon(%q) = %q, want %q", tt.status, got, tt.icon)
+		}
+		if want := tt.icon + " " + tt.label; !strings.Contains(normalized, want) {
+			t.Errorf("Graph legend missing %q: %q", want, legend)
+		}
+	}
+	if got := getStatusIcon("custom"); got != model.StatusIcon("custom") {
+		t.Errorf("getStatusIcon(custom) = %q, want %q", got, model.StatusIcon("custom"))
+	}
+	for _, want := range []string{"STATUS", model.StatusIcon("unknown") + " other"} {
+		if !strings.Contains(normalized, want) {
+			t.Errorf("Graph legend missing %q: %q", want, legend)
+		}
+	}
+	for _, unrelated := range []string{"priority", "type", "related", "counts", "blockers", "dependents", "🐛", "🔹", "⬆", "⬇"} {
+		if strings.Contains(normalized, unrelated) {
+			t.Errorf("Graph legend advertised unrelated entry %q: %q", unrelated, legend)
+		}
+	}
+}
+
+func TestGraphLegendFitsAndSitsAtBottomRight(t *testing.T) {
+	g := NewGraphModel([]model.Issue{
+		{ID: "open", Status: model.StatusOpen},
+		{ID: "blocked", Status: model.StatusBlocked},
+	}, nil, createTheme())
+	for _, width := range []int{1, 4, 8, 16, 24, 48} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			legend := renderStatusLegend(width, g.theme)
+			for _, line := range strings.Split(legend, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("legend line width = %d, want <= %d: %q", got, width, line)
+				}
+			}
+		})
+	}
+
+	view := g.View(120, 40)
+	if strings.Contains(view, "j/k: navigate") {
+		t.Fatalf("Graph view contains redundant local navigation hint: %q", view)
+	}
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(strings.TrimSpace(lines[len(lines)-1]), "other") {
+		t.Fatalf("status legend is not visible on the final Graph row: %q", view)
+	}
+}
+
+func TestGraphMetricsStatusLegendLayout(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "center", Status: model.StatusInProgress},
+		{ID: "blocker", Status: model.StatusOpen},
+		{ID: "dependent", Status: model.StatusBlocked},
+	}
+	issues[0].Dependencies = []*model.Dependency{{DependsOnID: "blocker", Type: model.DepBlocks}}
+	issues[2].Dependencies = []*model.Dependency{{DependsOnID: "center", Type: model.DepBlocks}}
+	stats := analysis.NewAnalyzer(issues).AnalyzeWithConfig(analysis.FullAnalysisConfig())
+	insights := (&stats).GenerateInsights(len(issues))
+	g := NewGraphModel(issues, &insights, createTheme())
+
+	wide := g.renderMetricsPanel("center", 100, g.theme)
+	wideLines := strings.Split(ansi.Strip(wide), "\n")
+	statusLine := -1
+	for i, line := range wideLines {
+		if strings.Contains(line, "STATUS") {
+			statusLine = i
+			break
+		}
+	}
+	if statusLine < 0 {
+		t.Fatalf("wide metrics panel is missing status heading: %q", wide)
+	}
+	statusColumn := strings.Index(wideLines[statusLine], "STATUS")
+	if strings.TrimSpace(wideLines[statusLine][:statusColumn]) == "" {
+		t.Fatalf("wide status legend is not composed beside metrics: %q", wide)
+	}
+	for _, line := range wideLines {
+		if got := lipgloss.Width(line); got > 100 {
+			t.Fatalf("wide metrics panel line width = %d, want <= 100: %q", got, line)
+		}
+	}
+
+	narrow := g.renderMetricsPanel("center", 60, g.theme)
+	narrowLines := strings.Split(ansi.Strip(narrow), "\n")
+	narrowStatusLine := -1
+	for i, line := range narrowLines {
+		if strings.Contains(line, "STATUS") {
+			narrowStatusLine = i
+			break
+		}
+	}
+	if narrowStatusLine <= 0 || !strings.Contains(strings.Join(narrowLines[:narrowStatusLine], "\n"), "GRAPH METRICS") {
+		t.Fatalf("narrow metrics panel did not stack status legend below metrics: %q", narrow)
+	}
+	if !strings.Contains(strings.TrimSpace(narrowLines[len(narrowLines)-1]), "other") {
+		t.Fatalf("narrow status legend is not anchored at the end of the metrics panel: %q", narrow)
+	}
+	for _, line := range narrowLines {
+		if got := lipgloss.Width(line); got > 60 {
+			t.Fatalf("narrow metrics panel line width = %d, want <= 60: %q", got, line)
+		}
+	}
+}
+
+func TestGraphAndListUseCanonicalIssueTypeIcons(t *testing.T) {
+	theme := createTheme()
+	tests := []string{
+		string(model.TypeBug),
+		string(model.TypeFeature),
+		string(model.TypeTask),
+		string(model.TypeEpic),
+		string(model.TypeChore),
+		"todo",
+		"incident",
+		"",
+	}
+
+	for _, issueType := range tests {
+		t.Run(issueType, func(t *testing.T) {
+			listIcon, _ := theme.GetTypeIcon(issueType)
+			want := model.IssueTypeIcon(issueType)
+			if listIcon != want {
+				t.Fatalf("List View icon = %q, want canonical %q", listIcon, want)
+			}
+
+			issue := model.Issue{ID: "type-icon", Status: model.StatusOpen, IssueType: model.IssueType(issueType)}
+			g := NewGraphModel([]model.Issue{issue}, nil, theme)
+			graph := g.renderEgoNode(issue.ID, &issue, 60, theme)
+			if !strings.Contains(graph, want) {
+				t.Fatalf("Graph View output %q does not contain canonical icon %q", graph, want)
+			}
+		})
+	}
+}
+
+func TestGraphViewConstrainsRelationshipRichContent(t *testing.T) {
+	issues := []model.Issue{{ID: "center", Status: model.StatusInProgress}}
+	for i := 0; i < 8; i++ {
+		blockerID := fmt.Sprintf("blocker-%d", i)
+		issues = append(issues, model.Issue{ID: blockerID, Status: model.StatusOpen})
+		issues[0].Dependencies = append(issues[0].Dependencies, &model.Dependency{
+			DependsOnID: blockerID,
+			Type:        model.DepBlocks,
+		})
+
+		dependentID := fmt.Sprintf("dependent-%d", i)
+		issues = append(issues, model.Issue{
+			ID:     dependentID,
+			Status: model.StatusBlocked,
+			Dependencies: []*model.Dependency{{
+				DependsOnID: "center",
+				Type:        model.DepBlocks,
+			}},
+		})
+	}
+
+	for _, size := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "narrow", width: 60, height: 24},
+		{name: "golden width", width: 78, height: 40},
+		{name: "wide", width: 120, height: 40},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			g := NewGraphModel(issues, nil, createTheme())
+			if !g.SelectByID("center") {
+				t.Fatal("failed to select relationship-rich center node")
+			}
+
+			view := g.View(size.width, size.height)
+			if got := lipgloss.Width(view); got > size.width {
+				t.Fatalf("Graph view width = %d, want <= %d:\n%s", got, size.width, view)
+			}
+			if got := lipgloss.Height(view); got > size.height {
+				t.Fatalf("Graph view height = %d, want <= %d:\n%s", got, size.height, view)
+			}
+
+			lines := strings.Split(view, "\n")
+			lastLine := strings.TrimSpace(lines[len(lines)-1])
+			if !strings.Contains(lastLine, "other") {
+				t.Fatalf("status legend is not visible on the final row: %q", view)
+			}
+			if strings.Contains(view, "j/k: navigate") {
+				t.Fatalf("Graph view contains redundant local navigation hint: %q", view)
+			}
+		})
 	}
 }
 

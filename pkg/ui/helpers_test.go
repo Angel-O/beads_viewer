@@ -255,10 +255,16 @@ func TestGetStatusIcon(t *testing.T) {
 		status   string
 		expected string
 	}{
-		{"open", "🟢"},
-		{"in_progress", "🔵"},
+		{"open", "🔵"},
+		{"in_progress", "🟡"},
 		{"blocked", "🔴"},
-		{"closed", "⚫"},
+		{"deferred", "⏸️"},
+		{"draft", "⏸️"},
+		{"pinned", "📌"},
+		{"hooked", "🪝"},
+		{"review", "👁️"},
+		{"closed", "✅"},
+		{"tombstone", "✅"},
 		{"unknown", "⚪"},
 		{"", "⚪"},
 	}
@@ -268,6 +274,9 @@ func TestGetStatusIcon(t *testing.T) {
 			icon := ui.GetStatusIcon(tt.status)
 			if icon != tt.expected {
 				t.Errorf("GetStatusIcon(%s) = %s; want %s", tt.status, icon, tt.expected)
+			}
+			if icon != model.StatusIcon(tt.status) {
+				t.Errorf("GetStatusIcon(%s) = %s; want model.StatusIcon = %s", tt.status, icon, model.StatusIcon(tt.status))
 			}
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -227,22 +228,21 @@ func (t Theme) GetStatusColor(s string) lipgloss.AdaptiveColor {
 }
 
 func (t Theme) GetTypeIcon(typ string) (string, lipgloss.AdaptiveColor) {
+	icon := model.IssueTypeIcon(typ)
 	switch typ {
 	case "bug":
-		return "🐛", t.Bug
+		return icon, t.Bug
 	case "feature":
-		return "✨", t.Feature
+		return icon, t.Feature
 	case "task":
-		return "🔧", t.Task
+		return icon, t.Task
 	case "epic":
-		// Use 🚀 instead of 🏔️ - the snow-capped mountain has a variation selector
-		// (U+FE0F) that causes inconsistent width calculations across terminals
-		return "🚀", t.Epic
+		return icon, t.Epic
 	case "chore":
-		return "🧹", t.Chore
+		return icon, t.Chore
 	case "todo":
-		return "📝", t.Task
+		return icon, t.Task
 	default:
-		return "•", t.Subtext
+		return icon, t.Subtext
 	}
 }

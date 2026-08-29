@@ -111,6 +111,30 @@ func TestGetContextHelp(t *testing.T) {
 	}
 }
 
+func TestGraphContextHelpOmitsHorizontalScroll(t *testing.T) {
+	help := GetContextHelp(ContextGraph)
+	if strings.Contains(help, "H/L") || strings.Contains(help, "Scroll left") || strings.Contains(help, "Scroll right") {
+		t.Fatalf("Graph context help advertises non-functional horizontal scrolling: %q", help)
+	}
+}
+
+func TestGraphContextHelpMatchesRenderedGraph(t *testing.T) {
+	help := GetContextHelp(ContextGraph)
+	for _, want := range []string{
+		"The metrics panel lists every status glyph",
+		"used by the node list",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("Graph help missing %q: %s", want, help)
+		}
+	}
+	for _, inaccurate := range []string{"Node size = priority", "Color = status"} {
+		if strings.Contains(help, inaccurate) {
+			t.Errorf("Graph help retains inaccurate claim %q: %s", inaccurate, help)
+		}
+	}
+}
+
 func TestGetContextHelpFallback(t *testing.T) {
 	// Test that unknown contexts fall back to generic content
 	unknownCtx := Context("nonexistent-context")

@@ -359,8 +359,8 @@ func TestHandleGraphBoardActionableKeys(t *testing.T) {
 	// Focus graph and exercise navigation + enter selection logic
 	m.isGraphView = true
 	m.focused = focusGraph
-	m = m.handleGraphKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")}) // ScrollLeft
-	m = m.handleGraphKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")}) // ScrollRight
+	m = m.handleGraphKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")}) // sibling navigation
+	m = m.handleGraphKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")}) // sibling navigation
 	// force select first node then enter to sync list
 	m.graphView.MoveDown()
 	m = m.handleGraphKeys(tea.KeyMsg{Type: tea.KeyEnter})
@@ -811,9 +811,7 @@ func TestOpenInEditorWithArguments(t *testing.T) {
 func TestGraphPageDownAndScrollEmpty(t *testing.T) {
 	renderer := lipgloss.NewRenderer(nil)
 	g := NewGraphModel(nil, nil, DefaultTheme(renderer))
-	g.PageDown()   // len=0 branch
-	g.ScrollLeft() // no-op branches
-	g.ScrollRight()
+	g.PageDown() // len=0 branch
 	g.ensureVisible()
 }
 
@@ -1258,7 +1256,7 @@ func TestOverlaysAndWorkspaceHelpers(t *testing.T) {
 }
 
 func TestGraphIconsAndTruncation(t *testing.T) {
-	if getTypeIcon(model.TypeBug) == "" || getPriorityIcon(1) == "" {
+	if model.IssueTypeIcon(string(model.TypeBug)) == "" || getPriorityIcon(1) == "" {
 		t.Fatalf("graph icons should not be empty")
 	}
 	if got := smartTruncateID("very_long_identifier_with_parts", 8); len([]rune(got)) > 8 {
