@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -77,6 +78,68 @@ func TestTypePickerLeavesBlankRowBeforeWrappedHints(t *testing.T) {
 		}
 	}
 	t.Fatalf("type picker did not render task option:\n%s", picker.View())
+}
+
+func TestTypePickerAKeyTogglesAllAndNone(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	m.typePicker = NewTypePickerModel(issueTypesFromIssues(m.issues, nil), nil, m.theme)
+	wantAll := map[model.IssueType]bool{
+		model.TypeBug:  true,
+		model.TypeTask: true,
+		"decision":     true,
+	}
+	wantPartial := map[model.IssueType]bool{
+		model.TypeTask: true,
+		"decision":     true,
+	}
+
+	m = m.handleTypePickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if selected := m.typePicker.SelectedTypes(); !reflect.DeepEqual(selected, map[model.IssueType]bool{}) {
+		t.Fatalf("first a selected %v, want none", selected)
+	}
+
+	m = m.handleTypePickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if selected := m.typePicker.SelectedTypes(); !reflect.DeepEqual(selected, wantAll) {
+		t.Fatalf("second a selected %v, want all %v", selected, wantAll)
+	}
+
+	m.typePicker.ToggleSelected()
+	if selected := m.typePicker.SelectedTypes(); !reflect.DeepEqual(selected, wantPartial) {
+		t.Fatalf("partial selection = %v, want %v", selected, wantPartial)
+	}
+
+	m = m.handleTypePickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	if selected := m.typePicker.SelectedTypes(); !reflect.DeepEqual(selected, wantAll) {
+		t.Fatalf("a from partial selection = %v, want all %v", selected, wantAll)
+	}
+
+	m.typePicker.ToggleSelected()
+	m = m.handleTypePickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	if selected := m.typePicker.SelectedTypes(); !reflect.DeepEqual(selected, wantPartial) {
+		t.Fatalf("removed n control changed selection to %v, want %v", selected, wantPartial)
+	}
+}
+
+func TestTypePickerGlobalFooterAndContextHelpUseToggleAllNone(t *testing.T) {
+	m := NewModel(typeFilterIssues(), nil, "")
+	m.width = 120
+	m.showTypePicker = true
+
+	footer := ansi.Strip(m.renderFooter())
+	if !strings.Contains(footer, "a all/none") {
+		t.Fatalf("global type-picker footer missing all/none hint: %q", footer)
+	}
+	if strings.Contains(footer, "n reset") {
+		t.Fatalf("global type-picker footer still includes removed reset hint: %q", footer)
+	}
+
+	help := GetContextHelp(ContextTypePicker)
+	if !strings.Contains(help, "a         Toggle all / none") {
+		t.Fatalf("type-picker context help missing all/none hint: %q", help)
+	}
+	if strings.Contains(help, "n         Reset type filter") || strings.Contains(help, "Reset type filter") {
+		t.Fatalf("type-picker context help still includes removed reset hint: %q", help)
+	}
 }
 
 func TestTypeFilterComposesWithStatusLabelRepositoryRecipeAndText(t *testing.T) {
@@ -541,10 +604,17 @@ func TestTypePickerFooterHintsDoNotTruncateAtWideModalWidth(t *testing.T) {
 	picker.SetSize(100, 20)
 
 	view := picker.View()
-	for _, hint := range []string{"j/k: navigate", "space: toggle", "a: all", "n: reset", "enter: apply", "esc: cancel"} {
+	for _, hint := range []string{"j/k: navigate", "space: toggle", "a: all/none", "enter: apply", "esc: cancel"} {
 		if !strings.Contains(view, hint) {
-			t.Fatalf("expected wrapped footer to include control hint %q in picker view", hint)
+			t.Fatalf("expected footer to include control hint %q in picker view", hint)
 		}
+	}
+	if strings.Contains(view, "n: reset") {
+		t.Fatalf("footer still includes removed reset control: %q", view)
+	}
+	footerLine := "j/k: navigate • space: toggle • a: all/none • enter: apply • esc: cancel"
+	if !strings.Contains(view, footerLine) {
+		t.Fatalf("expected footer controls on one line, view=%q", view)
 	}
 	if strings.Count(view, "…") > 1 {
 		t.Fatalf("footer appears truncated in modal width=100; view=%q", view)

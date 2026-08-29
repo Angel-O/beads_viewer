@@ -368,8 +368,7 @@ const contextHelpTypePicker = `## Issue Type Filter
   Esc       Cancel
 
 **Actions**
-  a         Select all types
-  n         Reset type filter
+  a         Toggle all / none
 
 Composes with status, labels, repositories, recipes,
 and text search.`

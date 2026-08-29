@@ -105,6 +105,14 @@ func (m *TypePickerModel) SelectAll() {
 	}
 }
 
+func (m *TypePickerModel) ToggleAll() {
+	if m.AllSelected() {
+		m.ClearSelection()
+		return
+	}
+	m.SelectAll()
+}
+
 func (m *TypePickerModel) ClearSelection() {
 	m.selected = make(map[model.IssueType]bool)
 }
@@ -157,7 +165,7 @@ func (m *TypePickerModel) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, label)
 	}
 
-	boxWidth := 54
+	boxWidth := 78
 	if maximum := m.width - 6; boxWidth > maximum {
 		boxWidth = maximum
 	}
@@ -168,8 +176,7 @@ func (m *TypePickerModel) View() string {
 	controlHints := []string{
 		"j/k: navigate",
 		"space: toggle",
-		"a: all",
-		"n: reset",
+		"a: all/none",
 		"enter: apply",
 		"esc: cancel",
 	}
