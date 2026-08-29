@@ -30,6 +30,30 @@ func isContextSortMode(mode SortMode) bool {
 	return mode == SortContextCreated || mode == SortContextPriority
 }
 
+func (m Model) effectiveHubContextIDs() map[string]struct{} {
+	recognized := make(map[string]struct{}, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind == model.RepositoryIdentityHubContext {
+			recognized[repository.ID] = struct{}{}
+		}
+	}
+
+	effective := make(map[string]struct{}, len(recognized))
+	if m.hubScope.Mode == model.HubScopeSelectedContexts {
+		for _, contextID := range m.hubScope.Contexts {
+			effective[contextID] = struct{}{}
+		}
+	}
+	for _, issue := range m.repositoryCandidates() {
+		for _, label := range issue.Labels {
+			if _, ok := recognized[label]; ok {
+				effective[label] = struct{}{}
+			}
+		}
+	}
+	return effective
+}
+
 func (m Model) contextSortModesAvailable() bool {
 	if m.workspaceMode || !m.usesHubScope() {
 		return false
@@ -37,24 +61,8 @@ func (m Model) contextSortModesAvailable() bool {
 	switch m.hubScope.Mode {
 	case model.HubScopeContextless:
 		return false
-	case model.HubScopeSelectedContexts:
-		seen := make(map[string]struct{}, len(m.hubScope.Contexts))
-		for _, contextID := range m.hubScope.Contexts {
-			seen[contextID] = struct{}{}
-		}
-		return len(seen) >= 2
 	}
-
-	seen := make(map[string]struct{}, len(m.repositoryCatalog))
-	for _, repository := range m.repositoryCatalog {
-		if repository.Kind != model.RepositoryIdentityHubContext {
-			continue
-		}
-		if _, exists := seen[repository.ID]; !exists {
-			seen[repository.ID] = struct{}{}
-		}
-	}
-	return len(seen) >= 2
+	return len(m.effectiveHubContextIDs()) >= 2
 }
 
 func (m *Model) normalizeContextSortMode() bool {
@@ -491,7 +499,6 @@ func (m *Model) applyDefaultRepositoryScope() bool {
 			return false
 		}
 		m.hubScope = scope
-		m.normalizeContextSortMode()
 		m.refreshRepositoryCandidates()
 		return true
 	}
@@ -586,7 +593,6 @@ func (m *Model) SetHubScope(scope model.HubScope) error {
 			m.activeRepos[contextID] = true
 		}
 	}
-	m.normalizeContextSortMode()
 	m.refreshRepositoryCandidates()
 	return nil
 }
@@ -639,6 +645,7 @@ func (m *Model) refreshRepositoryCandidates() {
 func (m *Model) syncRepositoryCandidates() {
 	m.repositoryIssues = m.repositoryCandidates()
 	m.repositoryIssueIDs = issueIDSet(m.repositoryIssues)
+	m.normalizeContextSortMode()
 }
 
 func (m *Model) recomputeRepositoryCounts() {

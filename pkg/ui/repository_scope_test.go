@@ -1052,6 +1052,32 @@ func TestEnableWorkspaceModeNormalizesUnavailableContextSort(t *testing.T) {
 	}
 }
 
+func TestCandidateRefreshNormalizesWhenEffectiveContextDisappears(t *testing.T) {
+	m := NewModel([]model.Issue{{
+		ID: "both", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"},
+	}}, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:alpha")); err != nil {
+		t.Fatal(err)
+	}
+	m.sortMode = SortContextCreated
+	m.refreshRepositoryCandidates()
+	if m.sortMode != SortContextCreated {
+		t.Fatalf("sort mode with secondary effective context = %v, want Context + Created", m.sortMode)
+	}
+
+	m.issues[0].Labels = []string{"ctx:alpha"}
+	m.refreshRepositoryCandidates()
+	if m.sortMode != SortDefault {
+		t.Fatalf("sort mode after effective context disappeared = %v, want Default", m.sortMode)
+	}
+	if strings.Contains(m.renderFooter(), "Ctx +") {
+		t.Fatal("context sort badge remained after effective context disappeared")
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "both")
+}
+
 func TestAsyncCatalogScopeReconcilePreservesSelectionAfterContextFallback(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "one-a", Status: model.StatusOpen, Priority: 1, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Labels: []string{"ctx:one"}},

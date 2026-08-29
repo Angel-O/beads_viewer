@@ -2,7 +2,6 @@ package ui
 
 import (
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -248,7 +247,10 @@ func TestContextSortPriorityUsesPriorityThenIDWithinGroups(t *testing.T) {
 }
 
 func TestContextSortModesAreReachableThroughSortCycle(t *testing.T) {
-	m := NewModel(nil, nil, "")
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:zeta"}},
+		{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+	}, nil, "")
 	m.repositoryCatalog = contextSortCatalog()
 	want := []SortMode{
 		SortCreatedAsc, SortCreatedDesc, SortPriority, SortUpdated,
@@ -291,23 +293,30 @@ func TestContextSortCycleSkipsModesWithoutMultipleHubContexts(t *testing.T) {
 }
 
 func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
-	m := NewModel(nil, nil, "")
-	m.hubRepositoryMode = true
-	m.repositoryCatalog = contextSortCatalog()
-
 	tests := []struct {
-		name  string
-		scope model.HubScope
-		want  bool
+		name      string
+		issues    []model.Issue
+		scope     model.HubScope
+		workspace bool
+		want      bool
 	}{
-		{name: "all items with two contexts", scope: model.NewAllItemsHubScope(), want: true},
-		{name: "one selected context", scope: mustSelectedContextsScope(t, "ctx:alpha"), want: false},
-		{name: "two selected contexts", scope: mustSelectedContextsScope(t, "ctx:alpha", "ctx:zeta"), want: true},
-		{name: "selected context plus contextless", scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: false},
-		{name: "contextless", scope: model.NewContextlessHubScope(), want: false},
+		{name: "selected one with secondary effective context", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha"), want: true},
+		{name: "selected one without secondary effective context", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha"), want: false},
+		{name: "selected two with one unused", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha", "ctx:beta"), want: true},
+		{name: "selected plus contextless without secondary", issues: []model.Issue{{ID: "none"}}, scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: false},
+		{name: "selected plus contextless with secondary", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}, {ID: "none"}}, scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: true},
+		{name: "contextless only", issues: []model.Issue{{ID: "none"}}, scope: model.NewContextlessHubScope(), want: false},
+		{name: "all items ignores unused catalog contexts", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: model.NewAllItemsHubScope(), want: false},
+		{name: "all items with effective contexts", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: model.NewAllItemsHubScope(), want: true},
+		{name: "workspace", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: model.NewAllItemsHubScope(), workspace: true, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(tt.issues, nil, "")
+			m.hubRepositoryMode = true
+			m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+			m.refreshRepositoryCandidates()
+			m.workspaceMode = tt.workspace
 			if err := m.SetHubScope(tt.scope); err != nil {
 				t.Fatal(err)
 			}
@@ -316,30 +325,24 @@ func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
 			}
 		})
 	}
-
-	m.workspaceMode = true
-	if m.contextSortModesAvailable() {
-		t.Fatal("workspace scope made context sort modes available")
-	}
 }
 
-func TestContextSortCycleSkipsModesOutsideActiveSelectedScope(t *testing.T) {
-	m := NewModel(nil, nil, "")
+func TestContextSortCycleReachesModesFromEffectiveSelectedScope(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, nil, "")
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = contextSortCatalog()
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
 	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:alpha")); err != nil {
 		t.Fatal(err)
 	}
 
-	for i := 0; i < 10; i++ {
+	seen := make(map[SortMode]bool)
+	for i := 0; i < 6; i++ {
 		updated, _ := m.Update(keyMsg("s"))
 		m = updated.(Model)
-		if isContextSortMode(m.sortMode) {
-			t.Fatalf("cycle step %d entered unavailable mode %v", i, m.sortMode)
-		}
+		seen[m.sortMode] = true
 	}
-	if strings.Contains(m.renderFooter(), "Ctx +") {
-		t.Fatal("context sort badge appeared in a single-context scope")
+	if !seen[SortContextCreated] || !seen[SortContextPriority] {
+		t.Fatalf("effective selected scope cycle did not reach both context modes: %v", seen)
 	}
 }
 
