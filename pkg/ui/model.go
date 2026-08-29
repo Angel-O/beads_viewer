@@ -104,12 +104,14 @@ const (
 type SortMode int
 
 const (
-	SortDefault     SortMode = iota // Priority asc, then created desc (original default)
-	SortCreatedAsc                  // By creation date, oldest first
-	SortCreatedDesc                 // By creation date, newest first
-	SortPriority                    // By priority only (ascending)
-	SortUpdated                     // By last update, newest first
-	numSortModes                    // Keep this last - used for cycling
+	SortDefault         SortMode = iota // Priority asc, then created desc (original default)
+	SortCreatedAsc                      // By creation date, oldest first
+	SortCreatedDesc                     // By creation date, newest first
+	SortPriority                        // By priority only (ascending)
+	SortUpdated                         // By last update, newest first
+	SortContextCreated                  // By Hub context, then creation date, newest first
+	SortContextPriority                 // By Hub context, then priority (ascending)
+	numSortModes                        // Keep this last - used for cycling
 )
 
 // String returns a human-readable label for the sort mode
@@ -123,6 +125,10 @@ func (s SortMode) String() string {
 		return "Priority"
 	case SortUpdated:
 		return "Updated"
+	case SortContextCreated:
+		return "Context + Created"
+	case SortContextPriority:
+		return "Context + Priority"
 	default:
 		return "Default"
 	}
@@ -7075,7 +7081,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"r", "Ready (unblocked)"},
 		{"l", "Filter by label"},
 		{"I", "Exact issue-type picker"},
-		{"s", "Cycle sort"},
+		{"s", "Cycle sort (including context)"},
 		{"S", "Triage sort"},
 	}
 	if origin == focusTree {
@@ -8923,6 +8929,79 @@ func (m *Model) cycleSortMode() {
 	m.applyFilter() // Re-apply filter with new sort
 }
 
+type contextSortGroup struct {
+	rank  int
+	names string
+	ids   string
+}
+
+// contextSortGroupForIssue returns one canonical group for an issue's complete
+// set of recognized Hub contexts. Unknown context labels are not Hub contexts
+// in the current catalog and therefore belong to the no-context group.
+func (m Model) contextSortGroupForIssue(issue model.Issue) contextSortGroup {
+	namesByID := make(map[string]string, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind != model.RepositoryIdentityHubContext {
+			continue
+		}
+		name := repository.Name
+		if name == "" {
+			name = repository.ID
+		}
+		namesByID[repository.ID] = name
+	}
+
+	contextIDs := make(map[string]struct{})
+	for _, label := range issue.Labels {
+		if _, recognized := namesByID[label]; recognized {
+			contextIDs[label] = struct{}{}
+		}
+	}
+	if len(contextIDs) == 0 {
+		return contextSortGroup{rank: 2}
+	}
+
+	ids := make([]string, 0, len(contextIDs))
+	names := make([]string, 0, len(contextIDs))
+	for id := range contextIDs {
+		ids = append(ids, id)
+		names = append(names, namesByID[id])
+	}
+	sort.Strings(ids)
+	sort.Strings(names)
+	rank := 1
+	if len(ids) == 1 {
+		rank = 0
+	}
+	return contextSortGroup{
+		rank:  rank,
+		names: strings.Join(names, "\x00"),
+		ids:   strings.Join(ids, "\x00"),
+	}
+}
+
+func compareContextSortGroups(left, right contextSortGroup) int {
+	if left.rank != right.rank {
+		if left.rank < right.rank {
+			return -1
+		}
+		return 1
+	}
+	if left.names < right.names {
+		return -1
+	}
+	if left.names > right.names {
+		return 1
+	}
+	if left.ids < right.ids {
+		return -1
+	}
+	if left.ids > right.ids {
+		return 1
+	}
+	return 0
+}
+
 // sortFilteredItems sorts the filtered items based on current sortMode (bv-3ita)
 func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 	if len(items) == 0 {
@@ -8934,6 +9013,12 @@ func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 	for i := range indices {
 		indices[i] = i
 	}
+	contextGroups := make([]contextSortGroup, len(items))
+	if m.sortMode == SortContextCreated || m.sortMode == SortContextPriority {
+		for i := range items {
+			contextGroups[i] = m.contextSortGroupForIssue(items[i].(IssueItem).Issue)
+		}
+	}
 
 	sort.Slice(indices, func(i, j int) bool {
 		iItem := items[indices[i]].(IssueItem)
@@ -8943,6 +9028,17 @@ func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 		}
 
 		switch m.sortMode {
+		case SortContextCreated, SortContextPriority:
+			if groupOrder := compareContextSortGroups(contextGroups[indices[i]], contextGroups[indices[j]]); groupOrder != 0 {
+				return groupOrder < 0
+			}
+			if m.sortMode == SortContextCreated {
+				if !iItem.Issue.CreatedAt.Equal(jItem.Issue.CreatedAt) {
+					return iItem.Issue.CreatedAt.After(jItem.Issue.CreatedAt)
+				}
+			} else if iItem.Issue.Priority != jItem.Issue.Priority {
+				return iItem.Issue.Priority < jItem.Issue.Priority
+			}
 		case SortCreatedAsc:
 			// Oldest first
 			if !iItem.Issue.CreatedAt.Equal(jItem.Issue.CreatedAt) {

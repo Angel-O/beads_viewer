@@ -178,6 +178,92 @@ func TestApplyRecipe_Sorting(t *testing.T) {
 	}
 }
 
+func contextSortCatalog() model.RepositoryCatalog {
+	return model.RepositoryCatalog{
+		{ID: "ctx:zeta", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:alpha", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:gamma", Name: "Gamma", Kind: model.RepositoryIdentityHubContext},
+	}
+}
+
+func contextSortIssue(id string, priority int, createdAt time.Time, labels ...string) model.Issue {
+	return model.Issue{
+		ID: id, Status: model.StatusOpen, Priority: priority, CreatedAt: createdAt, Labels: labels,
+	}
+}
+
+func TestContextSortCreatedGroupsByCompleteContextSet(t *testing.T) {
+	issues := []model.Issue{
+		contextSortIssue("beta-old", 2, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "ctx:alpha"),
+		contextSortIssue("no-old", 2, time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)),
+		contextSortIssue("alpha", 2, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "ctx:zeta"),
+		contextSortIssue("multi-old", 2, time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), "ctx:alpha", "ctx:zeta", "ctx:alpha"),
+		contextSortIssue("beta-new", 2, time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC), "ctx:alpha"),
+		contextSortIssue("multi-new", 2, time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC), "ctx:zeta", "ctx:alpha"),
+		contextSortIssue("gamma", 2, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), "ctx:gamma"),
+		contextSortIssue("multi-other", 2, time.Date(2026, 1, 6, 0, 0, 0, 0, time.UTC), "ctx:gamma", "ctx:alpha"),
+		contextSortIssue("unknown-context", 2, time.Date(2026, 1, 7, 0, 0, 0, 0, time.UTC), "ctx:unknown"),
+		contextSortIssue("no-new", 2, time.Date(2026, 1, 8, 0, 0, 0, 0, time.UTC)),
+	}
+	m := NewModel(issues, nil, "")
+	m.repositoryCatalog = contextSortCatalog()
+	m.sortMode = SortContextCreated
+	m.applyFilter()
+
+	got := m.FilteredIssues()
+	want := []string{"alpha", "beta-new", "beta-old", "gamma", "multi-new", "multi-old", "multi-other", "no-new", "unknown-context", "no-old"}
+	if len(got) != len(want) {
+		t.Fatalf("sorted issue count = %d, want %d", len(got), len(want))
+	}
+	for i, issue := range got {
+		if issue.ID != want[i] {
+			t.Fatalf("sorted issue %d = %q, want %q", i, issue.ID, want[i])
+		}
+	}
+}
+
+func TestContextSortPriorityUsesPriorityThenIDWithinGroups(t *testing.T) {
+	date := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	issues := []model.Issue{
+		contextSortIssue("beta-z", 2, date, "ctx:alpha"),
+		contextSortIssue("beta-a", 2, date.AddDate(0, 0, 1), "ctx:alpha"),
+		contextSortIssue("alpha", 3, date, "ctx:zeta"),
+		contextSortIssue("multi-z", 1, date, "ctx:alpha", "ctx:zeta"),
+		contextSortIssue("multi-a", 1, date.AddDate(0, 0, 1), "ctx:zeta", "ctx:alpha"),
+		contextSortIssue("no", 0, date),
+	}
+	m := NewModel(issues, nil, "")
+	m.repositoryCatalog = contextSortCatalog()
+	m.sortMode = SortContextPriority
+	m.applyFilter()
+
+	got := m.FilteredIssues()
+	want := []string{"alpha", "beta-a", "beta-z", "multi-a", "multi-z", "no"}
+	for i, issue := range got {
+		if issue.ID != want[i] {
+			t.Fatalf("sorted issue %d = %q, want %q", i, issue.ID, want[i])
+		}
+	}
+}
+
+func TestContextSortModesAreReachableThroughSortCycle(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	want := []SortMode{
+		SortCreatedAsc, SortCreatedDesc, SortPriority, SortUpdated,
+		SortContextCreated, SortContextPriority, SortDefault,
+	}
+	for i, expected := range want {
+		updated, _ := m.Update(keyMsg("s"))
+		m = updated.(Model)
+		if m.sortMode != expected {
+			t.Fatalf("sort cycle step %d = %v, want %v", i, m.sortMode, expected)
+		}
+	}
+	if SortContextCreated.String() != "Context + Created" || SortContextPriority.String() != "Context + Priority" {
+		t.Fatalf("context sort labels = %q and %q", SortContextCreated, SortContextPriority)
+	}
+}
+
 func TestNewModel_RecipeSortDescendingTieBreaksByID(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "d", Priority: 1},

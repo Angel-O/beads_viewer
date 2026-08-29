@@ -352,7 +352,7 @@ func structuredTutorialPages() []StructuredTutorialPage {
 				}},
 				Spacer{Lines: 1},
 				Section{Title: "Sorting"},
-				Paragraph{Text: "Press s to cycle: Default -> Created ascending -> Created descending -> Priority -> Updated. Press S to apply the triage recipe."},
+				Paragraph{Text: "Press s to cycle: Default -> Created ascending -> Created descending -> Priority -> Updated -> Context + Created -> Context + Priority. Press S to apply the triage recipe."},
 				Spacer{Lines: 1},
 				Tip{Text: "Filter to r (ready) and work top-down for daily triage"},
 			},

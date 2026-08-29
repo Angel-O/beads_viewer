@@ -773,6 +773,52 @@ func TestHubCatalogRefreshPreservesActiveFuzzyResults(t *testing.T) {
 	}
 }
 
+func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Title: "Issue one", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
+		{ID: "two", Title: "Issue two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
+	}
+	oldCatalog := model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+	}
+	newCatalog := model.RepositoryCatalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:two", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+	}
+
+	for _, mode := range []SortMode{SortContextCreated, SortContextPriority} {
+		for _, filtered := range []bool{false, true} {
+			name := mode.String()
+			if filtered {
+				name += "/filtered"
+			}
+			t.Run(name, func(t *testing.T) {
+				m := NewModel(issues, nil, "")
+				m.hubConfigPath = "hub.yaml"
+				m.repositoryCatalog = oldCatalog
+				m.sortMode = mode
+				m.applyFilter()
+				requireIssueIDs(t, visibleIssueIDs(m), "two", "one")
+				if filtered {
+					m.list.SetFilterText("")
+				}
+				m.list.Select(1)
+				if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+					t.Fatalf("selected before catalog refresh = %q, want one", selected)
+				}
+
+				updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: newCatalog})
+				m = updated.(Model)
+				requireIssueIDs(t, visibleIssueIDs(m), "one", "two")
+				if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
+					t.Fatalf("selected after catalog refresh = %q, want one", selected)
+				}
+			})
+		}
+	}
+}
+
 func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	issues := []model.Issue{{
 		ID: "one", Title: "One", Status: model.StatusOpen,

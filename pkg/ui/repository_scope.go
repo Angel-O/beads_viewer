@@ -283,6 +283,13 @@ func (m *Model) refreshRepositoryPresentation() {
 	hubMode := m.hubRepositoryPresentation()
 	if m.list.Width() > 0 {
 		items := m.list.Items()
+		contextSort := m.sortMode == SortContextCreated || m.sortMode == SortContextPriority
+		selectedID := ""
+		if contextSort {
+			if selected, ok := m.list.SelectedItem().(IssueItem); ok {
+				selectedID = selected.Issue.ID
+			}
+		}
 		for i := range items {
 			item, ok := items[i].(IssueItem)
 			if !ok {
@@ -291,7 +298,23 @@ func (m *Model) refreshRepositoryPresentation() {
 			m.decorateIssueItem(&item)
 			items[i] = item
 		}
+		if contextSort {
+			issues := make([]model.Issue, len(items))
+			for i, item := range items {
+				issues[i] = item.(IssueItem).Issue
+			}
+			m.sortFilteredItems(items, issues)
+		}
 		m.setListItemsPreservingFilter(items)
+		if selectedID != "" {
+			for i, visible := range m.list.VisibleItems() {
+				item, ok := visible.(IssueItem)
+				if ok && item.Issue.ID == selectedID {
+					m.list.Select(i)
+					break
+				}
+			}
+		}
 		m.updateListDelegate()
 		m.updateViewportContent()
 	}
