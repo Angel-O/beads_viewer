@@ -22,6 +22,114 @@ type IssueDelegate struct {
 	RepositoryNameWidth  int  // Shared Hub repository name column width in cells
 	RepositoryExtraWidth int  // Shared Hub +N sub-column width in cells
 	ShowSearchScores     bool // Show semantic/hybrid score badge when search is active
+	triageSlotWidth      int  // Shared visual width for the current list layout
+}
+
+const issueTypeIconSlotWidth = 2
+
+func triageIndicatorText(i IssueItem) string {
+	if i.IsQuickWin {
+		return "⭐"
+	}
+	if i.IsBlocker && i.UnblocksCount > 0 {
+		return fmt.Sprintf("🔓%d", i.UnblocksCount)
+	}
+	if i.UnblocksCount > 0 {
+		return fmt.Sprintf("↪%d", i.UnblocksCount)
+	}
+	return ""
+}
+
+func triageIndicatorContentWidth(items []list.Item) int {
+	width := 0
+	for _, item := range items {
+		i, ok := item.(IssueItem)
+		if !ok {
+			continue
+		}
+		width = max(width, lipgloss.Width(triageIndicatorText(i)))
+	}
+	return width
+}
+
+func (d IssueDelegate) triageSlotWidthFor(items []list.Item, width int) int {
+	contentWidth := triageIndicatorContentWidth(items)
+	if contentWidth == 0 {
+		return 0
+	}
+
+	if width <= 0 {
+		width = 80
+	}
+	rowWidth := width - 1 // Render's edge-wrap guard
+	maxReserve := 0
+	for _, item := range items {
+		i, ok := item.(IssueItem)
+		if !ok {
+			continue
+		}
+		maxReserve = max(maxReserve, d.triagePrefixWidth(i, rowWidth)+d.triageRightWidth(i, rowWidth))
+	}
+
+	// Leave room for the shared slot separator, minimum ID/title cells, the ID
+	// separator, and the two existing trailing layout cells.
+	maxSlotWidth := rowWidth - maxReserve - 6
+	return min(contentWidth, max(maxSlotWidth, 0))
+}
+
+func (d IssueDelegate) triagePrefixWidth(i IssueItem, width int) int {
+	icon, _ := d.Theme.GetTypeIcon(string(i.Issue.IssueType))
+	leftWidth := 2 + max(issueTypeIconSlotWidth, lipgloss.Width(icon)) + 1
+
+	if d.ShowRepositories && d.RepositoryNameWidth > 0 && width > 45 {
+		leftWidth += d.RepositoryNameWidth + 2 + d.RepositoryExtraWidth + 1
+	} else if d.WorkspaceMode && i.RepoPrefix != "" {
+		leftWidth += lipgloss.Width(RenderRepoBadge(i.RepoPrefix)) + 1
+	}
+
+	leftWidth += lipgloss.Width(RenderPriorityBadge(i.Issue.Priority)) + 1
+	if d.ShowPriorityHints {
+		leftWidth += 2
+	}
+	leftWidth += lipgloss.Width(RenderStatusBadge(string(i.Issue.Status))) + 1
+	if d.ShowSearchScores && i.SearchScoreSet {
+		leftWidth += lipgloss.Width(fmt.Sprintf("[%.2f]", i.SearchScore)) + 1
+	}
+	if badge := i.DiffStatus.Badge(); badge != "" {
+		leftWidth += lipgloss.Width(badge) + 1
+	}
+	return leftWidth
+}
+
+func (d IssueDelegate) triageRightWidth(i IssueItem, width int) int {
+	rightWidth := 0
+	if width > 60 {
+		rightWidth += 9
+		if len(i.Issue.Comments) > 0 {
+			rightWidth += lipgloss.Width(fmt.Sprintf("💬%d", len(i.Issue.Comments))) + 1
+		} else {
+			rightWidth += 3
+		}
+	}
+	if width > 120 {
+		rightWidth += 6
+	}
+	if width > 100 && i.Issue.Assignee != "" {
+		rightWidth += 14
+	}
+	labels := i.Issue.Labels
+	if i.HubPresentation {
+		labels = i.PresentationLabels
+	}
+	if width > 140 && len(labels) > 0 {
+		labelStr := truncateRunesHelper(strings.Join(labels, ","), 20, "…")
+		labelStyle := d.Theme.Renderer.NewStyle().
+			Foreground(ColorPrimary).
+			Background(ColorBgSubtle).
+			Padding(0, 1)
+		rightWidth += lipgloss.Width(labelStyle.Render(labelStr)) + 1
+	}
+	return rightWidth
 }
 
 func (d IssueDelegate) Height() int {
@@ -38,17 +146,15 @@ func (d IssueDelegate) Update(msg tea.Msg, m *list.Model) tea.Cmd {
 
 func (d IssueDelegate) rowWidthWithoutRepository(i IssueItem, width int) int {
 	icon, _ := d.Theme.GetTypeIcon(string(i.Issue.IssueType))
-	leftWidth := 2 + lipgloss.Width(icon) + 1
+	leftWidth := 2 + max(issueTypeIconSlotWidth, lipgloss.Width(icon)) + 1
 	leftWidth += lipgloss.Width(RenderPriorityBadge(i.Issue.Priority)) + 1
 	if d.ShowPriorityHints {
 		leftWidth += 2
 	}
-	if i.IsQuickWin {
-		leftWidth += lipgloss.Width("⭐") + 1
-	} else if i.IsBlocker && i.UnblocksCount > 0 {
-		leftWidth += lipgloss.Width(fmt.Sprintf("🔓%d", i.UnblocksCount)) + 1
-	} else if i.UnblocksCount > 0 {
-		leftWidth += lipgloss.Width(fmt.Sprintf("↪%d", i.UnblocksCount)) + 1
+	if d.triageSlotWidth > 0 {
+		leftWidth += d.triageSlotWidth + 1
+	} else if triage := triageIndicatorText(i); triage != "" {
+		leftWidth += lipgloss.Width(triage) + 1
 	}
 	leftWidth += lipgloss.Width(RenderStatusBadge(string(i.Issue.Status))) + 1
 	if d.ShowSearchScores && i.SearchScoreSet {
@@ -116,6 +222,14 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Measure actual icon display width (emojis vary: 1-2 cells)
 	iconDisplayWidth := lipgloss.Width(icon)
+	typeIconSlotWidth := max(issueTypeIconSlotWidth, iconDisplayWidth)
+	triageText := triageIndicatorText(i)
+	triageSlotWidth := d.triageSlotWidth
+	idStrWidth := lipgloss.Width(idStr)
+	if idStrWidth > 35 {
+		idStrWidth = 35
+		idStr = truncateRunesHelper(idStr, 35, "…")
+	}
 
 	// Calculate widths for right-side columns (fixed)
 	rightWidth := 0
@@ -172,7 +286,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	// Left side fixed columns with polished badges
 	// [selector 2] [repo-badge 0-6] [icon 1-2] [prio-badge 3] [hint 1-2] [status-badge 6] [id dynamic] [space]
 	// Use measured iconDisplayWidth instead of hardcoded value for proper alignment
-	leftFixedWidth := 2 + iconDisplayWidth + 1 // selector(2) + icon(measured) + space(1)
+	leftFixedWidth := 2 + typeIconSlotWidth + 1 // selector(2) + icon slot + space(1)
 
 	// Repo badge width (workspace mode)
 	var repoBadge string
@@ -207,15 +321,6 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftFixedWidth += 2
 	}
 
-	// Triage indicator width (bv-151) - use lipgloss.Width for accurate emoji measurement
-	if i.IsQuickWin {
-		leftFixedWidth += lipgloss.Width("⭐") + 1 // emoji + space
-	} else if i.IsBlocker && i.UnblocksCount > 0 {
-		leftFixedWidth += lipgloss.Width(fmt.Sprintf("🔓%d", i.UnblocksCount)) + 1 // emoji+count + space
-	} else if i.UnblocksCount > 0 {
-		leftFixedWidth += lipgloss.Width(fmt.Sprintf("↪%d", i.UnblocksCount)) + 1 // arrow+count + space
-	}
-
 	// Status badge (polished)
 	statusBadge := RenderStatusBadge(string(i.Issue.Status))
 	statusBadgeWidth := lipgloss.Width(statusBadge)
@@ -234,16 +339,20 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftFixedWidth += lipgloss.Width(diffBadge) + 1
 	}
 
-	// ID width - use actual visual width, but cap reasonably
-	idWidth := lipgloss.Width(idStr)
-	if idWidth > 35 {
-		idWidth = 35
-		idStr = truncateRunesHelper(idStr, 35, "…")
+	// Reserve the shared visual-width slot for triage indicators. It is sized
+	// from the list layout before rendering, so every row uses the same width.
+	if triageSlotWidth > 0 {
+		leftFixedWidth += triageSlotWidth + 1
 	}
+
+	// ID width - use actual visual width, but cap reasonably
+	idWidth := idStrWidth
 
 	// Keep the fixed columns within the row when a narrow pane has a long issue
 	// ID. The title can shrink to a single cell before the ID is truncated.
 	fixedWithoutID := leftFixedWidth
+	// Leave room for the ID separator and the title's existing trailing layout
+	// cells before allowing the ID to consume the remaining width.
 	maxIDWidth := width - fixedWithoutID - rightWidth - 2
 	if maxIDWidth < idWidth {
 		idWidth = maxIDWidth
@@ -289,6 +398,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Type icon with color
 	leftSide.WriteString(t.Renderer.NewStyle().Foreground(iconColor).Render(icon))
+	leftSide.WriteString(strings.Repeat(" ", typeIconSlotWidth-iconDisplayWidth))
 	leftSide.WriteString(" ")
 
 	// Priority badge (polished)
@@ -310,16 +420,19 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	}
 
 	// Triage indicators (bv-151): Quick win ⭐ and Unblocks count 🔓 - using pre-computed styles
-	triageIndicator := ""
-	if i.IsQuickWin {
-		triageIndicator = t.TriageStar.Render("⭐")
-	} else if i.IsBlocker && i.UnblocksCount > 0 {
-		triageIndicator = t.TriageUnblocks.Render(fmt.Sprintf("🔓%d", i.UnblocksCount))
-	} else if i.UnblocksCount > 0 {
-		triageIndicator = t.TriageUnblocksAlt.Render(fmt.Sprintf("↪%d", i.UnblocksCount))
-	}
-	if triageIndicator != "" {
+	if triageSlotWidth > 0 {
+		triageDisplayText := truncateRunesHelper(triageText, triageSlotWidth, "…")
+		triageIndicator := triageDisplayText
+		switch {
+		case i.IsQuickWin:
+			triageIndicator = t.TriageStar.Render(triageDisplayText)
+		case i.IsBlocker && i.UnblocksCount > 0:
+			triageIndicator = t.TriageUnblocks.Render(triageDisplayText)
+		case i.UnblocksCount > 0:
+			triageIndicator = t.TriageUnblocksAlt.Render(triageDisplayText)
+		}
 		leftSide.WriteString(triageIndicator)
+		leftSide.WriteString(strings.Repeat(" ", triageSlotWidth-lipgloss.Width(triageDisplayText)))
 		leftSide.WriteString(" ")
 	}
 

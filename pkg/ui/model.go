@@ -1205,6 +1205,7 @@ func (m *Model) updateListDelegate() {
 		ShowSearchScores:  m.shouldShowSearchScores(),
 	}
 	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidths(delegate)
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(m.list.Items(), m.list.Width())
 	m.list.SetDelegate(delegate)
 }
 
@@ -1549,6 +1550,8 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			items[i] = issueItem
 		}
 	}
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(items, l.Width())
+	l.SetDelegate(delegate)
 
 	// Initialize recipe loader
 	recipeLoader := recipe.NewLoader()
