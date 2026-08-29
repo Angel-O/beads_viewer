@@ -23,9 +23,382 @@ type IssueDelegate struct {
 	RepositoryExtraWidth int  // Shared Hub +N sub-column width in cells
 	ShowSearchScores     bool // Show semantic/hybrid score badge when search is active
 	triageSlotWidth      int  // Shared visual width for the current list layout
+	columns              *issueListColumns
 }
 
 const issueTypeIconSlotWidth = 2
+
+type issueListColumns struct {
+	width int
+
+	repoWidth     int
+	typeWidth     int
+	priorityWidth int
+	triageWidth   int
+	statusWidth   int
+	searchWidth   int
+	idWidth       int
+	diffWidth     int
+	commentsWidth int
+	assigneeWidth int
+	labelsWidth   int
+	rightWidth    int
+
+	repoStart     int
+	typeStart     int
+	priorityStart int
+	hintsStart    int
+	triageStart   int
+	statusStart   int
+	searchStart   int
+	idStart       int
+	diffStart     int
+	titleStart    int
+
+	ageStart      int
+	commentsStart int
+	graphStart    int
+	assigneeStart int
+	labelsStart   int
+	showRepo      bool
+	showHints     bool
+	showTriage    bool
+	showSearch    bool
+	showDiff      bool
+	showAge       bool
+	showComments  bool
+	showGraph     bool
+	showAssignee  bool
+	showLabels    bool
+	rightParts    []issueListRightPart
+}
+
+// issueListColumns is the single list-level layout contract. It is computed
+// from all visible items, then consumed by both Render and the list header.
+func (d IssueDelegate) issueListColumnsFor(items []list.Item, listWidth int) *issueListColumns {
+	if listWidth <= 0 {
+		listWidth = 80
+	}
+	rowWidth := max(listWidth-1, 1)
+	columns := &issueListColumns{width: rowWidth, typeWidth: issueTypeIconSlotWidth}
+	issueItems := make([]IssueItem, 0, len(items))
+	for _, item := range items {
+		i, ok := item.(IssueItem)
+		if !ok {
+			continue
+		}
+		issueItems = append(issueItems, i)
+		icon, _ := d.Theme.GetTypeIcon(string(i.Issue.IssueType))
+		columns.typeWidth = max(columns.typeWidth, lipgloss.Width(icon))
+		columns.priorityWidth = max(columns.priorityWidth, lipgloss.Width(RenderPriorityBadge(i.Issue.Priority)))
+		columns.statusWidth = max(columns.statusWidth, lipgloss.Width(RenderStatusBadge(string(i.Issue.Status))))
+		if i.DiffStatus.Badge() != "" {
+			columns.showDiff = true
+			columns.diffWidth = max(columns.diffWidth, lipgloss.Width(i.DiffStatus.Badge()))
+		}
+		if d.ShowSearchScores && i.SearchScoreSet {
+			columns.showSearch = true
+			columns.searchWidth = max(columns.searchWidth, lipgloss.Width(fmt.Sprintf("[%.2f]", i.SearchScore)))
+		}
+		if i.Issue.Assignee != "" {
+			columns.showAssignee = true
+		}
+		labels := i.Issue.Labels
+		if i.HubPresentation {
+			labels = i.PresentationLabels
+		}
+		if len(labels) > 0 {
+			columns.showLabels = true
+		}
+	}
+	columns.priorityWidth = max(columns.priorityWidth, 1)
+	columns.statusWidth = max(columns.statusWidth, 1)
+	columns.showHints = d.ShowPriorityHints && d.PriorityHints != nil
+	columns.showTriage = d.triageSlotWidth > 0
+	columns.showRepo = d.ShowRepositories && d.RepositoryNameWidth > 0 && rowWidth > 45
+	if !columns.showRepo && d.WorkspaceMode {
+		for _, i := range issueItems {
+			if i.RepoPrefix != "" {
+				columns.showRepo = true
+				break
+			}
+		}
+	}
+	if columns.showRepo {
+		if d.ShowRepositories && d.RepositoryNameWidth > 0 && rowWidth > 45 {
+			columns.repoWidth = d.RepositoryNameWidth + 2 + d.RepositoryExtraWidth
+		} else {
+			for _, i := range issueItems {
+				columns.repoWidth = max(columns.repoWidth, lipgloss.Width(RenderRepoBadge(i.RepoPrefix)))
+			}
+		}
+	}
+
+	columns.showAge = rowWidth > 60
+	columns.showComments = rowWidth > 60
+	columns.showGraph = rowWidth > 120
+	if columns.showAssignee && rowWidth > 100 {
+		columns.assigneeWidth = 13
+	} else {
+		columns.showAssignee = false
+	}
+	if !columns.showLabels || rowWidth <= 140 {
+		columns.showLabels = false
+	}
+	columns.commentsWidth = 3
+	columns.labelsWidth = 0
+	for _, i := range issueItems {
+		if columns.showComments && len(i.Issue.Comments) > 0 {
+			columns.commentsWidth = max(columns.commentsWidth, lipgloss.Width(fmt.Sprintf("💬%d", len(i.Issue.Comments))))
+		}
+		if columns.showLabels {
+			labels := i.Issue.Labels
+			if i.HubPresentation {
+				labels = i.PresentationLabels
+			}
+			if len(labels) > 0 {
+				labelStr := truncateRunesHelper(strings.Join(labels, ","), 20, "…")
+				labelStyle := d.Theme.Renderer.NewStyle().Padding(0, 1)
+				columns.labelsWidth = max(columns.labelsWidth, lipgloss.Width(labelStyle.Render(labelStr)))
+			}
+		}
+	}
+
+	cursor := 2 // selection indicator
+	if columns.showRepo {
+		columns.repoStart = cursor
+		cursor += columns.repoWidth + 1
+	}
+	columns.typeStart = cursor
+	cursor += columns.typeWidth + 1
+	columns.priorityStart = cursor
+	cursor += columns.priorityWidth + 1
+	if columns.showHints {
+		columns.hintsStart = cursor
+		cursor += 2
+	}
+	if columns.showTriage {
+		columns.triageStart = cursor
+		cursor += d.triageSlotWidth + 1
+	}
+	columns.statusStart = cursor
+	cursor += columns.statusWidth + 1
+	if columns.showSearch {
+		columns.searchStart = cursor
+		cursor += columns.searchWidth + 1
+	}
+	columns.idStart = cursor
+	for _, i := range issueItems {
+		columns.idWidth = max(columns.idWidth, min(lipgloss.Width(i.Issue.ID), 35))
+	}
+	columns.idWidth = max(columns.idWidth, 1)
+	columns.triageWidth = d.triageSlotWidth
+	columns.rightParts = d.issueListRightParts(rowWidth, columns)
+	columns.rightWidth = issueListRightWidth(columns.rightParts)
+	diffReserve := 0
+	if columns.showDiff {
+		diffReserve = columns.diffWidth + 1
+	}
+	maxIDWidth := rowWidth - cursor - columns.rightWidth - diffReserve - 2
+	if maxIDWidth < columns.idWidth {
+		columns.idWidth = max(maxIDWidth, 1)
+	}
+	cursor += columns.idWidth + 1
+	if columns.showDiff {
+		columns.diffStart = cursor
+		cursor += columns.diffWidth + 1
+	}
+	columns.titleStart = cursor
+	for index := range columns.rightParts {
+		part := &columns.rightParts[index]
+		switch part.kind {
+		case "age":
+			columns.ageStart = part.start
+		case "comments":
+			columns.commentsStart = part.start
+		case "graph":
+			columns.graphStart = part.start
+		case "assignee":
+			columns.assigneeStart = part.start
+		case "labels":
+			columns.labelsStart = part.start + 1
+		}
+	}
+	return columns
+}
+
+type issueListRightPart struct {
+	kind    string
+	start   int
+	width   int
+	visible bool
+}
+
+func (d IssueDelegate) issueListRightParts(rowWidth int, columns *issueListColumns) []issueListRightPart {
+	parts := make([]issueListRightPart, 0, 5)
+	if rowWidth > 60 {
+		parts = append(parts,
+			issueListRightPart{kind: "age", width: 8, visible: true},
+			issueListRightPart{kind: "comments", width: columns.commentsWidth, visible: true},
+		)
+	}
+	if rowWidth > 120 {
+		parts = append(parts, issueListRightPart{kind: "graph", width: 5, visible: true})
+	}
+	if columns.showAssignee {
+		parts = append(parts, issueListRightPart{kind: "assignee", width: columns.assigneeWidth, visible: true})
+	}
+	if columns.showLabels {
+		parts = append(parts, issueListRightPart{kind: "labels", width: columns.labelsWidth, visible: true})
+	}
+	width := issueListRightWidth(parts)
+	start := rowWidth - width
+	for index := range parts {
+		parts[index].start = start
+		start += parts[index].width
+		if index < len(parts)-1 {
+			start++
+		}
+	}
+	return parts
+}
+
+func issueListRightWidth(parts []issueListRightPart) int {
+	width := 0
+	for index := range parts {
+		width += parts[index].width
+		if index < len(parts)-1 {
+			width++
+		}
+	}
+	return width
+}
+
+func (d IssueDelegate) columnsFor(m list.Model) *issueListColumns {
+	width := m.Width()
+	if width <= 0 {
+		width = 80
+	}
+	if d.columns != nil && d.columns.width == max(width-1, 1) {
+		return d.columns
+	}
+	return d.issueListColumnsFor(m.VisibleItems(), width)
+}
+
+func (d IssueDelegate) renderRightParts(i IssueItem, t Theme, columns *issueListColumns) []string {
+	parts := make([]string, 0, len(columns.rightParts))
+	for _, part := range columns.rightParts {
+		var value string
+		switch part.kind {
+		case "age":
+			age := truncateRunesHelper(FormatTimeRel(i.Issue.CreatedAt), part.width, "…")
+			value = t.MutedText.Render(padRight(age, part.width))
+		case "comments":
+			if len(i.Issue.Comments) > 0 {
+				value = t.InfoText.Render(fmt.Sprintf("💬%d", len(i.Issue.Comments)))
+			} else {
+				value = strings.Repeat(" ", part.width)
+			}
+		case "graph":
+			spark := RenderSparkline(i.GraphScore, 5)
+			value = t.Renderer.NewStyle().Foreground(GetHeatmapColor(i.GraphScore, t)).Render(spark)
+		case "assignee":
+			if i.Issue.Assignee == "" {
+				value = strings.Repeat(" ", part.width)
+			} else {
+				assignee := truncateRunesHelper(i.Issue.Assignee, 12, "…")
+				value = t.SecondaryText.Render("@" + padRight(assignee, 12))
+			}
+		case "labels":
+			labels := i.Issue.Labels
+			if i.HubPresentation {
+				labels = i.PresentationLabels
+			}
+			if len(labels) > 0 {
+				labelStyle := t.Renderer.NewStyle().
+					Foreground(ColorPrimary).
+					Background(ColorBgSubtle).
+					Padding(0, 1)
+				value = labelStyle.Render(truncateRunesHelper(strings.Join(labels, ","), 20, "…"))
+			} else {
+				value = strings.Repeat(" ", part.width)
+			}
+		}
+		valueWidth := lipgloss.Width(value)
+		if valueWidth < part.width {
+			value += strings.Repeat(" ", part.width-valueWidth)
+		}
+		parts = append(parts, value)
+	}
+	return parts
+}
+
+func renderIssueListHeader(columns *issueListColumns) string {
+	line := []rune(strings.Repeat(" ", columns.width))
+	place := func(offset int, labels ...string) {
+		for _, label := range labels {
+			if offset < 0 || offset+len([]rune(label)) > len(line) {
+				continue
+			}
+			fits := true
+			for index := range label {
+				if line[offset+index] != ' ' {
+					fits = false
+					break
+				}
+			}
+			if fits {
+				copy(line[offset:], []rune(label))
+				return
+			}
+		}
+	}
+
+	if columns.showRepo {
+		place(columns.repoStart, "CTX", "C")
+	}
+	place(columns.typeStart, "TY")
+	place(columns.priorityStart, "PR")
+	if columns.showHints {
+		place(columns.hintsStart, "H")
+	}
+	if columns.showTriage {
+		place(columns.triageStart, "TR")
+	}
+	place(columns.statusStart, "STAT")
+	if columns.showSearch {
+		place(columns.searchStart, "SCORE")
+	}
+	place(columns.idStart, "ID")
+	if columns.showDiff {
+		place(columns.diffStart, "DF")
+	}
+	if columns.showAge {
+		place(columns.ageStart, "AGE")
+	}
+	if columns.showComments {
+		place(columns.commentsStart, "CMT")
+	}
+	if columns.showGraph {
+		place(columns.graphStart, "GRAPH")
+	}
+	if columns.showAssignee {
+		place(columns.assigneeStart, "ASGN")
+	}
+	if columns.showLabels {
+		place(columns.labelsStart, "LBL")
+	}
+	rightStart := columns.width - columns.rightWidth
+	for _, label := range []string{"TITLE", "T"} {
+		labelWidth := lipgloss.Width(label)
+		if columns.rightWidth > 0 && columns.titleStart+labelWidth+1 > rightStart {
+			continue
+		}
+		place(columns.titleStart, label)
+		break
+	}
+	return string(line)
+}
 
 func triageIndicatorText(i IssueItem) string {
 	if i.IsQuickWin {
@@ -205,6 +578,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	}
 	// Reduce width by 1 to prevent terminal wrapping on the exact edge
 	width = width - 1
+	columns := d.columnsFor(m)
 
 	isSelected := index == m.Index()
 
@@ -217,80 +591,24 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	icon, iconColor := t.GetTypeIcon(string(i.Issue.IssueType))
 	idStr := i.Issue.ID
 	title := i.Issue.Title
-	ageStr := FormatTimeRel(i.Issue.CreatedAt)
-	commentCount := len(i.Issue.Comments)
 
 	// Measure actual icon display width (emojis vary: 1-2 cells)
 	iconDisplayWidth := lipgloss.Width(icon)
-	typeIconSlotWidth := max(issueTypeIconSlotWidth, iconDisplayWidth)
+	typeIconSlotWidth := columns.typeWidth
 	triageText := triageIndicatorText(i)
-	triageSlotWidth := d.triageSlotWidth
-	idStrWidth := lipgloss.Width(idStr)
-	if idStrWidth > 35 {
-		idStrWidth = 35
-		idStr = truncateRunesHelper(idStr, 35, "…")
-	}
+	triageSlotWidth := columns.triageWidth
 
-	// Calculate widths for right-side columns (fixed)
-	rightWidth := 0
-	var rightParts []string
+	// Render every list-level right-side slot. Empty item values remain padded
+	// so later metadata columns cannot shift between rows.
+	rightParts := d.renderRightParts(i, t, columns)
+	rightWidth := columns.rightWidth
 
-	// Show Age and Comments only if we have reasonable width
-	if width > 60 {
-		// Age - with subtle styling (using pre-computed style)
-		rightParts = append(rightParts, t.MutedText.Render(fmt.Sprintf("%8s", ageStr)))
-		rightWidth += 9
+	// Left side fixed columns with polished badges. Every optional slot is
+	// reserved from the list-level contract, including empty item values.
+	leftFixedWidth := columns.titleStart
 
-		// Comments with icon - use lipgloss.Width for accurate emoji measurement
-		if commentCount > 0 {
-			commentStr := fmt.Sprintf("💬%d", commentCount)
-			rightParts = append(rightParts, t.InfoText.Render(commentStr))
-			rightWidth += lipgloss.Width(commentStr) + 1 // +1 for spacing
-		} else {
-			rightParts = append(rightParts, "   ")
-			rightWidth += 3
-		}
-	}
-
-	// Sparkline (Graph Score) - visualization of importance
-	if width > 120 {
-		spark := RenderSparkline(i.GraphScore, 5)
-		sparkColor := GetHeatmapColor(i.GraphScore, t)
-		sparkStyle := t.Renderer.NewStyle().Foreground(sparkColor)
-		rightParts = append(rightParts, sparkStyle.Render(spark))
-		rightWidth += 6 // 5 + 1 spacing
-	}
-
-	// Assignee (if present and we have room)
-	if width > 100 && i.Issue.Assignee != "" {
-		assignee := truncateRunesHelper(i.Issue.Assignee, 12, "…")
-		rightParts = append(rightParts, t.SecondaryText.Render("@"+padRight(assignee, 12)))
-		rightWidth += 14
-	}
-
-	// Labels (if present and we have room) - render as mini tags
-	labels := i.Issue.Labels
-	if i.HubPresentation {
-		labels = i.PresentationLabels
-	}
-	if width > 140 && len(labels) > 0 {
-		labelStr := truncateRunesHelper(strings.Join(labels, ","), 20, "…")
-		labelStyle := t.Renderer.NewStyle().
-			Foreground(ColorPrimary).
-			Background(ColorBgSubtle).
-			Padding(0, 1)
-		rightParts = append(rightParts, labelStyle.Render(labelStr))
-		rightWidth += lipgloss.Width(labelStyle.Render(labelStr)) + 1
-	}
-
-	// Left side fixed columns with polished badges
-	// [selector 2] [repo-badge 0-6] [icon 1-2] [prio-badge 3] [hint 1-2] [status-badge 6] [id dynamic] [space]
-	// Use measured iconDisplayWidth instead of hardcoded value for proper alignment
-	leftFixedWidth := 2 + typeIconSlotWidth + 1 // selector(2) + icon slot + space(1)
-
-	// Repo badge width (workspace mode)
 	var repoBadge string
-	if d.ShowRepositories && d.RepositoryNameWidth > 0 && width > 45 {
+	if columns.showRepo && d.ShowRepositories {
 		extra := ""
 		if i.RepositoryExtra > 0 {
 			extra = fmt.Sprintf("+%d", i.RepositoryExtra)
@@ -304,73 +622,35 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		}
 		repoBadge += strings.Repeat(" ", max(d.RepositoryNameWidth+2-lipgloss.Width(repoBadge), 0))
 		repoBadge += padRight(extra, d.RepositoryExtraWidth)
-		leftFixedWidth += lipgloss.Width(repoBadge) + 1
-	} else if d.WorkspaceMode && i.RepoPrefix != "" {
-		// Create a compact repo badge like [API] or [WEB]
+	} else if columns.showRepo {
 		repoBadge = RenderRepoBadge(i.RepoPrefix)
-		leftFixedWidth += lipgloss.Width(repoBadge) + 1
+	}
+	if columns.showRepo {
+		repoBadge += strings.Repeat(" ", max(columns.repoWidth-lipgloss.Width(repoBadge), 0))
 	}
 
 	// Priority badge (polished)
 	prioBadge := RenderPriorityBadge(i.Issue.Priority)
-	prioBadgeWidth := lipgloss.Width(prioBadge)
-	leftFixedWidth += prioBadgeWidth + 1
-
-	// Priority hint indicator
-	if d.ShowPriorityHints {
-		leftFixedWidth += 2
-	}
-
-	// Status badge (polished)
 	statusBadge := RenderStatusBadge(string(i.Issue.Status))
-	statusBadgeWidth := lipgloss.Width(statusBadge)
-	leftFixedWidth += statusBadgeWidth + 1
-
-	// Search score badge (semantic/hybrid)
-	var searchBadge string
-	if d.ShowSearchScores && i.SearchScoreSet {
-		scoreStr := fmt.Sprintf("%.2f", i.SearchScore)
-		searchBadge = t.InfoBold.Render(fmt.Sprintf("[%s]", scoreStr))
-		leftFixedWidth += lipgloss.Width(searchBadge) + 1
-	}
-
 	diffBadge := i.DiffStatus.Badge()
-	if diffBadge != "" {
-		leftFixedWidth += lipgloss.Width(diffBadge) + 1
+	if lipgloss.Width(idStr) > columns.idWidth {
+		idStr = truncateRunesHelper(idStr, columns.idWidth, "…")
 	}
 
-	// Reserve the shared visual-width slot for triage indicators. It is sized
-	// from the list layout before rendering, so every row uses the same width.
-	if triageSlotWidth > 0 {
-		leftFixedWidth += triageSlotWidth + 1
-	}
-
-	// ID width - use actual visual width, but cap reasonably
-	idWidth := idStrWidth
-
-	// Keep the fixed columns within the row when a narrow pane has a long issue
-	// ID. The title can shrink to a single cell before the ID is truncated.
-	fixedWithoutID := leftFixedWidth
-	// Leave room for the ID separator and the title's existing trailing layout
-	// cells before allowing the ID to consume the remaining width.
-	maxIDWidth := width - fixedWithoutID - rightWidth - 2
-	if maxIDWidth < idWidth {
-		idWidth = maxIDWidth
-		if idWidth < 1 {
-			idWidth = 1
-		}
-		idStr = truncateRunesHelper(idStr, idWidth, "…")
-	}
-	leftFixedWidth = fixedWithoutID + idWidth + 1
-
-	// Title gets everything in between
-	titleWidth := width - leftFixedWidth - rightWidth - 2
-	if titleWidth < 1 {
-		titleWidth = 1
+	// Keep one blank display cell before right-side metadata. If the fixed
+	// columns consume the available width, omit the title rather than letting
+	// it run into AGE or another right-side column.
+	titleWidth := width - leftFixedWidth - rightWidth - 1
+	if titleWidth < 0 {
+		titleWidth = 0
 	}
 
 	// Truncate title if needed
-	title = truncateRunesHelper(title, titleWidth, "…")
+	if titleWidth > 0 {
+		title = truncateRunesHelper(title, titleWidth, "…")
+	} else {
+		title = ""
+	}
 
 	// Pad title to fill space
 	currentWidth := lipgloss.Width(title)
@@ -390,9 +670,10 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		leftSide.WriteString("  ")
 	}
 
-	// Repo badge (workspace mode)
-	if repoBadge != "" {
+	// Repository cell (local workspace or Hub context presentation).
+	if columns.showRepo {
 		leftSide.WriteString(repoBadge)
+		leftSide.WriteString(strings.Repeat(" ", max(columns.repoWidth-lipgloss.Width(repoBadge), 0)))
 		leftSide.WriteString(" ")
 	}
 
@@ -403,10 +684,11 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Priority badge (polished)
 	leftSide.WriteString(prioBadge)
+	leftSide.WriteString(strings.Repeat(" ", columns.priorityWidth-lipgloss.Width(prioBadge)))
 	leftSide.WriteString(" ")
 
 	// Priority hint indicator (↑/↓) - using pre-computed styles
-	if d.ShowPriorityHints && d.PriorityHints != nil {
+	if columns.showHints {
 		if hint, ok := d.PriorityHints[i.Issue.ID]; ok {
 			if hint.Direction == "increase" {
 				leftSide.WriteString(t.PriorityUpArrow.Render("↑"))
@@ -438,11 +720,18 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 
 	// Status badge (polished)
 	leftSide.WriteString(statusBadge)
+	leftSide.WriteString(strings.Repeat(" ", columns.statusWidth-lipgloss.Width(statusBadge)))
 	leftSide.WriteString(" ")
 
 	// Search score badge (optional)
-	if searchBadge != "" {
-		leftSide.WriteString(searchBadge)
+	if columns.showSearch {
+		if i.SearchScoreSet {
+			searchBadge := t.InfoBold.Render(fmt.Sprintf("[%.2f]", i.SearchScore))
+			leftSide.WriteString(searchBadge)
+			leftSide.WriteString(strings.Repeat(" ", max(columns.searchWidth-lipgloss.Width(searchBadge), 0)))
+		} else {
+			leftSide.WriteString(strings.Repeat(" ", columns.searchWidth))
+		}
 		leftSide.WriteString(" ")
 	}
 
@@ -452,11 +741,13 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		idStyle = idStyle.Bold(true)
 	}
 	leftSide.WriteString(idStyle.Render(idStr))
+	leftSide.WriteString(strings.Repeat(" ", max(columns.idWidth-lipgloss.Width(idStr), 0)))
 	leftSide.WriteString(" ")
 
 	// Diff badge (time-travel mode)
-	if diffBadge != "" {
+	if columns.showDiff {
 		leftSide.WriteString(diffBadge)
+		leftSide.WriteString(strings.Repeat(" ", max(columns.diffWidth-lipgloss.Width(diffBadge), 0)))
 		leftSide.WriteString(" ")
 	}
 
@@ -467,7 +758,9 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	} else {
 		titleStyle = titleStyle.Foreground(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#E8E8E8"})
 	}
-	leftSide.WriteString(titleStyle.Render(title))
+	if titleWidth > 0 {
+		leftSide.WriteString(titleStyle.Render(title))
+	}
 
 	// Right side
 	rightSide := strings.Join(rightParts, " ")
@@ -484,7 +777,7 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	row := leftSide.String() + strings.Repeat(" ", padding) + rightSide
 
 	// Apply row background for selection and clamp width
-	rowStyle := t.Renderer.NewStyle().Width(width).MaxWidth(width)
+	rowStyle := t.Renderer.NewStyle().Inline(true).Width(width).MaxWidth(width)
 	if isSelected {
 		row = rowStyle.Background(t.Highlight).Render(row)
 	} else {
