@@ -32,8 +32,6 @@ func TestGraphModelEmpty(t *testing.T) {
 	g.MoveRight()
 	g.PageUp()
 	g.PageDown()
-	g.ScrollLeft()
-	g.ScrollRight()
 }
 
 // TestGraphModelSingleNode verifies graph with single node
@@ -192,8 +190,8 @@ func TestGraphModelNavigation(t *testing.T) {
 	}
 }
 
-// TestGraphModelScrollBounds verifies scroll clamping
-func TestGraphModelScrollBounds(t *testing.T) {
+// TestGraphModelPageBounds verifies page navigation clamping.
+func TestGraphModelPageBounds(t *testing.T) {
 	theme := createTheme()
 
 	issues := []model.Issue{
@@ -201,12 +199,6 @@ func TestGraphModelScrollBounds(t *testing.T) {
 	}
 
 	g := ui.NewGraphModel(issues, nil, theme)
-
-	// Scroll left from origin should stay at 0
-	g.ScrollLeft()
-	g.ScrollLeft()
-	g.ScrollLeft()
-	// After View call, scrollX should be clamped to 0
 
 	// PageUp from origin should stay at 0
 	g.PageUp()

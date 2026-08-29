@@ -325,6 +325,31 @@ const (
 	StatusTombstone  Status = "tombstone" // Soft-deleted issue
 )
 
+// StatusIcon returns the canonical glyph used when representing an issue
+// status. Grouped statuses intentionally share a glyph.
+func StatusIcon(status string) string {
+	switch Status(status) {
+	case StatusOpen:
+		return "🔵"
+	case StatusInProgress:
+		return "🟡"
+	case StatusBlocked:
+		return "🔴"
+	case StatusDeferred, StatusDraft:
+		return "⏸️"
+	case StatusPinned:
+		return "📌"
+	case StatusHooked:
+		return "🪝"
+	case StatusReview:
+		return "👁️"
+	case StatusClosed, StatusTombstone:
+		return "✅"
+	default:
+		return "⚪"
+	}
+}
+
 // IsValid returns true if the status is a recognized value
 func (s Status) IsValid() bool {
 	switch s {
@@ -360,6 +385,29 @@ const (
 	TypeEpic    IssueType = "epic"
 	TypeChore   IssueType = "chore"
 )
+
+// IssueTypeIcon returns the canonical glyph used when representing an issue
+// type. Non-standard types remain valid and use the neutral fallback glyph.
+func IssueTypeIcon(issueType string) string {
+	switch IssueType(issueType) {
+	case TypeBug:
+		return "🐛"
+	case TypeFeature:
+		return "✨"
+	case TypeTask:
+		return "🔧"
+	case TypeEpic:
+		// Use 🚀 instead of 🏔️ - the snow-capped mountain has a variation selector
+		// that causes inconsistent width calculations across terminals.
+		return "🚀"
+	case TypeChore:
+		return "🧹"
+	case "todo":
+		return "📝"
+	default:
+		return "•"
+	}
+}
 
 // IsValid returns true if the issue type is non-empty.
 // Any non-empty type is considered valid to support extensibility in the Beads ecosystem

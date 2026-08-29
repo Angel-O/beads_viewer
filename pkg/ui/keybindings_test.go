@@ -425,6 +425,47 @@ func TestKeyDispatch_GraphNavigation(t *testing.T) {
 	}
 }
 
+func TestCompactGraphAndTreeStatusHints(t *testing.T) {
+	m := setupTestModel(t)
+	m.isGraphView = true
+	m.focused = focusGraph
+
+	normalGraph := ansi.Strip(m.renderFooter())
+	if !strings.Contains(normalGraph, "/:search") || strings.Contains(normalGraph, "n/N:match") || strings.Contains(normalGraph, "H/L") {
+		t.Fatalf("normal Graph hint has incorrect search guidance: %q", normalGraph)
+	}
+
+	m.graphView.StartSearch()
+	searchInputGraph := ansi.Strip(m.renderFooter())
+	if strings.Contains(searchInputGraph, "n/N:match") {
+		t.Fatalf("empty Graph search input exposed n/N guidance: %q", searchInputGraph)
+	}
+	m.graphView.AppendSearchRunes([]rune("kd"))
+	searchingGraph := ansi.Strip(m.renderFooter())
+	if !strings.Contains(searchingGraph, "n/N:match") {
+		t.Fatalf("Graph search hint omitted n/N guidance: %q", searchingGraph)
+	}
+	m.graphView.ClearSearch()
+
+	m.isGraphView = false
+	m.focused = focusTree
+	normalTree := ansi.Strip(m.renderFooter())
+	if !strings.Contains(normalTree, "/:search") || strings.Contains(normalTree, "n/N:match") {
+		t.Fatalf("normal Tree hint has incorrect search guidance: %q", normalTree)
+	}
+
+	m.tree.StartSearch()
+	m.tree.UpdateSearchInput(keyMsg("k"))
+	searchingTree := ansi.Strip(m.renderFooter())
+	if !strings.Contains(searchingTree, "type:search") || strings.Contains(searchingTree, "n/N:match") {
+		t.Fatalf("active Tree input hint changed unexpectedly: %q", searchingTree)
+	}
+	m.tree.FinishSearch()
+	if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "n/N:match") {
+		t.Fatalf("submitted Tree search hint omitted n/N guidance: %q", footer)
+	}
+}
+
 func TestKeyDispatch_GraphSearchConsumesInputAndSelectsMatches(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "search-a", Title: "Board query first", Status: model.StatusOpen, IssueType: model.TypeTask},
@@ -1139,6 +1180,9 @@ func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 		"esc|tree|Clear search or exit Tree":   false,
 	}
 	for _, doc := range docs {
+		if doc.Context == "graph" && (doc.Key == "H" || doc.Key == "L") {
+			t.Errorf("authoritative key docs retain non-functional Graph scroll shortcut: %s", doc.Key)
+		}
 		if doc.Key == "#" && doc.Desc == "Add comment" {
 			t.Errorf("authoritative key docs retain removed # comment shortcut")
 		}

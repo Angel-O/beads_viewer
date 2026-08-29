@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // GraphModel represents the dependency graph view with visual ASCII art visualization
@@ -319,9 +320,6 @@ func (g *GraphModel) PageDown() {
 	g.ensureVisible()
 }
 
-func (g *GraphModel) ScrollLeft()  {}
-func (g *GraphModel) ScrollRight() {}
-
 func (g *GraphModel) ensureVisible() {}
 
 func (g *GraphModel) SelectedIssue() *model.Issue {
@@ -330,6 +328,17 @@ func (g *GraphModel) SelectedIssue() *model.Issue {
 	}
 	id := g.sortedIDs[g.selectedIdx]
 	return g.issueMap[id]
+}
+
+// selectFirst selects the deterministic first node in the current graph
+// projection. It is used when a selection from another view is not present.
+func (g *GraphModel) selectFirst() bool {
+	if len(g.sortedIDs) == 0 {
+		return false
+	}
+	g.selectedIdx = 0
+	g.ensureVisible()
+	return true
 }
 
 // SelectByID selects an issue by its ID (bv-xf4p)
@@ -524,7 +533,7 @@ func (g *GraphModel) View(width, height int) string {
 	}
 	separator := t.Renderer.NewStyle().
 		Foreground(t.Secondary).
-		Render(strings.Repeat("│\n", sepHeight))
+		Render(strings.TrimSuffix(strings.Repeat("│\n", sepHeight), "\n"))
 
 	return joinGraphSearchStatus(searchStatus, lipgloss.JoinHorizontal(lipgloss.Top, listView, separator, graphView))
 }
@@ -635,6 +644,10 @@ func (g *GraphModel) renderNodeList(width, height int, t Theme) string {
 
 // renderVisualGraph renders the ASCII art graph visualization with metrics
 func (g *GraphModel) renderVisualGraph(id string, issue *model.Issue, width, height int, t Theme) string {
+	if height <= 0 {
+		return ""
+	}
+
 	var sections []string
 
 	blockerIDs := g.blockers[id]
@@ -663,21 +676,44 @@ func (g *GraphModel) renderVisualGraph(id string, issue *model.Issue, width, hei
 		sections = append(sections, g.renderDependentsVisual(dependentIDs, width, t))
 	}
 
-	sections = append(sections, "")
-
 	// ═══════════════════════════════════════════════════════════════════════
 	// COMPREHENSIVE METRICS PANEL - ALL 8 metrics with values AND ranks
 	// ═══════════════════════════════════════════════════════════════════════
-	sections = append(sections, g.renderMetricsPanel(id, width, t))
+	metrics := g.renderMetricsPanel(id, width, t)
+	return constrainGraphView(strings.Join(sections, "\n"), metrics, width, height)
+}
 
-	// Navigation hint
-	navStyle := t.Renderer.NewStyle().
-		Foreground(t.Secondary).
-		Italic(true)
-	sections = append(sections, "")
-	sections = append(sections, navStyle.Render("j/k: navigate • /: search • n/N: matches • enter: details • esc: clear/back"))
+func constrainGraphView(flow, metrics string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
 
-	return strings.Join(sections, "\n")
+	metricLines := []string{}
+	if metrics != "" {
+		metricLines = strings.Split(metrics, "\n")
+	}
+	if len(metricLines) > height {
+		metricLines = metricLines[len(metricLines)-height:]
+	}
+
+	flowLines := []string{}
+	if flow != "" {
+		flowLines = strings.Split(flow, "\n")
+	}
+	flowHeight := height - len(metricLines)
+	if len(flowLines) > flowHeight {
+		flowLines = flowLines[:max(flowHeight, 0)]
+	}
+	for len(flowLines) < flowHeight {
+		flowLines = append(flowLines, "")
+	}
+
+	lines := append(flowLines, metricLines...)
+
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, width, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderBlockersVisual renders blocker nodes as boxes
@@ -840,7 +876,7 @@ func (g *GraphModel) renderNodeBox(id string, boxWidth int, t Theme, isEgo bool)
 func (g *GraphModel) renderEgoNode(id string, issue *model.Issue, width int, t Theme) string {
 	statusIcon := getStatusIcon(issue.Status)
 	prioIcon := getPriorityIcon(issue.Priority)
-	typeIcon := getTypeIcon(issue.IssueType)
+	typeIcon, _ := t.GetTypeIcon(string(issue.IssueType))
 
 	egoWidth := width / 2
 	if egoWidth > 50 {
@@ -924,8 +960,23 @@ func (g *GraphModel) renderConnectorDown(count int, width int, t Theme) string {
 	return connStyle.Render(strings.Join(lines, "\n"))
 }
 
-// renderMetricsPanel renders ALL graph metrics with polished visualization
+// renderMetricsPanel renders graph metrics with the exhaustive status legend.
 func (g *GraphModel) renderMetricsPanel(id string, width int, t Theme) string {
+	contentWidth := max(width-4, 1)
+	if contentWidth >= 82 {
+		metricsWidth := width - statusLegendWidth - statusLegendColumnGap
+		metrics := g.renderMetricsContent(id, metricsWidth, t)
+		legend := renderStatusLegend(statusLegendWidth, t)
+		return lipgloss.JoinHorizontal(lipgloss.Bottom, metrics, strings.Repeat(" ", statusLegendColumnGap), legend)
+	}
+
+	metrics := g.renderMetricsContent(id, width, t)
+	legend := renderStatusLegend(contentWidth, t)
+	return metrics + "\n" + legend
+}
+
+// renderMetricsContent renders ALL graph metrics with polished visualization.
+func (g *GraphModel) renderMetricsContent(id string, width int, t Theme) string {
 	total := len(g.sortedIDs)
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1103,26 +1154,7 @@ func (g *GraphModel) renderMetricsPanel(id string, width int, t Theme) string {
 // Helper functions
 
 func getStatusIcon(status model.Status) string {
-	switch {
-	case isClosedLikeStatus(status):
-		return "✅"
-	case status == model.StatusOpen:
-		return "🔵"
-	case status == model.StatusInProgress:
-		return "🟡"
-	case status == model.StatusBlocked:
-		return "🔴"
-	case status == model.StatusDeferred || status == model.StatusDraft:
-		return "⏸️"
-	case status == model.StatusPinned:
-		return "📌"
-	case status == model.StatusHooked:
-		return "🪝"
-	case status == model.StatusReview:
-		return "👁️"
-	default:
-		return "⚪"
-	}
+	return model.StatusIcon(string(status))
 }
 
 func getStatusColor(status model.Status, t Theme) lipgloss.AdaptiveColor {
@@ -1162,23 +1194,6 @@ func getPriorityIcon(priority int) string {
 		return "📋"
 	default:
 		return "  "
-	}
-}
-
-func getTypeIcon(itype model.IssueType) string {
-	switch itype {
-	case model.TypeBug:
-		return "🐛"
-	case model.TypeFeature:
-		return "✨"
-	case model.TypeTask:
-		return "📝"
-	case model.TypeEpic:
-		return "🎯"
-	case model.TypeChore:
-		return "🔧"
-	default:
-		return "📄"
 	}
 }
 

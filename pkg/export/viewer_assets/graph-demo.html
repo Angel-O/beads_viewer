@@ -824,10 +824,10 @@
             const noSelection = document.getElementById('no-selection');
 
             if (node) {
-                const icons = { bug: '🐛', feature: '✨', task: '📝', epic: '🎯', chore: '🔧' };
+                const icons = { bug: '🐛', feature: '✨', task: '🔧', epic: '🚀', chore: '🧹', todo: '📝', default: '•' };
                 const priorityColors = ['#ff0000', '#ff5555', '#ffb86c', '#f1fa8c', '#6272a4'];
 
-                document.getElementById('detail-icon').textContent = icons[node.type] || '📋';
+                document.getElementById('detail-icon').textContent = icons[node.type] || icons.default;
                 document.getElementById('detail-id').textContent = node.id;
                 document.getElementById('detail-name').textContent = node.title;
 

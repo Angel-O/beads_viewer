@@ -334,8 +334,6 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 
 		// Graph View
 		{"hjkl", "Navigate graph", "Graph", "graph"},
-		{"H", "Scroll left", "Graph", "graph"},
-		{"L", "Scroll right", "Graph", "graph"},
 		{"PgUp", "Scroll up", "Graph", "graph"},
 		{"PgDn", "Scroll down", "Graph", "graph"},
 		{"/", "Search ID or title", "Graph", "graph"},

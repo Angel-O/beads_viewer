@@ -28,6 +28,203 @@ func TestListHelpRendersTreeAndExactTypePickerShortcuts(t *testing.T) {
 	}
 }
 
+func selectListIssueForTest(t *testing.T, m *Model, id string) {
+	t.Helper()
+	for i, item := range m.list.Items() {
+		if issue, ok := item.(IssueItem); ok && issue.Issue.ID == id {
+			m.list.Select(i)
+			return
+		}
+	}
+	t.Fatalf("test issue %q not found in list", id)
+}
+
+func TestGraphTransitionSynchronizesListSelection(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "zeta", Title: "Zeta", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeTask},
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeBug},
+		{ID: "target", Title: "Target", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeFeature},
+	}
+	m := NewModel(issues, nil, "")
+	selectListIssueForTest(t, &m, "target")
+
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "target" {
+		t.Fatalf("List -> Graph selection = %#v, want target", selected)
+	}
+}
+
+func TestGraphTransitionSynchronizesGraphSelectionBackToList(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if !m.graphView.SelectByID("target") {
+		t.Fatal("test graph selection failed")
+	}
+
+	updated, _ = m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if selected := m.list.SelectedItem(); selected == nil {
+		t.Fatal("List selection is nil after Graph -> List")
+	} else if item, ok := selected.(IssueItem); !ok || item.Issue.ID != "target" {
+		t.Fatalf("Graph -> List selection = %#v, want target", selected)
+	}
+}
+
+func TestGraphExitKeysSynchronizeGraphSelectionBackToList(t *testing.T) {
+	for _, key := range []string{"g", "q", "esc"} {
+		t.Run(key, func(t *testing.T) {
+			m := NewModel([]model.Issue{
+				{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+				{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeTask},
+			}, nil, "")
+			updated, _ := m.Update(keyMsg("g"))
+			m = updated.(Model)
+			if !m.graphView.SelectByID("target") {
+				t.Fatal("test graph selection failed")
+			}
+
+			updated, _ = m.Update(keyMsg(key))
+			m = updated.(Model)
+			if m.isGraphView || m.focused != focusList {
+				t.Fatalf("Graph exit key %q left focus=%v graph=%v", key, m.focused, m.isGraphView)
+			}
+			if selected := m.selectedListIssueID(); selected != "target" {
+				t.Fatalf("Graph exit key %q selected list bead %q, want target", key, selected)
+			}
+		})
+	}
+}
+
+func TestGraphEnterSelectsVisibleFilteredBead(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "before", Title: "Before", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "after", Title: "After", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}, nil, "")
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if !m.graphView.SelectByID("target") {
+		t.Fatal("test graph selection failed")
+	}
+	m.list.SetFilterText("target")
+	if len(m.list.VisibleItems()) != 1 {
+		t.Fatalf("test filter returned %d visible items, want 1", len(m.list.VisibleItems()))
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusDetail || m.selectedListIssueID() != "target" {
+		t.Fatalf("filtered Graph -> Enter selected focus=%v bead=%q, want detail/target", m.focused, m.selectedListIssueID())
+	}
+	if !strings.Contains(m.viewport.View(), "Target") {
+		t.Fatalf("filtered Graph -> Enter omitted target detail: %s", m.viewport.View())
+	}
+}
+
+func graphModelWithExcludedListFilter(t *testing.T) Model {
+	t.Helper()
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}, nil, "")
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if !m.graphView.SelectByID("target") {
+		t.Fatal("test graph selection failed")
+	}
+	m.list.SetFilterText("alpha")
+	if m.selectedListIssueID() != "alpha" {
+		t.Fatalf("test setup selected %q, want alpha", m.selectedListIssueID())
+	}
+	return m
+}
+
+func TestGraphEnterSelectsBeadExcludedByListTextFilter(t *testing.T) {
+	m := graphModelWithExcludedListFilter(t)
+	if len(m.list.VisibleItems()) != 1 {
+		t.Fatalf("test filter returned %d visible items, want 1", len(m.list.VisibleItems()))
+	}
+
+	updated, _ := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.focused != focusDetail || m.selectedListIssueID() != "target" {
+		t.Fatalf("filtered Graph -> Enter selected focus=%v bead=%q, want detail/target", m.focused, m.selectedListIssueID())
+	}
+	if m.list.FilterValue() != "" {
+		t.Fatalf("incompatible list text filter remained %q", m.list.FilterValue())
+	}
+	if !strings.Contains(m.viewport.View(), "Target") {
+		t.Fatalf("filtered Graph -> Enter omitted target detail: %s", m.viewport.View())
+	}
+}
+
+func TestGraphExitKeysSelectBeadExcludedByListTextFilter(t *testing.T) {
+	for _, key := range []string{"g", "q", "esc"} {
+		t.Run(key, func(t *testing.T) {
+			m := graphModelWithExcludedListFilter(t)
+			updated, _ := m.Update(keyMsg(key))
+			m = updated.(Model)
+			if m.isGraphView || m.focused != focusList {
+				t.Fatalf("Graph exit key %q left focus=%v graph=%v", key, m.focused, m.isGraphView)
+			}
+			if m.list.FilterValue() != "" || m.selectedListIssueID() != "target" {
+				t.Fatalf("Graph exit key %q left filter=%q selected=%q, want cleared/target", key, m.list.FilterValue(), m.selectedListIssueID())
+			}
+		})
+	}
+}
+
+func TestGraphTransitionUsesFirstNodeWhenListSelectionIsFilteredOut(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "todo-note", Title: "Captured note", Status: model.StatusOpen, IssueType: "todo"},
+		{ID: "visible-a", Title: "Visible A", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "visible-b", Title: "Visible B", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	selectListIssueForTest(t, &m, "todo-note")
+
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(Model)
+	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "visible-a" {
+		t.Fatalf("filtered List -> Graph selection = %#v, want visible-a fallback", selected)
+	}
+	if selected := m.selectedListIssueID(); selected != "todo-note" {
+		t.Fatalf("filtered List selection changed to %q, want todo-note", selected)
+	}
+}
+
+func TestGraphSelectionRoundTripToDetailPreservesBeadIdentity(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeFeature},
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	selectListIssueForTest(t, &m, "target")
+
+	updated, _ = m.Update(keyMsg("g"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+
+	if m.FocusState() != "detail" {
+		t.Fatalf("Graph -> Enter did not open detail: focus=%s", m.FocusState())
+	}
+	if selected := m.selectedListIssueID(); selected != "target" {
+		t.Fatalf("round-trip list selection = %q, want target", selected)
+	}
+	if !strings.Contains(m.viewport.View(), "Target") {
+		t.Fatalf("round-trip detail omitted target bead: %s", m.viewport.View())
+	}
+}
+
 func TestUpdateInsightsHeatmapKey(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 

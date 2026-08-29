@@ -7,19 +7,10 @@
                                       │                                       
                                       ▼                                       
                   ╔═══════════════════════════════════════╗                   
-                  ║              🔵 ⚡ 📝 n5              ║                   
+                  ║              🔵 ⚡ 🔧 n5              ║                   
                   ║                  n5                   ║                   
                   ║                ⬆1  ⬇1                 ║                   
                   ╚═══════════════════════════════════════╝                   
-                                      │                                       
-                                      │                                       
-                                      ▼                                       
-                            ╭────────────────────╮                            
-                            │       🔵 n4        │                            
-                            │         n4         │                            
-                            ╰────────────────────╯                            
-                         ▼ BLOCKS (waiting on this) ▼                         
-
   📊 GRAPH METRICS                                                        
 ──────────────────────────────────────────────────────────────────────────
  Importance 
@@ -37,5 +28,13 @@
   Out-Degree            1 ██████ #6
 
 █ relative score │ #N rank of 10 issues                                   
-
-j/k: navigate • /: search • n/N: matches • enter: details • esc: clear/back
+                                                                    STATUS
+                                                                   🔵 open
+                                                            🟡 in progress
+                                                                🔴 blocked
+                                                         ⏸️ deferred/draft
+                                                                 📌 pinned
+                                                                 🪝 hooked
+                                                                 👁️ review
+                                                       ✅ closed/tombstone
+                                                                  ⚪ other

@@ -222,20 +222,9 @@ func getDepTypeIcon(depType string) string {
 	}
 }
 
-// GetStatusIcon returns a colored icon for a status
+// GetStatusIcon returns the canonical icon for a status.
 func GetStatusIcon(s string) string {
-	switch s {
-	case "open":
-		return "🟢"
-	case "in_progress":
-		return "🔵"
-	case "blocked":
-		return "🔴"
-	case "closed":
-		return "⚫"
-	default:
-		return "⚪"
-	}
+	return model.StatusIcon(s)
 }
 
 // GetPriorityIcon returns the emoji for a priority level

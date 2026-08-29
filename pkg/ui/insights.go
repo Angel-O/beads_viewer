@@ -1752,19 +1752,7 @@ func (m *InsightsModel) renderDrillDownIssue(issueID string, isSelected bool, wi
 	}
 
 	// Type icon
-	icon := "•"
-	switch issue.IssueType {
-	case "bug":
-		icon = "🐛"
-	case "feature":
-		icon = "✨"
-	case "task":
-		icon = "📋"
-	case "chore":
-		icon = "🔧"
-	case "epic":
-		icon = "🎯"
-	}
+	icon, _ := t.GetTypeIcon(string(issue.IssueType))
 	sb.WriteString(icon + " ")
 
 	// Status indicator (matches model.Status constants)

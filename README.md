@@ -3674,8 +3674,7 @@ bv has a comprehensive built-in help system:
 | | `e` | Toggle Explanations |
 | | `x` | Toggle Calculation Proof |
 | | `m` | Toggle Heatmap Overlay |
-| **Graph View** | `H` / `L` | Scroll Left / Right |
-| | `Ctrl+D` / `Ctrl+U` | Page Down / Up |
+| **Graph View** | `Ctrl+D` / `Ctrl+U` | Page Down / Up |
 | **Tree View** | `j` / `k` | Move cursor down / up |
 | | `h` / `l` | Collapse/parent or Expand/child |
 | | `Enter` / `Space` | Toggle expand/collapse |

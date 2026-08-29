@@ -63,10 +63,11 @@ const THEME = {
 const TYPE_ICONS = {
     bug: '\uD83D\uDC1B',      // 🐛
     feature: '\u2728',        // ✨
-    task: '\uD83D\uDCDD',     // 📝
-    epic: '\uD83C\uDFAF',     // 🎯
-    chore: '\uD83D\uDD27',    // 🔧
-    default: '\uD83D\uDCCB'   // 📋
+    task: '\uD83D\uDD27',     // 🔧
+    epic: '\uD83D\uDE80',     // 🚀
+    chore: '\uD83E\uDDF9',    // 🧹
+    todo: '\uD83D\uDCDD',     // 📝
+    default: '\u2022'         // •
 };
 
 const VIEW_MODES = {

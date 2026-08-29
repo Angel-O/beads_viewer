@@ -1,5 +1,5 @@
                   ╔═══════════════════════════════════════╗                   
-                  ║              🔵 ⚡ 📝 n0              ║                   
+                  ║              🔵 ⚡ 🔧 n0              ║                   
                   ║                  n0                   ║                   
                   ║                ⬆0  ⬇9                 ║                   
                   ╚═══════════════════════════════════════╝                   
@@ -11,9 +11,6 @@
   │    🔵 n1     ││    🔵 n2     ││    🔵 n3     ││    🔵 n4     ││    🔵 n5  
                                    │+4 more                                   
 ╰──────────────╯╰──────────────╯╰──────────────╯╰──────────────╯╰─────────────
-                                  ─╯                                          
-                         ▼ BLOCKS (waiting on this) ▼                         
-
   📊 GRAPH METRICS                                                        
 ──────────────────────────────────────────────────────────────────────────
  Importance 
@@ -31,5 +28,13 @@
   Out-Degree            0 ░░░░░░ #10
 
 █ relative score │ #N rank of 10 issues                                   
-
-j/k: navigate • /: search • n/N: matches • enter: details • esc: clear/back
+                                                                    STATUS
+                                                                   🔵 open
+                                                            🟡 in progress
+                                                                🔴 blocked
+                                                         ⏸️ deferred/draft
+                                                                 📌 pinned
+                                                                 🪝 hooked
+                                                                 👁️ review
+                                                       ✅ closed/tombstone
+                                                                  ⚪ other

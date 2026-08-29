@@ -3982,7 +3982,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focused = focusInsights
 					return m, nil
 				}
-				if m.showDetails && !m.isSplitView {
+				if m.showDetails && !m.isSplitView && !m.isGraphView {
 					m.showDetails = false
 					m.focused = focusList
 					return m, nil
@@ -4000,8 +4000,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.isGraphView {
-					m.isGraphView = false
-					m.focused = focusList
+					m.leaveGraphView()
 					return m, nil
 				}
 				if m.isBoardView {
@@ -4060,7 +4059,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusIsError = false
 					return m, nil
 				}
-				if m.showDetails && !m.isSplitView {
+				if m.showDetails && !m.isSplitView && !m.isGraphView {
 					m.showDetails = false
 					m.focused = focusList
 					return m, nil
@@ -4078,8 +4077,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.isGraphView {
-					m.isGraphView = false
-					m.focused = focusList
+					m.leaveGraphView()
 					return m, nil
 				}
 				if m.isBoardView {
@@ -4268,7 +4266,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch keyStr {
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
-					"H", "L", "ctrl+d", "ctrl+u", "pgup", "pgdown",
+					"ctrl+d", "ctrl+u", "pgup", "pgdown",
 					"/", "n", "N", "enter":
 					m = m.handleGraphKeys(msg)
 					viewToggleHandled = true
@@ -4416,16 +4414,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "g":
 				// Toggle graph view
+				if m.isGraphView {
+					m.leaveGraphView()
+					m.clearAttentionOverlay()
+					m.isBoardView = false
+					m.isActionableView = false
+					m.isHistoryView = false
+					return m, nil
+				}
+				listSelectedID := m.selectedListIssueID()
 				m.clearAttentionOverlay()
-				m.isGraphView = !m.isGraphView
+				m.isGraphView = true
 				m.isBoardView = false
 				m.isActionableView = false
 				m.isHistoryView = false
-				if m.isGraphView {
-					m.focused = focusGraph
-					m.refreshBoardAndGraphForCurrentFilter()
-				} else {
-					m.focused = focusList
+				m.focused = focusGraph
+				m.refreshBoardAndGraphForCurrentFilter()
+				if !m.graphView.SelectByID(listSelectedID) {
+					m.graphView.selectFirst()
 				}
 				return m, nil
 
@@ -5026,21 +5032,9 @@ func (m Model) handleGraphKeys(msg tea.KeyMsg) Model {
 		m.graphView.PageDown()
 	case "ctrl+u", "pgup":
 		m.graphView.PageUp()
-	case "H":
-		m.graphView.ScrollLeft()
-	case "L":
-		m.graphView.ScrollRight()
 	case "enter":
 		if selected := m.graphView.SelectedIssue(); selected != nil {
-			// Find and select in list
-			for i, item := range m.list.Items() {
-				if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selected.ID {
-					m.list.Select(i)
-					break
-				}
-			}
-			m.isGraphView = false
-			m.focused = focusList
+			m.leaveGraphView()
 			if m.isSplitView {
 				m.focused = focusDetail
 			} else {
@@ -6933,7 +6927,6 @@ func (m *Model) renderHelpOverlay() string {
 		{"hjkl", "Navigate nodes"},
 		{"/", "Search ID/title"},
 		{"n/N", "Next/prev match"},
-		{"H/L", "Scroll left/right"},
 		{"PgUp/Dn", "Scroll up/down"},
 		{"Enter", "Jump to issue"},
 		{"Esc", "Clear search / back"},
@@ -7745,26 +7738,15 @@ func (m *Model) renderFooter() string {
 		}
 	}
 	if m.focused == focusTree {
-		if m.tree.IsSearchActive() {
-			labelHint = lipgloss.NewStyle().
-				Foreground(ColorFooterHint).
-				Padding(0, 1).
-				Render("type:search • Enter:done • Escape:clear")
-		} else if m.tree.SearchQuery() != "" {
-			scopeHint := "minimal • v:subtrees"
-			if m.tree.searchSubtrees {
-				scopeHint = "subtrees • v:minimal"
-			}
-			labelHint = lipgloss.NewStyle().
-				Foreground(ColorFooterHint).
-				Padding(0, 1).
-				Render(fmt.Sprintf("%s • n/N:match • Esc:clear", scopeHint))
-		} else {
-			labelHint = lipgloss.NewStyle().
-				Foreground(ColorFooterHint).
-				Padding(0, 1).
-				Render("j/k:move • h/l:fold • o/c/r:filter • +/-:all • /:search • E:exit • ?:help")
-		}
+		labelHint = lipgloss.NewStyle().
+			Foreground(ColorFooterHint).
+			Padding(0, 1).
+			Render(renderCompactNavigationHint(compactNavigationState{
+				view:          compactNavigationTree,
+				searchInput:   m.tree.IsSearchActive(),
+				searchQuery:   m.tree.SearchQuery() != "",
+				searchSubtree: m.tree.searchSubtrees,
+			}))
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -8079,7 +8061,11 @@ func (m *Model) renderFooter() string {
 		}
 		keyHints = append(keyHints, keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")
 	} else if m.isGraphView {
-		keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("H/L")+" scroll", keyStyle.Render("⏎")+" view", keyStyle.Render("g")+" list")
+		keyHints = append(keyHints, renderCompactNavigationHint(compactNavigationState{
+			view:        compactNavigationGraph,
+			searchInput: m.graphView.IsSearchInputActive(),
+			searchQuery: m.graphView.HasSearchQuery(),
+		}))
 	} else if m.isBoardView {
 		keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("G")+" bottom", keyStyle.Render("⏎")+" view", keyStyle.Render("b")+" list")
 	} else if m.isActionableView {
@@ -8445,6 +8431,54 @@ func (m *Model) refreshBoardAndGraphForCurrentFilter() {
 			m.graphView.SetProjectedIssues(filteredIssues, m.issueMap, &filterIns)
 		}
 	}
+}
+
+func (m Model) selectedListIssueID() string {
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok {
+		return ""
+	}
+	return selected.Issue.ID
+}
+
+func (m *Model) selectListIssueByID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i, item := range m.list.VisibleItems() {
+		if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == id {
+			m.list.Select(i)
+			return true
+		}
+	}
+	for _, item := range m.list.Items() {
+		if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == id {
+			m.list.ResetFilter()
+			for i, visibleItem := range m.list.VisibleItems() {
+				if visibleIssue, ok := visibleItem.(IssueItem); ok && visibleIssue.Issue.ID == id {
+					m.list.Select(i)
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+func (m *Model) syncListSelectionFromGraph() {
+	if selected := m.graphView.SelectedIssue(); selected != nil {
+		m.selectListIssueByID(selected.ID)
+	}
+}
+
+func (m *Model) leaveGraphView() {
+	if !m.isGraphView {
+		return
+	}
+	m.syncListSelectionFromGraph()
+	m.isGraphView = false
+	m.focused = focusList
 }
 
 func (m *Model) applyFilter() {
@@ -9457,22 +9491,7 @@ func truncateString(s string, maxLen int) string {
 
 // GetTypeIconMD returns the emoji icon for an issue type (for markdown)
 func GetTypeIconMD(t string) string {
-	switch t {
-	case "bug":
-		return "🐛"
-	case "feature":
-		return "✨"
-	case "task":
-		return "🔧"
-	case "epic":
-		return "🚀" // Use rocket instead of mountain - VS-16 variation selector causes width issues
-	case "chore":
-		return "🧹"
-	case "todo":
-		return "📝"
-	default:
-		return "•"
-	}
+	return model.IssueTypeIcon(t)
 }
 
 // SetFilter sets the current filter and applies it (exposed for testing)

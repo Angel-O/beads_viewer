@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func newTreeTestTheme() Theme {
@@ -192,6 +193,128 @@ func TestTreeSearchScopeToggle(t *testing.T) {
 	tree.ClearSearch()
 	if tree.roots[0].Expanded || tree.roots[0].Children[0].Expanded {
 		t.Fatal("search scope toggles changed expansion choices")
+	}
+}
+
+func TestTreeStatusLegendWideRightColumn(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build([]model.Issue{
+		{ID: "tree-root", Title: "Tree root", Status: model.StatusOpen, IssueType: model.TypeEpic},
+		{ID: "tree-child", Title: "Tree child", Status: model.StatusBlocked, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{DependsOnID: "tree-root", Type: model.DepParentChild}}},
+	})
+	tree.SetSize(100, 20)
+
+	view := tree.View()
+	lines := strings.Split(view, "\n")
+	statusLine := -1
+	for i, line := range lines {
+		if strings.Contains(line, "STATUS") {
+			statusLine = i
+			break
+		}
+	}
+	if statusLine < 0 || strings.Index(lines[statusLine], "STATUS") <= 0 {
+		t.Fatalf("wide Tree legend is not in a right-side column: %q", view)
+	}
+	if !strings.Contains(view, "tree-root") || !strings.Contains(view, "other") {
+		t.Fatalf("wide Tree lost useful content or legend: %q", view)
+	}
+	if strings.Count(view, "STATUS") != 1 {
+		t.Fatalf("wide Tree rendered duplicate status legends: %q", view)
+	}
+	if got := lipgloss.Width(view); got > 100 || lipgloss.Height(view) > 20 {
+		t.Fatalf("wide Tree bounds = %dx%d, want <= 100x20: %q", got, lipgloss.Height(view), view)
+	}
+}
+
+func TestTreeStatusLegendBottomAlignsInTallViewport(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		width  int
+		height int
+		legend string
+	}{
+		{name: "wide", width: 100, height: 20, legend: renderStatusLegend(statusLegendWidth, newTreeTestTheme())},
+		{name: "narrow", width: 60, height: 20, legend: renderCompactStatusLegend(60, newTreeTestTheme())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := NewTreeModel(newTreeTestTheme())
+			tree.Build([]model.Issue{{ID: "short-tree", Title: "Short tree", Status: model.StatusOpen, IssueType: model.TypeTask}})
+			tree.SetSize(tc.width, tc.height)
+
+			view := tree.View()
+			lines := strings.Split(view, "\n")
+			statusLine := -1
+			for i, line := range lines {
+				if strings.Contains(line, "STATUS") {
+					statusLine = i
+					break
+				}
+			}
+			wantStatusLine := tc.height - treeLegendSpacerRows - lipgloss.Height(tc.legend)
+			if statusLine != wantStatusLine {
+				t.Fatalf("STATUS begins at row %d, want bottom-aligned row %d:\n%s", statusLine, wantStatusLine, view)
+			}
+			if got := strings.TrimSpace(lines[len(lines)-treeLegendSpacerRows]); got != "" {
+				t.Fatalf("Tree legend spacer = %q, want blank final body row:\n%s", got, view)
+			}
+			if !strings.Contains(view, "short-tree") || !strings.Contains(view, "other") {
+				t.Fatalf("short Tree lost useful content or shared legend: %q", view)
+			}
+			if got := lipgloss.Width(view); got > tc.width || lipgloss.Height(view) > tc.height {
+				t.Fatalf("Tree bounds = %dx%d, want <= %dx%d: %q", got, lipgloss.Height(view), tc.width, tc.height, view)
+			}
+		})
+	}
+}
+
+func TestTreeStatusLegendNarrowFallbackPreservesSelectionAndSearch(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build([]model.Issue{
+		{ID: "tree-a", Title: "Tree A", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "tree-b", Title: "Tree B", Status: model.StatusReview, IssueType: model.TypeTask},
+	})
+	tree.SetSize(60, 12)
+	if !tree.SelectByID("tree-b") {
+		t.Fatal("failed to select tree-b")
+	}
+	tree.StartSearch()
+	tree.UpdateSearchInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Tree B")})
+	selected := tree.GetSelectedID()
+	view := tree.View()
+
+	if selected != "tree-b" || tree.SearchQuery() != "Tree B" {
+		t.Fatalf("narrow Tree changed selection/search state: selected=%q query=%q", selected, tree.SearchQuery())
+	}
+	if !strings.Contains(view, "STATUS") || !strings.Contains(view, "other") || !strings.Contains(view, "tree-b") {
+		t.Fatalf("narrow Tree lost useful content or compact legend: %q", view)
+	}
+	if strings.Contains(view, "j/k: navigate") || strings.Count(view, "STATUS") != 1 {
+		t.Fatalf("narrow Tree contains duplicate/local navigation content: %q", view)
+	}
+	if got := lipgloss.Width(view); got > 60 || lipgloss.Height(view) > 12 {
+		t.Fatalf("narrow Tree bounds = %dx%d, want <= 60x12: %q", got, lipgloss.Height(view), view)
+	}
+}
+
+func TestTreeNarrowSelectedRowFitsWithStatusLegend(t *testing.T) {
+	tree := NewTreeModel(newTreeTestTheme())
+	tree.Build([]model.Issue{{
+		ID:        "selected-tree-node",
+		Title:     strings.Repeat("selected title ", 10),
+		Status:    model.StatusReview,
+		IssueType: model.TypeTask,
+	}})
+	tree.SetSize(40, 16)
+
+	view := tree.View()
+	if !strings.Contains(view, "STATUS") || !strings.Contains(view, "other") || !strings.Contains(view, "selected-tree-node") {
+		t.Fatalf("narrow Tree lost selected content or shared legend: %q", view)
+	}
+	for lineNumber, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(ansi.Strip(line)); got > 40 {
+			t.Fatalf("narrow Tree line %d width = %d, want <= 40: %q", lineNumber+1, got, line)
+		}
 	}
 }
 
@@ -1753,9 +1876,10 @@ func TestViewRendersOnlyVisible(t *testing.T) {
 	output := tree.View()
 	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 
-	// Header, eight issue rows, and the position indicator fit the allocation.
-	if len(lines) != 10 {
-		t.Errorf("expected 10 lines (header + 8 issues + indicator), got %d", len(lines))
+	// Header, seven issue rows, and the position indicator fit above the spacer.
+	// TrimSuffix removes the final blank spacer from the counted lines.
+	if len(lines) != 9 {
+		t.Errorf("expected 9 non-spacer lines (header + 7 issues + indicator), got %d", len(lines))
 	}
 
 	// Should contain node 50's content (issue-50)
@@ -1763,9 +1887,9 @@ func TestViewRendersOnlyVisible(t *testing.T) {
 		t.Error("first visible node (issue-50) not rendered")
 	}
 
-	// Should contain node 57's content (last visible)
-	if !strings.Contains(output, "issue-57") {
-		t.Error("last visible node (issue-57) not rendered")
+	// Should contain node 56's content (last visible)
+	if !strings.Contains(output, "issue-56") {
+		t.Error("last visible node (issue-56) not rendered")
 	}
 
 	// Should NOT contain node 0's content
@@ -1779,8 +1903,8 @@ func TestViewRendersOnlyVisible(t *testing.T) {
 	}
 
 	// Should NOT contain node 58's content (just after viewport)
-	if strings.Contains(output, "issue-58") {
-		t.Error("non-visible node (issue-58) incorrectly rendered")
+	if strings.Contains(output, "issue-57") {
+		t.Error("non-visible node (issue-57) incorrectly rendered")
 	}
 }
 
@@ -1801,16 +1925,31 @@ func TestViewHeaderAdjustedExactFit(t *testing.T) {
 	output := tree.View()
 	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 
-	if len(lines) != 10 || lines[0] != "Tree View" {
-		t.Fatalf("exact-fit Tree should use one header plus nine issue rows, got %d lines:\n%s", len(lines), output)
+	if len(lines) != 9 || !strings.HasPrefix(lines[0], "Tree View") {
+		t.Fatalf("exact-fit Tree should use header, seven nodes, and indicator above spacer, got %d lines:\n%s", len(lines), output)
 	}
-	if strings.Contains(output, " of 9]") {
-		t.Fatalf("exact-fit Tree should not render a position indicator:\n%s", output)
+	if !strings.Contains(output, "[1-7 of 9]") {
+		t.Fatalf("exact-fit Tree should render the bounded position indicator:\n%s", output)
 	}
-	for i := range issues {
-		if !strings.Contains(output, issues[i].ID) {
-			t.Errorf("exact-fit Tree missing %s", issues[i].ID)
-		}
+	if !strings.Contains(output, "exact-6") {
+		t.Fatalf("exact-fit Tree missing last visible node exact-6:\n%s", output)
+	}
+	if strings.Contains(output, "exact-7") || strings.Contains(output, "exact-8") {
+		t.Fatalf("exact-fit Tree rendered nodes beyond the bounded viewport:\n%s", output)
+	}
+}
+
+func TestTreeWideHeightOneOmitsSpacerAndStaysBounded(t *testing.T) {
+	tree := NewTreeModel(testTheme())
+	tree.Build([]model.Issue{{ID: "height-one", Title: "Height one", Status: model.StatusOpen, IssueType: model.TypeTask}})
+	tree.SetSize(100, 1)
+
+	view := tree.View()
+	if lipgloss.Height(view) > 1 || strings.Contains(view, "\n") {
+		t.Fatalf("height-one wide Tree exceeded one row or appended a spacer: %q", view)
+	}
+	if !strings.Contains(view, "Tree View") {
+		t.Fatalf("height-one wide Tree lost its header: %q", view)
 	}
 }
 
@@ -1895,14 +2034,14 @@ func TestViewAtEndOfList(t *testing.T) {
 
 	output := tree.View()
 
-	// Should contain the last issue
-	if !strings.Contains(output, "issue-99") {
-		t.Error("last issue (issue-99) not rendered")
+	// The spacer leaves seven visible nodes: issue-93 through issue-99.
+	for i := 93; i <= 99; i++ {
+		if !strings.Contains(output, fmt.Sprintf("issue-%02d", i)) {
+			t.Errorf("visible issue issue-%02d not rendered", i)
+		}
 	}
-
-	// Should contain issue-92 (eight issue rows from the end)
-	if !strings.Contains(output, "issue-92") {
-		t.Error("issue-92 not rendered")
+	if strings.Contains(output, "issue-92") {
+		t.Error("issue-92 should not be visible with the reserved spacer")
 	}
 
 	// Should NOT contain issue-91
@@ -1910,7 +2049,7 @@ func TestViewAtEndOfList(t *testing.T) {
 		t.Error("issue-91 incorrectly rendered")
 	}
 	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
-	if len(lines) != 10 || lines[0] != "Tree View" || !strings.Contains(lines[len(lines)-1], "[93-100 of 100]") {
+	if len(lines) != 9 || !strings.HasPrefix(lines[0], "Tree View") || !strings.Contains(lines[len(lines)-1], "[94-100 of 100]") {
 		t.Errorf("end-of-list rendering does not fit header/indicator contract:\n%s", output)
 	}
 }
@@ -1937,8 +2076,8 @@ func TestPositionIndicatorShown(t *testing.T) {
 
 	output := tree.View()
 
-	// Header and indicator leave eight rows for issues.
-	if !strings.Contains(output, "[1-8 of 100]") {
+	// Header, indicator, and spacer leave seven rows for issues.
+	if !strings.Contains(output, "[1-7 of 100]") {
 		t.Errorf("position indicator not found in output, got:\n%s", output)
 	}
 }
@@ -2014,7 +2153,7 @@ func TestPositionIndicatorAtEnd(t *testing.T) {
 	output := tree.View()
 
 	// Should contain "[93-100 of 100]"
-	if !strings.Contains(output, "[93-100 of 100]") {
+	if !strings.Contains(output, "[94-100 of 100]") {
 		t.Errorf("position indicator at end not found, got:\n%s", output)
 	}
 }

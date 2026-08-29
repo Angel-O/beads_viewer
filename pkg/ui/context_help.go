@@ -91,6 +91,49 @@ func RenderContextHelp(ctx Context, theme Theme, width, height int) string {
 	return modalStyle.Render(b.String())
 }
 
+type compactNavigationView uint8
+
+const (
+	compactNavigationGraph compactNavigationView = iota
+	compactNavigationTree
+)
+
+type compactNavigationState struct {
+	view          compactNavigationView
+	searchInput   bool
+	searchQuery   bool
+	searchSubtree bool
+}
+
+func renderCompactNavigationHint(state compactNavigationState) string {
+	if state.view == compactNavigationGraph {
+		if state.searchInput {
+			hint := "type:search • Enter:done • Esc:clear"
+			if state.searchQuery {
+				hint += " • n/N:match"
+			}
+			return hint
+		}
+		hint := "hjkl:nav • PgUp/Dn:page • /:search • Enter:view • g:list"
+		if state.searchQuery {
+			hint += " • n/N:match"
+		}
+		return hint
+	}
+
+	if state.searchInput {
+		return "type:search • Enter:done • Escape:clear"
+	}
+	if state.searchQuery {
+		scopeHint := "minimal • v:subtrees"
+		if state.searchSubtree {
+			scopeHint = "subtrees • v:minimal"
+		}
+		return scopeHint + " • n/N:match • Esc:clear"
+	}
+	return "j/k:move • h/l:fold • o/c/r:filter • +/-:all • /:search • E:exit • ?:help"
+}
+
 // =============================================================================
 // CONTEXT-SPECIFIC HELP CONTENT (bv-4swd)
 // =============================================================================
@@ -141,9 +184,8 @@ const contextHelpGraph = `## Graph View
 **Understanding the Graph**
 • Arrows point TO what's blocked
   (A → B means A blocks B)
-• Node size = priority
-• Color = status
-  Green=closed, Blue=in_progress`
+• The metrics panel lists every status glyph
+  used by the node list`
 
 const contextHelpTree = `## Tree View
 
@@ -157,6 +199,9 @@ const contextHelpTree = `## Tree View
 
 **Filtering**
   o/c/r     Open/closed/ready status filter
+
+**Understanding the Tree**
+• The status legend lists every glyph used by tree rows
 
 **Search**
   /         Search this Tree by ID or title

@@ -141,7 +141,7 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 
 	// Individual Issues
 	for idx, i := range issues {
-		typeIcon := getTypeEmoji(string(i.IssueType))
+		typeIcon := model.IssueTypeIcon(string(i.IssueType))
 		slug := issueSlugs[idx]
 		sb.WriteString(fmt.Sprintf("<a id=\"%s\"></a>\n\n", slug))
 		sb.WriteString(fmt.Sprintf("## %s\n\n", issueHeadingText(i)))
@@ -232,7 +232,7 @@ func GenerateMarkdown(issues []model.Issue, title string) (string, error) {
 }
 
 func issueHeadingText(i model.Issue) string {
-	typeIcon := getTypeEmoji(string(i.IssueType))
+	typeIcon := model.IssueTypeIcon(string(i.IssueType))
 	return fmt.Sprintf("%s %s %s", typeIcon, i.ID, i.Title)
 }
 
@@ -259,39 +259,11 @@ func createSlug(text string) string {
 }
 
 func getStatusEmoji(status string) string {
-	switch status {
-	case "open":
-		return "🟢"
-	case "in_progress":
-		return "🔵"
-	case "blocked":
-		return "🔴"
-	case "closed", "tombstone":
-		return "⚫"
-	default:
-		return "⚪"
-	}
+	return model.StatusIcon(status)
 }
 
 func isClosedLikeStatus(status model.Status) bool {
 	return status == model.StatusClosed || status == model.StatusTombstone
-}
-
-func getTypeEmoji(issueType string) string {
-	switch issueType {
-	case "bug":
-		return "🐛"
-	case "feature":
-		return "✨"
-	case "task":
-		return "📋"
-	case "epic":
-		return "🚀" // Use rocket instead of mountain - VS-16 variation selector causes width issues
-	case "chore":
-		return "🧹"
-	default:
-		return "•"
-	}
 }
 
 func getPriorityLabel(priority int) string {
@@ -648,7 +620,7 @@ func GeneratePriorityBriefFromTriageJSON(triageJSON []byte, config PriorityBrief
 
 		for i := 0; i < limit; i++ {
 			rec := triage.Recommendations[i]
-			typeIcon := getTypeIcon(rec.Type)
+			typeIcon := model.IssueTypeIcon(rec.Type)
 			reason := "-"
 			if len(rec.Reasons) > 0 {
 				reason = truncateString(rec.Reasons[0], 30)
@@ -774,22 +746,4 @@ func truncateString(s string, maxLen int) string {
 		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-1]) + "…"
-}
-
-// getTypeIcon returns a compact icon for issue type (for tables)
-func getTypeIcon(issueType string) string {
-	switch issueType {
-	case "bug":
-		return "🐛"
-	case "feature":
-		return "✨"
-	case "task":
-		return "📋"
-	case "epic":
-		return "🚀"
-	case "chore":
-		return "🧹"
-	default:
-		return "•"
-	}
 }

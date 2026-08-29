@@ -632,6 +632,26 @@ func TestSwimLaneModeByType(t *testing.T) {
 	if b.ColumnCount(3) != 1 {
 		t.Errorf("Expected 1 in Epic column, got %d", b.ColumnCount(3))
 	}
+
+	headerBoard := ui.NewBoardModel(nil, theme)
+	headerBoard.CycleSwimLaneMode()
+	headerBoard.CycleSwimLaneMode()
+	view := headerBoard.View(120, 24)
+	for _, issueType := range []model.IssueType{model.TypeBug, model.TypeFeature, model.TypeTask, model.TypeEpic} {
+		icon := model.IssueTypeIcon(string(issueType))
+		if !strings.Contains(view, icon) {
+			t.Errorf("Type board header missing canonical %s icon %q", issueType, icon)
+		}
+	}
+
+	statusBoard := ui.NewBoardModel(nil, theme)
+	statusView := statusBoard.View(120, 24)
+	for _, status := range []model.Status{model.StatusOpen, model.StatusInProgress, model.StatusBlocked, model.StatusClosed} {
+		icon := model.StatusIcon(string(status))
+		if !strings.Contains(statusView, icon) {
+			t.Errorf("Status board header missing canonical %s icon %q", status, icon)
+		}
+	}
 }
 
 // TestSwimLaneModeCycles verifies mode cycles back to Status after Type

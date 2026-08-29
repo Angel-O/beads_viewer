@@ -419,10 +419,20 @@ func (b *BoardModel) getColumnHeaders() ([]string, []string) {
 			[]string{"🔥", "⚡", "🔹", "💤"}
 	case SwimByType:
 		return []string{"BUG", "FEATURE", "TASK", "EPIC"},
-			[]string{"🐛", "✨", "📋", "🎯"}
+			[]string{
+				model.IssueTypeIcon(string(model.TypeBug)),
+				model.IssueTypeIcon(string(model.TypeFeature)),
+				model.IssueTypeIcon(string(model.TypeTask)),
+				model.IssueTypeIcon(string(model.TypeEpic)),
+			}
 	default: // SwimByStatus
 		return []string{"OPEN", "IN PROGRESS", "BLOCKED", "CLOSED"},
-			[]string{"📋", "🔄", "🚫", "✅"}
+			[]string{
+				model.StatusIcon(string(model.StatusOpen)),
+				model.StatusIcon(string(model.StatusInProgress)),
+				model.StatusIcon(string(model.StatusBlocked)),
+				model.StatusIcon(string(model.StatusClosed)),
+			}
 	}
 }
 

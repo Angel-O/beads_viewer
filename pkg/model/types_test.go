@@ -8,6 +8,55 @@ import (
 	"time"
 )
 
+func TestIssueTypeIcon(t *testing.T) {
+	tests := []struct {
+		issueType string
+		want      string
+	}{
+		{string(TypeBug), "🐛"},
+		{string(TypeFeature), "✨"},
+		{string(TypeTask), "🔧"},
+		{string(TypeEpic), "🚀"},
+		{string(TypeChore), "🧹"},
+		{"todo", "📝"},
+		{"unknown", "•"},
+		{"", "•"},
+	}
+	for _, tt := range tests {
+		if got := IssueTypeIcon(tt.issueType); got != tt.want {
+			t.Errorf("IssueTypeIcon(%q) = %q, want %q", tt.issueType, got, tt.want)
+		}
+	}
+}
+
+func TestStatusIcon(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{"open", string(StatusOpen), "🔵"},
+		{"in progress", string(StatusInProgress), "🟡"},
+		{"blocked", string(StatusBlocked), "🔴"},
+		{"deferred", string(StatusDeferred), "⏸️"},
+		{"draft alias", string(StatusDraft), "⏸️"},
+		{"pinned", string(StatusPinned), "📌"},
+		{"hooked", string(StatusHooked), "🪝"},
+		{"review", string(StatusReview), "👁️"},
+		{"closed", string(StatusClosed), "✅"},
+		{"tombstone alias", string(StatusTombstone), "✅"},
+		{"unknown", "unknown", "⚪"},
+		{"empty", "", "⚪"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := StatusIcon(tt.status); got != tt.want {
+				t.Errorf("StatusIcon(%q) = %q, want %q", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStatus_IsValid(t *testing.T) {
 	tests := []struct {
 		name   string
