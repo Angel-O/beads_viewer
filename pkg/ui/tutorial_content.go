@@ -238,7 +238,7 @@ func structuredTutorialPages() []StructuredTutorialPage {
 				Section{Title: "Priority Hints & Sorting"},
 				KeyTable{Bindings: []KeyHint{
 					{Key: "p", Desc: "Toggle priority hints"},
-					{Key: "s", Desc: "Cycle list sort mode"},
+					{Key: "s", Desc: "Cycle list sort (multi-context Hub data)"},
 				}},
 				Spacer{Lines: 1},
 				Tip{Text: "If everything is P0, nothing is P0"},
@@ -352,7 +352,7 @@ func structuredTutorialPages() []StructuredTutorialPage {
 				}},
 				Spacer{Lines: 1},
 				Section{Title: "Sorting"},
-				Paragraph{Text: "Press s to cycle: Default -> Created ascending -> Created descending -> Priority -> Updated -> Context + Created -> Context + Priority. Press S to apply the triage recipe."},
+				Paragraph{Text: "Press s to cycle: Default -> Created ascending -> Created descending -> Priority -> Updated -> Ctx + Created -> Ctx + Priority. The extra context modes are available when multiple Hub contexts are present. Press S to apply the triage recipe."},
 				Spacer{Lines: 1},
 				Tip{Text: "Filter to r (ready) and work top-down for daily triage"},
 			},

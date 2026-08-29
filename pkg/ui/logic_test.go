@@ -2,6 +2,7 @@ package ui
 
 import (
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +249,7 @@ func TestContextSortPriorityUsesPriorityThenIDWithinGroups(t *testing.T) {
 
 func TestContextSortModesAreReachableThroughSortCycle(t *testing.T) {
 	m := NewModel(nil, nil, "")
+	m.repositoryCatalog = contextSortCatalog()
 	want := []SortMode{
 		SortCreatedAsc, SortCreatedDesc, SortPriority, SortUpdated,
 		SortContextCreated, SortContextPriority, SortDefault,
@@ -259,9 +261,104 @@ func TestContextSortModesAreReachableThroughSortCycle(t *testing.T) {
 			t.Fatalf("sort cycle step %d = %v, want %v", i, m.sortMode, expected)
 		}
 	}
-	if SortContextCreated.String() != "Context + Created" || SortContextPriority.String() != "Context + Priority" {
+	if SortContextCreated.String() != "Ctx + Created" || SortContextPriority.String() != "Ctx + Priority" {
 		t.Fatalf("context sort labels = %q and %q", SortContextCreated, SortContextPriority)
 	}
+}
+
+func TestContextSortCycleSkipsModesWithoutMultipleHubContexts(t *testing.T) {
+	tests := []struct {
+		name    string
+		catalog model.RepositoryCatalog
+	}{
+		{name: "zero", catalog: nil},
+		{name: "one", catalog: contextSortCatalog()[:1]},
+		{name: "one hub plus workspace", catalog: append(contextSortCatalog()[:1], model.RepositoryCatalogEntry{ID: "workspace", Name: "Workspace", Kind: model.RepositoryIdentityWorkspacePrefix})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.repositoryCatalog = tt.catalog
+			for i := 0; i < 10; i++ {
+				updated, _ := m.Update(keyMsg("s"))
+				m = updated.(Model)
+				if isContextSortMode(m.sortMode) {
+					t.Fatalf("cycle step %d entered unavailable mode %v", i, m.sortMode)
+				}
+			}
+		})
+	}
+}
+
+func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = contextSortCatalog()
+
+	tests := []struct {
+		name  string
+		scope model.HubScope
+		want  bool
+	}{
+		{name: "all items with two contexts", scope: model.NewAllItemsHubScope(), want: true},
+		{name: "one selected context", scope: mustSelectedContextsScope(t, "ctx:alpha"), want: false},
+		{name: "two selected contexts", scope: mustSelectedContextsScope(t, "ctx:alpha", "ctx:zeta"), want: true},
+		{name: "selected context plus contextless", scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: false},
+		{name: "contextless", scope: model.NewContextlessHubScope(), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := m.SetHubScope(tt.scope); err != nil {
+				t.Fatal(err)
+			}
+			if got := m.contextSortModesAvailable(); got != tt.want {
+				t.Fatalf("context sort availability = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	m.workspaceMode = true
+	if m.contextSortModesAvailable() {
+		t.Fatal("workspace scope made context sort modes available")
+	}
+}
+
+func TestContextSortCycleSkipsModesOutsideActiveSelectedScope(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = contextSortCatalog()
+	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:alpha")); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		updated, _ := m.Update(keyMsg("s"))
+		m = updated.(Model)
+		if isContextSortMode(m.sortMode) {
+			t.Fatalf("cycle step %d entered unavailable mode %v", i, m.sortMode)
+		}
+	}
+	if strings.Contains(m.renderFooter(), "Ctx +") {
+		t.Fatal("context sort badge appeared in a single-context scope")
+	}
+}
+
+func mustSelectedContextsScope(t *testing.T, contexts ...string) model.HubScope {
+	t.Helper()
+	scope, err := model.NewSelectedContextsHubScope(contexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func mustSelectedContextsAndContextlessScope(t *testing.T, contexts ...string) model.HubScope {
+	t.Helper()
+	scope, err := model.NewSelectedContextsAndContextlessHubScope(contexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
 }
 
 func TestNewModel_RecipeSortDescendingTieBreaksByID(t *testing.T) {

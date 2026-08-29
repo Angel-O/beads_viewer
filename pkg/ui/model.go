@@ -126,9 +126,9 @@ func (s SortMode) String() string {
 	case SortUpdated:
 		return "Updated"
 	case SortContextCreated:
-		return "Context + Created"
+		return "Ctx + Created"
 	case SortContextPriority:
-		return "Context + Priority"
+		return "Ctx + Priority"
 	default:
 		return "Default"
 	}
@@ -1281,12 +1281,11 @@ func (m *Model) setListItemsPreservingFilter(items []list.Item) {
 		items[i] = item
 	}
 	m.list.SetItems(items)
-	if filterState == list.Unfiltered {
-		return
-	}
-	m.list.SetFilterText(filterText)
-	if filterState == list.Filtering {
-		m.list.SetFilterState(list.Filtering)
+	if filterState != list.Unfiltered {
+		m.list.SetFilterText(filterText)
+		if filterState == list.Filtering {
+			m.list.SetFilterState(list.Filtering)
+		}
 	}
 	for i, visible := range m.list.VisibleItems() {
 		item, ok := visible.(IssueItem)
@@ -1889,8 +1888,18 @@ func (m Model) contextlessBeadCount() int {
 
 func (m *Model) reloadRepositoryCatalog() error {
 	if m.workspaceMode {
+		beforeScope := m.HubScope()
+		beforeRepos := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
 		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		contextSortFallback := m.normalizeContextSortMode()
+		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		if scopeChanged {
+			m.refreshRepositoryCandidates()
+		} else if contextSortFallback && m.list.Width() > 0 {
+			m.sortListItems(m.list.Items())
+			m.updateViewportContent()
+		}
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
 		}
@@ -1909,8 +1918,18 @@ func (m *Model) reloadRepositoryCatalog() error {
 	if err != nil {
 		return err
 	}
+	beforeScope := m.HubScope()
+	beforeRepos := sortedRepoKeys(m.activeRepos)
 	m.repositoryCatalog = catalog
 	m.reconcileHubScopeCatalog()
+	contextSortFallback := m.normalizeContextSortMode()
+	scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+	if scopeChanged {
+		m.refreshRepositoryCandidates()
+	} else if contextSortFallback && m.list.Width() > 0 {
+		m.sortListItems(m.list.Items())
+		m.updateViewportContent()
+	}
 	m.repositoryCatalogReady = true
 	if m.showRepoPicker {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
@@ -1940,6 +1959,7 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		} else {
 			m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
 		}
+		contextSortFallback := m.normalizeContextSortMode()
 		m.repositoryCatalogReady = true
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
@@ -1947,8 +1967,12 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 		}
 		m.refreshRepositoryPresentation()
 		defaultApplied := m.applyDefaultRepositoryScope()
-		if !defaultApplied && (beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))) {
+		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		if !defaultApplied && scopeChanged {
 			m.refreshRepositoryCandidates()
+		} else if contextSortFallback && m.list.Width() > 0 {
+			m.sortListItems(m.list.Items())
+			m.updateViewportContent()
 		}
 	}
 	if recovered && (strings.HasPrefix(m.statusMsg, "Repository catalog load failed:") || strings.HasPrefix(m.statusMsg, "Repository catalog reload failed")) {
@@ -7081,7 +7105,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"r", "Ready (unblocked)"},
 		{"l", "Filter by label"},
 		{"I", "Exact issue-type picker"},
-		{"s", "Cycle sort (including context)"},
+		{"s", "Cycle sort (multi-context Hub data)"},
 		{"S", "Triage sort"},
 	}
 	if origin == focusTree {
@@ -8925,7 +8949,14 @@ func (m *Model) refreshListItemsPhase2() {
 
 // cycleSortMode cycles through available sort modes (bv-3ita)
 func (m *Model) cycleSortMode() {
-	m.sortMode = (m.sortMode + 1) % numSortModes
+	if m.contextSortModesAvailable() {
+		m.sortMode = (m.sortMode + 1) % numSortModes
+	} else {
+		if isContextSortMode(m.sortMode) {
+			m.sortMode = SortDefault
+		}
+		m.sortMode = (m.sortMode + 1) % SortContextCreated
+	}
 	m.applyFilter() // Re-apply filter with new sort
 }
 
@@ -9002,6 +9033,16 @@ func compareContextSortGroups(left, right contextSortGroup) int {
 	return 0
 }
 
+func (m *Model) sortListItems(items []list.Item) {
+	sortedItems := append([]list.Item(nil), items...)
+	issues := make([]model.Issue, len(sortedItems))
+	for i, item := range sortedItems {
+		issues[i] = item.(IssueItem).Issue
+	}
+	m.sortFilteredItems(sortedItems, issues)
+	m.setListItemsPreservingFilter(sortedItems)
+}
+
 // sortFilteredItems sorts the filtered items based on current sortMode (bv-3ita)
 func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 	if len(items) == 0 {
@@ -9014,7 +9055,7 @@ func (m *Model) sortFilteredItems(items []list.Item, issues []model.Issue) {
 		indices[i] = i
 	}
 	contextGroups := make([]contextSortGroup, len(items))
-	if m.sortMode == SortContextCreated || m.sortMode == SortContextPriority {
+	if isContextSortMode(m.sortMode) {
 		for i := range items {
 			contextGroups[i] = m.contextSortGroupForIssue(items[i].(IssueItem).Issue)
 		}
@@ -9676,9 +9717,9 @@ func (m *Model) updateViewportContent() {
 
 	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), nil)
 	if len(presentation.Names) > 0 {
-		sb.WriteString(fmt.Sprintf("**Repositories:** %s\n\n", strings.Join(presentation.Names, ", ")))
+		sb.WriteString(fmt.Sprintf("**Context:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && presentation.ID == contextlessRepositoryID {
-		sb.WriteString("**Repositories:** no-context\n\n")
+		sb.WriteString("**Context:** no-context\n\n")
 	}
 
 	// Labels (bv-f103 fix: display labels in detail view)
@@ -9946,6 +9987,7 @@ func (m *Model) EnableWorkspaceMode(info WorkspaceInfo) {
 	m.workspaceRepos = append([]WorkspaceRepositoryInfo(nil), info.Repositories...)
 	m.activeRepos = nil // nil means all repos are active
 	m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
+	m.normalizeContextSortMode()
 	m.refreshRepositoryCandidates()
 
 	if info.RepoCount > 0 {

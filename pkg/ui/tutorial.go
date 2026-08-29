@@ -1376,7 +1376,7 @@ This surfaces issues that are both important AND blocking other work.
 | Key | Action |
 |-----|--------|
 | **p** | Toggle priority hints |
-| **s** | Cycle list sort mode |
+| **s** | Cycle list sort mode (multi-context Hub data adds context modes) |
 | **S** | Apply triage sort |
 
 Or from the command line:

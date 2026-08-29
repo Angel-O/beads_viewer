@@ -26,6 +26,45 @@ type hubRelationshipEvidence struct {
 
 const contextlessRepositoryID = "no-context"
 
+func isContextSortMode(mode SortMode) bool {
+	return mode == SortContextCreated || mode == SortContextPriority
+}
+
+func (m Model) contextSortModesAvailable() bool {
+	if m.workspaceMode || !m.usesHubScope() {
+		return false
+	}
+	switch m.hubScope.Mode {
+	case model.HubScopeContextless:
+		return false
+	case model.HubScopeSelectedContexts:
+		seen := make(map[string]struct{}, len(m.hubScope.Contexts))
+		for _, contextID := range m.hubScope.Contexts {
+			seen[contextID] = struct{}{}
+		}
+		return len(seen) >= 2
+	}
+
+	seen := make(map[string]struct{}, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind != model.RepositoryIdentityHubContext {
+			continue
+		}
+		if _, exists := seen[repository.ID]; !exists {
+			seen[repository.ID] = struct{}{}
+		}
+	}
+	return len(seen) >= 2
+}
+
+func (m *Model) normalizeContextSortMode() bool {
+	if !isContextSortMode(m.sortMode) || m.contextSortModesAvailable() {
+		return false
+	}
+	m.sortMode = SortDefault
+	return true
+}
+
 func isHubContextLabel(label string) bool {
 	return strings.HasPrefix(label, "ctx:")
 }
@@ -283,37 +322,10 @@ func (m *Model) refreshRepositoryPresentation() {
 	hubMode := m.hubRepositoryPresentation()
 	if m.list.Width() > 0 {
 		items := m.list.Items()
-		contextSort := m.sortMode == SortContextCreated || m.sortMode == SortContextPriority
-		selectedID := ""
-		if contextSort {
-			if selected, ok := m.list.SelectedItem().(IssueItem); ok {
-				selectedID = selected.Issue.ID
-			}
-		}
-		for i := range items {
-			item, ok := items[i].(IssueItem)
-			if !ok {
-				continue
-			}
-			m.decorateIssueItem(&item)
-			items[i] = item
-		}
-		if contextSort {
-			issues := make([]model.Issue, len(items))
-			for i, item := range items {
-				issues[i] = item.(IssueItem).Issue
-			}
-			m.sortFilteredItems(items, issues)
-		}
-		m.setListItemsPreservingFilter(items)
-		if selectedID != "" {
-			for i, visible := range m.list.VisibleItems() {
-				item, ok := visible.(IssueItem)
-				if ok && item.Issue.ID == selectedID {
-					m.list.Select(i)
-					break
-				}
-			}
+		if isContextSortMode(m.sortMode) {
+			m.sortListItems(items)
+		} else {
+			m.setListItemsPreservingFilter(items)
 		}
 		m.updateListDelegate()
 		m.updateViewportContent()
@@ -479,6 +491,7 @@ func (m *Model) applyDefaultRepositoryScope() bool {
 			return false
 		}
 		m.hubScope = scope
+		m.normalizeContextSortMode()
 		m.refreshRepositoryCandidates()
 		return true
 	}
@@ -573,6 +586,7 @@ func (m *Model) SetHubScope(scope model.HubScope) error {
 			m.activeRepos[contextID] = true
 		}
 	}
+	m.normalizeContextSortMode()
 	m.refreshRepositoryCandidates()
 	return nil
 }
