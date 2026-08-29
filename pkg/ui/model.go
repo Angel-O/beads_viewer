@@ -8636,13 +8636,8 @@ func (m *Model) matchesFilter(issue model.Issue, filter string) bool {
 			issue.Status == model.StatusDraft || issue.Status == model.StatusDeferred {
 			return false
 		}
-		for _, dep := range issue.Dependencies {
-			if dep == nil || !dep.Type.IsBlocking() {
-				continue
-			}
-			if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-				return false
-			}
+		if issueHasUnresolvedBlockingDependency(issue, m.issueMap) {
+			return false
 		}
 		return true
 	default:
@@ -9066,21 +9061,15 @@ func (m *Model) applyRecipe(r *recipe.Recipe) {
 			}
 		}
 
+		// Apply HasBlockers filter (unresolved blocking dependencies only).
+		if include && r.Filters.HasBlockers != nil {
+			include = *r.Filters.HasBlockers == issueHasUnresolvedBlockingDependency(issue, m.issueMap)
+		}
+
 		// Apply actionable filter (no open blockers, not scheduler-deferred;
 		// issue #191 parity with `br ready`)
 		if include && r.Filters.Actionable != nil && *r.Filters.Actionable {
-			// Check if issue is blocked
-			isBlocked := issue.IsDeferredAt(time.Now())
-			for _, dep := range issue.Dependencies {
-				if dep == nil || !dep.Type.IsBlocking() {
-					continue
-				}
-				if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-					isBlocked = true
-					break
-				}
-			}
-			include = !isBlocked
+			include = !issue.IsDeferredAt(time.Now()) && !issueHasUnresolvedBlockingDependency(issue, m.issueMap)
 		}
 
 		if include {

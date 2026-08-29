@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -488,6 +489,42 @@ func TestSnapshotBuilder_WithRecipe_FiltersListItems(t *testing.T) {
 	}
 	if got := snapshot.ListItems[0].Issue.ID; got != "open-1" {
 		t.Fatalf("Expected open-1, got %s", got)
+	}
+}
+
+func TestSnapshotBuilder_WithRecipe_HasBlockersFilter(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "root", Status: model.StatusOpen},
+		{ID: "unresolved", Status: model.StatusOpen, Dependencies: []*model.Dependency{
+			{DependsOnID: "root", Type: model.DepBlocks},
+		}},
+		{ID: "closed-dependency", Status: model.StatusOpen, Dependencies: []*model.Dependency{
+			{DependsOnID: "closed-blocker", Type: model.DepBlocks},
+		}},
+		{ID: "closed-blocker", Status: model.StatusClosed},
+		{ID: "blocked-status-only", Status: model.StatusBlocked},
+	}
+
+	for _, test := range []struct {
+		name  string
+		want  []string
+		value bool
+	}{
+		{name: "true finds unresolved dependencies", value: true, want: []string{"unresolved"}},
+		{name: "false excludes unresolved dependencies", value: false, want: []string{"root", "closed-dependency", "closed-blocker", "blocked-status-only"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := &recipe.Recipe{Name: "blocker-filter", Filters: recipe.FilterConfig{HasBlockers: &test.value}}
+			snapshot := NewSnapshotBuilder(copyIssues(issues)).WithRecipe(r).Build()
+			got := make([]string, 0, len(snapshot.ListItems))
+			for _, item := range snapshot.ListItems {
+				got = append(got, item.Issue.ID)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), test.want...)
+			sort.Strings(want)
+			requireIssueIDs(t, got, want...)
+		})
 	}
 }
 

@@ -387,6 +387,16 @@ func TestRepositoryScopeComposesAfterScopeAndKeepsHiddenBlockerTruth(t *testing.
 	m.setActiveRecipe(r)
 	m.applyRecipe(r)
 	requireIssueIDs(t, visibleIssueIDs(m))
+
+	blocked := &recipe.Recipe{Name: "blocked", Filters: recipe.FilterConfig{HasBlockers: boolPointer(true)}}
+	m.setActiveRecipe(blocked)
+	m.applyRecipe(blocked)
+	requireIssueIDs(t, visibleIssueIDs(m), "visible")
+
+	unblocked := &recipe.Recipe{Name: "unblocked", Filters: recipe.FilterConfig{HasBlockers: boolPointer(false)}}
+	m.setActiveRecipe(unblocked)
+	m.applyRecipe(unblocked)
+	requireIssueIDs(t, visibleIssueIDs(m))
 }
 
 func TestHubFocusedRelationshipBoundaryEvidence(t *testing.T) {

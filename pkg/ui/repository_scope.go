@@ -617,17 +617,7 @@ func (m *Model) recomputeRepositoryCounts() {
 			m.countBlocked++
 			continue
 		}
-		blocked := false
-		for _, dep := range issue.Dependencies {
-			if dep == nil || !dep.Type.IsBlocking() {
-				continue
-			}
-			if blocker, exists := m.issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-				blocked = true
-				break
-			}
-		}
-		if !blocked {
+		if !issueHasUnresolvedBlockingDependency(*issue, m.issueMap) {
 			m.countReady++
 		}
 	}
