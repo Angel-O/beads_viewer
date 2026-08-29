@@ -1195,7 +1195,7 @@ func (m *Model) shouldShowSearchScores() bool {
 	return true
 }
 
-func (m *Model) updateListDelegate() {
+func (m Model) issueListDelegate() IssueDelegate {
 	delegate := IssueDelegate{
 		Theme:             m.theme,
 		ShowPriorityHints: m.showPriorityHints,
@@ -1205,7 +1205,13 @@ func (m *Model) updateListDelegate() {
 		ShowSearchScores:  m.shouldShowSearchScores(),
 	}
 	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidths(delegate)
-	delegate.triageSlotWidth = delegate.triageSlotWidthFor(m.list.Items(), m.list.Width())
+	delegate.triageSlotWidth = delegate.triageSlotWidthFor(m.list.VisibleItems(), m.list.Width())
+	delegate.columns = delegate.issueListColumnsFor(m.list.VisibleItems(), m.list.Width())
+	return delegate
+}
+
+func (m *Model) updateListDelegate() {
+	delegate := m.issueListDelegate()
 	m.list.SetDelegate(delegate)
 }
 
@@ -1551,6 +1557,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 	delegate.triageSlotWidth = delegate.triageSlotWidthFor(items, l.Width())
+	delegate.columns = delegate.issueListColumnsFor(items, l.Width())
 	l.SetDelegate(delegate)
 
 	// Initialize recipe loader
@@ -6630,6 +6637,16 @@ func (m Model) renderQuitConfirm() string {
 	)
 }
 
+func (m Model) renderIssueListHeader() string {
+	delegate := m.issueListDelegate()
+	headerStyle := m.theme.Renderer.NewStyle().
+		Background(m.theme.Primary).
+		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).
+		Bold(true).
+		Inline(true)
+	return headerStyle.Render(renderIssueListHeader(delegate.columns))
+}
+
 func (m Model) renderListWithHeader() string {
 	t := m.theme
 
@@ -6647,27 +6664,9 @@ func (m Model) renderListWithHeader() string {
 	// list itself was already sized to mainContentWidth() in applyContentSizing.
 	bodyWidth := m.mainContentWidth()
 
-	// Render column header.
-	//
-	// Clamp to a single line (Height/MaxHeight 1): the header strings below are
-	// ~65 columns wide, so on a narrow terminal (bodyWidth-2 < header width) they
-	// would otherwise wrap to a 2nd line, misaligning columns AND shifting every
-	// list row down by a line, which broke the click->row mapping in
-	// handleLeftClick (bv-164). See listChromeLines().
-	headerStyle := t.Renderer.NewStyle().
-		Background(t.Primary).
-		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).
-		Bold(true).
-		Width(bodyWidth - 2).
-		Height(1).
-		MaxHeight(1)
-
-	headerText := "  TYPE PRI STATUS      ID                                   TITLE"
-	if m.workspaceMode {
-		// Account for repo badges like [API] shown in workspace mode.
-		headerText = "  REPO TYPE PRI STATUS      ID                               TITLE"
-	}
-	header := headerStyle.Render(headerText)
+	// The header uses the same display-cell contract as IssueDelegate rows and
+	// is clamped to one line so narrow panes keep stable click geometry.
+	header := m.renderIssueListHeader()
 
 	// Page info
 	totalItems := len(m.list.Items())
@@ -6719,11 +6718,10 @@ func (m Model) renderListWithHeader() string {
 	// Header (1) + List + PageLine (1) must fit in bodyHeight
 	content := lipgloss.JoinVertical(lipgloss.Left, headerLine, listView, pageLine)
 
-	// Force exact width/height to prevent overflow. Width is the reserved body
-	// width (mainContentWidth) so the appended shortcuts sidebar fits within the
-	// terminal rather than overflowing it (#168).
+	// Force the body height without re-wrapping the already cell-positioned list
+	// header and rows. The list and page line are sized to the reserved body
+	// width above, so the appended shortcuts sidebar still fits (#168).
 	return lipgloss.NewStyle().
-		Width(bodyWidth).
 		Height(bodyHeight).
 		MaxHeight(bodyHeight).
 		Render(content)
@@ -6746,23 +6744,9 @@ func (m Model) renderSplitView() string {
 	listInnerWidth := m.list.Width()
 	panelHeight := m.height - 1
 
-	// Create header row for list.
-	//
-	// Clamp to a single line (Height/MaxHeight 1): the header string is ~51
-	// columns wide, so on a narrow list pane (listInnerWidth < ~51) it would
-	// otherwise wrap to a 2nd line. That wrap both misaligns the columns AND
-	// shifts every list row down by a line, breaking the click->row mapping in
-	// handleLeftClick (bv-164). Clamping keeps the chrome above the first row at
-	// a constant height regardless of width; see listChromeLines().
-	headerStyle := t.Renderer.NewStyle().
-		Background(t.Primary).
-		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).
-		Bold(true).
-		Width(listInnerWidth).
-		Height(1).
-		MaxHeight(1)
-
-	header := headerStyle.Render("  TYPE PRI STATUS      ID                     TITLE")
+	// Keep the split header on the same display-cell contract as single-column
+	// rows. Height/MaxHeight below preserve one-line narrow-pane geometry.
+	header := m.renderIssueListHeader()
 
 	// Page info for list
 	totalItems := len(m.list.Items())

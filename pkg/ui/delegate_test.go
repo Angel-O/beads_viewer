@@ -186,7 +186,7 @@ func TestIssueDelegate_FixedTypeAndTriageSlotsAlignColumns(t *testing.T) {
 	l.SetWidth(120)
 	delegate.triageSlotWidth = delegate.triageSlotWidthFor(listItems, l.Width())
 
-	var statusColumn, idColumn int
+	var statusColumn, idColumn, titleColumn int
 	wantIndicators := []string{"", "⭐", "🔓12", "↪3", ""}
 	for index, item := range items {
 		var buf bytes.Buffer
@@ -206,11 +206,11 @@ func TestIssueDelegate_FixedTypeAndTriageSlotsAlignColumns(t *testing.T) {
 		gotID := lipgloss.Width(row[:idAt])
 		gotTitle := lipgloss.Width(row[:titleAt])
 		if index == 0 {
-			statusColumn, idColumn = gotStatus, gotID
+			statusColumn, idColumn, titleColumn = gotStatus, gotID, gotTitle
 			continue
 		}
-		if gotStatus != statusColumn || gotID != idColumn || gotTitle-gotID != lipgloss.Width(item.Issue.ID)+1 {
-			t.Fatalf("row %d columns = status:%d id:%d title:%d, want status:%d id:%d title offset:%d; row %q", index, gotStatus, gotID, gotTitle, statusColumn, idColumn, lipgloss.Width(item.Issue.ID)+1, row)
+		if gotStatus != statusColumn || gotID != idColumn || gotTitle != titleColumn {
+			t.Fatalf("row %d columns = status:%d id:%d title:%d, want status:%d id:%d title:%d; row %q", index, gotStatus, gotID, gotTitle, statusColumn, idColumn, titleColumn, row)
 		}
 	}
 }
@@ -272,12 +272,15 @@ func TestIssueDelegate_NarrowTriageSlotsPreserveRowBudget(t *testing.T) {
 		statusAt := strings.Index(row, "OPEN")
 		idAt := strings.Index(row, item.Issue.ID)
 		titleAt := strings.Index(row, item.Issue.Title)
-		if statusAt < 0 || idAt < 0 || titleAt < 0 {
-			t.Fatalf("row %d omitted status, ID, or title marker: %q", index, row)
+		if statusAt < 0 || idAt < 0 {
+			t.Fatalf("row %d omitted status or ID marker: %q", index, row)
 		}
 		gotStatus := lipgloss.Width(row[:statusAt])
 		gotID := lipgloss.Width(row[:idAt])
-		gotTitle := lipgloss.Width(row[:titleAt])
+		gotTitle := -1
+		if titleAt >= 0 {
+			gotTitle = lipgloss.Width(row[:titleAt])
+		}
 		if index == 0 {
 			statusColumn, idColumn, titleColumn = gotStatus, gotID, gotTitle
 			continue
@@ -354,12 +357,15 @@ func TestIssueDelegate_NarrowSharedSlotAccountsForOptionalPrefix(t *testing.T) {
 		statusAt := strings.Index(row, "OPEN")
 		idAt := strings.Index(row, item.Issue.ID)
 		titleAt := strings.Index(row, item.Issue.Title)
-		if statusAt < 0 || idAt < 0 || titleAt < 0 {
-			t.Fatalf("row %d omitted status, ID, or title marker: %q", index, row)
+		if statusAt < 0 || idAt < 0 {
+			t.Fatalf("row %d omitted status or ID marker: %q", index, row)
 		}
 		gotStatus := lipgloss.Width(row[:statusAt])
 		gotID := lipgloss.Width(row[:idAt])
-		gotTitle := lipgloss.Width(row[:titleAt])
+		gotTitle := -1
+		if titleAt >= 0 {
+			gotTitle = lipgloss.Width(row[:titleAt])
+		}
 		if index == 0 {
 			statusColumn, idColumn, titleColumn = gotStatus, gotID, gotTitle
 			continue
