@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"sort"
 	"testing"
 	"time"
 
@@ -92,6 +93,54 @@ func TestApplyRecipe_ActionableFilter(t *testing.T) {
 	}
 	if filtered[0].ID != "A" {
 		t.Errorf("Expected A (actionable), got %s", filtered[0].ID)
+	}
+}
+
+func TestRecipe_HasBlockersFilterLiveAndActiveView(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "root", Status: model.StatusOpen},
+		{ID: "unresolved", Status: model.StatusOpen, Dependencies: []*model.Dependency{
+			{DependsOnID: "root", Type: model.DepBlocks},
+		}},
+		{ID: "closed-dependency", Status: model.StatusOpen, Dependencies: []*model.Dependency{
+			{DependsOnID: "closed-blocker", Type: model.DepBlocks},
+		}},
+		{ID: "closed-blocker", Status: model.StatusClosed},
+		{ID: "blocked-status-only", Status: model.StatusBlocked},
+	}
+	m := NewModel(issues, nil, "")
+
+	for _, test := range []struct {
+		name  string
+		want  []string
+		value bool
+	}{
+		{name: "true finds unresolved dependencies", value: true, want: []string{"unresolved"}},
+		{name: "false excludes unresolved dependencies", value: false, want: []string{"root", "closed-dependency", "closed-blocker", "blocked-status-only"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := &recipe.Recipe{Name: "blocker-filter", Filters: recipe.FilterConfig{HasBlockers: &test.value}}
+			m.setActiveRecipe(r)
+			m.applyRecipe(r)
+			filtered := m.FilteredIssues()
+			got := make([]string, 0, len(filtered))
+			for _, issue := range filtered {
+				got = append(got, issue.ID)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), test.want...)
+			sort.Strings(want)
+			requireIssueIDs(t, got, want...)
+
+			m.currentFilter = "recipe:blocker-filter"
+			activeView := m.filteredIssuesForActiveView()
+			got = got[:0]
+			for _, issue := range activeView {
+				got = append(got, issue.ID)
+			}
+			sort.Strings(got)
+			requireIssueIDs(t, got, want...)
+		})
 	}
 }
 

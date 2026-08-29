@@ -57,6 +57,18 @@ func isClosedLikeStatus(status model.Status) bool {
 	return status == model.StatusClosed || status == model.StatusTombstone
 }
 
+func issueHasUnresolvedBlockingDependency(issue model.Issue, issueMap map[string]*model.Issue) bool {
+	for _, dep := range issue.Dependencies {
+		if dep == nil || !dep.Type.IsBlocking() {
+			continue
+		}
+		if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
+			return true
+		}
+	}
+	return false
+}
+
 type snapshotBuildConfig struct {
 	PrecomputeTriage      bool
 	PrecomputeTree        bool
@@ -706,19 +718,19 @@ func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *
 		}
 	}
 
+	// HasBlockers filter (true = at least one unresolved blocking dependency).
+	if r.Filters.HasBlockers != nil && *r.Filters.HasBlockers != issueHasUnresolvedBlockingDependency(issue, issueMap) {
+		return false
+	}
+
 	// Actionable filter (true = no open blockers and not scheduler-deferred;
 	// issue #191 parity with `br ready`)
 	if r.Filters.Actionable != nil && *r.Filters.Actionable {
 		if issue.IsDeferredAt(time.Now()) {
 			return false
 		}
-		for _, dep := range issue.Dependencies {
-			if dep == nil || !dep.Type.IsBlocking() {
-				continue
-			}
-			if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-				return false
-			}
+		if issueHasUnresolvedBlockingDependency(issue, issueMap) {
+			return false
 		}
 	}
 
