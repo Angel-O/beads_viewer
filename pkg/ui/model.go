@@ -5674,9 +5674,7 @@ func (m Model) handleTypePickerKeys(msg tea.KeyMsg) Model {
 	case " ", "space":
 		m.typePicker.ToggleSelected()
 	case "a":
-		m.typePicker.SelectAll()
-	case "n":
-		m.typePicker.ClearSelection()
+		m.typePicker.ToggleAll()
 	case "esc", "q", "I":
 		m.showTypePicker = false
 		m.focused = focusList
@@ -8062,7 +8060,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showRepoPicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("/")+" search", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showTypePicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all", keyStyle.Render("n")+" reset", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
