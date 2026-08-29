@@ -1219,16 +1219,16 @@ func TestVisibleRange(t *testing.T) {
 	}{
 		{"empty tree", 0, 10, 0, 0, 0},
 		{"fewer nodes than viewport", 5, 10, 0, 0, 5},
-		{"header-adjusted exact fit", 9, 10, 0, 0, 9},
-		{"one over exact fit reserves indicator", 10, 10, 0, 0, 8},
-		{"offset at start", 100, 10, 0, 0, 8},
-		{"offset in middle", 100, 10, 45, 45, 53},
-		{"offset near end", 100, 10, 90, 90, 98},
-		{"offset past end clamps", 100, 10, 95, 92, 100},
+		{"header and spacer exact fit", 9, 10, 0, 0, 7},
+		{"one over exact fit reserves indicator", 10, 10, 0, 0, 7},
+		{"offset at start", 100, 10, 0, 0, 7},
+		{"offset in middle", 100, 10, 45, 45, 52},
+		{"offset near end", 100, 10, 90, 90, 97},
+		{"offset past end clamps", 100, 10, 95, 93, 100},
 		{"zero height uses default 20", 100, 0, 0, 0, 20},
 		{"negative height uses default 20", 100, -5, 0, 0, 20},
 		{"single node", 1, 10, 0, 0, 1},
-		{"negative offset clamps to start", 100, 10, -5, 0, 8},
+		{"negative offset clamps to start", 100, 10, -5, 0, 7},
 		{"negative offset small list", 5, 10, -5, 0, 5},
 	}
 
@@ -1282,8 +1282,8 @@ func TestVisibleRangePerformance(t *testing.T) {
 	// Should complete instantly (O(1))
 	start, end := tree.visibleRange()
 
-	if start != 50000 || end != 50018 {
-		t.Errorf("visibleRange() = (%d, %d), want (50000, 50018)", start, end)
+	if start != 50000 || end != 50017 {
+		t.Errorf("visibleRange() = (%d, %d), want (50000, 50017)", start, end)
 	}
 }
 
@@ -1709,17 +1709,17 @@ func TestEnsureCursorVisible(t *testing.T) {
 	}{
 		{"cursor at start, offset at start", 100, 10, 0, 0, 0},
 		{"cursor in visible range", 100, 10, 5, 0, 0},
-		{"cursor below viewport - scroll down", 100, 10, 15, 0, 8},
+		{"cursor below viewport - scroll down", 100, 10, 15, 0, 9},
 		{"cursor above viewport - scroll up", 100, 10, 0, 10, 0},
-		{"cursor at viewport bottom edge", 100, 10, 7, 0, 0},
-		{"cursor just past viewport bottom", 100, 10, 8, 0, 1},
-		{"cursor at end of list", 100, 10, 99, 0, 92},
+		{"cursor at viewport bottom edge", 100, 10, 7, 0, 1},
+		{"cursor just past viewport bottom", 100, 10, 8, 0, 2},
+		{"cursor at end of list", 100, 10, 99, 0, 93},
 		{"offset already correct", 100, 10, 50, 45, 45},
 		{"empty list", 0, 10, 0, 0, 0},
 		{"single node", 1, 10, 0, 0, 0},
 		{"fewer nodes than viewport", 5, 10, 3, 0, 0},
 		{"zero height uses default 20", 100, 0, 25, 0, 6},
-		{"large cursor with max offset clamping", 100, 10, 95, 0, 88},
+		{"large cursor with max offset clamping", 100, 10, 95, 0, 89},
 	}
 
 	for _, tt := range tests {
