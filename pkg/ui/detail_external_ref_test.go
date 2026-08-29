@@ -182,6 +182,9 @@ func TestIssueDetailSectionOrderOmitsOptionalSections(t *testing.T) {
 	}}, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 32, Height: 200})
 	m = updated.(Model)
+	if m.renderer.width != m.viewport.Width {
+		t.Fatalf("narrow detail renderer width = %d, viewport width = %d", m.renderer.width, m.viewport.Width)
+	}
 	m.list.SetItems([]list.Item{IssueItem{Issue: m.issues[0]}})
 	m.list.Select(0)
 	m.updateViewportContent()
