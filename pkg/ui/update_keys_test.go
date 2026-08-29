@@ -7,6 +7,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -328,6 +329,45 @@ func TestGraphTransitionSynchronizesListSelection(t *testing.T) {
 	m = updated.(Model)
 	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "target" {
 		t.Fatalf("List -> Graph selection = %#v, want target", selected)
+	}
+}
+
+func TestTreeTransitionSynchronizesListSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		selectedID string
+		wantID     string
+		wantOffset int
+	}{
+		{name: "selected matching bead", selectedID: "tree-b-other", wantID: "tree-b-other", wantOffset: 1},
+		{name: "bead omitted by tree projection", selectedID: "tree-c-cycle", wantID: "tree-a-target"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{
+				{ID: "tree-a-target", Title: "Target issue", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeTask, Labels: []string{"focus"}},
+				{ID: "tree-b-other", Title: "Other issue", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, Labels: []string{"focus"}},
+				{ID: "tree-c-cycle", Title: "Cycle issue", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, Labels: []string{"focus"}, Dependencies: []*model.Dependency{{IssueID: "tree-c-cycle", DependsOnID: "tree-d-cycle", Type: model.DepParentChild}}},
+				{ID: "tree-d-cycle", Title: "Cycle issue", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, Labels: []string{"focus"}, Dependencies: []*model.Dependency{{IssueID: "tree-d-cycle", DependsOnID: "tree-c-cycle", Type: model.DepParentChild}}},
+			}, nil, "")
+			m.width, m.height = 120, 4
+			r := &recipe.Recipe{Name: "focused", Filters: recipe.FilterConfig{Tags: []string{"focus"}}}
+			m.setActiveRecipe(r)
+			m.applyRecipe(r)
+			selectListIssueForTest(t, &m, tc.selectedID)
+
+			updated, _ := m.Update(keyMsg("E"))
+			m = updated.(Model)
+
+			if m.focused != focusTree {
+				t.Fatalf("List -> Tree focus=%v, want tree", m.focused)
+			}
+			if selected := m.tree.GetSelectedID(); selected != tc.wantID {
+				t.Fatalf("List -> Tree selection = %q, want %q", selected, tc.wantID)
+			}
+			if offset := m.tree.GetViewportOffset(); offset != tc.wantOffset {
+				t.Fatalf("List -> Tree viewport offset = %d, want %d", offset, tc.wantOffset)
+			}
+		})
 	}
 }
 

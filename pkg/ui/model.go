@@ -4556,12 +4556,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.focused == focusTree {
 					m.focused = focusList
 				} else {
+					listSelectedID := ""
+					if m.focused == focusList {
+						listSelectedID = m.selectedListIssueID()
+					}
 					m.isGraphView = false
 					m.isBoardView = false
 					m.isActionableView = false
 					m.isHistoryView = false
 					m.rebuildRepositoryTree()
 					m.tree.SetSize(m.mainContentWidth(), m.height-1)
+					if listSelectedID != "" && m.tree.SelectByID(listSelectedID) {
+						m.tree.ensureCursorVisible()
+					}
 					m.focused = focusTree
 				}
 				return m, nil
