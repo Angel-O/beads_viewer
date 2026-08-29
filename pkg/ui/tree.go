@@ -1191,6 +1191,29 @@ func (t *TreeModel) SelectByID(id string) bool {
 	return false
 }
 
+// SelectByIDAndReveal selects a retained node, expanding only its ancestors
+// when the node is hidden by the current tree expansion state.
+func (t *TreeModel) SelectByIDAndReveal(id string) bool {
+	if t.SelectByID(id) {
+		t.ensureCursorVisible()
+		return true
+	}
+
+	node := t.issueMap[id]
+	if node == nil || node.Issue == nil || strings.TrimSpace(t.searchQuery) != "" {
+		return false
+	}
+	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
+		ancestor.Expanded = true
+	}
+	t.rebuildFlatList()
+	if t.SelectByID(id) {
+		t.ensureCursorVisible()
+		return true
+	}
+	return false
+}
+
 // StartSearch focuses Tree-local search without changing the current query.
 func (t *TreeModel) StartSearch() {
 	t.searchActive = true
