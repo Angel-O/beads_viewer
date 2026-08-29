@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,29 @@ func TestHandleSprintKeys_Exit(t *testing.T) {
 	}
 	if m.focused != focusList {
 		t.Fatalf("focused=%v; want focusList", m.focused)
+	}
+}
+
+func TestSprintExitKeysClearStateAndRenderList(t *testing.T) {
+	for _, key := range []string{"P", "esc", "q"} {
+		t.Run(key, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen}}, nil, "")
+			m.isSprintView = true
+			m.focused = focusSprint
+			m.sprintViewText = "Sprint dashboard"
+
+			updated, cmd := m.Update(keyMsg(key))
+			result := updated.(Model)
+			if cmd != nil {
+				t.Fatalf("%q returned quit/other command: %v", key, cmd)
+			}
+			if result.isSprintView || result.focused != focusList || result.showQuitConfirm {
+				t.Fatalf("%q did not return to List cleanly: sprint=%v focus=%v quit=%v", key, result.isSprintView, result.focused, result.showQuitConfirm)
+			}
+			if strings.Contains(result.View(), "Sprint dashboard") {
+				t.Fatalf("%q still renders Sprint content after exit", key)
+			}
+		})
 	}
 }
 

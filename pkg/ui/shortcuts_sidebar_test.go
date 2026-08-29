@@ -163,6 +163,9 @@ func TestShortcutsSidebarTreeDocumentsStatusAndAllActions(t *testing.T) {
 			t.Fatalf("Tree sidebar missing %q: %s", expected, view)
 		}
 	}
+	if strings.Contains(view, "Tab") {
+		t.Fatal("Tree sidebar advertises Tab even though Tree does not own it")
+	}
 }
 
 func TestContextFromFocus(t *testing.T) {
@@ -178,6 +181,9 @@ func TestContextFromFocus(t *testing.T) {
 		{focusHistory, "history"},
 		{focusActionable, "actionable"},
 		{focusLabelDashboard, "label"},
+		{focusFlowMatrix, "flow"},
+		{focusSprint, "sprint"},
+		{focusAttention, "attention"},
 		{focusHelp, "list"}, // Default fallback
 	}
 
@@ -219,6 +225,11 @@ func TestShortcutsSidebar_MatchesRegistry(t *testing.T) {
 		// Should use hardcoded sections - expect Navigation
 		if !strings.Contains(view, "Navigation") {
 			t.Error("Expected hardcoded 'Navigation' section when registry empty")
+		}
+		sidebar.SetFocus(focusBoard)
+		view = sidebar.View()
+		if !strings.Contains(view, "Empty columns") {
+			t.Error("Expected hardcoded Board section to document empty-column cycle")
 		}
 	})
 
@@ -280,6 +291,224 @@ func TestShortcutsSidebarTreeCoverageIsCompact(t *testing.T) {
 	}
 	if strings.Contains(view, "Self-update") || strings.Contains(view, "Copy issue ID") {
 		t.Fatal("Tree shortcuts sidebar includes unrelated actions")
+	}
+	if strings.Contains(view, "Tab") {
+		t.Fatal("registry-backed Tree sidebar advertises Tab")
+	}
+}
+
+func TestShortcutsSidebarHidesListEnterInSplitView(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 40)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusList)
+
+	view := sidebar.View()
+	if !strings.Contains(view, "enter") {
+		t.Fatal("List sidebar omitted the registry-backed Enter binding")
+	}
+
+	sidebar.SetSplitView(true)
+	view = sidebar.View()
+	if strings.Contains(view, "enter") {
+		t.Fatal("Split List sidebar advertises Enter even though it is a no-op")
+	}
+}
+
+func TestShortcutsSidebarShowsOnlyActiveScrollControl(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+
+	for _, focus := range []focus{focusBoard, focusInsights} {
+		sidebar.SetFocus(focus)
+		sections := sidebar.sectionsFromRegistry()
+		var hasSidebarScroll bool
+		for _, section := range sections {
+			for _, item := range section.items {
+				if item.key == "ctrl+j/k" && item.desc == "Scroll sidebar" {
+					hasSidebarScroll = true
+				}
+				if item.key == "ctrl+j" || item.key == "ctrl+k" || strings.Contains(item.desc, "Scroll detail") {
+					t.Fatalf("%v sidebar retains an underlying detail-scroll binding: %#v", focus, item)
+				}
+			}
+		}
+		if !hasSidebarScroll {
+			t.Fatalf("%v sidebar lacks its active ctrl+j/k scroll binding", focus)
+		}
+	}
+
+	sidebar.SetFocus(focusList)
+	if view := sidebar.View(); !strings.Contains(view, "ctrl+j/k scroll") {
+		t.Fatalf("sidebar footer does not identify its actual scroll keys: %q", view)
+	}
+}
+
+func TestShortcutsSidebarAttentionUsesRegistryWithoutFakeNavigation(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusAttention)
+
+	view := sidebar.View()
+	for _, expected := range []string{"1-9", "Close Attention", "esc / q", "Help overlay", "Shortcuts sidebar"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("Attention registry sidebar missing %q:\n%s", expected, view)
+		}
+	}
+	for _, fake := range []string{"Move down", "Move up"} {
+		if strings.Contains(view, fake) {
+			t.Fatalf("Attention registry sidebar contains fake navigation %q:\n%s", fake, view)
+		}
+	}
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			if item.key == "j" || item.key == "k" {
+				t.Fatalf("Attention registry sidebar contains fake navigation binding: %#v", item)
+			}
+		}
+	}
+}
+
+func TestShortcutsSidebarOnlyShowsSplitTabForListAndDetail(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+
+	for _, focus := range []focus{focusList, focusDetail, focusTree} {
+		sidebar.SetFocus(focus)
+		sidebar.SetSplitView(false)
+		for _, section := range sidebar.sectionsFromRegistry() {
+			for _, item := range section.items {
+				if item.key == "tab" || item.key == "<" || item.key == ">" {
+					t.Fatalf("normal %v sidebar advertises Split-only binding: %#v", focus, item)
+				}
+			}
+		}
+	}
+
+	for _, focus := range []focus{focusList, focusDetail} {
+		sidebar.SetFocus(focus)
+		sidebar.SetSplitView(true)
+		found := map[string]bool{}
+		for _, section := range sidebar.sectionsFromRegistry() {
+			for _, item := range section.items {
+				if item.desc == "Switch panes in Split" || item.key == "<" || item.key == ">" {
+					found[item.key] = true
+				}
+			}
+		}
+		for _, key := range []string{"tab", "<", ">"} {
+			if !found[key] {
+				t.Fatalf("Split %v sidebar lacks pane-switch binding %q", focus, key)
+			}
+		}
+	}
+}
+
+func TestShortcutsSidebarDetailOmitsRestrictedCommands(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusDetail)
+
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			if item.key == "p" || item.key == "!" || item.desc == "Priority hints" || item.desc == "Alerts panel" {
+				t.Fatalf("Detail sidebar advertises restricted command: %#v", item)
+			}
+		}
+	}
+}
+
+func TestShortcutsSidebarGroupsGlobalAliases(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusList)
+
+	var global []shortcutItem
+	for _, section := range sidebar.sectionsFromRegistry() {
+		if section.title == "Global" || section.title == "Actions" {
+			global = append(global, section.items...)
+		}
+	}
+	for _, alias := range []string{"F2", ";", "ctrl+r", "f5"} {
+		for _, item := range global {
+			if item.key == alias {
+				t.Fatalf("sidebar renders ungrouped alias %q: %#v", alias, item)
+			}
+		}
+	}
+	for _, want := range []string{"F2/;", "Ctrl+R/F5"} {
+		found := false
+		for _, item := range global {
+			if item.key == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("sidebar missing grouped alias %q: %#v", want, global)
+		}
+	}
+}
+
+func TestShortcutsSidebarGraphAliasesAreGrouped(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusGraph)
+
+	var graphItems []shortcutItem
+	for _, section := range sidebar.sectionsFromRegistry() {
+		if section.title == "Graph" {
+			graphItems = append(graphItems, section.items...)
+		}
+	}
+	for _, alias := range []string{"pgup", "pgdown", "PgUp", "PgDn", "Esc", "esc"} {
+		if alias == "esc" {
+			continue
+		}
+		for _, item := range graphItems {
+			if item.key == alias {
+				t.Fatalf("Graph sidebar renders ungrouped physical alias %q: %#v", alias, item)
+			}
+		}
+	}
+	var grouped int
+	var esc int
+	for _, item := range graphItems {
+		if item.key == "pgup/pgdown" {
+			grouped++
+		}
+		if item.key == "esc" {
+			esc++
+		}
+	}
+	if grouped != 1 {
+		t.Fatalf("Graph sidebar has %d grouped page-scroll rows, want 1: %#v", grouped, graphItems)
+	}
+	if esc != 1 {
+		t.Fatalf("Graph sidebar has %d lowercase escape rows, want 1: %#v", esc, graphItems)
 	}
 }
 

@@ -17,6 +17,7 @@ type ShortcutsSidebar struct {
 	context      string       // Current context for filtering shortcuts
 	keyRegistry  *KeyRegistry // Registry for auto-generated bindings (bv-xl6g)
 	focusHint    focus        // Current focus for registry lookup (bv-xl6g)
+	splitView    bool         // Whether List focus is the left pane of Split view
 }
 
 // shortcutItem represents a single keyboard shortcut
@@ -56,6 +57,11 @@ func (s *ShortcutsSidebar) SetContext(ctx string) {
 func (s *ShortcutsSidebar) SetFocus(f focus) {
 	s.focusHint = f
 	s.context = ContextFromFocus(f)
+}
+
+// SetSplitView updates the small set of focus-dependent List bindings.
+func (s *ShortcutsSidebar) SetSplitView(split bool) {
+	s.splitView = split
 }
 
 // SetKeyRegistry sets the key registry for auto-generated bindings (bv-xl6g)
@@ -115,6 +121,20 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryOrder := []string{} // Preserve order of first appearance
 
 	for _, b := range bindings {
+		// Ctrl+j/k are consumed by the open sidebar, so the underlying view's
+		// detail-scroll bindings must not be shown alongside the sidebar control.
+		if b.Key == "ctrl+j" || b.Key == "ctrl+k" {
+			continue
+		}
+		if s.splitView && s.focusHint == focusList && b.Key == "enter" {
+			continue
+		}
+		if (s.focusHint == focusList || s.focusHint == focusDetail) && !s.splitView && (b.Key == "tab" || b.Key == "<" || b.Key == ">") {
+			continue
+		}
+		if s.focusHint == focusTree && (b.Key == "tab" || b.Key == "<" || b.Key == ">") {
+			continue
+		}
 		if s.focusHint == focusTree && b.Category != "Tree" && b.Category != "Views" && b.Category != "Filters" {
 			continue
 		}
@@ -130,10 +150,29 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			desc: b.Desc,
 		})
 	}
+	categoryItems["Sidebar"] = []shortcutItem{{key: "ctrl+j/k", desc: "Scroll sidebar"}}
+	categoryOrder = append(categoryOrder, "Sidebar")
 
-	// Build sections in category order
-	sections := make([]shortcutSection, 0, len(categoryOrder))
+	// Keep the most useful categories at the top; bindings within each section
+	// remain sorted by the registry.
+	preferredOrder := []string{"Navigation", "Views", "Filters", "Actions", "Global", "Sidebar"}
+	orderedCategories := make([]string, 0, len(categoryOrder))
+	seenCategories := make(map[string]struct{}, len(categoryOrder))
+	for _, cat := range preferredOrder {
+		if _, exists := categoryItems[cat]; exists {
+			orderedCategories = append(orderedCategories, cat)
+			seenCategories[cat] = struct{}{}
+		}
+	}
 	for _, cat := range categoryOrder {
+		if _, seen := seenCategories[cat]; !seen {
+			orderedCategories = append(orderedCategories, cat)
+		}
+	}
+
+	// Build sections in the stable display order.
+	sections := make([]shortcutSection, 0, len(orderedCategories))
+	for _, cat := range orderedCategories {
 		sections = append(sections, shortcutSection{
 			title:    cat,
 			items:    categoryItems[cat],
@@ -164,11 +203,16 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			title:    "Navigation",
 			contexts: []string{}, // All contexts
 			items: []shortcutItem{
-				{"j/k", "Move ↓/↑"},
-				{"G/gg", "End/Start"},
-				{"^d/^u", "Page ↓/↑"},
-				{"Enter", "Details"},
-				{"Esc", "Back"},
+				{"j/k", "Navigate"},
+				{"Esc", "Back/close"},
+			},
+		},
+		{
+			title:    "Jumps",
+			contexts: []string{"list", "board"},
+			items: []shortcutItem{
+				{"Home/G", "Start/end"},
+				{"^d/^u", "Page down/up"},
 			},
 		},
 		{
@@ -209,7 +253,18 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 				{"e", "Explanations"},
 				{"x", "Calc proof"},
 				{"m", "Heatmap"},
-				{"Enter", "Jump to issue"},
+				{"Enter", "Open issue / cell"},
+				{"] / F4", "Attention view"},
+				{"f", "Flow matrix"},
+			},
+		},
+		{
+			title:    "Attention",
+			contexts: []string{"attention"},
+			items: []shortcutItem{
+				{"1-9", "Filter by ranked label"},
+				{"] / F4", "Close Attention"},
+				{"Esc / q", "Back"},
 			},
 		},
 		{
@@ -223,6 +278,7 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 				{"Tab", "Focus toggle"},
 				{"y", "Copy SHA"},
 				{"o", "Open in browser"},
+				{"f", "File tree"},
 				{"g", "Graph view"},
 				{"c", "Cycle filter"},
 			},
@@ -234,9 +290,10 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 				{"h/l", "Columns ←/→"},
 				{"j/k", "Items ↓/↑"},
 				{"Tab", "Toggle detail"},
+				{"e", "Empty columns"},
 				{"y", "Copy ID"},
 				{"^j/^k", "Scroll detail"},
-				{"Enter", "Full view"},
+				{"Enter", "Open issue detail"},
 			},
 		},
 		{
@@ -245,7 +302,7 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			items: []shortcutItem{
 				{"j/k", "Move ↓/↑"},
 				{"h/l", "Fold/visit parent/child"},
-				{"Enter/Space", "Toggle expansion"},
+				{"Enter/Space", "Toggle/select"},
 				{"+/-", "Expand/collapse all"},
 				{"o/c/r", "Open/closed/ready"},
 				{"/", "Search"},
@@ -271,10 +328,10 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			contexts: []string{"list", "detail", "split"},
 			items: []shortcutItem{
 				{"n", "Add comment"},
-				{"t/T", "Time-travel"},
-				{"x", "Export .md"},
+				{"t/T", "Choose/Quick diff"},
+				{"x", "Export markdown"},
 				{"y", "Copy ID"},
-				{"C", "Copy"},
+				{"C", "Copy full issue"},
 				{"O", "Open in $EDITOR"},
 				{"'", "Recipe picker"},
 				{"U", "Self-update"},
@@ -380,7 +437,7 @@ func (s *ShortcutsSidebar) View() string {
 		if maxScroll > 0 {
 			scrollPercent = s.scrollOffset * 100 / maxScroll
 		}
-		footer = dimStyle.Render(fmt.Sprintf("j/k scroll %d%%", scrollPercent))
+		footer = dimStyle.Render(fmt.Sprintf("ctrl+j/k scroll %d%%", scrollPercent))
 	} else {
 		footer = dimStyle.Render("; hide")
 	}
@@ -413,6 +470,8 @@ func ContextFromFocus(f focus) string {
 		return "graph"
 	case focusInsights:
 		return "insights"
+	case focusAttention:
+		return "attention"
 	case focusHistory:
 		return "history"
 	case focusTree:
@@ -421,6 +480,10 @@ func ContextFromFocus(f focus) string {
 		return "actionable"
 	case focusLabelDashboard:
 		return "label"
+	case focusFlowMatrix:
+		return "flow"
+	case focusSprint:
+		return "sprint"
 	default:
 		return "list"
 	}

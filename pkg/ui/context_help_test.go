@@ -238,6 +238,8 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 		{ContextTree, "n/N"},
 		{ContextTree, "E / Escape"},
 		{ContextBoard, "h/l"},
+		{ContextBoard, "Tab"},
+		{ContextBoard, "e         Cycle empty-column mode"},
 		{ContextDetail, "Esc"},
 		{ContextDetail, "n         Add comment"},
 		{ContextSplit, "Tab"},
@@ -291,6 +293,18 @@ func TestContextHelpAttentionMatchesRuntime(t *testing.T) {
 	}
 }
 
+func TestContextHelpFlowExplainsDrilldownExit(t *testing.T) {
+	content := GetContextHelp(ContextFlowMatrix)
+	for _, expected := range []string{"Drill into the selected label", "close drilldown", "Close Flow or its drilldown"} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("Flow context help missing %q", expected)
+		}
+	}
+	if strings.Contains(content, "Open cross-label issues") {
+		t.Fatal("Flow top-level help describes Enter as opening issues before drilldown")
+	}
+}
+
 // =============================================================================
 // ADDITIONAL TESTS FOR BV-WE18: Context Help Content Coverage
 // =============================================================================
@@ -301,6 +315,11 @@ func TestContextHelpExitHints(t *testing.T) {
 
 	for ctx, content := range ContextHelpContent {
 		t.Run(fmt.Sprintf("context_%s_has_exit_hint", ctx), func(t *testing.T) {
+			if ctx == ContextSplit {
+				// Split Esc is intentionally not documented until runtime behavior
+				// provides a reliable pane-exit action.
+				return
+			}
 			hasExit := false
 			contentLower := strings.ToLower(content)
 			for _, pattern := range exitPatterns {
@@ -313,6 +332,13 @@ func TestContextHelpExitHints(t *testing.T) {
 				t.Errorf("Context %v help should mention how to exit/close (e.g., Esc, Return, Close)", ctx)
 			}
 		})
+	}
+}
+
+func TestContextHelpSplitDoesNotPromiseEscape(t *testing.T) {
+	content := GetContextHelp(ContextSplit)
+	if strings.Contains(content, "Esc") || strings.Contains(strings.ToLower(content), "return to list") {
+		t.Fatal("Split help must not promise an Esc path back to List")
 	}
 }
 
@@ -368,7 +394,7 @@ func TestContextHelpListShortcutsMatchModel(t *testing.T) {
 	}{
 		{"j/k", "vertical navigation"},
 		{"Enter", "view details"},
-		{"g/G", "jump to top/bottom"},
+		{"Home/G", "jump to top/bottom"},
 		{"/", "search"},
 	}
 
@@ -376,6 +402,13 @@ func TestContextHelpListShortcutsMatchModel(t *testing.T) {
 		if !strings.Contains(content, rs.shortcut) {
 			t.Errorf("List context help missing %s for %s", rs.shortcut, rs.description)
 		}
+	}
+}
+
+func TestContextHelpListDoesNotClaimAResetsFilters(t *testing.T) {
+	content := GetContextHelp(ContextList)
+	if strings.Contains(content, "All issues") || strings.Contains(strings.ToLower(content), "reset filter") {
+		t.Fatal("List help must not claim lowercase a resets filters")
 	}
 }
 

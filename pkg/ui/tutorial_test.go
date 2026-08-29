@@ -56,6 +56,74 @@ func TestRepositoryScopeTutorialCopy(t *testing.T) {
 	t.Fatal("repository scope tutorial page not found")
 }
 
+func TestTutorialKeyboardReferenceUsesContextualShortcuts(t *testing.T) {
+	for _, page := range defaultTutorialPages() {
+		if page.ID != "ref-keyboard" {
+			continue
+		}
+		for _, want := range []string{
+			"Close the current view; quit from List",
+			"Switch views from List or Detail",
+			"Select, open, or drill where supported",
+			"o/c/r",
+			"Actionable view from List or Detail",
+		} {
+			if !strings.Contains(page.Content, want) {
+				t.Fatalf("default keyboard reference missing %q", want)
+			}
+		}
+		if strings.Contains(page.Content, "o/c/r/a") || strings.Contains(page.Content, "| **q** | Quit |") {
+			t.Fatal("default keyboard reference retains stale global shortcut wording")
+		}
+		if strings.Contains(page.Content, "Universal") {
+			t.Fatal("default keyboard reference describes contextual shortcuts as universal")
+		}
+		return
+	}
+	t.Fatal("keyboard reference page not found")
+}
+
+func TestStructuredTutorialKeyboardReferenceUsesContextualShortcuts(t *testing.T) {
+	for _, page := range structuredTutorialPages() {
+		if page.ID != "ref-keyboard" {
+			continue
+		}
+		content := RenderStructuredPage(page, testTheme(), 120)
+		for _, want := range []string{"Close current view; quit from List", "Switch views from List/Detail", "Select, open, or drill where supported", "o/c/r", "Actionable view from List/Detail"} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("structured keyboard reference missing %q", want)
+			}
+		}
+		if strings.Contains(content, "o/c/r/a") {
+			t.Fatal("structured keyboard reference retains stale status-filter wording")
+		}
+		if strings.Contains(content, "Universal") {
+			t.Fatal("structured keyboard reference describes contextual shortcuts as universal")
+		}
+		return
+	}
+	t.Fatal("structured keyboard reference page not found")
+}
+
+func TestTutorialNavigationCallsEnterContextual(t *testing.T) {
+	for _, page := range defaultTutorialPages() {
+		if page.ID == "views-nav-fundamentals" && strings.Contains(page.Content, "Universal Keys") {
+			t.Fatal("legacy navigation tutorial calls Enter universal")
+		}
+	}
+	for _, page := range structuredTutorialPages() {
+		if page.ID != "views-nav-fundamentals" {
+			continue
+		}
+		content := RenderStructuredPage(page, testTheme(), 120)
+		if strings.Contains(content, "Universal Keys") || !strings.Contains(content, "Select, open, or drill where supported") {
+			t.Fatalf("structured navigation tutorial has non-contextual Enter guidance:\n%s", content)
+		}
+		return
+	}
+	t.Fatal("structured navigation page not found")
+}
+
 func TestTutorialNavigation(t *testing.T) {
 	m := newTestTutorialModel()
 	totalPages := len(m.pages)
@@ -521,6 +589,66 @@ func TestDefaultTutorialPages(t *testing.T) {
 		}
 		if page.Content == "" {
 			t.Error("Page missing Content")
+		}
+	}
+}
+
+func TestTutorialShortcutGuidanceMatchesCurrentBindings(t *testing.T) {
+	var content strings.Builder
+	for _, page := range defaultTutorialPages() {
+		content.WriteString(page.Content)
+	}
+	allContent := content.String()
+	for _, expected := range []string{
+		"Home/G",
+		"gg",
+		"Copy the full issue",
+		"Priority x Depth heatmap",
+		"Press **x** from List, Detail, or Split",
+		"Press **'** (single quote)",
+		"**tab** | Toggle detail panel",
+		"**e** | Cycle empty-column mode",
+	} {
+		if !strings.Contains(allContent, expected) {
+			t.Errorf("default tutorial missing current shortcut guidance %q", expected)
+		}
+	}
+	for _, stale := range []string{
+		"Open label picker (apply labels)",
+		"Change priority",
+		"All issues (reset filter)",
+		"All (reset filter)",
+		"Press **R** (capital R)",
+		"Time-travel preview",
+		"Node size | Priority",
+	} {
+		if strings.Contains(allContent, stale) {
+			t.Errorf("default tutorial retains stale shortcut guidance %q", stale)
+		}
+	}
+
+	for _, expected := range []struct {
+		id      string
+		content string
+	}{
+		{"concepts-labels", "Filter by label"},
+		{"concepts-priorities", "Toggle priority hints"},
+		{"concepts-graph", "Status glyph"},
+		{"views-detail", "Copy full issue"},
+		{"views-split", "automatically when the terminal"},
+		{"views-insights", "Priority x Depth heatmap"},
+		{"views-history", "selected bead"},
+		{"views-board", "Toggle detail panel"},
+		{"views-board", "Cycle empty-column mode"},
+		{"advanced-export", "List, Detail, or Split"},
+	} {
+		page := getStructuredPage(expected.id)
+		if page == nil {
+			t.Fatalf("structured tutorial page %q not found", expected.id)
+		}
+		rendered := RenderStructuredPage(*page, testTheme(), 120)
+		if !strings.Contains(rendered, expected.content) {
+			t.Errorf("structured tutorial %q missing %q", expected.id, expected.content)
 		}
 	}
 }

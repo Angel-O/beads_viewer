@@ -400,7 +400,6 @@ func (m *RepoPickerModel) View() string {
 
 	var lines []string
 	spacious := m.height >= 12
-	showFooter := m.height >= 10
 	compactSearch := m.height < 10
 
 	titleStyle := t.Renderer.NewStyle().
@@ -442,9 +441,6 @@ func (m *RepoPickerModel) View() string {
 		fixedLines := 1            // title
 		if spacious {
 			fixedLines += 2 // title and footer spacers
-		}
-		if showFooter {
-			fixedLines++
 		}
 		if m.searching {
 			fixedLines++
@@ -534,20 +530,6 @@ func (m *RepoPickerModel) View() string {
 				fmt.Sprintf("  %d/%d", m.selectedIndex+1, choiceCount),
 			))
 		}
-	}
-
-	if showFooter {
-		if spacious {
-			lines = append(lines, "")
-		}
-		footerStyle := t.Renderer.NewStyle().
-			Foreground(ColorFooterHint).
-			Italic(true)
-		footer := "j/k: navigate | space: toggle | a: all/none | c: current only | /: search | enter: apply | esc: cancel"
-		if m.searching {
-			footer = "type: search | up/down: navigate | enter: apply | esc: clear search"
-		}
-		lines = append(lines, footerStyle.Render(truncateRunesHelper(footer, contentWidth, "...")))
 	}
 
 	content := strings.Join(lines, "\n")

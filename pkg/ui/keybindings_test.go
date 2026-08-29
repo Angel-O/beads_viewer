@@ -290,9 +290,11 @@ func TestNewModelRegistersDocumentedBindings(t *testing.T) {
 		key   string
 	}{
 		{focus: focusList, key: "j"},
-		{focus: focusDetail, key: "enter"},
+		{focus: focusList, key: "home"},
+		{focus: focusList, key: "enter"},
+		{focus: focusDetail, key: "C"},
 		{focus: focusBoard, key: "h"},
-		{focus: focusGraph, key: "PgDn"},
+		{focus: focusGraph, key: "pgup/pgdown"},
 		{focus: focusHistory, key: "v"},
 	}
 
@@ -783,6 +785,48 @@ func TestKeyDispatch_ShortcutsSidebarTogglesInBoardAndInsights(t *testing.T) {
 	}
 }
 
+func TestKeyDispatch_ShortcutsSidebarKeepsScrollNotificationAndControls(t *testing.T) {
+	m := setupTestModel(t)
+	m.width, m.height = 200, 40
+	updated, _ := m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar || !strings.Contains(m.statusMsg, "ctrl+j/k scroll") {
+		t.Fatalf("sidebar notification lost: shown=%v status=%q", m.showShortcutsSidebar, m.statusMsg)
+	}
+
+	initial := m.shortcutsSidebar.scrollOffset
+	updated, _ = m.Update(keyMsg("ctrl+j"))
+	m = updated.(Model)
+	if m.shortcutsSidebar.scrollOffset <= initial {
+		t.Fatalf("ctrl+j did not scroll sidebar: before=%d after=%d", initial, m.shortcutsSidebar.scrollOffset)
+	}
+	updated, _ = m.Update(keyMsg("ctrl+k"))
+	m = updated.(Model)
+	if m.shortcutsSidebar.scrollOffset != initial {
+		t.Fatalf("ctrl+k did not restore sidebar scroll: want=%d got=%d", initial, m.shortcutsSidebar.scrollOffset)
+	}
+}
+
+func TestAttentionShortcutsSidebarUsesAttentionContext(t *testing.T) {
+	m := setupTestModel(t)
+	m.width, m.height = 200, 40
+	m.focused = focusInsights
+	m.showAttentionView = true
+
+	updated, _ := m.Update(keyMsg(";"))
+	m = updated.(Model)
+	if !m.showShortcutsSidebar {
+		t.Fatal("semicolon did not open sidebar for Attention")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Close Attention") {
+		t.Fatalf("Attention sidebar missing Attention-specific bindings:\n%s", view)
+	}
+	if strings.Contains(view, "Flow matrix") || strings.Contains(view, "]/F4 Attention view") {
+		t.Fatalf("Attention sidebar exposed Insights cross-view bindings:\n%s", view)
+	}
+}
+
 // TestKeyDispatch_Regression_EscInTreeReturnsList verifies that ESC in tree view
 // returns to list.
 func TestKeyDispatch_Regression_EscInTreeReturnsList(t *testing.T) {
@@ -1032,7 +1076,7 @@ func TestKeyDispatch_HelpWithTreeSidebarKeepsOverlayAndStateCoherent(t *testing.
 		t.Fatalf("expected Help with sidebar state retained: help=%v sidebar=%v focus=%v", m.showHelp, m.showShortcutsSidebar, m.focused)
 	}
 	view := ansi.Strip(m.View())
-	if strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll") || !strings.Contains(view, "Keyboard Shortcuts") {
+	if strings.Contains(view, "; hide") || !strings.Contains(view, "Keyboard Shortcuts") {
 		t.Fatal("Help was interleaved with the underlying shortcuts sidebar")
 	}
 	for _, line := range strings.Split(view, "\n") {
@@ -1118,7 +1162,7 @@ func TestKeyDispatch_TutorialConsumesSidebarToggleAndRestoresTreeState(t *testin
 	if !m.showTutorial || !m.showShortcutsSidebar || m.focused != focusTutorial {
 		t.Fatalf("expected Tutorial with sidebar state retained: tutorial=%v sidebar=%v focus=%v", m.showTutorial, m.showShortcutsSidebar, m.focused)
 	}
-	if view := ansi.Strip(m.View()); strings.Contains(view, "; hide") || strings.Contains(view, "j/k scroll 0%") {
+	if view := ansi.Strip(m.View()); strings.Contains(view, "; hide") || strings.Contains(view, "ctrl+j/k scroll 0%") {
 		t.Fatal("Tutorial was interleaved with the underlying shortcuts sidebar")
 	}
 
@@ -1195,6 +1239,312 @@ func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 		if !found {
 			t.Errorf("authoritative key docs missing %q", binding)
 		}
+	}
+}
+
+func TestKeyBindingDocsUseContextualNavigationAndActions(t *testing.T) {
+	docs := GetKeyBindingDocs()
+	for _, doc := range docs {
+		if doc.Context == "all" {
+			switch doc.Key {
+			case "G", "gg", "ctrl+d", "ctrl+u", "enter", "y", "U":
+				t.Errorf("context-specific shortcut %q is still documented for all views", doc.Key)
+			}
+		}
+		if doc.Key == "y" && doc.Context == "history" && doc.Desc != "Copy commit SHA" {
+			t.Errorf("History y description = %q, want Copy commit SHA", doc.Desc)
+		}
+	}
+
+	for _, expected := range []KeyBindingDoc{
+		{Key: "gg", Context: "board,tree"},
+		{Key: "C", Context: "list,detail"},
+		{Key: "enter", Desc: "Open selected bead", Context: "history"},
+		{Key: "enter", Desc: "Apply label filter", Context: "label-dashboard"},
+	} {
+		found := false
+		for _, doc := range docs {
+			if doc.Key == expected.Key && (expected.Desc == "" || doc.Desc == expected.Desc) && doc.Context == expected.Context {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing contextual keybinding doc: %+v", expected)
+		}
+	}
+}
+
+func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
+	docs := GetKeyBindingDocs()
+	contexts := map[focus]string{
+		focusList:           "list",
+		focusDetail:         "detail",
+		focusBoard:          "board",
+		focusGraph:          "graph",
+		focusTree:           "tree",
+		focusInsights:       "insights",
+		focusHistory:        "history",
+		focusActionable:     "actionable",
+		focusLabelDashboard: "label-dashboard",
+		focusFlowMatrix:     "flow",
+		focusSprint:         "sprint",
+		focusAttention:      "attention",
+	}
+	required := map[focus][]string{
+		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5"},
+		focusDetail:         {"j", "a", "b", "g", "h", "i", "E", "?", "F2/;", "tab", "n", "U", "x", "y", "C", "t", "T", "O", "Ctrl+R/F5"},
+		focusBoard:          {"h", "l", "j", "k", "G", "gg", "tab", "enter", "o", "c", "r", "/", "n/N", "1-4", "H/L", "0/$", "y", "s", "e", "d", "b", "?", "F2/;"},
+		focusGraph:          {"hjkl", "pgup/pgdown", "/", "n/N", "enter", "esc", "g", "b", "?", "F2/;"},
+		focusTree:           {"h", "l", "enter", "space", "/", "n", "N", "v", "+", "-", "G", "E", "o", "c", "r", "pgup", "pgdown", "?", "F2/;"},
+		focusInsights:       {"h", "l", "j", "k", "ctrl+j", "ctrl+k", "tab", "o", "r", "e", "x", "m", "enter", "] / F4", "f", "i", "?", "F2/;"},
+		focusHistory:        {"/", "v", "tab", "J", "K", "enter", "y", "o", "f/F", "g", "h", "c", "?", "F2/;"},
+		focusActionable:     {"j", "k", "enter", "a", "?", "F2/;"},
+		focusLabelDashboard: {"j", "k", "home", "G", "enter", "h", "d", "[", "esc", "?", "F2/;"},
+		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
+		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
+		focusAttention:      {"1-9", "d", "] / F4", "esc / q", "?", "F2/;"},
+	}
+
+	hasDoc := func(context, key string) bool {
+		for _, doc := range docs {
+			if doc.Key != key {
+				continue
+			}
+			for _, candidate := range strings.Split(doc.Context, ",") {
+				if strings.TrimSpace(candidate) == context {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	for f, keys := range required {
+		t.Run(f.String(), func(t *testing.T) {
+			context := contexts[f]
+			for _, key := range keys {
+				if !hasDoc(context, key) {
+					t.Errorf("missing documented shortcut %q for %s", key, context)
+				}
+			}
+		})
+	}
+}
+
+func TestSprintKeyBindingDocsIncludeQuit(t *testing.T) {
+	found := false
+	for _, doc := range GetKeyBindingDocs() {
+		if doc.Key == "q" && strings.Contains(doc.Context, "sprint") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Sprint registry must advertise q as a close shortcut")
+	}
+}
+
+func TestLabelDashboardDocsOnlyAdvertiseReachableCommands(t *testing.T) {
+	forbidden := map[string]bool{"a": true, "b": true, "E": true, "i": true, "f": true, "]": true, "!": true}
+	for _, doc := range GetKeyBindingDocs() {
+		if strings.Contains(doc.Context, "label-dashboard") && forbidden[doc.Key] {
+			t.Fatalf("Label Dashboard registry advertises unreachable shortcut: %+v", doc)
+		}
+	}
+}
+
+func TestDetailDocsOmitRestrictedCommands(t *testing.T) {
+	for _, doc := range GetKeyBindingDocs() {
+		if !strings.Contains(doc.Context, "detail") {
+			continue
+		}
+		if doc.Key == "p" || doc.Key == "!" {
+			t.Fatalf("Detail registry advertises restricted shortcut: %+v", doc)
+		}
+	}
+}
+
+func TestKeyBindingDocsGroupGlobalAliases(t *testing.T) {
+	docs := GetKeyBindingDocs()
+	for _, alias := range []string{"F2", ";", "ctrl+r", "f5"} {
+		for _, doc := range docs {
+			if doc.Key == alias {
+				t.Fatalf("ungrouped alias remains in registry docs: %+v", doc)
+			}
+		}
+	}
+	wants := map[string]bool{"F2/;": false, "Ctrl+R/F5": false}
+	for _, doc := range docs {
+		if _, ok := wants[doc.Key]; ok {
+			wants[doc.Key] = true
+		}
+	}
+	for key, found := range wants {
+		if !found {
+			t.Fatalf("missing grouped alias %q", key)
+		}
+	}
+}
+
+func TestFlowKeyBindingDocsDoNotAdvertiseUnforwardedPaging(t *testing.T) {
+	for _, doc := range GetKeyBindingDocs() {
+		if strings.Contains(doc.Context, "flow") && (doc.Key == "ctrl+d" || doc.Key == "ctrl+u") {
+			t.Fatalf("Flow registry advertises paging that main dispatch does not forward: %+v", doc)
+		}
+	}
+}
+
+func TestFlowKeyBindingDocsMentionDrilldownClose(t *testing.T) {
+	for _, doc := range GetKeyBindingDocs() {
+		if doc.Key == "f" && doc.Context == "flow" {
+			if !strings.Contains(doc.Desc, "drilldown") {
+				t.Fatalf("Flow f binding omits drilldown behavior: %+v", doc)
+			}
+			return
+		}
+	}
+	t.Fatal("Flow f binding not found")
+}
+
+func TestSpecializedFullHelpOmitsDefaultSections(t *testing.T) {
+	cases := []struct {
+		name     string
+		setup    func(*Model)
+		forbids  []string
+		contains []string
+	}{
+		{
+			name:     "label dashboard",
+			setup:    func(m *Model) { m.focused = focusLabelDashboard },
+			forbids:  []string{"Actionable", "Open issues", "Priority hints", "Alerts panel", "List / Detail"},
+			contains: []string{"Label Dashboard", "Filter by label", "[/F3"},
+		},
+		{
+			name:     "flow top level",
+			setup:    func(m *Model) { m.focused = focusFlowMatrix },
+			forbids:  []string{"Graph view", "Actionable", "Priority hints", "Alerts panel", "List / Detail"},
+			contains: []string{"Dependency Flow", "g/G", "First / last", "Drill into label"},
+		},
+		{
+			name:     "flow drilldown",
+			setup:    func(m *Model) { m.focused = focusFlowMatrix; m.flowMatrix.showDrilldown = true },
+			forbids:  []string{"Graph view", "Actionable", "Priority hints", "Alerts panel", "List / Detail"},
+			contains: []string{"Open / jump to issue"},
+		},
+		{
+			name:     "detail",
+			setup:    func(m *Model) { m.focused = focusDetail },
+			forbids:  []string{"Priority hints", "Alerts panel", "List Filters & Sort"},
+			contains: []string{"Detail Actions", "Self-update check"},
+		},
+		{
+			name:     "board",
+			setup:    func(m *Model) { m.focused = focusBoard },
+			forbids:  []string{"Hybrid ranking", "List Filters & Sort", "List / Detail"},
+			contains: []string{"Board", "First / last column", "o/c/r", "Reachable"},
+		},
+		{
+			name:     "graph",
+			setup:    func(m *Model) { m.focused = focusGraph },
+			forbids:  []string{"History view", "Hybrid ranking", "List Filters & Sort"},
+			contains: []string{"Graph", "Navigate graph", "Return to List"},
+		},
+		{
+			name:     "insights",
+			setup:    func(m *Model) { m.focused = focusInsights },
+			forbids:  []string{"History view", "Open issues", "List / Detail"},
+			contains: []string{"Insights", "Switch panels", "Ready-only toggle"},
+		},
+		{
+			name:     "history",
+			setup:    func(m *Model) { m.focused = focusHistory },
+			forbids:  []string{"History view", "Hybrid ranking", "Open issues", "List / Detail"},
+			contains: []string{"History", "Toggle file tree", "Confidence filter"},
+		},
+		{
+			name:     "actionable",
+			setup:    func(m *Model) { m.focused = focusActionable },
+			forbids:  []string{"Open issues", "Hybrid ranking", "List / Detail"},
+			contains: []string{"Actionable", "Move through", "Open selected issue"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			tc.setup(&m)
+			help := ansi.Strip(m.renderHelpOverlay())
+			for _, want := range tc.contains {
+				if !strings.Contains(help, want) {
+					t.Fatalf("specialized Help missing %q:\n%s", want, help)
+				}
+			}
+			for _, forbidden := range tc.forbids {
+				if strings.Contains(help, forbidden) {
+					t.Fatalf("specialized Help contains default/conflicting %q:\n%s", forbidden, help)
+				}
+			}
+		})
+	}
+}
+
+func TestInsightsFullHelpOmitsConsumedConfidenceFilter(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.focused = focusInsights
+	help := ansi.Strip(m.renderHelpOverlay())
+	if strings.Contains(help, "Confidence filter") {
+		t.Fatalf("Insights Help advertises consumed c confidence filter:\n%s", help)
+	}
+	for _, valid := range []string{"Switch panels", "Ready-only toggle", "Calculation proof"} {
+		if !strings.Contains(help, valid) {
+			t.Fatalf("Insights Help lost valid control %q:\n%s", valid, help)
+		}
+	}
+}
+
+func TestTreeTabIsANoOpAndTreeGuidanceOmitsIt(t *testing.T) {
+	issues := mouseTestIssues(4)
+	m := sizedModel(t, issues, 120, 30)
+	updated, _ := m.Update(keyMsg("E"))
+	m = updated.(Model)
+	if m.focused != focusTree {
+		t.Fatalf("expected Tree focus, got %v", m.focused)
+	}
+	m.isSplitView = true
+	selectedID := m.tree.GetSelectedID()
+	offset := m.tree.GetViewportOffset()
+	updated, _ = m.Update(keyMsg("tab"))
+	m = updated.(Model)
+	if m.focused != focusTree || m.tree.GetSelectedID() != selectedID || m.tree.GetViewportOffset() != offset {
+		t.Fatalf("Tree Tab was not a no-op: focus=%v selected=%q offset=%d", m.focused, m.tree.GetSelectedID(), m.tree.GetViewportOffset())
+	}
+
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	help := ansi.Strip(m.View())
+	if strings.Contains(help, "Tab") || strings.Contains(help, "Home/G") || strings.Contains(help, "Graph view") || strings.Contains(help, "History view") || strings.Contains(help, "Label picker") || strings.Contains(help, "Cycle sort") {
+		t.Fatalf("Tree Help advertises conflicting shortcuts:\n%s", help)
+	}
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg(";"))
+	m = updated.(Model)
+	sidebar := ansi.Strip(m.View())
+	if strings.Contains(sidebar, "Tab") {
+		t.Fatalf("Tree sidebar advertises Tab:\n%s", sidebar)
+	}
+}
+
+func TestListLowercaseAOpensActionableView(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(4), 120, 30)
+	m.currentFilter = "status:closed"
+	m.statusFilter = "closed"
+	updated, _ := m.Update(keyMsg("a"))
+	m = updated.(Model)
+	if !m.isActionableView || m.focused != focusActionable {
+		t.Fatalf("lowercase a did not open Actionable view: actionable=%v focus=%v", m.isActionableView, m.focused)
+	}
+	if content := GetContextHelp(ContextList); strings.Contains(content, "All issues") || strings.Contains(strings.ToLower(content), "reset filter") {
+		t.Fatal("List context help still claims lowercase a resets filters")
 	}
 }
 
