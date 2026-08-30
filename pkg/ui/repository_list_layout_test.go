@@ -533,12 +533,21 @@ func TestIssueListRightEdgeContractAcrossViewLayouts(t *testing.T) {
 	})
 
 	t.Run("split", func(t *testing.T) {
-		m := sizedModel(t, []model.Issue{issue}, 120, 24)
+		m := sizedModel(t, []model.Issue{issue}, 160, 24)
 		if !m.isSplitView {
-			t.Fatal("width 120 did not select split view")
+			t.Fatal("width 160 did not select split view")
 		}
 		assertManagedWidth(t, m)
-		assertLayout(t, m, m.renderSplitView())
+		view := m.renderSplitView()
+		assertLayout(t, m, view)
+		header, row := listHeaderAndRow(t, view, issue.ID)
+		listContentRightEdge := m.list.Width() + 1 // one cell after the left border
+		if got, want := displayOffset(header, "CMT")+lipgloss.Width("CMT"), listContentRightEdge; got != want {
+			t.Fatalf("split CMT header ends at cell %d, want list content edge %d: %q", got, want, header)
+		}
+		if got, want := displayOffset(row, "💬1")+lipgloss.Width("💬1"), listContentRightEdge; got != want {
+			t.Fatalf("split CMT value ends at cell %d, want list content edge %d: %q", got, want, row)
+		}
 	})
 
 	t.Run("narrow", func(t *testing.T) {
