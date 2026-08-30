@@ -92,6 +92,11 @@ func fakeChild() {
 		}
 	}
 	response := responses[key]
+	if key == "list" && responses["list:hub"] != "" {
+		if len(call.Args) > 1 && strings.HasSuffix(filepath.Clean(call.Args[1]), filepath.Join(".local", "share", "beads", "hub", ".beads")) {
+			response = responses["list:hub"]
+		}
+	}
 	if response == "" && key == "list" {
 		response = `[]`
 	}
@@ -156,6 +161,625 @@ func fakeCommandKey(arguments []string) string {
 		}
 	}
 	return ""
+}
+
+func TestParseMigrateRequiresOnePhaseAndJSON(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "dry run", args: []string{"migrate", "--dry-run", "--json"}, want: true},
+		{name: "apply", args: []string{"--json", "migrate", "--apply"}, want: true},
+		{name: "missing json", args: []string{"migrate", "--dry-run"}},
+		{name: "missing phase", args: []string{"migrate", "--json"}},
+		{name: "both phases", args: []string{"migrate", "--dry-run", "--apply", "--json"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := parse(testCase.args)
+			if (err == nil) != testCase.want {
+				t.Fatalf("parse(%v) error = %v, want success=%t", testCase.args, err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestDiscoverMigrationCorrelationsUsesFullCommitBodies(t *testing.T) {
+	repository := newGitRepository(t)
+	path := filepath.Join(repository, "body-reference")
+	if err := os.WriteFile(path, []byte("body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repository, "add", "body-reference")
+	git(t, repository, "commit", "-m", "migration record", "-m", "Refs: OLD-1")
+	commitData, err := exec.Command("git", "-C", repository, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := strings.TrimSpace(string(commitData))
+
+	correlations, err := discoverMigrationCorrelations(repository, []migrationSourceIssue{{ID: "old-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(correlations, []migrationCorrelation{{OldID: "old-1", Commit: commit}}) {
+		t.Fatalf("correlations=%#v", correlations)
+	}
+}
+
+func TestDiscoverMigrationCorrelationsFailsClosedOnGitError(t *testing.T) {
+	_, err := discoverMigrationCorrelations(t.TempDir(), []migrationSourceIssue{{ID: "old-1"}})
+	if err == nil || !strings.Contains(err.Error(), "git log failed") {
+		t.Fatalf("error=%v, want git log failure", err)
+	}
+}
+
+func TestDecodeMigrationBackendRequiresSupportedSchemaVersion(t *testing.T) {
+	valid := `{"schema_version":1,"source":"source","destination":"destination","digest":"digest","applied":false,"issues_imported":0,"history_imported":0,"events_imported":0,"provenance_imported":0,"issue_map":{}}`
+	if _, err := decodeMigrationBackend([]byte(valid)); err != nil {
+		t.Fatalf("decode valid result: %v", err)
+	}
+	for _, testCase := range []struct {
+		name string
+		data string
+	}{
+		{name: "missing", data: strings.Replace(valid, `"schema_version":1,`, "", 1)},
+		{name: "unsupported", data: strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := decodeMigrationBackend([]byte(testCase.data)); err == nil {
+				t.Fatal("decodeMigrationBackend succeeded")
+			}
+		})
+	}
+}
+
+func TestIsolatedEnvironmentRemovesBDJSONEnvelope(t *testing.T) {
+	t.Setenv("BD_JSON_ENVELOPE", "1")
+	for _, entry := range isolatedEnvironment(t.TempDir(), false) {
+		if strings.HasPrefix(entry, "BD_JSON_ENVELOPE=") {
+			t.Fatalf("isolated environment retained %q", entry)
+		}
+	}
+}
+
+func TestValidateMigrationBackendRejectsAnyNoOpImportCount(t *testing.T) {
+	hubID := "hub-" + strings.Repeat("a", 64)
+	plan := migrationPlan{
+		source:      "source",
+		destination: "destination",
+		prefix:      "hub",
+		issues:      []migrationSourceIssue{{ID: "old-1"}},
+	}
+	for _, testCase := range []struct {
+		name string
+		set  func(*migrationBackendResult)
+	}{
+		{name: "issues", set: func(result *migrationBackendResult) { result.IssuesImported = 1 }},
+		{name: "history", set: func(result *migrationBackendResult) { result.HistoryImported = 1 }},
+		{name: "events", set: func(result *migrationBackendResult) { result.EventsImported = 1 }},
+		{name: "provenance", set: func(result *migrationBackendResult) { result.ProvenanceImported = 1 }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := &migrationBackendResult{
+				Source:      plan.source,
+				Destination: plan.destination,
+				Digest:      "digest",
+				IssueMap:    map[string]string{"old-1": hubID},
+			}
+			testCase.set(result)
+			if err := validateMigrationBackend(plan, result); err == nil {
+				t.Fatal("validateMigrationBackend succeeded for non-zero no-op count")
+			}
+		})
+	}
+}
+
+func TestValidateMigrationBackendRejectsWrongPrefixMapping(t *testing.T) {
+	plan := migrationPlan{
+		source:      "source",
+		destination: "destination",
+		prefix:      "hub",
+		issues:      []migrationSourceIssue{{ID: "old-1"}},
+	}
+	result := &migrationBackendResult{
+		Source:      plan.source,
+		Destination: plan.destination,
+		Digest:      "digest",
+		IssueMap:    map[string]string{"old-1": "other-" + strings.Repeat("a", 64)},
+	}
+	if err := validateMigrationBackend(plan, result); err == nil || !strings.Contains(err.Error(), "invalid destination issue ID") {
+		t.Fatalf("error=%v, want wrong-prefix rejection", err)
+	}
+}
+
+func TestVerifyMigrationRequiresOrdinarySourceLabels(t *testing.T) {
+	test := newAppTestWithoutStore(t)
+	if err := os.MkdirAll(test.store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	context := "ctx:verify"
+	hubID := "hub-" + strings.Repeat("a", 64)
+	plan := migrationPlan{
+		destination: test.store,
+		context:     context,
+		issues:      []migrationSourceIssue{{ID: "old-1", Labels: []string{"ordinary"}}},
+	}
+	result := &migrationBackendResult{IssueMap: map[string]string{"old-1": hubID}}
+	setResponses(t, map[string]string{
+		"list:hub": fmt.Sprintf(`[{"id":%q,"labels":["imported",%q]}]`, hubID, context),
+	})
+	if _, err := test.app.verifyMigration(plan, result); err == nil || !strings.Contains(err.Error(), "missing source label") {
+		t.Fatalf("verifyMigration error=%v, want ordinary-label rejection", err)
+	}
+}
+
+func TestMigrateDryRunDoesNotWrite(t *testing.T) {
+	test := newAppTest(t, true)
+	source := filepath.Join(test.repository, ".beads")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(source, "source-data")
+	if err := os.WriteFile(sentinel, []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalHub, err := filepath.EvalSymlinks(test.app.paths.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	setResponses(t, map[string]string{
+		"config:get": `{"key":"issue_prefix","value":"hub"}`,
+		"list":       `[{"id":"old-1","labels":[]}]`,
+	})
+
+	before, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := test.run("migrate", "--dry-run", "--json")
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	var output migrationOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("decode output: %v; stdout=%q", err, stdout)
+	}
+	if output.Phase != "dry-run" || output.SourceIssueCount != 1 || output.ExactCorrelationCount != 0 || output.BackupPath == "" {
+		t.Fatalf("unexpected output: %#v", output)
+	}
+	if after, err := os.ReadFile(sentinel); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("source changed: err=%v contents=%q", err, after)
+	}
+	if _, err := os.Stat(output.BackupPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created backup: %v", err)
+	}
+	assertNoViewerSignal(t, test)
+	calls := test.calls()
+	wantSource := []string{"--db", canonicalSource, "--readonly", "--json", "list", "--all", "--include-all-types", "--limit", "0"}
+	if len(calls) != 2 {
+		t.Fatalf("calls=%#v", calls)
+	}
+	if !reflect.DeepEqual(calls[0].Args, []string{"--db", canonicalHub, "--readonly", "--json", "config", "get", "issue_prefix"}) {
+		t.Fatalf("prefix args=%#v", calls[0].Args)
+	}
+	if !reflect.DeepEqual(calls[1].Args, wantSource) {
+		t.Fatalf("source args=%#v want=%#v", calls[1].Args, wantSource)
+	}
+}
+
+func TestMigrateRejectsReservedSourceContextBeforeApply(t *testing.T) {
+	test := newAppTest(t, true)
+	source := filepath.Join(test.repository, ".beads")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	setResponses(t, map[string]string{
+		"config:get": `{"key":"issue_prefix","value":"hub"}`,
+		"list":       fmt.Sprintf(`[{"id":"old-1","labels":[%q]}]`, context),
+	})
+
+	code, _, stderr := test.run("migrate", "--dry-run", "--json")
+	if code != 1 || !strings.Contains(stderr, "reserved context label") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	assertNoViewerSignal(t, test)
+	if calls := test.calls(); len(calls) != 2 {
+		t.Fatalf("unexpected child calls=%#v", calls)
+	}
+}
+
+func TestMigrateRejectsSymlinksBeforeBackup(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		message string
+	}{
+		{name: "nested Hub symlink", message: "symlink"},
+		{name: "nested source symlink", message: "symlink"},
+		{name: "symlinked ledger", message: "symlink"},
+		{name: "symlinked Hub config", message: "symlink"},
+		{name: "non-regular local config", message: "regular non-symlink"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			source := filepath.Join(test.repository, ".beads")
+			if err := os.MkdirAll(source, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			context := contextForTest(t, test.repository)
+			setResponses(t, map[string]string{
+				"config:get": `{"key":"issue_prefix","value":"hub"}`,
+				"list":       `[{"id":"old-1","labels":[]}]`,
+			})
+			switch testCase.name {
+			case "nested Hub symlink":
+				target := t.TempDir()
+				if err := os.Symlink(target, filepath.Join(test.store, "nested")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			case "nested source symlink":
+				target := t.TempDir()
+				if err := os.Symlink(target, filepath.Join(source, "nested")); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			case "symlinked ledger":
+				target := filepath.Join(t.TempDir(), "ledger.jsonl")
+				if err := os.WriteFile(target, []byte{}, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, test.app.paths.Ledger); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			case "symlinked Hub config":
+				target := filepath.Join(t.TempDir(), "hub.yaml")
+				if err := os.MkdirAll(filepath.Dir(test.app.paths.Config), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, test.app.paths.Config); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			case "non-regular local config":
+				if err := os.Mkdir(filepath.Join(test.store, "config.local.yaml"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeHubConfig(t, test, map[string]string{context: test.repository})
+
+			code, _, stderr := test.run("migrate", "--apply", "--json")
+			if code != 1 || !strings.Contains(stderr, testCase.message) {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			backups, err := filepath.Glob(filepath.Join(filepath.Dir(test.store), "wbd-migrate-backup-*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(backups) != 0 {
+				t.Fatalf("preflight created backups=%v", backups)
+			}
+		})
+	}
+}
+
+func TestValidateMigrationStoreBackendRejectsLoopbackServerMarker(t *testing.T) {
+	store := t.TempDir()
+	metadata := []byte(`{"backend":"dolt","dolt_mode":"embedded","dolt_server_host":"127.0.0.1"}`)
+	if err := os.WriteFile(filepath.Join(store, "metadata.json"), metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMigrationStoreBackend(store, "test store"); err == nil || !strings.Contains(err.Error(), "server-mode") {
+		t.Fatalf("error=%v, want loopback server marker rejection", err)
+	}
+}
+
+func TestValidateMigrationStoreBackendRejectsDoltConfigMarkers(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		config string
+		local  string
+	}{
+		{name: "host", config: "dolt:\n  host: 127.0.0.1\n"},
+		{name: "port", config: "dolt:\n  port: 3307\n"},
+		{name: "local override", config: "dolt:\n  mode: embedded\n", local: "dolt:\n  host: 127.0.0.1\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := t.TempDir()
+			if err := os.WriteFile(filepath.Join(store, "config.yaml"), []byte(testCase.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.local != "" {
+				if err := os.WriteFile(filepath.Join(store, "config.local.yaml"), []byte(testCase.local), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := validateMigrationStoreBackend(store, "test store"); err == nil || !strings.Contains(err.Error(), "server-mode") {
+				t.Fatalf("error=%v, want server marker rejection", err)
+			}
+		})
+	}
+}
+
+func TestValidateMigrationStoreBackendAcceptsConfigLocalOverrides(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		config string
+		local  string
+	}{
+		{name: "clears host", config: "dolt:\n  host: 127.0.0.1\n", local: "dolt:\n  host: \"\"\n"},
+		{name: "clears port", config: "dolt:\n  port: 3307\n", local: "dolt:\n  port: \"\"\n"},
+		{name: "overrides mode", config: "dolt:\n  mode: server\n", local: "dolt:\n  mode: embedded\n"},
+		{name: "overrides shared", config: "dolt:\n  shared-server: true\n", local: "dolt:\n  shared-server: false\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := t.TempDir()
+			if err := os.WriteFile(filepath.Join(store, "config.yaml"), []byte(testCase.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(store, "config.local.yaml"), []byte(testCase.local), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateMigrationStoreBackend(store, "test store"); err != nil {
+				t.Fatalf("error=%v, want local override to clear server marker", err)
+			}
+		})
+	}
+}
+
+func TestValidateMigrationStoreBackendRejectsExplicitModeMarkers(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		metadata string
+		config   string
+	}{
+		{name: "server", metadata: `{"backend":"dolt","dolt_mode":"server"}`},
+		{name: "proxied", metadata: `{"backend":"dolt","dolt_mode":"proxied-server"}`},
+		{name: "shared", config: "dolt:\n  shared-server: true\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := t.TempDir()
+			if testCase.metadata != "" {
+				if err := os.WriteFile(filepath.Join(store, "metadata.json"), []byte(testCase.metadata), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase.config != "" {
+				if err := os.WriteFile(filepath.Join(store, "config.yaml"), []byte(testCase.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := validateMigrationStoreBackend(store, "test store"); err == nil || !strings.Contains(err.Error(), "server-mode") {
+				t.Fatalf("error=%v, want explicit mode-marker rejection", err)
+			}
+		})
+	}
+}
+
+func TestMigratePartialLedgerRetryCompletesAndDeduplicates(t *testing.T) {
+	test := newAppTest(t, true)
+	source := filepath.Join(test.repository, ".beads")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "source-data"), []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, test.repository, "add", ".beads/source-data")
+	git(t, test.repository, "commit", "-m", "fix old-1")
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalHub, err := filepath.EvalSymlinks(test.app.paths.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	hubID := "hub-" + strings.Repeat("b", 64)
+	show := fmt.Sprintf(`[{"id":%q,"status":"open","issue_type":"task","labels":["imported",%q]}]`, hubID, context)
+	applied := fmt.Sprintf(`{"schema_version":1,"source":%q,"destination":%q,"digest":"backend-digest","applied":true,"issues_imported":1,"history_imported":1,"events_imported":1,"provenance_imported":1,"issue_map":{"old-1":%q}}`, canonicalSource, canonicalHub, hubID)
+	setResponses(t, map[string]string{
+		"config:get":    `{"key":"issue_prefix","value":"hub"}`,
+		"list":          `[{"id":"old-1","labels":[]}]`,
+		"list:hub":      show,
+		"store-copy":    applied,
+		"show:" + hubID: show,
+	})
+	if err := os.MkdirAll(filepath.Dir(test.app.paths.Ledger), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(test.app.paths.Ledger, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := test.run("migrate", "--apply", "--json")
+	if code != 1 || !strings.Contains(stderr, "incomplete apply") {
+		t.Fatalf("first apply code=%d stderr=%q", code, stderr)
+	}
+	if backups, err := filepath.Glob(filepath.Join(filepath.Dir(test.store), "wbd-migrate-backup-*")); err != nil || len(backups) != 1 {
+		t.Fatalf("first apply backups=%v err=%v", backups, err)
+	}
+	if err := os.WriteFile(test.app.paths.Ledger, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	noOp := fmt.Sprintf(`{"schema_version":1,"source":%q,"destination":%q,"digest":"backend-digest","applied":false,"issues_imported":0,"history_imported":0,"events_imported":0,"provenance_imported":0,"issue_map":{"old-1":%q}}`, canonicalSource, canonicalHub, hubID)
+	setResponses(t, map[string]string{
+		"config:get":    `{"key":"issue_prefix","value":"hub"}`,
+		"list":          `[{"id":"old-1","labels":[]}]`,
+		"list:hub":      show,
+		"store-copy":    noOp,
+		"show:" + hubID: show,
+	})
+	code, stdout, stderr := test.run("migrate", "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("retry code=%d stderr=%q", code, stderr)
+	}
+	var output migrationOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Correlations.Added != 1 || output.Correlations.Existing != 0 {
+		t.Fatalf("retry correlations=%#v", output.Correlations)
+	}
+	ledger, err := os.ReadFile(test.app.paths.Ledger)
+	if err != nil || bytes.Count(ledger, []byte("\n")) != 1 {
+		t.Fatalf("ledger after retry=%q err=%v", ledger, err)
+	}
+
+	code, stdout, stderr = test.run("migrate", "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("dedupe retry code=%d stderr=%q", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Correlations.Added != 0 || output.Correlations.Existing != 1 {
+		t.Fatalf("dedupe correlations=%#v", output.Correlations)
+	}
+}
+
+func TestMigrateApplyBacksUpVerifiesAndResumes(t *testing.T) {
+	test := newAppTest(t, true)
+	source := filepath.Join(test.repository, ".beads")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(source, "source-data")
+	if err := os.WriteFile(sentinel, []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, test.repository, "add", ".beads/source-data")
+	git(t, test.repository, "commit", "-m", "fix old-1")
+	commitData, err := exec.Command("git", "-C", test.repository, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := strings.TrimSpace(string(commitData))
+	canonicalSource, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalHub, err := filepath.EvalSymlinks(test.app.paths.Store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	hubID := "hub-" + strings.Repeat("a", 64)
+	backend := fmt.Sprintf(`{"schema_version":1,"source":%q,"destination":%q,"digest":"backend-digest","applied":true,"issues_imported":1,"history_imported":1,"events_imported":1,"provenance_imported":1,"issue_map":{"old-1":%q}}`, canonicalSource, canonicalHub, hubID)
+	show := fmt.Sprintf(`[{"id":%q,"status":"open","issue_type":"task","labels":["imported","ordinary",%q]}]`, hubID, context)
+	setResponses(t, map[string]string{
+		"config:get":    `{"key":"issue_prefix","value":"hub"}`,
+		"list":          `[{"id":"old-1","labels":["ordinary"]}]`,
+		"list:hub":      show,
+		"store-copy":    backend,
+		"show:" + hubID: show,
+	})
+
+	before, err := migrationTreeDigest(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := test.run("migrate", "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("apply code=%d stderr=%q", code, stderr)
+	}
+	var output migrationOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("decode apply output: %v; stdout=%q", err, stdout)
+	}
+	if output.Backend == nil || !output.Backend.Applied || output.Correlations.Added != 1 || output.Verification == nil || !output.Verification.SourceUnchanged {
+		t.Fatalf("unexpected apply output: %#v", output)
+	}
+	if got, err := migrationTreeDigest(source); err != nil || got != before {
+		t.Fatalf("source digest changed: got=%q want=%q err=%v", got, before, err)
+	}
+	backupInfo, err := os.Stat(output.BackupPath)
+	if err != nil || !backupInfo.IsDir() || backupInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("backup=%q info=%v err=%v", output.BackupPath, backupInfo, err)
+	}
+	for _, path := range []string{
+		filepath.Join(output.BackupPath, "source", ".beads", "source-data"),
+		filepath.Join(output.BackupPath, "hub", ".beads"),
+		filepath.Join(output.BackupPath, "hub.yaml"),
+		filepath.Join(output.BackupPath, "checksums.sha256"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("backup path %q: %v", path, err)
+		}
+	}
+	checksums, err := os.ReadFile(filepath.Join(output.BackupPath, "checksums.sha256"))
+	if err != nil || !strings.Contains(string(checksums), "source/.beads/source-data") {
+		t.Fatalf("backup checksums=%q err=%v", checksums, err)
+	}
+	checksumInfo, err := os.Stat(filepath.Join(output.BackupPath, "checksums.sha256"))
+	if err != nil || checksumInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("checksum mode=%v err=%v", checksumInfo, err)
+	}
+	assertViewerSignal(t, test)
+
+	calls := test.calls()
+	wantCopy := []string{"--db", canonicalHub, "--json", "store-copy", canonicalSource, canonicalHub, "--prefix", "hub", "--namespace", context, "--label", "imported", "--label", context}
+	foundCopy := false
+	for _, call := range calls {
+		if reflect.DeepEqual(call.Args, wantCopy) {
+			foundCopy = true
+			break
+		}
+	}
+	if !foundCopy {
+		t.Fatalf("store-copy call not found in %#v", calls)
+	}
+	hubListCalls := 0
+	for _, call := range calls {
+		if fakeCommandKey(call.Args) == "list" && len(call.Args) > 1 && call.Args[1] == canonicalHub {
+			hubListCalls++
+		}
+	}
+	if hubListCalls != 1 {
+		t.Fatalf("Hub verification list calls=%d, want 1; calls=%#v", hubListCalls, calls)
+	}
+
+	ledgerBefore, err := os.ReadFile(test.app.paths.Ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ledgerBefore), commit) {
+		t.Fatalf("ledger=%q does not contain exact commit %q", ledgerBefore, commit)
+	}
+	noOp := fmt.Sprintf(`{"schema_version":1,"source":%q,"destination":%q,"digest":"backend-digest","applied":false,"issues_imported":0,"history_imported":0,"events_imported":0,"provenance_imported":0,"issue_map":{"old-1":%q}}`, canonicalSource, canonicalHub, hubID)
+	setResponses(t, map[string]string{
+		"config:get":    `{"key":"issue_prefix","value":"hub"}`,
+		"list":          `[{"id":"old-1","labels":["ordinary"]}]`,
+		"list:hub":      show,
+		"store-copy":    noOp,
+		"show:" + hubID: show,
+	})
+	code, stdout, stderr = test.run("migrate", "--apply", "--json")
+	if code != 0 {
+		t.Fatalf("retry code=%d stderr=%q", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Backend == nil || output.Backend.Applied || output.Correlations.Existing != 1 {
+		t.Fatalf("unexpected retry output: %#v", output)
+	}
+	ledgerAfter, err := os.ReadFile(test.app.paths.Ledger)
+	if err != nil || !bytes.Equal(ledgerAfter, ledgerBefore) {
+		t.Fatalf("retry changed ledger: err=%v before=%q after=%q", err, ledgerBefore, ledgerAfter)
+	}
+	backups, err := filepath.Glob(filepath.Join(filepath.Dir(test.store), "wbd-migrate-backup-*"))
+	if err != nil || len(backups) != 2 {
+		t.Fatalf("retry backups=%v err=%v", backups, err)
+	}
 }
 
 func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {

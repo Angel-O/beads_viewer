@@ -20,6 +20,7 @@ import (
 
 var isolatedVariables = map[string]bool{
 	"BD_DB": true, "BEADS_DB": true, "BD_GLOBAL": true,
+	"BD_JSON_ENVELOPE":    true,
 	"BEADS_DOLT_DATA_DIR": true, "BEADS_DOLT_PORT": true,
 	"BEADS_DOLT_PROXIED_SERVER": true, "BEADS_DOLT_SERVER_DATABASE": true,
 	"BEADS_DOLT_SERVER_HOST": true, "BEADS_DOLT_SERVER_MODE": true,
@@ -385,6 +386,8 @@ func (a *app) run(arguments []string) int {
 			return a.fail(fmt.Errorf("writing correlation removal result: %w", err))
 		}
 		return code
+	case "migrate":
+		return a.migrate(request)
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
@@ -1224,11 +1227,15 @@ func (a *app) runBDCapture(directory string, arguments ...string) ([]byte, error
 }
 
 func (a *app) runBDCaptureWithStderr(directory string, arguments ...string) ([]byte, []byte, error) {
-	arguments = append([]string{"--db", a.paths.Store}, arguments...)
+	return a.runBDCaptureAtStore(directory, a.paths.Store, arguments...)
+}
+
+func (a *app) runBDCaptureAtStore(directory, store string, arguments ...string) ([]byte, []byte, error) {
+	arguments = append([]string{"--db", store}, arguments...)
 	command := exec.Command("bd", arguments...)
 	command.Dir = directory
 	command.Stdin = a.stdin
-	command.Env = isolatedEnvironment(a.paths.Store, false)
+	command.Env = isolatedEnvironment(store, false)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	output, err := command.Output()
