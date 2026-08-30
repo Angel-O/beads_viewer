@@ -6855,15 +6855,15 @@ func (m Model) renderSplitView() string {
 	// Combine header + list + page indicator
 	listContent := lipgloss.JoinVertical(lipgloss.Left, header, m.list.View(), pageLine)
 
-	// List Panel Width: Inner + 2 (Padding). Border adds another 2.
+	// Use the list content width directly; the panel style adds only its border.
 	// Use MaxHeight to ensure content doesn't overflow
 	listView := listStyle.
-		Width(listInnerWidth + 2).
+		Width(listInnerWidth).
 		Height(panelHeight).
 		MaxHeight(panelHeight).
 		Render(listContent)
 
-	// Detail Panel Width: Inner + 2 (Padding). Border adds another 2.
+	// Keep the detail panel's existing two-cell wrapper slack.
 	detailView := detailStyle.
 		Width(m.viewport.Width + 2).
 		Height(panelHeight).
@@ -9422,8 +9422,8 @@ func (m *Model) applyContentSizing() {
 	m.tree.SetSize(contentWidth, m.height-1)
 
 	if m.isSplitView {
-		// Calculate dimensions accounting for 2 panels with borders(2)+padding(2) = 4 overhead each
-		// Total overhead = 8
+		// Keep the existing pane allocation; the list gets its former two-cell
+		// wrapper spacer as content instead.
 		availWidth := contentWidth - 8
 		if availWidth < 10 {
 			availWidth = 10
@@ -9439,7 +9439,7 @@ func (m *Model) applyContentSizing() {
 			listHeight = 3
 		}
 
-		m.list.SetSize(listInnerWidth, listHeight)
+		m.list.SetSize(listInnerWidth+2, listHeight)
 		m.viewport = viewport.New(detailInnerWidth, bodyHeight-2) // Account for border
 
 		m.renderer.SetWidthWithTheme(detailInnerWidth, m.theme)
@@ -9483,7 +9483,8 @@ func (m *Model) recalculateSplitPaneSizes() {
 		bodyHeight = 5
 	}
 
-	// Calculate dimensions accounting for 2 panels with borders(2)+padding(2) = 4 overhead each.
+	// Keep the existing pane allocation; the list gets its former two-cell
+	// wrapper spacer as content instead.
 	// Reserve the shortcuts sidebar column when it is open (#168) so the joined
 	// body+sidebar fits the terminal.
 	availWidth := m.mainContentWidth() - 8
@@ -9499,7 +9500,7 @@ func (m *Model) recalculateSplitPaneSizes() {
 		listHeight = 3
 	}
 
-	m.list.SetSize(listInnerWidth, listHeight)
+	m.list.SetSize(listInnerWidth+2, listHeight)
 	m.viewport = viewport.New(detailInnerWidth, bodyHeight-2)
 	m.renderer.SetWidthWithTheme(detailInnerWidth, m.theme)
 	m.updateListDelegate()
@@ -9554,9 +9555,9 @@ func (m Model) listChromeLines() int {
 // click math and the renderers share a single source of truth:
 //
 //   - Split view (m.isSplitView): the list panel is drawn on the left wrapped
-//     in a rounded-border panel of total width listInnerWidth+4 (1 border + 1
-//     style-content padding column on each side, with the list rendered at
-//     listInnerWidth). A click with x inside that span focuses the list; any
+//     in a rounded-border panel of total width listInnerWidth+2 (one border
+//     cell on each side, with the list rendered at listInnerWidth). A click
+//     with x inside that span focuses the list; any
 //     other x focuses the detail panel. Within the list panel the lines above
 //     the first row are: the top border, the column header, and the list's
 //     always-present title/filter bar (listChromeLines() == 3), so the clicked
@@ -9622,10 +9623,9 @@ func (m Model) handleLeftClick(x, y int) Model {
 	}
 
 	if m.isSplitView {
-		// Total width of the bordered list panel: list rendered at
-		// listInnerWidth, wrapped by a style of Width(listInnerWidth+2) plus a
-		// 1-cell rounded border on each side => listInnerWidth+4 total.
-		listPanelWidth := m.list.Width() + 4
+		// Total width of the bordered list panel: list content plus one border
+		// cell on each side.
+		listPanelWidth := m.list.Width() + 2
 		if x < listPanelWidth {
 			wasInsightsDetail := m.insightsDetailID != ""
 			m.insightsDetailID = ""

@@ -58,7 +58,7 @@ func TestLeftClickSelectsListRowInSplitView(t *testing.T) {
 		t.Fatalf("setup: expected list index 0, got %d", got)
 	}
 
-	// The list panel occupies x in [0, listInnerWidth+4). The lines above the
+	// The list panel occupies x in [0, listInnerWidth+2). The lines above the
 	// first row are border + header + filter bar (listChromeLines()), so the
 	// first row is at y == listChromeLines(). Click row index 3.
 	x := 5 // well inside the left panel
@@ -84,8 +84,8 @@ func TestLeftClickFocusesDetailPanel(t *testing.T) {
 	m.list.Select(4)
 	m.focused = focusList
 
-	// listInnerWidth+4 is the panel boundary; click past it (far right).
-	x := m.list.Width() + 4 + 10
+	// listInnerWidth+2 is the panel boundary; click past it (far right).
+	x := m.list.Width() + 2 + 10
 	updated := m.handleLeftClick(x, 5)
 
 	if updated.focused != focusDetail {

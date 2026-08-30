@@ -579,10 +579,10 @@ func TestShortcutsSidebarReservesLayoutWidth(t *testing.T) {
 			// at least the sidebar's reserved column.
 			wantBodyWidth := m.width - m.shortcutsSidebar.Width()
 			if m.isSplitView {
-				// list inner width + 4 (border+padding both sides) is the list
+				// list inner width + 2 (the panel border) is the list
 				// panel; it must be well within the reserved body width.
-				if m.list.Width()+4 > wantBodyWidth {
-					t.Errorf("list panel width %d does not leave room for sidebar (reserved body %d)", m.list.Width()+4, wantBodyWidth)
+				if m.list.Width()+2 > wantBodyWidth {
+					t.Errorf("list panel width %d does not leave room for sidebar (reserved body %d)", m.list.Width()+2, wantBodyWidth)
 				}
 			} else if m.list.Width() > wantBodyWidth {
 				t.Errorf("mobile list width %d exceeds reserved body width %d", m.list.Width(), wantBodyWidth)
