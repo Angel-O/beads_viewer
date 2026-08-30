@@ -113,7 +113,11 @@ func (a *app) migrate(request request) int {
 	data, diagnostic, err := a.runBDCaptureAtStore(a.dir, plan.destination, "--json", "store-copy", plan.source, plan.destination,
 		"--prefix", plan.prefix, "--namespace", plan.context, "--label", "imported", "--label", plan.context)
 	if err != nil {
-		if detail := strings.TrimSpace(string(diagnostic)); detail != "" {
+		detail := strings.TrimSpace(string(diagnostic))
+		if detail == "" {
+			detail = strings.TrimSpace(string(data))
+		}
+		if detail != "" {
 			return a.fail(fmt.Errorf("copying local store into Hub: %w: %s", err, detail))
 		}
 		return a.fail(fmt.Errorf("copying local store into Hub: %w", err))
@@ -437,7 +441,7 @@ func validateMigrationBackend(plan migrationPlan, result *migrationBackendResult
 	}
 	known := make(map[string]struct{}, len(plan.issues))
 	destinations := make(map[string]struct{}, len(plan.issues))
-	destinationPattern := regexp.MustCompile("^" + regexp.QuoteMeta(plan.prefix) + `-[0-9a-f]{64}$`)
+	destinationPattern := regexp.MustCompile("^" + regexp.QuoteMeta(plan.prefix) + `-[0-9a-z]{3,8}$`)
 	for _, issue := range plan.issues {
 		known[issue.ID] = struct{}{}
 		mapped, ok := result.IssueMap[issue.ID]

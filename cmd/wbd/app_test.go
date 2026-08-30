@@ -244,7 +244,7 @@ func TestIsolatedEnvironmentRemovesBDJSONEnvelope(t *testing.T) {
 }
 
 func TestValidateMigrationBackendRejectsAnyNoOpImportCount(t *testing.T) {
-	hubID := "hub-" + strings.Repeat("a", 64)
+	hubID := "hub-8c2"
 	plan := migrationPlan{
 		source:      "source",
 		destination: "destination",
@@ -286,7 +286,7 @@ func TestValidateMigrationBackendRejectsWrongPrefixMapping(t *testing.T) {
 		Source:      plan.source,
 		Destination: plan.destination,
 		Digest:      "digest",
-		IssueMap:    map[string]string{"old-1": "other-" + strings.Repeat("a", 64)},
+		IssueMap:    map[string]string{"old-1": "other-8c2"},
 	}
 	if err := validateMigrationBackend(plan, result); err == nil || !strings.Contains(err.Error(), "invalid destination issue ID") {
 		t.Fatalf("error=%v, want wrong-prefix rejection", err)
@@ -299,7 +299,7 @@ func TestVerifyMigrationRequiresOrdinarySourceLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	context := "ctx:verify"
-	hubID := "hub-" + strings.Repeat("a", 64)
+	hubID := "hub-8c2"
 	plan := migrationPlan{
 		destination: test.store,
 		context:     context,
@@ -561,6 +561,30 @@ func TestValidateMigrationStoreBackendRejectsExplicitModeMarkers(t *testing.T) {
 	}
 }
 
+func TestMigrateReportsStoreCopyStdoutDiagnostic(t *testing.T) {
+	test := newAppTest(t, true)
+	source := filepath.Join(test.repository, ".beads")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "source-data"), []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	context := contextForTest(t, test.repository)
+	writeHubConfig(t, test, map[string]string{context: test.repository})
+	setResponses(t, map[string]string{
+		"config:get": `{"key":"issue_prefix","value":"hub"}`,
+		"list":       `[{"id":"old-1","labels":[]}]`,
+		"store-copy": `{"schema_version":1,"error":"backend copy failed"}`,
+	})
+	setExitCodes(t, map[string]int{"store-copy": 1})
+
+	code, _, stderr := test.run("migrate", "--apply", "--json")
+	if code != 1 || !strings.Contains(stderr, "backend copy failed") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
 func TestMigratePartialLedgerRetryCompletesAndDeduplicates(t *testing.T) {
 	test := newAppTest(t, true)
 	source := filepath.Join(test.repository, ".beads")
@@ -582,7 +606,7 @@ func TestMigratePartialLedgerRetryCompletesAndDeduplicates(t *testing.T) {
 	}
 	context := contextForTest(t, test.repository)
 	writeHubConfig(t, test, map[string]string{context: test.repository})
-	hubID := "hub-" + strings.Repeat("b", 64)
+	hubID := "hub-k91"
 	show := fmt.Sprintf(`[{"id":%q,"status":"open","issue_type":"task","labels":["imported",%q]}]`, hubID, context)
 	applied := fmt.Sprintf(`{"schema_version":1,"source":%q,"destination":%q,"digest":"backend-digest","applied":true,"issues_imported":1,"history_imported":1,"events_imported":1,"provenance_imported":1,"issue_map":{"old-1":%q}}`, canonicalSource, canonicalHub, hubID)
 	setResponses(t, map[string]string{
@@ -672,7 +696,7 @@ func TestMigrateApplyBacksUpVerifiesAndResumes(t *testing.T) {
 	}
 	context := contextForTest(t, test.repository)
 	writeHubConfig(t, test, map[string]string{context: test.repository})
-	hubID := "hub-" + strings.Repeat("a", 64)
+	hubID := "hub-8c2"
 	backend := fmt.Sprintf(`{"schema_version":1,"source":%q,"destination":%q,"digest":"backend-digest","applied":true,"issues_imported":1,"history_imported":1,"events_imported":1,"provenance_imported":1,"issue_map":{"old-1":%q}}`, canonicalSource, canonicalHub, hubID)
 	show := fmt.Sprintf(`[{"id":%q,"status":"open","issue_type":"task","labels":["imported","ordinary",%q]}]`, hubID, context)
 	setResponses(t, map[string]string{
