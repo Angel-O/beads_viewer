@@ -310,6 +310,11 @@ func TestShortcutsSidebarHidesListEnterInSplitView(t *testing.T) {
 	if !strings.Contains(view, "enter") {
 		t.Fatal("List sidebar omitted the registry-backed Enter binding")
 	}
+	for _, expected := range []string{"up", "down", "left", "right", "Move up", "Move down", "Previous page", "Next page"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("List sidebar omitted active arrow binding %q: %s", expected, view)
+		}
+	}
 
 	sidebar.SetSplitView(true)
 	view = sidebar.View()

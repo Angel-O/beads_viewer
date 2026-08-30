@@ -294,6 +294,10 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// consume these keys differently and are not registry view contexts.
 		{"j", "Move down", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
 		{"k", "Move up", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"up", "Move up", "Navigation", "list"},
+		{"down", "Move down", "Navigation", "list"},
+		{"left", "Previous page", "Navigation", "list"},
+		{"right", "Next page", "Navigation", "list"},
 		{"home", "Go to start", "Navigation", "list,board,label-dashboard,flow"},
 		{"enter", "Open details", "Navigation", "list"},
 		{"G", "Go to end", "Navigation", "list,board,tree,flow,label-dashboard"},
