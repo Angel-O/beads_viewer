@@ -6744,12 +6744,6 @@ func (m Model) renderIssueListHeader() string {
 func (m Model) renderListWithHeader() string {
 	t := m.theme
 
-	// Calculate dimensions based on actual list height set in sizing
-	availableHeight := m.list.Height()
-	if availableHeight == 0 {
-		availableHeight = m.height - 3 // fallback
-	}
-
 	// Width available to this (single-column) body. When the shortcuts sidebar
 	// is open it reserves its own column, so the header/page lines and the final
 	// clamp below must shrink to the reserved width — otherwise the body is drawn
@@ -6763,25 +6757,18 @@ func (m Model) renderListWithHeader() string {
 	header := m.renderIssueListHeader()
 
 	// Page info
-	totalItems := len(m.list.Items())
-	currentIdx := m.list.Index()
-	itemsPerPage := availableHeight
-	if itemsPerPage < 1 {
-		itemsPerPage = 1
-	}
-	currentPage := (currentIdx / itemsPerPage) + 1
-	totalPages := (totalItems + itemsPerPage - 1) / itemsPerPage
+	totalItems := len(m.list.VisibleItems())
+	currentPage := m.list.Paginator.Page + 1
+	totalPages := m.list.Paginator.TotalPages
 	if totalPages < 1 {
 		totalPages = 1
 	}
+	start, end := m.list.Paginator.GetSliceBounds(totalItems)
 	startItem := 0
 	endItem := 0
-	if totalItems > 0 {
-		startItem = (currentPage-1)*itemsPerPage + 1
-		endItem = startItem + itemsPerPage - 1
-		if endItem > totalItems {
-			endItem = totalItems
-		}
+	if start < end {
+		startItem = start + 1
+		endItem = end
 	}
 
 	pageInfo := fmt.Sprintf(" Page %d of %d (items %d-%d of %d) ", currentPage, totalPages, startItem, endItem, totalItems)
@@ -6843,28 +6830,18 @@ func (m Model) renderSplitView() string {
 	header := m.renderIssueListHeader()
 
 	// Page info for list
-	totalItems := len(m.list.Items())
-	currentIdx := m.list.Index()
-	listHeight := m.list.Height()
-	if listHeight == 0 {
-		listHeight = panelHeight - 3 // fallback
-	}
-	if listHeight < 1 {
-		listHeight = 1
-	}
-	currentPage := (currentIdx / listHeight) + 1
-	totalPages := (totalItems + listHeight - 1) / listHeight
+	totalItems := len(m.list.VisibleItems())
+	currentPage := m.list.Paginator.Page + 1
+	totalPages := m.list.Paginator.TotalPages
 	if totalPages < 1 {
 		totalPages = 1
 	}
+	start, end := m.list.Paginator.GetSliceBounds(totalItems)
 	startItem := 0
 	endItem := 0
-	if totalItems > 0 {
-		startItem = (currentPage-1)*listHeight + 1
-		endItem = startItem + listHeight - 1
-		if endItem > totalItems {
-			endItem = totalItems
-		}
+	if start < end {
+		startItem = start + 1
+		endItem = end
 	}
 
 	pageInfo := fmt.Sprintf("Page %d/%d (%d-%d of %d) ", currentPage, totalPages, startItem, endItem, totalItems)
@@ -6978,6 +6955,7 @@ func (m *Model) renderHelpOverlay() string {
 	navSection := []struct{ key, desc string }{
 		{"j / ↓", "Move down"},
 		{"k / ↑", "Move up"},
+		{"← / →", "Previous / next page"},
 		{"Home/G", "First / last"},
 		{"Ctrl+d", "Page down"},
 		{"Ctrl+u", "Page up"},

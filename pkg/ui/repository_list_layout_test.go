@@ -717,6 +717,77 @@ func TestListMetadataColumnsStayStableAcrossNavigationFiltersAndScopes(t *testin
 	}
 }
 
+func TestListPaginationFooterMatchesPaginatorAfterArrowNavigation(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		width     int
+		wantSplit bool
+	}{
+		{name: "single-column", width: 80},
+		{name: "split", width: 120, wantSplit: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(60), testCase.width, 24)
+			if m.isSplitView != testCase.wantSplit {
+				t.Fatalf("isSplitView = %v, want %v", m.isSplitView, testCase.wantSplit)
+			}
+			if m.list.Paginator.TotalPages < 3 {
+				t.Fatalf("test setup produced %d pages, want at least 3", m.list.Paginator.TotalPages)
+			}
+
+			assertFooter := func(wantPage int) {
+				t.Helper()
+				items := m.list.VisibleItems()
+				start, end := m.list.Paginator.GetSliceBounds(len(items))
+				page := m.list.Paginator.Page + 1
+				if page != wantPage {
+					t.Fatalf("current page = %d, want %d", page, wantPage)
+				}
+				startItem, endItem := 0, 0
+				if start < end {
+					startItem, endItem = start+1, end
+				}
+				view := m.renderListWithHeader()
+				if m.isSplitView {
+					view = m.renderSplitView()
+				}
+				want := fmt.Sprintf("%d-%d of %d", startItem, endItem, len(items))
+				if !strings.Contains(view, want) {
+					t.Fatalf("page %d footer missing %q:\n%s", page, want, view)
+				}
+				pageLabel := fmt.Sprintf("Page %d of %d", page, m.list.Paginator.TotalPages)
+				if m.isSplitView {
+					pageLabel = fmt.Sprintf("Page %d/%d", page, m.list.Paginator.TotalPages)
+				}
+				if !strings.Contains(view, pageLabel) {
+					t.Fatalf("rendered page label missing %q:\n%s", pageLabel, view)
+				}
+				if start < end {
+					id := fmt.Sprintf("bv-%03d", start)
+					if !strings.Contains(view, id) {
+						t.Fatalf("page %d does not render first paginator item %q:\n%s", page, id, view)
+					}
+				}
+			}
+
+			assertFooter(1)
+			for _, step := range []struct {
+				key  string
+				page int
+			}{
+				{key: "right", page: 2},
+				{key: "right", page: 3},
+				{key: "left", page: 2},
+				{key: "left", page: 1},
+			} {
+				updated, _ := m.Update(keyMsg(step.key))
+				m = updated.(Model)
+				assertFooter(step.page)
+			}
+		})
+	}
+}
+
 func TestListLayoutUsesCanonicalIssuesWhenFiltersRemoveWidestMetadata(t *testing.T) {
 	wideID := strings.Repeat("widest-id-", 5)
 	issues := []model.Issue{

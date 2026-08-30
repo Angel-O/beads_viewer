@@ -142,7 +142,8 @@ func renderCompactNavigationHint(state compactNavigationState) string {
 const contextHelpList = `## List View
 
 **Navigation**
-  j/k       Move up/down
+  j/k / Up/Down  Move up/down
+  Left/Right     Previous/next page
   Enter     View issue details
   Home/G    Jump to top/bottom
 
@@ -351,7 +352,8 @@ wider than 100 columns.
 	 >         Expand list pane
 
 **Left Pane (List)**
-  j/k       Navigate issues
+  j/k / Up/Down  Navigate issues
+  Left/Right     Previous/next page
 
 **Right Pane (Detail)**
   j/k       Scroll content

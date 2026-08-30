@@ -1292,7 +1292,7 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusAttention:      "attention",
 	}
 	required := map[focus][]string{
-		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5"},
+		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5", "up", "down", "left", "right"},
 		focusDetail:         {"j", "a", "b", "g", "h", "i", "E", "?", "F2/;", "tab", "n", "U", "x", "y", "C", "t", "T", "O", "Ctrl+R/F5"},
 		focusBoard:          {"h", "l", "j", "k", "G", "gg", "tab", "enter", "o", "c", "r", "/", "n/N", "1-4", "H/L", "0/$", "y", "s", "e", "d", "b", "?", "F2/;"},
 		focusGraph:          {"hjkl", "pgup/pgdown", "/", "n/N", "enter", "esc", "g", "b", "?", "F2/;"},
@@ -1329,6 +1329,41 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestListArrowDocsMatchActiveBubblesKeyMap(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	for _, testCase := range []struct {
+		docKey string
+		keys   []string
+	}{
+		{docKey: "up", keys: m.list.KeyMap.CursorUp.Keys()},
+		{docKey: "down", keys: m.list.KeyMap.CursorDown.Keys()},
+		{docKey: "left", keys: m.list.KeyMap.PrevPage.Keys()},
+		{docKey: "right", keys: m.list.KeyMap.NextPage.Keys()},
+	} {
+		active := false
+		for _, key := range testCase.keys {
+			if key == testCase.docKey {
+				active = true
+				break
+			}
+		}
+		if !active {
+			t.Fatalf("Bubbles list keymap does not activate %q: %v", testCase.docKey, testCase.keys)
+		}
+
+		documented := false
+		for _, doc := range GetKeyBindingDocs() {
+			if doc.Key == testCase.docKey && strings.Contains(doc.Context, "list") {
+				documented = true
+				break
+			}
+		}
+		if !documented {
+			t.Fatalf("active Bubbles list key %q is not documented for list context", testCase.docKey)
+		}
 	}
 }
 

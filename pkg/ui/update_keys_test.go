@@ -301,7 +301,7 @@ func TestListHelpRendersTreeAndExactTypePickerShortcuts(t *testing.T) {
 		t.Fatalf("? did not open List help: shown=%v focus=%v", m.showHelp, m.focused)
 	}
 	help := m.renderHelpOverlay()
-	if !strings.Contains(help, "E         Tree view") || !strings.Contains(help, "I         Exact issue-type picker") {
+	if !strings.Contains(help, "E         Tree view") || !strings.Contains(help, "I         Exact issue-type picker") || !strings.Contains(help, "← / →") {
 		t.Fatalf("List help lacks Tree or exact type shortcut:\n%s", help)
 	}
 }

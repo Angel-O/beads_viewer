@@ -230,6 +230,8 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 		shortcut string
 	}{
 		{ContextList, "j/k"},
+		{ContextList, "Up/Down"},
+		{ContextList, "Left/Right"},
 		{ContextList, "Enter"},
 		{ContextList, "n         Add comment"},
 		{ContextGraph, "h/l"},
@@ -243,6 +245,8 @@ func TestContextHelpKeyboardShortcuts(t *testing.T) {
 		{ContextDetail, "Esc"},
 		{ContextDetail, "n         Add comment"},
 		{ContextSplit, "Tab"},
+		{ContextSplit, "Up/Down"},
+		{ContextSplit, "Left/Right"},
 		{ContextFilter, "/"},
 	}
 
