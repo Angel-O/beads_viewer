@@ -29,6 +29,7 @@ var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "claim", "unclaim", "dep", "dep add", "dep remove",
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
+	"migrate",
 }
 
 var commandSpecs = map[string]commandSpec{
@@ -182,6 +183,14 @@ var commandSpecs = map[string]commandSpec{
 		path: "unlink", usage: "wbd unlink <bead-id> <full-commit-sha>", summary: "Remove one exact current-context commit correlation.",
 		examples: []string{`wbd unlink <id> 0123456789abcdef0123456789abcdef01234567`},
 	},
+	"migrate": {
+		path: "migrate", usage: "wbd migrate (--dry-run|--apply) --json", summary: "Copy the local repository store into the private Hub.",
+		options: []optionSpec{
+			{name: "--dry-run", description: "Validate and report without writing."},
+			{name: "--apply", description: "Back up and apply the migration."},
+			{name: "--json", description: "Required; emit JSON."},
+		},
+	},
 }
 
 func init() {
@@ -240,6 +249,8 @@ type request struct {
 	listAfterClosed    string
 	listBrief          bool
 	expandDependencies bool
+	migrateDryRun      bool
+	migrateApply       bool
 }
 
 func commandName(arguments []string) (string, error) {
@@ -316,6 +327,8 @@ func parse(arguments []string) (request, error) {
 		return parseDep(result, arguments)
 	case "close", "reopen":
 		return parseClose(result, arguments)
+	case "migrate":
+		return parseMigrate(result, arguments)
 	case "comments":
 		if len(arguments) == 0 {
 			return result, errors.New(usageFor("comments"))
@@ -366,6 +379,33 @@ func parse(arguments []string) (request, error) {
 		return result, errors.New("direct init is disabled; run 'wbd bootstrap'")
 	default:
 		return result, errors.New(supportedCommands())
+	}
+	return result, nil
+}
+
+func parseMigrate(result request, arguments []string) (request, error) {
+	seen := make(map[string]bool)
+	for _, argument := range arguments {
+		switch argument {
+		case "--json":
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+		case "--dry-run", "--apply":
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			if argument == "--dry-run" {
+				result.migrateDryRun = true
+			} else {
+				result.migrateApply = true
+			}
+		default:
+			return result, fmt.Errorf("unsupported option for migrate: %s", argument)
+		}
+	}
+	if !result.json || result.migrateDryRun == result.migrateApply {
+		return result, errors.New(usageFor("migrate"))
 	}
 	return result, nil
 }
