@@ -6863,9 +6863,9 @@ func (m Model) renderSplitView() string {
 		MaxHeight(panelHeight).
 		Render(listContent)
 
-	// Use the viewport content width directly; the panel style adds only its border.
+	// Keep the detail panel's existing two-cell wrapper slack.
 	detailView := detailStyle.
-		Width(m.viewport.Width).
+		Width(m.viewport.Width + 2).
 		Height(panelHeight).
 		MaxHeight(panelHeight).
 		Render(m.viewport.View())
@@ -9422,9 +9422,9 @@ func (m *Model) applyContentSizing() {
 	m.tree.SetSize(contentWidth, m.height-1)
 
 	if m.isSplitView {
-		// Calculate dimensions accounting for the two border cells per panel.
-		// Total overhead = 4.
-		availWidth := contentWidth - 4
+		// Keep the existing pane allocation; the list gets its former two-cell
+		// wrapper spacer as content instead.
+		availWidth := contentWidth - 8
 		if availWidth < 10 {
 			availWidth = 10
 		}
@@ -9439,7 +9439,7 @@ func (m *Model) applyContentSizing() {
 			listHeight = 3
 		}
 
-		m.list.SetSize(listInnerWidth, listHeight)
+		m.list.SetSize(listInnerWidth+2, listHeight)
 		m.viewport = viewport.New(detailInnerWidth, bodyHeight-2) // Account for border
 
 		m.renderer.SetWidthWithTheme(detailInnerWidth, m.theme)
@@ -9483,10 +9483,11 @@ func (m *Model) recalculateSplitPaneSizes() {
 		bodyHeight = 5
 	}
 
-	// Calculate dimensions accounting for the two border cells per panel.
+	// Keep the existing pane allocation; the list gets its former two-cell
+	// wrapper spacer as content instead.
 	// Reserve the shortcuts sidebar column when it is open (#168) so the joined
 	// body+sidebar fits the terminal.
-	availWidth := m.mainContentWidth() - 4
+	availWidth := m.mainContentWidth() - 8
 	if availWidth < 10 {
 		availWidth = 10
 	}
@@ -9499,7 +9500,7 @@ func (m *Model) recalculateSplitPaneSizes() {
 		listHeight = 3
 	}
 
-	m.list.SetSize(listInnerWidth, listHeight)
+	m.list.SetSize(listInnerWidth+2, listHeight)
 	m.viewport = viewport.New(detailInnerWidth, bodyHeight-2)
 	m.renderer.SetWidthWithTheme(detailInnerWidth, m.theme)
 	m.updateListDelegate()

@@ -571,6 +571,43 @@ func TestIssueListRightEdgeContractAcrossViewLayouts(t *testing.T) {
 	})
 }
 
+func TestSplitPaneReclaimsOnlyListSpacerAtNonDefaultRatios(t *testing.T) {
+	for _, ratio := range []float64{0.2, 0.8} {
+		t.Run(fmt.Sprintf("ratio-%.1f", ratio), func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(3), 160, 24)
+			m.splitPaneRatio = ratio
+			m.recalculateSplitPaneSizes()
+
+			allocatedWidth := int(float64(m.mainContentWidth()-8) * ratio)
+			if got, want := m.list.Width(), allocatedWidth+2; got != want {
+				t.Fatalf("list content width = %d, want prior allocation %d plus two reclaimed cells", got, want)
+			}
+			if got, want := m.viewport.Width, m.mainContentWidth()-8-allocatedWidth; got != want {
+				t.Fatalf("detail content width = %d, want %d", got, want)
+			}
+
+			wantListPanelWidth := allocatedWidth + 4
+			if got, want := m.list.Width()+2, wantListPanelWidth; got != want {
+				t.Fatalf("list panel width = %d, want unchanged divider at %d", got, want)
+			}
+			if got := m.handleLeftClick(wantListPanelWidth-1, 0).focused; got != focusList {
+				t.Fatalf("click before list boundary focused %v, want focusList", got)
+			}
+			if got := m.handleLeftClick(wantListPanelWidth, 0).focused; got != focusDetail {
+				t.Fatalf("click at list boundary focused %v, want focusDetail", got)
+			}
+
+			m.applyContentSizing()
+			if got, want := m.list.Width(), allocatedWidth+2; got != want {
+				t.Fatalf("applyContentSizing list width = %d, want %d", got, want)
+			}
+			if got, want := m.viewport.Width, m.mainContentWidth()-8-allocatedWidth; got != want {
+				t.Fatalf("applyContentSizing detail width = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
 func TestListMetadataBudgetImprovesTitleWidthAndIgnoresCommentPopulation(t *testing.T) {
 	item := newTestIssueItem("metadata-1")
 	item.Issue.Title = "A title with room to grow"
