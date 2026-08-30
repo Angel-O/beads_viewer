@@ -1244,7 +1244,7 @@ func (a *app) runBDCaptureAtStore(directory, store string, arguments ...string) 
 		if detail == "" {
 			detail = err.Error()
 		}
-		return nil, nil, errors.New(detail)
+		return output, nil, errors.New(detail)
 	}
 	return output, stderr.Bytes(), nil
 }
