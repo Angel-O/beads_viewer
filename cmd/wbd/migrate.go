@@ -110,9 +110,12 @@ func (a *app) migrate(request request) int {
 	if err != nil {
 		return a.fail(fmt.Errorf("creating migration backup: %w", err))
 	}
-	data, _, err := a.runBDCaptureAtStore(a.dir, plan.destination, "--json", "store-copy", plan.source, plan.destination,
+	data, diagnostic, err := a.runBDCaptureAtStore(a.dir, plan.destination, "--json", "store-copy", plan.source, plan.destination,
 		"--prefix", plan.prefix, "--namespace", plan.context, "--label", "imported", "--label", plan.context)
 	if err != nil {
+		if detail := strings.TrimSpace(string(diagnostic)); detail != "" {
+			return a.fail(fmt.Errorf("copying local store into Hub: %w: %s", err, detail))
+		}
 		return a.fail(fmt.Errorf("copying local store into Hub: %w", err))
 	}
 	backend, err := decodeMigrationBackend(data)

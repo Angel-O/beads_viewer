@@ -39,7 +39,7 @@ const (
 	beadsBulkHistoryMaxIDLength   = 255
 	// Bulk history can contain many full issue snapshots, but provider output
 	// must remain bounded so one malformed response cannot exhaust Viewer memory.
-	beadsBulkHistoryMaxResponseBytes = 64 << 20
+	beadsBulkHistoryMaxResponseBytes = 192 << 20
 	beadsBulkHistoryMaxStderrBytes   = 64 << 10
 )
 
