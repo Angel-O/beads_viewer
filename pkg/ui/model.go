@@ -326,7 +326,7 @@ func (m Model) commentRepositoryPath(issueID string) (string, error) {
 	if issue == nil {
 		return "", fmt.Errorf("cannot mutate comment for %s: issue is unavailable", issueID)
 	}
-	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.activeRepos)
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos)
 	if presentation.ID == "" || presentation.ID == contextlessRepositoryID {
 		return "", fmt.Errorf("cannot mutate comment for %s: no registered repository path; register its Hub context and retry", issueID)
 	}
@@ -1903,7 +1903,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
 		}
-		m.board.SetRepositoryPresentation(m.repositoryCatalog, false)
+		m.board.SetRepositoryPresentation(m.repositoryCatalog, false, m.currentRepositoryID, m.activeRepos)
 		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false)
 		return nil
 	}
@@ -1935,7 +1935,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
 		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
 	}
-	m.board.SetRepositoryPresentation(catalog, true)
+	m.board.SetRepositoryPresentation(catalog, true, m.currentRepositoryID, m.activeRepos)
 	m.insightsPanel.SetRepositoryPresentation(catalog, true)
 	return nil
 }
@@ -9718,7 +9718,7 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), nil)
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil)
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Context:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && presentation.ID == contextlessRepositoryID {

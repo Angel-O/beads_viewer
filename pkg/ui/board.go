@@ -30,10 +30,12 @@ type BoardModel struct {
 	blocksIndex map[string][]string
 
 	// Issue lookup map: ID -> *Issue for getting blocker titles (bv-kklp)
-	issueMap          map[string]*model.Issue
-	candidateIDs      map[string]bool
-	repositoryCatalog model.RepositoryCatalog
-	hubPresentation   bool
+	issueMap              map[string]*model.Issue
+	candidateIDs          map[string]bool
+	repositoryCatalog     model.RepositoryCatalog
+	hubPresentation       bool
+	currentRepositoryID   string
+	preferredRepositories map[string]bool
 
 	// Detail panel (bv-r6kh)
 	showDetail   bool
@@ -62,16 +64,18 @@ type BoardModel struct {
 	expandedCardID string
 }
 
-// SetRepositoryPresentation updates Hub-only display metadata and invalidates
-// rendered details even when the selected issue and repository IDs are stable.
-func (b *BoardModel) SetRepositoryPresentation(catalog model.RepositoryCatalog, enabled bool) {
+// SetRepositoryPresentation updates Hub-only display metadata, primary-context
+// preference, and invalidates rendered details for stable selected issues.
+func (b *BoardModel) SetRepositoryPresentation(catalog model.RepositoryCatalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool) {
 	b.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
 	b.hubPresentation = enabled
+	b.currentRepositoryID = currentRepositoryID
+	b.preferredRepositories = preferredRepositories
 	b.lastDetailID = ""
 }
 
 func (b BoardModel) issuePresentation(issue model.Issue) issueRepositoryPresentation {
-	return repositoryPresentationForIssue(issue, b.repositoryCatalog, b.hubPresentation, nil)
+	return repositoryPresentationForIssue(issue, b.repositoryCatalog, b.hubPresentation, b.currentRepositoryID, b.preferredRepositories)
 }
 
 // searchMatch holds info about a matching card (bv-yg39)

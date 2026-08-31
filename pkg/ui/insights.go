@@ -1832,7 +1832,7 @@ func (m *InsightsModel) buildDetailMarkdown(selectedID string) string {
 	}
 
 	var sb strings.Builder
-	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubPresentation, nil)
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubPresentation, "", nil)
 
 	// === HEADER: Title with Type Icon ===
 	sb.WriteString(fmt.Sprintf("# %s %s\n\n", GetTypeIconMD(string(issue.IssueType)), issue.Title))

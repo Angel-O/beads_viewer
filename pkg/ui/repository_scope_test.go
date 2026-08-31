@@ -598,7 +598,7 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: model.RepositoryIdentityHubContext},
 	}
 
-	presentation := repositoryPresentationForIssue(issue, catalog, true, nil)
+	presentation := repositoryPresentationForIssue(issue, catalog, true, "", nil)
 	if presentation.ID != "ctx:alpha" || presentation.Name != "teams/alpha/service" || presentation.Extra != 1 {
 		t.Fatalf("presentation = %+v", presentation)
 	}
@@ -637,17 +637,21 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 	}
 	catalog := model.RepositoryCatalog{
 		{ID: "ctx:repo-a", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:repo-b", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
+		{ID: "ctx:repo-b", Name: "beads", Kind: model.RepositoryIdentityHubContext},
 	}
 	tests := []struct {
 		name     string
+		current  string
 		selected map[string]bool
+		wantID   string
 		want     string
 	}{
-		{name: "dotfiles only", selected: map[string]bool{"ctx:repo-b": true}, want: "dotfiles"},
-		{name: "beads viewer only", selected: map[string]bool{"ctx:repo-a": true}, want: "beads_viewer"},
-		{name: "both selected", selected: map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true}, want: "beads_viewer"},
-		{name: "all items fallback", want: "beads_viewer"},
+		{name: "beads only", selected: map[string]bool{"ctx:repo-b": true}, wantID: "ctx:repo-b", want: "beads"},
+		{name: "beads viewer only", selected: map[string]bool{"ctx:repo-a": true}, wantID: "ctx:repo-a", want: "beads_viewer"},
+		{name: "both selected uses alphabetical fallback", selected: map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true}, wantID: "ctx:repo-b", want: "beads"},
+		{name: "current context wins", current: "ctx:repo-a", selected: map[string]bool{"ctx:repo-b": true}, wantID: "ctx:repo-a", want: "beads_viewer"},
+		{name: "current absent uses selected scope", current: "ctx:missing", selected: map[string]bool{"ctx:repo-b": true}, wantID: "ctx:repo-b", want: "beads"},
+		{name: "current absent uses alphabetical fallback", current: "ctx:missing", wantID: "ctx:repo-b", want: "beads"},
 	}
 
 	for _, tt := range tests {
@@ -655,6 +659,7 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 			m := NewModel([]model.Issue{issue}, nil, "")
 			m.hubConfigPath = "hub.yaml"
 			m.repositoryCatalog = catalog
+			m.currentRepositoryID = tt.current
 			m.SetRepositoryScope(tt.selected)
 			m.refreshRepositoryPresentation()
 
@@ -665,8 +670,47 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 			if strings.Contains(row, "[beads_viewer]") == (tt.want != "beads_viewer") {
 				t.Fatalf("list row used wrong primary repository: %q", row)
 			}
+			if presentation := m.board.issuePresentation(issue); presentation.ID != tt.wantID || presentation.Name != tt.want {
+				t.Fatalf("board presentation = %+v, want %s (%s)", presentation, tt.wantID, tt.want)
+			}
+			board := m.board.renderCard(issue, 48, false, 0, 0)
+			if !strings.Contains(board, RenderRepositoryBadgeCompact(tt.wantID, tt.want, 8)) {
+				t.Fatalf("board card used wrong primary repository: %q", board)
+			}
 		})
 	}
+
+	t.Run("production default and picker scope refresh rendered views", func(t *testing.T) {
+		m := NewModel([]model.Issue{issue}, nil, "")
+		m.hubConfigPath = "hub.yaml"
+		m.hubRepositoryMode = true
+		m.repositoryCatalog = catalog
+		m.repositoryCatalogReady = true
+		m.list.SetSize(120, 10)
+
+		if !m.SetDefaultRepositoryScope("ctx:repo-a") {
+			t.Fatal("default repository scope was not applied")
+		}
+
+		m.repoPicker = NewRepoPickerModel(catalog, m.theme)
+		m.repoPicker.SetHubScope(m.HubScope())
+		m.repoPicker.MoveDown()
+		m.repoPicker.MoveDown()
+		m.repoPicker.ToggleSelected()
+		m.repoPicker.MoveUp()
+		m.repoPicker.ToggleSelected()
+		m = m.applyRepositoryPickerSelection()
+
+		listView := m.list.View()
+		if !containsAll(listView, "[beads_viewer]", "+1") {
+			t.Fatalf("rendered list badge = %q", listView)
+		}
+		boardView := m.board.View(120, 30)
+		boardBadge := RenderRepositoryBadgeCompact("ctx:repo-a", "beads_viewer", 8)
+		if !containsAll(boardView, boardBadge, "+1") {
+			t.Fatalf("rendered board badge = %q", boardView)
+		}
+	})
 
 	t.Run("display name tie uses ID", func(t *testing.T) {
 		presentation := repositoryPresentationForIssue(
@@ -676,6 +720,7 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 				{ID: "ctx:repo-a", Name: "same", Kind: model.RepositoryIdentityHubContext},
 			},
 			true,
+			"",
 			map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true},
 		)
 		if presentation.ID != "ctx:repo-a" || presentation.Extra != 1 {
@@ -721,13 +766,13 @@ func TestHubCatalogChangeInvalidatesBoardAndInsightsPresentationCaches(t *testin
 
 	theme := DefaultTheme(lipgloss.NewRenderer(io.Discard))
 	board := NewBoardModel([]model.Issue{issue}, theme)
-	board.SetRepositoryPresentation(oldCatalog, true)
+	board.SetRepositoryPresentation(oldCatalog, true, "", nil)
 	board.ShowDetail()
 	_ = board.renderDetailPanel(80, 30)
 	if !strings.Contains(board.detailVP.View(), "old/name") {
 		t.Fatalf("initial board detail missing old name: %s", board.detailVP.View())
 	}
-	board.SetRepositoryPresentation(newCatalog, true)
+	board.SetRepositoryPresentation(newCatalog, true, "", nil)
 	_ = board.renderDetailPanel(80, 30)
 	if !strings.Contains(board.detailVP.View(), "new/name") || strings.Contains(board.detailVP.View(), "old/name") {
 		t.Fatalf("board detail cache stale: %s", board.detailVP.View())
@@ -1365,7 +1410,7 @@ func TestHubRepositoryBadgeFitsNarrowBoardCard(t *testing.T) {
 	board.SetRepositoryPresentation(model.RepositoryCatalog{
 		{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext},
 		{ID: "ctx:beta", Name: "beta/service", Kind: model.RepositoryIdentityHubContext},
-	}, true)
+	}, true, "", nil)
 	card := board.renderCard(issue, 20, false, 0, 0)
 	if !containsAll(card, "ver…", "+1") {
 		t.Fatalf("narrow repository badge displaced issue ID or multi-context count: %q", card)
