@@ -88,7 +88,7 @@ func contextlessIssueCount(issues []model.Issue) int {
 	return count
 }
 
-func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool, preferredRepositories map[string]bool) issueRepositoryPresentation {
+func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryCatalog, hubMode bool, currentRepositoryID string, preferredRepositories map[string]bool) issueRepositoryPresentation {
 	presentation := issueRepositoryPresentation{Labels: issue.Labels}
 	if !hubMode {
 		return presentation
@@ -118,8 +118,18 @@ func repositoryPresentationForIssue(issue model.Issue, catalog model.RepositoryC
 		}
 		return presentation
 	}
+	// Prefer the current repository, then the selected scope, then the
+	// deterministic display-name/ID ordering below.
 	candidates := matches
-	if len(preferredRepositories) > 0 {
+	currentFound := false
+	for _, repository := range matches {
+		if repository.ID == currentRepositoryID {
+			candidates = []model.RepositoryCatalogEntry{repository}
+			currentFound = true
+			break
+		}
+	}
+	if !currentFound && len(preferredRepositories) > 0 {
 		preferred := make([]model.RepositoryCatalogEntry, 0, len(matches))
 		for _, repository := range matches {
 			if preferredRepositories[repository.ID] {
@@ -265,7 +275,7 @@ func (m *Model) decorateIssueItem(item *IssueItem) {
 	if item == nil {
 		return
 	}
-	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.activeRepos)
+	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.currentRepositoryID, m.activeRepos)
 	item.HubPresentation = m.hubRepositoryPresentation()
 	item.RepositoryID = presentation.ID
 	item.RepositoryName = presentation.Name
@@ -338,7 +348,7 @@ func (m *Model) refreshRepositoryPresentation() {
 		m.updateListDelegate()
 		m.updateViewportContent()
 	}
-	m.board.SetRepositoryPresentation(m.repositoryCatalog, hubMode)
+	m.board.SetRepositoryPresentation(m.repositoryCatalog, hubMode, m.currentRepositoryID, m.activeRepos)
 	m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, hubMode)
 }
 
@@ -476,7 +486,10 @@ func (m *Model) SetDefaultRepositoryScope(repositoryID string) bool {
 	if repositoryID == "" || m.workspaceMode || !m.hubRepositoryMode {
 		return false
 	}
-	m.currentRepositoryID = repositoryID
+	if m.currentRepositoryID != repositoryID {
+		m.currentRepositoryID = repositoryID
+		m.refreshRepositoryPresentation()
+	}
 	if m.defaultRepositorySet {
 		return false
 	}
@@ -493,13 +506,14 @@ func (m *Model) applyDefaultRepositoryScope() bool {
 		if repository.Kind != model.RepositoryIdentityHubContext || repository.ID != m.defaultRepositoryID {
 			continue
 		}
-		m.activeRepos = map[string]bool{repository.ID: true}
 		scope, err := model.NewSelectedContextsHubScope([]string{repository.ID})
 		if err != nil {
 			return false
 		}
+		m.activeRepos = map[string]bool{repository.ID: true}
 		m.hubScope = scope
 		m.refreshRepositoryCandidates()
+		m.refreshRepositoryPresentation()
 		return true
 	}
 	return false
@@ -529,6 +543,7 @@ func (m *Model) SetRepositoryScope(selected map[string]bool) {
 		m.activeRepos = reconciled
 	}
 	m.refreshRepositoryCandidates()
+	m.refreshRepositoryPresentation()
 }
 
 func (m *Model) setHubRepositoryScope(selected map[string]bool, includeContextless bool) {
@@ -594,6 +609,7 @@ func (m *Model) SetHubScope(scope model.HubScope) error {
 		}
 	}
 	m.refreshRepositoryCandidates()
+	m.refreshRepositoryPresentation()
 	return nil
 }
 
