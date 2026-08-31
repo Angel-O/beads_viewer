@@ -271,10 +271,11 @@ func (c *Correlator) findLatestCommitSHA(events []BeadEvent, commits []Correlate
 
 // BeadInfo is minimal bead information needed for correlation
 type BeadInfo struct {
-	ID     string
-	Title  string
-	Status string
-	Labels []string
+	ID        string
+	Title     string
+	IssueType string // Canonical Beads type for History presentation
+	Status    string
+	Labels    []string
 }
 
 // buildHistories constructs BeadHistory for each bead
@@ -284,11 +285,12 @@ func (c *Correlator) buildHistories(beads []BeadInfo, events []BeadEvent, commit
 	// Initialize histories from bead list
 	for _, bead := range beads {
 		histories[bead.ID] = BeadHistory{
-			BeadID:  bead.ID,
-			Title:   bead.Title,
-			Status:  bead.Status,
-			Events:  []BeadEvent{},
-			Commits: []CorrelatedCommit{},
+			BeadID:    bead.ID,
+			Title:     bead.Title,
+			IssueType: bead.IssueType,
+			Status:    bead.Status,
+			Events:    []BeadEvent{},
+			Commits:   []CorrelatedCommit{},
 		}
 	}
 

@@ -119,6 +119,7 @@ type CycleTime struct {
 type BeadHistory struct {
 	BeadID       string             `json:"bead_id"`
 	Title        string             `json:"title"`
+	IssueType    string             `json:"issue_type"` // Canonical Beads type for UI presentation
 	Status       string             `json:"status"`
 	Events       []BeadEvent        `json:"events"`      // All lifecycle events, chronological
 	Milestones   BeadMilestones     `json:"milestones"`  // Key events for quick access

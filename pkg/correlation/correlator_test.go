@@ -19,8 +19,8 @@ func TestBuildHistories_Basic(t *testing.T) {
 	c := NewCorrelator("/tmp/test")
 
 	beads := []BeadInfo{
-		{ID: "bv-1", Title: "Task 1", Status: "open"},
-		{ID: "bv-2", Title: "Task 2", Status: "closed"},
+		{ID: "bv-1", Title: "Task 1", IssueType: "task", Status: "open"},
+		{ID: "bv-2", Title: "Task 2", IssueType: "bug", Status: "closed"},
 	}
 
 	now := time.Now()
@@ -38,6 +38,9 @@ func TestBuildHistories_Basic(t *testing.T) {
 	}
 
 	h1 := histories["bv-1"]
+	if h1.IssueType != "task" {
+		t.Errorf("IssueType for bv-1 = %q, want task", h1.IssueType)
+	}
 	if len(h1.Events) != 2 {
 		t.Errorf("expected 2 events for bv-1, got %d", len(h1.Events))
 	}
@@ -54,6 +57,17 @@ func TestBuildHistories_Basic(t *testing.T) {
 	}
 	if h2.CycleTime == nil {
 		t.Error("expected bv-2 to have cycle time (closed bead)")
+	}
+}
+
+func TestMergeReportsUpdatesIssueType(t *testing.T) {
+	existing := &HistoryReport{Histories: map[string]BeadHistory{
+		"bv-1": {BeadID: "bv-1", Title: "Task 1", IssueType: "task", Status: "open"},
+	}}
+
+	merged := mergeReports(existing, []BeadInfo{{ID: "bv-1", Title: "Task 1", IssueType: "bug", Status: "open"}}, nil, nil)
+	if got := merged.Histories["bv-1"].IssueType; got != "bug" {
+		t.Fatalf("merged IssueType = %q, want bug", got)
 	}
 }
 

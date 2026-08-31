@@ -344,6 +344,7 @@ func mergeReports(existing *HistoryReport, beads []BeadInfo, newEvents []BeadEve
 		histories[id] = BeadHistory{
 			BeadID:     h.BeadID,
 			Title:      h.Title,
+			IssueType:  h.IssueType,
 			Status:     h.Status,
 			Events:     eventsCopy,
 			Milestones: h.Milestones,
@@ -357,11 +358,12 @@ func mergeReports(existing *HistoryReport, beads []BeadInfo, newEvents []BeadEve
 	for _, bead := range beads {
 		if _, exists := histories[bead.ID]; !exists {
 			histories[bead.ID] = BeadHistory{
-				BeadID:  bead.ID,
-				Title:   bead.Title,
-				Status:  bead.Status,
-				Events:  []BeadEvent{},
-				Commits: []CorrelatedCommit{},
+				BeadID:    bead.ID,
+				Title:     bead.Title,
+				IssueType: bead.IssueType,
+				Status:    bead.Status,
+				Events:    []BeadEvent{},
+				Commits:   []CorrelatedCommit{},
 			}
 		}
 	}
@@ -370,6 +372,7 @@ func mergeReports(existing *HistoryReport, beads []BeadInfo, newEvents []BeadEve
 	for _, bead := range beads {
 		if h, exists := histories[bead.ID]; exists {
 			h.Title = bead.Title
+			h.IssueType = bead.IssueType
 			h.Status = bead.Status
 			histories[bead.ID] = h
 		}

@@ -26,7 +26,7 @@ func writeFileAt(t *testing.T, path string, content []byte, mod time.Time) {
 
 func TestLoadHistoryWithProviderOffFeedsTUIModel(t *testing.T) {
 	cmd := loadHistoryWithProviderCmd(
-		[]model.Issue{{ID: "work-1", Title: "Work", Status: model.StatusOpen}},
+		[]model.Issue{{ID: "work-1", Title: "Work", Status: model.StatusOpen, IssueType: model.TypeBug}},
 		"",
 		correlation.HistoryModeOff,
 		"",
@@ -40,6 +40,9 @@ func TestLoadHistoryWithProviderOffFeedsTUIModel(t *testing.T) {
 	}
 	if msg.Report == nil || msg.Report.GitRange != "history disabled" || len(msg.Report.Histories) != 1 {
 		t.Fatalf("unexpected off-mode TUI report: %+v", msg.Report)
+	}
+	if got := msg.Report.Histories["work-1"].IssueType; got != string(model.TypeBug) {
+		t.Fatalf("History conversion lost issue type: got %q, want %q", got, model.TypeBug)
 	}
 }
 
