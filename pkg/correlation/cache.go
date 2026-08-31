@@ -323,7 +323,7 @@ func hashBeads(beads []BeadInfo) string {
 
 	entries := make([]string, 0, len(beads))
 	for _, b := range beads {
-		entries = append(entries, b.ID+"\x00"+b.Title+"\x00"+b.Status)
+		entries = append(entries, b.ID+"\x00"+b.Title+"\x00"+b.IssueType+"\x00"+b.Status)
 	}
 	sort.Strings(entries)
 

@@ -732,10 +732,11 @@ func loadHistoryWithProviderGenerationCmd(issues []model.Issue, beadsPath string
 		beads := make([]correlation.BeadInfo, len(issues))
 		for i, issue := range issues {
 			beads[i] = correlation.BeadInfo{
-				ID:     issue.ID,
-				Title:  issue.Title,
-				Status: string(issue.Status),
-				Labels: issue.Labels,
+				ID:        issue.ID,
+				Title:     issue.Title,
+				IssueType: string(issue.IssueType),
+				Status:    string(issue.Status),
+				Labels:    issue.Labels,
 			}
 		}
 
@@ -10024,10 +10025,11 @@ func (m *Model) enterHistoryView() {
 	beads := make([]correlation.BeadInfo, len(m.issues))
 	for i, issue := range m.issues {
 		beads[i] = correlation.BeadInfo{
-			ID:     issue.ID,
-			Title:  issue.Title,
-			Status: string(issue.Status),
-			Labels: issue.Labels,
+			ID:        issue.ID,
+			Title:     issue.Title,
+			IssueType: string(issue.IssueType),
+			Status:    string(issue.Status),
+			Labels:    issue.Labels,
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/cass"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -136,20 +137,6 @@ func assertHistoryPanelKeepsCursor(t *testing.T, panel string, maxHeight int) {
 	}
 }
 
-func historyTestListPanelWidth(h *HistoryModel) int {
-	switch h.determineLayout() {
-	case layoutWide:
-		if h.viewMode == historyModeGit {
-			return int(float64(h.width) * 0.25)
-		}
-		return int(float64(h.width) * 0.20)
-	case layoutStandard:
-		return int(float64(h.width) * 0.30)
-	default:
-		return int(float64(h.width) * 0.45)
-	}
-}
-
 func testTheme() Theme {
 	return DefaultTheme(lipgloss.NewRenderer(nil))
 }
@@ -250,7 +237,7 @@ func TestHistoryModel_BeadListScrollsPastInitialViewport(t *testing.T) {
 
 	for range 5 {
 		h.MoveDown()
-		assertHistoryPanelKeepsCursor(t, h.renderListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+		assertHistoryPanelKeepsCursor(t, h.renderListPanel(h.historyListPanelWidth(), h.height-2), h.height-2)
 	}
 
 	if h.selectedBead != 5 {
@@ -268,7 +255,7 @@ func TestHistoryModel_GitListScrollsPastInitialViewport(t *testing.T) {
 
 	for range 5 {
 		h.MoveDownGit()
-		assertHistoryPanelKeepsCursor(t, h.renderGitCommitListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+		assertHistoryPanelKeepsCursor(t, h.renderGitCommitListPanel(h.historyListPanelWidth(), h.height-2), h.height-2)
 	}
 
 	if h.selectedGitCommit != 5 {
@@ -359,9 +346,18 @@ func TestHistoryModel_DetailColumnScrollsPastInitialViewport(t *testing.T) {
 }
 
 func TestHistoryModel_WideLayoutScrollsWrappedBeadRows(t *testing.T) {
-	h := NewHistoryModel(createOverflowHistoryReport(30), testTheme())
+	report := createOverflowHistoryReport(30)
+	// With the title preview removed, use long IDs to keep exercising wrapped-row
+	// scrolling without coupling the test to redundant title content.
+	for beadID, history := range report.Histories {
+		longID := beadID + strings.Repeat("-long", 8)
+		delete(report.Histories, beadID)
+		history.BeadID = longID
+		report.Histories[longID] = history
+	}
+	h := NewHistoryModel(report, testTheme())
 	h.SetSize(200, 40)
-	panelWidth := historyTestListPanelWidth(&h)
+	panelWidth := h.historyListPanelWidth()
 	panelHeight := h.height - 2
 
 	line := h.renderBeadLine(0, h.histories[0], panelWidth-4)
@@ -420,9 +416,9 @@ func TestHistoryModel_ResizeAndRenderKeepSelectionVisible(t *testing.T) {
 				t.Fatalf("resize scrolled past selection: offset %d, selection %d", tt.offset(&h), tt.selected(&h))
 			}
 			if tt.gitMode {
-				assertHistoryPanelKeepsCursor(t, h.renderGitCommitListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+				assertHistoryPanelKeepsCursor(t, h.renderGitCommitListPanel(h.historyListPanelWidth(), h.height-2), h.height-2)
 			} else {
-				assertHistoryPanelKeepsCursor(t, h.renderListPanel(historyTestListPanelWidth(&h), h.height-2), h.height-2)
+				assertHistoryPanelKeepsCursor(t, h.renderListPanel(h.historyListPanelWidth(), h.height-2), h.height-2)
 			}
 
 			if tt.gitMode {
@@ -1384,6 +1380,78 @@ func TestHistoryModel_PaneCount(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_WideBeadPaneAllocationAndNormalRow(t *testing.T) {
+	h := NewHistoryModel(createTestHistoryReport(), testTheme())
+
+	h.SetSize(149, 40)
+	if h.determineLayout() != layoutStandard || h.paneCount() != 3 {
+		t.Fatalf("width 149 layout = %v with %d panes, want standard three-pane", h.determineLayout(), h.paneCount())
+	}
+	if got := h.historyListPanelWidth(); got != 44 {
+		t.Fatalf("width 149 first pane = %d, want standard 30%% allocation of 44", got)
+	}
+
+	h.SetSize(150, 40)
+	if h.determineLayout() != layoutWide || h.paneCount() != 4 {
+		t.Fatalf("width 150 layout = %v with %d panes, want wide four-pane", h.determineLayout(), h.paneCount())
+	}
+	if got := h.historyListPanelWidth(); got != 37 {
+		t.Fatalf("width 150 first pane = %d, want the 37-column wide-layout minimum", got)
+	}
+
+	h.SetSize(200, 40)
+	listWidth, timelineWidth, middleWidth, detailWidth := h.wideBeadPaneWidths()
+	if listWidth != 44 || timelineWidth != 44 || middleWidth != 50 || detailWidth != 62 {
+		t.Fatalf("wide pane widths = %d/%d/%d/%d, want 44/44/50/62", listWidth, timelineWidth, middleWidth, detailWidth)
+	}
+
+	row := h.histories[0]
+	row.BeadID = "bv-1"
+	row.IssueType = string(model.TypeBug)
+	row.Commits = make([]correlation.CorrelatedCommit, 2)
+	row.Events = make([]correlation.BeadEvent, 2)
+	h.histories[0] = row
+	for _, terminalWidth := range []int{150, 200} {
+		h.SetSize(terminalWidth, 40)
+		rowWidth := h.historyListPanelWidth()
+		line := h.renderBeadLine(0, row, rowWidth-4)
+		wrapped := h.theme.Renderer.NewStyle().Width(rowWidth - 2).Render(line)
+		if lipgloss.Height(wrapped) != 1 {
+			t.Fatalf("representative wide bead row wrapped at terminal width %d: pane=%d content=%d row=%d rendered=%q", terminalWidth, rowWidth, rowWidth-2, lipgloss.Width(line), wrapped)
+		}
+		for _, renderedLine := range strings.Split(wrapped, "\n") {
+			if strings.TrimSpace(renderedLine) == "events" {
+				t.Fatalf("representative event count became standalone line at terminal width %d: %q", terminalWidth, wrapped)
+			}
+		}
+	}
+	h.SetSize(200, 40)
+	listWidth, timelineWidth, middleWidth, detailWidth = h.wideBeadPaneWidths()
+
+	panelHeight := h.historyPanelHeight()
+	panels := []struct {
+		name  string
+		view  string
+		width int
+	}{
+		{"beads", h.renderListPanel(listWidth, panelHeight), listWidth},
+		{"timeline", h.renderTimelinePanel(timelineWidth, panelHeight), timelineWidth},
+		{"commits", h.renderCommitMiddlePanel(middleWidth, panelHeight), middleWidth},
+		{"details", h.renderDetailPanel(detailWidth, panelHeight), detailWidth},
+	}
+	for _, panel := range panels {
+		if got := lipgloss.Width(panel.view); got != panel.width {
+			t.Fatalf("%s panel width = %d, want allocated %d", panel.name, got, panel.width)
+		}
+	}
+	view := h.renderThreePaneView()
+	for _, heading := range []string{"BEADS WITH HISTORY", "TIMELINE", "COMMITS", "COMMIT DETAILS"} {
+		if !strings.Contains(view, heading) {
+			t.Fatalf("wide bead view missing %q heading: %q", heading, view)
+		}
+	}
+}
+
 func TestHistoryModel_ToggleFocusThreePane(t *testing.T) {
 	report := createTestHistoryReport()
 	theme := testTheme()
@@ -1763,6 +1831,51 @@ func TestHistoryModel_ViewGitModeWide(t *testing.T) {
 	view := h.View()
 	if view == "" {
 		t.Error("View() in Git mode with wide layout returned empty")
+	}
+}
+
+func TestHistoryModel_BeadRowsUseTypeIconsAndEventCounts(t *testing.T) {
+	const title = "Title retained in the final column"
+	report := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{
+		"bug-1": {
+			BeadID:    "bug-1",
+			Title:     title,
+			IssueType: string(model.TypeBug),
+			Status:    "open",
+			Events: []correlation.BeadEvent{
+				{EventType: correlation.EventCreated},
+				{EventType: correlation.EventModified},
+			},
+			Commits: []correlation.CorrelatedCommit{{SHA: "sha-1", ShortSHA: "sha-1"}},
+		},
+	}}
+	h := NewHistoryModel(report, testTheme())
+
+	beadRow := h.renderBeadLine(0, h.histories[0], 60)
+	icon, _ := h.theme.GetTypeIcon(string(model.TypeBug))
+	if !strings.Contains(beadRow, icon) || !strings.Contains(beadRow, "2\u00a0events") {
+		t.Fatalf("bead row = %q, want %q and event count", beadRow, icon)
+	}
+	if strings.Contains(beadRow, title) || strings.Contains(beadRow, "⚡") {
+		t.Fatalf("bead row retained redundant title or glyph count: %q", beadRow)
+	}
+	if detail := h.renderDetailPanel(60, 20); !strings.Contains(detail, title) {
+		t.Fatalf("final-column detail lost title %q: %q", title, detail)
+	}
+
+	zeroEvents := h.histories[0]
+	zeroEvents.Events = nil
+	zeroEventsRow := h.renderBeadLine(0, zeroEvents, 60)
+	if !strings.Contains(zeroEventsRow, "0\u00a0events") {
+		t.Fatalf("zero-event bead row = %q, want 0 events", zeroEventsRow)
+	}
+
+	unknown := h.histories[0]
+	unknown.IssueType = "non-standard"
+	unknownRow := h.renderBeadLine(0, unknown, 60)
+	fallbackIcon, _ := h.theme.GetTypeIcon(unknown.IssueType)
+	if !strings.Contains(unknownRow, fallbackIcon) {
+		t.Fatalf("unknown issue type row = %q, want canonical fallback icon %q", unknownRow, fallbackIcon)
 	}
 }
 

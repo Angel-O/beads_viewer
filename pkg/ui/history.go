@@ -1515,12 +1515,20 @@ func (h *HistoryModel) historyListPanelWidth() int {
 		if h.viewMode == historyModeGit {
 			return int(float64(h.width) * 0.25)
 		}
-		return int(float64(h.width) * 0.20)
+		return max(37, int(float64(h.width)*0.22))
 	case layoutStandard:
 		return int(float64(h.width) * 0.30)
 	default:
 		return int(float64(h.width) * 0.45)
 	}
+}
+
+func (h *HistoryModel) wideBeadPaneWidths() (listWidth, timelineWidth, middleWidth, detailWidth int) {
+	listWidth = h.historyListPanelWidth()
+	timelineWidth = int(float64(h.width) * 0.22)
+	middleWidth = int(float64(h.width) * 0.25)
+	detailWidth = h.width - listWidth - timelineWidth - middleWidth
+	return
 }
 
 func historyListVisibleItems(panelHeight int) int {
@@ -1671,11 +1679,8 @@ func (h *HistoryModel) renderThreePaneView() string {
 
 	// Wide layout: 4 panes with timeline (bv-1x6o)
 	if layout == layoutWide && h.viewMode != historyModeGit {
-		// Wide bead mode: 20% beads | 22% timeline | 25% commits | 33% details
-		listWidth := h.historyListPanelWidth()
-		timelineWidth := int(float64(h.width) * 0.22)
-		middleWidth := int(float64(h.width) * 0.25)
-		detailWidth := h.width - listWidth - timelineWidth - middleWidth
+		// Wide bead mode: 22% beads (minimum 37) | 22% timeline | 25% commits | remainder details
+		listWidth, timelineWidth, middleWidth, detailWidth := h.wideBeadPaneWidths()
 
 		listPanel := h.renderListPanel(listWidth, panelHeight)
 		timelinePanel := h.renderTimelinePanel(timelineWidth, panelHeight)
@@ -2494,36 +2499,23 @@ func (h *HistoryModel) renderBeadLine(idx int, hist correlation.BeadHistory, wid
 		statusIcon = "●"
 	}
 
+	// Issue type and status icons
+	typeIcon, typeColor := t.GetTypeIcon(hist.IssueType)
+	typeStyle := t.Renderer.NewStyle().Foreground(typeColor)
+
 	// Commit count
 	commitCount := fmt.Sprintf("%d commits", len(hist.Commits))
 
-	// Event count badge (bv-7k8p) - shows lifecycle events if any
-	eventBadge := ""
-	if len(hist.Events) > 0 {
-		eventBadge = renderCompactEventBadge(len(hist.Events), t)
-	}
-
-	// Calculate space for event badge
-	eventBadgeWidth := lipgloss.Width(eventBadge)
-	if eventBadgeWidth > 0 {
-		eventBadgeWidth += 1 // Space before badge
-	}
-
-	// Truncate title
-	maxTitleLen := width - len(indicator) - len(statusIcon) - len(commitCount) - eventBadgeWidth - 6
-	if maxTitleLen < 10 {
-		maxTitleLen = 10
-	}
-	title := truncateRunesHelper(hist.Title, maxTitleLen, "…")
+	// Event count badge (bv-7k8p)
+	eventBadge := renderCompactEventBadge(len(hist.Events), t)
 
 	// Build line
 	idStyle := t.Renderer.NewStyle().Foreground(t.Secondary).Width(12)
-	titleStyle := t.Renderer.NewStyle().Width(maxTitleLen)
 	countStyle := t.Renderer.NewStyle().Foreground(t.Muted).Align(lipgloss.Right)
 
 	if selected && h.focused == historyFocusList {
 		idStyle = idStyle.Bold(true).Foreground(t.Primary)
-		titleStyle = titleStyle.Bold(true)
+		typeStyle = typeStyle.Bold(true)
 	}
 
 	// Include event badge if present
@@ -2531,12 +2523,17 @@ func (h *HistoryModel) renderBeadLine(idx int, hist correlation.BeadHistory, wid
 	if eventBadge != "" {
 		countPart = countPart + " " + eventBadge
 	}
+	// Keep the fixed-width ID column only when the row has room for it. Long IDs
+	// remain naturally wrappable; short IDs do not force normal rows to wrap.
+	prefix := fmt.Sprintf("%s%s %s ", indicator, typeStyle.Render(typeIcon), statusIcon)
+	if h.determineLayout() == layoutWide {
+		idWidth := min(12, max(1, width-lipgloss.Width(prefix)-1-lipgloss.Width(countPart)))
+		idStyle = idStyle.Width(idWidth)
+	}
 
-	line := fmt.Sprintf("%s%s %s %s %s",
-		indicator,
-		statusIcon,
+	line := fmt.Sprintf("%s%s %s",
+		prefix,
 		idStyle.Render(hist.BeadID),
-		titleStyle.Render(title),
 		countPart,
 	)
 
@@ -3452,14 +3449,10 @@ func (h *HistoryModel) renderEventsSection(events []correlation.BeadEvent, width
 
 // renderCompactEventBadge renders a compact event count badge for list items (bv-7k8p)
 func renderCompactEventBadge(eventCount int, t Theme) string {
-	if eventCount == 0 {
-		return ""
-	}
-
 	badgeStyle := t.Renderer.NewStyle().
 		Foreground(t.Secondary)
 
-	return badgeStyle.Render(fmt.Sprintf("⚡%d", eventCount))
+	return badgeStyle.Render(fmt.Sprintf("%d\u00a0events", eventCount))
 }
 
 // Git Mode rendering functions (bv-tl3n)

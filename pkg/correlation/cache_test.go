@@ -309,12 +309,17 @@ func TestHashBeads(t *testing.T) {
 		{ID: "bv-2", Title: "Second", Status: "closed"},
 		{ID: "bv-1", Title: "First", Status: "open"},
 	}
+	beadsDifferentType := []BeadInfo{
+		{ID: "bv-1", Title: "First", IssueType: "bug", Status: "open"},
+		{ID: "bv-2", Title: "Second", Status: "closed"},
+	}
 
 	hash1 := hashBeads(beads1)
 	hash2 := hashBeads(beads2)
 	hash3 := hashBeads(beads3)
 	hash4 := hashBeads(beads4)
 	hashReordered := hashBeads(beadsReordered)
+	hashDifferentType := hashBeads(beadsDifferentType)
 
 	// Same input should produce same hash
 	if hash1 != hash2 {
@@ -330,6 +335,9 @@ func TestHashBeads(t *testing.T) {
 	}
 	if hash1 == hash4 {
 		t.Error("Different bead titles should produce different hash")
+	}
+	if hash1 == hashDifferentType {
+		t.Error("Different bead issue types should produce different hash")
 	}
 
 	// Hash should be 12 chars
