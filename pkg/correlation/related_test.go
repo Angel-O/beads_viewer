@@ -443,7 +443,7 @@ func TestFindRelatedWork_Concurrent(t *testing.T) {
 			"bv-old": {
 				BeadID: "bv-old",
 				Title:  "Old Bead",
-				Status: "open",
+				Status: "closed",
 				Milestones: BeadMilestones{
 					Created: &BeadEvent{Timestamp: now.Add(-60 * 24 * time.Hour)},
 					Closed:  &BeadEvent{Timestamp: now.Add(-30 * 24 * time.Hour)},

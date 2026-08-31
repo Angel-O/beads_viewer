@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1163,11 +1164,12 @@ func TestPhase2UpdateRejectsSameHashFromDifferentStats(t *testing.T) {
 	// GraphStats may legitimately be shared by the analysis cache when only
 	// non-graph content differs. Give the stale snapshot a distinct stats
 	// identity so this test exercises the model's identity fence directly.
-	// Even SkipPhase2 uses the asynchronous completion path to publish disabled
-	// metric state, so wait before copying the struct under the race detector.
+	// GraphStats embeds a mutex, so build a fresh instance instead of copying
+	// the struct (which `go vet` copylocks rejects).
 	stale.Analysis.WaitForPhase2()
-	staleStats := *stale.Analysis
-	stale.Analysis = &staleStats
+	staleStats := analysis.NewAnalyzer(copyIssues(staleIssues)).AnalyzeAsync(context.Background())
+	staleStats.WaitForPhase2()
+	stale.Analysis = staleStats
 	if current.Analysis == stale.Analysis {
 		t.Fatal("expected snapshots to have distinct GraphStats pointers")
 	}

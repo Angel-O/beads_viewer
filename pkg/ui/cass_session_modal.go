@@ -18,7 +18,7 @@ import (
 const clipboardCopyTimeout = 2 * time.Second
 
 type cassClipboardCopyMsg struct {
-	modalToken *struct{}
+	modalToken *byte
 	err        error
 }
 
@@ -42,7 +42,7 @@ type CassSessionModal struct {
 	height     int
 	copied     bool      // Flash feedback for clipboard copy
 	copiedAt   time.Time // When copy happened
-	copyToken  *struct{} // Reject late results from a dismissed modal instance
+	copyToken  *byte     // Reject late results from a dismissed modal instance (non-zero-size so each allocation is unique)
 	maxDisplay int       // Max sessions to show (rest are summarized)
 }
 
@@ -63,7 +63,7 @@ func NewCassSessionModal(beadID string, result cass.CorrelationResult, theme The
 		theme:      theme,
 		width:      70,
 		height:     25,
-		copyToken:  &struct{}{},
+		copyToken:  new(byte),
 		maxDisplay: 3,
 	}
 }
@@ -364,7 +364,7 @@ func (m CassSessionModal) CenterModal(termWidth, termHeight int) string {
 	return centered
 }
 
-func copyToClipboardCmd(text string, modalToken *struct{}) tea.Cmd {
+func copyToClipboardCmd(text string, modalToken *byte) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), clipboardCopyTimeout)
 		defer cancel()

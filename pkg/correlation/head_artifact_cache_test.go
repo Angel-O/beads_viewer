@@ -162,12 +162,14 @@ func TestPersistentCorrelationCachesIsolateNamespaces(t *testing.T) {
 		optsHash   = "same-options"
 	)
 
-	putCorrelationDiskCachedReport(namespaceA, headSHA, beadsHash, optsHash, &HistoryReport{DataHash: "report-a"})
-	putCorrelationDiskCachedReport(namespaceB, headSHA, beadsHash, optsHash, &HistoryReport{DataHash: "report-b"})
+	// The report cache validates entry.Report.DataHash against the beads hash
+	// key, so distinguish the two namespaces via GitRange instead.
+	putCorrelationDiskCachedReport(namespaceA, headSHA, beadsHash, optsHash, &HistoryReport{DataHash: beadsHash, GitRange: "report-a"})
+	putCorrelationDiskCachedReport(namespaceB, headSHA, beadsHash, optsHash, &HistoryReport{DataHash: beadsHash, GitRange: "report-b"})
 	for namespace, want := range map[string]string{namespaceA: "report-a", namespaceB: "report-b"} {
 		got, ok := getCorrelationDiskCachedReport(namespace, headSHA, beadsHash, optsHash)
-		if !ok || got.DataHash != want {
-			t.Fatalf("report cache namespace %q = (%+v, %v), want data hash %q", namespace, got, ok, want)
+		if !ok || got.GitRange != want {
+			t.Fatalf("report cache namespace %q = (%+v, %v), want git range %q", namespace, got, ok, want)
 		}
 	}
 

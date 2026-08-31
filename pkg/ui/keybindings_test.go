@@ -638,6 +638,7 @@ func TestKeyDispatch_Regression_HistorySearchConsumesGlobalKeys(t *testing.T) {
 	if m.focused != focusHistory || !m.isHistoryView {
 		t.Fatalf("Expected history view after 'h', got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
 	}
+	makeHistoryReportCurrent(m, createTestHistoryReport())
 
 	updated, _ = m.Update(keyMsg("/"))
 	m = updated.(*Model)
@@ -712,6 +713,7 @@ func TestKeyDispatch_Regression_HistorySearchEnterKeepsFilter(t *testing.T) {
 	if m.focused != focusHistory || !m.isHistoryView {
 		t.Fatalf("Expected history view after 'h', got focused=%v isHistoryView=%v", m.focused, m.isHistoryView)
 	}
+	makeHistoryReportCurrent(m, createTestHistoryReport())
 
 	updated, _ = m.Update(keyMsg("/"))
 	m = updated.(*Model)
@@ -737,6 +739,7 @@ func TestKeyDispatch_Regression_HistoryFileTreeEscStaysInHistory(t *testing.T) {
 	m.isHistoryView = true
 	m.focused = focusHistory
 	m.historyView = NewHistoryModel(createTestHistoryReportWithFiles(), testTheme())
+	makeHistoryReportCurrent(m, createTestHistoryReportWithFiles())
 	m.historyView.ToggleFileTree()
 	m.historyView.SetFileTreeFocus(true)
 

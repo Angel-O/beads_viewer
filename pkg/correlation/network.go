@@ -233,7 +233,6 @@ func (nb *NetworkBuilder) BuildAt(now time.Time) *ImpactNetwork {
 		return network.Edges[i].EdgeType < network.Edges[j].EdgeType
 	})
 
-
 	nb.recomputeNodeDegrees(network)
 
 	// Detect clusters using connected components with edge weight threshold
@@ -243,6 +242,28 @@ func (nb *NetworkBuilder) BuildAt(now time.Time) *ImpactNetwork {
 	nb.calculateStats(network)
 
 	return network
+}
+
+// recomputeNodeDegrees resets and recounts every node's Degree from the final
+// edge list. Each edge contributes one degree to both of its endpoints, so a
+// pair of beads linked by multiple edge types (shared commit, shared file,
+// dependency) counts once per edge — matching the historical inline
+// degree-update loop this method replaced.
+func (nb *NetworkBuilder) recomputeNodeDegrees(network *ImpactNetwork) {
+	if network == nil {
+		return
+	}
+	for _, node := range network.Nodes {
+		node.Degree = 0
+	}
+	for _, edge := range network.Edges {
+		if node, ok := network.Nodes[edge.FromBead]; ok {
+			node.Degree++
+		}
+		if node, ok := network.Nodes[edge.ToBead]; ok {
+			node.Degree++
+		}
+	}
 }
 
 func latestHistoryActivity(history BeadHistory) time.Time {
@@ -288,7 +309,6 @@ func (nb *NetworkBuilder) addSharedCommitEdges(network *ImpactNetwork) {
 		if len(beadIDs) < 2 {
 			continue
 		}
-
 
 		// A malformed or hand-built CommitIndex may repeat a bead ID. Normalize
 		// each membership list so a commit contributes once per distinct pair.

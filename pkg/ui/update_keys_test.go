@@ -270,6 +270,7 @@ func TestHistoryViewKeys(t *testing.T) {
 	// Re-enter and test 'c' key cycles confidence
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
 	m = updated.(*Model)
+	makeHistoryReportCurrent(m, createTestHistoryReport())
 
 	initialConf := m.historyView.GetMinConfidence()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})

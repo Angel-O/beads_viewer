@@ -640,7 +640,7 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 		{
 			name: "update dry-run stays non-robot with structured-output alias",
 			args: []string{"--update-dry-run", "--json"},
-			want: []string{"--update-dry-run", "--format=json"},
+			want: []string{"--update-dry-run", "--format", "json"},
 		},
 		{
 			name: "upgrade --rollback maps to --rollback",

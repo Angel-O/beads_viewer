@@ -142,6 +142,12 @@ func readWizardInput(input *os.File, timeout time.Duration) ([]byte, error) {
 		return nil, fmt.Errorf("stdin read timeout must be positive")
 	}
 	if err := input.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		if errors.Is(err, os.ErrNoDeadline) {
+			// Some platforms cannot set deadlines on exec-inherited pipes
+			// (macOS returns ErrNoDeadline for os.Stdin in that case). Fall
+			// back to a goroutine read bounded by the same timeout.
+			return readWizardInputBlocking(input, timeout)
+		}
 		return nil, fmt.Errorf("set stdin read deadline: %w", err)
 	}
 
@@ -154,6 +160,32 @@ func readWizardInput(input *os.File, timeout time.Duration) ([]byte, error) {
 		return nil, fmt.Errorf("clear stdin read deadline: %w", clearErr)
 	}
 	return data, nil
+}
+
+// readWizardInputBlocking is the fallback for file types that do not support
+// read deadlines. It reads on a goroutine bounded by the caller's timeout; on
+// timeout the goroutine may linger blocked on stdin, which only happens when a
+// writer keeps the pipe open without producing input (the case the timeout
+// exists to report).
+func readWizardInputBlocking(input *os.File, timeout time.Duration) ([]byte, error) {
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	results := make(chan readResult, 1)
+	go func() {
+		data, err := io.ReadAll(input)
+		results <- readResult{data: data, err: err}
+	}()
+	select {
+	case res := <-results:
+		if res.err != nil {
+			return nil, res.err
+		}
+		return res.data, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("wizard stdin probe timed out: %w", os.ErrDeadlineExceeded)
+	}
 }
 
 // offerSavedConfig asks if the user wants to use previously saved settings

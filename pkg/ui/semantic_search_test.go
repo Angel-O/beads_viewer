@@ -1179,6 +1179,7 @@ func TestHistorySearchPreservesTextInputCommandWithoutSemanticWork(t *testing.T)
 	m := NewModel(nil, nil, "")
 	m.isHistoryView = true
 	m.focused = focusHistory
+	makeHistoryReportCurrent(m, createTestHistoryReport())
 	m.historyView.StartSearch()
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})

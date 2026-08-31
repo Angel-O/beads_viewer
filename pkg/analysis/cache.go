@@ -842,8 +842,11 @@ func (s graphStatsCacheSoA) validate() error {
 	if len(s.Nodes) != s.NodeCount {
 		return fmt.Errorf("node dictionary length %d does not match node_count %d", len(s.Nodes), s.NodeCount)
 	}
-	if math.IsNaN(s.Density) || math.IsInf(s.Density, 0) || s.Density < 0 || s.Density > 1 {
-		return fmt.Errorf("density %g is outside [0,1]", s.Density)
+	// Self-loops add edges without adding ordered node pairs, so a legitimate
+	// writer can produce density above 1 (density = e / (n * (n - 1))). Only
+	// reject values that no writer can produce: negative or non-finite.
+	if math.IsNaN(s.Density) || math.IsInf(s.Density, 0) || s.Density < 0 {
+		return fmt.Errorf("density %g is negative or non-finite", s.Density)
 	}
 	nodeSet := make(map[string]struct{}, len(s.Nodes))
 	for i, node := range s.Nodes {

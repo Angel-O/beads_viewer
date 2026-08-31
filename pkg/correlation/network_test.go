@@ -484,29 +484,65 @@ func TestCommonPathPrefix(t *testing.T) {
 	}
 }
 
-func TestSplitEdgeKey(t *testing.T) {
+func TestMakeNetworkEdgeKey(t *testing.T) {
+	// Keys must be order-normalized so (a, b) and (b, a) dedupe to one edge.
 	tests := []struct {
-		key      string
-		expected []string
+		beadA, beadB string
+		edgeType     NetworkEdgeType
+		wantFrom     string
+		wantTo       string
 	}{
-		{"bv-001:bv-002:commit", []string{"bv-001", "bv-002", "commit"}},
-		{"bv-001:bv-002:file", []string{"bv-001", "bv-002", "file"}},
-		{"a:b:c:d", []string{"a", "b", "c", "d"}},
-		{"single", []string{"single"}},
+		{"bv-001", "bv-002", EdgeSharedCommit, "bv-001", "bv-002"},
+		{"bv-002", "bv-001", EdgeSharedCommit, "bv-001", "bv-002"},
+		{"bv-010", "bv-003", EdgeSharedFile, "bv-003", "bv-010"},
+		{"same", "same", EdgeDependency, "same", "same"},
 	}
 
 	for _, tt := range tests {
-		result := splitEdgeKey(tt.key)
-		if len(result) != len(tt.expected) {
-			t.Errorf("For key %q: expected %d parts, got %d", tt.key, len(tt.expected), len(result))
-			continue
+		key := makeNetworkEdgeKey(tt.beadA, tt.beadB, tt.edgeType)
+		if key.fromBead != tt.wantFrom || key.toBead != tt.wantTo {
+			t.Errorf("makeNetworkEdgeKey(%q, %q): got (%q, %q), want (%q, %q)",
+				tt.beadA, tt.beadB, key.fromBead, key.toBead, tt.wantFrom, tt.wantTo)
 		}
-		for i, part := range result {
-			if part != tt.expected[i] {
-				t.Errorf("For key %q: part %d expected %q, got %q", tt.key, i, tt.expected[i], part)
-			}
+		if key.edgeType != tt.edgeType {
+			t.Errorf("makeNetworkEdgeKey(%q, %q): edge type %q, want %q",
+				tt.beadA, tt.beadB, key.edgeType, tt.edgeType)
+		}
+		reversed := makeNetworkEdgeKey(tt.beadB, tt.beadA, tt.edgeType)
+		if key != reversed {
+			t.Errorf("makeNetworkEdgeKey is not order-normalized for (%q, %q)", tt.beadA, tt.beadB)
 		}
 	}
+}
+
+func TestRecomputeNodeDegrees(t *testing.T) {
+	nb := &NetworkBuilder{}
+	network := &ImpactNetwork{
+		Nodes: map[string]*NetworkNode{
+			"bv-001": {BeadID: "bv-001", Degree: 99}, // stale value must be reset
+			"bv-002": {BeadID: "bv-002"},
+			"bv-003": {BeadID: "bv-003"},
+			"bv-004": {BeadID: "bv-004"},
+		},
+		Edges: []NetworkEdge{
+			{FromBead: "bv-001", ToBead: "bv-002", EdgeType: EdgeSharedCommit},
+			{FromBead: "bv-001", ToBead: "bv-002", EdgeType: EdgeSharedFile}, // parallel edge counts again
+			{FromBead: "bv-002", ToBead: "bv-003", EdgeType: EdgeDependency},
+			{FromBead: "bv-001", ToBead: "bv-ghost", EdgeType: EdgeSharedFile}, // missing endpoint ignored
+		},
+	}
+
+	nb.recomputeNodeDegrees(network)
+
+	want := map[string]int{"bv-001": 3, "bv-002": 3, "bv-003": 1, "bv-004": 0}
+	for id, degree := range want {
+		if got := network.Nodes[id].Degree; got != degree {
+			t.Errorf("node %s: degree %d, want %d", id, got, degree)
+		}
+	}
+
+	// Must be safe on a nil network.
+	nb.recomputeNodeDegrees(nil)
 }
 
 // TestGenerateClusterLabel tests cluster label generation with truncation

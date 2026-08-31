@@ -5232,6 +5232,7 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		}
 	}
 
+	var cmd tea.Cmd
 	switch msg.String() {
 	case "/":
 		// Start search (bv-nkrj)
@@ -5426,7 +5427,7 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.isHistoryView = false
 		m.focused = focusList
 	}
-	return m, nil
+	return m, cmd
 }
 
 // getCommitURL returns the GitHub/GitLab commit URL for a SHA (bv-xf4p)
