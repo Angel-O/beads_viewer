@@ -4952,23 +4952,16 @@ func (m Model) handleBoardKeys(msg tea.KeyMsg) Model {
 	// Search mode input handling (bv-yg39)
 	// ═══════════════════════════════════════════════════════════════════════════
 	if m.board.IsSearchMode() {
-		switch key {
-		case "esc":
+		switch msg.Type {
+		case tea.KeyEsc:
 			m.board.CancelSearch()
-		case "enter":
+		case tea.KeyEnter:
 			// Keep search results but exit search mode
 			m.board.FinishSearch()
-		case "backspace":
+		case tea.KeyBackspace:
 			m.board.BackspaceSearch()
-		case "n":
-			m.board.NextMatch()
-		case "N":
-			m.board.PrevMatch()
-		default:
-			// Append printable characters to search query
-			if len(key) == 1 {
-				m.board.AppendSearchChar(rune(key[0]))
-			}
+		case tea.KeyRunes:
+			m.board.AppendSearchRunes(msg.Runes)
 		}
 		return m
 	}
@@ -8099,7 +8092,12 @@ func (m *Model) renderFooter() string {
 			labelHint = lipgloss.NewStyle().
 				Foreground(ColorFooterHint).
 				Padding(0, 1).
-				Render(fmt.Sprintf("/%s%s • n/N:match • enter:done • esc:cancel", m.board.SearchQuery(), matchInfo))
+				Render(fmt.Sprintf("/%s%s • enter:done • esc:cancel", m.board.SearchQuery(), matchInfo))
+		} else if m.board.SearchMatchCount() > 0 {
+			labelHint = lipgloss.NewStyle().
+				Foreground(ColorFooterHint).
+				Padding(0, 1).
+				Render(fmt.Sprintf("/%s [%d/%d] • n/N:match", m.board.SearchQuery(), m.board.SearchCursorPos(), m.board.SearchMatchCount()))
 		} else {
 			// Normal board mode - show navigation hints with filter indicator (bv-naov)
 			filterInfo := ""
@@ -8435,9 +8433,12 @@ func (m *Model) renderFooter() string {
 		}))
 	} else if m.isBoardView {
 		if m.board.IsSearchMode() {
-			keyHints = append(keyHints, keyStyle.Render("type")+" search", keyStyle.Render("n/N")+" match", keyStyle.Render("enter")+" done", keyStyle.Render("esc")+" cancel")
+			keyHints = append(keyHints, keyStyle.Render("type")+" search", keyStyle.Render("enter")+" done", keyStyle.Render("esc")+" cancel")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("tab")+":detail", keyStyle.Render("e")+":cycle empty", keyStyle.Render("⏎")+" view", keyStyle.Render("b")+":list")
+			if m.board.SearchMatchCount() > 0 {
+				keyHints = append(keyHints, keyStyle.Render("n/N")+" match")
+			}
 		}
 	} else if m.isActionableView {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" view", keyStyle.Render("a")+":list", keyStyle.Render("?")+" help")
