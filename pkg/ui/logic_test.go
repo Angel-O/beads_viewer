@@ -178,6 +178,67 @@ func TestApplyRecipe_Sorting(t *testing.T) {
 	}
 }
 
+func TestRecipeSortCyclePreservesFilteredIssues(t *testing.T) {
+	date := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	issues := []model.Issue{
+		{ID: "old", Status: model.StatusOpen, Priority: 3, CreatedAt: date, Labels: []string{"focus"}},
+		{ID: "new", Status: model.StatusInProgress, Priority: 1, CreatedAt: date.AddDate(0, 0, 2), Labels: []string{"focus"}},
+		{ID: "closed", Status: model.StatusClosed, Priority: 2, CreatedAt: date.AddDate(0, 0, 3), Labels: []string{"focus"}},
+		{ID: "draft", Status: model.StatusDraft, Priority: 0, CreatedAt: date.AddDate(0, 0, 4)},
+	}
+	tests := []struct {
+		name     string
+		recipe   *recipe.Recipe
+		wantAsc  []string
+		wantDesc []string
+	}{
+		{
+			name: "bottlenecks status filter",
+			recipe: &recipe.Recipe{
+				Name:    "bottlenecks",
+				Filters: recipe.FilterConfig{Status: []string{"open", "in_progress"}},
+				Sort:    recipe.SortConfig{Field: "betweenness", Direction: "desc"},
+			},
+			wantAsc:  []string{"old", "new"},
+			wantDesc: []string{"new", "old"},
+		},
+		{
+			name:     "tag filter",
+			recipe:   &recipe.Recipe{Name: "focused", Filters: recipe.FilterConfig{Tags: []string{"focus"}}},
+			wantAsc:  []string{"old", "new", "closed"},
+			wantDesc: []string{"closed", "new", "old"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(append([]model.Issue(nil), issues...), tt.recipe, "")
+			for _, expected := range []struct {
+				mode SortMode
+				ids  []string
+			}{
+				{SortCreatedAsc, tt.wantAsc},
+				{SortCreatedDesc, tt.wantDesc},
+			} {
+				updated, _ := m.Update(keyMsg("s"))
+				m = updated.(Model)
+				if m.sortMode != expected.mode {
+					t.Fatalf("sort mode = %v, want %v", m.sortMode, expected.mode)
+				}
+				got := m.FilteredIssues()
+				if len(got) != len(expected.ids) {
+					t.Fatalf("filtered issue count = %d, want %d", len(got), len(expected.ids))
+				}
+				for i, id := range expected.ids {
+					if got[i].ID != id {
+						t.Fatalf("issue %d = %q, want %q", i, got[i].ID, id)
+					}
+				}
+			}
+		})
+	}
+}
+
 func contextSortCatalog() model.RepositoryCatalog {
 	return model.RepositoryCatalog{
 		{ID: "ctx:zeta", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
