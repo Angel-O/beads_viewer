@@ -2154,20 +2154,18 @@ func (h *HistoryModel) renderEmpty(msg string) string {
 	}
 	header := h.renderHeader()
 	headerHeight := lipgloss.Height(header)
-	if headerHeight <= 0 || headerHeight >= h.height {
-		return renderCompactHistoryEmpty(msg, h.width, h.height)
-	}
-	bodyHeight := h.height - headerHeight
+	bodyHeight := max(h.height-headerHeight, 1)
 	header = boundHistoryText(header, h.width, headerHeight)
 	bodyText := boundHistoryText(msg, h.width, bodyHeight)
-	bodyStyle := t.Renderer.NewStyle().
-		Foreground(t.Secondary)
-	body := lipgloss.Place(h.width, bodyHeight, lipgloss.Center, lipgloss.Center, bodyStyle.Render(bodyText))
+	body := lipgloss.Place(h.width, bodyHeight, lipgloss.Center, lipgloss.Center,
+		t.Renderer.NewStyle().Foreground(t.Secondary).Render(bodyText))
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body)
+	return boundHistoryText(lipgloss.JoinVertical(lipgloss.Left, header, body), h.width, h.height)
 }
 
 func boundHistoryText(text string, width, rows int) string {
+	// Empty states are rendered as one bounded view, so dense terminals need no
+	// separate compact renderer.
 	if width <= 0 || rows <= 0 {
 		return ""
 	}
@@ -2188,11 +2186,6 @@ func boundHistoryText(text string, width, rows int) string {
 		lines[i] = ansi.Truncate(line, width, "…")
 	}
 	return strings.Join(lines, "\n")
-}
-
-func renderCompactHistoryEmpty(msg string, width, height int) string {
-	compact := boundHistoryText(msg, width, 1)
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, compact)
 }
 
 func (h *HistoryModel) historyEmptyHint() string {
