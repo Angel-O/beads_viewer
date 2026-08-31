@@ -370,7 +370,9 @@ bash skills/beads-hub-closeout/validate.sh
 
 - [ ] Output is `private Hub closeout privacy validation passed`.
 - [ ] From the clean PR base checkout, run
-      `bash skills/beads-hub-closeout/closeout.sh <private-work-item-id> <pr-selector>`.
+      `bash skills/beads-hub-closeout/closeout.sh <private-work-item-id> https://github.com/<owner>/<repository>/pull/<number>`.
+- [ ] Unqualified PR selectors are rejected before any GitHub, Git, or Hub
+      command runs.
 - [ ] It rejects an unmerged or malformed PR result and derives the base branch
       only from the PR response.
 - [ ] It fetches only the PR base ref with `--no-tags`, leaves `HEAD` unchanged,

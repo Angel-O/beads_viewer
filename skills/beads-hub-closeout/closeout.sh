@@ -8,16 +8,22 @@ die() {
 }
 
 if [[ $# -ne 2 ]]; then
-  printf 'usage: closeout.sh <private-work-item-id> <pr-selector>\n' >&2
+  printf 'usage: closeout.sh <private-work-item-id> <github-pull-request-url>\n' >&2
   exit 2
 fi
 
 work_item=$1
-pr_selector=$2
+pr_url=$2
+if [[ ! $pr_url =~ ^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$ ]]; then
+  printf 'usage: closeout.sh <private-work-item-id> <github-pull-request-url>\n' >&2
+  printf '%s\n' 'closeout failed: pull request selector must be a full GitHub pull-request URL' >&2
+  exit 2
+fi
+
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || die 'cannot locate closeout skill'
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die 'not a Git checkout'
 
-pr_json=$(gh pr view "$pr_selector" --json state,mergedAt,mergeCommit,baseRefName 2>/dev/null) ||
+pr_json=$(gh pr view "$pr_url" --json state,mergedAt,mergeCommit,baseRefName 2>/dev/null) ||
   die 'cannot read pull request'
 pr_fields=$(jq -er -r '
   if type == "object" and

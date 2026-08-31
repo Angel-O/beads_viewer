@@ -97,6 +97,69 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 	}
 }
 
+func TestCloseoutRequiresFullPullRequestURLBeforeCommands(t *testing.T) {
+	for _, selector := range []string{"123", "owner/repository#123", "https://github.com/owner/repository/pull/123/"} {
+		t.Run(selector, func(t *testing.T) {
+			stubDir := t.TempDir()
+			calledFile := filepath.Join(stubDir, "called")
+			for _, command := range []string{"gh", "git", "wbd"} {
+				writeExecutable(t, filepath.Join(stubDir, command), "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$CALLED_FILE\"\nexit 99\n")
+			}
+
+			closeout := exec.Command("bash", "closeout.sh", "private-item", selector)
+			closeout.Dir = filepath.Dir("closeout.sh")
+			closeout.Env = append(os.Environ(), "PATH="+stubDir+":/usr/bin:/bin", "CALLED_FILE="+calledFile)
+			output, err := closeout.CombinedOutput()
+			if err == nil {
+				t.Fatal("closeout unexpectedly accepted an invalid pull request selector")
+			}
+			if exitError, ok := err.(*exec.ExitError); !ok || exitError.ExitCode() != 2 {
+				t.Fatalf("closeout returned %v, want exit code 2\n%s", err, output)
+			}
+			if !strings.Contains(string(output), "full GitHub pull-request URL") {
+				t.Fatalf("closeout returned an unclear diagnostic: %s", output)
+			}
+			if _, err := os.Stat(calledFile); err == nil {
+				t.Fatalf("closeout invoked a command before rejecting selector: %s", calledFile)
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("checking command marker: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloseoutPassesFullPullRequestURLUnchangedToGH(t *testing.T) {
+	calledFile := filepath.Join(t.TempDir(), "gh-args")
+	ghDir := t.TempDir()
+	writeExecutable(t, filepath.Join(ghDir, "gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_FILE\"\nexit 1\n")
+
+	selector := "https://github.com/octo-org/example_repo/pull/42"
+	closeout := exec.Command("bash", "closeout.sh", "private-item", selector)
+	closeout.Env = append(os.Environ(), "PATH="+ghDir+":/usr/bin:/bin", "GH_ARGS_FILE="+calledFile)
+	output, err := closeout.CombinedOutput()
+	if err == nil {
+		t.Fatal("closeout unexpectedly completed with a failing gh stub")
+	}
+	if !strings.Contains(string(output), "cannot read pull request") {
+		t.Fatalf("closeout did not preserve gh failure handling: %s", output)
+	}
+	arguments, err := os.ReadFile(calledFile)
+	if err != nil {
+		t.Fatalf("reading gh arguments: %v", err)
+	}
+	argumentLines := strings.Split(strings.TrimSpace(string(arguments)), "\n")
+	if len(argumentLines) < 3 || argumentLines[2] != selector {
+		t.Fatalf("gh received %q, want URL unchanged", arguments)
+	}
+}
+
+func writeExecutable(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func syntheticRepository(t *testing.T, message string) string {
 	t.Helper()
 	repository := t.TempDir()
