@@ -804,6 +804,12 @@ func (m *InsightsModel) View() string {
 	if rowHeight < 6 {
 		rowHeight = 6
 	}
+	// Give the final row any integer-division remainder so its outer border
+	// reaches the detail panel's bottom border.
+	priorityHeight := m.height - 8 - 3*rowHeight
+	if priorityHeight < 6 {
+		priorityHeight = 6
+	}
 
 	panels := []string{
 		m.renderMetricPanel(PanelBottlenecks, colWidth, rowHeight, t),
@@ -824,9 +830,9 @@ func (m *InsightsModel) View() string {
 	// Toggle between priority list and heatmap view (bv-95)
 	var row4 string
 	if m.showHeatmap {
-		row4 = m.renderHeatmapPanel(mainWidth-2, rowHeight, t)
+		row4 = m.renderHeatmapPanel(mainWidth-2, priorityHeight, t)
 	} else {
-		row4 = m.renderPriorityPanel(mainWidth-2, rowHeight, t)
+		row4 = m.renderPriorityPanel(mainWidth-2, priorityHeight, t)
 	}
 
 	mainContent := lipgloss.JoinVertical(lipgloss.Left, row1, row2, row3, row4)
@@ -1266,12 +1272,25 @@ func (m *InsightsModel) renderPriorityPanel(width, height int, t Theme) string {
 		endIdx = len(picks)
 	}
 
+	// Keep the item area from expanding when either footer is rendered.
+	footerRows := 0
+	if len(picks) > visibleItems {
+		footerRows++
+	}
+	if m.triageDataHash != "" {
+		footerRows++
+	}
+	itemHeight := height - 3 - footerRows
+	if itemHeight < 1 {
+		itemHeight = 1
+	}
+
 	// Render picks horizontally
 	var pickRenderings []string
 	for i := startIdx; i < endIdx; i++ {
 		pick := picks[i]
 		isSelected := isFocused && i == selectedIdx
-		pickRenderings = append(pickRenderings, m.renderPriorityItem(pick, itemWidth, height-3, isSelected, t))
+		pickRenderings = append(pickRenderings, m.renderPriorityItem(pick, itemWidth, itemHeight, isSelected, t))
 	}
 
 	lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, pickRenderings...))
@@ -1636,7 +1655,12 @@ func (m *InsightsModel) renderHeatmapCell(count, maxCount, width int, isSelected
 		Bold(count >= maxCount/2)
 
 	if isSelected {
-		cellStyle = cellStyle.Reverse(true)
+		// Do not reverse gradient colors: gold cells become terminal-background
+		// colored when their dark foreground is swapped with the background.
+		cellStyle = cellStyle.
+			Background(t.Primary).
+			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).
+			Bold(true)
 	}
 
 	// Show just the count centered
@@ -2057,8 +2081,8 @@ func (m *InsightsModel) renderCalculationProofMD(selectedID string) string {
 
 func (m *InsightsModel) renderDetailPanel(width, height int, t Theme) string {
 	// Update viewport dimensions
-	vpWidth := width - 4   // Account for border
-	vpHeight := height - 4 // Account for border and scroll hint
+	vpWidth := width - 4 // Account for border
+	vpHeight := height - 1
 	if vpWidth < 20 {
 		vpWidth = 20
 	}
@@ -2100,7 +2124,7 @@ Navigate to a metric panel and select an item to view its details here.
 
 	// Add scroll indicator if content overflows
 	scrollPercent := m.detailVP.ScrollPercent()
-	if scrollPercent < 1.0 || m.detailVP.YOffset > 0 {
+	if !m.detailVP.AtBottom() || m.detailVP.YOffset > 0 {
 		scrollHint := t.Renderer.NewStyle().
 			Foreground(t.Secondary).
 			Italic(true).
