@@ -75,4 +75,22 @@ else
   closure='already closed'
 fi
 
-printf 'closeout complete: merge %s on base branch %s; item %s.\n' "$merge_sha" "$base_branch" "$closure"
+final_status=$(git status --porcelain=v1 --untracked-files=all) || {
+  printf 'closeout partial success: merge %s on base branch %s; item %s; local reference synchronization failed: cannot verify a clean checkout before final pull.\n' \
+    "$merge_sha" "$base_branch" "$closure" >&2
+  exit 1
+}
+if [[ -n $final_status ]]; then
+  printf 'closeout partial success: merge %s on base branch %s; item %s; local reference synchronization failed: checkout is not clean before final pull.\n' \
+    "$merge_sha" "$base_branch" "$closure" >&2
+  exit 1
+fi
+
+if ! git pull --ff-only origin "$base_branch" >/dev/null 2>&1; then
+  printf 'closeout partial success: merge %s on base branch %s; item %s; local reference synchronization failed.\n' \
+    "$merge_sha" "$base_branch" "$closure" >&2
+  exit 1
+fi
+
+printf 'closeout complete: merge %s on base branch %s; item %s; local reference synchronized.\n' \
+  "$merge_sha" "$base_branch" "$closure"

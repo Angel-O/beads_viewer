@@ -60,3 +60,12 @@ no branch or remote arguments.
 7. Run `wbd link <work-item-id> <full-merge-sha>`. Only after link succeeds,
    run `wbd close ... --reason "Merged and correlated" --json` when the parsed
    record was not already closed.
+8. For a concrete item only, require the checkout to still be clean immediately
+   before exactly one `git pull --ff-only origin <base-branch>`. Report normal
+   closeout success only after that pull succeeds, including whether the item
+   was closed or already closed. If the clean-state check or pull fails, report
+   partial success because correlation/closure already succeeded; do not retry,
+   undo, or alter Hub state.
+
+The final pull is a local reference synchronization convenience, not a closure
+precondition. Epic dispatch remains documentation-only and never runs this pull.
