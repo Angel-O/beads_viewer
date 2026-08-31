@@ -15,7 +15,7 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 		repository := syntheticRepository(t, "docs: harden closeout validation")
 		commit(t, repository, "docs: safe target change")
 		git(t, repository, "tag", "validation-fixture")
-		if output, err := runMetadataValidation(repository); err != nil {
+		if output, err := runMetadataValidation(repository, "refs/heads/baseline", "HEAD"); err != nil {
 			t.Fatalf("metadata validation failed: %v\n%s", err, output)
 		}
 	})
@@ -24,8 +24,22 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 		repository := syntheticRepository(t, "docs: accepted baseline with ctx:synthetic-baseline")
 		git(t, repository, "branch", "feature/global-synthetic-unrelated")
 		commit(t, repository, "docs: safe target change")
-		if output, err := runMetadataValidation(repository); err != nil {
+		if output, err := runMetadataValidation(repository, "refs/heads/baseline", "HEAD"); err != nil {
 			t.Fatalf("unrelated metadata blocked target range: %v\n%s", err, output)
+		}
+	})
+
+	t.Run("checks the supplied fetched range", func(t *testing.T) {
+		repository := syntheticRepository(t, "docs: synthetic root")
+		git(t, repository, "checkout", "--quiet", "-b", "target")
+		commit(t, repository, "docs: safe target change ctx:synthetic-fetched")
+		git(t, repository, "checkout", "--quiet", "main")
+		output, err := runMetadataValidation(repository, "refs/heads/baseline", "refs/heads/target")
+		if err == nil {
+			t.Fatal("metadata validation accepted a private pattern in the supplied range")
+		}
+		if strings.Contains(string(output), "ctx:synthetic-fetched") {
+			t.Fatalf("validator exposed matched metadata: %s", output)
 		}
 	})
 
@@ -69,7 +83,7 @@ func TestMetadataValidationUsesRepositoryRefsAndHistory(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			repository := syntheticRepository(t, "docs: synthetic root")
 			testCase.setup(t, repository, testCase.leak)
-			output, err := runMetadataValidation(repository)
+			output, err := runMetadataValidation(repository, "refs/heads/baseline", "HEAD")
 			if err == nil {
 				t.Fatal("metadata validation accepted a synthetic private pattern")
 			}
@@ -120,7 +134,7 @@ func git(t *testing.T, repository string, arguments ...string) {
 	}
 }
 
-func runMetadataValidation(repository string) ([]byte, error) {
-	command := exec.Command("bash", "validate.sh", "--metadata-only", repository, testIssuePrefix, "refs/heads/baseline")
+func runMetadataValidation(repository, base, tip string) ([]byte, error) {
+	command := exec.Command("bash", "validate.sh", "--metadata-only", repository, testIssuePrefix, base, tip)
 	return command.CombinedOutput()
 }

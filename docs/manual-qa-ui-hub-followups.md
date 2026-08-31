@@ -368,15 +368,20 @@ Run:
 bash skills/beads-hub-closeout/validate.sh
 ```
 
-- [ ] Output is `private Hub closeout policy validation passed`.
-- [ ] The closeout skill requires an eligible concrete record and a merged PR.
-- [ ] It resolves the repository-designated reference branch and immutable full
-      merge-result SHA.
-- [ ] It requires a clean reference checkout and safe `--ff-only`
-      synchronization before Hub mutation.
-- [ ] It orders Hub mutation as `wbd link` followed by `wbd close`.
-- [ ] It documents stop and recovery behavior without stash, reset, history
-      rewriting, force-push, or direct private-ledger editing.
+- [ ] Output is `private Hub closeout privacy validation passed`.
+- [ ] From the clean PR base checkout, run
+      `bash skills/beads-hub-closeout/closeout.sh <private-work-item-id> <pr-selector>`.
+- [ ] It rejects an unmerged or malformed PR result and derives the base branch
+      only from the PR response.
+- [ ] It fetches only the PR base ref with `--no-tags`, leaves `HEAD` unchanged,
+      and proves both ancestry facts against `FETCH_HEAD`.
+- [ ] It validates privacy over `HEAD..FETCH_HEAD` without printing private
+      Hub identities.
+- [ ] It performs one parsed pre-mutation `wbd show`, links the full merge SHA,
+      and closes only after a successful link when the item was not already
+      closed.
+- [ ] Repeating the same closeout tolerates duplicate links and an already
+      closed item without printing the private item ID.
 - [ ] The previously affected real History item retains its correct
       implementation correlation and no longer shows the erroneous base commit.
 
