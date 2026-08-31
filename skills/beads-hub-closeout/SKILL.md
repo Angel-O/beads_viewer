@@ -25,6 +25,22 @@ merge SHA, public PR base branch, and non-sensitive state.
 checks the active branch, commits in `HEAD..FETCH_HEAD`, and tags on those
 commits without printing a match.
 
+## Epic dispatch
+
+An epic is not a closeout target: do not run `closeout.sh`, or perform PR, Git,
+fetch, or privacy-validation steps. Instead, for each explicit, already-known
+relevant concrete-child full merge SHA, run this direct link from that child
+repository's registered context:
+
+```sh
+wbd link <epic-id> <full-merge-sha>
+```
+
+Do not discover descendants or correlations, infer commit SHAs, add an
+aggregation script, or add a new `wbd` feature. Close the epic only after its
+relevant concrete children are closed and their merge commits are linked to it.
+Concrete-item closeout behavior below is unchanged.
+
 ## Required flow
 
 The script derives the base branch only from the merged PR response and accepts
