@@ -1646,6 +1646,63 @@ func TestKeyDispatch_Regression_BoardSearchConsumesInput(t *testing.T) {
 	}
 }
 
+func TestKeyDispatch_BoardSearchAcceptsRunesAndNavigatesAfterCommit(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "board-match-1", Title: "Match one", Status: model.StatusOpen},
+		{ID: "board-match-2", Title: "Match two", Status: model.StatusOpen},
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(keyMsg("b"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+
+	pasted := []rune("nN世界 pasted")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: pasted})
+	m = updated.(Model)
+	if got := m.board.SearchQuery(); got != string(pasted) {
+		t.Fatalf("active Board search query = %q, want %q", got, string(pasted))
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("match")})
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("N"))
+	m = updated.(Model)
+	if got := m.board.SearchQuery(); got != "matchnN" {
+		t.Fatalf("active Board search treated n/N as commands: query=%q", got)
+	}
+
+	updated, _ = m.Update(keyMsg("backspace"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("backspace"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.board.IsSearchMode() || m.board.SearchQuery() != "match" {
+		t.Fatalf("Enter did not commit Board search: active=%v query=%q", m.board.IsSearchMode(), m.board.SearchQuery())
+	}
+	if m.board.SearchMatchCount() != 2 {
+		t.Fatalf("committed Board search match count = %d, want 2", m.board.SearchMatchCount())
+	}
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	if got := m.board.SearchCursorPos(); got != 2 {
+		t.Fatalf("n navigated to Board match %d, want 2", got)
+	}
+	updated, _ = m.Update(keyMsg("N"))
+	m = updated.(Model)
+	if got := m.board.SearchCursorPos(); got != 1 {
+		t.Fatalf("N navigated to Board match %d, want 1", got)
+	}
+}
+
 func TestKeyDispatch_Regression_HistorySearchConsumesGlobalKeys(t *testing.T) {
 	m := setupTestModel(t)
 

@@ -165,6 +165,14 @@ func TestSearchFootersDoNotAdvertiseConsumedReturnKeys(t *testing.T) {
 			t.Fatalf("Board search footer missing %q: %q", want, boardFooter)
 		}
 	}
+	if strings.Contains(boardFooter, "n/N") {
+		t.Fatalf("active Board search footer advertises match navigation: %q", boardFooter)
+	}
+	board.board.AppendSearchRunes([]rune("Issue"))
+	board.board.FinishSearch()
+	if footer := ansi.Strip(board.renderFooter()); !strings.Contains(footer, "n/N:match") {
+		t.Fatalf("committed Board search footer missing match navigation: %q", footer)
+	}
 
 	history := NewModel(issues, nil, "")
 	history.isHistoryView = true

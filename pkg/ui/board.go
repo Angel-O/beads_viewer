@@ -789,7 +789,15 @@ func (b *BoardModel) SearchCursorPos() int {
 
 // AppendSearchChar adds a character to the search query
 func (b *BoardModel) AppendSearchChar(ch rune) {
-	b.searchQuery += string(ch)
+	b.AppendSearchRunes([]rune{ch})
+}
+
+// AppendSearchRunes adds all supplied runes to the search query.
+func (b *BoardModel) AppendSearchRunes(runes []rune) {
+	if len(runes) == 0 {
+		return
+	}
+	b.searchQuery += string(runes)
 	b.updateSearchMatches()
 }
 
