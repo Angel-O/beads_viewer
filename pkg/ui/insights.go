@@ -828,17 +828,22 @@ func (m *InsightsModel) View() string {
 	row3 := lipgloss.JoinHorizontal(lipgloss.Top, panels[6], panels[7], panels[8])
 	// Priority panel spans full width for prominence (bv-91)
 	// Toggle between priority list and heatmap view (bv-95)
+	priorityWidth := mainWidth - 2
+	if detailWidth > 0 {
+		priorityWidth = lipgloss.Width(row1) - 2
+	}
 	var row4 string
 	if m.showHeatmap {
-		row4 = m.renderHeatmapPanel(mainWidth-2, priorityHeight, t)
+		row4 = m.renderHeatmapPanel(priorityWidth, priorityHeight, t)
 	} else {
-		row4 = m.renderPriorityPanel(mainWidth-2, priorityHeight, t)
+		row4 = m.renderPriorityPanel(priorityWidth, priorityHeight, t)
 	}
 
 	mainContent := lipgloss.JoinVertical(lipgloss.Left, row1, row2, row3, row4)
 
 	// Add detail panel if enabled
 	if detailWidth > 0 {
+		mainContent = lipgloss.Place(mainWidth, lipgloss.Height(mainContent), lipgloss.Left, lipgloss.Top, mainContent)
 		detailPanel := m.renderDetailPanel(detailWidth, m.height-2, t)
 		view := lipgloss.JoinHorizontal(lipgloss.Top, mainContent, detailPanel)
 		if velocityLine != "" {
@@ -1293,7 +1298,8 @@ func (m *InsightsModel) renderPriorityPanel(width, height int, t Theme) string {
 		pickRenderings = append(pickRenderings, m.renderPriorityItem(pick, itemWidth, itemHeight, isSelected, t))
 	}
 
-	lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, pickRenderings...))
+	cardRow := lipgloss.JoinHorizontal(lipgloss.Top, pickRenderings...)
+	lines = append(lines, lipgloss.Place(width-2, lipgloss.Height(cardRow), lipgloss.Center, lipgloss.Top, cardRow))
 
 	// Scroll indicator
 	if len(picks) > visibleItems {

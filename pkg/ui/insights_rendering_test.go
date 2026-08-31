@@ -18,16 +18,22 @@ func TestInsightsPriorityListOuterGeometry(t *testing.T) {
 	theme := DefaultTheme(renderer)
 	insights := analysis.Insights{
 		Stats: analysis.NewGraphStatsForTest(
-			nil, nil, nil, nil, nil, map[string]float64{"issue-1": 1}, nil, nil, nil, 0, nil,
+			nil, nil, nil, nil, nil, map[string]float64{"issue-1": 1, "issue-2": 1, "issue-3": 1}, nil, nil, nil, 0, nil,
 		),
 	}
-	picks := []analysis.TopPick{{ID: "issue-1", Title: "Issue", Score: 0.4}}
+	picks := []analysis.TopPick{
+		{ID: "issue-1", Title: "Issue", Score: 0.4},
+		{ID: "issue-2", Title: "Issue", Score: 0.3},
+		{ID: "issue-3", Title: "Issue", Score: 0.2},
+	}
 	m := NewInsightsModel(insights, map[string]*model.Issue{
 		"issue-1": {ID: "issue-1", Title: "Issue"},
+		"issue-2": {ID: "issue-2", Title: "Issue"},
+		"issue-3": {ID: "issue-3", Title: "Issue"},
 	}, theme)
 	m.SetTopPicks(picks)
 	m.SetRecommendations(nil, "hash")
-	m.SetSize(150, 61)
+	m.SetSize(152, 61)
 	m.focusedPanel = PanelPriority
 
 	listView := m.View()
@@ -38,6 +44,23 @@ func TestInsightsPriorityListOuterGeometry(t *testing.T) {
 	listLines := strings.Split(strings.TrimRight(ansi.Strip(listView), "\n"), "\n")
 	if len(listLines) != 61 || listTop != 45 {
 		t.Fatalf("list geometry = height %d, Priority top %d; want height 61, top 45", len(listLines), listTop)
+	}
+	if detailStart != 101 {
+		t.Fatalf("detail left border = column %d, want 101", detailStart)
+	}
+	metricRight := lastCornerBefore(listLines[0], '╮', detailStart)
+	priorityRight := lastCornerBefore(listLines[listTop], '╮', detailStart)
+	if metricRight != 98 || priorityRight != 98 {
+		t.Fatalf("metric/Priority right borders = %d/%d, want 98/98", metricRight, priorityRight)
+	}
+	outerLeft := cornerPositions(listLines[listTop], '╭')[0]
+	outerRightCorners := cornerPositions(listLines[listTop], '╮')
+	outerRight := outerRightCorners[len(outerRightCorners)-1]
+	cardLeft := cornerPositions(listLines[47], '╭')[0]
+	cardRightCorners := cornerPositions(listLines[47], '╮')
+	cardRight := cardRightCorners[len(cardRightCorners)-1]
+	if cardLeft-outerLeft != outerRight-cardRight {
+		t.Fatalf("Priority card row margins = left %d, right %d; want equal", cardLeft-outerLeft, outerRight-cardRight)
 	}
 	priorityCardTop := firstCornerRowAt(listLines, listTop+1, 0, detailStart, '╭')
 	detailViewportTop := firstCornerRowAt(listLines, 1, detailStart+2, -1, '╭')
@@ -62,11 +85,17 @@ func TestInsightsPriorityListOuterGeometry(t *testing.T) {
 	if got, want := heatmapDetailStart, detailStart; got != want {
 		t.Fatalf("heatmap detail column = %d, want list detail column %d", got, want)
 	}
+	heatmapLines := strings.Split(strings.TrimRight(ansi.Strip(heatmapView), "\n"), "\n")
+	if got := lastCornerBefore(heatmapLines[0], '╮', heatmapDetailStart); got != 98 {
+		t.Fatalf("heatmap metric right border = %d, want 98", got)
+	}
+	if got := lastCornerBefore(heatmapLines[heatmapTop], '╮', heatmapDetailStart); got != 98 {
+		t.Fatalf("heatmap right border = %d, want 98", got)
+	}
 	if got, want := lipgloss.Height(heatmapView), lipgloss.Height(listView); got != want {
 		t.Fatalf("heatmap toggle changed rendered height from %d to %d", want, got)
 	}
 	assertSplitPanelGeometry(t, heatmapView, heatmapTop, heatmapDetailStart)
-	heatmapLines := strings.Split(strings.TrimRight(ansi.Strip(heatmapView), "\n"), "\n")
 	if got := firstCornerRowAt(heatmapLines, 1, heatmapDetailStart+2, -1, '╭'); got != 1 {
 		t.Fatalf("heatmap detail viewport top = %d, want 1", got)
 	}
@@ -140,6 +169,16 @@ func hasCornerAt(line string, column int, corner rune) bool {
 		}
 	}
 	return false
+}
+
+func lastCornerBefore(line string, corner rune, before int) int {
+	last := -1
+	for _, position := range cornerPositions(line, corner) {
+		if position < before {
+			last = position
+		}
+	}
+	return last
 }
 
 func TestRenderHeatmapCellSelectedPopulatedUsesContrast(t *testing.T) {
