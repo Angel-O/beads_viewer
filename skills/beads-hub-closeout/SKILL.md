@@ -13,8 +13,13 @@ it does not claim, review, merge, push, or manage worktrees.
 Run the bundled script with exactly two positional inputs:
 
 ```sh
-skills/beads-hub-closeout/closeout.sh <private-work-item-id> <pr-selector>
+skills/beads-hub-closeout/closeout.sh <private-work-item-id> <github-pull-request-url>
 ```
+
+`<github-pull-request-url>` must be a full URL in the form
+`https://github.com/<owner>/<repository>/pull/<number>`. Bare numbers and other
+unqualified selectors are rejected before any GitHub, Git, or Hub command runs;
+the accepted URL is passed unchanged to `gh pr view`.
 
 The work-item ID is runtime-private. It and any `ctx:` identities must not
 appear in Git metadata, fixtures, documentation, diagnostics, or the final
@@ -46,9 +51,10 @@ Concrete-item closeout behavior below is unchanged.
 The script derives the base branch only from the merged PR response and accepts
 no branch or remote arguments.
 
-1. Read the PR with `gh pr view --json state,mergedAt,mergeCommit,baseRefName`.
-   Require a merged state, non-empty merge time, a valid 40-character
-   merge-result SHA, and a valid base branch. Normalize the SHA to lowercase.
+1. Read the full PR URL with `gh pr view --json
+   state,mergedAt,mergeCommit,baseRefName`. Require a merged state, non-empty
+   merge time, a valid 40-character merge-result SHA, and a valid base branch.
+   Normalize the SHA to lowercase.
 2. Require the current checkout to be clean and already on that PR base branch.
    Never find another worktree, switch branches, or update `HEAD`.
 3. Fetch only `refs/heads/<base>` from `origin` with `--no-tags`.
