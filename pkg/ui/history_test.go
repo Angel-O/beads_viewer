@@ -1252,6 +1252,29 @@ func TestHistoryModel_EmptyStateHintsMatchSearchState(t *testing.T) {
 	}
 }
 
+func TestHistoryModel_EmptyStateRetainsClearGuidanceWithinBounds(t *testing.T) {
+	h := NewHistoryModel(createTestHistoryReport(), testTheme())
+	h.SetSize(80, 10)
+	h.StartSearchWithMode(searchModeCommit)
+	h.searchInput.SetValue("no matching commit")
+	h.applySearchFilter()
+	h.FinishSearch()
+
+	view := h.View()
+	if !strings.Contains(view, "no matching commit") || !strings.Contains(view, "esc: clear") {
+		t.Fatalf("History empty state lost submitted-search guidance: %q", view)
+	}
+	if strings.Contains(view, "esc/h/q: close") {
+		t.Fatalf("History empty state showed close guidance: %q", view)
+	}
+	if got := lipgloss.Width(view); got > 80 {
+		t.Fatalf("History empty-state width = %d, want at most 80", got)
+	}
+	if got := lipgloss.Height(view); got > 10 {
+		t.Fatalf("History empty-state height = %d, want at most 10", got)
+	}
+}
+
 func TestHistoryModel_EmptyStateBoundsNarrowWrappedContent(t *testing.T) {
 	report := createTestHistoryReport()
 	report.Histories = map[string]correlation.BeadHistory{}
