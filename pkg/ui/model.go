@@ -8956,6 +8956,10 @@ func (m *Model) cycleSortMode() {
 		}
 		m.sortMode = (m.sortMode + 1) % SortContextCreated
 	}
+	if m.activeRecipe != nil && strings.HasPrefix(m.currentFilter, "recipe:") {
+		m.sortListItems(m.list.Items())
+		return
+	}
 	m.applyFilter() // Re-apply filter with new sort
 }
 
