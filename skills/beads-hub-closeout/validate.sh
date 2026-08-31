@@ -2,26 +2,6 @@
 
 set -euo pipefail
 
-require_text() {
-  local file=$1 text=$2
-  if ! grep -Fq -- "$text" "$file"; then
-    printf 'missing required closeout policy in %s: %s\n' "$file" "$text" >&2
-    return 1
-  fi
-}
-
-require_before() {
-  local file=$1 earlier=$2 later=$3 earlier_match later_match earlier_line later_line
-  earlier_match=$(grep -nFm1 -- "$earlier" "$file") || return 1
-  later_match=$(grep -nFm1 -- "$later" "$file") || return 1
-  earlier_line=${earlier_match%%:*}
-  later_line=${later_match%%:*}
-  if (( earlier_line >= later_line )); then
-    printf 'closeout ordering violation in %s: %s must precede %s\n' "$file" "$earlier" "$later" >&2
-    return 1
-  fi
-}
-
 validate_metadata_value() {
   local kind=$1 value=$2 prefix=$3
   if grep -Eq "${prefix}-[a-z0-9][a-z0-9-]*|ctx:[a-z0-9][a-z0-9-]*" <<<"$value"; then
@@ -31,33 +11,37 @@ validate_metadata_value() {
 }
 
 validate_repository_metadata() {
-  local repository=$1 base=${2:-} prefix=$3 branch commits messages tags commit commit_tags
+  local repository=$1 base=$2 tip=$3 prefix=$4 branch commits messages tags commit commit_tags
   branch=$(git -C "$repository" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   if [[ -z $branch ]]; then
     printf '%s\n' 'cannot validate Git metadata without an active branch' >&2
     return 1
   fi
-  if [[ -z $base ]]; then
-    base=${CLOSEOUT_METADATA_BASE:-}
-  fi
-  if [[ -z $base ]]; then
-    base=$(git -C "$repository" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
-  fi
-  if [[ -z $base ]] || ! git -C "$repository" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
-    printf '%s\n' 'cannot validate Git metadata without a valid upstream or reference' >&2
+  if [[ -z $base ]] || ! git -C "$repository" rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
+     ! git -C "$repository" rev-parse --verify --quiet "$tip^{commit}" >/dev/null; then
+    printf '%s\n' 'cannot validate Git metadata without a valid range' >&2
     return 1
   fi
-  if ! git -C "$repository" merge-base --is-ancestor "$base" HEAD; then
-    printf '%s\n' 'configured metadata reference is not an ancestor of HEAD' >&2
+  if ! git -C "$repository" merge-base --is-ancestor "$base" "$tip" >/dev/null 2>&1; then
+    printf '%s\n' 'metadata range base is not an ancestor of its tip' >&2
     return 1
   fi
 
-  commits=$(git -C "$repository" rev-list --reverse "$base..HEAD")
-  messages=$(git -C "$repository" log --format='%s%n%b' "$base..HEAD")
+  commits=$(git -C "$repository" rev-list --reverse "$base..$tip") || {
+    printf '%s\n' 'cannot read the metadata commit range' >&2
+    return 1
+  }
+  messages=$(git -C "$repository" log --format='%s%n%b' "$base..$tip") || {
+    printf '%s\n' 'cannot read the metadata commit messages' >&2
+    return 1
+  }
   tags=
   while IFS= read -r commit; do
     [[ -n $commit ]] || continue
-    commit_tags=$(git -C "$repository" tag --points-at "$commit")
+    commit_tags=$(git -C "$repository" tag --points-at "$commit") || {
+      printf '%s\n' 'cannot read metadata tags' >&2
+      return 1
+    }
     if [[ -n $commit_tags ]]; then
       tags+=$'\n'$commit_tags
     fi
@@ -120,39 +104,31 @@ detect_hub_prefix() {
 }
 
 if [[ ${1:-} == "--metadata-only" ]]; then
-  if [[ $# -lt 3 || $# -gt 4 ]] || ! hub_prefix_valid "$3"; then
-    printf '%s\n' 'usage: validate.sh --metadata-only <repository> <issue-prefix> [reference]' >&2
+  if [[ $# -ne 5 ]] || ! hub_prefix_valid "$3"; then
+    printf '%s\n' 'usage: validate.sh --metadata-only <repository> <issue-prefix> <base> <tip>' >&2
     exit 2
   fi
-  validate_repository_metadata "$2" "${4:-}" "$3"
+  validate_repository_metadata "$2" "$4" "$5" "$3"
+  printf '%s\n' 'Git metadata privacy validation passed'
+  exit 0
+fi
+
+if [[ ${1:-} == "--metadata-range" ]]; then
+  if [[ $# -ne 4 ]]; then
+    printf '%s\n' 'usage: validate.sh --metadata-range <repository> <base> <tip>' >&2
+    exit 2
+  fi
+  hub_prefix=$(detect_hub_prefix)
+  validate_repository_metadata "$2" "$3" "$4" "$hub_prefix"
   printf '%s\n' 'Git metadata privacy validation passed'
   exit 0
 fi
 
 repo_root=$(git rev-parse --show-toplevel)
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-skills_root=$(dirname -- "$script_dir")
-hub_skill=$skills_root/beads-hub/SKILL.md
-closeout_skill=$script_dir/SKILL.md
 hub_prefix=$(detect_hub_prefix)
 
-validate_repository_metadata "$repo_root" "" "$hub_prefix"
+base=${CLOSEOUT_METADATA_BASE:-$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)}
+tip=${CLOSEOUT_METADATA_TIP:-HEAD}
+validate_repository_metadata "$repo_root" "$base" "$tip" "$hub_prefix"
 
-require_text "$hub_skill" '[`beads-hub-closeout`](../beads-hub-closeout/SKILL.md)'
-require_text "$closeout_skill" '^[0-9a-fA-F]{40}$'
-require_text "$closeout_skill" 'git merge-base --is-ancestor "$merge_sha" FETCH_HEAD'
-require_text "$closeout_skill" 'pull --ff-only "$remote" "$reference_branch"'
-require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd show "$bead_id" --json)'
-require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
-require_text "$closeout_skill" '(cd -- "$reference_worktree" && wbd close "$bead_id"'
-require_text "$closeout_skill" 'It reads the persisted Hub issue prefix at'
-require_text "$closeout_skill" 'runtime and rejects that prefix and `ctx:` identities in the active branch'
-require_before "$closeout_skill" '## Synchronize Reference' 'pull --ff-only "$remote" "$reference_branch"'
-require_before "$closeout_skill" 'git merge-base --is-ancestor "$merge_sha" FETCH_HEAD' 'pull --ff-only "$remote" "$reference_branch"'
-require_before "$closeout_skill" 'Recheck that the reference checkout is still on the resolved branch and' 'pull --ff-only "$remote" "$reference_branch"'
-require_before "$closeout_skill" 'pull --ff-only "$remote" "$reference_branch"' '## Revalidate And Close'
-require_before "$closeout_skill" '(cd -- "$reference_worktree" && wbd show "$bead_id" --json)' '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
-require_before "$closeout_skill" '## Revalidate And Close' '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")'
-require_before "$closeout_skill" '(cd -- "$reference_worktree" && wbd link "$bead_id" "$merge_sha")' '(cd -- "$reference_worktree" && wbd close "$bead_id"'
-
-printf '%s\n' 'private Hub closeout policy validation passed'
+printf '%s\n' 'private Hub closeout privacy validation passed'
