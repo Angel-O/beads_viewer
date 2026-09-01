@@ -2927,17 +2927,17 @@ function showTooltip(node) {
 
     tooltipEl.innerHTML = `
         <div style="font-weight: 600; margin-bottom: 8px; color: ${THEME.accent.cyan}">
-            ${icon} ${node.id}
+            ${icon} ${escapeHtml(node.id)}
         </div>
         <div style="margin-bottom: 8px; line-height: 1.4;">
             ${escapeHtml(node.title)}
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
             <span style="background: ${statusColor}; color: ${THEME.bg}; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase;">
-                ${node.status}
+                ${escapeHtml(node.status)}
             </span>
             <span style="color: ${priorityColor}; font-weight: 600;">
-                P${node.priority}
+                P${escapeHtml(String(node.priority))}
             </span>
         </div>
         <div style="font-size: 10px; color: ${THEME.fgMuted}; display: grid; grid-template-columns: 1fr 1fr; gap: 4px;">
