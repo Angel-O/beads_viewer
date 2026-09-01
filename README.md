@@ -164,6 +164,8 @@ Don't just read the title. `bv` gives you the full picture:
 ### 🔌 Automation Hooks
 Configure pre- and post-export hooks in `.bv/hooks.yaml` to run validations, notifications, or uploads. Defaults: pre-export hooks fail fast on errors (`on_error: fail`), post-export hooks log and continue (`on_error: continue`). Empty commands are ignored with a warning for safety. Hook env includes `BV_EXPORT_PATH`, `BV_EXPORT_FORMAT`, `BV_ISSUE_COUNT`, `BV_TIMESTAMP`, plus any custom `env` entries.
 
+**Security:** hooks are shell commands defined by the project you are exporting, so treat `.bv/hooks.yaml` in an unfamiliar repository as untrusted code and review it before exporting (or pass `--no-hooks`). To limit blast radius, bv strips credential-bearing environment variables (names containing `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, etc., plus `SSH_AUTH_SOCK`) from hook subprocesses. A hook that legitimately needs one must re-grant it explicitly, e.g. `env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" }`.
+
 ---
 
 ## 🤖 Ready-made Blurb to Drop Into Your AGENTS.md or CLAUDE.md Files
