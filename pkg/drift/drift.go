@@ -911,7 +911,19 @@ func (c *Calculator) checkPotentialDuplicate(result *Result) {
 	if maxAlerts > 0 {
 		cfg.MaxSuggestions = maxAlerts
 	}
-	for i, suggestion := range analysis.DetectDuplicates(c.issues, cfg) {
+	// Closed and tombstoned issues cannot be consolidated any more; pairing
+	// them only buries the live duplicates under history.
+	live := make([]model.Issue, 0, len(c.issues))
+	for _, iss := range c.issues {
+		if iss.Status == model.StatusClosed || iss.Status == model.StatusTombstone {
+			continue
+		}
+		live = append(live, iss)
+	}
+	if len(live) < 2 {
+		return
+	}
+	for i, suggestion := range analysis.DetectDuplicates(live, cfg) {
 		if maxAlerts > 0 && i >= maxAlerts {
 			break
 		}

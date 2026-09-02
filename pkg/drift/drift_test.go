@@ -1843,6 +1843,11 @@ func TestDrift_NewEmitterSemantics(t *testing.T) {
 			issues = append(issues, model.Issue{ID: fmt.Sprintf("SAME-%d", i), Title: "Migrate billing exports to parquet format", Status: model.StatusOpen, UpdatedAt: fresh})
 		}
 		issues = append(issues, model.Issue{ID: "OTHER", Title: "Rename the tutorial header", Status: model.StatusOpen, UpdatedAt: fresh})
+		// Closed twins are history, not duplicates to consolidate.
+		issues = append(issues,
+			model.Issue{ID: "DONE-1", Title: "Archive the quarterly invoice batch", Status: model.StatusClosed, UpdatedAt: fresh},
+			model.Issue{ID: "DONE-2", Title: "Archive the quarterly invoice batch", Status: model.StatusClosed, UpdatedAt: fresh},
+		)
 		cfg := DefaultConfig()
 		cfg.DuplicateMaxAlerts = 4
 		got := alertsOfType(newCalc(cfg, issues), AlertPotentialDuplicate)
@@ -1852,6 +1857,15 @@ func TestDrift_NewEmitterSemantics(t *testing.T) {
 		for _, a := range got {
 			if a.IssueID == "OTHER" || a.RelatedIssueID == "OTHER" || a.RelatedIssueID == "" {
 				t.Fatalf("dissimilar issue paired, or pair missing related_issue_id: %+v", a)
+			}
+			if strings.HasPrefix(a.IssueID, "DONE") || strings.HasPrefix(a.RelatedIssueID, "DONE") {
+				t.Fatalf("closed issues must not be paired as duplicates: %+v", a)
+			}
+		}
+		cfg.DuplicateMaxAlerts = 100
+		for _, a := range alertsOfType(newCalc(cfg, issues), AlertPotentialDuplicate) {
+			if strings.HasPrefix(a.IssueID, "DONE") || strings.HasPrefix(a.RelatedIssueID, "DONE") {
+				t.Fatalf("closed issues must not be paired as duplicates even uncapped: %+v", a)
 			}
 		}
 	})
