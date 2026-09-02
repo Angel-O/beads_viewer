@@ -64,6 +64,15 @@ func TestRobotRegistryValidate_RejectsModifierAlone(t *testing.T) {
 	}
 }
 
+func TestTriageHistoryAvailableSkipsGitOutsideRepository(t *testing.T) {
+	if triageHistoryAvailable(correlation.NewGitProvider(t.TempDir(), "issues.jsonl"), t.TempDir()) {
+		t.Fatal("expected Git history to be skipped outside a repository")
+	}
+	if triageHistoryAvailable(correlation.NewDisabledProvider(), t.TempDir()) {
+		t.Fatal("expected disabled history to be skipped")
+	}
+}
+
 func TestRobotRegistryAnyActive_MatchesOldLogic(t *testing.T) {
 	var (
 		robotHelp       bool

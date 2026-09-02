@@ -34,19 +34,6 @@ const (
 	HistoryModeOff      HistoryMode = "off"
 )
 
-// WithHistoryMode selects git, external, or disabled history loading.
-func (c *Correlator) WithHistoryMode(mode HistoryMode) *Correlator {
-	c.historyMode = mode
-	return c
-}
-
-// WithHubConfig switches correlation to explicit,
-// repository-aware history. No Git command is run against repoPath in this mode.
-func (c *Correlator) WithHubConfig(path string) *Correlator {
-	c.hubConfigPath = path
-	return c
-}
-
 // NewCorrelator creates a new correlator for the given repository.
 // beadsFilePath is optional and forwarded to the extractor so history follows
 // the correct beads file; variadic form preserves compatibility with older

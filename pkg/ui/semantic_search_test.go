@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 	tea "github.com/charmbracelet/bubbletea"
@@ -653,7 +652,7 @@ func TestBuildSemanticIndexCmdUsesHubPrivateStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	message := BuildSemanticIndexCmd([]model.Issue{{ID: "hub-1", Title: "Hub issue", Status: model.StatusOpen}}, dataset, configPath, correlation.HistoryModeExternal)()
+	message := BuildSemanticIndexCmd([]model.Issue{{ID: "hub-1", Title: "Hub issue", Status: model.StatusOpen}}, dataset, store)()
 	ready, ok := message.(SemanticIndexReadyMsg)
 	if !ok {
 		t.Fatalf("BuildSemanticIndexCmd() returned %T", message)
@@ -695,7 +694,7 @@ func TestBuildSemanticIndexCmdGitModeDoesNotUseHubStorage(t *testing.T) {
 	cache := filepath.Join(root, "cache")
 	t.Setenv("BV_CACHE_DIR", cache)
 
-	message := BuildSemanticIndexCmd([]model.Issue{{ID: "git-1", Title: "Git issue", Status: model.StatusOpen}}, dataset, configPath, correlation.HistoryModeGit)()
+	message := BuildSemanticIndexCmd([]model.Issue{{ID: "git-1", Title: "Git issue", Status: model.StatusOpen}}, dataset, "")()
 	ready, ok := message.(SemanticIndexReadyMsg)
 	if !ok {
 		t.Fatalf("BuildSemanticIndexCmd() returned %T", message)

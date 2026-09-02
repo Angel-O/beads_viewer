@@ -160,7 +160,7 @@ func TestListHeadersShareIssueDelegateDisplayCellOffsets(t *testing.T) {
 func TestHubListHeaderShowsRepositoryWithoutWorkspaceMode(t *testing.T) {
 	issue := model.Issue{ID: "hub-1", Title: "Hub header", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:alpha"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
 	m.list.SetSize(100, 10)
@@ -213,7 +213,7 @@ func TestHeterogeneousListRowsUseOneHeaderContract(t *testing.T) {
 		},
 	}
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact},
 		{ID: "ctx:beta", Name: "beta", Kind: repositorypkg.IdentityExact},
@@ -723,7 +723,7 @@ func TestListMetadataColumnsStayStableAcrossNavigationFiltersAndScopes(t *testin
 		{ID: "s", Title: "Closed item", Status: model.StatusClosed, IssueType: model.TypeBug, Labels: []string{"ctx:long"}, Comments: make([]*model.Comment, 999)},
 	}
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "ctx:short", Name: "s", Kind: repositorypkg.IdentityExact},
 		{ID: "ctx:long", Name: "long-repository", Kind: repositorypkg.IdentityExact},
@@ -843,7 +843,7 @@ func TestListLayoutUsesCanonicalIssuesWhenFiltersRemoveWidestMetadata(t *testing
 		{ID: "narrow", Title: "Narrow metadata", Status: model.StatusClosed, IssueType: model.TypeTask, Labels: []string{"ctx:narrow"}},
 	}
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "ctx:wide", Name: "wide-repository", Kind: repositorypkg.IdentityExact},
 		{ID: "ctx:narrow", Name: "narrow", Kind: repositorypkg.IdentityExact},
@@ -925,7 +925,7 @@ func TestHubListExtraWidthUsesCanonicalIssuesAfterLargestIssueLeavesScope(t *tes
 	}
 
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = catalog
 	m.list.SetSize(120, 10)
 	m.refreshRepositoryPresentation()
@@ -968,7 +968,7 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 		{ID: "ctx:s", Name: "s", Kind: repositorypkg.IdentityExact},
 	}
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = catalog
 	m.list.SetSize(80, 10)
 	m.quickWinSet = map[string]bool{issues[2].ID: true}
@@ -1028,7 +1028,7 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 	}
 
 	narrow := NewModel(issues, nil, "")
-	narrow.hubConfigPath = "hub.yaml"
+	narrow.runtimeServices.CatalogPath = "hub.yaml"
 	narrow.repositoryCatalog = catalog
 	narrow.list.SetSize(55, 10)
 	narrow.refreshRepositoryPresentation()
@@ -1054,7 +1054,7 @@ func TestHubListRepositoryWidthUsesStableCatalogPolicy(t *testing.T) {
 	}
 
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = catalog
 	m.list.SetSize(120, 10)
 	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:s"})
@@ -1073,7 +1073,7 @@ func TestHubListRepositoryWidthUsesStableCatalogPolicy(t *testing.T) {
 	}
 
 	contextless := NewModel(issues, nil, "")
-	contextless.hubConfigPath = "hub.yaml"
+	contextless.runtimeServices.CatalogPath = "hub.yaml"
 	contextless.repositoryCatalog = catalog
 	contextless.list.SetSize(120, 10)
 	if err := contextless.SetHubScope(hub.NewContextlessHubScope()); err != nil {
@@ -1101,7 +1101,7 @@ func TestHubListExtraWidthUsesRenderedInactiveContexts(t *testing.T) {
 	}
 
 	m := NewModel(issues, nil, "")
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = catalog
 	m.list.SetSize(120, 10)
 	scope, err := hub.NewSelectedContextsHubScope([]string{activeID})
@@ -1150,7 +1150,7 @@ func TestHubListExtraWidthUsesRenderedInactiveContexts(t *testing.T) {
 	}
 
 	allItems := NewModel([]model.Issue{{ID: "only-active", Title: "Only active", Status: model.StatusOpen, Labels: []string{activeID}}}, nil, "")
-	allItems.hubConfigPath = "hub.yaml"
+	allItems.runtimeServices.CatalogPath = "hub.yaml"
 	allItems.repositoryCatalog = catalog
 	allItems.list.SetSize(120, 10)
 	allNameWidth, allExtraWidth := allItems.repositoryListColumnWidths(IssueDelegate{Theme: allItems.theme})
