@@ -75,7 +75,7 @@ go mod tidy                       # Clean up unused deps
 | `charmbracelet/bubbles` | Reusable TUI components (viewport, list, etc.) |
 | `charmbracelet/huh` | Interactive form components |
 | `charmbracelet/glamour` | Markdown rendering |
-| `modernc.org/sqlite` | Pure-Go SQLite for FTS5 search index |
+| `modernc.org/sqlite` | Pure-Go SQLite for the static-site export (`beads.sqlite3` with an FTS5 index) |
 | `gonum.org/v1/gonum` | Graph algorithms (PageRank, betweenness, HITS, eigenvector) |
 | `goccy/go-json` | High-performance JSON serialization |
 | `fsnotify/fsnotify` | Filesystem event watching (daemon mode) |
@@ -202,7 +202,7 @@ go test -run TestSpecificName ./pkg/...
 | Package | Focus Areas |
 |---------|-------------|
 | `pkg/analysis` | Graph metrics (PageRank, betweenness, HITS, eigenvector, k-core), triage, planning, priority detection |
-| `pkg/search` | Hybrid semantic search (text + graph metrics), FTS5, ranking, presets |
+| `pkg/search` | Hybrid semantic search (text + graph metrics), hash embedder, ranking, presets |
 | `pkg/correlation` | Bead-to-commit correlation, orphan detection, history tracking |
 | `pkg/export` | Static site export, HTML bundle generation, GitHub Pages deployment |
 | `pkg/loader` | JSONL parsing, bead loading, validation |
@@ -262,7 +262,7 @@ beads_viewer/
 ├── cmd/bv/                         # CLI entry point (cobra)
 ├── pkg/
 │   ├── analysis/                   # Graph metrics, triage, planning, priority, forecasting
-│   ├── search/                     # Hybrid semantic search (text + graph, FTS5)
+│   ├── search/                     # Hybrid semantic search (text + graph metrics)
 │   ├── correlation/                # Bead-to-commit correlation, orphan detection
 │   ├── export/                     # Static site export (HTML/JS bundle, GitHub Pages)
 │   ├── loader/                     # JSONL parsing, bead loading, validation
@@ -290,9 +290,9 @@ beads_viewer/
 
 ### Key Design Decisions
 
-- **Two-phase analysis**: Phase 1 metrics (degree, topo sort, density) are instant; Phase 2 (PageRank, betweenness, HITS, eigenvector, cycles) runs async with a 500ms timeout — check `status` flags
+- **Two-phase analysis**: Phase 1 metrics (degree, topo sort, density) are instant; Phase 2 (PageRank, betweenness, HITS, eigenvector, cycles) runs async with size-tiered timeouts (2 s down to 200 ms, `ConfigForSize` in `pkg/analysis/config.go`) — check `status` flags
 - **Robot-first API**: All `--robot-*` flags emit deterministic JSON to stdout; human TUI is secondary
-- **Pure-Go SQLite** (`modernc.org/sqlite`) for FTS5 search index — no CGO dependency
+- **Pure-Go SQLite** (`modernc.org/sqlite`) for the static-site export's FTS5 index — no CGO dependency; `pkg/search` itself is an in-memory hash-embedding index, not SQLite
 - **Hybrid search** combines text relevance with graph metrics (PageRank, status, impact, priority, recency) via configurable weight presets
 - **Elm architecture TUI** via bubbletea — all state transitions are message-based
 - **Structured error wrapping** with `fmt.Errorf("context: %w", err)` for traceability

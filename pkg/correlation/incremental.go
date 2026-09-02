@@ -521,7 +521,12 @@ func calculateMergedStats(histories map[string]BeadHistory, newCommits []Correla
 		for _, commit := range h.Commits {
 			uniqueCommits[commit.SHA] = true
 			authors[commit.Author] = true
-			stats.MethodDistribution[commit.Method.String()]++
+			for _, method := range commit.AllMethods() {
+				stats.MethodDistribution[method]++
+			}
+			if commit.Confirmed {
+				stats.MethodDistribution[MethodDistributionConfirmedByFeedback]++
+			}
 		}
 
 		for _, event := range h.Events {

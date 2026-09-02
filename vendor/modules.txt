@@ -210,6 +210,8 @@ github.com/yuin/goldmark/util
 github.com/yuin/goldmark-emoji
 github.com/yuin/goldmark-emoji/ast
 github.com/yuin/goldmark-emoji/definition
+# go.uber.org/goleak v1.3.0
+## explicit; go 1.20
 # golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a
 ## explicit; go 1.25.0
 # golang.org/x/image v0.42.0

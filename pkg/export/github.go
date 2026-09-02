@@ -645,21 +645,39 @@ func DeleteRepository(repoFullName string, confirm bool) error {
 // OpenInBrowser opens a URL in the default browser.
 // Set BV_NO_BROWSER=1 to suppress browser opening (useful for tests).
 func OpenInBrowser(url string) error {
-	// Skip browser opening in test mode or when explicitly disabled
-	if os.Getenv("BV_NO_BROWSER") != "" || os.Getenv("BV_TEST_MODE") != "" {
-		return nil
+	cmd, err := prepareBrowserOpen(url)
+	if err != nil || cmd == nil {
+		return err
 	}
+	return cmd.Start()
+}
 
-	return startBrowserURL(url)
+// prepareBrowserOpen resolves everything a browser launch depends on — the
+// BV_NO_BROWSER/BV_TEST_MODE gate, the platform command, its PATH lookup, and
+// the environment — at the moment it is called, and returns a ready command
+// (nil when opening is disabled). Callers that launch later from a goroutine
+// must prepare here first: deferring the lookup let a delayed opener run under
+// a different caller's environment (in the test suite, a previous test's
+// preview server opened a browser inside the next test's stubbed PATH).
+func prepareBrowserOpen(url string) (*exec.Cmd, error) {
+	if os.Getenv("BV_NO_BROWSER") != "" || os.Getenv("BV_TEST_MODE") != "" {
+		return nil, nil
+	}
+	name, args, err := browserOpenCommandForGOOS(runtime.GOOS, url)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(name, args...) // resolves PATH now
+	cmd.Env = os.Environ()             // snapshot the environment now
+	return cmd, nil
 }
 
 func startBrowserURL(url string) error {
-	name, args, err := browserOpenCommandForGOOS(runtime.GOOS, url)
-	if err != nil {
+	cmd, err := prepareBrowserOpen(url)
+	if err != nil || cmd == nil {
 		return err
 	}
-
-	return exec.Command(name, args...).Start()
+	return cmd.Start()
 }
 
 func browserOpenCommandForGOOS(goos, url string) (string, []string, error) {

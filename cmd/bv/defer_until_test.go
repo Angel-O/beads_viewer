@@ -35,15 +35,15 @@ func TestApplyRecipeFilters_ActionableHonoursDeferUntil(t *testing.T) {
 	}
 
 	r := &recipe.Recipe{Filters: recipe.FilterConfig{Actionable: ptrBool(true)}}
-	requireIssueIDs(t, applyRecipeFilters(issues, r), "ELAPSED", "PLAIN")
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "ELAPSED", "PLAIN")
 
 	// Without the actionable gate the deferred beads are plain open issues.
 	r.Filters.Actionable = nil
-	requireIssueIDs(t, applyRecipeFilters(issues, r), "FUTURE", "ELAPSED", "PLAIN", "OFFSET")
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "FUTURE", "ELAPSED", "PLAIN", "OFFSET")
 
 	// has_blockers is strictly about blockers; deferral does not count as one.
 	r.Filters.HasBlockers = ptrBool(false)
-	requireIssueIDs(t, applyRecipeFilters(issues, r), "FUTURE", "ELAPSED", "PLAIN", "OFFSET")
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "FUTURE", "ELAPSED", "PLAIN", "OFFSET")
 }
 
 func TestRobotNextClaimablePickSkipsDeferredTopPick(t *testing.T) {

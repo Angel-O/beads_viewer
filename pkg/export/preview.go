@@ -477,18 +477,28 @@ func StartPreviewWithConfig(config PreviewConfig) error {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Handle opening browser
+	// Handle opening browser. Resolve the command and environment NOW; the
+	// delayed goroutine must not consult PATH/env later, when a different
+	// caller (or the next test) may have changed them.
 	if config.OpenBrowser {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			url := server.URL()
-			if err := OpenInBrowser(url); err != nil {
-				if !config.Quiet {
-					fmt.Printf("Could not open browser: %v\n", err)
-					fmt.Printf("Open %s in your browser\n", url)
-				}
+		url := server.URL()
+		opener, err := prepareBrowserOpen(url)
+		if err != nil {
+			if !config.Quiet {
+				fmt.Printf("Could not open browser: %v\n", err)
+				fmt.Printf("Open %s in your browser\n", url)
 			}
-		}()
+		} else if opener != nil {
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				if err := opener.Start(); err != nil {
+					if !config.Quiet {
+						fmt.Printf("Could not open browser: %v\n", err)
+						fmt.Printf("Open %s in your browser\n", url)
+					}
+				}
+			}()
+		}
 	}
 
 	// Print status message

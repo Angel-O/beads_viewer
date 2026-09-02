@@ -1509,7 +1509,7 @@ func main() {
 	alertSeverity := flag.String("severity", "", "Filter robot alerts by severity (info|warning|critical)")
 	alertType := flag.String("alert-type", "", "Filter robot alerts by alert type (e.g., stale_issue)")
 	alertLabel := flag.String("alert-label", "", "Filter robot alerts by label match")
-	recipeName := flag.StringP("recipe", "r", "", "Apply named recipe (e.g., triage, actionable, high-impact)")
+	recipeName := flag.StringP("recipe", "r", "", "Apply a recipe by name (e.g., triage, actionable, high-impact) or by .yaml/.yml file path (e.g., .beads/recipes/sprint.yaml)")
 	semanticQuery := flag.String("search", "", "Semantic search query (vector-based; builds/updates index on first run)")
 	robotSearch := flag.Bool("robot-search", false, "Output semantic search results as JSON for AI agents (use with --search)")
 	searchLimit := flag.Int("search-limit", 10, "Max results for --search/--robot-search")
@@ -2526,18 +2526,35 @@ func main() {
 			os.Exit(0)
 		}
 
-		// Validate recipe name if provided (before loading issues)
+		// Resolve the recipe if provided (before loading issues): a loaded name,
+		// or a .yaml/.yml path parsed as a single recipe file.
 		var activeRecipe *recipe.Recipe
 		if *recipeName != "" {
-			activeRecipe = recipeLoader.Get(*recipeName)
-			if activeRecipe == nil {
-				fmt.Fprintf(os.Stderr, "Error: Unknown recipe '%s'\n\n", *recipeName)
-				fmt.Fprintln(os.Stderr, "Available recipes:")
-				for _, name := range recipeLoader.Names() {
-					r := recipeLoader.Get(name)
-					fmt.Fprintf(os.Stderr, "  %-15s %s\n", name, r.Description)
+			resolved, err := recipeLoader.Resolve(*recipeName)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				// A project recipe file that failed to parse explains an unknown name.
+				for _, warning := range recipeLoader.Warnings() {
+					fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+				}
+				var unknown *recipe.UnknownRecipeError
+				if errors.As(err, &unknown) {
+					fmt.Fprintln(os.Stderr, "\nAvailable recipes:")
+					for _, name := range unknown.Available {
+						description := ""
+						if r := recipeLoader.Get(name); r != nil {
+							description = r.Description
+						}
+						fmt.Fprintf(os.Stderr, "  %-15s %s\n", name, description)
+					}
+					fmt.Fprintln(os.Stderr, "\nA path ending in .yaml or .yml loads one recipe file, e.g. --recipe .beads/recipes/sprint.yaml")
 				}
 				os.Exit(1)
+			}
+			activeRecipe = resolved
+			// Parsed-but-unhonoured fields are called out rather than ignored.
+			for _, field := range activeRecipe.UnappliedFields() {
+				fmt.Fprintf(os.Stderr, "Warning: recipe %s: %s is not applied yet\n", activeRecipe.Name, field)
 			}
 		}
 
@@ -2677,9 +2694,17 @@ func main() {
 		// Apply recipe filtering early for robot modes (bv-93)
 		// This ensures --recipe filters are applied before robot modes exit.
 		// dataHash uses pre-filtered issues for stability.
-		if activeRecipe != nil && (*robotTriage || *robotNext || *robotTriageByTrack || *robotTriageByLabel || *robotPriority || *robotInsights || *robotPlan) {
-			issues = applyRecipeFilters(issues, activeRecipe)
-			issues = applyRecipeSort(issues, activeRecipe)
+		// --recipe scopes EVERY robot command, not just the triage family:
+		// a recipe is a declarative filter and an agent asking any robot
+		// question under it expects the same issue set (reality check
+		// 2026-09-01, gap 2). The envelope reports the active recipe.
+		if activeRecipe != nil && envRobot {
+			applied, err := applyRecipe(issues, activeRecipe)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: recipe %s: %v\n", activeRecipe.Name, err)
+				os.Exit(1)
+			}
+			issues = applied
 			dataHashMatchesIssues = false
 		}
 		robotDispatchContext.Issues = issues
@@ -2689,6 +2714,24 @@ func main() {
 		robotDispatchContext.AsOfCommit = asOfResolved
 		robotDispatchContext.LabelScope = *labelScope
 		robotDispatchContext.LabelContext = labelScopeContext
+		robotDispatchContext.Recipe = *recipeName
+		robotDispatchContext.Repo = *repoFilter
+		// Name the source every payload was computed from (reality check
+		// 2026-09-01: a fresher sidecar could be loaded with nothing in the
+		// output revealing it).
+		switch {
+		case *asOf != "":
+			robotDispatchContext.SourceKind = "git"
+			robotDispatchContext.SourcePath = fmt.Sprintf(".beads@%s", *asOf)
+		case *workspaceConfig != "":
+			robotDispatchContext.SourceKind = "workspace"
+			robotDispatchContext.SourcePath = *workspaceConfig
+		default:
+			if src, ok := datasource.LastSource(); ok {
+				robotDispatchContext.SourcePath = src.Path
+				robotDispatchContext.SourceKind = string(src.Type)
+			}
+		}
 
 		// Handle semantic search CLI (bv-9gf.3)
 		if *semanticQuery != "" {
@@ -5591,10 +5634,14 @@ func main() {
 			os.Exit(0)
 		}
 
-		// Apply recipe filters and sorting if specified
+		// Apply recipe filters, sort chain and max_items if specified
 		if activeRecipe != nil {
-			issues = applyRecipeFilters(issues, activeRecipe)
-			issues = applyRecipeSort(issues, activeRecipe)
+			applied, err := applyRecipe(issues, activeRecipe)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: recipe %s: %v\n", activeRecipe.Name, err)
+				os.Exit(1)
+			}
+			issues = applied
 		}
 
 		// Background mode rollout (bv-o11l):
@@ -5972,261 +6019,37 @@ func formatCycle(cycle []string) string {
 	return result
 }
 
-// naturalLess compares two strings using natural sort order (numeric parts sorted numerically)
-func naturalLess(s1, s2 string) bool {
-	// Simple heuristic: if both strings end with numbers, compare the prefix then the number
-	// e.g. "bv-2" vs "bv-10" -> "bv-" == "bv-", 2 < 10
-
-	// Helper to split into prefix and numeric suffix
-	split := func(s string) (string, int, bool) {
-		lastDigit := -1
-		for i := len(s) - 1; i >= 0; i-- {
-			if s[i] >= '0' && s[i] <= '9' {
-				lastDigit = i
-			} else {
-				break
-			}
-		}
-		if lastDigit == -1 {
-			return s, 0, false
-		}
-		// If the whole string is number, prefix is empty
-		prefix := s[:lastDigit]
-		numStr := s[lastDigit:]
-		num, err := strconv.Atoi(numStr)
-		if err != nil {
-			return s, 0, false
-		}
-		return prefix, num, true
-	}
-
-	p1, n1, ok1 := split(s1)
-	p2, n2, ok2 := split(s2)
-
-	if ok1 && ok2 && p1 == p2 {
-		return n1 < n2
-	}
-
-	return s1 < s2
-}
-
-// applyRecipeFilters filters issues based on recipe configuration
-func applyRecipeFilters(issues []model.Issue, r *recipe.Recipe) []model.Issue {
+// applyRecipe is the CLI's single entry point into the shared recipe engine
+// (recipe.Apply): it narrows and orders issues with r, computing graph metrics
+// and triage scores only when r's sort chain reads them. The result is a new
+// slice; the caller's issues are untouched.
+func applyRecipe(issues []model.Issue, r *recipe.Recipe) ([]model.Issue, error) {
 	if r == nil {
-		return issues
+		return issues, nil
 	}
-
-	f := r.Filters
-	now := robotNow()
-
-	// Build a set of open blocker IDs for actionable filtering
-	openBlockers := make(map[string]bool)
-	for _, issue := range issues {
-		if issue.Status != model.StatusClosed {
-			openBlockers[issue.ID] = true
-		}
-	}
-
-	var result []model.Issue
-	for _, issue := range issues {
-		// Status filter
-		if len(f.Status) > 0 {
-			match := false
-			for _, s := range f.Status {
-				if strings.EqualFold(string(issue.Status), s) {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// Priority filter
-		if len(f.Priority) > 0 {
-			match := false
-			for _, p := range f.Priority {
-				if issue.Priority == p {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// Tags filter (must have all)
-		if len(f.Tags) > 0 {
-			match := true
-			for _, tag := range f.Tags {
-				found := false
-				for _, label := range issue.Labels {
-					if strings.EqualFold(label, tag) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					match = false
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// ExcludeTags filter
-		if len(f.ExcludeTags) > 0 {
-			excluded := false
-			for _, excludeTag := range f.ExcludeTags {
-				for _, label := range issue.Labels {
-					if strings.EqualFold(label, excludeTag) {
-						excluded = true
-						break
-					}
-				}
-				if excluded {
-					break
-				}
-			}
-			if excluded {
-				continue
-			}
-		}
-
-		// CreatedAfter filter
-		if f.CreatedAfter != "" {
-			threshold, err := recipe.ParseRelativeTime(f.CreatedAfter, now)
-			if err == nil && !issue.CreatedAt.IsZero() && issue.CreatedAt.Before(threshold) {
-				continue
-			}
-		}
-
-		// CreatedBefore filter
-		if f.CreatedBefore != "" {
-			threshold, err := recipe.ParseRelativeTime(f.CreatedBefore, now)
-			if err == nil && !issue.CreatedAt.IsZero() && issue.CreatedAt.After(threshold) {
-				continue
-			}
-		}
-
-		// UpdatedAfter filter
-		if f.UpdatedAfter != "" {
-			threshold, err := recipe.ParseRelativeTime(f.UpdatedAfter, now)
-			if err == nil && !issue.UpdatedAt.IsZero() && issue.UpdatedAt.Before(threshold) {
-				continue
-			}
-		}
-
-		// UpdatedBefore filter
-		if f.UpdatedBefore != "" {
-			threshold, err := recipe.ParseRelativeTime(f.UpdatedBefore, now)
-			if err == nil && !issue.UpdatedAt.IsZero() && issue.UpdatedAt.After(threshold) {
-				continue
-			}
-		}
-
-		// HasBlockers filter
-		if f.HasBlockers != nil {
-			hasOpenBlockers := false
-			for _, dep := range issue.Dependencies {
-				if dep != nil && dep.Type.IsBlocking() && openBlockers[dep.DependsOnID] {
-					hasOpenBlockers = true
-					break
-				}
-			}
-			if *f.HasBlockers != hasOpenBlockers {
-				continue
-			}
-		}
-
-		// Actionable filter (no open blockers, not scheduler-deferred).
-		// A future defer_until withholds the bead exactly as `br ready` does
-		// (issue #191); the deferral lapses on its own once the instant passes.
-		if f.Actionable != nil && *f.Actionable {
-			if issue.IsDeferredAt(now) {
-				continue
-			}
-			hasOpenBlockers := false
-			for _, dep := range issue.Dependencies {
-				if dep != nil && dep.Type.IsBlocking() && openBlockers[dep.DependsOnID] {
-					hasOpenBlockers = true
-					break
-				}
-			}
-			if hasOpenBlockers {
-				continue
-			}
-		}
-
-		// TitleContains filter
-		if f.TitleContains != "" {
-			if !strings.Contains(strings.ToLower(issue.Title), strings.ToLower(f.TitleContains)) {
-				continue
-			}
-		}
-
-		// IDPrefix filter
-		if f.IDPrefix != "" {
-			if !strings.HasPrefix(issue.ID, f.IDPrefix) {
-				continue
-			}
-		}
-
-		result = append(result, issue)
-	}
-
-	return result
+	return recipe.Apply(issues, recipeMetrics(issues, r), r, robotNow())
 }
 
-// applyRecipeSort sorts issues based on recipe configuration
-func applyRecipeSort(issues []model.Issue, r *recipe.Recipe) []model.Issue {
-	if r == nil || r.Sort.Field == "" {
-		return issues
+// recipeMetrics computes only the metric sources r needs. Scores are taken
+// over every issue handed in, so a blocker hidden by the recipe's filters still
+// feeds the PageRank/betweenness of what remains, exactly as the TUI's stats do.
+func recipeMetrics(issues []model.Issue, r *recipe.Recipe) recipe.Metrics {
+	var metrics recipe.Metrics
+	if r.NeedsGraphMetrics() {
+		analyzer := analysis.NewAnalyzer(issues)
+		analyzer.SetNow(robotNow())
+		stats := analyzer.AnalyzeAsync(context.Background())
+		stats.WaitForPhase2()
+		metrics.Graph = stats
 	}
-
-	s := r.Sort
-	ascending := s.Direction != "desc"
-
-	// For priority, default to ascending (P0 first)
-	if s.Field == "priority" && s.Direction == "" {
-		ascending = true
-	}
-	// For dates, default to descending (newest first)
-	if (s.Field == "created" || s.Field == "updated") && s.Direction == "" {
-		ascending = false
-	}
-
-	sort.SliceStable(issues, func(i, j int) bool {
-		// For descending, swap comparison operands
-		a, b := i, j
-		if !ascending {
-			a, b = j, i
+	if r.NeedsTriageScores() {
+		scores := analysis.ComputeTriageScores(issues)
+		metrics.Triage = make(map[string]float64, len(scores))
+		for _, score := range scores {
+			metrics.Triage[score.IssueID] = score.TriageScore
 		}
-
-		switch s.Field {
-		case "priority":
-			return issues[a].Priority < issues[b].Priority
-		case "created":
-			return issues[a].CreatedAt.Before(issues[b].CreatedAt)
-		case "updated":
-			return issues[a].UpdatedAt.Before(issues[b].UpdatedAt)
-		case "title":
-			return strings.ToLower(issues[a].Title) < strings.ToLower(issues[b].Title)
-		case "id":
-			return naturalLess(issues[a].ID, issues[b].ID)
-		case "status":
-			return issues[a].Status < issues[b].Status
-		default:
-			// Unknown sort field, maintain order
-			return false
-		}
-	})
-
-	return issues
+	}
+	return metrics
 }
 
 // runProfileStartup runs profiled startup analysis and outputs results
@@ -8216,7 +8039,13 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 	// the per-commit event cache. Without this the watcher re-materialized the
 	// entire blob history on every re-export. BV_NO_CACHE=1 still opts out.
 	correlation.SetDiskCacheEnabled(true)
-	correlator := correlation.NewCorrelator(cwd, beadsPath)
+	// The exported history is a read path: stored confirm/reject feedback
+	// shapes it exactly as it shapes --robot-history.
+	feedbackStore := correlation.NewFeedbackStore(beadsDir)
+	if err := feedbackStore.Load(); err != nil {
+		return nil, fmt.Errorf("loading correlation feedback: %w", err)
+	}
+	correlator := correlation.NewCorrelator(cwd, beadsPath).WithFeedbackStore(feedbackStore)
 	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for time-travel
 	})
@@ -8321,7 +8150,24 @@ type RobotEnvelope struct {
 	DataHash     string          `json:"data_hash"`               // Fingerprint of source data
 	OutputFormat string          `json:"output_format,omitempty"` // "json" or "toon"
 	Version      string          `json:"version,omitempty"`       // bv version (e.g., "1.0.0")
+	SourcePath   string          `json:"source_path,omitempty"`   // File (or "<file>@<rev>") the issue set was loaded from
+	SourceKind   string          `json:"source_kind,omitempty"`   // jsonl | sqlite | git | workspace | bd
+	AsOf         string          `json:"as_of,omitempty"`         // --as-of ref, when time-travelling
+	AsOfCommit   string          `json:"as_of_commit,omitempty"`  // Resolved SHA for --as-of
+	Scope        *RobotScope     `json:"scope,omitempty"`         // Active --label/--recipe/--repo scoping and what this command could not honour
 	LoadStats    *RobotLoadStats `json:"load_stats,omitempty"`    // Present when records were dropped during load (#190)
+}
+
+// RobotScope reports the scoping flags in effect for a robot payload so a
+// consumer can tell a scoped answer from a whole-project one, and lists the
+// flags the command could not honour (for example sprint definitions are read
+// from disk, so --as-of does not apply to them) instead of silently ignoring
+// them.
+type RobotScope struct {
+	Label       string   `json:"label,omitempty"`
+	Recipe      string   `json:"recipe,omitempty"`
+	Repo        string   `json:"repo,omitempty"`
+	Unsupported []string `json:"unsupported,omitempty"`
 }
 
 // RobotLoadStats surfaces per-line parse accounting for the JSONL source that
@@ -8735,6 +8581,7 @@ func robotCommandDocs() map[string]robotCommandDoc {
 		},
 		"robot-sprint-list": {
 			Flag:        "--robot-sprint-list",
+			NeedsSprint: true,
 			Description: "List all sprints as JSON.",
 			NeedsIssues: true,
 		},
@@ -9167,6 +9014,37 @@ func generateRobotSchemas() RobotSchemas {
 			"version": map[string]interface{}{
 				"type":        "string",
 				"description": "bv version that generated this output",
+			},
+			"source_path": map[string]interface{}{
+				"type":        "string",
+				"description": "File the issue set was loaded from (or '<beads>@<rev>' for --as-of, or the workspace config path)",
+			},
+			"source_kind": map[string]interface{}{
+				"type":        "string",
+				"enum":        []string{"jsonl_local", "jsonl_worktree", "sqlite", "git", "workspace"},
+				"description": "Kind of source behind source_path",
+			},
+			"as_of": map[string]interface{}{
+				"type":        "string",
+				"description": "The --as-of ref when time-travelling",
+			},
+			"as_of_commit": map[string]interface{}{
+				"type":        "string",
+				"description": "Resolved commit SHA for --as-of",
+			},
+			"scope": map[string]interface{}{
+				"type":        "object",
+				"description": "Active --label/--recipe/--repo scoping; 'unsupported' lists scoping flags this command could not honour (for example as_of for commands that read sprint files or live git history)",
+				"properties": map[string]interface{}{
+					"label":       map[string]interface{}{"type": "string"},
+					"recipe":      map[string]interface{}{"type": "string"},
+					"repo":        map[string]interface{}{"type": "string"},
+					"unsupported": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				},
+			},
+			"load_stats": map[string]interface{}{
+				"type":        "object",
+				"description": "Present only when records were dropped during load (#190)",
 			},
 		},
 		"required": []string{"generated_at", "data_hash"},
@@ -9905,7 +9783,8 @@ func recipeSummarySchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"name":        map[string]interface{}{"type": "string"},
 			"description": map[string]interface{}{"type": "string"},
-			"source":      map[string]interface{}{"type": "string", "enum": []string{"builtin", "user", "project"}},
+			"source":      map[string]interface{}{"type": "string", "enum": []string{recipe.SourceBuiltin, recipe.SourceUser, recipe.SourceProject, recipe.SourceProjectFile}},
+			"path":        map[string]interface{}{"type": "string", "description": "Defining file for project-file recipes"},
 		},
 		"required": []string{"name", "description", "source"},
 	}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -38,15 +39,184 @@ const (
 // constructing large archives. Production keeps it aligned with maxDownloadBytes.
 var maxExtractedBinaryBytes int64 = maxDownloadBytes
 
-// githubToken returns a GitHub personal access token from the environment,
+// Environment variables that control the updater's network behaviour.
+const (
+	// EnvNoUpdateCheck disables the TUI's startup release check when set to a
+	// truthy value. Explicit --check-update / --update invocations ignore it.
+	EnvNoUpdateCheck = "BV_NO_UPDATE_CHECK"
+	// EnvUseToken opts in to sending the ambient GITHUB_TOKEN / GH_TOKEN with
+	// GitHub requests. Without it the updater talks to GitHub anonymously.
+	EnvUseToken = "BV_UPDATE_USE_TOKEN"
+	// envNoSavedConfig is the project-wide switch that makes bv ignore every
+	// file under the user config directory (read and write).
+	envNoSavedConfig = "BV_NO_SAVED_CONFIG"
+
+	userConfigFileName        = "config.yaml"
+	startupDisclosureFileName = "update-check-disclosed"
+)
+
+// StartupCheckDisclosure is the footer text shown the first time bv performs
+// its automatic release check, so the network access is never silent (#197).
+const StartupCheckDisclosure = "checked github.com for updates (BV_NO_UPDATE_CHECK=1 to disable)"
+
+// Preferences is the resolved update policy: defaults, then
+// ~/.config/bv/config.yaml `updates:` keys, then environment overrides.
+type Preferences struct {
+	// CheckOnStartup controls the TUI's background release check.
+	CheckOnStartup bool
+	// UseAmbientToken allows GITHUB_TOKEN / GH_TOKEN to be attached to
+	// requests that target GitHub hosts.
+	UseAmbientToken bool
+}
+
+// userUpdateConfig is the subset of config.yaml the updater understands:
+//
+//	updates:
+//	  check: false      # skip the startup release check
+//	  use_token: true   # send the ambient GITHUB_TOKEN / GH_TOKEN
+type userUpdateConfig struct {
+	Updates struct {
+		Check    *bool `yaml:"check"`
+		UseToken *bool `yaml:"use_token"`
+	} `yaml:"updates"`
+}
+
+// envTruthy treats any non-empty value other than an explicit "0"/"false"/
+// "no"/"off" as enabled, so BV_NO_UPDATE_CHECK=1 and BV_NO_UPDATE_CHECK=true
+// both work while BV_NO_UPDATE_CHECK=0 re-enables the default.
+func envTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "false", "no", "off":
+		return false
+	}
+	return true
+}
+
+func savedConfigDisabled() bool {
+	return os.Getenv(envNoSavedConfig) != ""
+}
+
+// UserConfigDir returns bv's user configuration directory:
+// $XDG_CONFIG_HOME/bv when XDG_CONFIG_HOME is set, otherwise ~/.config/bv.
+func UserConfigDir() (string, error) {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		return filepath.Join(xdg, "bv"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving user config dir: %w", err)
+	}
+	if home == "" {
+		return "", fmt.Errorf("resolving user config dir: empty home directory")
+	}
+	return filepath.Join(home, ".config", "bv"), nil
+}
+
+// loadUserUpdateConfig reads the `updates:` section of config.yaml. A missing
+// or unreadable file, or BV_NO_SAVED_CONFIG, yields the zero value so callers
+// fall back to defaults.
+func loadUserUpdateConfig() userUpdateConfig {
+	var cfg userUpdateConfig
+	if savedConfigDisabled() {
+		return cfg
+	}
+	dir, err := UserConfigDir()
+	if err != nil {
+		return cfg
+	}
+	data, err := os.ReadFile(filepath.Join(dir, userConfigFileName))
+	if err != nil {
+		return cfg
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return userUpdateConfig{}
+	}
+	return cfg
+}
+
+// LoadPreferences resolves the update policy. Defaults are "check on startup,
+// never send the ambient token"; config.yaml can flip either, and the
+// environment (BV_NO_UPDATE_CHECK, BV_UPDATE_USE_TOKEN) wins over both.
+func LoadPreferences() Preferences {
+	prefs := Preferences{CheckOnStartup: true, UseAmbientToken: false}
+	cfg := loadUserUpdateConfig()
+	if cfg.Updates.Check != nil {
+		prefs.CheckOnStartup = *cfg.Updates.Check
+	}
+	if cfg.Updates.UseToken != nil {
+		prefs.UseAmbientToken = *cfg.Updates.UseToken
+	}
+	if envTruthy(os.Getenv(EnvNoUpdateCheck)) {
+		prefs.CheckOnStartup = false
+	}
+	if envTruthy(os.Getenv(EnvUseToken)) {
+		prefs.UseAmbientToken = true
+	}
+	return prefs
+}
+
+// StartupCheckEnabled reports whether the TUI should run its automatic
+// release check at startup.
+func StartupCheckEnabled() bool {
+	return LoadPreferences().CheckOnStartup
+}
+
+// StartupDisclosurePending reports whether the one-time "checked github.com"
+// footer notice still has to be shown. The notice is recorded in the user
+// config directory, so it appears once per config-directory lifetime; with
+// BV_NO_SAVED_CONFIG nothing can be recorded and nothing is shown.
+func StartupDisclosurePending() bool {
+	if savedConfigDisabled() {
+		return false
+	}
+	dir, err := UserConfigDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dir, startupDisclosureFileName))
+	return os.IsNotExist(err)
+}
+
+// RecordStartupDisclosure marks the startup-check disclosure as shown by
+// writing a marker file into the user config directory.
+func RecordStartupDisclosure() error {
+	if savedConfigDisabled() {
+		return nil
+	}
+	dir, err := UserConfigDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+	body := "bv showed the startup update-check disclosure on " + time.Now().UTC().Format(time.RFC3339) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, startupDisclosureFileName), []byte(body), 0o644); err != nil {
+		return fmt.Errorf("recording update-check disclosure: %w", err)
+	}
+	return nil
+}
+
+// ambientGitHubToken returns the GitHub token present in the environment,
 // checking GITHUB_TOKEN first, then GH_TOKEN. Returns empty string if
-// neither is set. Using a token raises the API rate limit from 60 to
-// 5,000 requests/hour and avoids 403 errors on shared IPs (#117).
-func githubToken() string {
+// neither is set.
+func ambientGitHubToken() string {
 	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {
 		return tok
 	}
 	return strings.TrimSpace(os.Getenv("GH_TOKEN"))
+}
+
+// githubToken returns the token to attach to GitHub requests, or "" when the
+// user has not opted in via BV_UPDATE_USE_TOKEN=1 or config.yaml
+// `updates: {use_token: true}`. Public release metadata needs no token; using
+// one only raises the rate limit from 60 to 5,000 requests/hour (#117), so a
+// credential that happens to be in the environment is never sent by default.
+func githubToken() string {
+	if !LoadPreferences().UseAmbientToken {
+		return ""
+	}
+	return ambientGitHubToken()
 }
 
 // isGitHubHost returns true if the given URL points to a github.com or
@@ -58,9 +228,9 @@ func isGitHubHost(u *url.URL) bool {
 		host == "githubusercontent.com" || strings.HasSuffix(host, ".githubusercontent.com")
 }
 
-// setGitHubAuth adds Authorization header to a request if a GitHub token
-// is available in the environment (GITHUB_TOKEN or GH_TOKEN) and the
-// request targets a GitHub domain. This prevents leaking tokens to
+// setGitHubAuth adds an Authorization header to a request when the user has
+// opted in to using the ambient GITHUB_TOKEN / GH_TOKEN (see githubToken)
+// and the request targets a GitHub domain. This prevents leaking tokens to
 // non-GitHub hosts (e.g. CDN redirects).
 func setGitHubAuth(req *http.Request) {
 	if tok := githubToken(); tok != "" && isGitHubHost(req.URL) {

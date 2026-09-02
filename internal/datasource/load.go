@@ -62,6 +62,30 @@ func recordLoadReport(rep LoadReport) {
 	lastLoadReport = &rep
 }
 
+var (
+	lastSourceMu sync.Mutex
+	lastSource   *DataSource
+)
+
+// LastSource returns the source (JSONL or SQLite) the most recent successful
+// load in this process read from, so robot payloads can name the file that
+// actually backed them. ok is false when no load has completed.
+func LastSource() (DataSource, bool) {
+	lastSourceMu.Lock()
+	defer lastSourceMu.Unlock()
+	if lastSource == nil {
+		return DataSource{}, false
+	}
+	return *lastSource, true
+}
+
+func recordLastSource(src DataSource) {
+	lastSourceMu.Lock()
+	defer lastSourceMu.Unlock()
+	cp := src
+	lastSource = &cp
+}
+
 // loadRecorder wires a single JSONL parse to a LoadReport: it collects
 // ParseStats plus the loader's per-line skip warnings, mirroring the default
 // warning behavior (stderr in interactive mode, quiet under BV_ROBOT=1 so
@@ -129,7 +153,12 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 	if source, ok, err := ExplicitBeadsDBSource(); err != nil {
 		return nil, err
 	} else if ok {
-		return LoadFromSource(source)
+		issues, err := LoadFromSource(source)
+		if err != nil {
+			return nil, err
+		}
+		recordLastSource(source)
+		return issues, nil
 	}
 
 	beadsDir, err := loader.GetBeadsDir(repoPath)
@@ -172,6 +201,7 @@ func loadLegacyJSONL(beadsDir string) ([]model.Issue, error) {
 		return nil, err
 	}
 	rec.commit()
+	recordLastSource(DataSource{Type: SourceTypeJSONLLocal, Path: jsonlPath, Priority: PriorityJSONLLocal})
 	return issues, nil
 }
 
@@ -207,11 +237,17 @@ func loadBDWorkspace(beadsDir string) ([]model.Issue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bd/Dolt workspace detected at %s: %w", beadsDir, err)
 	}
-	return loadAndValidateJSONL(DataSource{
+	src := DataSource{
 		Type:     SourceTypeJSONLLocal,
 		Path:     jsonlPath,
 		Priority: PriorityJSONLLocal,
-	})
+	}
+	issues, err := loadAndValidateJSONL(src)
+	if err != nil {
+		return nil, err
+	}
+	recordLastSource(src)
+	return issues, nil
 }
 
 // ExplicitBeadsDBSource returns the direct source named by BEADS_DB when it
@@ -321,17 +357,26 @@ func loadSmart(beadsDir, repoPath string) ([]model.Issue, error) {
 // parse IS the validation pass: a single read materializes issues and yields the
 // parse stats used to apply the malformed-error-rate gate.
 func loadAndValidate(source DataSource) ([]model.Issue, error) {
+	var (
+		issues []model.Issue
+		err    error
+	)
 	switch source.Type {
 	case SourceTypeSQLite:
 		if err := ValidateSource(&source); err != nil {
 			return nil, err
 		}
-		return LoadFromSource(source)
+		issues, err = LoadFromSource(source)
 	case SourceTypeJSONLLocal, SourceTypeJSONLWorktree:
-		return loadAndValidateJSONL(source)
+		issues, err = loadAndValidateJSONL(source)
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", source.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+	recordLastSource(source)
+	return issues, nil
 }
 
 // loadAndValidateJSONL performs the fused validate-and-materialize pass for a

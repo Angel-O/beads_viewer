@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/baseline"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
@@ -50,17 +49,31 @@ type RobotContext struct {
 	AsOfCommit            string
 	LabelScope            string
 	LabelContext          *analysis.LabelHealth
-	Stdout                io.Writer
-	Stderr                io.Writer
-	FinalizeBeforeExit    func()
-	WorkDir               string
-	ProjectDir            string
-	BaselinePath          string
-	EnvRobot              bool
-	SearchOutput          *robotSearchOutput
-	Diff                  *analysis.SnapshotDiff
-	DiffHistoricalIssues  []model.Issue
-	DiffResolvedRevision  string
+	// Command is the normalized robot flag being dispatched (set by
+	// DispatchFlag) so Envelope can declare which scoping flags this command
+	// cannot honour.
+	Command string
+	// SourcePath / SourceKind describe where Issues came from: the JSONL or
+	// SQLite file selected by discovery, "<file>@<rev>" for --as-of, or the
+	// workspace config. Every payload carries them so a consumer can see when a
+	// different file than expected was analysed.
+	SourcePath string
+	SourceKind string
+	// Recipe and Repo mirror the --recipe and --repo scoping already applied to
+	// Issues (LabelScope covers --label).
+	Recipe               string
+	Repo                 string
+	Stdout               io.Writer
+	Stderr               io.Writer
+	FinalizeBeforeExit   func()
+	WorkDir              string
+	ProjectDir           string
+	BaselinePath         string
+	EnvRobot             bool
+	SearchOutput         *robotSearchOutput
+	Diff                 *analysis.SnapshotDiff
+	DiffHistoricalIssues []model.Issue
+	DiffResolvedRevision string
 }
 
 type RobotRegistry struct {
@@ -200,6 +213,52 @@ func newRobotRegistry() RobotRegistry {
 	return RobotRegistry{}
 }
 
+// Envelope builds the shared robot payload header for this dispatch: data
+// hash, source, time-travel metadata, and active scoping. Every handler embeds
+// it so "every payload carries X" is true by construction.
+func (ctx RobotContext) Envelope() RobotEnvelope {
+	return ctx.EnvelopeWithHash(ctx.DataHash)
+}
+
+// EnvelopeWithHash is Envelope for handlers whose payload hashes a derived
+// issue set (a history report, a scoped subgraph) rather than ctx.Issues.
+func (ctx RobotContext) EnvelopeWithHash(dataHash string) RobotEnvelope {
+	env := NewRobotEnvelope(dataHash)
+	env.SourcePath = ctx.SourcePath
+	env.SourceKind = ctx.SourceKind
+	env.AsOf = ctx.AsOf
+	env.AsOfCommit = ctx.AsOfCommit
+	unsupported := unsupportedScopeFor(ctx.Command, ctx)
+	if ctx.LabelScope != "" || ctx.Recipe != "" || ctx.Repo != "" || len(unsupported) > 0 {
+		env.Scope = &RobotScope{
+			Label:       ctx.LabelScope,
+			Recipe:      ctx.Recipe,
+			Repo:        ctx.Repo,
+			Unsupported: unsupported,
+		}
+	}
+	return env
+}
+
+// unsupportedScopeFor lists the scoping flags a command cannot honour for the
+// given context. Commands that walk live git history or read sprint files from
+// disk cannot be time-travelled with --as-of; declaring that beats silently
+// answering from the wrong point in time.
+func unsupportedScopeFor(command string, ctx RobotContext) []string {
+	if ctx.AsOf == "" {
+		return nil
+	}
+	switch normalizeRobotFlagName(command) {
+	case "robot-history", "robot-orphans", "robot-file-beads", "robot-file-hotspots",
+		"robot-file-relations", "robot-impact-network", "robot-related", "robot-causality",
+		"robot-explain-correlation", "robot-confirm-correlation", "robot-reject-correlation",
+		"robot-correlation-stats", "robot-impact",
+		"robot-sprint-list", "robot-sprint-show", "robot-burndown":
+		return []string{"as_of"}
+	}
+	return nil
+}
+
 func (ctx RobotContext) StdoutOrDefault() io.Writer {
 	if ctx.Stdout != nil {
 		return ctx.Stdout
@@ -304,6 +363,7 @@ func (r *RobotRegistry) DispatchFlag(flagName string, ctx RobotContext) (bool, e
 		if cmd.Handler == nil {
 			return true, fmt.Errorf("robot command %q has no handler", cmd.Name)
 		}
+		ctx.Command = normalized
 		return true, cmd.Handler(ctx)
 	}
 
@@ -373,6 +433,14 @@ func newReportedRobotHandlerExit(exitCode int) error {
 
 // writeRobotHelp outputs the robot help documentation.
 func writeRobotHelp(out io.Writer) error {
+	return writeRobotHelpFromRegistries(out, &phaseOneRobotRegistry, &phaseTwoRobotRegistry, &phaseThreeRobotRegistry)
+}
+
+// writeRobotHelpFromRegistries renders --robot-help. The command list is
+// generated from the registries so a new robot command is documented the
+// moment it is registered; the hand-written list it replaced covered six of
+// forty commands.
+func writeRobotHelpFromRegistries(out io.Writer, registries ...*RobotRegistry) error {
 	if out == nil {
 		out = os.Stdout
 	}
@@ -395,17 +463,64 @@ func writeRobotHelp(out io.Writer) error {
 Use --robot-* flags for deterministic automation output.
 Bare bv launches the interactive TUI.
 
-Core commands:
-  --robot-triage    Unified triage output (recommended entry point)
-  --robot-next      Single top recommendation
-  --robot-plan      Dependency-respecting execution tracks
-  --robot-insights  Graph metrics and structural analysis
+Start here:
+  --robot-triage        Unified triage output (recommended entry point)
+  --robot-next          Single top recommendation
   --robot-capabilities  Machine-readable command/contract manifest
-  --robot-schema    JSON Schema definitions for robot outputs
+  --robot-schema        JSON Schema definitions for robot outputs
+  --robot-docs <topic>  Long-form agent documentation
+
+Every payload carries: generated_at, data_hash, source_path, source_kind,
+as_of/as_of_commit (with --as-of), scope (with --label/--recipe/--repo, plus
+scope.unsupported for flags a command cannot honour), load_stats (when records
+were dropped during load).
 
 `)
 	if err != nil {
 		return fmt.Errorf("writing robot help intro: %w", err)
+	}
+
+	// Every registered command, generated so the list cannot drift from the
+	// registry. Modifiers (flags that only adjust another command) are listed
+	// under their own heading.
+	if err := writeln("All robot commands:"); err != nil {
+		return fmt.Errorf("writing robot help commands heading: %w", err)
+	}
+	if err := writeln("-------------------"); err != nil {
+		return fmt.Errorf("writing robot help commands divider: %w", err)
+	}
+	var modifiers []RobotCommand
+	seen := make(map[string]bool)
+	for _, reg := range registries {
+		if reg == nil {
+			continue
+		}
+		for _, cmd := range reg.commands {
+			if seen[cmd.FlagName] {
+				continue
+			}
+			seen[cmd.FlagName] = true
+			if cmd.IsModifier {
+				modifiers = append(modifiers, cmd)
+				continue
+			}
+			if err := writef("  %-28s %s\n", formatRobotFlag(cmd.FlagName), cmd.Description); err != nil {
+				return fmt.Errorf("writing robot help command %q: %w", cmd.FlagName, err)
+			}
+		}
+	}
+	if len(modifiers) > 0 {
+		if err := writeln("\nModifiers (combine with a command above):"); err != nil {
+			return fmt.Errorf("writing robot help modifiers heading: %w", err)
+		}
+		for _, cmd := range modifiers {
+			if err := writef("  %-28s %s\n", formatRobotFlag(cmd.FlagName), cmd.Description); err != nil {
+				return fmt.Errorf("writing robot help modifier %q: %w", cmd.FlagName, err)
+			}
+		}
+	}
+	if err := writeln(); err != nil {
+		return fmt.Errorf("writing robot help commands spacer: %w", err)
 	}
 
 	// Key bindings table (bv-xl6g)
@@ -590,7 +705,7 @@ func registerPhaseOneRobotHandlers(registry *RobotRegistry, cfg phaseOneRobotHan
 				Cache  []metrics.CacheStats  `json:"cache,omitempty"`
 				Memory metrics.MemoryStats   `json:"memory"`
 			}{
-				RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
+				RobotEnvelope: ctx.Envelope(),
 				Timing:        snapshot.Timing,
 				Cache:         snapshot.Cache,
 				Memory:        snapshot.Memory,
@@ -663,10 +778,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			stats.WaitForPhase2()
 
 			output := struct {
-				GeneratedAt    string                  `json:"generated_at"`
-				DataHash       string                  `json:"data_hash"`
-				AsOf           string                  `json:"as_of,omitempty"`
-				AsOfCommit     string                  `json:"as_of_commit,omitempty"`
+				RobotEnvelope
 				AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
 				Status         analysis.MetricStatus   `json:"status"`
 				LabelScope     string                  `json:"label_scope,omitempty"`
@@ -674,10 +786,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				Plan           analysis.ExecutionPlan  `json:"plan"`
 				UsageHints     []string                `json:"usage_hints"`
 			}{
-				GeneratedAt:    robotNow().Format(time.RFC3339),
-				DataHash:       ctx.DataHash,
-				AsOf:           ctx.AsOf,
-				AsOfCommit:     ctx.AsOfCommit,
+				RobotEnvelope:  ctx.Envelope(),
 				AnalysisConfig: config,
 				Status:         stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 				LabelScope:     ctx.LabelScope,
@@ -773,10 +882,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			output := struct {
-				GeneratedAt       string                                    `json:"generated_at"`
-				DataHash          string                                    `json:"data_hash"`
-				AsOf              string                                    `json:"as_of,omitempty"`
-				AsOfCommit        string                                    `json:"as_of_commit,omitempty"`
+				RobotEnvelope
 				AnalysisConfig    analysis.AnalysisConfig                   `json:"analysis_config"`
 				Status            analysis.MetricStatus                     `json:"status"`
 				LabelScope        string                                    `json:"label_scope,omitempty"`
@@ -796,10 +902,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				} `json:"summary"`
 				Usage []string `json:"usage_hints"`
 			}{
-				GeneratedAt:       robotNow().Format(time.RFC3339),
-				DataHash:          ctx.DataHash,
-				AsOf:              ctx.AsOf,
-				AsOfCommit:        ctx.AsOfCommit,
+				RobotEnvelope:     ctx.Envelope(),
 				AnalysisConfig:    config,
 				Status:            stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 				LabelScope:        ctx.LabelScope,
@@ -869,7 +972,29 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			if err != nil {
 				return fmt.Errorf("exporting graph: %w", err)
 			}
-			if err := ctx.EncoderOrDefault().Encode(result); err != nil {
+			// Same keys as before plus the shared envelope (source, scope,
+			// as_of). GraphExportResult carries its own data_hash, so copy
+			// fields instead of embedding two structs that both define it.
+			output := struct {
+				RobotEnvelope
+				Format         string                  `json:"format"`
+				Graph          string                  `json:"graph,omitempty"`
+				Nodes          int                     `json:"nodes"`
+				Edges          int                     `json:"edges"`
+				FiltersApplied map[string]string       `json:"filters_applied,omitempty"`
+				Explanation    export.GraphExplanation `json:"explanation"`
+				Adjacency      *export.AdjacencyGraph  `json:"adjacency,omitempty"`
+			}{
+				RobotEnvelope:  ctx.EnvelopeWithHash(result.DataHash),
+				Format:         result.Format,
+				Graph:          result.Graph,
+				Nodes:          result.Nodes,
+				Edges:          result.Edges,
+				FiltersApplied: result.FiltersApplied,
+				Explanation:    result.Explanation,
+				Adjacency:      result.Adjacency,
+			}
+			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 				return fmt.Errorf("encoding graph: %w", err)
 			}
 			return nil
@@ -985,7 +1110,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				} `json:"summary"`
 				UsageHints []string `json:"usage_hints"`
 			}{
-				RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
+				RobotEnvelope: ctx.Envelope(),
 				Alerts:        driftResult.Alerts,
 				UsageHints: []string{
 					"--severity=warning --alert-type=stale_issue   # stale warnings only",
@@ -1045,7 +1170,22 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				return newReportedRobotHandlerExit(1)
 			}
 
-			output := analysis.GenerateRobotSuggestOutputAt(ctx.Issues, config, ctx.DataHash, robotNow())
+			suggest := analysis.GenerateRobotSuggestOutputAt(ctx.Issues, config, ctx.DataHash, robotNow())
+			// Re-host the payload under the shared envelope (same top-level
+			// keys plus source/scope metadata). Embedding the analysis struct
+			// directly would collide on generated_at/data_hash, which
+			// encoding/json resolves by dropping both.
+			output := struct {
+				RobotEnvelope
+				Filters    analysis.SuggestFilter `json:"filters"`
+				Set        analysis.SuggestionSet `json:"suggestions"`
+				UsageHints []string               `json:"usage_hints"`
+			}{
+				RobotEnvelope: ctx.Envelope(),
+				Filters:       suggest.Filters,
+				Set:           suggest.Set,
+				UsageHints:    suggest.UsageHints,
+			}
 			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 				return fmt.Errorf("encoding suggestions: %w", err)
 			}
@@ -1073,7 +1213,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				SprintCount int            `json:"sprint_count"`
 				Sprints     []model.Sprint `json:"sprints"`
 			}{
-				RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+				RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 				SprintCount:   len(sprints),
 				Sprints:       sprints,
 			}
@@ -1131,7 +1271,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 
 			now := robotNow()
 			burndown := calculateBurndownAt(targetSprint, ctx.Issues, now)
-			burndown.RobotEnvelope = NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues))
+			burndown.RobotEnvelope = ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues))
 			issueMap := make(map[string]model.Issue, len(ctx.Issues))
 			for _, issue := range ctx.Issues {
 				issueMap[issue.ID] = issue
@@ -1284,7 +1424,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			output := ForecastOutput{
-				RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+				RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 				Agents:        agents,
 				ForecastCount: len(forecasts),
 				Forecasts:     forecasts,
@@ -1332,18 +1472,14 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			diff := *ctx.Diff
 			diff.ToTimestamp = robotNow()
 			output := struct {
-				GeneratedAt      string                 `json:"generated_at"`
+				RobotEnvelope
 				ResolvedRevision string                 `json:"resolved_revision"`
-				AsOf             string                 `json:"as_of,omitempty"`
-				AsOfCommit       string                 `json:"as_of_commit,omitempty"`
 				FromDataHash     string                 `json:"from_data_hash"`
 				ToDataHash       string                 `json:"to_data_hash"`
 				Diff             *analysis.SnapshotDiff `json:"diff"`
 			}{
-				GeneratedAt:      robotNow().Format(time.RFC3339),
+				RobotEnvelope:    ctx.Envelope(),
 				ResolvedRevision: ctx.DiffResolvedRevision,
-				AsOf:             ctx.AsOf,
-				AsOfCommit:       ctx.AsOfCommit,
 				FromDataHash:     analysis.ComputeDataHash(ctx.DiffHistoricalIssues),
 				ToDataHash:       ctx.DataHash,
 				Diff:             &diff,
@@ -1447,14 +1583,12 @@ func handleRobotLabelHealth(ctx RobotContext) error {
 	results := analysis.ComputeAllLabelHealth(ctx.Issues, cfg, robotNow(), nil)
 
 	output := struct {
-		GeneratedAt    string                       `json:"generated_at"`
-		DataHash       string                       `json:"data_hash"`
+		RobotEnvelope
 		AnalysisConfig analysis.LabelHealthConfig   `json:"analysis_config"`
 		Results        analysis.LabelAnalysisResult `json:"results"`
 		UsageHints     []string                     `json:"usage_hints"`
 	}{
-		GeneratedAt:    robotNow().Format(time.RFC3339),
-		DataHash:       ctx.DataHash,
+		RobotEnvelope:  ctx.Envelope(),
 		AnalysisConfig: cfg,
 		Results:        results,
 		UsageHints: []string{
@@ -1474,18 +1608,14 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 	cfg := analysis.DefaultLabelHealthConfig()
 	flow := analysis.ComputeCrossLabelFlow(ctx.Issues, cfg)
 	output := struct {
-		GeneratedAt string                     `json:"generated_at"`
-		DataHash    string                     `json:"data_hash"`
-		LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		Flow        analysis.CrossLabelFlow    `json:"flow"`
-		Config      analysis.LabelHealthConfig `json:"analysis_config"`
-		UsageHints  []string                   `json:"usage_hints"`
+		RobotEnvelope
+		Flow       analysis.CrossLabelFlow    `json:"flow"`
+		Config     analysis.LabelHealthConfig `json:"analysis_config"`
+		UsageHints []string                   `json:"usage_hints"`
 	}{
-		GeneratedAt: robotNow().Format(time.RFC3339),
-		DataHash:    ctx.DataHash,
-		LoadStats:   robotLoadStatsFromLastLoad(),
-		Flow:        flow,
-		Config:      cfg,
+		RobotEnvelope: ctx.Envelope(),
+		Flow:          flow,
+		Config:        cfg,
 		UsageHints: []string{
 			"jq '.flow.bottleneck_labels' - labels blocking the most others",
 			"jq '.flow.dependencies[] | select(.issue_count > 0) | {from:.from_label,to:.to_label,count:.issue_count}'",
@@ -1525,9 +1655,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 		VelocityFactor  float64 `json:"velocity_factor"`
 	}
 	type attentionOutput struct {
-		GeneratedAt string           `json:"generated_at"`
-		DataHash    string           `json:"data_hash"`
-		LoadStats   *RobotLoadStats  `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
+		RobotEnvelope
 		Limit       int              `json:"limit"`
 		TotalLabels int              `json:"total_labels"`
 		Labels      []attentionLabel `json:"labels"`
@@ -1535,11 +1663,9 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 	}
 
 	output := attentionOutput{
-		GeneratedAt: robotNow().Format(time.RFC3339),
-		DataHash:    ctx.DataHash,
-		LoadStats:   robotLoadStatsFromLastLoad(),
-		Limit:       limit,
-		TotalLabels: result.TotalLabels,
+		RobotEnvelope: ctx.Envelope(),
+		Limit:         limit,
+		TotalLabels:   result.TotalLabels,
 		UsageHints: []string{
 			"jq '.labels[0]' - top attention label details",
 			"jq '.labels[] | select(.blocked_count > 0)' - labels with blocked issues",
@@ -1685,11 +1811,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	}
 
 	output := struct {
-		GeneratedAt    string                  `json:"generated_at"`
-		DataHash       string                  `json:"data_hash"`
-		LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		AsOf           string                  `json:"as_of,omitempty"`
-		AsOfCommit     string                  `json:"as_of_commit,omitempty"`
+		RobotEnvelope
 		AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
 		Status         analysis.MetricStatus   `json:"status"`
 		LabelScope     string                  `json:"label_scope,omitempty"`
@@ -1700,11 +1822,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"`
 		UsageHints       []string                   `json:"usage_hints"`
 	}{
-		GeneratedAt:      robotNow().Format(time.RFC3339),
-		DataHash:         ctx.DataHash,
-		LoadStats:        robotLoadStatsFromLastLoad(),
-		AsOf:             ctx.AsOf,
-		AsOfCommit:       ctx.AsOfCommit,
+		RobotEnvelope:    ctx.Envelope(),
 		AnalysisConfig:   stats.Config,
 		Status:           stabilizeRobotMetricStatusForPinnedClock(stats.Status()),
 		LabelScope:       ctx.LabelScope,
@@ -1831,7 +1949,11 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	}
 	defer cancel()
 
-	correlator := correlation.NewCorrelator(workDir, beadsPath).WithContext(histCtx)
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return nil, "error"
+	}
+	correlator = correlator.WithContext(histCtx)
 
 	type historyResult struct {
 		report *correlation.HistoryReport
@@ -1950,22 +2072,14 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}
 
 	output := struct {
-		GeneratedAt string                 `json:"generated_at"`
-		DataHash    string                 `json:"data_hash"`
-		LoadStats   *RobotLoadStats        `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		AsOf        string                 `json:"as_of,omitempty"`
-		AsOfCommit  string                 `json:"as_of_commit,omitempty"`
-		Triage      analysis.TriageResult  `json:"triage"`
-		Feedback    *analysis.FeedbackJSON `json:"feedback,omitempty"`
-		UsageHints  []string               `json:"usage_hints"`
+		RobotEnvelope
+		Triage     analysis.TriageResult  `json:"triage"`
+		Feedback   *analysis.FeedbackJSON `json:"feedback,omitempty"`
+		UsageHints []string               `json:"usage_hints"`
 	}{
-		GeneratedAt: now.Format(time.RFC3339),
-		DataHash:    ctx.DataHash,
-		LoadStats:   robotLoadStatsFromLastLoad(),
-		AsOf:        ctx.AsOf,
-		AsOfCommit:  ctx.AsOfCommit,
-		Triage:      triage,
-		Feedback:    feedbackInfo,
+		RobotEnvelope: ctx.Envelope(),
+		Triage:        triage,
+		Feedback:      feedbackInfo,
 		UsageHints: []string{
 			"jq '.triage.quick_ref.top_picks[:3]' - Top 3 picks for immediate work",
 			"jq '.triage.recommendations[3:10] | map({id,title,score})' - Next candidates after top picks",
@@ -2007,11 +2121,7 @@ type briefTriageRecommendation struct {
 // recommendation to briefTriageRecommendation. Score breakdowns, project
 // health, commands, feedback, and usage hints are omitted.
 type briefTriageOutput struct {
-	GeneratedAt     string                      `json:"generated_at"`
-	DataHash        string                      `json:"data_hash"`
-	LoadStats       *RobotLoadStats             `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-	AsOf            string                      `json:"as_of,omitempty"`
-	AsOfCommit      string                      `json:"as_of_commit,omitempty"`
+	RobotEnvelope
 	Brief           bool                        `json:"brief"`
 	QuickRef        analysis.QuickRef           `json:"quick_ref"`
 	Recommendations []briefTriageRecommendation `json:"recommendations"`
@@ -2033,11 +2143,7 @@ func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.
 		})
 	}
 	output := briefTriageOutput{
-		GeneratedAt:     now.Format(time.RFC3339),
-		DataHash:        ctx.DataHash,
-		LoadStats:       robotLoadStatsFromLastLoad(),
-		AsOf:            ctx.AsOf,
-		AsOfCommit:      ctx.AsOfCommit,
+		RobotEnvelope:   ctx.Envelope(),
 		Brief:           true,
 		QuickRef:        triage.QuickRef,
 		Recommendations: recs,
@@ -2067,8 +2173,6 @@ type robotNextDiagnosticPick struct {
 
 type robotNextOutput struct {
 	RobotEnvelope
-	AsOf              string                   `json:"as_of,omitempty"`
-	AsOfCommit        string                   `json:"as_of_commit,omitempty"`
 	Actionable        bool                     `json:"actionable"`
 	Phase2Ready       bool                     `json:"phase2_ready"`
 	Status            analysis.MetricStatus    `json:"status"`
@@ -2213,9 +2317,7 @@ func handleRobotNext(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	stabilizeRobotTriageForPinnedClock(&triage)
 
 	output := robotNextOutput{
-		RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
-		AsOf:          ctx.AsOf,
-		AsOfCommit:    ctx.AsOfCommit,
+		RobotEnvelope: ctx.Envelope(),
 		Phase2Ready:   triage.Meta.Phase2Ready,
 		Status:        triage.Status,
 		UsageHints: []string{
@@ -2329,7 +2431,11 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		}
 	}
 
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return err
+	}
+	report, err := correlator.GenerateReportCached(beadInfos, opts)
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2347,14 +2453,25 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		}
 	}
 
+	// Same top-level keys as the report plus the shared envelope (source,
+	// scope, as_of). Copy fields rather than embedding: HistoryReport defines
+	// generated_at and data_hash too, and colliding embedded keys are dropped.
 	output := struct {
-		correlation.HistoryReport
-		OutputFormat string `json:"output_format,omitempty"`
-		Version      string `json:"version,omitempty"`
+		RobotEnvelope
+		GitRange        string                             `json:"git_range"`
+		LatestCommitSHA string                             `json:"latest_commit_sha,omitempty"`
+		Window          *correlation.HistoryWindow         `json:"window,omitempty"`
+		Stats           correlation.HistoryStats           `json:"stats"`
+		Histories       map[string]correlation.BeadHistory `json:"histories"`
+		CommitIndex     correlation.CommitIndex            `json:"commit_index"`
 	}{
-		HistoryReport: *report,
-		OutputFormat:  robotOutputFormat,
-		Version:       version.Version,
+		RobotEnvelope:   ctx.EnvelopeWithHash(report.DataHash),
+		GitRange:        report.GitRange,
+		LatestCommitSHA: report.LatestCommitSHA,
+		Window:          report.Window,
+		Stats:           report.Stats,
+		Histories:       report.Histories,
+		CommitIndex:     report.CommitIndex,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding history report: %w", err)
@@ -2386,7 +2503,31 @@ func buildCorrelationBeadInfos(issues []model.Issue) []correlation.BeadInfo {
 	return beadInfos
 }
 
+// generateCorrelationReport builds the feedback-aware history report every
+// read path (history, explain, orphans, related, impact network, causality)
+// consumes: stored rejections are absent from it and confirmations are pinned.
 func generateCorrelationReport(workDir string, issues []model.Issue, opts correlation.CorrelatorOptions) (*correlation.HistoryReport, error) {
+	_, beadsPath, err := resolveCorrelationBeadsPath(workDir)
+	if err != nil {
+		return nil, err
+	}
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return nil, err
+	}
+	report, err := correlator.GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
+	if err != nil {
+		return nil, fmt.Errorf("generating history report: %w", err)
+	}
+	return report, nil
+}
+
+// generateRawCorrelationReport builds the history report WITHOUT applying the
+// feedback store. Only the confirm/reject handler uses it: feedback is a
+// decision about a raw correlation, so the target must still be resolvable
+// after an earlier rejection (letting a rejection be flipped) and orig_conf
+// must record the strategy confidence, not a previously pinned 1.0.
+func generateRawCorrelationReport(workDir string, issues []model.Issue, opts correlation.CorrelatorOptions) (*correlation.HistoryReport, error) {
 	_, beadsPath, err := resolveCorrelationBeadsPath(workDir)
 	if err != nil {
 		return nil, err
@@ -2396,6 +2537,17 @@ func generateCorrelationReport(workDir string, issues []model.Issue, opts correl
 		return nil, fmt.Errorf("generating history report: %w", err)
 	}
 	return report, nil
+}
+
+// newCorrelatorWithFeedback builds the correlator used by every read path, with
+// the correlation feedback store attached so confirm/reject decisions shape
+// histories, the commit index and stats (feedback loop, C4).
+func newCorrelatorWithFeedback(workDir, beadsPath string) (*correlation.Correlator, error) {
+	feedbackStore, err := loadCorrelationFeedbackStore(workDir)
+	if err != nil {
+		return nil, err
+	}
+	return correlation.NewCorrelator(workDir, beadsPath).WithFeedbackStore(feedbackStore), nil
 }
 
 func loadCorrelationFeedbackStore(workDir string) (*correlation.FeedbackStore, error) {
@@ -2565,7 +2717,7 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		return err
 	}
 
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
+	report, err := generateRawCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
 	if err != nil {
 		return fmt.Errorf("generating report: %w", err)
 	}
@@ -2628,10 +2780,10 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
+	// Use the dispatch context's issue set: it already carries --as-of,
+	// --label, --recipe, and --repo scoping. Reloading the working tree here
+	// silently bypassed all four (reality check 2026-09-01, gap 2).
+	issues := ctx.Issues
 	beadsDir, err := loader.GetBeadsDir("")
 	if err != nil {
 		return fmt.Errorf("getting beads directory: %w", err)
@@ -2650,7 +2802,11 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return err
+	}
+	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2672,7 +2828,7 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 		Threshold    float64                     `json:"threshold"`
 		RelatedFiles []correlation.CoChangeEntry `json:"related_files"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
+		RobotEnvelope: ctx.EnvelopeWithHash(report.DataHash),
 		FilePath:      result.FilePath,
 		TotalCommits:  result.TotalCommits,
 		Threshold:     result.Threshold,
@@ -2713,17 +2869,23 @@ func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	}
 	filterOrphanReportByMinScore(orphanReport, minScore)
 
+	// Copy fields rather than embedding: OrphanReport defines generated_at and
+	// data_hash too, and encoding/json drops colliding embedded keys silently.
 	output := struct {
-		*correlation.OrphanReport
-		OutputFormat string `json:"output_format,omitempty"`
-		Version      string `json:"version,omitempty"`
+		RobotEnvelope
+		GitRange   string                         `json:"git_range"`
+		Stats      correlation.OrphanReportStats  `json:"stats"`
+		Candidates []correlation.OrphanCandidate  `json:"candidates"`
+		ByBead     map[string][]string            `json:"by_bead,omitempty"`
 	}{
-		OrphanReport: orphanReport,
-		OutputFormat: robotOutputFormat,
-		Version:      version.Version,
+		RobotEnvelope: ctx.EnvelopeWithHash(orphanReport.DataHash),
+		GitRange:      orphanReport.GitRange,
+		Stats:         orphanReport.Stats,
+		Candidates:    orphanReport.Candidates,
+		ByBead:        orphanReport.ByBead,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
-		return fmt.Errorf("encoding orphan report: %w", err)
+		return fmt.Errorf("encoding orphans: %w", err)
 	}
 	return nil
 }
@@ -2795,7 +2957,7 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 		OpenBeads   []correlation.BeadReference `json:"open_beads"`
 		ClosedBeads []correlation.BeadReference `json:"closed_beads"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
+		RobotEnvelope: ctx.EnvelopeWithHash(report.DataHash),
 		FilePath:      *cfg.RobotFileBeadsFlag,
 		TotalBeads:    result.TotalBeads,
 		OpenBeads:     result.OpenBeads,
@@ -2845,7 +3007,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		Warnings      []string                   `json:"warnings"`
 		AffectedBeads []correlation.AffectedBead `json:"affected_beads"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(report.DataHash),
+		RobotEnvelope: ctx.EnvelopeWithHash(report.DataHash),
 		Files:         impactResult.Files,
 		RiskLevel:     impactResult.RiskLevel,
 		RiskScore:     impactResult.RiskScore,
@@ -2868,10 +3030,10 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
+	// Use the dispatch context's issue set: it already carries --as-of,
+	// --label, --recipe, and --repo scoping. Reloading the working tree here
+	// silently bypassed all four (reality check 2026-09-01, gap 2).
+	issues := ctx.Issues
 	beadsDir, err := loader.GetBeadsDir("")
 	if err != nil {
 		return fmt.Errorf("getting beads directory: %w", err)
@@ -2890,7 +3052,11 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return err
+	}
+	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2943,14 +3109,10 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 }
 
 func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	workDir, err := ctx.WorkDirOrDefault()
-	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
-	}
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
+	// Use the dispatch context's issue set: it already carries --as-of,
+	// --label, --recipe, and --repo scoping. Reloading the working tree here
+	// silently bypassed all four (reality check 2026-09-01, gap 2).
+	issues := ctx.Issues
 
 	analyzer := analysis.NewAnalyzer(issues)
 	analyzer.SetNow(robotNow())
@@ -2964,7 +3126,7 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 		RobotEnvelope
 		Result *analysis.BlockerChainResult `json:"result"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(issues)),
+		RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(issues)),
 		Result:        result,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
@@ -2990,10 +3152,10 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("finding beads file: %w", err)
 	}
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
+	// Use the dispatch context's issue set: it already carries --as-of,
+	// --label, --recipe, and --repo scoping. Reloading the working tree here
+	// silently bypassed all four (reality check 2026-09-01, gap 2).
+	issues := ctx.Issues
 
 	beadInfos := make([]correlation.BeadInfo, len(issues))
 	for i, issue := range issues {
@@ -3004,7 +3166,11 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return err
+	}
+	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -3055,10 +3221,10 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 		return err
 	}
 
-	issues, err := datasource.LoadIssues(workDir)
-	if err != nil {
-		return fmt.Errorf("loading beads: %w", err)
-	}
+	// Use the dispatch context's issue set: it already carries --as-of,
+	// --label, --recipe, and --repo scoping. Reloading the working tree here
+	// silently bypassed all four (reality check 2026-09-01, gap 2).
+	issues := ctx.Issues
 	beadsDir, err := loader.GetBeadsDir("")
 	if err != nil {
 		return fmt.Errorf("getting beads directory: %w", err)
@@ -3077,7 +3243,11 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := correlation.NewCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	correlator, err := newCorrelatorWithFeedback(workDir, beadsPath)
+	if err != nil {
+		return err
+	}
+	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -3136,7 +3306,7 @@ func handleRobotSprintShow(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) e
 		RobotEnvelope
 		Sprint *model.Sprint `json:"sprint"`
 	}{
-		RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+		RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 		Sprint:        found,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
@@ -3295,7 +3465,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		Actionable        []string     `json:"actionable,omitempty"`
 		Bottlenecks       []bottleneck `json:"bottlenecks,omitempty"`
 	}{
-		RobotEnvelope:     NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+		RobotEnvelope:     ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 		Agents:            agents,
 		OpenIssueCount:    len(openIssues),
 		TotalMinutes:      totalMinutes,

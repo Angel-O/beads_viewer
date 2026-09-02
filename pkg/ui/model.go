@@ -513,6 +513,17 @@ func LoadHistoryCmd(
 		}
 
 		correlator := correlation.NewCorrelator(repoPath, correlationPath).WithContext(ctx)
+		// The History view is a read path: stored confirm/reject feedback lives
+		// next to the followed JSONL and shapes the view like --robot-history.
+		// A store that cannot be read must not take the whole view down.
+		if correlationPath != "" {
+			feedbackStore := correlation.NewFeedbackStore(filepath.Dir(correlationPath))
+			if err := feedbackStore.Load(); err != nil {
+				debug.Log("history: correlation feedback not loaded: %v", err)
+			} else {
+				correlator.WithFeedbackStore(feedbackStore)
+			}
+		}
 		opts := correlation.CorrelatorOptions{
 			Limit: 500, // Reasonable limit for TUI performance
 		}
@@ -654,8 +665,8 @@ type Model struct {
 	labelDrilldownCache      map[string][]model.Issue
 	showLabelGraphAnalysis   bool
 	labelGraphAnalysisResult *LabelGraphAnalysisResult
-	showAttentionView        bool
-	showShortcutsSidebar     bool // bv-3qi5 toggleable shortcuts sidebar
+	attentionView            AttentionModel // ] ranked label attention view (bv-117)
+	showShortcutsSidebar     bool           // bv-3qi5 toggleable shortcuts sidebar
 
 	// Key combo state (bv-6fm0)
 	pendingComboKey   string    // Key waiting for potential combo (e.g., "g" for gg)
@@ -663,8 +674,6 @@ type Model struct {
 	pendingComboFocus focus     // Focus context where combo started (prevents cross-view dispatch)
 	labelHealthCached bool
 	labelHealthCache  analysis.LabelAnalysisResult
-	attentionCached   bool
-	attentionCache    analysis.LabelAttentionResult
 
 	// Actionable view
 	actionableView ActionableModel
@@ -2689,7 +2698,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshotInitPending = false
 
 		// Clear ephemeral overlays tied to old data
-		m.clearAttentionOverlay()
 
 		// Exit time-travel mode if active (file changed, show current state)
 		if m.timeTravelMode {
@@ -2760,7 +2768,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Clear caches that need recomputation
 		m.labelHealthCached = false
-		m.attentionCached = false
 		if m.priorityHints == nil {
 			m.priorityHints = make(map[string]*analysis.PriorityRecommendation)
 		} else {
@@ -3102,7 +3109,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Clear ephemeral overlays tied to old data
-		m.clearAttentionOverlay()
 
 		// Exit time-travel mode if active (file changed, show current state)
 		if m.timeTravelMode {
@@ -3199,7 +3205,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			debug.Log("refresh.phase1_cache_hit=%t issues=%d", cacheHit, len(newIssues))
 		}
 		m.labelHealthCached = false
-		m.attentionCached = false
 
 		// Rebuild lookup map
 		var mapStart time.Time
@@ -3309,7 +3314,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Regenerate sub-views (with Phase 1 data; Phase 2 will update via Phase2ReadyMsg)
 		// Preserve triage data already computed to avoid UI flicker.
-		needsInsights := m.focused == focusInsights && !m.showAttentionView
+		needsInsights := m.focused == focusInsights
 		needsGraph := m.isGraphView
 		var ins analysis.Insights
 		if needsInsights || needsGraph {
@@ -3339,23 +3344,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.insightsPanel.SetSize(m.width, bodyHeight)
 		}
-		if m.showAttentionView {
+		if m.focused == focusAttention {
 			var attentionStart time.Time
 			if profileRefresh {
 				attentionStart = time.Now()
 			}
-			cfg := analysis.DefaultLabelHealthConfig()
-			m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
-			m.attentionCached = true
-			attText, _ := ComputeAttentionView(m.issues, max(40, m.width-4))
-			m.rebuildInsightsPanel()
-			m.insightsPanel.labelAttention = m.attentionCache.Labels
-			m.insightsPanel.extraText = attText
-			panelHeight := m.height - 2
-			if panelHeight < 3 {
-				panelHeight = 3
-			}
-			m.insightsPanel.SetSize(m.width, panelHeight)
+			m.refreshAttentionView()
 			if profileRefresh {
 				recordTiming("attention_view", time.Since(attentionStart))
 			}
@@ -3651,27 +3645,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Handle attention view quick jumps (bv-117)
-		if m.showAttentionView {
-			s := msg.String()
-			switch {
-			case s == "esc" || s == "q" || s == "d":
-				m.showAttentionView = false
-				m.insightsPanel.extraText = ""
-				return m, nil
-			case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
-				if len(m.attentionCache.Labels) == 0 {
-					return m, nil
-				}
-				idx := int(s[0] - '1')
-				if idx >= 0 && idx < len(m.attentionCache.Labels) {
-					label := m.attentionCache.Labels[idx].Label
-					m.currentFilter = "label:" + label
-					m.applyFilter()
-					m.statusMsg = fmt.Sprintf("Filtered to label %s (attention #%d)", label, idx+1)
-					m.statusIsError = false
-				}
-				return m, m.pendingSemanticFilterCmd()
+		// Attention view (bv-117): cursor navigation, drilldown, quick filters.
+		// Unhandled keys (ctrl+c, ?, ;, view switches) fall through.
+		if m.focused == focusAttention {
+			if updated, cmd, handled := m.handleAttentionKeys(msg); handled {
+				return updated, cmd
 			}
 		}
 
@@ -3792,6 +3770,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.showTutorial {
 				m.showHelp = false // Close help if open
 				m.tutorialModel.SetSize(m.width, m.height)
+				m.tutorialModel.markCurrentPageViewed() // the resumed page counts as viewed
 				m.focused = focusTutorial
 			} else {
 				m.focused = focusList
@@ -4000,7 +3979,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tutorialModel.ShouldClose() {
 				m.showTutorial = false
 				m.focused = focusList
-				m.tutorialModel = NewTutorialModel(m.theme) // Reset for next time
+				// Persist progress and keep the instance so reopening resumes
+				// on the same page (bv-8y31). Save is a no-op under
+				// BV_NO_SAVED_CONFIG.
+				if err := m.tutorialModel.SaveProgress(); err != nil {
+					debug.Log("tutorial: saving progress failed: %v", err)
+				}
+				m.tutorialModel.ResetClose()
 			}
 			return m, tutorialCmd
 		}
@@ -4240,7 +4225,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch keyStr {
 				case "h", "l",
 					"j", "k", "up", "down", "left", "right",
-					"ctrl+j", "ctrl+k", "tab",
+					"ctrl+j", "ctrl+k", "tab", "shift+tab",
 					"e", "x", "m", "enter", "esc":
 					m = m.handleInsightsKeys(msg)
 					viewToggleHandled = true
@@ -4382,7 +4367,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					viewToggleHandled = true
 				} else {
 					switch keyStr {
-					case "h", "f", "g",
+					case "h", "f", "g", "t",
 						"j", "k", "up", "down",
 						"J", "K", "v", "tab", "enter",
 						"y", "c", "F", "o", "/":
@@ -4441,8 +4426,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (enabling cross-view switching, e.g. 'g' from board -> graph).
 			// ═══════════════════════════════════════════════════════════════
 			switch msg.String() {
+			case "P":
+				// Sprint dashboard (bv-161). Only the list and detail views
+				// open it; other views leave P unbound so nothing they
+				// document is shadowed.
+				if m.focused == focusList || m.focused == focusDetail {
+					return m.openSprintView()
+				}
+				return m, nil
+
 			case "b":
-				m.clearAttentionOverlay()
 				m.isBoardView = !m.isBoardView
 				m.isGraphView = false
 				m.isActionableView = false
@@ -4457,7 +4450,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "g":
 				// Toggle graph view
-				m.clearAttentionOverlay()
 				m.isGraphView = !m.isGraphView
 				m.isBoardView = false
 				m.isActionableView = false
@@ -4472,7 +4464,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "a":
 				// Toggle actionable view
-				m.clearAttentionOverlay()
 				m.isActionableView = !m.isActionableView
 				m.isGraphView = false
 				m.isBoardView = false
@@ -4491,7 +4482,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "E":
 				// Toggle hierarchical tree view (bv-gllx)
-				m.clearAttentionOverlay()
 				if m.focused == focusTree {
 					m.focused = focusList
 				} else {
@@ -4511,7 +4501,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "i":
-				m.clearAttentionOverlay()
 				if m.focused == focusInsights {
 					m.focused = focusList
 				} else {
@@ -4544,7 +4533,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "h":
 				// Toggle history view
-				m.clearAttentionOverlay()
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
@@ -4560,7 +4548,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "[", "f3":
 				// Open label dashboard (phase 1: table view)
-				m.clearAttentionOverlay()
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
@@ -4579,32 +4566,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "]", "f4":
-				// Attention view: compute attention scores (cached) and render as text
-				if !m.attentionCached {
-					cfg := analysis.DefaultLabelHealthConfig()
-					m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
-					m.attentionCached = true
-				}
-				attText, _ := ComputeAttentionView(m.issues, max(40, m.width-4))
+				// Attention view (bv-117): ranked labels with a cursor
 				m.isGraphView = false
 				m.isBoardView = false
 				m.isActionableView = false
 				m.isHistoryView = false
-				m.focused = focusInsights
-				m.showAttentionView = true
-				m.rebuildInsightsPanel()
-				m.insightsPanel.labelAttention = m.attentionCache.Labels
-				m.insightsPanel.extraText = attText
-				panelHeight := m.height - 2
-				if panelHeight < 3 {
-					panelHeight = 3
-				}
-				m.insightsPanel.SetSize(m.width, panelHeight)
+				m.focused = focusAttention
+				m.refreshAttentionView()
+				m.statusMsg = fmt.Sprintf("Attention: %d labels ranked • j/k move • enter drilldown • 1-9 filter • ] close", m.attentionView.Len())
+				m.statusIsError = false
 				return m, nil
 
 			case "f":
 				// Flow matrix view (cross-label dependencies)
-				m.clearAttentionOverlay()
 				cfg := analysis.DefaultLabelHealthConfig()
 				flow := analysis.ComputeCrossLabelFlow(m.issues, cfg)
 				m.isGraphView = false
@@ -4723,6 +4697,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.ScrollUp(3)
 			case focusInsights:
 				m.insightsPanel.MoveUp()
+			case focusAttention:
+				m.attentionView.MoveUp()
 			case focusBoard:
 				m.board.MoveUp()
 			case focusGraph:
@@ -4754,6 +4730,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.viewport.ScrollDown(3)
 			case focusInsights:
 				m.insightsPanel.MoveDown()
+			case focusAttention:
+				m.attentionView.MoveDown()
 			case focusBoard:
 				m.board.MoveDown()
 			case focusGraph:
@@ -4788,6 +4766,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isSplitView = msg.Width > SplitViewThreshold
 		m.ready = true
 		m.applyContentSizing()
+		if m.isSprintView && m.selectedSprint != nil {
+			// The dashboard is pre-rendered at its width; refresh on resize.
+			m.sprintViewText = m.renderSprintDashboard()
+		}
 	}
 
 	// Update list for navigation, but NOT for WindowSizeMsg
@@ -5366,6 +5348,20 @@ func (m *Model) handleHistoryKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			m.statusMsg = "📁 File tree hidden"
 		}
 		m.statusIsError = false
+	case "t":
+		// Toggle the timeline pane (bv-1x6o). It is on by default at
+		// >= 150 columns; t overrides that for the session.
+		if !m.historyView.TimelineAvailable() {
+			m.statusMsg = "🕒 Timeline needs bead mode and ≥100 columns"
+			m.statusIsError = true
+			break
+		}
+		if m.historyView.ToggleTimeline() {
+			m.statusMsg = "🕒 Timeline pane shown (t to hide)"
+		} else {
+			m.statusMsg = "🕒 Timeline pane hidden (t to show)"
+		}
+		m.statusIsError = false
 	case "o":
 		// Open commit in browser (bv-xf4p)
 		var sha string
@@ -5697,7 +5693,7 @@ func (m *Model) handleInsightsKeys(msg tea.KeyMsg) *Model {
 	case "ctrl+k":
 		// Scroll detail panel up
 		m.insightsPanel.ScrollDetailUp()
-	case "h", "left":
+	case "h", "left", "shift+tab":
 		m.insightsPanel.PrevPanel()
 	case "l", "right", "tab":
 		m.insightsPanel.NextPanel()
@@ -5782,9 +5778,13 @@ func (m *Model) handleListKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "r":
 		m.currentFilter = "ready"
 		m.applyFilter()
-	case "a":
-		m.currentFilter = "all"
-		m.applyFilter()
+	// Note: "a" is the actionable-view toggle handled in Update; filters are
+	// cleared with esc (see the global esc handler / clearAllFilters).
+	case "n", "N":
+		// Time-travel: next / previous changed issue in list order.
+		if m.timeTravelMode {
+			m.jumpToChangedIssue(msg.String() == "n")
+		}
 	case "t":
 		// Toggle time-travel mode off, or show prompt for custom revision
 		if m.timeTravelMode {
@@ -5913,6 +5913,7 @@ func (m *Model) handleHelpKeys(msg tea.KeyMsg) *Model {
 		m.helpScroll = 0
 		m.showTutorial = true
 		m.tutorialModel.SetSize(m.width, m.height)
+		m.tutorialModel.markCurrentPageViewed()
 		m.focused = focusTutorial
 	default:
 		// Any other key dismisses help and restores previous focus
@@ -5988,6 +5989,9 @@ func (m *Model) View() string {
 		body = m.tutorialModel.View()
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
+	} else if m.focused == focusAttention {
+		m.attentionView.SetSize(m.width, m.height-1)
+		body = m.attentionView.View()
 	} else if m.focused == focusInsights {
 		m.insightsPanel.SetSize(m.width, m.height-1)
 		body = m.insightsPanel.View()
@@ -7105,11 +7109,11 @@ func (m *Model) renderFooter() string {
 				Padding(0, 1).
 				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • L:labels • /:search • ?:help", filterInfo))
 		}
-	} else if m.showAttentionView {
+	} else if m.focused == focusAttention {
 		labelHint = lipgloss.NewStyle().
 			Foreground(ColorFooterHint).
 			Padding(0, 1).
-			Render("A:attention • 1-9 filter • esc close")
+			Render("j/k:move • enter:drilldown • 1-9:filter • ]/esc:close")
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -7628,6 +7632,51 @@ func (m Model) getDiffStatus(id string) DiffStatus {
 		return DiffStatusModified
 	}
 	return DiffStatusNone
+}
+
+// jumpToChangedIssue selects the next (forward) or previous changed issue in
+// the current list order while time-travel mode is active, wrapping around
+// the ends. "Changed" means the issue is new, closed, or modified in the
+// SnapshotDiff, i.e. exactly the rows the list marks.
+func (m *Model) jumpToChangedIssue(forward bool) {
+	items := m.list.Items()
+	n := len(items)
+	if n == 0 || m.timeTravelDiff == nil {
+		m.statusMsg = "⏱ No changed issues in the current view"
+		m.statusIsError = false
+		return
+	}
+	cur := m.list.Index()
+	for step := 1; step <= n; step++ {
+		idx := (cur + step) % n
+		if !forward {
+			idx = ((cur-step)%n + n) % n
+		}
+		issueItem, ok := items[idx].(IssueItem)
+		if !ok || m.getDiffStatus(issueItem.Issue.ID) == DiffStatusNone {
+			continue
+		}
+		m.list.Select(idx)
+		if m.isSplitView {
+			m.updateViewportContent()
+		}
+		pos, total := 0, 0
+		for i, it := range items {
+			ii, ok := it.(IssueItem)
+			if !ok || m.getDiffStatus(ii.Issue.ID) == DiffStatusNone {
+				continue
+			}
+			total++
+			if i == idx {
+				pos = total
+			}
+		}
+		m.statusMsg = fmt.Sprintf("⏱ Changed issue %d/%d: %s", pos, total, issueItem.Issue.ID)
+		m.statusIsError = false
+		return
+	}
+	m.statusMsg = "⏱ No changed issues in the current view"
+	m.statusIsError = false
 }
 
 // hasActiveFilters returns true if any filter is currently applied

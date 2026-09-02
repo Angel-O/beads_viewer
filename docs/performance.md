@@ -263,14 +263,14 @@ These targets assume Phase 1 (blocking) startup. Phase 2 completes asynchronousl
 
 ## Timeout Configuration
 
-All expensive algorithms have configurable timeouts:
+All expensive algorithms have per-metric timeouts chosen by graph size (`ConfigForSize` in `pkg/analysis/config.go`); `BV_PHASE2_TIMEOUT_S` overrides them:
 
-| Algorithm | Default Timeout | Rationale |
-|-----------|----------------|-----------|
-| Betweenness | 500ms | O(V×E) can be seconds |
-| PageRank | 500ms | Usually fast, defensive |
-| HITS | 500ms | Usually fast, defensive |
-| Cycle Detection | 500ms | Can be exponential |
+| Algorithm | < 100 nodes | < 500 nodes | < 2,000 nodes | ≥ 2,000 nodes | Rationale |
+|-----------|-------------|-------------|---------------|---------------|-----------|
+| Betweenness | 2s (exact) | 500ms (exact) | 500ms (sampled; skipped when density ≥ 0.01) | 500ms (sampled) | O(V×E) can be seconds |
+| PageRank | 2s | 500ms | 300ms | 200ms | Usually fast, defensive |
+| HITS | 2s | 500ms | 300ms | 200ms (only when density < 0.001, else skipped) | Usually fast, defensive |
+| Cycle Detection | 2s | 500ms | 300ms | skipped | Can be exponential |
 
 When a timeout triggers:
 - The metric is skipped or returns partial results

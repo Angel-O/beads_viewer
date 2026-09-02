@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/debug"
 	json "github.com/goccy/go-json"
 )
 
@@ -41,7 +42,11 @@ import (
 // (a pure read does not rewrite the file just to bump AccessedAt).
 
 const (
-	headArtifactCacheVersion            = 2
+	// headArtifactCacheVersion is the cache FILE schema; the artifact payload
+	// additionally carries historyArtifactFormatVersion and an entry whose
+	// artifact was written by a different format is a miss (see
+	// getHeadArtifactCached). 3 = first file version storing v2 artifacts.
+	headArtifactCacheVersion            = 3
 	headArtifactCacheFileName           = "correlation_head_artifact_cache.json"
 	headArtifactCacheMaxEntries         = 6
 	headArtifactCacheMaxAge             = 24 * time.Hour
@@ -201,14 +206,29 @@ func getHeadArtifactCached(namespace, headSHA, optsHash string) (*historyArtifac
 	if !cacheCreatedAtIsFresh(entry.CreatedAt, now, headArtifactCacheMaxAge) {
 		return nil, false
 	}
+	if entry.Artifact.FormatVersion != historyArtifactFormatVersion {
+		// No migration is attempted: the artifact is rebuilt lazily from git on
+		// this miss and the stale entry is overwritten by the next put.
+		debug.Log("correlation: head artifact cache entry for %s has format v%d, want v%d; treating as miss",
+			shortSHA(headSHA), entry.Artifact.FormatVersion, historyArtifactFormatVersion)
+		return nil, false
+	}
 	return entry.Artifact, true
 }
 
 // putHeadArtifactCached persists a freshly extracted artifact. Runs only after a
 // real extraction (a miss), so the rewrite cost is amortized against the
-// expensive git extraction it lets future bead-edit invocations skip.
+// expensive git extraction it lets future bead-edit invocations skip. An
+// artifact assembled in-process without a version is stamped with the current
+// format; one carrying a foreign version is never persisted.
 func putHeadArtifactCached(namespace, headSHA, optsHash string, art *historyArtifact) {
 	if !correlationDiskCacheEnabled() || art == nil {
+		return
+	}
+	if art.FormatVersion == 0 {
+		art.FormatVersion = historyArtifactFormatVersion
+	}
+	if art.FormatVersion != historyArtifactFormatVersion {
 		return
 	}
 	data, err := json.Marshal(art)

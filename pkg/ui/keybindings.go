@@ -251,6 +251,8 @@ func focusesForBindingDoc(doc KeyBindingDoc) []focus {
 			addFocus(focusFlowMatrix)
 		case "sprint":
 			addFocus(focusSprint)
+		case "attention":
+			addFocus(focusAttention)
 		}
 	}
 
@@ -270,6 +272,7 @@ func allDocumentedFocuses() []focus {
 		focusTree,
 		focusFlowMatrix,
 		focusSprint,
+		focusAttention,
 	}
 }
 
@@ -291,11 +294,14 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"j", "Move down", "Navigation", "all"},
 		{"k", "Move up", "Navigation", "all"},
 		{"G", "Go to end", "Navigation", "all"},
-		{"gg", "Go to start", "Navigation", "all"},
+		{"home", "Go to start", "Navigation", "list"},
+		// gg is a 200 ms combo; only the board and tree implement it. In the
+		// list a single g opens the graph view.
+		{"gg", "Go to start", "Navigation", "board,tree"},
 		{"ctrl+d", "Page down", "Navigation", "all"},
 		{"ctrl+u", "Page up", "Navigation", "all"},
 		{"enter", "Open details", "Navigation", "all"},
-		{"esc", "Back/close", "Navigation", "all"},
+		{"esc", "Back/close (list: clear filters)", "Navigation", "all"},
 		{"q", "Quit", "Navigation", "all"},
 
 		// View Switching
@@ -304,6 +310,9 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"g", "Graph view", "Views", "list,detail"},
 		{"h", "History view", "Views", "list,detail"},
 		{"i", "Insights panel", "Views", "list,detail"},
+		{"P", "Sprint dashboard", "Views", "list,detail"},
+		{"[", "Label dashboard", "Views", "list,detail"},
+		{"]", "Attention view", "Views", "list,detail"},
 		{"?", "Help overlay", "Views", "all"},
 		{";", "Shortcuts sidebar", "Views", "all"},
 		{"p", "Priority hints", "Views", "list,detail"},
@@ -316,8 +325,10 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"/", "Search/filter", "Filters", "list"},
 
 		// Actions
-		{"t", "Time travel (forward)", "Actions", "list,detail"},
-		{"T", "Time travel (back)", "Actions", "list,detail"},
+		{"t", "Time travel (custom revision)", "Actions", "list,detail"},
+		{"T", "Time travel (HEAD~5)", "Actions", "list,detail"},
+		{"n", "Next changed issue (time travel)", "Actions", "list"},
+		{"N", "Previous changed issue (time travel)", "Actions", "list"},
 		{"x", "Export to markdown", "Actions", "list,detail"},
 		{"y", "Copy issue ID", "Actions", "all"},
 		{"C", "Copy full issue", "Actions", "detail"},
@@ -343,6 +354,8 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// Insights View
 		{"h", "Previous panel", "Insights", "insights"},
 		{"l", "Next panel", "Insights", "insights"},
+		{"tab", "Next panel", "Insights", "insights"},
+		{"shift+tab", "Previous panel", "Insights", "insights"},
 		{"e", "Toggle explanations", "Insights", "insights"},
 		{"x", "Calculation proof", "Insights", "insights"},
 		{"m", "Heatmap toggle", "Insights", "insights"},
@@ -350,8 +363,21 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// History View
 		{"v", "Toggle git/bead mode", "History", "history"},
 		{"tab", "Toggle focus", "History", "history"},
+		{"t", "Toggle timeline pane", "History", "history"},
+		{"f", "Toggle file tree", "History", "history"},
 		{"J", "Detail scroll down", "History", "history"},
 		{"K", "Detail scroll up", "History", "history"},
 		{"o", "Open in browser", "History", "history"},
+
+		// Attention View (])
+		{"g", "Go to top", "Attention", "attention"},
+		{"enter", "Label drilldown", "Attention", "attention"},
+		{"1-9", "Filter list by rank", "Attention", "attention"},
+		{"]", "Close attention view", "Attention", "attention"},
+
+		// Sprint Dashboard (P)
+		{"P", "Close sprint dashboard", "Sprint", "sprint"},
+		{"j", "Next sprint", "Sprint", "sprint"},
+		{"k", "Previous sprint", "Sprint", "sprint"},
 	}
 }

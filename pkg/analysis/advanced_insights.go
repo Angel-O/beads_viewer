@@ -2,7 +2,11 @@ package analysis
 
 import (
 	"container/heap"
+	"fmt"
 	"sort"
+	"time"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 // intHeap implements heap.Interface for a min-heap of ints.
@@ -37,20 +41,26 @@ type AdvancedInsightsConfig struct {
 	CycleBreakLimit int `json:"cycle_break_limit"` // Max cycle break suggestions (default 5)
 
 	// Parallel analysis caps
-	ParallelCutLimit int `json:"parallel_cut_limit"` // Max parallel cut suggestions (default 5)
+	ParallelCutLimit  int `json:"parallel_cut_limit"`  // Max parallel cut suggestions (default 5)
+	ParallelGainLimit int `json:"parallel_gain_limit"` // Max parallel gain metrics (default 5)
 }
 
 // DefaultAdvancedInsightsConfig returns safe defaults for all caps.
 func DefaultAdvancedInsightsConfig() AdvancedInsightsConfig {
 	return AdvancedInsightsConfig{
-		TopKSetLimit:     5,
-		CoverageSetLimit: 5,
-		KPathsLimit:      5,
-		PathLengthCap:    50,
-		CycleBreakLimit:  5,
-		ParallelCutLimit: 5,
+		TopKSetLimit:      5,
+		CoverageSetLimit:  5,
+		KPathsLimit:       5,
+		PathLengthCap:     50,
+		CycleBreakLimit:   5,
+		ParallelCutLimit:  5,
+		ParallelGainLimit: 5,
 	}
 }
+
+// parallelGainMaxIssues bounds generateParallelGain: above this many issues the
+// O(actionable x (V+E)) sweep is skipped with state=skipped, reason=size.
+const parallelGainMaxIssues = 5000
 
 // AdvancedInsights provides structured, capped outputs for advanced graph analysis.
 // Each feature includes status tracking and usage hints for agent consumption.
@@ -82,11 +92,12 @@ type AdvancedInsights struct {
 
 // FeatureStatus tracks computation state for a single advanced feature.
 type FeatureStatus struct {
-	State   string `json:"state"`             // available|pending|skipped|error
-	Reason  string `json:"reason,omitempty"`  // Explanation when skipped/error
-	Capped  bool   `json:"capped,omitempty"`  // True if results were truncated
-	Count   int    `json:"count,omitempty"`   // Number of results returned
-	Limited int    `json:"limited,omitempty"` // Original count before capping
+	State      string `json:"state"`                 // available|computed|skipped|error
+	Reason     string `json:"reason,omitempty"`      // Explanation when skipped/error/capped
+	Capped     bool   `json:"capped,omitempty"`      // True if results were truncated
+	Count      int    `json:"count,omitempty"`       // Number of results returned
+	Limited    int    `json:"limited,omitempty"`     // Original count before capping
+	DurationMs int64  `json:"duration_ms,omitempty"` // Wall-clock cost of the computation, when measured
 }
 
 // TopKSetResult represents the optimal set of issues to complete for maximum unlock.
@@ -158,20 +169,30 @@ type ParallelCutItem struct {
 	EnabledTracks []string `json:"enabled_tracks,omitempty"` // Track IDs enabled
 }
 
-// ParallelGainResult provides parallelization metrics for top recommendations.
+// ParallelGainResult reports, for each actionable issue, how many additional
+// independent work tracks would open if that issue were closed now.
+//
+// A track is a connected component of the non-closed dependency graph (the
+// union-find grouping plan.go uses) that contains at least one actionable
+// issue. Gain(X) = tracks(after closing X) - tracks(now); the issues X would
+// newly unblock are reported as context. Only issues with positive gain are
+// listed, ordered by gain, then by unblock count, then by ID.
 type ParallelGainResult struct {
-	Status   FeatureStatus      `json:"status"`
-	Metrics  []ParallelGainItem `json:"metrics,omitempty"`
-	HowToUse string             `json:"how_to_use"`
+	Status          FeatureStatus      `json:"status"`
+	CurrentParallel int                `json:"current_parallel"` // Tracks with actionable work right now
+	Metrics         []ParallelGainItem `json:"metrics,omitempty"`
+	HowToUse        string             `json:"how_to_use"`
 }
 
 // ParallelGainItem represents parallelization gain for one issue.
 type ParallelGainItem struct {
-	ID                string  `json:"id"`
-	Title             string  `json:"title,omitempty"`
-	CurrentParallel   int     `json:"current_parallel"`   // Current parallel streams
-	PotentialParallel int     `json:"potential_parallel"` // After completion
-	GainPercent       float64 `json:"gain_percent"`       // Percentage improvement
+	ID                string   `json:"id"`
+	Title             string   `json:"title,omitempty"`
+	CurrentParallel   int      `json:"current_parallel"`   // Tracks with actionable work now
+	PotentialParallel int      `json:"potential_parallel"` // Tracks after closing this issue
+	Gain              int      `json:"gain"`               // PotentialParallel - CurrentParallel
+	GainPercent       float64  `json:"gain_percent"`       // Gain relative to CurrentParallel
+	Unblocks          []string `json:"unblocks,omitempty"` // Issues that become actionable
 }
 
 // CycleBreakResult provides suggestions for breaking cycles.
@@ -200,13 +221,12 @@ func DefaultUsageHints() map[string]string {
 		"coverage_set":  "Small vertex cover touching all dependency edges. Use for breadth coverage.",
 		"k_paths":       "K-shortest critical paths. Focus on issues appearing in multiple paths.",
 		"parallel_cut":  "Issues that enable parallel work. Complete to maximize team throughput.",
-		"parallel_gain": "Parallelization improvement from completing each issue.",
+		"parallel_gain": "Independent work tracks gained by closing each actionable issue now (gain = tracks after - tracks now). Pick high-gain issues to widen parallel work; unblocks lists what opens up.",
 		"cycle_break":   "Structural fix suggestions. Apply BEFORE working on cycle members.",
 	}
 }
 
 // GenerateAdvancedInsights creates the advanced insights structure with current data.
-// Features that aren't yet implemented return status=pending.
 func (a *Analyzer) GenerateAdvancedInsights(config AdvancedInsightsConfig) *AdvancedInsights {
 	return a.GenerateAdvancedInsightsFromStats(nil, config)
 }
@@ -232,14 +252,8 @@ func (a *Analyzer) GenerateAdvancedInsightsFromStats(stats *GraphStats, config A
 	// Parallel Cut - suggestions for maximizing parallel work (bv-154)
 	insights.ParallelCut = a.generateParallelCut(config.ParallelCutLimit)
 
-	// Parallel Gain - placeholder until bv-129 implements
-	insights.ParallelGain = &ParallelGainResult{
-		Status: FeatureStatus{
-			State:  "pending",
-			Reason: "Awaiting implementation (bv-129)",
-		},
-		HowToUse: DefaultUsageHints()["parallel_gain"],
-	}
+	// Parallel Gain - tracks gained per actionable issue (bv-129)
+	insights.ParallelGain = a.generateParallelGain(config.ParallelGainLimit)
 
 	// Cycle Break - implement basic version using existing cycle detection
 	insights.CycleBreak = a.generateCycleBreakSuggestionsFromStats(stats, config.CycleBreakLimit)
@@ -973,4 +987,215 @@ func (a *Analyzer) generateParallelCut(limit int) *ParallelCutResult {
 		MaxParallel: maxParallel,
 		HowToUse:    DefaultUsageHints()["parallel_cut"],
 	}
+}
+
+// generateParallelGain measures, for every actionable issue, how many extra
+// independent work tracks would open if that issue were closed now (bv-129).
+//
+// A track is a connected component of the non-closed dependency graph
+// (blocking and parent-child edges, the grouping plan.go uses) that contains
+// at least one actionable issue. For candidate X the graph is re-grouped with
+// X removed and the actionable set becomes (actionable - X) + unblocks(X).
+//
+// Cost is O(actionable x (V+E)). The sweep is skipped above
+// parallelGainMaxIssues and stops early when the Phase-2 budget from
+// parallelGainBudget is exhausted, reporting the partial list as capped.
+func (a *Analyzer) generateParallelGain(limit int) *ParallelGainResult {
+	start := time.Now()
+	if limit <= 0 {
+		limit = 5
+	}
+	result := &ParallelGainResult{HowToUse: DefaultUsageHints()["parallel_gain"]}
+
+	if len(a.issueMap) > parallelGainMaxIssues {
+		result.Status = FeatureStatus{
+			State:  "skipped",
+			Reason: fmt.Sprintf("size: %d issues exceeds the %d-issue cap", len(a.issueMap), parallelGainMaxIssues),
+		}
+		return result
+	}
+
+	// Open issues in sorted order so every map walk below is deterministic.
+	openIDs := make([]string, 0, len(a.issueMap))
+	for id, issue := range a.issueMap {
+		if !isClosedLikeStatus(issue.Status) {
+			openIDs = append(openIDs, id)
+		}
+	}
+	sort.Strings(openIDs)
+	openSet := make(map[string]bool, len(openIDs))
+	for _, id := range openIDs {
+		openSet[id] = true
+	}
+
+	// Undirected edges between open issues, matching findConnectedComponents.
+	type edge struct{ from, to string }
+	var edges []edge
+	for _, id := range openIDs {
+		for _, dep := range a.issueMap[id].Dependencies {
+			if dep == nil || !(dep.Type.IsBlocking() || dep.Type == model.DepParentChild) {
+				continue
+			}
+			if openSet[dep.DependsOnID] {
+				edges = append(edges, edge{from: id, to: dep.DependsOnID})
+			}
+		}
+	}
+
+	actionable := a.GetActionableIssues()
+	actionableSet := make(map[string]bool, len(actionable))
+	actionableIDs := make([]string, 0, len(actionable))
+	for _, iss := range actionable {
+		actionableSet[iss.ID] = true
+		actionableIDs = append(actionableIDs, iss.ID)
+	}
+	sort.Strings(actionableIDs)
+
+	// countTracks groups the open graph without `excluded` and counts the
+	// components that contain at least one member of `active`.
+	countTracks := func(excluded string, active map[string]bool) int {
+		parent := make(map[string]string, len(openIDs))
+		for _, id := range openIDs {
+			if id != excluded {
+				parent[id] = id
+			}
+		}
+		var find func(string) string
+		find = func(x string) string {
+			for parent[x] != x {
+				parent[x] = parent[parent[x]]
+				x = parent[x]
+			}
+			return x
+		}
+		for _, e := range edges {
+			if e.from == excluded || e.to == excluded {
+				continue
+			}
+			pf, pt := find(e.from), find(e.to)
+			if pf == pt {
+				continue
+			}
+			if pf < pt {
+				parent[pt] = pf
+			} else {
+				parent[pf] = pt
+			}
+		}
+		roots := make(map[string]bool)
+		for id := range active {
+			if id == excluded {
+				continue
+			}
+			if _, ok := parent[id]; !ok {
+				continue
+			}
+			roots[find(id)] = true
+		}
+		return len(roots)
+	}
+
+	tracksNow := countTracks("", actionableSet)
+	result.CurrentParallel = tracksNow
+
+	if len(actionableIDs) == 0 {
+		result.Status = FeatureStatus{
+			State:      "computed",
+			Count:      0,
+			Reason:     "No actionable issues",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+		return result
+	}
+
+	budget := a.parallelGainBudget()
+	var deadline time.Time
+	if budget > 0 {
+		deadline = start.Add(budget)
+	}
+
+	none := map[string]bool{}
+	var items []ParallelGainItem
+	evaluated := 0
+	for _, id := range actionableIDs {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			break
+		}
+		evaluated++
+
+		unblocks := a.computeMarginalUnblocks(id, none)
+		after := make(map[string]bool, len(actionableSet)+len(unblocks))
+		for k := range actionableSet {
+			if k != id {
+				after[k] = true
+			}
+		}
+		for _, u := range unblocks {
+			after[u] = true
+		}
+		tracksAfter := countTracks(id, after)
+		gain := tracksAfter - tracksNow
+		if gain <= 0 {
+			continue
+		}
+		pct := 0.0
+		if tracksNow > 0 {
+			pct = float64(gain) / float64(tracksNow) * 100
+		}
+		items = append(items, ParallelGainItem{
+			ID:                id,
+			Title:             a.issueMap[id].Title,
+			CurrentParallel:   tracksNow,
+			PotentialParallel: tracksAfter,
+			Gain:              gain,
+			GainPercent:       pct,
+			Unblocks:          unblocks,
+		})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Gain != items[j].Gain {
+			return items[i].Gain > items[j].Gain
+		}
+		if len(items[i].Unblocks) != len(items[j].Unblocks) {
+			return len(items[i].Unblocks) > len(items[j].Unblocks)
+		}
+		return items[i].ID < items[j].ID
+	})
+
+	total := len(items)
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	status := FeatureStatus{
+		State:      "computed",
+		Count:      len(items),
+		Capped:     total > limit,
+		Limited:    total,
+		DurationMs: time.Since(start).Milliseconds(),
+	}
+	if evaluated < len(actionableIDs) {
+		status.Capped = true
+		status.Reason = fmt.Sprintf("time budget %s exhausted after %d of %d candidates", budget, evaluated, len(actionableIDs))
+	}
+	result.Status = status
+	result.Metrics = items
+	return result
+}
+
+// parallelGainBudget returns the wall-clock budget for the parallel-gain sweep:
+// the betweenness timeout of the configured (SetConfig) or size-tier
+// (ConfigForSize) analysis config, since both computations are in the same
+// O(V*E) cost class. RunToCompletion (reproducible output) disables the budget.
+func (a *Analyzer) parallelGainBudget() time.Duration {
+	var cfg AnalysisConfig
+	if a.config != nil {
+		cfg = *a.config
+	} else {
+		cfg = ConfigForSize(len(a.issueMap), a.g.Edges().Len())
+	}
+	if cfg.RunToCompletion {
+		return 0
+	}
+	return cfg.BetweennessTimeout
 }

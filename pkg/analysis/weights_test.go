@@ -18,7 +18,7 @@ func TestDefaultWeights_MatchConstantsAndSumToOne(t *testing.T) {
 	if math.Abs(w.Sum()-1.0) > 1e-9 {
 		t.Fatalf("default weights sum to %f, want 1.0", w.Sum())
 	}
-	if got := (Weights{}).Normalized(); got != DefaultWeights() {
+	if got := (Weights{}).Normalized(); !weightsClose(got, DefaultWeights()) {
 		t.Fatalf("zero weights must normalize to the defaults, got %+v", got)
 	}
 	doubled := Weights{PageRank: 2, Betweenness: 2}.Normalized()
@@ -26,7 +26,7 @@ func TestDefaultWeights_MatchConstantsAndSumToOne(t *testing.T) {
 		t.Fatalf("Normalized() = %+v, want 0.5/0.5", doubled)
 	}
 	roundTrip := WeightsFromMap(DefaultWeights().AsMap())
-	if roundTrip != DefaultWeights() {
+	if !weightsClose(roundTrip, DefaultWeights()) {
 		t.Fatalf("AsMap/WeightsFromMap round trip changed the weights: %+v", roundTrip)
 	}
 }
@@ -48,6 +48,18 @@ func weightsFixture(now time.Time) []model.Issue {
 		// stale: no structure, very old
 		{ID: "stale", Title: "Stale loner", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 2, CreatedAt: old, UpdatedAt: old},
 	}
+}
+
+// weightsClose compares two Weights field by field within floating-point noise.
+func weightsClose(a, b Weights) bool {
+	const eps = 1e-9
+	ma, mb := a.AsMap(), b.AsMap()
+	for k, va := range ma {
+		if math.Abs(va-mb[k]) > eps {
+			return false
+		}
+	}
+	return true
 }
 
 func scoreOf(scores []ImpactScore, id string) float64 {
@@ -103,7 +115,7 @@ func TestFeedback_WeightsApplyOnlyAboveMinSamples(t *testing.T) {
 	if fb.Applies() {
 		t.Fatal("no events must not apply")
 	}
-	if got := fb.Weights(); got != DefaultWeights() {
+	if got := fb.Weights(); !weightsClose(got, DefaultWeights()) {
 		t.Fatalf("untouched feedback weights = %+v, want defaults", got)
 	}
 	// Push the Staleness adjustment up and PageRank down via the public API.

@@ -91,10 +91,31 @@ type CorrelatedCommit struct {
 	AuthorEmail string            `json:"author_email"`
 	Timestamp   time.Time         `json:"timestamp"`
 	Files       []FileChange      `json:"files"`
-	Method      CorrelationMethod `json:"method"`
+	Method      CorrelationMethod `json:"method"`     // Primary (highest-confidence) method
+	Methods     []string          `json:"methods"`    // Every method that matched this (commit, bead) pair
 	Confidence  float64           `json:"confidence"` // 0.0 to 1.0
 	Reason      string            `json:"reason"`     // Human-readable explanation
+	Confirmed   bool              `json:"confirmed,omitempty"`
 }
+
+// AllMethods returns every correlation method that linked this commit to its
+// bead. Commits assembled by the Correlator always carry Methods; a commit
+// built elsewhere (tests, incremental merges) falls back to its primary Method.
+func (c CorrelatedCommit) AllMethods() []string {
+	if len(c.Methods) > 0 {
+		return c.Methods
+	}
+	if c.Method == "" {
+		return nil
+	}
+	return []string{c.Method.String()}
+}
+
+// MethodDistributionConfirmedByFeedback is the HistoryStats.MethodDistribution
+// key counting commits whose confidence was pinned to 1.0 by a stored
+// confirmation. It is not a CorrelationMethod: the commit keeps its real
+// methods and additionally counts here.
+const MethodDistributionConfirmedByFeedback = "confirmed_by_feedback"
 
 // BeadMilestones contains key lifecycle timestamps for quick access
 type BeadMilestones struct {
@@ -128,13 +149,46 @@ type CommitIndex map[string][]string
 
 // HistoryStats provides aggregate statistics for the history report
 type HistoryStats struct {
-	TotalBeads         int            `json:"total_beads"`
-	BeadsWithCommits   int            `json:"beads_with_commits"`
-	TotalCommits       int            `json:"total_commits"`
-	UniqueAuthors      int            `json:"unique_authors"`
-	AvgCommitsPerBead  float64        `json:"avg_commits_per_bead"`
-	AvgCycleTimeDays   *float64       `json:"avg_cycle_time_days,omitempty"` // nil if no closed beads
-	MethodDistribution map[string]int `json:"method_distribution"`           // Count per correlation method
+	TotalBeads         int              `json:"total_beads"`
+	BeadsWithCommits   int              `json:"beads_with_commits"`
+	TotalCommits       int              `json:"total_commits"`
+	UniqueAuthors      int              `json:"unique_authors"`
+	AvgCommitsPerBead  float64          `json:"avg_commits_per_bead"`
+	AvgCycleTimeDays   *float64         `json:"avg_cycle_time_days,omitempty"` // nil if no closed beads
+	MethodDistribution map[string]int   `json:"method_distribution"`           // Count per correlation method (a multi-method commit counts once per method)
+	Strategies         []StrategyRun    `json:"strategies,omitempty"`          // Which correlation strategies ran and what they cost
+	FeedbackApplied    *FeedbackApplied `json:"feedback_applied,omitempty"`    // nil when no feedback store was consulted
+}
+
+// StrategyRun records one correlation strategy's execution during history
+// extraction. DurationMS is wall time measured when the artifact was
+// extracted; a report served from the persistent caches carries the timing of
+// the extraction that produced the cached artifact, not of the current call.
+type StrategyRun struct {
+	Name       string  `json:"name"`
+	Ran        bool    `json:"ran"`
+	DurationMS float64 `json:"duration_ms"`
+	Candidates int     `json:"candidates"` // Raw (commit, bead) pairs produced before assembly filtered unknown beads
+}
+
+// FeedbackApplied counts how stored correlation feedback shaped the report:
+// rejected pairs were removed from histories and the commit index, confirmed
+// pairs were pinned to confidence 1.0, ignored pairs were left untouched.
+type FeedbackApplied struct {
+	Confirmed int `json:"confirmed"`
+	Rejected  int `json:"rejected"`
+	Ignored   int `json:"ignored"`
+}
+
+// HistoryWindow is the commit window the correlation index covers. The
+// explicit-ID and temporal strategies walk the last Limit non-merge commits
+// (bounded by Since/Until); Commits is how many commits that walk yielded.
+// The orphan detector aligns its own window to this one.
+type HistoryWindow struct {
+	Limit   int        `json:"limit"`
+	Since   *time.Time `json:"since,omitempty"`
+	Until   *time.Time `json:"until,omitempty"`
+	Commits int        `json:"commits"`
 }
 
 // HistoryReport is the top-level output structure for --robot-history
@@ -143,6 +197,7 @@ type HistoryReport struct {
 	DataHash        string                 `json:"data_hash"`                   // Hash of source beads.jsonl for consistency checks
 	GitRange        string                 `json:"git_range"`                   // e.g., "HEAD~100..HEAD" or "2024-01-01..2024-12-15"
 	LatestCommitSHA string                 `json:"latest_commit_sha,omitempty"` // Most recent commit SHA for incremental updates
+	Window          *HistoryWindow         `json:"window,omitempty"`            // Commit window the index covers (nil for reports assembled without a walk)
 	Stats           HistoryStats           `json:"stats"`                       // Aggregate statistics
 	Histories       map[string]BeadHistory `json:"histories"`                   // BeadID -> BeadHistory
 	CommitIndex     CommitIndex            `json:"commit_index"`                // SHA -> []BeadID for reverse lookup

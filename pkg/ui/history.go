@@ -165,6 +165,44 @@ type HistoryModel struct {
 
 	// View mode transition state (bv-kvlx)
 	modeChangedAt time.Time // Timestamp of last mode toggle for transition animation
+
+	// Timeline pane override (bv-1x6o). The pane is shown by default at
+	// >= layoutBreakpointWide columns; pressing t pins it on or off.
+	timelinePinned  bool // true once the user toggled explicitly
+	timelineVisible bool // the pinned value; ignored until timelinePinned
+}
+
+// TimelineAvailable reports whether the timeline pane can be shown at all:
+// bead mode (git mode has no per-bead timeline) at a width that fits three
+// or more panes.
+func (h *HistoryModel) TimelineAvailable() bool {
+	return h.viewMode != historyModeGit && h.determineLayout() != layoutNarrow
+}
+
+// TimelineVisible reports whether the timeline pane is currently shown: the
+// explicit toggle wins, otherwise the width rule applies.
+func (h *HistoryModel) TimelineVisible() bool {
+	if !h.TimelineAvailable() {
+		return false
+	}
+	if h.timelinePinned {
+		return h.timelineVisible
+	}
+	return h.determineLayout() == layoutWide
+}
+
+// ToggleTimeline flips the timeline pane and returns the new visibility.
+// When the pane is unavailable it stays hidden and false is returned.
+func (h *HistoryModel) ToggleTimeline() bool {
+	if !h.TimelineAvailable() {
+		return false
+	}
+	h.timelineVisible = !h.TimelineVisible()
+	h.timelinePinned = true
+	if !h.timelineVisible && h.focused == historyFocusTimeline {
+		h.focused = historyFocusList
+	}
+	return h.timelineVisible
 }
 
 // NewHistoryModel creates a new history view from a correlation report
@@ -1444,7 +1482,7 @@ func (h *HistoryModel) determineLayout() historyLayout {
 // paneCount returns the number of visible panes for the current layout (bv-xrfh)
 func (h *HistoryModel) paneCount() int {
 	layout := h.determineLayout()
-	if layout == layoutWide && h.viewMode != historyModeGit {
+	if h.TimelineVisible() {
 		return 4
 	}
 	switch layout {
@@ -1518,8 +1556,9 @@ func (h *HistoryModel) renderThreePaneView() string {
 	header := h.renderHeader()
 	panelHeight := h.height - 2
 
-	// Wide layout: 4 panes with timeline (bv-1x6o)
-	if layout == layoutWide && h.viewMode != historyModeGit {
+	// Four panes with the timeline (bv-1x6o): default in wide layout, or
+	// pinned on with t in the standard layout.
+	if h.TimelineVisible() {
 		// Wide bead mode: 20% beads | 22% timeline | 25% commits | 33% details
 		listWidth := int(float64(h.width) * 0.20)
 		timelineWidth := int(float64(h.width) * 0.22)

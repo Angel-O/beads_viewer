@@ -22,11 +22,16 @@ type CacheKey struct {
 	HeadSHA   string // Current git HEAD
 	BeadsHash string // Hash of beads content
 	Options   string // Serialized options
+	Feedback  string // FeedbackStore fingerprint ("" when no store is attached)
 }
 
 // String returns a string representation of the cache key
 func (k CacheKey) String() string {
-	return k.HeadSHA + ":" + k.BeadsHash + ":" + k.Options
+	s := k.HeadSHA + ":" + k.BeadsHash + ":" + k.Options
+	if k.Feedback != "" {
+		s += ":" + k.Feedback
+	}
+	return s
 }
 
 // CacheEntry holds a cached report with metadata
@@ -393,10 +398,30 @@ func NewCachedCorrelatorWithOptions(repoPath string, maxAge time.Duration, maxSi
 	}
 }
 
+// WithFeedbackStore attaches the confirm/reject store to the underlying
+// correlator; the store's fingerprint becomes part of the in-memory cache key
+// so a new decision is never served a stale pre-feedback report.
+func (c *CachedCorrelator) WithFeedbackStore(store *FeedbackStore) *CachedCorrelator {
+	c.correlator.WithFeedbackStore(store)
+	return c
+}
+
+// buildKey is BuildCacheKey plus the feedback fingerprint of the wrapped
+// correlator (reports are assembled against the store, so the store's state
+// is a report input).
+func (c *CachedCorrelator) buildKey(beads []BeadInfo, opts CorrelatorOptions) (CacheKey, error) {
+	key, err := BuildCacheKey(c.cache.repoPath, beads, opts)
+	if err != nil {
+		return CacheKey{}, err
+	}
+	key.Feedback = c.correlator.feedbackFingerprint()
+	return key, nil
+}
+
 // GenerateReport generates a history report, using cache when possible
 func (c *CachedCorrelator) GenerateReport(beads []BeadInfo, opts CorrelatorOptions) (*HistoryReport, error) {
 	// Build cache key
-	key, err := BuildCacheKey(c.cache.repoPath, beads, opts)
+	key, err := c.buildKey(beads, opts)
 	if err != nil {
 		// If we can't build a cache key, fall back to uncached
 		return c.generate(beads, opts)
@@ -542,7 +567,7 @@ func (c *CachedCorrelator) recordMiss() {
 }
 
 func (c *CachedCorrelator) cacheReportIfCurrent(expectedKey CacheKey, beads []BeadInfo, opts CorrelatorOptions, report *HistoryReport, computeDuration time.Duration) bool {
-	currentKey, err := BuildCacheKey(c.cache.repoPath, beads, opts)
+	currentKey, err := c.buildKey(beads, opts)
 	if err != nil {
 		return false
 	}

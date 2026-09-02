@@ -83,9 +83,21 @@ type OrphanReport struct {
 	GeneratedAt time.Time           `json:"generated_at"`
 	GitRange    string              `json:"git_range"` // e.g., "last 30 days"
 	DataHash    string              `json:"data_hash"` // Beads content hash
+	Window      OrphanWindow        `json:"window"`    // Commit window scanned (aligned with the correlation index)
 	Stats       OrphanReportStats   `json:"stats"`
 	Candidates  []OrphanCandidate   `json:"candidates"`
 	ByBead      map[string][]string `json:"by_bead,omitempty"` // BeadID -> []commit SHAs
+	UsageHints  []string            `json:"usage_hints"`
+}
+
+// orphanUsageHints documents how the payload is computed so an agent can read
+// suspicion_score and orphan_ratio without consulting the source.
+var orphanUsageHints = []string{
+	"window: the non-merge commits scanned; source=history_index means the same bounded walk the correlation index (co_committed, explicit_id, temporal_author) covered, so an orphan is a code commit in that window no strategy linked",
+	"stats.total_commits counts window commits that changed something outside .beads/; beads-only bookkeeping commits are neither orphans nor correlated",
+	"suspicion_score (0-100, capped) sums signal weights: timing=30 per bead whose claimed→closed window contains the commit, files=25 per (file, bead) pair where a linked bead touched the same path, message<=35 for bead-like patterns in the subject, author=15 per bead the same author worked on within +/-7 days",
+	"probable_beads.confidence adds 35 when the message names the bead id; the top 3 beads are kept; candidates below --orphans-min-score are dropped",
+	"link a candidate with --robot-confirm-correlation SHA:BEAD (or exclude a false link with --robot-reject-correlation); both shape later history reports",
 }
 
 // OrphanReportStats provides aggregate statistics.
@@ -107,6 +119,7 @@ type OrphanDetector struct {
 	beadWindows map[string]TemporalWindow // BeadID -> active time window
 	authorBeads map[string][]string       // Author email -> BeadIDs they worked on
 	now         time.Time
+	window      *HistoryWindow // The correlation index's commit window, when the report carries one
 }
 
 // NewOrphanDetector creates a detector from a history report.
@@ -136,6 +149,7 @@ func newOrphanDetector(report *HistoryReport, repoPath string, now time.Time) *O
 		beadWindows: make(map[string]TemporalWindow),
 		authorBeads: make(map[string][]string),
 		now:         now,
+		window:      report.Window,
 	}
 
 	// Build temporal windows for each bead
@@ -183,20 +197,34 @@ func orphanActivityWindowEnd(history BeadHistory, now time.Time) time.Time {
 	return now
 }
 
-// DetectOrphans finds orphan commits with smart detection.
+// DetectOrphans finds orphan commits with smart detection. When the history
+// report the detector was built from records the window its correlation index
+// covers, that window is scanned (and reported with source "history_index")
+// regardless of opts: an orphan is meaningful only relative to the commits the
+// index actually had a chance to correlate. opts is used as-is only for
+// reports assembled without a walk.
 func (od *OrphanDetector) DetectOrphans(opts ExtractOptions) (*OrphanReport, error) {
+	source := "options"
+	if od.window != nil {
+		opts = ExtractOptions{Limit: od.window.Limit, Since: od.window.Since, Until: od.window.Until}
+		source = "history_index"
+	}
+
 	// Get basic orphans first
 	orphans, stats, err := od.lookup.FindOrphanCommits(opts)
 	if err != nil {
 		return nil, fmt.Errorf("finding orphan commits: %w", err)
 	}
+	stats.Window.Source = source
 
 	report := &OrphanReport{
 		GeneratedAt: od.now,
 		GitRange:    formatGitRange(opts),
 		DataHash:    od.dataHash,
+		Window:      stats.Window,
 		Candidates:  make([]OrphanCandidate, 0, len(orphans)),
 		ByBead:      make(map[string][]string),
+		UsageHints:  append([]string(nil), orphanUsageHints...),
 	}
 
 	// Analyze each orphan
@@ -258,8 +286,11 @@ func (od *OrphanDetector) analyzeOrphan(orphan OrphanCommit) (OrphanCandidate, e
 		ProbableBeads: make([]ProbableBead, 0),
 	}
 
-	// Get files changed in this commit
-	if od.repoPath != "" {
+	// Files changed in this commit: FindOrphanCommits already carries them from
+	// the walk (no per-commit git show); an orphan built without them falls
+	// back to asking git.
+	candidate.Files = orphan.Files
+	if candidate.Files == nil && od.repoPath != "" {
 		files, err := od.getCommitFiles(orphan.SHA)
 		if err != nil {
 			return OrphanCandidate{}, err

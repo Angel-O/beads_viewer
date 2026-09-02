@@ -58,7 +58,10 @@ func SetDiskCacheEnabled(on bool) { diskCacheForced.Store(on) }
 // hit/miss.
 
 const (
-	correlationDiskCacheVersion      = 2
+	// correlationDiskCacheVersion: 3 = reports carry per-commit methods, the
+	// walked window, strategy timings and feedback_applied (v2 reports lack
+	// them and must not be served as-is).
+	correlationDiskCacheVersion      = 3
 	correlationDiskCacheFileName     = "correlation_report_cache.json"
 	correlationDiskCacheDirName      = "bv"
 	correlationDiskCacheMaxEntries   = 6
@@ -394,9 +397,14 @@ func (c *Correlator) GenerateReportCached(beads []BeadInfo, opts CorrelatorOptio
 	beadsHash := hashBeads(beads)
 	optsHash := hashOptions(opts)
 	namespace := c.persistentCacheNamespace()
+	// The assembled REPORT depends on the feedback store (rejections remove
+	// commits, confirmations pin confidence), the HEAD-only ARTIFACT does not.
+	// Fold the store fingerprint into the outer key only, so a new confirm or
+	// reject misses layer 1, reuses the layer-2 artifact, and re-assembles.
+	reportOptsHash := c.reportOptsHash(optsHash)
 
-	// Layer 1: fully assembled report for this exact (HEAD, beads, opts).
-	if report, ok := getCorrelationDiskCachedReport(namespace, headSHA, beadsHash, optsHash); ok {
+	// Layer 1: fully assembled report for this exact (HEAD, beads, opts, feedback).
+	if report, ok := getCorrelationDiskCachedReport(namespace, headSHA, beadsHash, reportOptsHash); ok {
 		return report, nil
 	}
 
@@ -404,7 +412,7 @@ func (c *Correlator) GenerateReportCached(beads []BeadInfo, opts CorrelatorOptio
 	// reusable; only the cheap bead-dependent assembly must run.
 	if art, ok := getHeadArtifactCached(namespace, headSHA, optsHash); ok {
 		report := c.assembleReport(beads, opts, art)
-		putCorrelationDiskCachedReport(namespace, headSHA, beadsHash, optsHash, report)
+		putCorrelationDiskCachedReport(namespace, headSHA, beadsHash, reportOptsHash, report)
 		return report, nil
 	}
 
@@ -420,17 +428,29 @@ func (c *Correlator) GenerateReportCached(beads []BeadInfo, opts CorrelatorOptio
 	return report, nil
 }
 
+// reportOptsHash extends the artifact options hash with the feedback store
+// fingerprint for the assembled-report cache layer. Without a store it is
+// exactly optsHash.
+func (c *Correlator) reportOptsHash(optsHash string) string {
+	fp := c.feedbackFingerprint()
+	if fp == "" {
+		return optsHash
+	}
+	return optsHash + ":fb" + fp
+}
+
 // putExtractedHistoryCachesIfHeadUnchanged closes the only correctness gap
 // between the pre-extraction HEAD cache key and a multi-command extraction. A
 // lookup failure is treated conservatively as drift: the caller still returns
 // its computed report, but no persistent entry is published under an
-// unverified key.
+// unverified key. optsHash is the ARTIFACT key; the report entry is stored
+// under the feedback-extended reportOptsHash.
 func (c *Correlator) putExtractedHistoryCachesIfHeadUnchanged(namespace, headSHA, beadsHash, optsHash string, art *historyArtifact, report *HistoryReport) bool {
 	currentHead, err := getGitHeadContext(c.ctx, c.repoPath)
 	if err != nil || currentHead != headSHA {
 		return false
 	}
 	putHeadArtifactCached(namespace, headSHA, optsHash, art)
-	putCorrelationDiskCachedReport(namespace, headSHA, beadsHash, optsHash, report)
+	putCorrelationDiskCachedReport(namespace, headSHA, beadsHash, c.reportOptsHash(optsHash), report)
 	return true
 }

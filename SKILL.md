@@ -194,7 +194,7 @@ When running `bv` interactively (not for agents):
 
 | Key | View |
 |-----|------|
-| `l` | List view (default) |
+| `l` | Label picker (quick filter by label) |
 | `b` | Kanban board |
 | `g` | Graph view (dependency DAG) |
 | `E` | Tree view (parent-child hierarchy) |
@@ -202,6 +202,7 @@ When running `bv` interactively (not for agents):
 | `h` | History view (bead-to-commit correlation) |
 | `a` | Actionable plan (parallel tracks) |
 | `f` | Flow matrix (cross-label dependencies) |
+| `[` | Label dashboard (per-label health) |
 | `]` | Attention view (label priority ranking) |
 
 ## Integration with br/bd CLIs
