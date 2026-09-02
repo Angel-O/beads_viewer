@@ -26,7 +26,11 @@ cd "$root"
 BENCHMARK_DIR="benchmarks"
 BASELINE_FILE="$BENCHMARK_DIR/baseline.txt"
 CURRENT_FILE="$BENCHMARK_DIR/current.txt"
+# The baseline is taken once with more repetitions; compare runs (gate stage 8)
+# use fewer so the gate stays under ten minutes on the reference machine.
+# BENCH_COUNT overrides both.
 COUNT="${BENCH_COUNT:-5}"
+COMPARE_COUNT="${BENCH_COUNT:-3}"
 PCT="${BENCH_PCT:-20}"
 DATASET="${BENCH_DATASET:-tests/testdata/benchmark/medium.jsonl}"
 
@@ -75,21 +79,21 @@ EOF
 }
 
 run_tracked() {
-  # run_tracked <output-file>
+  # run_tracked <output-file> <count>
   prepare_dataset
-  go test -run '^$' -bench "$TRACKED" -benchmem -count="$COUNT" "${PACKAGES[@]}" 2>&1 | tee -a "$1"
+  go test -run '^$' -bench "$TRACKED" -benchmem -count="$2" "${PACKAGES[@]}" 2>&1 | tee -a "$1"
 }
 
 save_baseline() {
   echo "Regenerating $BASELINE_FILE (count=$COUNT, dataset=$DATASET)"
   provenance_header > "$BASELINE_FILE"
-  run_tracked "$BASELINE_FILE"
+  run_tracked "$BASELINE_FILE" "$COUNT"
   echo "Baseline saved to $BASELINE_FILE"
 }
 
 run_benchmarks() {
   : > "$CURRENT_FILE"
-  run_tracked "$CURRENT_FILE"
+  run_tracked "$CURRENT_FILE" "$COMPARE_COUNT"
   echo "Results saved to $CURRENT_FILE"
 }
 
