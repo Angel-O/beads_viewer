@@ -1993,6 +1993,8 @@ func main() {
 			os.Exit(2)
 		}
 
+		// --robot-help lists every registered command from these registries.
+		robotHelpRegistries = []*RobotRegistry{&phaseOneRobotRegistry, &phaseTwoRobotRegistry, &phaseThreeRobotRegistry}
 		robotDispatchContext := RobotContext{
 			Stdout:             os.Stdout,
 			Stderr:             os.Stderr,
@@ -4686,8 +4688,13 @@ func main() {
 				}
 
 				hotspots := fileLookup.GetHotspots(*hotspotsLimit)
+				// This command is handled inline (not via the registry), so name
+				// it here so the envelope can declare that --as-of does not apply
+				// to a live git-history walk.
+				hotspotsCtx := robotDispatchContext
+				hotspotsCtx.Command = "robot-file-hotspots"
 				output := HotspotsOutput{
-					RobotEnvelope: NewRobotEnvelope(report.DataHash),
+					RobotEnvelope: hotspotsCtx.EnvelopeWithHash(report.DataHash),
 					Hotspots:      hotspots,
 					Stats:         fileLookup.GetStats(),
 				}
@@ -4714,7 +4721,7 @@ func main() {
 				}
 
 				output := FileBeadsOutput{
-					RobotEnvelope: NewRobotEnvelope(report.DataHash),
+					RobotEnvelope: robotDispatchContext.EnvelopeWithHash(report.DataHash),
 					FilePath:      *robotFileBeads,
 					TotalBeads:    result.TotalBeads,
 					OpenBeads:     result.OpenBeads,
@@ -4792,7 +4799,7 @@ func main() {
 			}
 
 			output := ImpactOutput{
-				RobotEnvelope: NewRobotEnvelope(report.DataHash),
+				RobotEnvelope: robotDispatchContext.EnvelopeWithHash(report.DataHash),
 				Files:         impactResult.Files,
 				RiskLevel:     impactResult.RiskLevel,
 				RiskScore:     impactResult.RiskScore,
@@ -4871,7 +4878,7 @@ func main() {
 			}
 
 			output := RelationsOutput{
-				RobotEnvelope: NewRobotEnvelope(report.DataHash),
+				RobotEnvelope: robotDispatchContext.EnvelopeWithHash(report.DataHash),
 				FilePath:      result.FilePath,
 				TotalCommits:  result.TotalCommits,
 				Threshold:     result.Threshold,
@@ -7513,6 +7520,9 @@ type BurndownOutput struct {
 	DailyPoints       []model.BurndownPoint `json:"daily_points"`
 	IdealLine         []model.BurndownPoint `json:"ideal_line"`
 	ScopeChanges      []ScopeChangeEvent    `json:"scope_changes,omitempty"`
+	// AtRisk lists sprint beads flagged by analysis.DetectAtRisk (blocked too
+	// long, no activity, critical blocked, blockers not closing).
+	AtRisk []analysis.AtRiskItem `json:"at_risk"`
 }
 
 // ScopeChangeEvent represents when issues were added/removed from sprint
@@ -7838,7 +7848,91 @@ func calculateBurndownAt(sprint *model.Sprint, issues []model.Issue, now time.Ti
 		DailyPoints:       dailyPoints,
 		IdealLine:         idealLine,
 		ScopeChanges:      nil,
+		AtRisk:            analysis.DetectAtRisk(issues, sprint, now, analysis.DefaultAtRiskThresholds()),
 	}
+}
+
+// generateIdealLineScoped is generateIdealLine made scope-aware: at each
+// scope-change date the remaining count moves by the added/removed beads and
+// the ideal trajectory re-linearizes from that day's remaining count to zero at
+// the sprint end, so a mid-sprint addition shows as a slope change instead of a
+// misleading "behind schedule" gap. Without events it equals generateIdealLine.
+func generateIdealLineScoped(sprint *model.Sprint, totalIssues int, events []ScopeChangeEvent) []model.BurndownPoint {
+	if len(events) == 0 {
+		return generateIdealLine(sprint, totalIssues)
+	}
+	if sprint.StartDate.IsZero() || sprint.EndDate.IsZero() {
+		return nil
+	}
+	totalDays := int(sprint.EndDate.Sub(sprint.StartDate).Hours()/24) + 1
+	if totalDays <= 0 {
+		return nil
+	}
+	dayOf := func(t time.Time) int {
+		return int(t.Sub(sprint.StartDate).Hours() / 24)
+	}
+	// Net scope change per sprint day; events before the start count as part
+	// of the initial scope, events after the end are ignored.
+	delta := make(map[int]int)
+	initial := totalIssues
+	for _, ev := range events {
+		change := 0
+		switch ev.Action {
+		case "added":
+			change = 1
+		case "removed":
+			change = -1
+		}
+		d := dayOf(ev.Date)
+		switch {
+		case d <= 0:
+			// Already part of the starting scope: nothing to replay.
+		case d > totalDays:
+			// After the sprint window: not part of the plan.
+		default:
+			delta[d] += change
+			initial -= change
+		}
+	}
+	if initial < 0 {
+		initial = 0
+	}
+
+	// Each segment burns linearly from segRemaining at segStart to zero at the
+	// sprint end, using the same truncating arithmetic as generateIdealLine so
+	// a sprint whose events all fall outside the window yields the identical
+	// line.
+	var points []model.BurndownPoint
+	segStart := 0
+	segRemaining := initial
+	idealAt := func(day int) int {
+		daysLeft := totalDays - segStart
+		if daysLeft <= 0 {
+			return segRemaining
+		}
+		burnPerDay := float64(segRemaining) / float64(daysLeft)
+		rem := segRemaining - int(float64(day-segStart)*burnPerDay)
+		if rem < 0 {
+			rem = 0
+		}
+		return rem
+	}
+	for i := 0; i <= totalDays; i++ {
+		if d, ok := delta[i]; ok && d != 0 && i > 0 {
+			segRemaining = idealAt(i) + d
+			if segRemaining < 0 {
+				segRemaining = 0
+			}
+			segStart = i
+		}
+		rem := idealAt(i)
+		points = append(points, model.BurndownPoint{
+			Date:      sprint.StartDate.AddDate(0, 0, i),
+			Remaining: rem,
+			Completed: totalIssues - rem,
+		})
+	}
+	return points
 }
 
 // generateDailyBurndown creates actual burndown points based on issue closure dates

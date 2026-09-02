@@ -267,11 +267,11 @@ func TestRobotDiffHandlerPinsNestedTimestampWithoutMutatingInput(t *testing.T) {
 	diff := &analysis.SnapshotDiff{FromTimestamp: from, ToTimestamp: originalTo}
 	var output bytes.Buffer
 	handled, err := registry.DispatchFlag("robot-diff", RobotContext{
-		DataHash:              "current-hash",
-		Diff:                  diff,
-		DiffResolvedRevision:  "abc123",
+		DataHash:             "current-hash",
+		Diff:                 diff,
+		DiffResolvedRevision: "abc123",
 		DiffHistoricalIssues: nil,
-		Encoder:               json.NewEncoder(&output),
+		Encoder:              json.NewEncoder(&output),
 	})
 	if err != nil {
 		t.Fatalf("dispatch robot-diff: %v", err)
@@ -413,7 +413,8 @@ func TestWriteRobotHelp_ReturnsWriterErrorAfterIntro(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected writer error after intro")
 	}
-	if !strings.Contains(err.Error(), "key bindings") {
+	// The first write after the intro is the generated commands heading.
+	if !strings.Contains(err.Error(), "commands heading") {
 		t.Fatalf("expected contextual error for later write, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "write failed after intro") {

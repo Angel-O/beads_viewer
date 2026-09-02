@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -240,6 +241,34 @@ func (ctx RobotContext) EnvelopeWithHash(dataHash string) RobotEnvelope {
 	return env
 }
 
+// withEnvelope overlays the shared envelope onto a payload that already
+// defines some of the same top-level keys (generated_at, data_hash) — for
+// example the correlation package's result structs. Embedding both would make
+// encoding/json drop the colliding keys silently; overlaying keeps every
+// payload key and lets the envelope supply source, scope, and as_of metadata.
+func withEnvelope(env RobotEnvelope, payload any) (map[string]json.RawMessage, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encoding payload: %w", err)
+	}
+	merged := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &merged); err != nil {
+		return nil, fmt.Errorf("payload is not a JSON object: %w", err)
+	}
+	envRaw, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("encoding envelope: %w", err)
+	}
+	var envFields map[string]json.RawMessage
+	if err := json.Unmarshal(envRaw, &envFields); err != nil {
+		return nil, fmt.Errorf("envelope is not a JSON object: %w", err)
+	}
+	for k, v := range envFields {
+		merged[k] = v
+	}
+	return merged, nil
+}
+
 // unsupportedScopeFor lists the scoping flags a command cannot honour for the
 // given context. Commands that walk live git history or read sprint files from
 // disk cannot be time-travelled with --as-of; declaring that beats silently
@@ -432,8 +461,13 @@ func newReportedRobotHandlerExit(exitCode int) error {
 }
 
 // writeRobotHelp outputs the robot help documentation.
+// robotHelpRegistries holds every populated registry so --robot-help can list
+// all commands. main sets it right after registering the phase handlers; a nil
+// slice (unit tests, early failures) still renders the intro and key bindings.
+var robotHelpRegistries []*RobotRegistry
+
 func writeRobotHelp(out io.Writer) error {
-	return writeRobotHelpFromRegistries(out, &phaseOneRobotRegistry, &phaseTwoRobotRegistry, &phaseThreeRobotRegistry)
+	return writeRobotHelpFromRegistries(out, robotHelpRegistries...)
 }
 
 // writeRobotHelpFromRegistries renders --robot-help. The command list is
@@ -1278,6 +1312,8 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 			if scopeChanges, err := computeSprintScopeChanges(workDir, targetSprint, issueMap, now); err == nil && len(scopeChanges) > 0 {
 				burndown.ScopeChanges = scopeChanges
+				// Re-linearize the ideal trajectory at each scope change.
+				burndown.IdealLine = generateIdealLineScoped(targetSprint, burndown.TotalIssues, scopeChanges)
 			}
 
 			if err := ctx.EncoderOrDefault().Encode(burndown); err != nil {
@@ -2661,7 +2697,10 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 		return err
 	}
 
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
+	// Explain the raw strategy score: a rejected pair is removed from the
+	// feedback-applied report, but the user asking "why was this correlated?"
+	// still needs the signals plus the stored decision.
+	report, err := generateRawCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
 	if err != nil {
 		return fmt.Errorf("generating report: %w", err)
 	}
@@ -2683,7 +2722,8 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 
 	explanation := correlation.NewScorer().BuildExplanation(*targetCommit, beadID)
 	if fb, ok := feedbackStore.Get(targetCommit.SHA, beadID); ok {
-		explanation.Recommendation = fmt.Sprintf("Already has feedback: %s", fb.Type)
+		explanation.Feedback = &fb
+		explanation.Recommendation = describeCorrelationFeedback(fb)
 	}
 	if err := ctx.EncoderOrDefault().Encode(explanation); err != nil {
 		return fmt.Errorf("encoding explanation: %w", err)
@@ -2873,10 +2913,10 @@ func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	// data_hash too, and encoding/json drops colliding embedded keys silently.
 	output := struct {
 		RobotEnvelope
-		GitRange   string                         `json:"git_range"`
-		Stats      correlation.OrphanReportStats  `json:"stats"`
-		Candidates []correlation.OrphanCandidate  `json:"candidates"`
-		ByBead     map[string][]string            `json:"by_bead,omitempty"`
+		GitRange   string                        `json:"git_range"`
+		Stats      correlation.OrphanReportStats `json:"stats"`
+		Candidates []correlation.OrphanCandidate `json:"candidates"`
+		ByBead     map[string][]string           `json:"by_bead,omitempty"`
 	}{
 		RobotEnvelope: ctx.EnvelopeWithHash(orphanReport.DataHash),
 		GitRange:      orphanReport.GitRange,
@@ -3091,16 +3131,9 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		return newReportedRobotHandlerExit(1)
 	}
 
-	output := struct {
-		*correlation.RelatedWorkResult
-		DataHash     string `json:"data_hash"`
-		OutputFormat string `json:"output_format,omitempty"`
-		Version      string `json:"version,omitempty"`
-	}{
-		RelatedWorkResult: result,
-		DataHash:          report.DataHash,
-		OutputFormat:      robotOutputFormat,
-		Version:           version.Version,
+	output, err := withEnvelope(ctx.EnvelopeWithHash(report.DataHash), result)
+	if err != nil {
+		return fmt.Errorf("related work payload: %w", err)
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding related work: %w", err)
@@ -3197,14 +3230,9 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 		depth = 3
 	}
 
-	output := struct {
-		*correlation.ImpactNetworkResult
-		OutputFormat string `json:"output_format,omitempty"`
-		Version      string `json:"version,omitempty"`
-	}{
-		ImpactNetworkResult: network.ToResult(beadID, depth),
-		OutputFormat:        robotOutputFormat,
-		Version:             version.Version,
+	output, err := withEnvelope(ctx.EnvelopeWithHash(report.DataHash), network.ToResult(beadID, depth))
+	if err != nil {
+		return fmt.Errorf("impact network payload: %w", err)
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding impact network: %w", err)
@@ -3265,14 +3293,9 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 		return newReportedRobotHandlerExit(1)
 	}
 
-	output := struct {
-		*correlation.CausalityResult
-		OutputFormat string `json:"output_format,omitempty"`
-		Version      string `json:"version,omitempty"`
-	}{
-		CausalityResult: result,
-		OutputFormat:    robotOutputFormat,
-		Version:         version.Version,
+	output, err := withEnvelope(ctx.EnvelopeWithHash(report.DataHash), result)
+	if err != nil {
+		return fmt.Errorf("causality payload: %w", err)
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding causality result: %w", err)
@@ -3614,4 +3637,29 @@ func robotValueActive(value reflect.Value) bool {
 		zero := reflect.Zero(value.Type()).Interface()
 		return !reflect.DeepEqual(value.Interface(), zero)
 	}
+}
+
+// describeCorrelationFeedback renders a stored confirm/reject/ignore decision
+// as the explanation's recommendation line, e.g.
+// "rejected by feedback (cli): touched the file by accident".
+func describeCorrelationFeedback(fb correlation.CorrelationFeedback) string {
+	var verb string
+	switch fb.Type {
+	case correlation.FeedbackConfirm:
+		verb = "confirmed"
+	case correlation.FeedbackReject:
+		verb = "rejected"
+	case correlation.FeedbackIgnore:
+		verb = "ignored"
+	default:
+		verb = string(fb.Type)
+	}
+	s := verb + " by feedback"
+	if by := strings.TrimSpace(fb.FeedbackBy); by != "" {
+		s += " (" + by + ")"
+	}
+	if reason := strings.TrimSpace(fb.Reason); reason != "" {
+		s += ": " + reason
+	}
+	return s
 }

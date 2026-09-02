@@ -45,7 +45,7 @@ func TestRobotContext_EnvelopeDeclaresUnsupportedAsOf(t *testing.T) {
 	ctx := RobotContext{DataHash: "h", AsOf: "HEAD~5", AsOfCommit: "0123456789abcdef", SourceKind: "git", SourcePath: ".beads@HEAD~5"}
 
 	// Commands that analyse ctx.Issues honour --as-of: no unsupported list.
-	for _, cmd := range []string{"robot-triage", "robot-plan", "robot-insights", "robot-blocker-chain", "robot-priority"} {
+	for _, cmd := range []string{"robot-triage", "robot-plan", "robot-insights", "robot-blocker-chain", "robot-priority", "robot-forecast", "robot-capacity"} {
 		ctx.Command = cmd
 		env := ctx.Envelope()
 		if env.AsOf != "HEAD~5" || env.AsOfCommit != "0123456789abcdef" {
@@ -57,7 +57,7 @@ func TestRobotContext_EnvelopeDeclaresUnsupportedAsOf(t *testing.T) {
 	}
 
 	// Commands that read sprint files from disk or walk live git history cannot.
-	for _, cmd := range []string{"robot-burndown", "robot-sprint-list", "robot-forecast", "robot-history", "robot-orphans", "robot-file-beads"} {
+	for _, cmd := range []string{"robot-burndown", "robot-sprint-list", "robot-sprint-show", "robot-history", "robot-orphans", "robot-file-beads", "robot-file-hotspots"} {
 		ctx.Command = cmd
 		env := ctx.Envelope()
 		if env.Scope == nil || !reflect.DeepEqual(env.Scope.Unsupported, []string{"as_of"}) {
