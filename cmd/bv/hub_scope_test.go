@@ -53,32 +53,19 @@ func TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences(t *testing.T)
 			t.Fatal("out-of-scope open blockers made visible work actionable")
 		}
 	}
-	output := map[string]any{
-		"data_hash": analysis.ComputeDataHash(issues),
-		"triage": map[string]any{
-			"recommendations": []any{
-				map[string]any{"id": "hidden-z"},
-				map[string]any{"id": "multi"},
-				map[string]any{"id": "visible"},
-				map[string]any{"id": "multi"},
-			},
-			"quick_ref": map[string]any{
-				"top_picks": []any{map[string]any{"id": "visible"}, map[string]any{"id": "hidden-z"}},
-			},
+	output := robotPriorityOutput{
+		DataHash: analysis.ComputeDataHash(issues),
+		Recommendations: []robotPriorityRecommendation{
+			{EnhancedPriorityRecommendation: analysis.EnhancedPriorityRecommendation{PriorityRecommendation: analysis.PriorityRecommendation{IssueID: "visible"}}},
 		},
 	}
-	projection.project("robot-triage", output)
-
-	metadata := output["scope"].(map[string]any)
-	if metadata["mode"] != "contexts" || !reflect.DeepEqual(metadata["contexts"], []string{first}) {
-		t.Fatalf("scope metadata = %#v", metadata)
+	if err := projection.decorateRobotResult("robot-priority", &output); err != nil {
+		t.Fatal(err)
 	}
-	recommendations := output["triage"].(map[string]any)["recommendations"].([]any)
-	if got := objectIDs(recommendations); !reflect.DeepEqual(got, []string{"multi", "visible"}) {
-		t.Fatalf("projected recommendations = %#v", got)
+	if output.Scope == nil || output.Scope.Mode != string(hub.HubScopeSelectedContexts) || !reflect.DeepEqual(output.Scope.Contexts, []string{first}) {
+		t.Fatalf("scope metadata = %#v", output.Scope)
 	}
-	visible := recommendations[1].(map[string]any)
-	refs := visible["boundary_refs"].([]hubBoundaryReference)
+	refs := output.Recommendations[0].BoundaryRefs
 	if got := []string{refs[0].EndpointID, refs[1].EndpointID}; !reflect.DeepEqual(got, []string{"hidden-a", "hidden-z"}) {
 		t.Fatalf("boundary order = %#v", got)
 	}
@@ -248,7 +235,9 @@ func planItemIDs(output map[string]any) []string {
 	var ids []string
 	for _, rawTrack := range tracks {
 		track := rawTrack.(map[string]any)
-		ids = append(ids, objectIDs(track["items"].([]any))...)
+		for _, rawItem := range track["items"].([]any) {
+			ids = append(ids, rawItem.(map[string]any)["id"].(string))
+		}
 	}
 	sort.Strings(ids)
 	return ids
@@ -326,24 +315,22 @@ func TestHubScopeProjectionVariantsAndCanonicalHash(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			output := map[string]any{
-				"data_hash": canonicalHash,
-				"forecasts": []any{
-					map[string]any{"issue_id": "selected"},
-					map[string]any{"issue_id": "contextless"},
-					map[string]any{"issue_id": "unregistered"},
-				},
+			output := robotForecastOutput{
+				RobotEnvelope: RobotEnvelope{DataHash: canonicalHash},
+				Forecasts:     []analysis.ETAEstimate{{IssueID: "selected"}, {IssueID: "contextless"}, {IssueID: "unregistered"}},
 			}
-			projection.project("robot-forecast", output)
-			if output["data_hash"] != canonicalHash {
-				t.Fatalf("data hash changed: %v", output["data_hash"])
+			if err := projection.decorateRobotResult("robot-forecast", &output); err != nil {
+				t.Fatal(err)
 			}
-			if got := objectIDs(output["forecasts"].([]any)); !reflect.DeepEqual(got, test.want) {
+			var got []string
+			for _, forecast := range output.Forecasts {
+				got = append(got, forecast.IssueID)
+			}
+			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("forecast IDs = %#v, want %#v", got, test.want)
 			}
-			metadata := output["scope"].(map[string]any)
-			if metadata["include_contextless"] != test.scope.IncludeContextless {
-				t.Fatalf("scope metadata = %#v", metadata)
+			if output.Scope == nil || output.Scope.IncludeContextless != test.scope.IncludeContextless {
+				t.Fatalf("scope metadata = %#v", output.Scope)
 			}
 		})
 	}
@@ -364,80 +351,52 @@ func TestHubScopeProjectionPlanGraphAndGlobalAggregates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan := map[string]any{
-		"plan": map[string]any{
-			"total_actionable": float64(2),
-			"tracks": []any{
-				map[string]any{"track_id": "one", "items": []any{map[string]any{"id": "hidden"}}},
-				map[string]any{"track_id": "two", "items": []any{map[string]any{"id": "visible"}}},
-			},
+	plan := robotPlanOutput{Plan: robotExecutionPlan{
+		TotalActionable: 2,
+		Tracks: []robotExecutionTrack{
+			{TrackID: "one", Items: []robotPlanItem{{PlanItem: analysis.PlanItem{ID: "hidden"}}}},
+			{TrackID: "two", Items: []robotPlanItem{{PlanItem: analysis.PlanItem{ID: "visible"}}}},
 		},
+	}}
+	if err := projection.decorateRobotResult("robot-plan", &plan); err != nil {
+		t.Fatal(err)
 	}
-	projection.project("robot-plan", plan)
-	projectedPlan := plan["plan"].(map[string]any)
-	if projectedPlan["total_actionable"] != float64(2) {
-		t.Fatalf("global total changed: %#v", projectedPlan)
-	}
-	tracks := projectedPlan["tracks"].([]any)
-	if len(tracks) != 1 || tracks[0].(map[string]any)["track_id"] != "two" {
-		t.Fatalf("tracks = %#v", tracks)
+	if plan.Plan.TotalActionable != 2 || len(plan.Plan.Tracks) != 1 || plan.Plan.Tracks[0].TrackID != "two" {
+		t.Fatalf("projected plan = %#v", plan.Plan)
 	}
 
-	graph := map[string]any{
-		"nodes": float64(2),
-		"edges": float64(2),
-		"adjacency": map[string]any{
-			"nodes": []any{map[string]any{"id": "hidden"}, map[string]any{"id": "visible"}},
-			"edges": []any{
-				map[string]any{"from": "visible", "to": "hidden"},
-				map[string]any{"from": "visible", "to": "visible"},
-			},
+	graph := robotGraphOutput{GraphExportResult: &export.GraphExportResult{
+		Nodes: 2, Edges: 2,
+		Adjacency: &export.AdjacencyGraph{
+			Nodes: []export.AdjacencyNode{{ID: "hidden"}, {ID: "visible"}},
+			Edges: []export.AdjacencyEdge{{From: "visible", To: "hidden"}, {From: "visible", To: "visible"}},
 		},
+	}}
+	if err := projection.decorateRobotResult("robot-graph", &graph); err != nil {
+		t.Fatal(err)
 	}
-	projection.project("robot-graph", graph)
-	adjacency := graph["adjacency"].(map[string]any)
-	if got := objectIDs(adjacency["nodes"].([]any)); !reflect.DeepEqual(got, []string{"visible"}) {
-		t.Fatalf("nodes = %#v", got)
-	}
-	if graph["nodes"] != 1 || graph["edges"] != 1 {
-		t.Fatalf("graph counts = nodes:%v edges:%v", graph["nodes"], graph["edges"])
+	if len(graph.Adjacency.Nodes) != 1 || graph.Adjacency.Nodes[0].ID != "visible" || graph.Nodes != 1 || graph.Edges != 1 {
+		t.Fatalf("projected graph = %#v", graph.GraphExportResult)
 	}
 
-	labelHealth := map[string]any{
-		"results": map[string]any{
-			"labels": []any{map[string]any{
-				"label":       "overall-health",
-				"issue_count": float64(2),
-				"issues":      []any{"hidden", "visible"},
-			}},
-			"summaries": []any{map[string]any{
-				"label":       "overall-health",
-				"issue_count": float64(2),
-				"top_issue":   "hidden",
-			}},
-			"cross_label_flow": map[string]any{
-				"total_cross_label_deps": float64(2),
-				"dependencies": []any{map[string]any{
-					"issue_count": float64(2),
-					"issue_ids":   []any{"hidden", "visible"},
-				}},
-			},
-		},
+	labelHealth := robotLabelHealthOutput{Results: analysis.LabelAnalysisResult{
+		Labels:         []analysis.LabelHealth{{Label: "overall-health", IssueCount: 2, Issues: []string{"hidden", "visible"}}},
+		Summaries:      []analysis.LabelSummary{{Label: "overall-health", IssueCount: 2, TopIssue: "hidden"}},
+		CrossLabelFlow: &analysis.CrossLabelFlow{TotalCrossLabelDeps: 2, Dependencies: []analysis.LabelDependency{{IssueCount: 2, IssueIDs: []string{"hidden", "visible"}}}},
+	}}
+	if err := projection.decorateRobotResult("robot-label-health", &labelHealth); err != nil {
+		t.Fatal(err)
 	}
-	projection.project("robot-label-health", labelHealth)
-	results := labelHealth["results"].(map[string]any)
-	health := results["labels"].([]any)[0].(map[string]any)
-	if health["issue_count"] != float64(2) || !reflect.DeepEqual(health["issues"], []any{"visible"}) {
-		t.Fatalf("label health projection changed aggregate or leaked candidate: %#v", health)
+	if !reflect.DeepEqual(labelHealth.Results.Labels[0].Issues, []string{"visible"}) || labelHealth.Results.Labels[0].IssueCount != 2 || labelHealth.Results.Summaries[0].TopIssue != "visible" || !reflect.DeepEqual(labelHealth.Results.CrossLabelFlow.Dependencies[0].IssueIDs, []string{"visible"}) {
+		t.Fatalf("label projection = %#v", labelHealth.Results)
 	}
-	summary := results["summaries"].([]any)[0].(map[string]any)
-	if summary["issue_count"] != float64(2) || summary["top_issue"] != "visible" {
-		t.Fatalf("label summary projection = %#v", summary)
+
+	labelFlow := robotLabelFlowOutput{Flow: analysis.CrossLabelFlow{Dependencies: []analysis.LabelDependency{{IssueIDs: []string{"hidden", "visible"}}}}}
+	if err := projection.decorateRobotResult("robot-label-flow", &labelFlow); err != nil {
+		t.Fatal(err)
 	}
-	flow := results["cross_label_flow"].(map[string]any)
-	dependency := flow["dependencies"].([]any)[0].(map[string]any)
-	if flow["total_cross_label_deps"] != float64(2) || dependency["issue_count"] != float64(2) || !reflect.DeepEqual(dependency["issue_ids"], []any{"visible"}) {
-		t.Fatalf("label flow projection changed aggregate or leaked candidate: %#v", flow)
+	if !reflect.DeepEqual(labelFlow.Flow.Dependencies[0].IssueIDs, []string{"visible"}) || labelFlow.Scope == nil {
+		t.Fatalf("Hub label-flow projection = %#v", labelFlow)
 	}
 }
 
@@ -550,14 +509,11 @@ func TestHubCapacityPreservesCanonicalCriticalPath(t *testing.T) {
 	}
 	var encoded bytes.Buffer
 	ctx := RobotContext{
-		Issues:        issues,
-		DataHash:      analysis.ComputeDataHash(issues),
-		HubProjection: projection,
-		Encoder: hubScopeRobotEncoder{
-			base:       newJSONRobotEncoder(&encoded),
-			command:    "robot-capacity",
-			projection: projection,
-		},
+		Issues:             issues,
+		DataHash:           analysis.ComputeDataHash(issues),
+		CandidatePredicate: projection.candidateFilter(),
+		ResultDecorator:    projection.decorateRobotResult,
+		Encoder:            newJSONRobotEncoder(&encoded),
 	}
 	if err := handleRobotCapacity(ctx, phaseThreeRobotHandlerConfig{}); err != nil {
 		t.Fatal(err)
@@ -597,35 +553,23 @@ func TestHubRobotDecorationPreservesLoadStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	var encoded bytes.Buffer
-	encoder := hubScopeRobotEncoder{
-		base:       newJSONRobotEncoder(&encoded),
-		command:    "robot-insights",
-		projection: projection,
+	output := robotInsightsOutput{
+		DataHash:  "hash",
+		LoadStats: &RobotLoadStats{Errors: 2},
 	}
-	if err := encoder.Encode(map[string]any{
-		"data_hash": "hash",
-		"load_stats": map[string]any{
-			"errors": 2,
-		},
-	}); err != nil {
+	if err := projection.decorateRobotResult("robot-insights", &output); err != nil {
+		t.Fatal(err)
+	}
+	if err := newJSONRobotEncoder(&encoded).Encode(output); err != nil {
 		t.Fatal(err)
 	}
 
-	var output map[string]any
-	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+	var encodedOutput map[string]any
+	if err := json.Unmarshal(encoded.Bytes(), &encodedOutput); err != nil {
 		t.Fatal(err)
 	}
-	loadStats, ok := output["load_stats"].(map[string]any)
+	loadStats, ok := encodedOutput["load_stats"].(map[string]any)
 	if !ok || loadStats["errors"] != float64(2) {
-		t.Fatalf("Hub decoration dropped load_stats: %#v", output)
+		t.Fatalf("Hub decoration dropped load_stats: %#v", encodedOutput)
 	}
-}
-
-func objectIDs(items []any) []string {
-	ids := make([]string, 0, len(items))
-	for _, raw := range items {
-		item := raw.(map[string]any)
-		ids = append(ids, objectID(item, "id", "issue_id"))
-	}
-	return ids
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -61,14 +60,13 @@ type RobotContext struct {
 	Diff                  *analysis.SnapshotDiff
 	DiffHistoricalIssues  []model.Issue
 	DiffResolvedRevision  string
-	HubProjection         *hubScopeProjection
+	CandidatePredicate    analysis.CandidatePredicate
+	LabelPredicate        analysis.LabelPredicate
+	ResultDecorator       RobotResultDecorator
 }
 
 func (ctx RobotContext) labelPredicate() analysis.LabelPredicate {
-	if ctx.HubProjection != nil {
-		return hub.AdmitLabel
-	}
-	return nil
+	return ctx.LabelPredicate
 }
 
 type RobotRegistry struct {
@@ -312,17 +310,22 @@ func (r *RobotRegistry) DispatchFlag(flagName string, ctx RobotContext) (bool, e
 		if cmd.Handler == nil {
 			return true, fmt.Errorf("robot command %q has no handler", cmd.Name)
 		}
-		if ctx.HubProjection != nil {
-			ctx.Encoder = hubScopeRobotEncoder{
-				base:       ctx.EncoderOrDefault(),
-				command:    cmd.Name,
-				projection: ctx.HubProjection,
-			}
-		}
 		return true, cmd.Handler(ctx)
 	}
 
 	return false, nil
+}
+
+// EncodeResult applies the optional typed adapter before writing a robot
+// result. Adapters see the concrete result value, not an intermediate JSON
+// object, so ordinary robot dispatch stays independent of presentation policy.
+func (ctx RobotContext) EncodeResult(command string, result RobotResult) error {
+	if ctx.ResultDecorator != nil {
+		if err := ctx.ResultDecorator(command, result); err != nil {
+			return err
+		}
+	}
+	return ctx.EncoderOrDefault().Encode(result)
 }
 
 func dispatchRobotFlagResult(registry *RobotRegistry, flagName string, ctx RobotContext) robotDispatchResult {
@@ -677,18 +680,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			stats := analyzer.AnalyzeAsyncWithConfig(context.Background(), config)
 			stats.WaitForPhase2()
 
-			output := struct {
-				GeneratedAt    string                  `json:"generated_at"`
-				DataHash       string                  `json:"data_hash"`
-				AsOf           string                  `json:"as_of,omitempty"`
-				AsOfCommit     string                  `json:"as_of_commit,omitempty"`
-				AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
-				Status         analysis.MetricStatus   `json:"status"`
-				LabelScope     string                  `json:"label_scope,omitempty"`
-				LabelContext   *analysis.LabelHealth   `json:"label_context,omitempty"`
-				Plan           analysis.ExecutionPlan  `json:"plan"`
-				UsageHints     []string                `json:"usage_hints"`
-			}{
+			output := robotPlanOutput{
 				GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 				DataHash:       ctx.DataHash,
 				AsOf:           ctx.AsOf,
@@ -697,7 +689,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				Status:         stats.Status(),
 				LabelScope:     ctx.LabelScope,
 				LabelContext:   ctx.LabelContext,
-				Plan:           plan,
+				Plan:           robotExecutionPlanFromAnalysis(plan),
 				UsageHints: []string{
 					"jq '.plan.tracks | length' - Number of parallel execution tracks",
 					"jq '.plan.tracks[0].items | map(.id)' - First track item IDs",
@@ -707,7 +699,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				},
 			}
 
-			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			if err := ctx.EncodeResult("robot-plan", &output); err != nil {
 				return fmt.Errorf("encoding execution plan: %w", err)
 			}
 			return nil
@@ -732,7 +724,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			stats := analyzer.AnalyzeAsyncWithConfig(context.Background(), config)
 			stats.WaitForPhase2()
 
-			recommendations := analyzer.GenerateEnhancedRecommendationsForCandidates(ctx.HubProjection.candidateFilter())
+			recommendations := analyzer.GenerateEnhancedRecommendationsForCandidates(ctx.CandidatePredicate)
 			filtered := make([]analysis.EnhancedPriorityRecommendation, 0, len(recommendations))
 			issueMap := make(map[string]model.Issue, len(ctx.Issues))
 			for _, issue := range ctx.Issues {
@@ -783,30 +775,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				}
 			}
 
-			output := struct {
-				GeneratedAt       string                                    `json:"generated_at"`
-				DataHash          string                                    `json:"data_hash"`
-				AsOf              string                                    `json:"as_of,omitempty"`
-				AsOfCommit        string                                    `json:"as_of_commit,omitempty"`
-				AnalysisConfig    analysis.AnalysisConfig                   `json:"analysis_config"`
-				Status            analysis.MetricStatus                     `json:"status"`
-				LabelScope        string                                    `json:"label_scope,omitempty"`
-				LabelContext      *analysis.LabelHealth                     `json:"label_context,omitempty"`
-				Recommendations   []analysis.EnhancedPriorityRecommendation `json:"recommendations"`
-				FieldDescriptions map[string]string                         `json:"field_descriptions"`
-				Filters           struct {
-					MinConfidence float64 `json:"min_confidence,omitempty"`
-					MaxResults    int     `json:"max_results"`
-					ByLabel       string  `json:"by_label,omitempty"`
-					ByAssignee    string  `json:"by_assignee,omitempty"`
-				} `json:"filters"`
-				Summary struct {
-					TotalIssues     int `json:"total_issues"`
-					Recommendations int `json:"recommendations"`
-					HighConfidence  int `json:"high_confidence"`
-				} `json:"summary"`
-				Usage []string `json:"usage_hints"`
-			}{
+			output := robotPriorityOutput{
 				GeneratedAt:       time.Now().UTC().Format(time.RFC3339),
 				DataHash:          ctx.DataHash,
 				AsOf:              ctx.AsOf,
@@ -815,13 +784,16 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				Status:            stats.Status(),
 				LabelScope:        ctx.LabelScope,
 				LabelContext:      ctx.LabelContext,
-				Recommendations:   recommendations,
+				Recommendations:   make([]robotPriorityRecommendation, 0, len(recommendations)),
 				FieldDescriptions: analysis.DefaultFieldDescriptions(),
 				Usage: []string{
 					"jq '.recommendations[] | select(.confidence > 0.7)' - Filter high confidence",
 					"jq '.recommendations[] | {id: .issue_id, score: .impact_score, prio: .suggested_priority}' - Extract essentials",
 					"jq '.summary' - Overview counts",
 				},
+			}
+			for _, recommendation := range recommendations {
+				output.Recommendations = append(output.Recommendations, robotPriorityRecommendation{EnhancedPriorityRecommendation: recommendation})
 			}
 			if cfg.RobotMinConf != nil && *cfg.RobotMinConf > 0 {
 				output.Filters.MinConfidence = *cfg.RobotMinConf
@@ -837,7 +809,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			output.Summary.Recommendations = len(recommendations)
 			output.Summary.HighConfidence = highConfidence
 
-			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			if err := ctx.EncodeResult("robot-priority", &output); err != nil {
 				return fmt.Errorf("encoding priority recommendations: %w", err)
 			}
 			return nil
@@ -876,16 +848,13 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 
 			var result *export.GraphExportResult
 			var err error
-			if ctx.HubProjection != nil {
-				result, err = ctx.HubProjection.exportGraph(ctx.Issues, &stats, config)
-			} else {
-				result, err = export.ExportGraph(ctx.Issues, &stats, config)
-			}
+			result, err = export.ExportGraph(ctx.Issues, &stats, config)
 			if err != nil {
 				return fmt.Errorf("exporting graph: %w", err)
 			}
 			result.DataHash = ctx.DataHash
-			if err := ctx.EncoderOrDefault().Encode(result); err != nil {
+			output := robotGraphOutput{GraphExportResult: result, issues: ctx.Issues, stats: &stats, config: config}
+			if err := ctx.EncodeResult("robot-graph", &output); err != nil {
 				return fmt.Errorf("encoding graph: %w", err)
 			}
 			return nil
@@ -1082,16 +1051,12 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				return fmt.Errorf("loading sprints: %w", err)
 			}
 
-			output := struct {
-				RobotEnvelope
-				SprintCount int            `json:"sprint_count"`
-				Sprints     []model.Sprint `json:"sprints"`
-			}{
+			output := robotSprintListOutput{
 				RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
 				SprintCount:   len(sprints),
 				Sprints:       sprints,
 			}
-			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			if err := ctx.EncodeResult("robot-sprint-list", &output); err != nil {
 				return fmt.Errorf("encoding sprints: %w", err)
 			}
 			return nil
@@ -1212,7 +1177,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				if sprintBeadIDs != nil && !sprintBeadIDs[issue.ID] {
 					continue
 				}
-				if ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[issue.ID] {
+				if ctx.CandidatePredicate != nil && !ctx.CandidatePredicate(issue.ID) {
 					continue
 				}
 				targetIssues = append(targetIssues, issue)
@@ -1224,28 +1189,12 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				agents = *cfg.ForecastAgents
 			}
 
-			type ForecastSummary struct {
-				TotalMinutes  int       `json:"total_minutes"`
-				TotalDays     float64   `json:"total_days"`
-				AvgConfidence float64   `json:"avg_confidence"`
-				EarliestETA   time.Time `json:"earliest_eta"`
-				LatestETA     time.Time `json:"latest_eta"`
-			}
-			type ForecastOutput struct {
-				RobotEnvelope
-				Agents        int                    `json:"agents"`
-				Filters       map[string]string      `json:"filters,omitempty"`
-				ForecastCount int                    `json:"forecast_count"`
-				Forecasts     []analysis.ETAEstimate `json:"forecasts"`
-				Summary       *ForecastSummary       `json:"summary,omitempty"`
-			}
-
 			forecastTarget := ""
 			if cfg.RobotForecastFlag != nil {
 				forecastTarget = *cfg.RobotForecastFlag
 			}
-			if forecastTarget != "all" && ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[forecastTarget] {
-				fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in Hub scope: %s\n", forecastTarget)
+			if forecastTarget != "all" && ctx.CandidatePredicate != nil && !ctx.CandidatePredicate(forecastTarget) {
+				fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in scope: %s\n", forecastTarget)
 				return newReportedRobotHandlerExit(1)
 			}
 
@@ -1270,7 +1219,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				forecasts = append(forecasts, eta)
 			}
 
-			var summary *ForecastSummary
+			var summary *robotForecastSummary
 			if len(forecasts) > 1 {
 				totalMinutes := 0
 				totalConfidence := 0.0
@@ -1286,7 +1235,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 						latest = forecast.ETADate
 					}
 				}
-				summary = &ForecastSummary{
+				summary = &robotForecastSummary{
 					TotalMinutes:  totalMinutes,
 					TotalDays:     float64(totalMinutes) / (60.0 * 8.0),
 					AvgConfidence: totalConfidence / float64(len(forecasts)),
@@ -1303,7 +1252,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				filters["sprint"] = *cfg.ForecastSprint
 			}
 
-			output := ForecastOutput{
+			output := robotForecastOutput{
 				RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
 				Agents:        agents,
 				ForecastCount: len(forecasts),
@@ -1314,7 +1263,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				output.Filters = filters
 			}
 
-			if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+			if err := ctx.EncodeResult("robot-forecast", &output); err != nil {
 				return fmt.Errorf("encoding forecast: %w", err)
 			}
 			return nil
@@ -1461,13 +1410,7 @@ func handleRobotLabelHealth(ctx RobotContext) error {
 	cfg := analysis.DefaultLabelHealthConfig()
 	results := analysis.ComputeAllLabelHealth(ctx.Issues, cfg, time.Now().UTC(), nil, ctx.labelPredicate())
 
-	output := struct {
-		GeneratedAt    string                       `json:"generated_at"`
-		DataHash       string                       `json:"data_hash"`
-		AnalysisConfig analysis.LabelHealthConfig   `json:"analysis_config"`
-		Results        analysis.LabelAnalysisResult `json:"results"`
-		UsageHints     []string                     `json:"usage_hints"`
-	}{
+	output := robotLabelHealthOutput{
 		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 		DataHash:       ctx.DataHash,
 		AnalysisConfig: cfg,
@@ -1479,7 +1422,7 @@ func handleRobotLabelHealth(ctx RobotContext) error {
 			"jq '.results.attention_needed' - Labels needing attention",
 		},
 	}
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-label-health", &output); err != nil {
 		return fmt.Errorf("encoding label health: %w", err)
 	}
 	return nil
@@ -1487,15 +1430,8 @@ func handleRobotLabelHealth(ctx RobotContext) error {
 
 func handleRobotLabelFlow(ctx RobotContext) error {
 	cfg := analysis.DefaultLabelHealthConfig()
-	flow := analysis.ComputeCrossLabelFlow(ctx.Issues, cfg, hub.AdmitLabel)
-	output := struct {
-		GeneratedAt string                     `json:"generated_at"`
-		DataHash    string                     `json:"data_hash"`
-		LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		Flow        analysis.CrossLabelFlow    `json:"flow"`
-		Config      analysis.LabelHealthConfig `json:"analysis_config"`
-		UsageHints  []string                   `json:"usage_hints"`
-	}{
+	flow := analysis.ComputeCrossLabelFlow(ctx.Issues, cfg, ctx.labelPredicate())
+	output := robotLabelFlowOutput{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
 		LoadStats:   robotLoadStatsFromLastLoad(),
@@ -1507,7 +1443,7 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 			"jq '.flow.flow_matrix' - raw matrix (row=from, col=to, align with .flow.labels)",
 		},
 	}
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-label-flow", &output); err != nil {
 		return fmt.Errorf("encoding label flow: %w", err)
 	}
 	return nil
@@ -1527,29 +1463,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 		limit = len(result.Labels)
 	}
 
-	type attentionLabel struct {
-		Rank            int     `json:"rank"`
-		Label           string  `json:"label"`
-		AttentionScore  float64 `json:"attention_score"`
-		NormalizedScore float64 `json:"normalized_score"`
-		Reason          string  `json:"reason"`
-		OpenCount       int     `json:"open_count"`
-		BlockedCount    int     `json:"blocked_count"`
-		StaleCount      int     `json:"stale_count"`
-		PageRankSum     float64 `json:"pagerank_sum"`
-		VelocityFactor  float64 `json:"velocity_factor"`
-	}
-	type attentionOutput struct {
-		GeneratedAt string           `json:"generated_at"`
-		DataHash    string           `json:"data_hash"`
-		LoadStats   *RobotLoadStats  `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		Limit       int              `json:"limit"`
-		TotalLabels int              `json:"total_labels"`
-		Labels      []attentionLabel `json:"labels"`
-		UsageHints  []string         `json:"usage_hints"`
-	}
-
-	output := attentionOutput{
+	output := robotAttentionOutput{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
 		LoadStats:   robotLoadStatsFromLastLoad(),
@@ -1564,7 +1478,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 
 	for i := 0; i < limit; i++ {
 		score := result.Labels[i]
-		output.Labels = append(output.Labels, attentionLabel{
+		output.Labels = append(output.Labels, robotAttentionLabel{
 			Rank:            score.Rank,
 			Label:           score.Label,
 			AttentionScore:  score.AttentionScore,
@@ -1578,7 +1492,7 @@ func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfi
 		})
 	}
 
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-label-attention", &output); err != nil {
 		return fmt.Errorf("encoding label attention: %w", err)
 	}
 	return nil
@@ -1594,7 +1508,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		analyzer.SetConfig(&fullConfig)
 	}
 	stats := analyzer.Analyze()
-	predicate := ctx.HubProjection.candidateFilter()
+	predicate := ctx.CandidatePredicate
 	insights := stats.GenerateInsightsForCandidates(50, predicate)
 
 	if velocity := analysis.ComputeProjectVelocity(ctx.Issues, time.Now(), 8); velocity != nil {
@@ -1704,17 +1618,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 	}
 
-	fullStats := struct {
-		PageRank          map[string]float64 `json:"pagerank"`
-		Betweenness       map[string]float64 `json:"betweenness"`
-		Eigenvector       map[string]float64 `json:"eigenvector"`
-		Hubs              map[string]float64 `json:"hubs"`
-		Authorities       map[string]float64 `json:"authorities"`
-		CriticalPathScore map[string]float64 `json:"critical_path_score"`
-		CoreNumber        map[string]int     `json:"core_number"`
-		Slack             map[string]float64 `json:"slack"`
-		Articulation      []string           `json:"articulation_points"`
-	}{
+	fullStats := robotFullStats{
 		PageRank:          limitMaps(stats.PageRank(), mapLimit),
 		Betweenness:       limitMaps(stats.Betweenness(), mapLimit),
 		Eigenvector:       limitMaps(stats.Eigenvector(), mapLimit),
@@ -1726,22 +1630,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		Articulation:      limitSlice(stats.ArticulationPoints(), mapLimit),
 	}
 
-	output := struct {
-		GeneratedAt    string                  `json:"generated_at"`
-		DataHash       string                  `json:"data_hash"`
-		LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		AsOf           string                  `json:"as_of,omitempty"`
-		AsOfCommit     string                  `json:"as_of_commit,omitempty"`
-		AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
-		Status         analysis.MetricStatus   `json:"status"`
-		LabelScope     string                  `json:"label_scope,omitempty"`
-		LabelContext   *analysis.LabelHealth   `json:"label_context,omitempty"`
-		analysis.Insights
-		FullStats        interface{}                `json:"full_stats"`
-		TopWhatIfs       []analysis.WhatIfEntry     `json:"top_what_ifs,omitempty"`
-		AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"`
-		UsageHints       []string                   `json:"usage_hints"`
-	}{
+	output := robotInsightsOutput{
 		GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
 		DataHash:         ctx.DataHash,
 		LoadStats:        robotLoadStatsFromLastLoad(),
@@ -1772,7 +1661,7 @@ func handleRobotInsights(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	advancedConfig.CandidateFilter = predicate
 	output.AdvancedInsights = analyzer.GenerateAdvancedInsightsFromStats(&stats, advancedConfig)
 
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-insights", &output); err != nil {
 		return fmt.Errorf("encoding insights: %w", err)
 	}
 	return nil
@@ -1926,7 +1815,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		RootIssueID:     rootIssueID,
 		SeedDataHash:    seedHash,
 		NotReadyLabels:  resolveNotReadyLabels(cfg),
-		CandidateFilter: ctx.HubProjection.candidateFilter(),
+		CandidateFilter: ctx.CandidatePredicate,
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 	triage.Meta.HistoryStatus = historyStatus
@@ -1950,22 +1839,13 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		}
 	}
 
-	output := struct {
-		GeneratedAt string                 `json:"generated_at"`
-		DataHash    string                 `json:"data_hash"`
-		LoadStats   *RobotLoadStats        `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-		AsOf        string                 `json:"as_of,omitempty"`
-		AsOfCommit  string                 `json:"as_of_commit,omitempty"`
-		Triage      analysis.TriageResult  `json:"triage"`
-		Feedback    *analysis.FeedbackJSON `json:"feedback,omitempty"`
-		UsageHints  []string               `json:"usage_hints"`
-	}{
+	output := robotTriageOutput{
 		GeneratedAt: now.Format(time.RFC3339),
 		DataHash:    ctx.DataHash,
 		LoadStats:   robotLoadStatsFromLastLoad(),
 		AsOf:        ctx.AsOf,
 		AsOfCommit:  ctx.AsOfCommit,
-		Triage:      triage,
+		Triage:      robotTriageResultFromAnalysis(triage),
 		Feedback:    feedbackInfo,
 		UsageHints: []string{
 			"jq '.triage.quick_ref.top_picks[:3]' - Top 3 picks for immediate work",
@@ -1984,7 +1864,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 			"--graph-root <id> - Scope triage to subgraph rooted at a specific epic (bv-140)",
 		},
 	}
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-triage", &output); err != nil {
 		return fmt.Errorf("encoding robot-triage: %w", err)
 	}
 	return nil
@@ -1993,13 +1873,14 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 // briefTriageRecommendation carries only the fields agents use for work
 // selection (#183): identity, claim state, and the dependency edges.
 type briefTriageRecommendation struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Assignee  string   `json:"assignee,omitempty"`
-	Score     float64  `json:"score"`
-	Unblocks  []string `json:"unblocks,omitempty"`
-	BlockedBy []string `json:"blocked_by,omitempty"`
+	ID           string                   `json:"id"`
+	Title        string                   `json:"title"`
+	Status       string                   `json:"status"`
+	Assignee     string                   `json:"assignee,omitempty"`
+	Score        float64                  `json:"score"`
+	Unblocks     []string                 `json:"unblocks,omitempty"`
+	BlockedBy    []string                 `json:"blocked_by,omitempty"`
+	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 // briefTriageOutput is the compact --robot-triage --brief payload (#183).
@@ -2016,11 +1897,14 @@ type briefTriageOutput struct {
 	Brief           bool                         `json:"brief"`
 	HistoryStatus   string                       `json:"history_status,omitempty"`
 	HistoryWarnings []correlation.HistoryWarning `json:"history_warnings,omitempty"`
-	QuickRef        analysis.QuickRef            `json:"quick_ref"`
+	QuickRef        robotTriageQuickRef          `json:"quick_ref"`
 	Recommendations []briefTriageRecommendation  `json:"recommendations"`
-	QuickWins       []analysis.QuickWin          `json:"quick_wins,omitempty"`
-	BlockersToClear []analysis.BlockerItem       `json:"blockers_to_clear,omitempty"`
+	QuickWins       []robotTriageQuickWin        `json:"quick_wins,omitempty"`
+	BlockersToClear []robotTriageBlocker         `json:"blockers_to_clear,omitempty"`
+	Scope           *robotScopeMetadata          `json:"scope,omitempty"`
 }
+
+func (*briefTriageOutput) robotResult() {}
 
 func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.Time) error {
 	recs := make([]briefTriageRecommendation, 0, len(triage.Recommendations))
@@ -2044,12 +1928,12 @@ func encodeBriefTriage(ctx RobotContext, triage analysis.TriageResult, now time.
 		Brief:           true,
 		HistoryStatus:   triage.Meta.HistoryStatus,
 		HistoryWarnings: triage.Meta.HistoryWarnings,
-		QuickRef:        triage.QuickRef,
+		QuickRef:        robotTriageQuickRefFromAnalysis(triage.QuickRef),
 		Recommendations: recs,
-		QuickWins:       triage.QuickWins,
-		BlockersToClear: triage.BlockersToClear,
+		QuickWins:       robotTriageQuickWins(triage.QuickWins),
+		BlockersToClear: robotTriageBlockers(triage.BlockersToClear),
 	}
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-triage", &output); err != nil {
 		return fmt.Errorf("encoding robot-triage --brief: %w", err)
 	}
 	return nil
@@ -2953,8 +2837,8 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 }
 
 func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	if ctx.HubProjection != nil && !ctx.HubProjection.inScopeID[*cfg.RobotBlockerChainFlag] {
-		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in Hub scope: %s\n", *cfg.RobotBlockerChainFlag)
+	if ctx.CandidatePredicate != nil && !ctx.CandidatePredicate(*cfg.RobotBlockerChainFlag) {
+		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in scope: %s\n", *cfg.RobotBlockerChainFlag)
 		return newReportedRobotHandlerExit(1)
 	}
 	result := analysis.NewAnalyzer(ctx.Issues).GetBlockerChain(*cfg.RobotBlockerChainFlag)
@@ -2963,14 +2847,11 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 		return newReportedRobotHandlerExit(1)
 	}
 
-	output := struct {
-		RobotEnvelope
-		Result *analysis.BlockerChainResult `json:"result"`
-	}{
+	output := robotBlockerChainOutput{
 		RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
 		Result:        result,
 	}
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-blocker-chain", &output); err != nil {
 		return fmt.Errorf("encoding blocker chain: %w", err)
 	}
 	return nil
@@ -3107,14 +2988,11 @@ func handleRobotSprintShow(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) e
 		return newReportedRobotHandlerExit(1)
 	}
 
-	output := struct {
-		RobotEnvelope
-		Sprint *model.Sprint `json:"sprint"`
-	}{
+	output := robotSprintShowOutput{
 		RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
 		Sprint:        found,
 	}
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-sprint-show", &output); err != nil {
 		return fmt.Errorf("encoding sprint: %w", err)
 	}
 	return nil
@@ -3227,16 +3105,10 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	effectiveMinutes := serialMinutes + parallelMinutes/agents
 	estimatedDays := float64(effectiveMinutes) / (60.0 * 8.0)
 
-	type bottleneck struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		BlocksCount int      `json:"blocks_count"`
-		Blocks      []string `json:"blocks,omitempty"`
-	}
-	bottlenecks := make([]bottleneck, 0)
+	bottlenecks := make([]robotCapacityBottleneck, 0)
 	for _, issue := range openIssues {
 		if len(blocks[issue.ID]) > 1 {
-			bottlenecks = append(bottlenecks, bottleneck{
+			bottlenecks = append(bottlenecks, robotCapacityBottleneck{
 				ID:          issue.ID,
 				Title:       issue.Title,
 				BlocksCount: len(blocks[issue.ID]),
@@ -3250,10 +3122,10 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 		return bottlenecks[i].BlocksCount > bottlenecks[j].BlocksCount
 	})
-	if ctx.HubProjection != nil {
+	if ctx.CandidatePredicate != nil {
 		filtered := bottlenecks[:0]
 		for _, candidate := range bottlenecks {
-			if ctx.HubProjection.inScopeID[candidate.ID] {
+			if ctx.CandidatePredicate(candidate.ID) {
 				filtered = append(filtered, candidate)
 			}
 		}
@@ -3261,7 +3133,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 
 		visibleActionable := actionable[:0]
 		for _, id := range actionable {
-			if ctx.HubProjection.inScopeID[id] {
+			if ctx.CandidatePredicate(id) {
 				visibleActionable = append(visibleActionable, id)
 			}
 		}
@@ -3271,23 +3143,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		bottlenecks = bottlenecks[:5]
 	}
 
-	output := struct {
-		RobotEnvelope
-		Agents            int          `json:"agents"`
-		Label             string       `json:"label,omitempty"`
-		OpenIssueCount    int          `json:"open_issue_count"`
-		TotalMinutes      int          `json:"total_minutes"`
-		TotalDays         float64      `json:"total_days"`
-		SerialMinutes     int          `json:"serial_minutes"`
-		ParallelMinutes   int          `json:"parallel_minutes"`
-		ParallelizablePct float64      `json:"parallelizable_pct"`
-		EstimatedDays     float64      `json:"estimated_days"`
-		CriticalPathLen   int          `json:"critical_path_length"`
-		CriticalPath      []string     `json:"critical_path,omitempty"`
-		ActionableCount   int          `json:"actionable_count"`
-		Actionable        []string     `json:"actionable,omitempty"`
-		Bottlenecks       []bottleneck `json:"bottlenecks,omitempty"`
-	}{
+	output := robotCapacityOutput{
 		RobotEnvelope:     NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
 		Agents:            agents,
 		OpenIssueCount:    len(openIssues),
@@ -3307,7 +3163,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		output.Label = *cfg.CapacityLabel
 	}
 
-	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+	if err := ctx.EncodeResult("robot-capacity", &output); err != nil {
 		return fmt.Errorf("encoding capacity: %w", err)
 	}
 	return nil
