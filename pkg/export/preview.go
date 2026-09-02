@@ -24,8 +24,8 @@ import (
 
 // PreviewServer serves a static site bundle locally for previewing.
 type PreviewServer struct {
-	bundlePath    string
-	port          int
+	bundlePath string
+	port       int
 
 	// SAFETY: server publication and stopRequested form one lifecycle state.
 	// Never call into net/http while holding mu: Shutdown may wait for handlers,
@@ -78,15 +78,21 @@ func (p *PreviewServer) Start() error {
 		return err
 	}
 
-	// Open browser after short delay
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		url := fmt.Sprintf("http://127.0.0.1:%d", p.port)
-		if err := OpenInBrowser(url); err != nil {
-			fmt.Printf("Could not open browser: %v\n", err)
-			fmt.Printf("Open %s in your browser\n", url)
-		}
-	}()
+	// Open browser after a short delay. The command and environment are
+	// resolved now (see prepareBrowserOpen); the goroutine only launches.
+	url := fmt.Sprintf("http://127.0.0.1:%d", p.port)
+	if opener, err := prepareBrowserOpen(url); err != nil {
+		fmt.Printf("Could not open browser: %v\n", err)
+		fmt.Printf("Open %s in your browser\n", url)
+	} else if opener != nil {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			if err := opener.Start(); err != nil {
+				fmt.Printf("Could not open browser: %v\n", err)
+				fmt.Printf("Open %s in your browser\n", url)
+			}
+		}()
+	}
 
 	fmt.Printf("\nPreview server running at http://127.0.0.1:%d\n", p.port)
 	fmt.Printf("Serving: %s\n", p.bundlePath)

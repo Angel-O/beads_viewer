@@ -134,9 +134,9 @@ var metricDescriptions = map[MetricPanel]MetricInfo{
 
 // InsightsModel is an interactive insights dashboard
 type InsightsModel struct {
-	insights analysis.Insights
-	issueMap map[string]*model.Issue
-	theme    Theme
+	insights  analysis.Insights
+	issueMap  map[string]*model.Issue
+	theme     Theme
 	labelFlow *analysis.CrossLabelFlow
 
 	// Priority triage data (bv-91)

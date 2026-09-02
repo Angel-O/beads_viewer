@@ -668,7 +668,7 @@ type Model struct {
 	attentionView            AttentionModel // ] ranked label attention view (bv-117)
 	attentionCache           analysis.LabelAttentionResult
 	attentionCached          bool
-	showShortcutsSidebar     bool           // bv-3qi5 toggleable shortcuts sidebar
+	showShortcutsSidebar     bool // bv-3qi5 toggleable shortcuts sidebar
 
 	// Key combo state (bv-6fm0)
 	pendingComboKey   string    // Key waiting for potential combo (e.g., "g" for gg)
@@ -1903,8 +1903,13 @@ func (m *Model) Init() tea.Cmd {
 	// initialized as ready with default dimensions in NewModel().
 	// This eliminates the "Initializing..." phase entirely.
 	cmds := []tea.Cmd{
-		CheckUpdateCmd(),
 		WaitForPhase2Cmd(m.analysis),
+	}
+	// The automatic release check is opt-out (BV_NO_UPDATE_CHECK=1 or
+	// updates.check: false in ~/.config/bv/config.yaml); explicit
+	// --check-update/--update still work when it is disabled (#197).
+	if updater.StartupCheckEnabled() {
+		cmds = append(cmds, CheckUpdateCmd())
 	}
 	if m.backgroundWorker != nil {
 		cmds = append(cmds, StartBackgroundWorkerCmd(m.backgroundWorker))
@@ -4100,6 +4105,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if m.focused == focusSprint {
+					m.isSprintView = false
 					m.focused = focusList
 					return m, nil
 				}
@@ -4152,6 +4158,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Close label dashboard if open
 				if m.focused == focusLabelDashboard {
+					m.focused = focusList
+					return m, nil
+				}
+				// Close the sprint dashboard if open (bv-161); the global esc
+				// handler runs before the per-focus dispatch, so without this
+				// branch esc in the dashboard fell through to quit-confirm.
+				if m.focused == focusSprint {
+					m.isSprintView = false
 					m.focused = focusList
 					return m, nil
 				}

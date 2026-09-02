@@ -85,7 +85,7 @@ func TestTutorialProgressManager_SaveLoad(t *testing.T) {
 	// Create temp directory for testing
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	// Create a manager
@@ -139,7 +139,7 @@ func TestTutorialProgressManager_SaveLoad(t *testing.T) {
 func TestTutorialProgressManager_LoadNonexistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	pm := &tutorialProgressManager{
@@ -161,7 +161,7 @@ func TestTutorialProgressManager_LoadNonexistent(t *testing.T) {
 func TestTutorialProgressManager_LoadInvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	// Create invalid JSON file
@@ -337,7 +337,7 @@ func TestTutorialModel_SaveProgress(t *testing.T) {
 	// Create temp directory for testing
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	// Reset singleton for test isolation
@@ -373,7 +373,7 @@ func TestTutorialModel_LoadProgress(t *testing.T) {
 	// Create temp directory for testing
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	// Reset singleton
@@ -410,7 +410,7 @@ func TestTutorialModel_HasViewedPage(t *testing.T) {
 	// Create temp directory for testing
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	// Reset singleton
@@ -457,7 +457,7 @@ func TestTutorialModel_SaveProgress_AllViewed(t *testing.T) {
 	// Create temp directory for testing
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
-	t.Setenv("XDG_CONFIG_HOME", "")     // exercise the ~/.config fallback path
+	t.Setenv("XDG_CONFIG_HOME", "")    // exercise the ~/.config fallback path
 	t.Setenv("BV_NO_SAVED_CONFIG", "") // TestMain disables persistence; opt back in
 
 	// Reset singleton

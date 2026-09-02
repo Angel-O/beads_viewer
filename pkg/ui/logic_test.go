@@ -258,3 +258,36 @@ func TestFormatTimeRel(t *testing.T) {
 		}
 	}
 }
+
+// TestModel_InitSkipsUpdateCheckWhenDisabled proves the startup release check
+// honours the updater preference (#197): with BV_NO_UPDATE_CHECK set, Init
+// schedules exactly one command fewer than with the default preferences.
+func TestModel_InitSkipsUpdateCheckWhenDisabled(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no saved config: defaults apply
+	t.Setenv("BV_NO_SAVED_CONFIG", "")
+
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	initCmdCount := func() int {
+		m := NewModel(issues, nil, "")
+		m.analysis = nil // WaitForPhase2Cmd then returns immediately if executed
+		cmd := m.Init()
+		if cmd == nil {
+			return 0
+		}
+		// tea.Batch collapses a single command to itself; executing it is safe
+		// here because every remaining startup command is non-blocking.
+		if batch, ok := cmd().(tea.BatchMsg); ok {
+			return len(batch)
+		}
+		return 1
+	}
+
+	t.Setenv("BV_NO_UPDATE_CHECK", "")
+	enabled := initCmdCount()
+	t.Setenv("BV_NO_UPDATE_CHECK", "1")
+	disabled := initCmdCount()
+
+	if enabled != disabled+1 {
+		t.Fatalf("Init scheduled %d commands with the check enabled and %d disabled; want exactly one fewer when disabled", enabled, disabled)
+	}
+}

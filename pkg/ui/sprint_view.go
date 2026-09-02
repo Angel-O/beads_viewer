@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -171,32 +172,27 @@ func (m Model) renderSprintDashboard() string {
 		sb.WriteString("\n\n")
 	}
 
-	// At-risk items (in_progress for more than X days without update)
+	// At-risk items: the same four signals --robot-burndown reports
+	// (analysis.DetectAtRisk), so the TUI and robot agree.
 	sb.WriteString(labelStyle.Render("At Risk:"))
 	sb.WriteString("\n")
-	const staleThresholdDays = 3
-	var atRisk []model.Issue
-	for _, iss := range sprintIssues {
-		if iss.Status == model.StatusInProgress {
-			daysSinceUpdate := int(now.Sub(iss.UpdatedAt).Hours() / 24)
-			if daysSinceUpdate >= staleThresholdDays {
-				atRisk = append(atRisk, iss)
-			}
-		}
-	}
+	atRisk := analysis.DetectAtRisk(m.issues, sprint, now, analysis.DefaultAtRiskThresholds())
 	if len(atRisk) == 0 {
 		sb.WriteString(t.Renderer.NewStyle().Foreground(t.Open).Render("  ✓ No at-risk items"))
 		sb.WriteString("\n")
 	} else {
-		for i, iss := range atRisk {
+		for i, item := range atRisk {
 			if i >= 5 {
 				sb.WriteString(valStyle.Render(fmt.Sprintf("  … +%d more", len(atRisk)-5)))
 				sb.WriteString("\n")
 				break
 			}
-			daysSinceUpdate := int(now.Sub(iss.UpdatedAt).Hours() / 24)
+			signals := make([]string, 0, len(item.Signals))
+			for _, s := range item.Signals {
+				signals = append(signals, string(s))
+			}
 			sb.WriteString(t.Renderer.NewStyle().Foreground(t.Feature).Render(
-				fmt.Sprintf("  ⚠ %s - %s (%dd stale)\n", iss.ID, truncateStrSprint(iss.Title, 30), daysSinceUpdate)))
+				fmt.Sprintf("  ⚠ %s - %s (%s)\n", item.ID, truncateStrSprint(item.Title, 30), strings.Join(signals, ", "))))
 		}
 	}
 	sb.WriteString("\n")
