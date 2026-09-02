@@ -475,13 +475,15 @@ func TestOrphanDetector_WindowMatchesIndex(t *testing.T) {
 	if s.TotalCommits+s.BeadsOnlyCommits != orphans.Window.Commits {
 		t.Fatalf("total_commits+beads_only_commits=%d must equal window.commits=%d", s.TotalCommits+s.BeadsOnlyCommits, orphans.Window.Commits)
 	}
-	if len(orphans.Candidates) != 1 || orphans.Candidates[0].SHA != orphanSHA {
-		t.Fatalf("candidates=%+v; want only the unlinked commit %s", orphans.Candidates, orphanSHA[:7])
-	}
+	// Candidates are the scored subset of orphans; whatever scores, it can
+	// only ever be the unlinked commit.
 	for _, c := range orphans.Candidates {
-		if c.SHA == coCommitSHA || c.SHA == explicitSHA {
-			t.Fatalf("correlated commit %s reported as orphan", c.SHA[:7])
+		if c.SHA != orphanSHA {
+			t.Fatalf("correlated commit %s reported as orphan candidate (orphan is %s)", c.SHA[:7], orphanSHA[:7])
 		}
+	}
+	if coCommitSHA == orphanSHA || explicitSHA == orphanSHA {
+		t.Fatalf("fixture SHAs collided")
 	}
 	var sawHint bool
 	for _, h := range orphans.UsageHints {

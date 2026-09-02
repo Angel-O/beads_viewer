@@ -309,12 +309,19 @@ func TestCorrelationRobotOrphans(t *testing.T) {
 	}
 
 	var payload struct {
+		Window struct {
+			Commits int    `json:"commits"`
+			Limit   int    `json:"limit"`
+			Source  string `json:"source"`
+		} `json:"window"`
 		Stats struct {
-			TotalCommits    int     `json:"total_commits"`
-			CorrelatedCount int     `json:"correlated_count"`
-			OrphanCount     int     `json:"orphan_count"`
-			OrphanRatio     float64 `json:"orphan_ratio"`
+			TotalCommits     int     `json:"total_commits"`
+			CorrelatedCount  int     `json:"correlated_count"`
+			OrphanCount      int     `json:"orphan_count"`
+			BeadsOnlyCommits int     `json:"beads_only_commits"`
+			OrphanRatio      float64 `json:"orphan_ratio"`
 		} `json:"stats"`
+		UsageHints []string `json:"usage_hints"`
 		Candidates []struct {
 			SHA           string `json:"sha"`
 			Message       string `json:"message"`
@@ -333,6 +340,21 @@ func TestCorrelationRobotOrphans(t *testing.T) {
 	// Should have some commits
 	if payload.Stats.TotalCommits == 0 {
 		t.Error("expected total_commits > 0")
+	}
+
+	// D4: the scan window is the correlation index's window and the payload
+	// accounts for every commit in it.
+	if payload.Window.Source != "history_index" || payload.Window.Commits == 0 {
+		t.Errorf("window=%+v; want source=history_index with commits > 0", payload.Window)
+	}
+	if got := payload.Stats.TotalCommits + payload.Stats.BeadsOnlyCommits; got != payload.Window.Commits {
+		t.Errorf("total_commits+beads_only_commits=%d; want window.commits=%d", got, payload.Window.Commits)
+	}
+	if payload.Stats.BeadsOnlyCommits == 0 {
+		t.Errorf("fixture's final beads-only commit should be counted in beads_only_commits: %+v", payload.Stats)
+	}
+	if len(payload.UsageHints) == 0 {
+		t.Error("expected usage_hints explaining the window and scores")
 	}
 
 	// Should have some correlated commits (from explicit mentions)
