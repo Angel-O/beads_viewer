@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -61,8 +63,64 @@ func sqliteReadOnlyDSN(path string) string {
 }
 
 func sqliteFileDSN(path, rawQuery string) string {
-	u := url.URL{Scheme: "file", Path: path, RawQuery: rawQuery}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path, runtime.GOOS == "windows"), RawQuery: rawQuery}
 	return u.String()
+}
+
+// sqliteURIPath converts a filesystem path into the path component of a
+// "file:" URI that SQLite maps back onto the same file.
+//
+// url.URL.String() always emits "file://" + path, so the first path segment
+// lands in the URI *authority* position unless the path starts with "/".
+// SQLite only accepts an empty authority (or "localhost") and rejects
+// anything else with "invalid uri authority: ...". Two path shapes hit that:
+//
+//   - Windows drive paths: `E:\repo\.beads\beads.db` became
+//     `file://E:%5Crepo%5C...` (bv #198). SQLite's documented Windows form
+//     is `file:///E:/repo/.beads/beads.db`, so backslashes are converted to
+//     forward slashes and the drive letter is prefixed with "/".
+//   - Relative paths: `.beads/beads.db` became `file://.beads/beads.db`.
+//     They are made absolute first so the URI path is always rooted.
+//
+// UNC paths (`\\server\share\x.db`) come out as `file:////server/share/x.db`:
+// empty authority, path `//server/share/x.db`, which the Windows file APIs
+// accept with forward slashes.
+//
+// windows selects the Windows path rules explicitly so the conversion is
+// unit-testable on every platform.
+func sqliteURIPath(path string, windows bool) string {
+	if !isRootedPath(path, windows) {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+	}
+	if windows {
+		path = strings.ReplaceAll(path, `\`, "/")
+		if hasDriveLetter(path) {
+			path = "/" + path
+		}
+	}
+	return path
+}
+
+func isRootedPath(path string, windows bool) bool {
+	if strings.HasPrefix(path, "/") {
+		return true
+	}
+	if !windows {
+		return false
+	}
+	return strings.HasPrefix(path, `\`) || hasDriveLetter(path)
+}
+
+// hasDriveLetter reports whether path starts with a Windows drive
+// designator such as "E:" (with or without a following separator).
+func hasDriveLetter(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 // Close closes the database connection

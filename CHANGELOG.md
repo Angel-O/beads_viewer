@@ -18,6 +18,14 @@ retained below.
 
 ## [Unreleased]
 
+### Fixed
+
+- SQLite-backed reloads (Ctrl-R / F5 and file-watch refreshes) failed on Windows with
+  `cannot connect to database: SQL logic error: invalid uri authority: E:%5C...`. The read-only
+  DSN was built with `net/url`, which turns a drive-letter path (or any relative path) into
+  `file://E:%5C...`, putting the first path segment in the URI authority slot. The DSN path is
+  now absolute and slash-normalized (`file:///E:/...`) on every platform (#198).
+
 ---
 
 ## [v0.22.0] -- 2026-08-25 (Release)
