@@ -1036,7 +1036,7 @@ Instead of memorizing CLI flags or repeatedly setting filters, `bv` supports **R
 
 ### Recipe Structure
 
-Recipes live under a `recipes:` map in `.bv/recipes.yaml` (project) or `~/.config/bv/recipes.yaml` (user); per-file `.beads/recipes/*.yaml` loading is not implemented yet. <!-- bv:pending:I1 -->
+Recipes are loaded from four sources, later ones overriding earlier ones by name: the built-in defaults, `~/.config/bv/recipes.yaml` (user, `recipes:` map), `.bv/recipes.yaml` (project, `recipes:` map), and one recipe per file under `.beads/recipes/<name>.yaml`. `--robot-recipes` reports each recipe's `source`.
 
 ```yaml
 # .bv/recipes.yaml
@@ -1756,7 +1756,7 @@ bv --robot-label-flow | jq '.flow.bottleneck_labels'
 
 ## 🎪 Attention View: Label Priority Ranking
 
-Press `]` (or `F4`) to open the **Attention View**—a ranked table of labels by attention score, helping you identify which project areas need focus. Today it renders as text inside the Insights panel; a dedicated model with a cursor is in progress. <!-- bv:pending:E2 -->
+Press `]` (or `F4`) to open the **Attention View**—a ranked table of labels by attention score, helping you identify which project areas need focus. It is a focused view with its own cursor: move with `j`/`k`, jump with `g`/`G`, and press `Enter` on a label to drill into that label's issues.
 
 ### Attention Score Formula
 
@@ -1802,10 +1802,11 @@ High attention scores indicate labels that are both important and neglected—th
 
 | Key | Action |
 |-----|--------|
+| `j` / `k` (`↓` / `↑`) | Move the cursor |
+| `g` / `G` | Jump to the first / last label |
+| `Enter` | Drill into the selected label's issues |
 | `1` - `9` | Filter the list to the label at that rank |
-| `Esc` / `q` / `d` | Exit attention view |
-
-Cursor navigation with `j`/`k` and `Enter` drilldown are not implemented yet. <!-- bv:pending:E2 -->
+| `]` / `Esc` / `q` | Exit attention view |
 
 ### Robot Command
 
@@ -1932,7 +1933,7 @@ The tutorial shows a page counter and progress bar as you read:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Progress is tracked for the current session only; the on-disk progress store (`pkg/ui/tutorial_progress.go`) is not yet wired to the tutorial, so closing bv restarts the tutorial from the first page. <!-- bv:pending:E3 -->
+Progress persists across sessions: pages you have seen are recorded in the user config directory (`pkg/ui/tutorial_progress.go`) when the tutorial closes, and reopening it resumes on the page you left. Set `BV_NO_SAVED_CONFIG=1` to keep it session-only.
 
 ### Tutorial Navigation
 
@@ -1980,7 +1981,6 @@ graph TD
         E["Explicit Mentions<br/><small>Commit contains bead ID</small>"]
         T["Temporal Proximity<br/><small>Commit near bead events</small>"]
         C["Co-Commit Analysis<br/><small>Files changed together</small>"]
-        P["Path Matching<br/><small>File paths match bead scope</small>"]
     end
 
     subgraph scorer ["📊 Confidence Scorer"]
@@ -1994,21 +1994,20 @@ graph TD
     E --> S
     T --> S
     C --> S
-    P --> S
     S --> H
 
     classDef strategy fill:#e3f2fd,stroke:#90caf9,stroke-width:2px,color:#1565c0
     classDef score fill:#fff8e1,stroke:#ffcc80,stroke-width:2px,color:#e65100
     classDef out fill:#e8f5e9,stroke:#a5d6a7,stroke-width:2px,color:#2e7d32
 
-    class E,T,C,P strategy
+    class E,T,C strategy
     class S score
     class H out
 ```
 
 ### Correlation Strategies
 
-`pkg/correlation/types.go` defines three correlation methods. The `Correlator` that backs the History view and `--robot-history` currently runs the **co-commit** strategy only; the explicit-ID matcher (`explicit.go`, extended by `--id-pattern`) and the temporal correlator (`temporal.go`) exist as libraries but are not yet wired into report generation, so `stats.method_distribution` reports `co_committed` alone today. <!-- bv:pending:D1 -->
+`pkg/correlation/types.go` defines three correlation methods, and the `Correlator` behind the History view and `--robot-history` runs all three over the same commit window: the co-commit strategy, the explicit-ID matcher (`explicit.go`, extended by `--id-pattern`), and the temporal correlator (`temporal.go`). When several strategies match the same (commit, bead) pair the highest-confidence one becomes `method` and every match is listed in `methods`; `stats.method_distribution` and `stats.strategies` report the per-strategy counts. Stored confirm/reject feedback is applied on top (see *Correlation Feedback System*).
 
 | Method | Confidence range | How It Works |
 |--------|------------------|--------------|
@@ -2058,7 +2057,7 @@ On terminals wider than 150 columns (bead mode), the **Timeline Panel** appears 
 - **Bar magnitude**: ▪ = 1-2, ▪▪ = 3-5, ▪▪▪ = 6-10, ▪▪▪▪ = 11+
 - **Highlights**: Selected bead's commits are marked with `━`
 
-There is no key to toggle the pane on narrower terminals yet. <!-- bv:pending:E5 -->
+The pane is on by default at 150 columns or wider; press `t` in the History view to toggle it for the session (it needs bead mode and at least 100 columns).
 
 ### Causality Markers
 
@@ -2070,7 +2069,7 @@ Each bead-commit correlation shows its **detection method** as a visual marker:
 | **🔗 Temporal** | Commit by the assignee inside the bead's active window (`temporal_author`) | 0.20-0.85 |
 | **📁 File** | Commit changed code and the beads file together (`co_committed`) | 0.85-0.99 |
 
-Only the `co_committed` marker is produced by the current correlator. <!-- bv:pending:D1 -->
+A pair matched by more than one strategy shows the highest-confidence marker; a confirmed pair (`--robot-confirm-correlation`) is pinned to confidence 1.0 and flagged `confirmed`.
 
 ### View Modes
 
@@ -2555,7 +2554,7 @@ When cass is available, the History View gains additional capabilities:
 
 ## 📅 Sprint Dashboard: Burndown & Progress Tracking
 
-The **Sprint Dashboard** (`pkg/ui/sprint_view.go`) shows sprint progress with burndown visualization, scope change tracking, and at-risk detection, driven by `.beads/sprints.jsonl`. It is not yet bound to a key in the list view; `P` and `Esc` close it once it is open. <!-- bv:pending:E1 -->
+The **Sprint Dashboard** (`pkg/ui/sprint_view.go`) shows sprint progress with burndown visualization, scope change tracking, and at-risk detection, driven by `.beads/sprints.jsonl`. Press `P` from the list or detail view to open it on the sprint active today (the status line says so when no sprints are defined); `j`/`k` step between sprints, and `P`, `Esc`, or `q` close it.
 
 ### Dashboard Layout
 
@@ -2612,11 +2611,11 @@ The burndown chart tracks completion velocity and records scope changes:
 2. **Actual Burn Rate:** `Closed Beads / Days Elapsed`
 3. **Scope Events:** Added/removed beads are listed with their dates
 
-The ideal line is a straight line from the starting scope to zero at the sprint end; scope events are reported alongside it but do not yet bend it. <!-- bv:pending:D6 -->
+The ideal line is scope-aware: it starts from the scope the sprint began with, and at each scope-change date the remaining count moves by the added or removed beads and the line re-linearizes from that day's count to zero at the sprint end, so a mid-sprint addition shows as a slope change instead of a false "behind schedule" gap.
 
 ### At-Risk Detection
 
-The dashboard applies a single rule: an issue is at risk when it is `in_progress` and has not been updated for 3 or more days (`staleThresholdDays` in `pkg/ui/sprint_view.go`). Up to five items are listed with their stale age. Blocked-duration and priority-based signals, and an `at_risk` field in `--robot-burndown`, are not implemented yet. <!-- bv:pending:D6 -->
+At-risk detection (`analysis.DetectAtRisk`, shared by the dashboard and `--robot-burndown`'s `at_risk` array) flags any open sprint bead that trips one or more of four signals: `blocked_too_long` (blocked for 2+ days), `no_activity` (no update for 4+ days), `critical_blocked` (a P0/P1 bead that is blocked at all), and `blockers_not_closing` (an open blocker that has itself been idle 4+ days). Each item reports its signals, the instant it has been at risk since, and a one-line detail; the dashboard lists up to five.
 
 ### Robot Commands
 
@@ -2924,7 +2923,7 @@ Alert types are the `AlertType` constants in `pkg/drift/drift.go` (`AllAlertType
 | `actionable_change` | Actionable count down by the warning percentage, or changed by the info percentage | Info / Warning | `actionable_decrease_warning_pct` (30), `actionable_increase_info_pct` (20) |
 | `pagerank_change` | A top-metric issue's PageRank moved by the percentage or more | Warning | `pagerank_change_warning_pct` (50) |
 
-Any type can be switched off with `disabled_alerts: [type, ...]`. `--robot-alerts` runs both groups (drift checks compare against the saved baseline when one exists, otherwise against the current graph and stay silent); `--check-drift` runs only the drift checks and exits 0 (no alerts or info only), 2 (warnings), or 1 (critical, or no baseline saved yet).
+Any type can be switched off with `disabled_alerts: [type, ...]`. `priority_mismatch` and `potential_duplicate` re-run whole-graph analysis, so above `proactive_max_issues` (2000) they are skipped and listed in `skipped_checks` with the reason; set the key to 0 to remove the cap. `--robot-alerts` runs both groups (drift checks compare against the saved baseline when one exists, otherwise against the current graph and stay silent); `--check-drift` runs only the drift checks and exits 0 (no alerts or info only), 2 (warnings), or 1 (critical, or no baseline saved yet).
 
 ### TUI Integration
 
@@ -2934,9 +2933,10 @@ Press `!` to open the **Alerts Panel**:
 ┌─────────────────────────────────────────────────────────────┐
 │  🚨 ALERTS (3 active)                               [!] close │
 ├─────────────────────────────────────────────────────────────┤
-│  ⚠️  WARNING: bv-123 stale for 45 days                       │
-│  🔴 CRITICAL: bv-456 blocks 8 tasks (cascade risk)           │
-│  ℹ️  INFO: Open issues increased 23% this sprint             │
+│  🔴 CRITICAL: Issue bv-123 inactive for 45 days              │
+│  ⚡ WARNING: Completing bv-456 unblocks 8 downstream item(s) │
+│     Suggested: Prioritize this issue: closing it releases... │
+│  ℹ️  INFO: Open issues grew 23% since the baseline (30 → 37) │
 ├─────────────────────────────────────────────────────────────┤
 │  j/k navigate • Enter jump to issue • d dismiss • q close   │
 └─────────────────────────────────────────────────────────────┘
@@ -3090,10 +3090,12 @@ bv --recipe blocked             # Waiting on dependencies
 bv -r recent                    # Short flag, updated in 7 days
 
 # Apply a project or user recipe by name (defined under `recipes:` in
-# .bv/recipes.yaml or ~/.config/bv/recipes.yaml; --recipe does not take a path yet)
+# .bv/recipes.yaml or ~/.config/bv/recipes.yaml, or as .beads/recipes/<name>.yaml)
 bv --recipe sprint-review
+
+# Or load one recipe file directly by path (.yaml / .yml)
+bv --recipe .beads/recipes/sprint.yaml --robot-triage
 ```
-<!-- bv:pending:I1 -->
 
 ### Export Commands
 
@@ -3295,7 +3297,7 @@ For monorepo and multi-package architectures, `bv` provides **workspace configur
 
 ### Workspace Configuration (`.bv/workspace.yaml`)
 
-Load a workspace explicitly with `--workspace <path/to/.bv/workspace.yaml>`; it is not auto-discovered yet.
+Workspaces are auto-discovered: when the working directory has no `.beads` directory reachable (directly, via a git worktree's main checkout, or via `BEADS_DIR` / `BEADS_DB`), bv looks for `.bv/workspace.yaml` in that directory and each parent and loads the workspace for the TUI and every robot command. Pass `--workspace <path/to/.bv/workspace.yaml>` to force a specific workspace (for example from inside one of its repos, where the repo's own `.beads` would otherwise win). Robot payloads report `source_kind: "workspace"` with the config path as `source_path`.
 
 ```yaml
 # .bv/workspace.yaml - Multi-repo workspace definition
@@ -3385,7 +3387,8 @@ The `IDResolver` handles cross-repo references intelligently:
 resolver := NewIDResolver(config, "api")
 
 // From api repo context:
-resolver.Resolve("AUTH-123")      // → {Namespace: "api-", LocalID: "AUTH-123"}
+resolver.Resolve("AUTH-123")      // → {Namespace: "", LocalID: "AUTH-123"} (no known prefix: a local ID)
+resolver.Qualify("AUTH-123")      // → "api-AUTH-123" (adds the current repo's prefix)
 resolver.Resolve("web-UI-456")    // → {Namespace: "web-", LocalID: "UI-456"}
 resolver.IsCrossRepo("web-UI-456") // → true
 resolver.DisplayID("api-AUTH-123") // → "AUTH-123" (local, strip prefix)
@@ -3463,8 +3466,7 @@ Health: ↑ improving (density: -0.02, cycles: -1)
 | `t` | Enter time-travel (custom revision prompt) |
 | `T` | Quick time-travel (HEAD~5) |
 | `t` (while in time-travel) | Exit time-travel mode |
-
-Stepping between changed issues with `n`/`N` is not implemented yet. <!-- bv:pending:E5 -->
+| `n` / `N` (while in time-travel) | Jump to the next / previous changed issue in list order |
 
 ---
 
@@ -3511,7 +3513,7 @@ bv --update-dry-run      # Show what an update would do without installing (bv u
 bv --rollback            # Rollback to the previous version (from backup)
 ```
 
-The startup check runs on every TUI launch; there is no environment variable or config key to disable it yet. <!-- bv:pending:G2 -->
+The startup check is opt-out: set `BV_NO_UPDATE_CHECK=1` or put `updates: {check: false}` in `~/.config/bv/config.yaml` to skip it (explicit `--check-update` / `--update` still work). The check never sends an ambient GitHub token unless `BV_UPDATE_USE_TOKEN=1` or `updates: {use_token: true}` is set, and the first time it runs the TUI footer discloses once that github.com was contacted.
 
 ---
 
@@ -3718,7 +3720,7 @@ bv has a comprehensive built-in help system:
 - Concepts: beads, dependencies, labels, priorities
 - Views: list, board, graph, tree, insights, history
 - Workflows: AI agent integration, triage, planning
-- 30 pages in 6 sections; progress is kept for the current session only <!-- bv:pending:E3 -->
+- 30 pages in 6 sections; progress is saved between sessions and the tutorial resumes where you left off
 
 ### Keyboard Control Map
 
@@ -3773,8 +3775,10 @@ bv has a comprehensive built-in help system:
 | | `!` | Toggle **Alerts Panel** (proactive warnings) |
 | | `'` | Recipe Picker |
 | | `w` | Repo Picker (workspace mode) |
-
-Not bound yet: `Shift+Tab` for the previous Insights panel, `n`/`N` to step through time-travel changes, `t` to toggle the History timeline pane, and `P` to open the Sprint Dashboard. <!-- bv:pending:E5 --> <!-- bv:pending:E1 -->
+| | `P` | Open the Sprint Dashboard (from the list or detail view) |
+| **Insights** | `Shift+Tab` / `h` | Previous Insights panel |
+| **History** | `t` | Toggle the timeline pane |
+| **Time-travel** | `n` / `N` | Next / previous changed issue |
 
 ---
 

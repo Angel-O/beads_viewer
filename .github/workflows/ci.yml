@@ -17,14 +17,25 @@ jobs:
       with:
         go-version: '1.25.5'
         
-    - name: Build
-      run: go build -v ./cmd/bv
-      
-    - name: Test with Coverage
-      run: go test -v -covermode=atomic -coverprofile=coverage.out ./pkg/... ./cmd/bv
+    # The release gate is the single source of truth for "is this shippable":
+    # gofmt, build+vet, unit tests with -race, e2e with -race, docs parity,
+    # action pins, vendor hashes, robot smoke. Local releases run the same
+    # script, so CI and a developer's machine cannot disagree. Stage 8
+    # (benchmark comparison) needs benchstat and a refreshed baseline and is
+    # skipped here until that lands.
+    - name: Release gate
+      run: RELEASE_GATE_SKIP="8" RELEASE_GATE_ALLOW_MISSING=1 scripts/release_gate.sh
 
-    - name: E2E Tests
-      run: go test -v ./tests/e2e -count=1
+    - name: Upload release gate log
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: release-gate-log
+        path: tests/artifacts/release_gate_*.log
+        if-no-files-found: ignore
+
+    - name: Test with Coverage
+      run: go test -covermode=atomic -coverprofile=coverage.out ./pkg/... ./cmd/bv
 
     - name: Enforce Coverage Threshold (project, pkg/* only)
       run: |
