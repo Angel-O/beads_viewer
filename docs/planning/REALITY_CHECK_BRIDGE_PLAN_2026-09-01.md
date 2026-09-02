@@ -2,9 +2,10 @@
 
 **Reality check date:** 2026-09-01
 **Baseline:** main @ 03f92509, v0.22.0 + 39 commits, 541/541 beads closed, 0 open
-**Gap count:** 5 critical, 16 major, 18 minor (39 gaps, 0 with bead coverage)
-**New beads created:** 0 (blocked on tracker repair, see Gap 3)
-**Estimated work:** roughly 9 workstreams, 60 to 80 beads, 3 to 5 agent-weeks of parallel work
+**Gap count:** 5 critical, 16 major, 18 minor (39 gaps; 0 had bead coverage when found)
+**Tracker:** repaired 2026-09-02 (see Gap 3); every gap below is now tracked
+**New beads created:** 70 on 2026-09-02 (9 epics, 61 tasks, 93 dependency edges, 0 cycles; ids in section 8)
+**Estimated work:** 9 workstreams, 3 to 5 agent-weeks of parallel work
 
 This document is the Phase 2 artifact of the reality-check workflow. Phase 1 (the honest assessment) found that the product the README describes exists and runs, but that the README, several "intelligence" subsystems, the data-source layer, and the verification pipeline have drifted from the promise. This plan closes every gap found, in a way that keeps the codebase harmonized: one robot envelope, one discovery policy, no write-only state, and documentation that is tested against code so drift cannot recur.
 
@@ -107,10 +108,12 @@ Local `go build && go vet && go test ./... -race` plus the e2e package is the mi
 **Would existing beads close it?** No.
 **Complexity:** M
 
-### Gap 3: The tracker cannot be opened or rebuilt by br — REGRESSED → WORKING
+### Gap 3: The tracker cannot be opened or rebuilt by br — REGRESSED → WORKING (resolved 2026-09-02)
 
 **Vision goals served:** the workflow itself (AGENTS.md "Beads Workflow Integration"), every subsequent phase of this plan
-**Current state:** `.beads/beads.db` was last written 2026-02-16; br 0.5.7 refuses it with `SCHEMA_MISMATCH expected 17, found 0`. `br doctor` reports degraded, `br sync --status` and `br show` fail. Read-only inspection: `PRAGMA integrity_check` ok, 0 rows in `dirty_issues`, same 541 IDs as `issues.jsonl`, DB shows 19 open while JSONL shows all closed, so the JSONL is strictly newer and there is no DB-only value to harvest. A rebuild from JSONL into an isolated temp DB (`br sync --import-only --rebuild --db <tmp> --no-auto-import --no-auto-flush`) is rejected by br's import semantic verifier: record `bv-0atb` fails because it carries `"description": ""` (15 records do; dropping the empty key makes that record import), and after that normalization the verifier rejects `bv-0d11`, which carries `dependencies[]` entries with `created_by: "daemon"`. A per-record bisect is establishing the complete normalization rule set. Two 85-byte `beads.db.rebuild_*.fsqlite-migration-state` files were left in `.beads/` by the failed attempts and a snapshot exists at `.beads/recovery_20260902T023914Z/`.
+**State when found:** `.beads/beads.db` was last written 2026-02-16; br 0.5.7 refused it with `SCHEMA_MISMATCH expected 17, found 0`. `br doctor` reported degraded, `br sync --status` and `br show` failed. Read-only inspection: `PRAGMA integrity_check` ok, 0 rows in `dirty_issues`, same 541 IDs as `issues.jsonl`, DB showed 19 open while JSONL showed all closed, so the JSONL was strictly newer and there was no DB-only value to harvest.
+**Root cause of the failed rebuild:** br's import semantic verifier compares each imported issue with its normalized JSONL form. bv's older export shape fails it in two ways: top-level empty-string fields (`"description": ""`, 15 records) and dependency entries lacking `metadata: "{}"` and `thread_id: ""` (373 records). Timezone offsets, `created_by: "daemon"`, and dependency order are accepted; dropping a dependency's `created_at` or `issue_id` yields CONFIG_ERROR instead. Established by importing single-record and whole-file variants in scratch workspaces and by capturing br 0.5.7's own export of a two-issue workspace.
+**Resolution:** a copy of `issues.jsonl` harmonized with those two rules imports cleanly (541 issues, 767 dependencies, zero-diff flush round trip, create/close/flush smoke). The stale DB and its WAL/SHM were renamed to `.beads/beads.db*.bad_20260902T030027Z`, the clean DB installed, and the harmonized JSONL written (0 records differ semantically; 444 raw lines changed, 56 of them only by JSON re-serialization). Verified on the default path: `br sync --status` 541/541 with no drift, `br show`, `br stats`, `br ready`, `br dep cycles`, dry-run create. `br doctor` reports "degraded" only because of preserved recovery artifacts. Leftovers awaiting the user's decision (never deleted): `.beads/beads.db*.bad_20260902T030027Z`, `.beads/recovery_20260902T023914Z/`, three 85-byte `*.fsqlite-migration-state` files. Tracked as bead bv-kaxg.5.
 **Target state:** `.beads/beads.db` is a schema-17 database rebuilt from a harmonized `issues.jsonl`; `br show`, `br sync --status`, `br doctor`, `br create`, and `br dep add` all succeed; `issues.jsonl` round-trips through `br sync --flush-only` with zero semantic diff; the old DB is renamed aside, never deleted.
 **Success criteria:**
 - [ ] `br doctor --json` reports ok on the default path.
@@ -458,8 +461,8 @@ Document `model.go:3439-3477` in the README env table and the migration-plan sec
 ### Gap 38: Leftover local artifacts from the tracker repair — housekeeping
 `.beads/beads.db.rebuild_*.fsqlite-migration-state` (2 files), `.beads/recovery_20260902T023914Z/`, and after promotion `.beads/beads.db.bad_<ts>`. List them for the user; remove only on instruction. **Complexity:** S
 
-### Gap 39: Beads for everything above — NO_BEAD → tracked
-After Gap 3, run the frozen bead-generation prompt over this document. Expected shape: one epic per workstream (A–I), one task per gap with a companion test task, dependencies as in section 5, priorities: critical gaps P0, major P1, minor P2. **Complexity:** S
+### Gap 39: Beads for everything above — NO_BEAD → tracked (done 2026-09-02)
+Created with `br` only: 9 epics (one per workstream, priority 1), 61 tasks as children of their epic (`--parent`), 93 blocking edges, 0 cycles, every bead labelled `reality-check-2026-09` plus a `ws-*` workstream label and `bug`/`tests`/`docs`/`chore` where relevant. Priorities: critical gaps P0, major P1, minor P2, polish P3. `bv --robot-triage` on the new graph: 70 open, 34 actionable, 35 dependency-blocked; top pick bv-3n9s.1 (RobotEnvelope, unblocks 6), then bv-283r.1 (correlation strategies) and bv-kaxg.1 (release gate). Ids in section 8. **Complexity:** S
 
 ---
 
@@ -529,3 +532,73 @@ After all bridge work lands, verify each vision goal with the listed check; the 
 5. GitHub Actions: re-enable, or codify the local gate as policy.
 6. `--robot-metrics`: instrument or remove.
 7. Recipe `view`/`export` sections: implement in TUI and `--export-md`, or remove from the schema.
+
+## 8. Beads created on 2026-09-02
+
+Epics (all P1): EA bv-uoyj (data source), EB bv-3n9s (robot contract), EC bv-tq98 (feedback loops), ED bv-283r (correlation intelligence), EE bv-ud6r (TUI completeness), EI bv-9hti (exports and integrations), EG bv-huf5 (security residuals), EF bv-fx5t (documentation truth), EH bv-kaxg (verification and process). Tasks are children of their epic; the suffix is the child number.
+
+| Plan key | Bead | Gap(s) | Priority |
+|---|---|---|---|
+| A1 | bv-uoyj.1 | 1 | P0 |
+| A2 | bv-uoyj.2 | 1 (probe silence) | P1 |
+| A3 | bv-uoyj.3 | 28 | P2 |
+| A4 | bv-uoyj.4 | 1 tests | P1 |
+| B1 | bv-3n9s.1 | D1 envelope | P0 |
+| B2 | bv-3n9s.2 | 2 | P0 |
+| B3 | bv-3n9s.3 | 2 tests | P1 |
+| B4 | bv-3n9s.4 | 9 (parallel gain) | P1 |
+| B5 | bv-3n9s.5 | 9 (metrics) | P2 |
+| B6 | bv-3n9s.6 | 22 | P2 |
+| B7 | bv-3n9s.11 | 24 | P2 |
+| B8 | bv-3n9s.7 | 27 (dead code) | P2 |
+| B9 | bv-3n9s.8 | 27 (key registry) | P2 |
+| B10 | bv-3n9s.9 | 35 | P2 |
+| B11 | bv-3n9s.12 | 37 | P2 |
+| B12 | bv-3n9s.10 | 23 | P2 |
+| C1 | bv-tq98.1 | 6 (weights value) | P1 |
+| C2 | bv-tq98.2 | 6 | P1 |
+| C3 | bv-tq98.3 | 6 tests | P1 |
+| C4 | bv-tq98.4 | 7 | P1 |
+| C5 | bv-tq98.5 | 7 tests | P1 |
+| D1 | bv-283r.1 | 8 | P1 |
+| D2 | bv-283r.2 | 8 (cache v2) | P2 |
+| D3 | bv-283r.3 | 8 (path matching) | P2 |
+| D4 | bv-283r.4 | 25 | P2 |
+| D5 | bv-283r.5 | 8 tests | P1 |
+| D6 | bv-283r.6 | 10 (at-risk, ideal line) | P1 |
+| D7 | bv-283r.7 | 16 | P1 |
+| D8 | bv-283r.8 | 16 tests | P2 |
+| E1 | bv-ud6r.1 | 10 (P key) | P1 |
+| E2 | bv-ud6r.2 | 11 | P2 |
+| E3 | bv-ud6r.3 | 12 | P2 |
+| E4 | bv-ud6r.4 | 21 | P2 |
+| E5 | bv-ud6r.5 | 29 | P2 |
+| E6 | bv-ud6r.6 | E tests | P2 |
+| I1 | bv-9hti.1 | 13 | P1 |
+| I2 | bv-9hti.2 | 14 | P2 |
+| I3 | bv-9hti.3 | 15 | P2 |
+| I4 | bv-9hti.4 | 19 | P2 |
+| I5 | bv-9hti.5 | 32 | P2 |
+| I6 | bv-9hti.6 | 36 | P3 |
+| G7 | bv-huf5.1 | 30 | P2 |
+| G1 | bv-huf5.2 | 18 (installer, README) | P1 |
+| G2 | bv-huf5.3 | 18 (updater) | P1 |
+| G3 | bv-huf5.4 | 18 (provenance) | P2 |
+| G4 | bv-huf5.5 | 18 (CSP) | P2 |
+| G5 | bv-huf5.6 | 18 (verify_isomorphic) | P3 |
+| G6 | bv-huf5.7 | 18 (RCH policy) | P3 |
+| F1 | bv-fx5t.1 | 17, 31 (docgen) | P1 |
+| F2 | bv-fx5t.2 | D4 parity tests | P1 |
+| F3 | bv-fx5t.3 | 17 prose | P1 |
+| F4 | bv-fx5t.4 | 33, 34, 36 | P2 |
+| F5 | bv-fx5t.5 | 20 (README numbers) | P2 |
+| F6 | bv-fx5t.6 | stale planning docs (found in refinement) | P2 |
+| H1 | bv-kaxg.1 | 4 (gate) | P0 |
+| H2 | bv-kaxg.2 | 4 (CI decision) | P1 |
+| H3 | bv-kaxg.3 | 26 | P1 |
+| H4 | bv-kaxg.4 | 5 | P1 |
+| H5 | bv-kaxg.5 | 3, 38 | P2 |
+| H6 | bv-kaxg.6 | 20 (baseline) | P2 |
+| V1 | bv-kaxg.7 | final verification | P1 |
+
+Refinement pass 1 (2026-09-02) added F6 after checking each bead against the frozen checklist; no bead was found to lose a feature or oversimplify. Further passes should look for: missing companion tests for I-workstream beads (currently embedded in each bead's criteria), whether B9's registry migration should split per view, and whether D3/I3/I5 decisions need the user before implementation starts.
