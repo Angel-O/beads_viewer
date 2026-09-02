@@ -179,6 +179,8 @@ type phaseThreeRobotHandlerConfig struct {
 	OrphansMinScore         *int
 	RobotFileBeadsFlag      *string
 	FileBeadsLimit          *int
+	RobotFileHotspotsFlag   *bool
+	HotspotsLimit           *int
 	RobotImpactFlag         *string
 	ForceFullAnalysis       *bool
 	HistoryLimit            *int
@@ -1154,10 +1156,12 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 					Warning  int `json:"warning"`
 					Info     int `json:"info"`
 				} `json:"summary"`
-				UsageHints []string `json:"usage_hints"`
+				SkippedChecks []drift.SkippedCheck `json:"skipped_checks,omitempty"`
+				UsageHints    []string             `json:"usage_hints"`
 			}{
 				RobotEnvelope: ctx.Envelope(),
 				Alerts:        driftResult.Alerts,
+				SkippedChecks: driftResult.SkippedChecks,
 				UsageHints: []string{
 					"--severity=warning --alert-type=stale_issue   # stale warnings only",
 					"--alert-type=blocking_cascade                 # high-unblock opportunities",
@@ -1603,6 +1607,9 @@ func registerPhaseThreeRobotHandlers(registry *RobotRegistry, cfg phaseThreeRobo
 	})
 	register("robot-file-beads", cfg.RobotFileBeadsFlag, "Output beads that touched a file path as JSON", func(ctx RobotContext) error {
 		return handleRobotFileBeads(ctx, cfg)
+	})
+	register("robot-file-hotspots", cfg.RobotFileHotspotsFlag, "Output files touched by most beads as JSON", func(ctx RobotContext) error {
+		return handleRobotFileHotspots(ctx, cfg)
 	})
 	register("robot-impact", cfg.RobotImpactFlag, "Analyze impact of modifying files", func(ctx RobotContext) error {
 		return handleRobotImpact(ctx, cfg)
@@ -3682,4 +3689,49 @@ func describeCorrelationFeedback(fb correlation.CorrelationFeedback) string {
 		s += ": " + reason
 	}
 	return s
+}
+
+// handleRobotFileHotspots answers "which files do the most beads touch?" from
+// the same shared correlation report as --robot-file-beads and --robot-impact,
+// so the three surfaces never disagree (#184).
+func handleRobotFileHotspots(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if cfg.RobotFileHotspotsFlag == nil {
+		return fmt.Errorf("robot file hotspots flag not configured")
+	}
+
+	workDir, err := ctx.WorkDirOrDefault()
+	if err != nil {
+		return fmt.Errorf("getting current directory: %w", err)
+	}
+	if err := correlation.ValidateRepository(workDir); err != nil {
+		return err
+	}
+
+	limit := 500
+	if cfg.HistoryLimit != nil {
+		limit = *cfg.HistoryLimit
+	}
+	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
+	if err != nil {
+		return err
+	}
+
+	hotspotsLimit := 10
+	if cfg.HotspotsLimit != nil {
+		hotspotsLimit = *cfg.HotspotsLimit
+	}
+	fileLookup := correlation.NewFileLookup(report)
+	output := struct {
+		RobotEnvelope
+		Hotspots []correlation.FileHotspot  `json:"hotspots"`
+		Stats    correlation.FileIndexStats `json:"stats"`
+	}{
+		RobotEnvelope: ctx.EnvelopeWithHash(report.DataHash),
+		Hotspots:      fileLookup.GetHotspots(hotspotsLimit),
+		Stats:         fileLookup.GetStats(),
+	}
+	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+		return fmt.Errorf("encoding hotspots: %w", err)
+	}
+	return nil
 }

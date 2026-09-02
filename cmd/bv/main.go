@@ -1702,6 +1702,8 @@ func main() {
 		OrphansMinScore:         orphansMinScore,
 		RobotFileBeadsFlag:      robotFileBeads,
 		FileBeadsLimit:          fileBeadsLimit,
+		RobotFileHotspotsFlag:   fileHotspots,
+		HotspotsLimit:           hotspotsLimit,
 		RobotImpactFlag:         robotImpact,
 		RobotFileRelationsFlag:  robotFileRelations,
 		RobotRelatedFlag:        robotRelatedWork,
@@ -2566,6 +2568,20 @@ func main() {
 		var beadsPath string
 		var workspaceInfo *workspace.LoadSummary
 		var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
+
+		// Workspace auto-discovery (I2): without --workspace, when no .beads
+		// directory is reachable from the working directory (or BEADS_DIR /
+		// BEADS_DB), a .bv/workspace.yaml here or in any parent directory
+		// selects workspace mode for the TUI and every robot command.
+		// --workspace stays the explicit override; --as-of never uses it.
+		if *workspaceConfig == "" && *asOf == "" {
+			if found := discoverWorkspaceConfig(); found != "" {
+				*workspaceConfig = found
+				if !envRobot {
+					fmt.Fprintf(os.Stderr, "No .beads directory found; using workspace %s\n", found)
+				}
+			}
+		}
 
 		if *asOf != "" {
 			// Time-travel mode: load historical issues from git
@@ -4644,9 +4660,8 @@ func main() {
 			os.Exit(0)
 		}
 
-		if !*fileHotspots {
-			dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-file-beads", robotDispatchContext)
-		}
+		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-file-beads", robotDispatchContext)
+		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-file-hotspots", robotDispatchContext)
 
 		// Handle --robot-file-beads and --robot-file-hotspots flags (bv-hmib)
 		if *robotFileBeads != "" || *fileHotspots {
@@ -10708,4 +10723,22 @@ func titleCaseRobotCommand(name string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, " ")
+}
+
+// discoverWorkspaceConfig returns the nearest .bv/workspace.yaml (searching
+// upward from the working directory) when no .beads directory is reachable,
+// and "" otherwise. A present .beads always wins so a nested single repo
+// inside a workspace keeps its own view unless --workspace is passed.
+func discoverWorkspaceConfig() string {
+	beadsDir, err := loader.GetBeadsDir("")
+	if err == nil {
+		if info, statErr := os.Stat(beadsDir); statErr == nil && info.IsDir() {
+			return ""
+		}
+	}
+	found, err := workspace.FindWorkspaceConfig("")
+	if err != nil {
+		return ""
+	}
+	return found
 }
