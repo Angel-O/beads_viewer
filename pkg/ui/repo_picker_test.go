@@ -9,11 +9,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
-func testRepositoryCatalog() model.RepositoryCatalog {
-	return model.RepositoryCatalog{
+func testRepositoryCatalog() repositorypkg.Catalog {
+	return repositorypkg.Catalog{
 		{ID: "ctx:alpha-123", Name: "alpha", Path: "/work/services/alpha", BeadCount: 12},
 		{ID: "ctx:beta-456", Name: "beta", Path: "/work/services/beta", BeadCount: 3},
 		{ID: "ctx:gamma-789", Name: "gamma", Path: "/work/tools/gamma", BeadCount: 0},
@@ -59,7 +61,7 @@ func TestRepoPickerViewContainsRepos(t *testing.T) {
 
 func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
 	m, _ := newANSIRepoPickerModel(testRepositoryCatalog())
-	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetHubScope(hub.NewAllItemsHubScope())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SetSize(120, 24)
 
@@ -90,7 +92,7 @@ func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
 
 func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetHubScope(hub.NewAllItemsHubScope())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SelectCurrent()
 
@@ -102,7 +104,7 @@ func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
 
 func TestRepoPickerCurrentOnlyAbsentIsNoOp(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetHubScope(hub.NewAllItemsHubScope())
 	m.SetCurrentRepository("ctx:missing")
 	before := m.SelectedRepos()
 	beforeContextless := m.ContextlessSelected()
@@ -118,30 +120,30 @@ func TestRepoPickerCurrentOnlyCancelAndApply(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha-123", "ctx:beta-456", "ctx:gamma-789")
 	m.currentRepositoryID = "ctx:beta-456"
-	if err := m.SetHubScope(model.NewAllItemsHubScope()); err != nil {
+	if err := m.SetHubScope(hub.NewAllItemsHubScope()); err != nil {
 		t.Fatal(err)
 	}
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 	m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-	m.repoPicker.SetHubScope(model.NewAllItemsHubScope())
+	m.repoPicker.SetHubScope(hub.NewAllItemsHubScope())
 	m.showRepoPicker = true
 	m.focused = focusRepoPicker
 
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.HubScope().Mode != model.HubScopeAllItems {
+	if m.HubScope().Mode != hub.HubScopeAllItems {
 		t.Fatalf("cancel applied current-only draft: %#v", m.HubScope())
 	}
 
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 	m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-	m.repoPicker.SetHubScope(model.NewAllItemsHubScope())
+	m.repoPicker.SetHubScope(hub.NewAllItemsHubScope())
 	m.showRepoPicker = true
 	m.focused = focusRepoPicker
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEnter})
 	scope := m.HubScope()
-	if scope.Mode != model.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:beta-456" || scope.IncludeContextless {
+	if scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:beta-456" || scope.IncludeContextless {
 		t.Fatalf("apply current-only scope = %#v", scope)
 	}
 }
@@ -239,7 +241,7 @@ func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.ready = true
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m = updated.(Model)
@@ -257,7 +259,7 @@ func TestHubRepositoryPickerRefreshesContextlessBeadCountWithSnapshot(t *testing
 	m.SetRepositoryCatalogIssues(initial)
 	m.ready = true
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m = updated.(Model)
@@ -269,7 +271,7 @@ func TestHubRepositoryPickerRefreshesContextlessBeadCountWithSnapshot(t *testing
 	updated, _ = m.Update(SnapshotReadyMsg{
 		Snapshot:          snapshot,
 		SnapshotVer:       1,
-		Catalog:           model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		Catalog:           repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
 		CatalogGeneration: 1,
 		CatalogAvailable:  true,
 	})
@@ -285,7 +287,7 @@ func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
 	m.SetRepositoryCatalogIssues(initial)
 	m.ready = true
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m = updated.(Model)
@@ -299,7 +301,7 @@ func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
 	updated, _ = m.Update(SnapshotReadyMsg{
 		Snapshot:              snapshot,
 		SnapshotVer:           1,
-		Catalog:               model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		Catalog:               repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
 		ContextlessBeadCount:  contextlessIssueCount(completeIssues),
 		ContextlessCountReady: true,
 		CatalogGeneration:     1,
@@ -317,7 +319,7 @@ func TestHubRepositoryPickerCatalogFailurePreservesFreshContextlessCount(t *test
 	m.SetRepositoryCatalogIssues(initial)
 	m.ready = true
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m = updated.(Model)
@@ -340,7 +342,7 @@ func TestHubRepositoryPickerCatalogFailurePreservesFreshContextlessCount(t *test
 	}
 
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{
-		Catalog:               model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		Catalog:               repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
 		ContextlessCountReady: true,
 		Generation:            2,
 		Recovered:             true,
@@ -360,12 +362,12 @@ func TestHubRepositoryPickerIgnoresStaleSnapshotContextlessCount(t *testing.T) {
 	m.SetRepositoryCatalogIssues(initial)
 	m.ready = true
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m = updated.(Model)
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{
-		Catalog:               model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
+		Catalog:               repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
 		ContextlessCountReady: true,
 		Generation:            2,
 	})
@@ -418,7 +420,7 @@ func TestRepoPickerCatalogRefreshPreservesExactSelectionAndCursor(t *testing.T) 
 	m.MoveDown()
 	m.MoveDown()
 
-	updated := model.RepositoryCatalog{
+	updated := repositorypkg.Catalog{
 		{ID: "ctx:gamma-789", Name: "aardvark", BeadCount: 2},
 		{ID: "ctx:alpha-123", Name: "alpha", BeadCount: 13},
 		{ID: "ctx:new-000", Name: "new", BeadCount: 0},
@@ -435,7 +437,7 @@ func TestRepoPickerCatalogRefreshPreservesExactSelectionAndCursor(t *testing.T) 
 
 func TestRepoPickerCatalogRefreshHonorsAllAndClearedDrafts(t *testing.T) {
 	catalog := testRepositoryCatalog()[:1]
-	added := append(append(model.RepositoryCatalog(nil), catalog...), model.RepositoryCatalogEntry{ID: "ctx:new", Name: "new"})
+	added := append(append(repositorypkg.Catalog(nil), catalog...), repositorypkg.CatalogEntry{ID: "ctx:new", Name: "new"})
 
 	all := NewRepoPickerModel(catalog, DefaultTheme(lipgloss.NewRenderer(nil)))
 	all.SetCatalog(added)
@@ -461,7 +463,7 @@ func TestRepoPickerCatalogRefreshHonorsAllAndClearedDrafts(t *testing.T) {
 
 func TestRepoPickerContextlessChoiceTogglesIndependently(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetHubScope(hub.NewAllItemsHubScope())
 	if m.FilteredCount() != len(testRepositoryCatalog())+1 || !m.currentChoiceIsContextless() {
 		t.Fatalf("contextless choice missing: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
 	}
@@ -493,7 +495,7 @@ func TestRepoPickerContextlessChoiceTogglesIndependently(t *testing.T) {
 	if m.FilteredCount() != 1 || !m.currentChoiceIsContextless() {
 		t.Fatalf("contextless search results: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
 	}
-	m.SetCatalog(append(testRepositoryCatalog(), model.RepositoryCatalogEntry{ID: "ctx:new", Name: "new"}))
+	m.SetCatalog(append(testRepositoryCatalog(), repositorypkg.CatalogEntry{ID: "ctx:new", Name: "new"}))
 	if !m.currentChoiceIsContextless() {
 		t.Fatal("catalog refresh moved contextless cursor")
 	}
@@ -510,10 +512,10 @@ func TestRepoPickerAllItemsAppliesAndReopensWithEveryCheckboxChecked(t *testing.
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha-123", "ctx:beta-456", "ctx:gamma-789")
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-	m.repoPicker.SetHubScope(model.NewContextlessHubScope())
+	m.repoPicker.SetHubScope(hub.NewContextlessHubScope())
 	m.repoPicker.SelectAll()
 	m = m.applyRepositoryPickerSelection()
-	if scope := m.HubScope(); scope.Mode != model.HubScopeAllItems {
+	if scope := m.HubScope(); scope.Mode != hub.HubScopeAllItems {
 		t.Fatalf("all-checkbox scope = %#v", scope)
 	}
 
@@ -525,7 +527,7 @@ func TestRepoPickerAllItemsAppliesAndReopensWithEveryCheckboxChecked(t *testing.
 
 	m.repoPicker.ToggleSelected()
 	m = m.applyRepositoryPickerSelection()
-	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || scope.IncludeContextless || len(scope.Contexts) != len(m.repositoryCatalog) {
+	if scope := m.HubScope(); scope.Mode != hub.HubScopeSelectedContexts || scope.IncludeContextless || len(scope.Contexts) != len(m.repositoryCatalog) {
 		t.Fatalf("repositories-only scope applied as all items: %#v", scope)
 	}
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
@@ -616,9 +618,9 @@ func TestRepoPickerRequiredKeyBindings(t *testing.T) {
 }
 
 func TestRepoPickerScrollsToCursor(t *testing.T) {
-	catalog := make(model.RepositoryCatalog, 12)
+	catalog := make(repositorypkg.Catalog, 12)
 	for i := range catalog {
-		catalog[i] = model.RepositoryCatalogEntry{ID: itoa(i), Name: "repository-" + itoa(i)}
+		catalog[i] = repositorypkg.CatalogEntry{ID: itoa(i), Name: "repository-" + itoa(i)}
 	}
 	m := NewRepoPickerModel(catalog, DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetSize(70, 14)

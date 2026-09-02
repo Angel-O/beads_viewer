@@ -101,7 +101,7 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		}
 		batch, batchErr := c.loadExternalCommits(request.context, request.repository, request.commits)
 		for _, requested := range request.commits {
-			identity := repositoryCommitIdentity(request.context, strings.ToLower(requested))
+			identity := CommitIdentity(request.context, strings.ToLower(requested))
 			if batchErr != nil {
 				loaded[identity] = loadedCommit{err: batchErr}
 				continue
@@ -116,7 +116,7 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		if _, skip := unavailable[correlation.Context]; skip {
 			continue
 		}
-		identity := repositoryCommitIdentity(correlation.Context, strings.ToLower(correlation.Commit))
+		identity := CommitIdentity(correlation.Context, strings.ToLower(correlation.Commit))
 		entry, exists := loaded[identity]
 		if !exists {
 			return nil, fmt.Errorf("correlation ledger %q record %d: commit %q was not included in the repository batch", hub.ledger, correlation.record, correlation.Commit)
@@ -137,18 +137,18 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 
 	sort.SliceStable(commits, func(i, j int) bool {
 		if commits[i].Timestamp.Equal(commits[j].Timestamp) {
-			return repositoryCommitIdentity(commits[i].Repository, commits[i].SHA) < repositoryCommitIdentity(commits[j].Repository, commits[j].SHA)
+			return CommitIdentity(commits[i].Repository, commits[i].SHA) < CommitIdentity(commits[j].Repository, commits[j].SHA)
 		}
 		return commits[i].Timestamp.Before(commits[j].Timestamp)
 	})
 	if opts.Limit > 0 {
 		selected := make(map[string]struct{}, opts.Limit)
 		for i := len(commits) - 1; i >= 0 && len(selected) < opts.Limit; i-- {
-			selected[repositoryCommitIdentity(commits[i].Repository, commits[i].SHA)] = struct{}{}
+			selected[CommitIdentity(commits[i].Repository, commits[i].SHA)] = struct{}{}
 		}
 		filtered := commits[:0]
 		for _, commit := range commits {
-			if _, ok := selected[repositoryCommitIdentity(commit.Repository, commit.SHA)]; ok {
+			if _, ok := selected[CommitIdentity(commit.Repository, commit.SHA)]; ok {
 				filtered = append(filtered, commit)
 			}
 		}
@@ -440,19 +440,18 @@ func validExternalSHA(value []byte) bool {
 	return true
 }
 
-func repositoryCommitIdentity(repository, sha string) string {
+// CommitIdentity returns the canonical history/index key. Empty repository
+// preserves the legacy raw SHA spelling; qualified keys use repository:sha.
+func CommitIdentity(repository, sha string) string {
 	if repository == "" {
 		return sha
 	}
 	return repository + ":" + sha
 }
 
-// CommitIdentity returns the repository-aware key used by reverse indexes.
-func CommitIdentity(commit CorrelatedCommit) string {
-	return repositoryCommitIdentity(commit.Repository, commit.SHA)
-}
-
-func repositoryFileIdentity(repository, path string) string {
+// FileIdentity returns the canonical history/index key for a changed path.
+// Empty repository preserves the legacy raw path spelling.
+func FileIdentity(repository, path string) string {
 	if repository == "" {
 		return path
 	}

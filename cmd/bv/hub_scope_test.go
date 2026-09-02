@@ -40,7 +40,7 @@ func TestHubScopeProjectionCandidateSemanticsAndBoundaryReferences(t *testing.T)
 		{ID: "multi", Status: model.StatusOpen, IssueType: model.TypeEpic, Labels: []string{second, first}},
 		{ID: "contextless", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}
-	scope, err := model.NewSelectedContextsHubScope([]string{first, first})
+	scope, err := hub.NewSelectedContextsHubScope([]string{first, first})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 	}
 
 	executable := buildTestBinary(t)
-	run := func(scope model.HubScope, arguments ...string) map[string]any {
+	run := func(scope hub.HubScope, arguments ...string) map[string]any {
 		t.Helper()
 		scopeData, err := json.Marshal(scope)
 		if err != nil {
@@ -156,13 +156,13 @@ func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 		return payload
 	}
 
-	selectedScope, err := model.NewSelectedContextsHubScope([]string{first})
+	selectedScope, err := hub.NewSelectedContextsHubScope([]string{first})
 	if err != nil {
 		t.Fatal(err)
 	}
 	selected := run(selectedScope, "--robot-plan")
-	contextless := run(model.NewContextlessHubScope(), "--robot-plan")
-	allItems := run(model.NewAllItemsHubScope(), "--robot-plan")
+	contextless := run(hub.NewContextlessHubScope(), "--robot-plan")
+	allItems := run(hub.NewAllItemsHubScope(), "--robot-plan")
 	if selected["data_hash"] != contextless["data_hash"] || selected["data_hash"] != allItems["data_hash"] {
 		t.Fatalf("canonical data hash varied by scope: selected=%v contextless=%v all=%v", selected["data_hash"], contextless["data_hash"], allItems["data_hash"])
 	}
@@ -294,7 +294,7 @@ func TestWrapperHubScopeTransportIsNarrowAndStrict(t *testing.T) {
 		t.Fatal("wrapper Hub scope accepted trailing JSON")
 	}
 	scope, err := parseHubRobotScope(all, "", true, true)
-	if err != nil || scope == nil || scope.Mode != model.HubScopeAllItems {
+	if err != nil || scope == nil || scope.Mode != hub.HubScopeAllItems {
 		t.Fatalf("valid wrapper scope = %#v, err = %v", scope, err)
 	}
 }
@@ -307,17 +307,17 @@ func TestHubScopeProjectionVariantsAndCanonicalHash(t *testing.T) {
 		{ID: "unregistered", Labels: []string{"ctx:" + "unknown"}},
 	}
 	canonicalHash := analysis.ComputeDataHash(issues)
-	mixed, err := model.NewSelectedContextsAndContextlessHubScope([]string{contextID})
+	mixed, err := hub.NewSelectedContextsAndContextlessHubScope([]string{contextID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
 		name  string
-		scope model.HubScope
+		scope hub.HubScope
 		want  []string
 	}{
-		{name: "all items", scope: model.NewAllItemsHubScope(), want: []string{"selected", "contextless", "unregistered"}},
-		{name: "contextless", scope: model.NewContextlessHubScope(), want: []string{"contextless"}},
+		{name: "all items", scope: hub.NewAllItemsHubScope(), want: []string{"selected", "contextless", "unregistered"}},
+		{name: "contextless", scope: hub.NewContextlessHubScope(), want: []string{"contextless"}},
 		{name: "selected and contextless", scope: mixed, want: []string{"selected", "contextless"}},
 	}
 	for _, test := range tests {
@@ -355,7 +355,7 @@ func TestHubScopeProjectionPlanGraphAndGlobalAggregates(t *testing.T) {
 		{ID: "visible", Labels: []string{contextID}},
 		{ID: "hidden", Labels: []string{"ctx:" + "other"}},
 	}
-	scope, err := model.NewSelectedContextsHubScope([]string{contextID})
+	scope, err := hub.NewSelectedContextsHubScope([]string{contextID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestHubGraphTraversalCrossesHiddenIntermediary(t *testing.T) {
 		{ID: "hidden", Status: model.StatusInProgress, IssueType: model.TypeBug, Labels: []string{hidden}, Dependencies: []*model.Dependency{{DependsOnID: "visible-b", Type: model.DepRelated}}},
 		{ID: "visible-b", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{selected}},
 	}
-	scope, err := model.NewSelectedContextsHubScope([]string{selected})
+	scope, err := hub.NewSelectedContextsHubScope([]string{selected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +540,7 @@ func TestHubCapacityPreservesCanonicalCriticalPath(t *testing.T) {
 		{ID: "hidden", Title: "Hidden", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"ctx:" + "other"}, Dependencies: []*model.Dependency{{DependsOnID: "visible-a", Type: model.DepBlocks}}},
 		{ID: "visible-b", Title: "Visible B", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{selected}, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},
 	}
-	scope, err := model.NewSelectedContextsHubScope([]string{selected})
+	scope, err := hub.NewSelectedContextsHubScope([]string{selected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestHubCapacityPreservesCanonicalCriticalPath(t *testing.T) {
 }
 
 func TestHubRobotDecorationPreservesLoadStats(t *testing.T) {
-	scope := model.NewAllItemsHubScope()
+	scope := hub.NewAllItemsHubScope()
 	projection, err := newHubScopeProjection(scope, nil, "")
 	if err != nil {
 		t.Fatal(err)

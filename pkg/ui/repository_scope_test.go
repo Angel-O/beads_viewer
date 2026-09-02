@@ -13,18 +13,20 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-func hubScopeCatalog(ids ...string) model.RepositoryCatalog {
-	catalog := make(model.RepositoryCatalog, 0, len(ids))
+func hubScopeCatalog(ids ...string) repositorypkg.Catalog {
+	catalog := make(repositorypkg.Catalog, 0, len(ids))
 	for _, id := range ids {
-		catalog = append(catalog, model.RepositoryCatalogEntry{ID: id, Name: id, Kind: model.RepositoryIdentityHubContext})
+		catalog = append(catalog, repositorypkg.CatalogEntry{ID: id, Name: id, Kind: repositorypkg.IdentityExact})
 	}
 	return catalog
 }
@@ -72,7 +74,7 @@ func TestRepositoryScopeHubExactMultiContextAndAllSemantics(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "a", "both", "none", "upper")
 
 	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true, "ctx:beta": true})
-	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || scope.IncludeContextless {
+	if scope := m.HubScope(); scope.Mode != hub.HubScopeSelectedContexts || scope.IncludeContextless {
 		t.Fatalf("full repository selection must exclude contextless, got %#v", scope)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "a", "both")
@@ -89,12 +91,12 @@ func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
 
-	if err := m.SetHubScope(model.NewAllItemsHubScope()); err != nil {
+	if err := m.SetHubScope(hub.NewAllItemsHubScope()); err != nil {
 		t.Fatal(err)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha", "both", "contextless", "unregistered")
 
-	selected, err := model.NewSelectedContextsHubScope([]string{"ctx:beta", "ctx:alpha", "ctx:beta"})
+	selected, err := hub.NewSelectedContextsHubScope([]string{"ctx:beta", "ctx:alpha", "ctx:beta"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,15 +108,15 @@ func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
 		t.Fatalf("selected contexts = %q", got)
 	}
 
-	if err := m.SetHubScope(model.NewContextlessHubScope()); err != nil {
+	if err := m.SetHubScope(hub.NewContextlessHubScope()); err != nil {
 		t.Fatal(err)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "contextless")
-	if m.HubScope().Mode != model.HubScopeContextless {
+	if m.HubScope().Mode != hub.HubScopeContextless {
 		t.Fatalf("scope = %#v", m.HubScope())
 	}
 
-	unknown, err := model.NewSelectedContextsHubScope([]string{"ctx:unknown"})
+	unknown, err := hub.NewSelectedContextsHubScope([]string{"ctx:unknown"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +135,7 @@ func TestHubScopeMixedContextAndContextlessIsUnionWithoutDuplicates(t *testing.T
 	m := NewModel(issues, nil, "")
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
-	scope, err := model.NewSelectedContextsAndContextlessHubScope([]string{"ctx:alpha"})
+	scope, err := hub.NewSelectedContextsAndContextlessHubScope([]string{"ctx:alpha"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,12 +152,12 @@ func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
 	}, nil, "")
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha")
-	if err := m.SetHubScope(model.NewContextlessHubScope()); err != nil {
+	if err := m.SetHubScope(hub.NewContextlessHubScope()); err != nil {
 		t.Fatal(err)
 	}
 
 	m.applyRepositoryCatalogUpdate(hubScopeCatalog("ctx:alpha", "ctx:beta"), 1, true, false, nil)
-	if m.HubScope().Mode != model.HubScopeContextless {
+	if m.HubScope().Mode != hub.HubScopeContextless {
 		t.Fatalf("catalog refresh changed scope to %#v", m.HubScope())
 	}
 
@@ -165,7 +167,7 @@ func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
 	}).Build()
 	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
 	m = updated.(Model)
-	if m.HubScope().Mode != model.HubScopeContextless {
+	if m.HubScope().Mode != hub.HubScopeContextless {
 		t.Fatalf("snapshot refresh changed scope to %#v", m.HubScope())
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "none-new")
@@ -237,7 +239,7 @@ func TestPendingDefaultScopeNormalizesActiveContextSort(t *testing.T) {
 	if strings.Contains(m.renderFooter(), "Ctx +") {
 		t.Fatal("context sort badge remained after pending default scope narrowed to one context")
 	}
-	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || !slices.Equal(scope.Contexts, []string{"ctx:alpha"}) {
+	if scope := m.HubScope(); scope.Mode != hub.HubScopeSelectedContexts || !slices.Equal(scope.Contexts, []string{"ctx:alpha"}) {
 		t.Fatalf("scope after pending default application = %#v", scope)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
@@ -259,7 +261,7 @@ func TestRejectedHubScopePreservesPendingDefault(t *testing.T) {
 	beforeScope := m.HubScope()
 	beforeDefaultSet := m.defaultRepositorySet
 	beforeDefaultID := m.defaultRepositoryID
-	unknown, err := model.NewSelectedContextsHubScope([]string{"ctx:unknown"})
+	unknown, err := hub.NewSelectedContextsHubScope([]string{"ctx:unknown"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +279,7 @@ func TestRejectedHubScopePreservesPendingDefault(t *testing.T) {
 
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
 	m = updated.(Model)
-	if scope := m.HubScope(); scope.Mode != model.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:alpha" {
+	if scope := m.HubScope(); scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:alpha" {
 		t.Fatalf("pending current-context default did not apply: %#v", scope)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
@@ -593,9 +595,9 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 		Status: model.StatusOpen,
 		Labels: []string{"ctx:zeta", "work", "Ctx:upper", "ctx:Mixed", "ctx:alpha", "myctx:keep"},
 	}
-	catalog := model.RepositoryCatalog{
-		{ID: "ctx:zeta", Name: "teams/zeta/service", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: model.RepositoryIdentityHubContext},
+	catalog := repositorypkg.Catalog{
+		{ID: "ctx:zeta", Name: "teams/zeta/service", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: repositorypkg.IdentityExact},
 	}
 
 	presentation := repositoryPresentationForIssue(issue, catalog, true, "", nil)
@@ -635,9 +637,9 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 		ID: "shared", Title: "Multi-context item", Status: model.StatusOpen,
 		Labels: []string{"ctx:repo-a", "ctx:repo-b"},
 	}
-	catalog := model.RepositoryCatalog{
-		{ID: "ctx:repo-a", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:repo-b", Name: "beads", Kind: model.RepositoryIdentityHubContext},
+	catalog := repositorypkg.Catalog{
+		{ID: "ctx:repo-a", Name: "beads_viewer", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:repo-b", Name: "beads", Kind: repositorypkg.IdentityExact},
 	}
 	tests := []struct {
 		name     string
@@ -715,9 +717,9 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 	t.Run("display name tie uses ID", func(t *testing.T) {
 		presentation := repositoryPresentationForIssue(
 			model.Issue{Labels: []string{"ctx:repo-b", "ctx:repo-a"}},
-			model.RepositoryCatalog{
-				{ID: "ctx:repo-b", Name: "same", Kind: model.RepositoryIdentityHubContext},
-				{ID: "ctx:repo-a", Name: "same", Kind: model.RepositoryIdentityHubContext},
+			repositorypkg.Catalog{
+				{ID: "ctx:repo-b", Name: "same", Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:repo-a", Name: "same", Kind: repositorypkg.IdentityExact},
 			},
 			true,
 			"",
@@ -731,7 +733,7 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 
 func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {
 	issue := model.Issue{ID: "one", Title: "One", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "backend"}}
-	catalog := model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext}}
+	catalog := repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha/service", Kind: repositorypkg.IdentityExact}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.repositoryCatalog = catalog
@@ -761,8 +763,8 @@ func TestHubRepositoryPresentationAcrossListBoardAndInsights(t *testing.T) {
 
 func TestHubCatalogChangeInvalidatesBoardAndInsightsPresentationCaches(t *testing.T) {
 	issue := model.Issue{ID: "one", Title: "One", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
-	oldCatalog := model.RepositoryCatalog{{ID: "ctx:alpha", Name: "old/name", Kind: model.RepositoryIdentityHubContext}}
-	newCatalog := model.RepositoryCatalog{{ID: "ctx:alpha", Name: "new/name", Kind: model.RepositoryIdentityHubContext}}
+	oldCatalog := repositorypkg.Catalog{{ID: "ctx:alpha", Name: "old/name", Kind: repositorypkg.IdentityExact}}
+	newCatalog := repositorypkg.Catalog{{ID: "ctx:alpha", Name: "new/name", Kind: repositorypkg.IdentityExact}}
 
 	theme := DefaultTheme(lipgloss.NewRenderer(io.Discard))
 	board := NewBoardModel([]model.Issue{issue}, theme)
@@ -797,7 +799,7 @@ func TestHubContextCleanupIsTUIOnlyAndExact(t *testing.T) {
 	}}
 	m := NewModel(issues, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", Kind: model.RepositoryIdentityHubContext}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
 
 	extraction := analysis.ExtractLabels(m.repositoryIssues)
@@ -835,14 +837,14 @@ func TestHubCatalogRefreshPreservesActiveFuzzyResults(t *testing.T) {
 	issue := model.Issue{ID: "one", Title: "Stable title", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "old/name", Kind: model.RepositoryIdentityHubContext}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "old/name", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
 	m.list.SetFilterText("Stable")
 	if len(m.list.VisibleItems()) != 1 {
 		t.Fatalf("initial fuzzy matches = %d", len(m.list.VisibleItems()))
 	}
 
-	m.applyRepositoryCatalogUpdate(model.RepositoryCatalog{{ID: "ctx:alpha", Name: "new/name", Kind: model.RepositoryIdentityHubContext}}, 1, true, false, nil)
+	m.applyRepositoryCatalogUpdate(repositorypkg.Catalog{{ID: "ctx:alpha", Name: "new/name", Kind: repositorypkg.IdentityExact}}, 1, true, false, nil)
 	if len(m.list.VisibleItems()) != 1 || m.list.SelectedItem().(IssueItem).Issue.ID != "one" {
 		t.Fatalf("catalog refresh lost fuzzy result: %+v", m.list.VisibleItems())
 	}
@@ -863,13 +865,13 @@ func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
 		{ID: "one", Title: "Issue one", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
 		{ID: "two", Title: "Issue two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
 	}
-	oldCatalog := model.RepositoryCatalog{
-		{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+	oldCatalog := repositorypkg.Catalog{
+		{ID: "ctx:one", Name: "Zulu", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:two", Name: "Alpha", Kind: repositorypkg.IdentityExact},
 	}
-	newCatalog := model.RepositoryCatalog{
-		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:two", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
+	newCatalog := repositorypkg.Catalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:two", Name: "Zulu", Kind: repositorypkg.IdentityExact},
 	}
 
 	for _, mode := range []SortMode{SortContextCreated, SortContextPriority} {
@@ -916,7 +918,7 @@ func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
 
 		updated, _ := m.Update(RepositoryCatalogReadyMsg{
 			Generation: 2,
-			Catalog:    model.RepositoryCatalog{oldCatalog[0]},
+			Catalog:    repositorypkg.Catalog{oldCatalog[0]},
 		})
 		m = updated.(Model)
 		if m.sortMode != SortDefault {
@@ -941,9 +943,9 @@ func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) 
 	for _, mode := range []SortMode{SortContextCreated, SortContextPriority} {
 		t.Run(mode.String(), func(t *testing.T) {
 			m := NewModel(issues, nil, "")
-			m.repositoryCatalog = model.RepositoryCatalog{
-				{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
-				{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+			m.repositoryCatalog = repositorypkg.Catalog{
+				{ID: "ctx:one", Name: "Zulu", Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:two", Name: "Alpha", Kind: repositorypkg.IdentityExact},
 			}
 			m.sortMode = mode
 			m.applyFilter()
@@ -972,12 +974,12 @@ func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.hubConfigPath = configPath
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{
-		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:two", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:two", Name: "Beta", Kind: repositorypkg.IdentityExact},
 	}
 	m.sortMode = SortContextCreated
-	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:one", "ctx:two"})
+	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:one", "ctx:two"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +992,7 @@ func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
 	}
 
 	m.SetHistoryProvider(correlation.HistoryModeExternal, configPath)
-	if got := m.HubScope(); got.Mode != model.HubScopeSelectedContexts || !slices.Equal(got.Contexts, []string{"ctx:one"}) {
+	if got := m.HubScope(); got.Mode != hub.HubScopeSelectedContexts || !slices.Equal(got.Contexts, []string{"ctx:one"}) {
 		t.Fatalf("scope after synchronous catalog reload = %#v", got)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "one")
@@ -1006,9 +1008,9 @@ func TestSetHubScopeNormalizesContextSortAndPreservesVisibleSelection(t *testing
 	}
 	m := NewModel(issues, nil, "")
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{
-		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:two", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:two", Name: "Beta", Kind: repositorypkg.IdentityExact},
 	}
 	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:one", "ctx:two")); err != nil {
 		t.Fatal(err)
@@ -1069,9 +1071,9 @@ func TestEnableWorkspaceModeNormalizesUnavailableContextSort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewModel(tt.issues, nil, "")
-			m.repositoryCatalog = model.RepositoryCatalog{
-				{ID: "ctx:one", Name: "Zulu", Kind: model.RepositoryIdentityHubContext},
-				{ID: "ctx:two", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+			m.repositoryCatalog = repositorypkg.Catalog{
+				{ID: "ctx:one", Name: "Zulu", Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:two", Name: "Alpha", Kind: repositorypkg.IdentityExact},
 			}
 			m.sortMode = tt.mode
 			m.applyFilter()
@@ -1132,12 +1134,12 @@ func TestAsyncCatalogScopeReconcilePreservesSelectionAfterContextFallback(t *tes
 	m := NewModel(issues, nil, "")
 	m.hubConfigPath = "hub.yaml"
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{
-		{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:two", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:two", Name: "Beta", Kind: repositorypkg.IdentityExact},
 	}
 	m.sortMode = SortContextPriority
-	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:one", "ctx:two"})
+	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:one", "ctx:two"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,8 +1153,8 @@ func TestAsyncCatalogScopeReconcilePreservesSelectionAfterContextFallback(t *tes
 
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
 		Generation: 1,
-		Catalog: model.RepositoryCatalog{
-			{ID: "ctx:one", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
+		Catalog: repositorypkg.Catalog{
+			{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
 		},
 	})
 	m = updated.(Model)
@@ -1172,7 +1174,7 @@ func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	}}
 	m := NewModel(issues, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:alpha", Name: "alpha", Kind: model.RepositoryIdentityHubContext}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
@@ -1232,8 +1234,8 @@ func TestHubListRowShowsFullCommonRepositoryName(t *testing.T) {
 	issue := model.Issue{ID: "issue-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{{
-		ID: "ctx:alpha", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext,
+	m.repositoryCatalog = repositorypkg.Catalog{{
+		ID: "ctx:alpha", Name: "beads_viewer", Kind: repositorypkg.IdentityExact,
 	}}
 	m.refreshRepositoryPresentation()
 	row := m.list.View()
@@ -1261,7 +1263,7 @@ func TestHubNoContextPickerStatusAndScopeBadges(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-	m.repoPicker.SetHubScope(model.NewContextlessHubScope())
+	m.repoPicker.SetHubScope(hub.NewContextlessHubScope())
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context") || strings.Contains(picker, "Contextless") {
 		t.Fatalf("picker presentation = %q", picker)
 	}
@@ -1275,7 +1277,7 @@ func TestHubNoContextPickerStatusAndScopeBadges(t *testing.T) {
 	}
 
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-	m.repoPicker.SetHubScope(model.NewContextlessHubScope())
+	m.repoPicker.SetHubScope(hub.NewContextlessHubScope())
 	m.repoPicker.MoveDown()
 	m.repoPicker.ToggleSelected()
 	m = m.applyRepositoryPickerSelection()
@@ -1291,9 +1293,9 @@ func TestHubListRowConstrainsLongMultiContextBadge(t *testing.T) {
 	issue := model.Issue{ID: "issue-7td", Title: "Badge fix", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{
-		{ID: "ctx:alpha", Name: "exceptionally-long-repository-name", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:beta", Name: "beta", Kind: model.RepositoryIdentityHubContext},
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:alpha", Name: "exceptionally-long-repository-name", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:beta", Name: "beta", Kind: repositorypkg.IdentityExact},
 	}
 	m.list.SetSize(50, 10)
 	m.refreshRepositoryPresentation()
@@ -1313,11 +1315,11 @@ func TestHubListRowsAlignSharedRepositoryColumn(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{
-		{ID: "ctx:beads", Name: "beads_viewer", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:long", Name: "an-extraordinarily-long-repository-name", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: model.RepositoryIdentityHubContext},
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:beads", Name: "beads_viewer", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:long", Name: "an-extraordinarily-long-repository-name", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: repositorypkg.IdentityExact},
 	}
 	m.refreshRepositoryPresentation()
 	nameWidth, extraWidth := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
@@ -1361,9 +1363,9 @@ func TestHubListColumnSuppressesWhenMetadataConsumesWidth(t *testing.T) {
 	}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{
-		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: model.RepositoryIdentityHubContext},
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:dotfiles", Name: "dotfiles", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:mcp", Name: "mcp-discovery", Kind: repositorypkg.IdentityExact},
 	}
 	m.list.SetSize(45, 10)
 	m.refreshRepositoryPresentation()
@@ -1387,8 +1389,8 @@ func TestHubListColumnRefreshesAfterSplitPaneResize(t *testing.T) {
 	issue := model.Issue{ID: "resize-id", Title: "Resize", Status: model.StatusOpen, Labels: []string{"ctx:long"}}
 	m := NewModel([]model.Issue{issue}, nil, "")
 	m.hubConfigPath = "hub.yaml"
-	m.repositoryCatalog = model.RepositoryCatalog{{
-		ID: "ctx:long", Name: "an-extraordinarily-long-repository-name", Kind: model.RepositoryIdentityHubContext,
+	m.repositoryCatalog = repositorypkg.Catalog{{
+		ID: "ctx:long", Name: "an-extraordinarily-long-repository-name", Kind: repositorypkg.IdentityExact,
 	}}
 	m.refreshRepositoryPresentation()
 	m.width, m.height, m.isSplitView = 160, 40, true
@@ -1407,9 +1409,9 @@ func TestHubListColumnRefreshesAfterSplitPaneResize(t *testing.T) {
 func TestHubRepositoryBadgeFitsNarrowBoardCard(t *testing.T) {
 	issue := model.Issue{ID: "very-long-issue-id", Title: "Title", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta", "backend"}}
 	board := NewBoardModel([]model.Issue{issue}, DefaultTheme(lipgloss.NewRenderer(io.Discard)))
-	board.SetRepositoryPresentation(model.RepositoryCatalog{
-		{ID: "ctx:alpha", Name: "alpha/service", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:beta", Name: "beta/service", Kind: model.RepositoryIdentityHubContext},
+	board.SetRepositoryPresentation(repositorypkg.Catalog{
+		{ID: "ctx:alpha", Name: "alpha/service", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:beta", Name: "beta/service", Kind: repositorypkg.IdentityExact},
 	}, true, "", nil)
 	card := board.renderCard(issue, 20, false, 0, 0)
 	if !containsAll(card, "ver…", "+1") {

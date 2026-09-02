@@ -73,7 +73,7 @@ func BuildFileIndex(report *HistoryReport) *FileBeadIndex {
 		for _, commit := range history.Commits {
 			for _, file := range commit.Files {
 				// Normalize path (remove leading ./ and normalize separators)
-				normalizedPath := normalizePath(repositoryFileIdentity(commit.Repository, file.Path))
+				normalizedPath := normalizePath(FileIdentity(commit.Repository, file.Path))
 
 				if fileBeadMap[normalizedPath] == nil {
 					fileBeadMap[normalizedPath] = make(map[string]*BeadReference)
@@ -425,7 +425,7 @@ func BuildCoChangeMatrix(report *HistoryReport) *CoChangeMatrix {
 
 	for _, history := range report.Histories {
 		for _, commit := range history.Commits {
-			commitIdentity := repositoryCommitIdentity(commit.Repository, commit.SHA)
+			commitIdentity := CommitIdentity(commit.Repository, commit.SHA)
 			if processedCommits[commitIdentity] {
 				continue
 			}
@@ -434,14 +434,14 @@ func BuildCoChangeMatrix(report *HistoryReport) *CoChangeMatrix {
 			// Normalize all file paths in this commit
 			var files []string
 			for _, fc := range commit.Files {
-				normalized := normalizePath(repositoryFileIdentity(commit.Repository, fc.Path))
+				normalized := normalizePath(FileIdentity(commit.Repository, fc.Path))
 				if normalized != "" {
 					files = append(files, normalized)
 				}
 			}
 
 			// Store files for this commit (for sampling later)
-			matrix.CommitFiles[repositoryCommitIdentity(commit.Repository, commit.ShortSHA)] = files
+			matrix.CommitFiles[CommitIdentity(commit.Repository, commit.ShortSHA)] = files
 
 			// Update file commit counts
 			for _, file := range files {

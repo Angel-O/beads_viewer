@@ -7,8 +7,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 // White-box testing of UI model logic
@@ -239,11 +241,11 @@ func TestRecipeSortCyclePreservesFilteredIssues(t *testing.T) {
 	}
 }
 
-func contextSortCatalog() model.RepositoryCatalog {
-	return model.RepositoryCatalog{
-		{ID: "ctx:zeta", Name: "Alpha", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:alpha", Name: "Beta", Kind: model.RepositoryIdentityHubContext},
-		{ID: "ctx:gamma", Name: "Gamma", Kind: model.RepositoryIdentityHubContext},
+func contextSortCatalog() repositorypkg.Catalog {
+	return repositorypkg.Catalog{
+		{ID: "ctx:zeta", Name: "Alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:alpha", Name: "Beta", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:gamma", Name: "Gamma", Kind: repositorypkg.IdentityExact},
 	}
 }
 
@@ -332,11 +334,11 @@ func TestContextSortModesAreReachableThroughSortCycle(t *testing.T) {
 func TestContextSortCycleSkipsModesWithoutMultipleHubContexts(t *testing.T) {
 	tests := []struct {
 		name    string
-		catalog model.RepositoryCatalog
+		catalog repositorypkg.Catalog
 	}{
 		{name: "zero", catalog: nil},
 		{name: "one", catalog: contextSortCatalog()[:1]},
-		{name: "one hub plus workspace", catalog: append(contextSortCatalog()[:1], model.RepositoryCatalogEntry{ID: "workspace", Name: "Workspace", Kind: model.RepositoryIdentityWorkspacePrefix})},
+		{name: "one hub plus workspace", catalog: append(contextSortCatalog()[:1], repositorypkg.CatalogEntry{ID: "workspace", Name: "Workspace", Kind: repositorypkg.IdentityPrefix})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -357,7 +359,7 @@ func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
 	tests := []struct {
 		name      string
 		issues    []model.Issue
-		scope     model.HubScope
+		scope     hub.HubScope
 		workspace bool
 		want      bool
 	}{
@@ -366,10 +368,10 @@ func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
 		{name: "selected two with one unused", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha", "ctx:beta"), want: true},
 		{name: "selected plus contextless without secondary", issues: []model.Issue{{ID: "none"}}, scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: false},
 		{name: "selected plus contextless with secondary", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}, {ID: "none"}}, scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: true},
-		{name: "contextless only", issues: []model.Issue{{ID: "none"}}, scope: model.NewContextlessHubScope(), want: false},
-		{name: "all items ignores unused catalog contexts", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: model.NewAllItemsHubScope(), want: false},
-		{name: "all items with effective contexts", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: model.NewAllItemsHubScope(), want: true},
-		{name: "workspace", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: model.NewAllItemsHubScope(), workspace: true, want: false},
+		{name: "contextless only", issues: []model.Issue{{ID: "none"}}, scope: hub.NewContextlessHubScope(), want: false},
+		{name: "all items ignores unused catalog contexts", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: hub.NewAllItemsHubScope(), want: false},
+		{name: "all items with effective contexts", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: hub.NewAllItemsHubScope(), want: true},
+		{name: "workspace", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: hub.NewAllItemsHubScope(), workspace: true, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -407,18 +409,18 @@ func TestContextSortCycleReachesModesFromEffectiveSelectedScope(t *testing.T) {
 	}
 }
 
-func mustSelectedContextsScope(t *testing.T, contexts ...string) model.HubScope {
+func mustSelectedContextsScope(t *testing.T, contexts ...string) hub.HubScope {
 	t.Helper()
-	scope, err := model.NewSelectedContextsHubScope(contexts)
+	scope, err := hub.NewSelectedContextsHubScope(contexts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return scope
 }
 
-func mustSelectedContextsAndContextlessScope(t *testing.T, contexts ...string) model.HubScope {
+func mustSelectedContextsAndContextlessScope(t *testing.T, contexts ...string) hub.HubScope {
 	t.Helper()
-	scope, err := model.NewSelectedContextsAndContextlessHubScope(contexts)
+	scope, err := hub.NewSelectedContextsAndContextlessHubScope(contexts)
 	if err != nil {
 		t.Fatal(err)
 	}

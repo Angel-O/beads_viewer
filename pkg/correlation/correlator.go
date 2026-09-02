@@ -351,7 +351,7 @@ func dedupCommits(commits []CorrelatedCommit) []CorrelatedCommit {
 	seen := make(map[string]bool)
 	var result []CorrelatedCommit
 	for _, c := range commits {
-		identity := repositoryCommitIdentity(c.Repository, c.SHA)
+		identity := CommitIdentity(c.Repository, c.SHA)
 		if !seen[identity] {
 			seen[identity] = true
 			result = append(result, c)
@@ -366,7 +366,7 @@ func (c *Correlator) buildCommitIndex(histories map[string]BeadHistory) CommitIn
 
 	for beadID, history := range histories {
 		for _, commit := range history.Commits {
-			identity := repositoryCommitIdentity(commit.Repository, commit.SHA)
+			identity := CommitIdentity(commit.Repository, commit.SHA)
 			index[identity] = append(index[identity], beadID)
 		}
 	}
@@ -394,7 +394,7 @@ func (c *Correlator) calculateStats(histories map[string]BeadHistory, commits []
 		}
 
 		for _, commit := range history.Commits {
-			uniqueCommits[repositoryCommitIdentity(commit.Repository, commit.SHA)] = true
+			uniqueCommits[CommitIdentity(commit.Repository, commit.SHA)] = true
 			authors[commit.Author] = true
 			stats.MethodDistribution[commit.Method.String()]++
 		}

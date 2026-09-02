@@ -6,6 +6,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
@@ -141,7 +142,7 @@ type InsightsModel struct {
 	extraText         string
 	labelAttention    []analysis.LabelAttentionScore
 	labelFlow         *analysis.CrossLabelFlow
-	repositoryCatalog model.RepositoryCatalog
+	repositoryCatalog repository.Catalog
 	hubPresentation   bool
 
 	// Priority triage data (bv-91)
@@ -185,8 +186,8 @@ type InsightsModel struct {
 
 // SetRepositoryPresentation updates Hub-only detail metadata and rebuilds the
 // cached detail content for the current selection.
-func (m *InsightsModel) SetRepositoryPresentation(catalog model.RepositoryCatalog, enabled bool) {
-	m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+func (m *InsightsModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool) {
+	m.repositoryCatalog = append(repository.Catalog(nil), catalog...)
 	m.hubPresentation = enabled
 	m.updateDetailContent()
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 func TestBackgroundWorker_NewWithoutPath(t *testing.T) {
@@ -51,7 +52,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
 		Generation: 2,
-		Catalog: model.RepositoryCatalog{
+		Catalog: repositorypkg.Catalog{
 			{ID: "ctx:a", Name: "a"},
 			{ID: "ctx:new", Name: "new"},
 		},
@@ -62,7 +63,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 	}
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{
 		Generation: 1,
-		Catalog:    model.RepositoryCatalog{{ID: "ctx:stale", Name: "stale"}},
+		Catalog:    repositorypkg.Catalog{{ID: "ctx:stale", Name: "stale"}},
 	})
 	m = updated.(Model)
 	if len(m.repositoryCatalog) != 2 || m.catalogGeneration != 2 {
@@ -70,7 +71,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 	}
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{
 		Generation: 3,
-		Catalog:    model.RepositoryCatalog{{ID: "ctx:new", Name: "new"}},
+		Catalog:    repositorypkg.Catalog{{ID: "ctx:new", Name: "new"}},
 	})
 	m = updated.(Model)
 	if m.activeRepos != nil {
@@ -81,7 +82,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 func TestOpenRepositoryPickerTracksLiveCatalogByExactID(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{
+	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "ctx:a", Name: "alpha"},
 		{ID: "ctx:b", Name: "beta"},
 	}
@@ -93,7 +94,7 @@ func TestOpenRepositoryPickerTracksLiveCatalogByExactID(t *testing.T) {
 
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
 		Generation: 1,
-		Catalog: model.RepositoryCatalog{
+		Catalog: repositorypkg.Catalog{
 			{ID: "ctx:b", Name: "aardvark", BeadCount: 4},
 			{ID: "ctx:new", Name: "new", BeadCount: 1},
 		},
@@ -145,7 +146,7 @@ func TestBackgroundWorkerBacklogPreservesSnapshot(t *testing.T) {
 	worker.send(Phase2UpdateMsg{DataHash: "old-2"})
 	snapshot := &DataSnapshot{DataHash: "snapshot"}
 	worker.send(SnapshotReadyMsg{Snapshot: snapshot})
-	worker.send(RepositoryCatalogReadyMsg{Generation: 1, Catalog: model.RepositoryCatalog{{ID: "ctx:a"}}})
+	worker.send(RepositoryCatalogReadyMsg{Generation: 1, Catalog: repositorypkg.Catalog{{ID: "ctx:a"}}})
 
 	foundSnapshot := false
 	for len(worker.msgCh) > 0 {
@@ -171,7 +172,7 @@ func TestBackgroundWorkerBacklogPreservesCurrentSnapshotAndNewestCatalog(t *test
 	worker.mu.Unlock()
 	worker.send(SnapshotReadyMsg{Snapshot: oldSnapshot, SnapshotVer: 1})
 	worker.send(SnapshotReadyMsg{Snapshot: currentSnapshot, SnapshotVer: 2})
-	worker.send(RepositoryCatalogReadyMsg{Generation: 3, Catalog: model.RepositoryCatalog{{ID: "ctx:new"}}})
+	worker.send(RepositoryCatalogReadyMsg{Generation: 3, Catalog: repositorypkg.Catalog{{ID: "ctx:new"}}})
 
 	foundCurrent := false
 	foundCatalog := false
@@ -202,7 +203,7 @@ func TestBackgroundWorkerBacklogPreservesLatestSourceError(t *testing.T) {
 	worker.snapshot = currentSnapshot
 	worker.mu.Unlock()
 	worker.send(SnapshotReadyMsg{Snapshot: currentSnapshot, SnapshotVer: 2})
-	worker.send(RepositoryCatalogReadyMsg{Generation: 2, Catalog: model.RepositoryCatalog{{ID: "ctx:a"}}})
+	worker.send(RepositoryCatalogReadyMsg{Generation: 2, Catalog: repositorypkg.Catalog{{ID: "ctx:a"}}})
 	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
 
 	foundSnapshot := false
@@ -236,7 +237,7 @@ func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing
 				t.Fatal(err)
 			}
 			defer worker.Stop()
-			catalog := model.RepositoryCatalog{{ID: "ctx:current", Name: "current"}}
+			catalog := repositorypkg.Catalog{{ID: "ctx:current", Name: "current"}}
 			current := NewSnapshotBuilder([]model.Issue{{ID: "CURRENT", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
 			worker.mu.Lock()
 			worker.snapshot = current
@@ -248,7 +249,7 @@ func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing
 				"snapshot": SnapshotReadyMsg{
 					Snapshot:          current,
 					SnapshotVer:       5,
-					Catalog:           model.RepositoryCatalog{{ID: "ctx:snapshot-old", Name: "snapshot-old"}},
+					Catalog:           repositorypkg.Catalog{{ID: "ctx:snapshot-old", Name: "snapshot-old"}},
 					CatalogGeneration: 5,
 					CatalogAvailable:  true,
 					CatalogChanged:    false,
@@ -292,7 +293,7 @@ func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing
 
 			m := NewModel(nil, nil, "")
 			m.catalogGeneration = 4
-			m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:old", Name: "old"}}
+			m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:old", Name: "old"}}
 			for _, message := range retained {
 				updated, _ := m.Update(message)
 				m = updated.(Model)
@@ -313,13 +314,13 @@ func TestBackgroundWorkerBacklogDoesNotDowngradeNewerSnapshotCatalog(t *testing.
 		t.Fatal(err)
 	}
 	defer worker.Stop()
-	newerCatalog := model.RepositoryCatalog{{ID: "ctx:newer", Name: "newer"}}
+	newerCatalog := repositorypkg.Catalog{{ID: "ctx:newer", Name: "newer"}}
 	current := NewSnapshotBuilder([]model.Issue{{ID: "CURRENT", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
 	worker.mu.Lock()
 	worker.snapshot = current
 	worker.catalog = newerCatalog
 	worker.mu.Unlock()
-	worker.send(RepositoryCatalogReadyMsg{Catalog: model.RepositoryCatalog{{ID: "ctx:older", Name: "older"}}, Generation: 5})
+	worker.send(RepositoryCatalogReadyMsg{Catalog: repositorypkg.Catalog{{ID: "ctx:older", Name: "older"}}, Generation: 5})
 	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
 	worker.send(SnapshotReadyMsg{
 		Snapshot:          current,
@@ -365,7 +366,7 @@ func TestBackgroundWorkerBacklogDoesNotClearNewerSnapshotCatalogError(t *testing
 	worker.mu.Lock()
 	worker.snapshot = current
 	worker.mu.Unlock()
-	worker.send(RepositoryCatalogReadyMsg{Catalog: model.RepositoryCatalog{{ID: "ctx:older"}}, Generation: 5})
+	worker.send(RepositoryCatalogReadyMsg{Catalog: repositorypkg.Catalog{{ID: "ctx:older"}}, Generation: 5})
 	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
 	worker.send(SnapshotReadyMsg{
 		Snapshot:          current,
@@ -391,13 +392,13 @@ func TestBackgroundWorkerBacklogEqualGenerationMergesDeliveryState(t *testing.T)
 		t.Fatal(err)
 	}
 	defer worker.Stop()
-	snapshotCatalog := model.RepositoryCatalog{{ID: "ctx:snapshot", Name: "snapshot"}}
+	snapshotCatalog := repositorypkg.Catalog{{ID: "ctx:snapshot", Name: "snapshot"}}
 	current := &DataSnapshot{DataHash: "current"}
 	worker.mu.Lock()
 	worker.snapshot = current
 	worker.mu.Unlock()
 	worker.send(RepositoryCatalogReadyMsg{
-		Catalog:    model.RepositoryCatalog{{ID: "ctx:standalone", Name: "standalone"}},
+		Catalog:    repositorypkg.Catalog{{ID: "ctx:standalone", Name: "standalone"}},
 		Generation: 6,
 		Recovered:  true,
 	})
@@ -432,7 +433,7 @@ func TestBackgroundWorkerBacklogEqualGenerationCompletesUnavailableSnapshot(t *t
 		t.Fatal(err)
 	}
 	defer worker.Stop()
-	catalog := model.RepositoryCatalog{{ID: "ctx:recovered"}}
+	catalog := repositorypkg.Catalog{{ID: "ctx:recovered"}}
 	current := &DataSnapshot{DataHash: "current"}
 	worker.mu.Lock()
 	worker.snapshot = current
@@ -486,7 +487,7 @@ func TestModelIgnoresOutOfOrderBackgroundSnapshot(t *testing.T) {
 	updated, _ := m.Update(SnapshotReadyMsg{
 		Snapshot:          newer,
 		SnapshotVer:       2,
-		Catalog:           model.RepositoryCatalog{{ID: "ctx:new"}},
+		Catalog:           repositorypkg.Catalog{{ID: "ctx:new"}},
 		CatalogGeneration: 2,
 		CatalogChanged:    true,
 	})
@@ -494,7 +495,7 @@ func TestModelIgnoresOutOfOrderBackgroundSnapshot(t *testing.T) {
 	updated, _ = m.Update(SnapshotReadyMsg{
 		Snapshot:          older,
 		SnapshotVer:       1,
-		Catalog:           model.RepositoryCatalog{{ID: "ctx:old"}},
+		Catalog:           repositorypkg.Catalog{{ID: "ctx:old"}},
 		CatalogGeneration: 1,
 		CatalogChanged:    true,
 	})
@@ -637,14 +638,14 @@ func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
 func TestModelWorkspaceCatalogIgnoresHubCatalogMessages(t *testing.T) {
 	m := Model{
 		workspaceMode: true,
-		repositoryCatalog: model.RepositoryCatalog{
-			{ID: "api", Name: "api", Kind: model.RepositoryIdentityWorkspacePrefix},
+		repositoryCatalog: repositorypkg.Catalog{
+			{ID: "api", Name: "api", Kind: repositorypkg.IdentityPrefix},
 		},
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
 		Generation: 3,
-		Catalog: model.RepositoryCatalog{
-			{ID: "ctx:api", Name: "api", Kind: model.RepositoryIdentityHubContext},
+		Catalog: repositorypkg.Catalog{
+			{ID: "ctx:api", Name: "api", Kind: repositorypkg.IdentityExact},
 		},
 	})
 	m = updated.(Model)
@@ -829,13 +830,13 @@ func TestBackgroundWorkerCatalogGenerationSuppressesStaleResult(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	worker.catalogLoader = func(_ string, issues []model.Issue) (model.RepositoryCatalog, error) {
+	worker.catalogLoader = func(_ string, issues []model.Issue) (repositorypkg.Catalog, error) {
 		if calls.Add(1) == 1 {
 			close(started)
 			<-release
-			return model.RepositoryCatalog{{ID: "ctx:stale", Name: "stale"}}, nil
+			return repositorypkg.Catalog{{ID: "ctx:stale", Name: "stale"}}, nil
 		}
-		return model.RepositoryCatalog{{ID: "ctx:fresh", Name: "fresh"}}, nil
+		return repositorypkg.Catalog{{ID: "ctx:fresh", Name: "fresh"}}, nil
 	}
 	go worker.process()
 	<-started
@@ -863,7 +864,7 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 	}
 	defer worker.Stop()
 	loadedCount := 0
-	worker.catalogLoader = func(_ string, issues []model.Issue) (model.RepositoryCatalog, error) {
+	worker.catalogLoader = func(_ string, issues []model.Issue) (repositorypkg.Catalog, error) {
 		loadedCount = len(issues)
 		return nil, nil
 	}
@@ -884,7 +885,7 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 		t.Fatal("catalog contextless count was not marked ready")
 	}
 
-	worker.catalogLoader = func(_ string, _ []model.Issue) (model.RepositoryCatalog, error) {
+	worker.catalogLoader = func(_ string, _ []model.Issue) (repositorypkg.Catalog, error) {
 		return nil, errors.New("catalog unavailable")
 	}
 	_, contextlessCount, countReady, err = worker.buildRepositoryCatalog(&DataSnapshot{
@@ -1011,13 +1012,13 @@ func waitForSnapshotReady(t *testing.T, messages <-chan tea.Msg) SnapshotReadyMs
 	}
 }
 
-func catalogEntry(catalog model.RepositoryCatalog, id string) model.RepositoryCatalogEntry {
+func catalogEntry(catalog repositorypkg.Catalog, id string) repositorypkg.CatalogEntry {
 	for _, entry := range catalog {
 		if entry.ID == id {
 			return entry
 		}
 	}
-	return model.RepositoryCatalogEntry{}
+	return repositorypkg.CatalogEntry{}
 }
 
 func TestBackgroundWorker_NewWithoutPath_EnvDefaults(t *testing.T) {

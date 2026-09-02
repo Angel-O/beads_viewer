@@ -9,13 +9,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 // RepoPickerModel represents the repository scope picker overlay.
 type RepoPickerModel struct {
-	catalog              model.RepositoryCatalog
-	filtered             model.RepositoryCatalog
+	catalog              repositorypkg.Catalog
+	filtered             repositorypkg.Catalog
 	currentID            string
 	selectedIndex        int
 	selected             map[string]bool // exact repository ID -> selected
@@ -32,14 +33,14 @@ type RepoPickerModel struct {
 }
 
 // NewRepoPickerModel creates a repository picker with all entries selected.
-func NewRepoPickerModel(catalog model.RepositoryCatalog, theme Theme) RepoPickerModel {
+func NewRepoPickerModel(catalog repositorypkg.Catalog, theme Theme) RepoPickerModel {
 	input := textinput.New()
 	input.Placeholder = "name, path, or exact ID"
 	input.CharLimit = 200
 	input.Blur()
 
 	m := RepoPickerModel{
-		catalog:       append(model.RepositoryCatalog(nil), catalog...),
+		catalog:       append(repositorypkg.Catalog(nil), catalog...),
 		selectedIndex: 0,
 		selected:      make(map[string]bool, len(catalog)),
 		selectFuture:  true,
@@ -94,13 +95,13 @@ func (m *RepoPickerModel) SetActiveRepos(active map[string]bool) {
 
 // SetHubScope enables the dedicated contextless choice and initializes the
 // picker from an explicit Hub selector.
-func (m *RepoPickerModel) SetHubScope(scope model.HubScope) {
+func (m *RepoPickerModel) SetHubScope(scope hub.HubScope) {
 	m.showContextless = true
-	contextlessSelected := scope.Mode == model.HubScopeAllItems || scope.Mode == model.HubScopeContextless || scope.IncludeContextless
-	if scope.Mode == model.HubScopeContextless {
+	contextlessSelected := scope.Mode == hub.HubScopeAllItems || scope.Mode == hub.HubScopeContextless || scope.IncludeContextless
+	if scope.Mode == hub.HubScopeContextless {
 		m.selected = make(map[string]bool)
 		m.selectFuture = false
-	} else if scope.Mode == model.HubScopeSelectedContexts {
+	} else if scope.Mode == hub.HubScopeSelectedContexts {
 		selected := make(map[string]bool, len(scope.Contexts))
 		for _, contextID := range scope.Contexts {
 			selected[contextID] = true
@@ -128,7 +129,7 @@ func (m *RepoPickerModel) SetCurrentRepository(repositoryID string) {
 
 // SetCatalog refreshes picker options while preserving draft selection and the
 // cursor by exact repository ID. New entries join only an all-repositories draft.
-func (m *RepoPickerModel) SetCatalog(catalog model.RepositoryCatalog) {
+func (m *RepoPickerModel) SetCatalog(catalog repositorypkg.Catalog) {
 	contextlessCursor := m.currentChoiceIsContextless()
 	cursorID := m.currentRepositoryID()
 	previousIndex := m.selectedIndex
@@ -144,7 +145,7 @@ func (m *RepoPickerModel) SetCatalog(catalog model.RepositoryCatalog) {
 			delete(m.selected, id)
 		}
 	}
-	m.catalog = append(model.RepositoryCatalog(nil), catalog...)
+	m.catalog = append(repositorypkg.Catalog(nil), catalog...)
 	m.filterCatalog(cursorID)
 	if contextlessCursor && m.contextlessMatch {
 		m.selectedIndex = 0
@@ -308,10 +309,10 @@ func (m *RepoPickerModel) filterCatalog(preferredID string) {
 	query := strings.TrimSpace(m.searchInput.Value())
 	m.contextlessMatch = m.showContextless && (query == "" || fuzzyScore("no-context contextless no repository", query) > 0)
 	if query == "" {
-		m.filtered = append(model.RepositoryCatalog(nil), m.catalog...)
+		m.filtered = append(repositorypkg.Catalog(nil), m.catalog...)
 	} else {
 		type scoredRepository struct {
-			repository model.RepositoryCatalogEntry
+			repository repositorypkg.CatalogEntry
 			score      int
 		}
 		matches := make([]scoredRepository, 0, len(m.catalog))
@@ -335,7 +336,7 @@ func (m *RepoPickerModel) filterCatalog(preferredID string) {
 			}
 			return matches[i].repository.ID < matches[j].repository.ID
 		})
-		m.filtered = make(model.RepositoryCatalog, len(matches))
+		m.filtered = make(repositorypkg.Catalog, len(matches))
 		for i, match := range matches {
 			m.filtered[i] = match.repository
 		}

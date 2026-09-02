@@ -20,7 +20,7 @@ func TestComputeAttentionView_Empty(t *testing.T) {
 	}
 }
 
-func TestComputeAttentionView_ContextOnlyUsesEmptyState(t *testing.T) {
+func TestComputeAttentionView_IncludesContextLabelsByDefault(t *testing.T) {
 	out, err := ComputeAttentionView([]model.Issue{{
 		ID:     "context",
 		Status: model.StatusOpen,
@@ -29,8 +29,8 @@ func TestComputeAttentionView_ContextOnlyUsesEmptyState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputeAttentionView error: %v", err)
 	}
-	if out != "No labels available for Attention analysis" {
-		t.Fatalf("unexpected context-only empty state: %q", out)
+	if !strings.Contains(out, "ctx:project") {
+		t.Fatalf("generic attention view omitted context label: %q", out)
 	}
 }
 

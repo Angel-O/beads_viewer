@@ -15,6 +15,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -313,10 +314,10 @@ func TestCommentAddWithoutRegisteredRepositoryPathDoesNotInvokeWBD(t *testing.T)
 
 	m := commentActionModel()
 	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
-	m.repositoryCatalog = model.RepositoryCatalog{{
+	m.repositoryCatalog = repositorypkg.Catalog{{
 		ID:   "ctx:repo",
 		Name: "repo",
-		Kind: model.RepositoryIdentityHubContext,
+		Kind: repositorypkg.IdentityExact,
 	}}
 	m.issueMap["A"].Labels = []string{"ctx:repo"}
 
@@ -634,7 +635,7 @@ func targetedCommentModel(t *testing.T) Model {
 	m.width, m.height = 120, 40
 	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:repo", Name: "repo", Path: t.TempDir(), Kind: model.RepositoryIdentityHubContext}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:repo", Name: "repo", Path: t.TempDir(), Kind: repositorypkg.IdentityExact}}
 	m.list.Select(1)
 	m.isSplitView = true
 	m.showDetails = true

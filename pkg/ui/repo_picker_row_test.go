@@ -10,12 +10,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 var repoPickerSGRPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-func newANSIRepoPickerModel(catalog model.RepositoryCatalog) (RepoPickerModel, Theme) {
+func newANSIRepoPickerModel(catalog repositorypkg.Catalog) (RepoPickerModel, Theme) {
 	renderer := lipgloss.NewRenderer(io.Discard)
 	renderer.SetColorProfile(termenv.ANSI)
 	theme := DefaultTheme(renderer)
@@ -45,7 +46,7 @@ func repoPickerLineHasUnderline(line string) bool {
 
 func TestRepoPickerCurrentNameIsAccentedAndUnderlinedWithoutChangingPlainText(t *testing.T) {
 	m, theme := newANSIRepoPickerModel(testRepositoryCatalog())
-	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetHubScope(hub.NewAllItemsHubScope())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SetSize(120, 24)
 
@@ -69,10 +70,10 @@ func TestRepoPickerCurrentNameIsAccentedAndUnderlinedWithoutChangingPlainText(t 
 }
 
 func TestRepoPickerCurrentNameTruncatesBeforeStyling(t *testing.T) {
-	m, theme := newANSIRepoPickerModel(model.RepositoryCatalog{{
+	m, theme := newANSIRepoPickerModel(repositorypkg.Catalog{{
 		ID: "ctx:long", Name: ".", BeadCount: 42,
 	}})
-	scope, err := model.NewSelectedContextsHubScope([]string{"ctx:long"})
+	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:long"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestRepoPickerCurrentNameTruncatesBeforeStyling(t *testing.T) {
 
 func TestRepoPickerContextlessRowPreservesCountAtNarrowWidth(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(model.NewAllItemsHubScope())
+	m.SetHubScope(hub.NewAllItemsHubScope())
 	m.SetSize(20, 8)
 
 	view := m.View()

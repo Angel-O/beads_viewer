@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 func TestDefaultPaths(t *testing.T) {
@@ -28,6 +29,22 @@ func TestDefaultPaths(t *testing.T) {
 	}
 	if paths != want {
 		t.Fatalf("DefaultPaths() = %#v, want %#v", paths, want)
+	}
+}
+
+func TestHubScopeAndLabelAdmissionAreCaseSensitive(t *testing.T) {
+	selected, err := NewSelectedContextsHubScope([]string{"ctx:z", "ctx:a", "ctx:z"})
+	if err != nil || !selected.MatchesLabels([]string{"ctx:a"}) || selected.MatchesLabels([]string{"ctx:other"}) {
+		t.Fatalf("selected scope = %#v, err = %v", selected, err)
+	}
+	if selected.MatchesLabels([]string{"Ctx:a"}) {
+		t.Fatal("uppercase context unexpectedly matched")
+	}
+	if IsContextLabel("Ctx:a") || !IsContextLabel("ctx:a") || !AdmitLabel("Ctx:a") || AdmitLabel("ctx:a") {
+		t.Fatal("Hub context classification is not exact and lowercase")
+	}
+	if !NewContextlessHubScope().MatchesLabels([]string{"Ctx:a"}) {
+		t.Fatal("uppercase ctx label should be contextless to Hub")
 	}
 }
 
@@ -356,7 +373,7 @@ func TestLoadRepositoryCatalogIncludesRegisteredRepositoriesAndCountsContexts(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	byID := make(map[string]model.RepositoryCatalogEntry, len(catalog))
+	byID := make(map[string]repository.CatalogEntry, len(catalog))
 	for _, entry := range catalog {
 		byID[entry.ID] = entry
 	}

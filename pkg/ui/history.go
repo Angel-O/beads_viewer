@@ -263,14 +263,14 @@ func correlatedCommitIdentity(commit *correlation.CorrelatedCommit) string {
 	if commit == nil {
 		return ""
 	}
-	return commit.Repository + "\x00" + commit.SHA
+	return correlation.CommitIdentity(commit.Repository, commit.SHA)
 }
 
 func commitListEntryIdentity(commit *CommitListEntry) string {
 	if commit == nil {
 		return ""
 	}
-	return commit.Repository + "\x00" + commit.SHA
+	return correlation.CommitIdentity(commit.Repository, commit.SHA)
 }
 
 func reportHistory(report *correlation.HistoryReport, beadID string) (correlation.BeadHistory, bool) {
@@ -1322,10 +1322,7 @@ func (h *HistoryModel) buildCommitList() {
 }
 
 func historyFileIdentity(file correlation.FileChange) string {
-	if file.Repository == "" {
-		return file.Path
-	}
-	return file.Repository + ":" + file.Path
+	return correlation.FileIdentity(file.Repository, file.Path)
 }
 
 // MoveUpGit moves selection up in git mode
