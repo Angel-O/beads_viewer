@@ -13,6 +13,266 @@ import (
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
+// repositoryScopeController owns the repository universe and the user's
+// selection. Model deliberately embeds it so existing UI code keeps its
+// field-level access while catalog reconciliation has one owner.
+type repositoryScopeController struct {
+	repositoryCatalog         repositorypkg.Catalog
+	hubScope                  hub.HubScope
+	repositoryCatalogIssues   []model.Issue
+	contextlessBeadCountValue int
+	contextlessCountReady     bool
+	repositoryIssues          []model.Issue
+	repositoryIssueIDs        map[string]bool
+	repositoryCatalogReady    bool
+	currentRepositoryID       string
+	defaultRepositoryID       string
+	defaultRepositorySet      bool
+	catalogGeneration         uint64
+	activeRepos               map[string]bool
+}
+
+func newRepositoryScopeController() repositoryScopeController {
+	return repositoryScopeController{hubScope: hub.NewAllItemsHubScope()}
+}
+
+func (s *repositoryScopeController) reconcileHubScopeCatalog(usesHub bool) {
+	if !usesHub || s.hubScope.Mode != hub.HubScopeSelectedContexts {
+		return
+	}
+	selected := make(map[string]bool, len(s.hubScope.Contexts))
+	for _, contextID := range s.hubScope.Contexts {
+		selected[contextID] = true
+	}
+	reconciled := repositorypkg.ReconcileSelection(selected, s.repositoryCatalog)
+	if reconciled == nil {
+		if s.hubScope.IncludeContextless {
+			s.hubScope = hub.NewContextlessHubScope()
+		} else {
+			s.hubScope = hub.NewAllItemsHubScope()
+		}
+		s.activeRepos = nil
+		return
+	}
+	if s.hubScope.IncludeContextless && len(reconciled) == len(s.repositoryCatalog) {
+		s.hubScope = hub.NewAllItemsHubScope()
+		s.activeRepos = nil
+		return
+	}
+	var scope hub.HubScope
+	var err error
+	if s.hubScope.IncludeContextless {
+		scope, err = hub.NewSelectedContextsAndContextlessHubScope(sortedRepoKeys(reconciled))
+	} else {
+		scope, err = hub.NewSelectedContextsHubScope(sortedRepoKeys(reconciled))
+	}
+	if err != nil {
+		s.hubScope = hub.NewAllItemsHubScope()
+		s.activeRepos = nil
+		return
+	}
+	s.hubScope = scope
+	s.activeRepos = reconciled
+}
+
+func (s *repositoryScopeController) setRepositoryScope(selected map[string]bool, usesHub bool) error {
+	s.defaultRepositorySet = true
+	s.defaultRepositoryID = ""
+	reconciled := repositorypkg.ReconcileSelection(selected, s.repositoryCatalog)
+	if usesHub {
+		if len(selected) == 0 || len(reconciled) == 0 {
+			s.hubScope = hub.NewAllItemsHubScope()
+			s.activeRepos = nil
+			return nil
+		}
+		return s.setHubRepositoryScope(reconciled, false)
+	}
+	if len(selected) == 0 || len(reconciled) == len(s.repositoryCatalog) {
+		s.activeRepos = nil
+	} else {
+		s.activeRepos = reconciled
+	}
+	return nil
+}
+
+func (s *repositoryScopeController) setHubRepositoryScope(selected map[string]bool, includeContextless bool) error {
+	s.defaultRepositorySet = true
+	s.defaultRepositoryID = ""
+	if len(selected) == 0 {
+		if includeContextless {
+			s.hubScope = hub.NewContextlessHubScope()
+		} else {
+			s.hubScope = hub.NewAllItemsHubScope()
+		}
+		s.activeRepos = nil
+		return nil
+	}
+	if includeContextless && len(selected) == len(s.repositoryCatalog) {
+		s.hubScope = hub.NewAllItemsHubScope()
+		s.activeRepos = nil
+		return nil
+	}
+	contexts := sortedRepoKeys(selected)
+	var scope hub.HubScope
+	var err error
+	if includeContextless {
+		scope, err = hub.NewSelectedContextsAndContextlessHubScope(contexts)
+	} else {
+		scope, err = hub.NewSelectedContextsHubScope(contexts)
+	}
+	if err != nil {
+		return err
+	}
+	s.hubScope = scope
+	s.activeRepos = repositorypkg.ReconcileSelection(selected, s.repositoryCatalog)
+	return nil
+}
+
+func (s *repositoryScopeController) setHubScope(scope hub.HubScope, usesHub bool) error {
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+	if scope.Mode == hub.HubScopeSelectedContexts {
+		available := make(map[string]bool, len(s.repositoryCatalog))
+		for _, repository := range s.repositoryCatalog {
+			if repository.Kind == repositorypkg.IdentityExact {
+				available[repository.ID] = true
+			}
+		}
+		for _, contextID := range scope.Contexts {
+			if !available[contextID] {
+				return fmt.Errorf("Hub context is not registered: %s", contextID)
+			}
+		}
+	}
+	s.defaultRepositorySet = true
+	s.defaultRepositoryID = ""
+	switch scope.Mode {
+	case hub.HubScopeAllItems:
+		s.hubScope = hub.NewAllItemsHubScope()
+	case hub.HubScopeContextless:
+		s.hubScope = hub.NewContextlessHubScope()
+	default:
+		s.hubScope = scope.Clone()
+	}
+	s.activeRepos = nil
+	if usesHub && scope.Mode == hub.HubScopeSelectedContexts {
+		s.activeRepos = make(map[string]bool, len(scope.Contexts))
+		for _, contextID := range scope.Contexts {
+			s.activeRepos[contextID] = true
+		}
+	}
+	return nil
+}
+
+func (s *repositoryScopeController) applyDefault() bool {
+	if s.defaultRepositorySet || s.defaultRepositoryID == "" || !s.repositoryCatalogReady {
+		return false
+	}
+	s.defaultRepositorySet = true
+	for _, repository := range s.repositoryCatalog {
+		if repository.Kind != repositorypkg.IdentityExact || repository.ID != s.defaultRepositoryID {
+			continue
+		}
+		scope, err := hub.NewSelectedContextsHubScope([]string{repository.ID})
+		if err != nil {
+			return false
+		}
+		s.activeRepos = map[string]bool{repository.ID: true}
+		s.hubScope = scope
+		return true
+	}
+	return false
+}
+
+func (s repositoryScopeController) usesHubScope(workspaceMode, hubRepositoryMode bool, catalogPath string) bool {
+	if workspaceMode {
+		return false
+	}
+	if hubRepositoryMode || strings.TrimSpace(catalogPath) != "" {
+		return true
+	}
+	for _, repository := range s.repositoryCatalog {
+		if repository.Kind == repositorypkg.IdentityExact {
+			return true
+		}
+	}
+	return false
+}
+
+func (s repositoryScopeController) issueMatchesRepositoryScope(issue model.Issue, workspaceMode, usesHub bool) bool {
+	if usesHub {
+		return s.hubScope.MatchesLabels(issue.Labels)
+	}
+	if s.activeRepos == nil {
+		return true
+	}
+
+	workspaceKey := ""
+	for _, repository := range s.repositoryCatalog {
+		if !s.activeRepos[repository.ID] {
+			continue
+		}
+		switch repository.Kind {
+		case repositorypkg.IdentityExact:
+			if repository.ID != strings.ToLower(repository.ID) || !strings.HasPrefix(repository.ID, "ctx:") {
+				continue
+			}
+			for _, label := range issue.Labels {
+				if label == repository.ID {
+					return true
+				}
+			}
+		case repositorypkg.IdentityPrefix:
+			if workspaceKey == "" {
+				workspaceKey = issueRepoKey(issue)
+			}
+			if workspaceKey == repository.ID {
+				return true
+			}
+		}
+	}
+
+	// Legacy workspace filtering keeps issues with no source/prefix visible.
+	return workspaceMode && workspaceKey == ""
+}
+
+func (s repositoryScopeController) repositoryCandidates(issues []model.Issue, workspaceMode, usesHub bool) []model.Issue {
+	if (!usesHub && s.activeRepos == nil) || (usesHub && s.hubScope.Mode == hub.HubScopeAllItems) {
+		return issues
+	}
+	candidates := make([]model.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if s.issueMatchesRepositoryScope(issue, workspaceMode, usesHub) {
+			candidates = append(candidates, issue)
+		}
+	}
+	return candidates
+}
+
+func (s *repositoryScopeController) acceptCatalogGeneration(generation uint64) bool {
+	if generation < s.catalogGeneration {
+		return false
+	}
+	s.catalogGeneration = generation
+	return true
+}
+
+func (s *repositoryScopeController) setCatalog(catalog repositorypkg.Catalog) {
+	s.repositoryCatalog = append(repositorypkg.Catalog(nil), catalog...)
+	s.repositoryCatalogReady = true
+}
+
+func (s *repositoryScopeController) setCatalogIssues(issues []model.Issue) {
+	s.repositoryCatalogIssues = cloneIssuesForAsync(issues)
+	s.contextlessCountReady = false
+}
+
+func (s *repositoryScopeController) setProjectedIssues(issues []model.Issue) {
+	s.repositoryIssues = issues
+	s.repositoryIssueIDs = issueIDSet(issues)
+}
+
 type issueRepositoryPresentation struct {
 	ID     string
 	Name   string
@@ -362,53 +622,11 @@ func (m *Model) refreshRepositoryPresentation() {
 }
 
 func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
-	if m.usesHubScope() {
-		return m.hubScope.MatchesLabels(issue.Labels)
-	}
-	if m.activeRepos == nil {
-		return true
-	}
-
-	workspaceKey := ""
-	for _, repository := range m.repositoryCatalog {
-		if !m.activeRepos[repository.ID] {
-			continue
-		}
-		switch repository.Kind {
-		case repositorypkg.IdentityExact:
-			if repository.ID != strings.ToLower(repository.ID) || !strings.HasPrefix(repository.ID, "ctx:") {
-				continue
-			}
-			for _, label := range issue.Labels {
-				if label == repository.ID {
-					return true
-				}
-			}
-		case repositorypkg.IdentityPrefix:
-			if workspaceKey == "" {
-				workspaceKey = issueRepoKey(issue)
-			}
-			if workspaceKey == repository.ID {
-				return true
-			}
-		}
-	}
-
-	// Legacy workspace filtering did not hide issues lacking a source/prefix.
-	return m.workspaceMode && workspaceKey == ""
+	return m.repositoryScopeController.issueMatchesRepositoryScope(issue, m.workspaceMode, m.usesHubScope())
 }
 
 func (m *Model) repositoryCandidates() []model.Issue {
-	if (!m.usesHubScope() && m.activeRepos == nil) || (m.usesHubScope() && m.hubScope.Mode == hub.HubScopeAllItems) {
-		return m.issues
-	}
-	candidates := make([]model.Issue, 0, len(m.issues))
-	for _, issue := range m.issues {
-		if m.issueMatchesRepositoryScope(issue) {
-			candidates = append(candidates, issue)
-		}
-	}
-	return candidates
+	return m.repositoryScopeController.repositoryCandidates(m.issues, m.workspaceMode, m.usesHubScope())
 }
 
 func (m Model) repositoryScopeIsAll() bool {
@@ -419,18 +637,7 @@ func (m Model) repositoryScopeIsAll() bool {
 }
 
 func (m Model) usesHubScope() bool {
-	if m.workspaceMode {
-		return false
-	}
-	if m.hubRepositoryMode || strings.TrimSpace(m.catalogPath()) != "" {
-		return true
-	}
-	for _, repository := range m.repositoryCatalog {
-		if repository.Kind == repositorypkg.IdentityExact {
-			return true
-		}
-	}
-	return false
+	return m.repositoryScopeController.usesHubScope(m.workspaceMode, m.hubRepositoryMode, m.catalogPath())
 }
 
 func issueIDSet(issues []model.Issue) map[string]bool {
@@ -450,42 +657,7 @@ func repositoryCatalogIDs(catalog repositorypkg.Catalog) []string {
 }
 
 func (m *Model) reconcileHubScopeCatalog() {
-	if !m.usesHubScope() || m.hubScope.Mode != hub.HubScopeSelectedContexts {
-		return
-	}
-	selected := make(map[string]bool, len(m.hubScope.Contexts))
-	for _, contextID := range m.hubScope.Contexts {
-		selected[contextID] = true
-	}
-	reconciled := repositorypkg.ReconcileSelection(selected, m.repositoryCatalog)
-	if reconciled == nil {
-		if m.hubScope.IncludeContextless {
-			m.hubScope = hub.NewContextlessHubScope()
-		} else {
-			m.hubScope = hub.NewAllItemsHubScope()
-		}
-		m.activeRepos = nil
-		return
-	}
-	if m.hubScope.IncludeContextless && len(reconciled) == len(m.repositoryCatalog) {
-		m.hubScope = hub.NewAllItemsHubScope()
-		m.activeRepos = nil
-		return
-	}
-	var scope hub.HubScope
-	var err error
-	if m.hubScope.IncludeContextless {
-		scope, err = hub.NewSelectedContextsAndContextlessHubScope(sortedRepoKeys(reconciled))
-	} else {
-		scope, err = hub.NewSelectedContextsHubScope(sortedRepoKeys(reconciled))
-	}
-	if err != nil {
-		m.hubScope = hub.NewAllItemsHubScope()
-		m.activeRepos = nil
-		return
-	}
-	m.hubScope = scope
-	m.activeRepos = reconciled
+	m.repositoryScopeController.reconcileHubScopeCatalog(m.usesHubScope())
 }
 
 // SetDefaultRepositoryScope applies an exact Hub context once the initial
@@ -507,115 +679,40 @@ func (m *Model) SetDefaultRepositoryScope(repositoryID string) bool {
 }
 
 func (m *Model) applyDefaultRepositoryScope() bool {
-	if m.defaultRepositorySet || m.defaultRepositoryID == "" || !m.repositoryCatalogReady {
+	if !m.hubRepositoryMode || m.workspaceMode {
 		return false
 	}
-	m.defaultRepositorySet = true
-	for _, repository := range m.repositoryCatalog {
-		if repository.Kind != repositorypkg.IdentityExact || repository.ID != m.defaultRepositoryID {
-			continue
-		}
-		scope, err := hub.NewSelectedContextsHubScope([]string{repository.ID})
-		if err != nil {
-			return false
-		}
-		m.activeRepos = map[string]bool{repository.ID: true}
-		m.hubScope = scope
-		m.refreshRepositoryCandidates()
-		m.refreshRepositoryPresentation()
-		return true
+	if !m.repositoryScopeController.applyDefault() {
+		return false
 	}
-	return false
+	m.refreshRepositoryCandidates()
+	m.refreshRepositoryPresentation()
+	return true
 }
 
 // SetRepositoryScope applies exact catalog IDs. Nil and an empty selection mean
 // the complete universe; selecting every Hub repository excludes contextless items.
 func (m *Model) SetRepositoryScope(selected map[string]bool) {
-	m.defaultRepositorySet = true
-	m.defaultRepositoryID = ""
-	reconciled := repositorypkg.ReconcileSelection(selected, m.repositoryCatalog)
-	if m.usesHubScope() {
-		if len(selected) == 0 || len(reconciled) == 0 {
-			_ = m.SetHubScope(hub.NewAllItemsHubScope())
-			return
-		}
-		contexts := sortedRepoKeys(reconciled)
-		scope, err := hub.NewSelectedContextsHubScope(contexts)
-		if err == nil {
-			_ = m.SetHubScope(scope)
-		}
+	if err := m.repositoryScopeController.setRepositoryScope(selected, m.usesHubScope()); err != nil {
 		return
-	}
-	if len(selected) == 0 || len(reconciled) == len(m.repositoryCatalog) {
-		m.activeRepos = nil
-	} else {
-		m.activeRepos = reconciled
 	}
 	m.refreshRepositoryCandidates()
 	m.refreshRepositoryPresentation()
 }
 
 func (m *Model) setHubRepositoryScope(selected map[string]bool, includeContextless bool) {
-	if len(selected) == 0 {
-		if includeContextless {
-			_ = m.SetHubScope(hub.NewContextlessHubScope())
-		} else {
-			_ = m.SetHubScope(hub.NewAllItemsHubScope())
-		}
+	if err := m.repositoryScopeController.setHubRepositoryScope(selected, includeContextless); err != nil {
 		return
 	}
-	if includeContextless && len(selected) == len(m.repositoryCatalog) {
-		_ = m.SetHubScope(hub.NewAllItemsHubScope())
-		return
-	}
-	contexts := sortedRepoKeys(selected)
-	var scope hub.HubScope
-	var err error
-	if includeContextless {
-		scope, err = hub.NewSelectedContextsAndContextlessHubScope(contexts)
-	} else {
-		scope, err = hub.NewSelectedContextsHubScope(contexts)
-	}
-	if err == nil {
-		_ = m.SetHubScope(scope)
-	}
+	m.refreshRepositoryCandidates()
+	m.refreshRepositoryPresentation()
 }
 
 // SetHubScope applies an explicit Hub candidate selector. Selected context IDs
 // must be present in the current Hub repository catalog.
 func (m *Model) SetHubScope(scope hub.HubScope) error {
-	if err := scope.Validate(); err != nil {
+	if err := m.repositoryScopeController.setHubScope(scope, m.usesHubScope()); err != nil {
 		return err
-	}
-	if scope.Mode == hub.HubScopeSelectedContexts {
-		available := make(map[string]bool, len(m.repositoryCatalog))
-		for _, repository := range m.repositoryCatalog {
-			if repository.Kind == repositorypkg.IdentityExact {
-				available[repository.ID] = true
-			}
-		}
-		for _, contextID := range scope.Contexts {
-			if !available[contextID] {
-				return fmt.Errorf("Hub context is not registered: %s", contextID)
-			}
-		}
-	}
-	m.defaultRepositorySet = true
-	m.defaultRepositoryID = ""
-	switch scope.Mode {
-	case hub.HubScopeAllItems:
-		m.hubScope = hub.NewAllItemsHubScope()
-	case hub.HubScopeContextless:
-		m.hubScope = hub.NewContextlessHubScope()
-	default:
-		m.hubScope = scope.Clone()
-	}
-	m.activeRepos = nil
-	if scope.Mode == hub.HubScopeSelectedContexts {
-		m.activeRepos = make(map[string]bool, len(scope.Contexts))
-		for _, contextID := range scope.Contexts {
-			m.activeRepos[contextID] = true
-		}
 	}
 	m.refreshRepositoryCandidates()
 	m.refreshRepositoryPresentation()
@@ -668,8 +765,7 @@ func (m *Model) refreshRepositoryCandidates() {
 }
 
 func (m *Model) syncRepositoryCandidates() {
-	m.repositoryIssues = m.repositoryCandidates()
-	m.repositoryIssueIDs = issueIDSet(m.repositoryIssues)
+	m.repositoryScopeController.setProjectedIssues(m.repositoryCandidates())
 	m.normalizeContextSortMode()
 }
 
