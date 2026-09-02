@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -175,28 +176,28 @@ func TestAttentionView_CloseRestoresInsightsPanel(t *testing.T) {
 	m = updated.(*Model)
 	m.insightsPanel.focusedPanel = PanelCycles
 
+	// The attention view is a first-class focus (like the label dashboard):
+	// ] opens it from insights, Esc returns to the list, and the insights
+	// panel keeps its own cursor for when the user returns to it.
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
-	if !m.showAttentionView {
-		t.Fatal("Expected attention view to open")
+	if m.focused != focusAttention {
+		t.Fatalf("Expected attention view to take focus, got %v", m.focused)
 	}
-	if m.insightsPanel.extraText == "" {
-		t.Fatal("Expected attention view to render overlay text")
+	if !strings.Contains(m.View(), "Rank") {
+		t.Fatal("Expected attention view to render its table")
 	}
 	if m.insightsPanel.focusedPanel != PanelCycles {
-		t.Fatalf("Expected attention view to preserve focused panel %v, got %v", PanelCycles, m.insightsPanel.focusedPanel)
+		t.Fatalf("Expected attention view to preserve the insights cursor %v, got %v", PanelCycles, m.insightsPanel.focusedPanel)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(*Model)
-	if m.showAttentionView {
+	if m.focused == focusAttention {
 		t.Fatal("Expected attention view to close")
 	}
-	if m.insightsPanel.extraText != "" {
-		t.Fatalf("Expected overlay text cleared, got %q", m.insightsPanel.extraText)
-	}
 	if m.insightsPanel.focusedPanel != PanelCycles {
-		t.Fatalf("Expected insights panel focus restored to %v, got %v", PanelCycles, m.insightsPanel.focusedPanel)
+		t.Fatalf("Expected insights panel cursor preserved at %v, got %v", PanelCycles, m.insightsPanel.focusedPanel)
 	}
 	if m.insightsPanel.insights.Stats == nil {
 		t.Fatal("Expected insights panel data restored after closing attention view")

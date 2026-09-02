@@ -666,6 +666,8 @@ type Model struct {
 	showLabelGraphAnalysis   bool
 	labelGraphAnalysisResult *LabelGraphAnalysisResult
 	attentionView            AttentionModel // ] ranked label attention view (bv-117)
+	attentionCache           analysis.LabelAttentionResult
+	attentionCached          bool
 	showShortcutsSidebar     bool           // bv-3qi5 toggleable shortcuts sidebar
 
 	// Key combo state (bv-6fm0)
@@ -9892,12 +9894,64 @@ func (m *Model) Stop() {
 	}
 }
 
-// clearAttentionOverlay hides the attention overlay and clears its rendered text.
+// clearAttentionOverlay leaves the attention view (bv-117) and returns focus
+// to the list. It is a no-op when the attention view is not active, so view
+// switches can call it unconditionally.
 func (m *Model) clearAttentionOverlay() {
-	if m.showAttentionView {
-		m.showAttentionView = false
-		m.insightsPanel.extraText = ""
+	if m.focused == focusAttention {
+		m.focused = focusList
 	}
+}
+
+// refreshAttentionView recomputes the label attention ranking for the current
+// issue set and feeds the navigable attention view.
+func (m *Model) refreshAttentionView() {
+	cfg := analysis.DefaultLabelHealthConfig()
+	m.attentionCache = analysis.ComputeLabelAttentionScores(m.issues, cfg, time.Now().UTC())
+	m.attentionCached = true
+	m.attentionView.SetData(m.attentionCache)
+	height := m.height - 1
+	if height < 3 {
+		height = 3
+	}
+	m.attentionView.SetSize(m.width, height)
+}
+
+// handleAttentionKeys handles keys while the attention view has focus:
+// j/k/g/G move, Enter opens the label drilldown for the selected label,
+// 1-9 apply a label filter to the list by rank, and ]/Esc/q close the view.
+// Unhandled keys report handled=false so global bindings still work.
+func (m *Model) handleAttentionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	s := msg.String()
+	switch {
+	case s == "]" || s == "esc" || s == "q":
+		m.clearAttentionOverlay()
+		m.statusMsg = ""
+		return m, nil, true
+	case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
+		idx := int(s[0] - '1')
+		label := m.attentionView.LabelAt(idx)
+		if label == "" {
+			return m, nil, true
+		}
+		m.currentFilter = "label:" + label
+		m.applyFilter()
+		m.statusMsg = fmt.Sprintf("Filtered to label %s (attention #%d)", label, idx+1)
+		m.statusIsError = false
+		return m, m.pendingSemanticFilterCmd(), true
+	}
+	label, handled := m.attentionView.Update(msg)
+	if !handled {
+		return m, nil, false
+	}
+	if label != "" {
+		m.labelDrilldownLabel = label
+		m.labelDrilldownIssues = m.filterIssuesByLabel(label)
+		m.showLabelDrilldown = true
+		m.statusMsg = fmt.Sprintf("Label %s: %d issues • esc closes", label, len(m.labelDrilldownIssues))
+		m.statusIsError = false
+	}
+	return m, nil, true
 }
 
 // ════════════════════════════════════════════════════════════════════════════
