@@ -1,15 +1,17 @@
 package drift
 
 import (
+	"fmt"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/baseline"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
-	"gopkg.in/yaml.v3"
 )
 
 func TestCalculatorNoDrift(t *testing.T) {
@@ -1526,5 +1528,443 @@ func TestLabelOverridesValidation(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Error("negative days should fail validation")
+	}
+}
+
+// alertFixture builds a calculator whose Calculate output contains at least
+// one alert of the named type. Each fixture is minimal and isolated so a
+// failing type points at exactly one emitter.
+type alertFixture struct {
+	baseline *baseline.Baseline
+	current  *baseline.Baseline
+	issues   []model.Issue
+	config   *Config
+}
+
+func alertFixtures(now time.Time) map[AlertType]alertFixture {
+	quietStats := baseline.GraphStats{NodeCount: 10, EdgeCount: 10, OpenCount: 10, ActionableCount: 5}
+	quiet := func() (*baseline.Baseline, *baseline.Baseline) {
+		return &baseline.Baseline{Stats: quietStats}, &baseline.Baseline{Stats: quietStats}
+	}
+	fresh := now.Add(-time.Hour)
+	blocksOn := func(id, blocker string) *model.Dependency {
+		return &model.Dependency{IssueID: id, DependsOnID: blocker, Type: model.DepBlocks}
+	}
+	closedAt := func(t time.Time) *time.Time { return &t }
+
+	fixtures := map[AlertType]alertFixture{}
+
+	bl, cur := quiet()
+	fixtures[AlertStaleIssue] = alertFixture{bl, cur, []model.Issue{
+		{ID: "STALE", Status: model.StatusOpen, Labels: []string{"backend"}, UpdatedAt: now.AddDate(0, 0, -20)},
+	}, nil}
+
+	bl, cur = quiet()
+	fixtures[AlertBlockingCascade] = alertFixture{bl, cur, []model.Issue{
+		{ID: "ROOT", Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh},
+		{ID: "D1", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("D1", "ROOT")}},
+		{ID: "D2", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("D2", "ROOT")}},
+		{ID: "D3", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("D3", "ROOT")}},
+	}, nil}
+
+	bl, cur = quiet()
+	fixtures[AlertHighImpactUnblock] = alertFixture{bl, cur, []model.Issue{
+		{ID: "ROOT", Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh},
+		{ID: "P0A", Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("P0A", "ROOT")}},
+		{ID: "P1B", Status: model.StatusOpen, Priority: 1, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("P1B", "ROOT")}},
+		{ID: "P3C", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("P3C", "ROOT")}},
+	}, nil}
+
+	bl, cur = quiet()
+	fixtures[AlertAbandonedClaim] = alertFixture{bl, cur, []model.Issue{
+		{ID: "CLAIMED", Status: model.StatusInProgress, Assignee: "agent-7", UpdatedAt: now.AddDate(0, 0, -20)},
+	}, nil}
+
+	bl, cur = quiet()
+	fixtures[AlertPotentialDuplicate] = alertFixture{bl, cur, []model.Issue{
+		{ID: "DUP-1", Title: "Fix login timeout on slow networks", Status: model.StatusOpen, UpdatedAt: fresh},
+		{ID: "DUP-2", Title: "Fix login timeout on slow networks", Status: model.StatusOpen, UpdatedAt: fresh},
+	}, nil}
+
+	// A P4 hub that everything depends on: the graph says it deserves a
+	// far higher priority than it carries.
+	bl, cur = quiet()
+	mismatch := []model.Issue{{ID: "HUB", Status: model.StatusOpen, Priority: 4, UpdatedAt: fresh}}
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("LEAF-%d", i)
+		mismatch = append(mismatch, model.Issue{ID: id, Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn(id, "HUB")}})
+	}
+	fixtures[AlertPriorityMismatch] = alertFixture{bl, cur, mismatch, nil}
+
+	bl, cur = quiet()
+	velocity := []model.Issue{}
+	for i := 0; i < 6; i++ {
+		velocity = append(velocity, model.Issue{ID: fmt.Sprintf("OLD-%d", i), Status: model.StatusClosed, UpdatedAt: fresh, ClosedAt: closedAt(now.AddDate(0, 0, -10))})
+	}
+	velocity = append(velocity, model.Issue{ID: "NEW-0", Status: model.StatusClosed, UpdatedAt: fresh, ClosedAt: closedAt(now.AddDate(0, 0, -2))})
+	fixtures[AlertVelocityDrop] = alertFixture{bl, cur, velocity, nil}
+
+	fixtures[AlertNewCycle] = alertFixture{
+		&baseline.Baseline{Stats: quietStats},
+		&baseline.Baseline{Stats: quietStats, Cycles: [][]string{{"A", "B", "A"}}},
+		nil, nil,
+	}
+	fixtures[AlertDensityGrowth] = alertFixture{
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, Density: 0.10}},
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 16, Density: 0.16}},
+		nil, nil,
+	}
+	fixtures[AlertNodeCountChange] = alertFixture{
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10}},
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 14, EdgeCount: 10}},
+		nil, nil,
+	}
+	fixtures[AlertEdgeCountChange] = alertFixture{
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10}},
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 14}},
+		nil, nil,
+	}
+	fixtures[AlertScopeCreep] = alertFixture{
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, OpenCount: 10}},
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, OpenCount: 13}},
+		nil, nil,
+	}
+	fixtures[AlertBlockedIncrease] = alertFixture{
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, BlockedCount: 1}},
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, BlockedCount: 7}},
+		nil, nil,
+	}
+	fixtures[AlertActionableChange] = alertFixture{
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, ActionableCount: 10}},
+		&baseline.Baseline{Stats: baseline.GraphStats{NodeCount: 10, EdgeCount: 10, ActionableCount: 5}},
+		nil, nil,
+	}
+	fixtures[AlertPageRankChange] = alertFixture{
+		&baseline.Baseline{Stats: quietStats, TopMetrics: baseline.TopMetrics{PageRank: []baseline.MetricItem{{ID: "X", Value: 0.10}}}},
+		&baseline.Baseline{Stats: quietStats, TopMetrics: baseline.TopMetrics{PageRank: []baseline.MetricItem{{ID: "X", Value: 0.20}}}},
+		nil, nil,
+	}
+	return fixtures
+}
+
+func alertsOfType(result *Result, typ AlertType) []Alert {
+	var out []Alert
+	for _, a := range result.Alerts {
+		if a.Type == typ {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// TestDrift_EveryAlertTypeHasEmitter is the D7 gate: every declared alert
+// type fires on its fixture, is silenced by disabled_alerts, carries a
+// suggested action, and a quiet fixture yields no alerts at all.
+func TestDrift_EveryAlertTypeHasEmitter(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	fixtures := alertFixtures(now)
+
+	declared := AllAlertTypes()
+	if len(declared) != len(fixtures) {
+		t.Fatalf("AllAlertTypes has %d entries but %d fixtures exist; add a fixture for every type", len(declared), len(fixtures))
+	}
+	for _, typ := range declared {
+		fx, ok := fixtures[typ]
+		if !ok {
+			t.Fatalf("no fixture for alert type %q", typ)
+		}
+		t.Run(string(typ), func(t *testing.T) {
+			calc := NewCalculator(fx.baseline, fx.current, fx.config)
+			calc.SetNow(now)
+			calc.SetIssues(fx.issues)
+			result := calc.Calculate()
+			got := alertsOfType(result, typ)
+			t.Logf("%s: %d alert(s): %+v", typ, len(got), got)
+			if len(got) == 0 {
+				t.Fatalf("fixture for %s produced no %s alert; all alerts: %+v", typ, typ, result.Alerts)
+			}
+			for _, a := range got {
+				if a.SuggestedAction == "" {
+					t.Fatalf("%s alert has no suggested_action: %+v", typ, a)
+				}
+				if a.Message == "" || a.Severity == "" {
+					t.Fatalf("%s alert missing message/severity: %+v", typ, a)
+				}
+				if !a.DetectedAt.Equal(now) {
+					t.Fatalf("%s alert detected_at=%s; want the pinned instant %s", typ, a.DetectedAt, now)
+				}
+			}
+
+			cfg := fx.config
+			if cfg == nil {
+				cfg = DefaultConfig()
+			}
+			disabled := *cfg
+			disabled.DisabledAlerts = append(append([]string(nil), cfg.DisabledAlerts...), string(typ))
+			calc = NewCalculator(fx.baseline, fx.current, &disabled)
+			calc.SetNow(now)
+			calc.SetIssues(fx.issues)
+			if left := alertsOfType(calc.Calculate(), typ); len(left) != 0 {
+				t.Fatalf("disabled_alerts=[%s] still produced %d alert(s): %+v", typ, len(left), left)
+			}
+		})
+	}
+
+	t.Run("quiet fixture", func(t *testing.T) {
+		stats := baseline.GraphStats{NodeCount: 3, EdgeCount: 2, OpenCount: 3, ActionableCount: 2}
+		fresh := now.Add(-time.Hour)
+		issues := []model.Issue{
+			{ID: "A", Title: "Write the parser", Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh},
+			{ID: "B", Title: "Ship the release notes", Status: model.StatusInProgress, Priority: 2, Assignee: "me", UpdatedAt: fresh},
+			{ID: "C", Title: "Rotate the signing key", Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh, Dependencies: []*model.Dependency{{IssueID: "C", DependsOnID: "A", Type: model.DepBlocks}}},
+		}
+		calc := NewCalculator(&baseline.Baseline{Stats: stats}, &baseline.Baseline{Stats: stats}, nil)
+		calc.SetNow(now)
+		calc.SetIssues(issues)
+		result := calc.Calculate()
+		if len(result.Alerts) != 0 || result.HasDrift {
+			t.Fatalf("healthy project produced alerts: %+v", result.Alerts)
+		}
+		if result.ExitCode() != 0 {
+			t.Fatalf("quiet exit code=%d; want 0", result.ExitCode())
+		}
+	})
+}
+
+func TestDrift_NewEmitterSemantics(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-time.Hour)
+	quiet := baseline.GraphStats{NodeCount: 10, EdgeCount: 10, OpenCount: 10, ActionableCount: 5}
+	newCalc := func(cfg *Config, issues []model.Issue) *Result {
+		calc := NewCalculator(&baseline.Baseline{Stats: quiet}, &baseline.Baseline{Stats: quiet}, cfg)
+		calc.SetNow(now)
+		calc.SetIssues(issues)
+		return calc.Calculate()
+	}
+	blocksOn := func(id, blocker string) *model.Dependency {
+		return &model.Dependency{IssueID: id, DependsOnID: blocker, Type: model.DepBlocks}
+	}
+	closedAt := func(t time.Time) *time.Time { return &t }
+
+	t.Run("velocity_drop needs a real baseline window", func(t *testing.T) {
+		var issues []model.Issue
+		for i := 0; i < 3; i++ { // only 3 closes in the prior window: below VelocityMinBaseline (5)
+			issues = append(issues, model.Issue{ID: fmt.Sprintf("OLD-%d", i), Status: model.StatusClosed, UpdatedAt: fresh, ClosedAt: closedAt(now.AddDate(0, 0, -10))})
+		}
+		if got := alertsOfType(newCalc(nil, issues), AlertVelocityDrop); len(got) != 0 {
+			t.Fatalf("3 prior closes must not alarm: %+v", got)
+		}
+		for i := 3; i < 6; i++ {
+			issues = append(issues, model.Issue{ID: fmt.Sprintf("OLD-%d", i), Status: model.StatusClosed, UpdatedAt: fresh, ClosedAt: closedAt(now.AddDate(0, 0, -9))})
+		}
+		for i := 0; i < 4; i++ { // 4 recent vs 6 prior = -33%, under the 50% default
+			issues = append(issues, model.Issue{ID: fmt.Sprintf("NEW-%d", i), Status: model.StatusClosed, UpdatedAt: fresh, ClosedAt: closedAt(now.AddDate(0, 0, -1))})
+		}
+		if got := alertsOfType(newCalc(nil, issues), AlertVelocityDrop); len(got) != 0 {
+			t.Fatalf("a 33%% dip must not alarm at the 50%% default: %+v", got)
+		}
+		cfg := DefaultConfig()
+		cfg.VelocityDropPct = 25
+		got := alertsOfType(newCalc(cfg, issues), AlertVelocityDrop)
+		if len(got) != 1 || got[0].Severity != SeverityWarning || got[0].BaselineVal != 6 || got[0].CurrentVal != 4 {
+			t.Fatalf("with velocity_drop_pct=25 want one warning 6→4, got %+v", got)
+		}
+	})
+
+	t.Run("high_impact_unblock escalates on two urgent downstream items", func(t *testing.T) {
+		issues := []model.Issue{
+			{ID: "ROOT", Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh},
+			{ID: "P0A", Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("P0A", "ROOT")}},
+			{ID: "P3B", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("P3B", "ROOT")}},
+			{ID: "P3C", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("P3C", "ROOT")}},
+		}
+		got := alertsOfType(newCalc(nil, issues), AlertHighImpactUnblock)
+		if len(got) != 1 || got[0].Severity != SeverityInfo || got[0].IssueID != "ROOT" || got[0].UnblocksCount != 3 {
+			t.Fatalf("one P0 downstream: want info for ROOT unblocking 3, got %+v", got)
+		}
+		if len(got[0].Details) != 1 || got[0].Details[0] != "P0A" {
+			t.Fatalf("details should list the urgent items only: %+v", got[0].Details)
+		}
+		issues[2].Priority = 1
+		got = alertsOfType(newCalc(nil, issues), AlertHighImpactUnblock)
+		if len(got) != 1 || got[0].Severity != SeverityWarning {
+			t.Fatalf("two urgent downstream items: want warning, got %+v", got)
+		}
+		// Plenty of downstream work but none of it urgent: cascade fires, this does not.
+		for i := range issues {
+			issues[i].Priority = 3
+		}
+		result := newCalc(nil, issues)
+		if got := alertsOfType(result, AlertHighImpactUnblock); len(got) != 0 {
+			t.Fatalf("no urgent downstream: high_impact_unblock must stay silent, got %+v", got)
+		}
+		if got := alertsOfType(result, AlertBlockingCascade); len(got) != 1 {
+			t.Fatalf("blocking_cascade should still fire on 3 downstream items, got %+v", got)
+		}
+	})
+
+	t.Run("abandoned_claim requires an assignee and honours label overrides", func(t *testing.T) {
+		idle := now.AddDate(0, 0, -20) // > 14d default (14 x 0.5 x 2)
+		issues := []model.Issue{
+			{ID: "NOBODY", Status: model.StatusInProgress, UpdatedAt: idle},
+			{ID: "CLAIMED", Status: model.StatusInProgress, Assignee: "agent-7", UpdatedAt: idle},
+			{ID: "RECENT", Status: model.StatusInProgress, Assignee: "agent-8", UpdatedAt: now.AddDate(0, 0, -10)},
+			{ID: "URGENT", Status: model.StatusInProgress, Assignee: "agent-9", Labels: []string{"urgent"}, UpdatedAt: now.AddDate(0, 0, -5)},
+		}
+		cfg := DefaultConfig()
+		cfg.LabelOverrides = map[string]*LabelConfig{"urgent": {StaleWarningDays: 2, StaleCriticalDays: 4}}
+		got := alertsOfType(newCalc(cfg, issues), AlertAbandonedClaim)
+		ids := map[string]Alert{}
+		for _, a := range got {
+			ids[a.IssueID] = a
+		}
+		if _, ok := ids["NOBODY"]; ok {
+			t.Fatalf("in_progress without an assignee is stale, not an abandoned claim: %+v", got)
+		}
+		if _, ok := ids["RECENT"]; ok {
+			t.Fatalf("10 idle days is under the 14-day default: %+v", got)
+		}
+		claimed, ok := ids["CLAIMED"]
+		if !ok || claimed.Severity != SeverityWarning || !strings.Contains(claimed.Message, "agent-7") {
+			t.Fatalf("want a warning naming agent-7 for CLAIMED, got %+v", got)
+		}
+		urgent, ok := ids["URGENT"]
+		if !ok {
+			t.Fatalf("label override (2d x 0.5 x 2 = 2d) should flag URGENT after 5 idle days: %+v", got)
+		}
+		if len(urgent.Labels) != 1 || urgent.Labels[0] != "urgent" {
+			t.Fatalf("alert should carry the issue labels for --alert-label: %+v", urgent)
+		}
+	})
+
+	t.Run("potential_duplicate is capped and skips dissimilar titles", func(t *testing.T) {
+		var issues []model.Issue
+		for i := 0; i < 6; i++ {
+			issues = append(issues, model.Issue{ID: fmt.Sprintf("SAME-%d", i), Title: "Migrate billing exports to parquet format", Status: model.StatusOpen, UpdatedAt: fresh})
+		}
+		issues = append(issues, model.Issue{ID: "OTHER", Title: "Rename the tutorial header", Status: model.StatusOpen, UpdatedAt: fresh})
+		cfg := DefaultConfig()
+		cfg.DuplicateMaxAlerts = 4
+		got := alertsOfType(newCalc(cfg, issues), AlertPotentialDuplicate)
+		if len(got) != 4 {
+			t.Fatalf("duplicate_max_alerts=4 should cap the %d similar pairs to 4, got %d: %+v", 15, len(got), got)
+		}
+		for _, a := range got {
+			if a.IssueID == "OTHER" || a.RelatedIssueID == "OTHER" || a.RelatedIssueID == "" {
+				t.Fatalf("dissimilar issue paired, or pair missing related_issue_id: %+v", a)
+			}
+		}
+	})
+
+	t.Run("priority_mismatch respects the confidence floor", func(t *testing.T) {
+		issues := []model.Issue{{ID: "HUB", Status: model.StatusOpen, Priority: 4, UpdatedAt: fresh}}
+		for i := 0; i < 8; i++ {
+			id := fmt.Sprintf("LEAF-%d", i)
+			issues = append(issues, model.Issue{ID: id, Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn(id, "HUB")}})
+		}
+		got := alertsOfType(newCalc(nil, issues), AlertPriorityMismatch)
+		var hub *Alert
+		for i := range got {
+			if got[i].IssueID == "HUB" {
+				hub = &got[i]
+			}
+		}
+		if hub == nil || hub.Severity != SeverityWarning || hub.BaselineVal != 4 || hub.CurrentVal >= 4 {
+			t.Fatalf("want a warning that P4 HUB deserves a higher priority, got %+v", got)
+		}
+		// A milder hub: its recommendation should land between the default
+		// floor and certainty, so raising the floor just above it silences it.
+		mild := []model.Issue{{ID: "HUB", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh}}
+		for i := 0; i < 3; i++ {
+			id := fmt.Sprintf("LEAF-%d", i)
+			mild = append(mild, model.Issue{ID: id, Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn(id, "HUB")}})
+		}
+		got = alertsOfType(newCalc(nil, mild), AlertPriorityMismatch)
+		if len(got) != 1 || got[0].IssueID != "HUB" {
+			t.Fatalf("mild hub fixture should produce exactly one HUB alert at the default floor, got %+v", got)
+		}
+		var conf float64
+		for _, rec := range analysis.NewAnalyzer(mild).GenerateRecommendations() {
+			if rec.IssueID == "HUB" {
+				conf = rec.Confidence
+			}
+		}
+		if conf < 0.6 || conf >= 1.0 {
+			t.Fatalf("fixture confidence %.2f must sit in [0.6,1.0) for the floor test", conf)
+		}
+		cfg := DefaultConfig()
+		cfg.PriorityMismatchMinConfidence = conf + 0.01
+		if got := alertsOfType(newCalc(cfg, mild), AlertPriorityMismatch); len(got) != 0 {
+			t.Fatalf("confidence floor %.2f should silence a %.2f recommendation, got %+v", cfg.PriorityMismatchMinConfidence, conf, got)
+		}
+		// Downgrade suggestions are not alerts: a leaf that the graph says
+		// could be lower stays silent.
+		leafOnly := []model.Issue{
+			{ID: "A", Title: "one", Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh},
+			{ID: "B", Title: "two", Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn("B", "A")}},
+		}
+		for _, a := range alertsOfType(newCalc(nil, leafOnly), AlertPriorityMismatch) {
+			if a.Delta > 0 {
+				t.Fatalf("decrease recommendation surfaced as an alert: %+v", a)
+			}
+		}
+	})
+
+	t.Run("scope_creep needs a baseline open count", func(t *testing.T) {
+		calc := NewCalculator(&baseline.Baseline{Stats: baseline.GraphStats{OpenCount: 0}}, &baseline.Baseline{Stats: baseline.GraphStats{OpenCount: 30}}, nil)
+		calc.SetNow(now)
+		if got := alertsOfType(calc.Calculate(), AlertScopeCreep); len(got) != 0 {
+			t.Fatalf("no baseline open count: must stay silent, got %+v", got)
+		}
+		calc = NewCalculator(&baseline.Baseline{Stats: baseline.GraphStats{OpenCount: 10}}, &baseline.Baseline{Stats: baseline.GraphStats{OpenCount: 11}}, nil)
+		calc.SetNow(now)
+		if got := alertsOfType(calc.Calculate(), AlertScopeCreep); len(got) != 0 {
+			t.Fatalf("10%% growth is under the 20%% default, got %+v", got)
+		}
+	})
+}
+
+func TestConfigValidate_ProactiveKeys(t *testing.T) {
+	cfg := &Config{DensityWarningPct: 50}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("omitted proactive keys must backfill, got %v", err)
+	}
+	def := DefaultConfig()
+	if cfg.VelocityDropPct != def.VelocityDropPct || cfg.HighImpactUnblockMin != def.HighImpactUnblockMin || cfg.DuplicateJaccardThreshold != def.DuplicateJaccardThreshold || cfg.PriorityMismatchMinConfidence != def.PriorityMismatchMinConfidence || cfg.AbandonedClaimMultiplier != def.AbandonedClaimMultiplier || cfg.ScopeCreepPct != def.ScopeCreepPct {
+		t.Fatalf("backfilled config differs from defaults: %+v", cfg)
+	}
+	bad := map[string]*Config{
+		"velocity pct > 100":      {DensityWarningPct: 50, VelocityDropPct: 150},
+		"negative window":         {DensityWarningPct: 50, VelocityWindowDays: -1},
+		"priority max > 4":        {DensityWarningPct: 50, HighImpactPriorityMax: 9},
+		"jaccard > 1":             {DensityWarningPct: 50, DuplicateJaccardThreshold: 1.5},
+		"confidence > 1":          {DensityWarningPct: 50, PriorityMismatchMinConfidence: 2},
+		"negative duplicate cap":  {DensityWarningPct: 50, DuplicateMaxAlerts: -1},
+		"abandoned multiplier 11": {DensityWarningPct: 50, AbandonedClaimMultiplier: 11},
+	}
+	for name, c := range bad {
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: want validation error", name)
+		}
+	}
+	// The example file must round-trip through the loader with every key present.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bv"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigPath(dir), []byte(ExampleConfig()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("example config failed to load: %v", err)
+	}
+	if loaded.VelocityWindowDays != 7 || loaded.DuplicateMaxAlerts != 10 || loaded.ScopeCreepPct != 20 || loaded.HighImpactPriorityMax != 1 {
+		t.Fatalf("example config keys not honoured: %+v", loaded)
+	}
+	for _, key := range []string{"scope_creep_pct", "velocity_drop_pct", "velocity_window_days", "velocity_min_baseline", "high_impact_unblock_min", "high_impact_priority_max", "abandoned_claim_multiplier", "duplicate_jaccard_threshold", "duplicate_max_alerts", "priority_mismatch_min_confidence"} {
+		if !strings.Contains(ExampleConfig(), key+":") {
+			t.Errorf("ExampleConfig missing key %s", key)
+		}
 	}
 }
