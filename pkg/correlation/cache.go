@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/xfetch"
 	"golang.org/x/sync/singleflight"
 )
@@ -555,12 +556,14 @@ func (c *CachedCorrelator) generate(beads []BeadInfo, opts CorrelatorOptions) (*
 }
 
 func (c *CachedCorrelator) recordHit() {
+	metrics.CorrelationCache.Hit()
 	c.mu.Lock()
 	c.hits++
 	c.mu.Unlock()
 }
 
 func (c *CachedCorrelator) recordMiss() {
+	metrics.CorrelationCache.Miss()
 	c.mu.Lock()
 	c.misses++
 	c.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -1612,5 +1613,23 @@ func TestFindJSONLPath_BDWorkspaceAcceptsEmptyIssuesJSONL(t *testing.T) {
 	}
 	if got != issuesPath {
 		t.Fatalf("FindJSONLPath() = %q, want %q (empty export = legitimately empty project)", got, issuesPath)
+	}
+}
+
+// TestMetrics_LoaderParseRecorded (B5): every file load records a
+// loader.parse timing so --robot-metrics can show how long parsing took.
+func TestMetrics_LoaderParseRecorded(t *testing.T) {
+	metrics.SetEnabled(true)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "issues.jsonl")
+	if err := os.WriteFile(path, []byte(`{"id":"M-1","title":"one","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := metrics.LoaderParse.Count()
+	if _, err := loader.LoadIssuesFromFileWithOptions(path, loader.ParseOptions{}); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := metrics.LoaderParse.Count() - before; got != 1 {
+		t.Fatalf("loader.parse count advanced by %d, want 1", got)
 	}
 }

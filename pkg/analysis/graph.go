@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/network"
 	"gonum.org/v1/gonum/graph/simple"
@@ -1475,6 +1476,7 @@ func (a *Analyzer) AnalyzeAsyncWithConfig(ctx context.Context, config AnalysisCo
 
 			if cached, xfetchRefresh, ok := getRobotDiskCachedStats(robotCacheKey); ok {
 				if !xfetchRefresh || ctx.Err() != nil {
+					metrics.GraphCache.Hit()
 					return cached
 				}
 				// XFetch selected this caller to refresh early. Fall through and
@@ -1537,7 +1539,12 @@ func (a *Analyzer) AnalyzeAsyncWithConfig(ctx context.Context, config AnalysisCo
 	}
 
 	// Phase 1: Fast metrics (degree centrality, topo sort, density)
+	if robotCacheKey != "" {
+		metrics.GraphCache.Miss() // the disk cache had no usable entry
+	}
+	stopPhase1 := metrics.Timer(metrics.AnalysisPhase1)
 	a.computePhase1(stats)
+	stopPhase1()
 
 	if incCacheKey != "" {
 		putIncrementalGraphStatsCache(incCacheKey, stats)
@@ -2147,6 +2154,7 @@ func (a *Analyzer) computePhase1(stats *GraphStats) {
 // Respects the config to skip expensive algorithms for large graphs.
 func (a *Analyzer) computePhase2(ctx context.Context, stats *GraphStats, config AnalysisConfig, cacheKey, dataHash, configHash string) {
 	defer close(stats.phase2Done)
+	defer metrics.Timer(metrics.AnalysisPhase2)()
 
 	// Recover from panics to prevent crashing the entire application
 	defer func() {

@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/cass"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -761,5 +764,143 @@ func TestCassSessionModal_UnhandledKeyIgnored(t *testing.T) {
 
 	if modal.selected != initialSelected {
 		t.Errorf("Unhandled keys should not change selection, got %d", modal.selected)
+	}
+}
+
+// writeStubCass puts a fake `cass` on PATH whose `health` exit code is
+// controlled by CASS_STUB_EXIT (0 healthy, 1 needs index).
+func writeStubCass(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = \"health\" ]; then exit \"${CASS_STUB_EXIT:-0}\"; fi\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "cass"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub cass: %v", err)
+	}
+	return dir
+}
+
+// TestModel_CassDetectionOnStartup (E4): the startup health check feeds the
+// footer badge: healthy shows "🤖 cass", an unindexed install shows
+// "⚠ cass index", and no cass on PATH shows nothing.
+func TestModel_CassDetectionOnStartup(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	footerAfter := func(t *testing.T, path, stubExit string) string {
+		t.Helper()
+		t.Setenv("PATH", path)
+		t.Setenv("CASS_STUB_EXIT", stubExit)
+		t.Setenv("BV_TEST_MODE", "")
+		m := NewModel(issues, nil, "")
+		m.width, m.height = 120, 40
+		msg := CheckCassHealthCmd()()
+		health, ok := msg.(CassHealthMsg)
+		if !ok {
+			t.Fatalf("CheckCassHealthCmd returned %T", msg)
+		}
+		got := asModelPtr(t, must2(m.Update(health)))
+		if got.cassStatus != health.Status || got.cassDetector == nil {
+			t.Fatalf("model did not record the detection result: status=%v detector=%v", got.cassStatus, got.cassDetector)
+		}
+		return got.renderFooter()
+	}
+
+	stub := writeStubCass(t)
+	if footer := footerAfter(t, stub, "0"); !strings.Contains(footer, "🤖 cass") {
+		t.Fatalf("healthy cass should show the badge, footer=%q", footer)
+	}
+	if footer := footerAfter(t, stub, "1"); !strings.Contains(footer, "⚠ cass index") {
+		t.Fatalf("unindexed cass should ask for an index, footer=%q", footer)
+	}
+	if footer := footerAfter(t, t.TempDir(), "0"); strings.Contains(footer, "cass") {
+		t.Fatalf("no cass on PATH must show nothing, footer=%q", footer)
+	}
+}
+
+// TestModel_InitSkipsCassProbeInTestMode: BV_TEST_MODE (set by TestMain for
+// every other test) must keep Init from executing cass.
+func TestModel_InitSkipsCassProbeInTestMode(t *testing.T) {
+	t.Setenv("BV_TEST_MODE", "1")
+	t.Setenv("BV_NO_UPDATE_CHECK", "1")
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.analysis = nil
+	n := 0
+	if cmd := m.Init(); cmd != nil {
+		if batch, ok := cmd().(tea.BatchMsg); ok {
+			n = len(batch)
+		} else {
+			n = 1
+		}
+	}
+	t.Setenv("BV_TEST_MODE", "")
+	m2 := NewModel(issues, nil, "")
+	m2.analysis = nil
+	n2 := 0
+	if cmd := m2.Init(); cmd != nil {
+		if batch, ok := cmd().(tea.BatchMsg); ok {
+			n2 = len(batch)
+		} else {
+			n2 = 1
+		}
+	}
+	if n2 != n+1 {
+		t.Fatalf("Init should queue exactly one extra command (the cass probe) outside test mode: test=%d normal=%d", n, n2)
+	}
+}
+
+// TestModel_VUsesFocusedSelection (E4): the session lookup follows the
+// focused view's selection, and V is reachable from the board, tree, and
+// history views (a missing cass turns into a status message, not silence).
+func TestModel_VUsesFocusedSelection(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no cass anywhere
+	issues := []model.Issue{
+		{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "B", Title: "Issue B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+		{ID: "C", Title: "Issue C", Status: model.StatusInProgress, Priority: 2, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.width, m.height = 120, 40
+
+	// List: the list item.
+	m.focused = focusList
+	m.list.Select(1)
+	if got := m.focusedIssueForSessions(); got == nil || got.ID != issues[1].ID && got.ID != m.list.Items()[1].(IssueItem).Issue.ID {
+		t.Fatalf("list selection: got %+v", got)
+	}
+
+	// Board: the selected card.
+	m.board = NewBoardModel(issues, m.theme)
+	m.board.MoveDown()
+	m.focused = focusBoard
+	want := m.board.SelectedIssue()
+	if want == nil {
+		t.Fatalf("board fixture has no selection")
+	}
+	if got := m.focusedIssueForSessions(); got == nil || got.ID != want.ID {
+		t.Fatalf("board selection: got %+v want %s", got, want.ID)
+	}
+	m.isBoardView = true
+	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("V")})))
+	if !strings.Contains(got.statusMsg, "cass not available") {
+		t.Fatalf("V from the board should reach the session lookup and report the missing cass, status=%q", got.statusMsg)
+	}
+
+	// History: the selected bead row (fixture from history_test.go).
+	m.historyView = NewHistoryModel(createTestHistoryReport(), m.theme)
+	m.focused = focusHistory
+	id := m.historyView.SelectedBeadID()
+	if id == "" {
+		t.Fatalf("history fixture has no selection")
+	}
+	m.issues = append(m.issues, model.Issue{ID: id, Title: "from history", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask})
+	if got := m.focusedIssueForSessions(); got == nil || got.ID != id {
+		t.Fatalf("history selection: got %+v want %s", got, id)
+	}
+
+	// Tree: the selected node.
+	m.focused = focusTree
+	if want := m.tree.SelectedIssue(); want != nil {
+		if got := m.focusedIssueForSessions(); got == nil || got.ID != want.ID {
+			t.Fatalf("tree selection: got %+v want %s", got, want.ID)
+		}
 	}
 }

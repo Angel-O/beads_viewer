@@ -56,8 +56,12 @@ bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/
 bv --robot-triage        # THE MEGA-COMMAND: start here
 bv --robot-next          # Minimal: just the single top pick + claim command
 
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
+# TOON output (--format toon): a compact tabular encoding. Measured on this
+# repository it is 7% smaller than JSON for --robot-graph but 9-15% LARGER for
+# nested payloads (--robot-triage, --robot-plan, --robot-insights,
+# --robot-label-health); use --stats to see both sizes before adopting it.
+bv --robot-graph --format toon
+bv --robot-triage --format toon --stats
 ` + "```" + `
 
 Before claiming, verify current state with the selected tracker: ` + "`" + `br show <id> --json` + "`" + `/` + "`" + `br ready --json` + "`" + ` or ` + "`" + `bd show <id> --json` + "`" + `/` + "`" + `bd ready --json` + "`" + `. ` + "`" + `recommendations` + "`" + ` can include graph-important blocked or assigned work; only ` + "`" + `quick_ref.top_picks` + "`" + ` and non-empty ` + "`" + `claim_command` + "`" + ` fields represent claimable work.

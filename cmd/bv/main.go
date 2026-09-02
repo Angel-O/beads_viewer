@@ -5006,17 +5006,18 @@ func buildAttentionReason(score analysis.LabelAttentionScore) string {
 func copyViewerAssets(outputDir, title string) error {
 	// First try to use embedded assets (production builds)
 	if export.HasEmbeddedAssets() {
-		return export.CopyEmbeddedAssets(outputDir, title)
+		if err := export.CopyEmbeddedAssets(outputDir, title); err != nil {
+			return err
+		}
+		// The optional hybrid scorer is built from source straight into the
+		// bundle so BV_BUILD_HYBRID_WASM works in the released binary too.
+		return maybeBuildHybridWasmAssets(outputDir)
 	}
 
 	// Fall back to filesystem-based approach (development mode)
 	assetsDir := findViewerAssetsDir()
 	if assetsDir == "" {
 		return fmt.Errorf("viewer assets not found")
-	}
-
-	if err := maybeBuildHybridWasmAssets(assetsDir); err != nil {
-		return err
 	}
 
 	// Files to copy
@@ -5069,6 +5070,9 @@ func copyViewerAssets(outputDir, title string) error {
 			return fmt.Errorf("copy wasm: %w", err)
 		}
 	}
+	if err := maybeBuildHybridWasmAssets(outputDir); err != nil {
+		return err
+	}
 
 	// Always add GitHub Actions workflow for reliable Pages deployment
 	// This ensures the workflow is in the bundle regardless of deployment target
@@ -5080,7 +5084,13 @@ func copyViewerAssets(outputDir, title string) error {
 	return nil
 }
 
-func maybeBuildHybridWasmAssets(assetsDir string) error {
+// maybeBuildHybridWasmAssets builds the optional hybrid search scorer with
+// wasm-pack when BV_BUILD_HYBRID_WASM is set, writing the artifacts into
+// <outputDir>/wasm of the bundle being exported. The Rust source lives next
+// to the viewer assets in a source checkout (pkg/export/wasm_scorer); the
+// embedded assets of a released binary do not carry it, so the checkout must
+// be reachable from the working directory.
+func maybeBuildHybridWasmAssets(outputDir string) error {
 	if os.Getenv("BV_BUILD_HYBRID_WASM") == "" {
 		return nil
 	}
@@ -5090,13 +5100,17 @@ func maybeBuildHybridWasmAssets(assetsDir string) error {
 		return fmt.Errorf("BV_BUILD_HYBRID_WASM is set but wasm-pack was not found in PATH")
 	}
 
+	assetsDir := findViewerAssetsDir()
+	if assetsDir == "" {
+		return fmt.Errorf("BV_BUILD_HYBRID_WASM is set but the source checkout (pkg/export/wasm_scorer) is not reachable from %s", mustGetwd())
+	}
 	wasmSrc := filepath.Join(assetsDir, "..", "wasm_scorer")
 	info, err := os.Stat(wasmSrc)
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("hybrid wasm source directory not found at %s", wasmSrc)
 	}
 
-	outDir := filepath.Join(assetsDir, "wasm")
+	outDir := filepath.Join(outputDir, "wasm")
 	cmd := exec.Command(wasmPackPath, "build", "--release", "--target", "web", "--out-dir", outDir)
 	cmd.Dir = wasmSrc
 	cmd.Stdout = os.Stdout
@@ -6954,11 +6968,20 @@ func (e *toonRobotEncoder) Encode(v any) error {
 		if jsonBytes, jerr := json.Marshal(v); jerr == nil {
 			jsonTokens := estimateTokens(string(jsonBytes))
 			toonTokens := estimateTokens(out)
+			// Signed: negative means TOON is the larger encoding for this
+			// payload (common for nested outputs such as --robot-triage).
 			savings := 0
-			if jsonTokens > 0 && toonTokens <= jsonTokens {
+			if jsonTokens > 0 {
 				savings = int((1.0 - (float64(toonTokens) / float64(jsonTokens))) * 100.0)
 			}
-			fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (%d%% savings)\n", jsonTokens, toonTokens, savings)
+			switch {
+			case savings > 0:
+				fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (TOON %d%% smaller)\n", jsonTokens, toonTokens, savings)
+			case savings < 0:
+				fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (TOON %d%% larger; JSON is the smaller encoding for this payload)\n", jsonTokens, toonTokens, -savings)
+			default:
+				fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (same size)\n", jsonTokens, toonTokens)
+			}
 		}
 	}
 
@@ -9334,4 +9357,14 @@ func discoverWorkspaceConfig() string {
 		return ""
 	}
 	return found
+}
+
+// mustGetwd returns the working directory or "." when it cannot be read; it
+// only feeds error messages.
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }

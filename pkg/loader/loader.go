@@ -17,6 +17,7 @@ import (
 
 	json "github.com/goccy/go-json"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -564,6 +565,7 @@ func (s ParseStats) ErrorRate() float64 {
 
 // LoadIssuesFromFileWithOptions reads issues from a file with custom options.
 func LoadIssuesFromFileWithOptions(path string, opts ParseOptions) ([]model.Issue, error) {
+	defer metrics.Timer(metrics.LoaderParse)()
 	// Check if file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no beads issues found at %s", path)

@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,8 +41,10 @@ func (s IndexSyncStats) Changed() bool {
 func LoadOrNewVectorIndex(path string, dim int) (*VectorIndex, bool, error) {
 	idx, err := LoadVectorIndex(path)
 	if err == nil {
+		metrics.SearchCache.Hit()
 		return idx, true, nil
 	}
+	metrics.SearchCache.Miss()
 
 	if os.IsNotExist(err) {
 		return NewVectorIndex(dim), false, nil

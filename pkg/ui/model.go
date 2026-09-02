@@ -405,6 +405,22 @@ type HistoryLoadedMsg struct {
 	Error             error
 }
 
+// CassHealthMsg carries the startup cass detection result (E4): the footer
+// shows it and V reuses the detector instead of probing again.
+type CassHealthMsg struct {
+	Status   cass.Status
+	Detector *cass.Detector
+}
+
+// CheckCassHealthCmd probes cass once at startup with a 2 s bound so a slow
+// or hung `cass health` can never delay the UI.
+func CheckCassHealthCmd() tea.Cmd {
+	return func() tea.Msg {
+		detector := cass.NewDetectorWithOptions(cass.WithHealthTimeout(2 * time.Second))
+		return CassHealthMsg{Status: detector.Check(), Detector: detector}
+	}
+}
+
 // AgentFileCheckMsg is sent after checking for AGENTS.md integration (bv-i8dk)
 type AgentFileCheckMsg struct {
 	ShouldPrompt bool
@@ -798,6 +814,8 @@ type Model struct {
 	showCassModal  bool
 	cassModal      CassSessionModal
 	cassCorrelator *cass.Correlator
+	cassDetector   *cass.Detector // set by the startup health check; reused by V
+	cassStatus     cass.Status    // startup detection result shown in the footer
 
 	// Self-update modal (bv-182)
 	showUpdateModal bool
@@ -1911,6 +1929,10 @@ func (m *Model) Init() tea.Cmd {
 	if updater.StartupCheckEnabled() {
 		cmds = append(cmds, CheckUpdateCmd())
 	}
+	// cass detection at startup (E4); tests opt back in by clearing BV_TEST_MODE.
+	if os.Getenv("BV_TEST_MODE") == "" {
+		cmds = append(cmds, CheckCassHealthCmd())
+	}
 	if m.backgroundWorker != nil {
 		cmds = append(cmds, StartBackgroundWorkerCmd(m.backgroundWorker))
 		cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
@@ -2657,6 +2679,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 			}
 		}
+
+	case CassHealthMsg:
+		m.cassStatus = msg.Status
+		m.cassDetector = msg.Detector
+		return m, tea.Batch(cmds...)
 
 	case AgentFileCheckMsg:
 		// AGENTS.md integration check (bv-i8dk)
@@ -4278,6 +4305,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m, cmd = m.handleBoardKeys(msg)
 					cmds = append(cmds, cmd)
 					viewToggleHandled = true
+				case "V":
+					// Session preview for the focused board card (E4)
+					m.showCassSessionModal()
+					viewToggleHandled = true
 				}
 
 			case focusLabelDashboard:
@@ -4355,6 +4386,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingComboKey = ""
 					m = m.handleTreeKeys(msg)
 					viewToggleHandled = true
+				case "V":
+					// Session preview for the focused tree node (E4)
+					m.showCassSessionModal()
+					viewToggleHandled = true
 				}
 
 			case focusActionable:
@@ -4389,6 +4424,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						"y", "c", "F", "o", "/":
 						m, cmd = m.handleHistoryKeys(msg)
 						cmds = append(cmds, cmd)
+						viewToggleHandled = true
+					case "V":
+						// Session preview for the focused history row (E4)
+						m.showCassSessionModal()
 						viewToggleHandled = true
 					}
 				}
@@ -7425,6 +7464,17 @@ func (m *Model) renderFooter() string {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
+	// CASS HEALTH - startup detection result (E4); nothing when not installed
+	// ─────────────────────────────────────────────────────────────────────────
+	cassSection := ""
+	switch m.cassStatus {
+	case cass.StatusHealthy:
+		cassSection = lipgloss.NewStyle().Background(ColorBgHighlight).Foreground(ColorInfo).Padding(0, 1).Render("🤖 cass")
+	case cass.StatusNeedsIndex:
+		cassSection = lipgloss.NewStyle().Background(ColorPrioHighBg).Foreground(ColorWarning).Padding(0, 1).Render("⚠ cass index")
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────
 	// WORKSPACE BADGE - Multi-repo mode indicator
 	// ─────────────────────────────────────────────────────────────────────────
 	workspaceSection := ""
@@ -7554,6 +7604,9 @@ func (m *Model) renderFooter() string {
 	if sessionSection != "" {
 		leftWidth += lipgloss.Width(sessionSection) + 1
 	}
+	if cassSection != "" {
+		leftWidth += lipgloss.Width(cassSection) + 1
+	}
 	if workspaceSection != "" {
 		leftWidth += lipgloss.Width(workspaceSection) + 1
 	}
@@ -7592,6 +7645,9 @@ func (m *Model) renderFooter() string {
 	}
 	if sessionSection != "" {
 		parts = append(parts, sessionSection)
+	}
+	if cassSection != "" {
+		parts = append(parts, cassSection)
 	}
 	if workspaceSection != "" {
 		parts = append(parts, workspaceSection)
@@ -9198,23 +9254,32 @@ func (m *Model) copyIssueToClipboard() tea.Cmd {
 
 // showCassSessionModal shows the cass session preview modal for the selected issue (bv-5bqh)
 func (m *Model) showCassSessionModal() {
-	// Get the currently selected issue
-	selectedItem := m.list.SelectedItem()
-	if selectedItem == nil {
+	issuePtr := m.focusedIssueForSessions()
+	if issuePtr == nil {
+		m.statusMsg = "No issue selected"
+		m.statusIsError = false
 		return
 	}
-
-	issueItem, ok := selectedItem.(IssueItem)
-	if !ok {
-		return
-	}
-	issue := issueItem.Issue
+	issue := *issuePtr
 
 	// Check if cass is available
 	if m.cassCorrelator == nil {
-		// Initialize correlator lazily
-		detector := cass.NewDetector()
-		if detector.Check() != cass.StatusHealthy {
+		// Initialize correlator lazily, reusing the startup detector when the
+		// health check already ran.
+		detector := m.cassDetector
+		if detector == nil {
+			detector = cass.NewDetector()
+			m.cassDetector = detector
+		}
+		status := detector.Check()
+		m.cassStatus = status
+		switch status {
+		case cass.StatusHealthy:
+		case cass.StatusNeedsIndex:
+			m.statusMsg = "⚠️ cass needs an index: run `cass index` first"
+			m.statusIsError = false
+			return
+		default:
 			m.statusMsg = "⚠️ cass not available (install it for session correlation)"
 			m.statusIsError = false
 			return
@@ -9274,16 +9339,11 @@ func (m *Model) getCassSessionCount() int {
 		return 0
 	}
 
-	// Get the currently selected issue
-	selectedItem := m.list.SelectedItem()
-	if selectedItem == nil {
+	issuePtr := m.focusedIssueForSessions()
+	if issuePtr == nil {
 		return 0
 	}
-
-	issueItem, ok := selectedItem.(IssueItem)
-	if !ok {
-		return 0
-	}
+	issueItem := IssueItem{Issue: *issuePtr}
 
 	// Check the cache for this bead
 	if hint := m.cassCorrelator.GetCached(issueItem.Issue.ID); hint != nil {
@@ -10189,4 +10249,38 @@ func formatReloadDuration(d time.Duration) string {
 		return fmt.Sprintf("%.1fs", d.Seconds())
 	}
 	return fmt.Sprintf("%dm", int(d.Minutes()))
+}
+
+// focusedIssueForSessions returns the issue the current view has selected:
+// the board card, the tree node, the history row, or the list item (also
+// used by the detail pane). nil when nothing is selected.
+func (m *Model) focusedIssueForSessions() *model.Issue {
+	switch m.focused {
+	case focusBoard:
+		return m.board.SelectedIssue()
+	case focusTree:
+		return m.tree.SelectedIssue()
+	case focusHistory:
+		id := m.historyView.SelectedBeadID()
+		if id == "" {
+			return nil
+		}
+		for i := range m.issues {
+			if m.issues[i].ID == id {
+				iss := m.issues[i]
+				return &iss
+			}
+		}
+		return nil
+	}
+	selectedItem := m.list.SelectedItem()
+	if selectedItem == nil {
+		return nil
+	}
+	issueItem, ok := selectedItem.(IssueItem)
+	if !ok {
+		return nil
+	}
+	iss := issueItem.Issue
+	return &iss
 }

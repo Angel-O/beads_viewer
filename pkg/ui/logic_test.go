@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -429,4 +430,93 @@ func TestHistoryKeys_TTogglesTimelinePane(t *testing.T) {
 	if !m.statusIsError || !strings.Contains(m.statusMsg, "100 columns") {
 		t.Fatalf("narrow terminals should explain why t does nothing: err=%v status=%q", m.statusIsError, m.statusMsg)
 	}
+}
+
+// TestListKeys_DocumentedViewToggles (E6): the bindings the README documents
+// for the list view do what it says: a opens the actionable view, E the
+// tree, ' the recipe picker, [ the label dashboard, x exports Markdown.
+func TestListKeys_DocumentedViewToggles(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, Labels: []string{"core"}},
+		{ID: "B", Title: "Issue B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, Labels: []string{"ui"}, Dependencies: []*model.Dependency{{IssueID: "B", DependsOnID: "A", Type: model.DepBlocks}}},
+	}
+	fresh := func() *Model {
+		m := NewModel(issues, nil, "")
+		m.width, m.height = 120, 40
+		m.focused = focusList
+		return m
+	}
+	press := func(t *testing.T, m *Model, key string) *Model {
+		t.Helper()
+		var msg tea.KeyMsg
+		if key == "esc" {
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		} else {
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+		}
+		return asModelPtr(t, must2(m.Update(msg)))
+	}
+
+	t.Run("a opens the actionable view and toggles back", func(t *testing.T) {
+		m := press(t, fresh(), "a")
+		if !m.isActionableView || m.focused != focusActionable {
+			t.Fatalf("a: actionable=%v focused=%v", m.isActionableView, m.focused)
+		}
+		m = press(t, m, "a")
+		if m.isActionableView || m.focused != focusList {
+			t.Fatalf("second a should return to the list: actionable=%v focused=%v", m.isActionableView, m.focused)
+		}
+	})
+	t.Run("E opens the tree view", func(t *testing.T) {
+		m := press(t, fresh(), "E")
+		if m.focused != focusTree {
+			t.Fatalf("E: focused=%v; want tree", m.focused)
+		}
+		if m = press(t, m, "E"); m.focused != focusList {
+			t.Fatalf("second E should return to the list, focused=%v", m.focused)
+		}
+	})
+	t.Run("' opens the recipe picker", func(t *testing.T) {
+		m := press(t, fresh(), "'")
+		if !m.showRecipePicker || m.focused != focusRecipePicker {
+			t.Fatalf("': picker=%v focused=%v", m.showRecipePicker, m.focused)
+		}
+	})
+	t.Run("[ opens the label dashboard", func(t *testing.T) {
+		m := press(t, fresh(), "[")
+		if m.focused != focusLabelDashboard {
+			t.Fatalf("[: focused=%v; want label dashboard", m.focused)
+		}
+		if m = press(t, m, "esc"); m.focused != focusList {
+			t.Fatalf("esc should close the label dashboard, focused=%v", m.focused)
+		}
+	})
+	t.Run("x exports Markdown into the working directory", func(t *testing.T) {
+		dir := t.TempDir()
+		wd, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chdir(dir); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chdir(wd) })
+		m := press(t, fresh(), "x")
+		if !strings.HasPrefix(m.statusMsg, "✅ Exported") {
+			t.Fatalf("x should export and confirm, status=%q", m.statusMsg)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var md bool
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".md") {
+				md = true
+			}
+		}
+		if !md {
+			t.Fatalf("no markdown file written to %s: %v", dir, entries)
+		}
+	})
 }

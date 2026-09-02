@@ -17,6 +17,7 @@ import (
 
 	json "github.com/goccy/go-json"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/xfetch"
 )
@@ -523,11 +524,13 @@ func (ca *CachedAnalyzer) AnalyzeAsync(ctx context.Context) *GraphStats {
 	// Check cache first
 	if stats, ok := ca.cache.GetByHash(fullHash); ok {
 		ca.cacheHit = true
+		metrics.GraphCache.Hit()
 		return stats
 	}
 
 	// Cache miss - compute fresh
 	ca.cacheHit = false
+	metrics.GraphCache.Miss()
 	stats := ca.Analyzer.AnalyzeAsync(ctx)
 
 	// Store in cache when Phase 2 completes

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 )
 
 func TestCacheKey_String(t *testing.T) {
@@ -1042,5 +1044,28 @@ func TestCachedCorrelator_FeedbackFingerprintChangesCacheKey(t *testing.T) {
 	}
 	if after.HeadSHA != before.HeadSHA || after.BeadsHash != before.BeadsHash || after.Options != before.Options {
 		t.Fatalf("feedback must not disturb the other key components: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestMetrics_CorrelationCacheRecords (B5): the correlation report cache
+// feeds the correlation_cache counters: first report misses, the second hits.
+func TestMetrics_CorrelationCacheRecords(t *testing.T) {
+	metrics.SetEnabled(true)
+	repo := initTempGitRepo(t)
+	beads := []BeadInfo{{ID: "bv-1", Title: "one", Status: "open"}}
+	hitsBefore, missesBefore := metrics.CorrelationCache.Hits(), metrics.CorrelationCache.Misses()
+
+	c := NewCachedCorrelator(repo)
+	if _, err := c.GenerateReport(beads, CorrelatorOptions{Limit: 10}); err != nil {
+		t.Fatalf("first report: %v", err)
+	}
+	if _, err := c.GenerateReport(beads, CorrelatorOptions{Limit: 10}); err != nil {
+		t.Fatalf("second report: %v", err)
+	}
+	if got := metrics.CorrelationCache.Misses() - missesBefore; got < 1 {
+		t.Fatalf("correlation_cache misses did not increase (got %d)", got)
+	}
+	if got := metrics.CorrelationCache.Hits() - hitsBefore; got < 1 {
+		t.Fatalf("correlation_cache hits did not increase (got %d)", got)
 	}
 }

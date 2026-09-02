@@ -18,7 +18,9 @@ func generateUltimateHTML(title, dataHash, graphDataJSON string, nodeCount, edge
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>%s | bv Graph</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Self-contained by design: no external stylesheets, scripts, or fonts.
+         Inter / JetBrains Mono are used when installed locally; the stacks
+         below fall back to the system UI and monospace faces. -->
     <style>
         :root {
             --bg: #0f0f1a;

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	json "github.com/goccy/go-json"
 )
 
@@ -405,12 +406,14 @@ func (c *Correlator) GenerateReportCached(beads []BeadInfo, opts CorrelatorOptio
 
 	// Layer 1: fully assembled report for this exact (HEAD, beads, opts, feedback).
 	if report, ok := getCorrelationDiskCachedReport(namespace, headSHA, beadsHash, reportOptsHash); ok {
+		metrics.CorrelationCache.Hit()
 		return report, nil
 	}
 
 	// Layer 2: HEAD-only artifact. A hit here means the expensive extraction is
 	// reusable; only the cheap bead-dependent assembly must run.
 	if art, ok := getHeadArtifactCached(namespace, headSHA, optsHash); ok {
+		metrics.CorrelationCache.Hit()
 		report := c.assembleReport(beads, opts, art)
 		putCorrelationDiskCachedReport(namespace, headSHA, beadsHash, reportOptsHash, report)
 		return report, nil
@@ -419,6 +422,7 @@ func (c *Correlator) GenerateReportCached(beads []BeadInfo, opts CorrelatorOptio
 	// Full miss: extract once, then assemble. Persist both layers only if HEAD
 	// still matches the pre-extraction key; extraction spans multiple git calls,
 	// so a concurrent commit could otherwise poison the old HEAD's cache entry.
+	metrics.CorrelationCache.Miss()
 	art, err := c.extractHistoryArtifact(opts)
 	if err != nil {
 		return nil, err

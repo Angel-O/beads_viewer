@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	json "github.com/goccy/go-json"
-
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	json "github.com/goccy/go-json"
 )
 
 func TestCacheSetTTLAndHash(t *testing.T) {
@@ -646,5 +646,38 @@ func TestRemoveRobotDiskCacheEntryIfSamePreservesConcurrentReplacement(t *testin
 	}
 	if string(got) != "new valid entry" {
 		t.Fatalf("replacement content=%q, want preserved valid entry", got)
+	}
+}
+
+// TestMetrics_AnalysisCacheRecordsHits (B5): the graph cache counters are
+// fed by the real in-memory cache, so two cached analyses of the same issues
+// record one miss and one hit.
+func TestMetrics_AnalysisCacheRecordsHits(t *testing.T) {
+	metrics.SetEnabled(true)
+	issues := []model.Issue{
+		{ID: "A", Title: "A", Status: model.StatusOpen, Priority: 1},
+		{ID: "B", Title: "B", Status: model.StatusOpen, Priority: 2, Dependencies: []*model.Dependency{{IssueID: "B", DependsOnID: "A", Type: model.DepBlocks}}},
+	}
+	cache := NewCache(time.Minute)
+	hitsBefore, missesBefore := metrics.GraphCache.Hits(), metrics.GraphCache.Misses()
+
+	first := NewCachedAnalyzer(issues, cache)
+	first.Analyze()
+	second := NewCachedAnalyzer(issues, cache)
+	second.Analyze()
+	if !second.WasCacheHit() {
+		t.Fatalf("second analysis should be served from the cache")
+	}
+	if got := metrics.GraphCache.Hits() - hitsBefore; got < 1 {
+		t.Fatalf("graph_cache hits did not increase (got %d)", got)
+	}
+	if got := metrics.GraphCache.Misses() - missesBefore; got < 1 {
+		t.Fatalf("graph_cache misses did not increase (got %d)", got)
+	}
+	if metrics.GraphCache.HitRate() <= 0 {
+		t.Fatalf("hit_rate should be positive after a hit, got %v", metrics.GraphCache.HitRate())
+	}
+	if metrics.AnalysisPhase1.Count() == 0 {
+		t.Fatalf("analysis.phase1 timing was never recorded")
 	}
 }
