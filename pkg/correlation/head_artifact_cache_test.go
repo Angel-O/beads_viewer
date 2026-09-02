@@ -1,6 +1,7 @@
 package correlation
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -180,5 +181,103 @@ func TestPersistentCorrelationCachesIsolateNamespaces(t *testing.T) {
 		if !ok || len(got.Events) != 1 || got.Events[0].BeadID != want {
 			t.Fatalf("artifact cache namespace %q = (%+v, %v), want bead %q", namespace, got, ok, want)
 		}
+	}
+}
+
+// TestHeadArtifactCache_VersionMismatchIsMiss (D2): an on-disk artifact
+// written by an older format is a miss, never migrated, and the next put
+// overwrites it with the current format.
+func TestHeadArtifactCache_VersionMismatchIsMiss(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	t.Setenv("BV_NO_CACHE", "")
+	t.Setenv("BV_CACHE_DIR", t.TempDir())
+	const namespace, headSHA, optsHash = "repo:issues", "head-1", "opts-1"
+
+	putHeadArtifactCached(namespace, headSHA, optsHash, &historyArtifact{WalkedCommits: 7, Events: []BeadEvent{{BeadID: "bv-1"}}})
+	if got, ok := getHeadArtifactCached(namespace, headSHA, optsHash); !ok || got.WalkedCommits != 7 || got.FormatVersion != historyArtifactFormatVersion {
+		t.Fatalf("precondition: fresh put should hit with the current format, got (%+v, %v)", got, ok)
+	}
+
+	// Age the stored entry to the previous format the way an old binary would have left it.
+	path, err := headArtifactCachePath(false)
+	if err != nil {
+		t.Fatalf("cache path: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	var cf headArtifactCacheFile
+	if err := json.Unmarshal(data, &cf); err != nil {
+		t.Fatalf("decode cache: %v", err)
+	}
+	if len(cf.Entries) != 1 {
+		t.Fatalf("expected one cache entry, got %d", len(cf.Entries))
+	}
+	for key, entry := range cf.Entries {
+		entry.Artifact.FormatVersion = historyArtifactFormatVersion - 1
+		cf.Entries[key] = entry
+	}
+	stale, _ := json.Marshal(cf)
+	if err := os.WriteFile(path, stale, 0o644); err != nil {
+		t.Fatalf("write stale cache: %v", err)
+	}
+
+	if got, ok := getHeadArtifactCached(namespace, headSHA, optsHash); ok {
+		t.Fatalf("format v%d entry must be a miss, got hit %+v", historyArtifactFormatVersion-1, got)
+	}
+
+	// A foreign-version artifact is never persisted; a current one replaces the stale entry.
+	putHeadArtifactCached(namespace, headSHA, optsHash, &historyArtifact{FormatVersion: historyArtifactFormatVersion + 1, WalkedCommits: 99})
+	if _, ok := getHeadArtifactCached(namespace, headSHA, optsHash); ok {
+		t.Fatalf("a foreign-version artifact must not be written over the stale entry")
+	}
+	putHeadArtifactCached(namespace, headSHA, optsHash, &historyArtifact{WalkedCommits: 8})
+	if got, ok := getHeadArtifactCached(namespace, headSHA, optsHash); !ok || got.WalkedCommits != 8 {
+		t.Fatalf("current-format put should replace the stale entry, got (%+v, %v)", got, ok)
+	}
+}
+
+// TestHeadArtifactCache_RoundTripKeepsStrategyFields (D2): the multi-strategy
+// artifact (explicit and temporal candidate sets, per-commit method lists,
+// walk size, strategy runs) survives the disk cache intact.
+func TestHeadArtifactCache_RoundTripKeepsStrategyFields(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	t.Setenv("BV_NO_CACHE", "")
+	t.Setenv("BV_CACHE_DIR", t.TempDir())
+	const namespace, headSHA, optsHash = "repo:issues", "head-2", "opts-2"
+
+	var runs []StrategyRun
+	if err := json.Unmarshal([]byte(`[{"name":"explicit_id","matches":1},{"name":"temporal_author","matches":2}]`), &runs); err != nil {
+		t.Fatalf("strategy run fixture: %v", err)
+	}
+	var temporal []temporalCandidate
+	if err := json.Unmarshal([]byte(`[{"sha":"ccc","bead_id":"bv-2"}]`), &temporal); err != nil {
+		t.Fatalf("temporal fixture: %v", err)
+	}
+	in := &historyArtifact{
+		Events:        []BeadEvent{{BeadID: "bv-1", EventType: EventCreated}},
+		Commits:       []CorrelatedCommit{{SHA: "aaa", BeadID: "bv-1", Method: MethodCoCommitted, Methods: []string{"co_committed", "explicit_id"}, Confidence: 0.9, Message: "feat(bv-1): x"}},
+		Explicit:      []CorrelatedCommit{{SHA: "bbb", BeadID: "bv-1", Method: MethodExplicitID, Methods: []string{"explicit_id"}, Confidence: 0.95, Message: "fix bv-1"}},
+		Temporal:      temporal,
+		WalkedCommits: 42,
+		Strategies:    runs,
+	}
+	putHeadArtifactCached(namespace, headSHA, optsHash, in)
+	out, ok := getHeadArtifactCached(namespace, headSHA, optsHash)
+	if !ok {
+		t.Fatalf("expected a cache hit")
+	}
+	if out.WalkedCommits != 42 || len(out.Strategies) != 2 || len(out.Temporal) != 1 || len(out.Explicit) != 1 || len(out.Commits) != 1 {
+		t.Fatalf("round trip lost strategy fields: %+v", out)
+	}
+	if out.Explicit[0].BeadID != "bv-1" || out.Explicit[0].Message != "fix bv-1" || out.Explicit[0].Confidence != 0.95 {
+		t.Fatalf("explicit set not preserved: %+v", out.Explicit[0])
+	}
+	if len(out.Commits[0].Methods) != 2 || out.Commits[0].Methods[1] != "explicit_id" || out.Commits[0].BeadID != "bv-1" {
+		t.Fatalf("per-commit methods/bead id not preserved: %+v", out.Commits[0])
+	}
+	if out.FormatVersion != historyArtifactFormatVersion {
+		t.Fatalf("stored format version %d, want %d", out.FormatVersion, historyArtifactFormatVersion)
 	}
 }
