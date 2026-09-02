@@ -21,21 +21,6 @@ type hubScopeProjection struct {
 	label     string
 }
 
-type hubBoundaryReference struct {
-	RelationType string          `json:"relation_type"`
-	EndpointID   string          `json:"endpoint_id"`
-	IssueType    model.IssueType `json:"issue_type"`
-	Status       model.Status    `json:"status"`
-	Contexts     []string        `json:"contexts"`
-	InScope      bool            `json:"in_scope"`
-}
-
-type hubScopeRobotEncoder struct {
-	base       robotEncoder
-	command    string
-	projection *hubScopeProjection
-}
-
 func parseHubRobotScope(raw, configPath string, hubMode, robotMode bool) (*hub.HubScope, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
@@ -121,6 +106,302 @@ func (p *hubScopeProjection) candidateFilter() analysis.CandidatePredicate {
 		return nil
 	}
 	return func(issueID string) bool { return p.inScopeID[issueID] }
+}
+
+// decorateRobotResult is the Hub adapter for the generic robot result hook.
+// It mutates typed command results directly; robot dispatch never needs to
+// know how Hub scope is represented.
+func (p *hubScopeProjection) decorateRobotResult(command string, result RobotResult) error {
+	if p == nil {
+		return nil
+	}
+	switch output := result.(type) {
+	case *robotPlanOutput:
+		p.decorateScope(&output.Scope)
+		p.projectPlanResult(&output.Plan)
+	case *robotPriorityOutput:
+		p.decorateScope(&output.Scope)
+		for i := range output.Recommendations {
+			output.Recommendations[i].BoundaryRefs = p.robotBoundaryRefs(output.Recommendations[i].IssueID)
+		}
+	case *robotInsightsOutput:
+		p.decorateScope(&output.Scope)
+	case *robotGraphOutput:
+		p.decorateScope(&output.Scope)
+		if output.stats != nil {
+			projected, err := p.exportGraph(output.issues, output.stats, output.config)
+			if err != nil {
+				return fmt.Errorf("projecting graph result: %w", err)
+			}
+			output.GraphExportResult = projected
+		} else {
+			p.projectGraphResult(output.GraphExportResult)
+		}
+	case *robotForecastOutput:
+		p.decorateScope(&output.Scope)
+		forecasts := output.Forecasts[:0]
+		for _, forecast := range output.Forecasts {
+			if p.inScopeID[forecast.IssueID] {
+				forecasts = append(forecasts, forecast)
+			}
+		}
+		output.Forecasts = forecasts
+	case *robotLabelHealthOutput:
+		p.decorateScope(&output.Scope)
+		p.projectLabelHealthResult(&output.Results)
+	case *robotLabelFlowOutput:
+		p.decorateScope(&output.Scope)
+		p.projectLabelFlowResult(&output.Flow)
+	case *robotAttentionOutput:
+		p.decorateScope(&output.Scope)
+	case *robotBlockerChainOutput:
+		p.decorateScope(&output.Scope)
+	case *robotSprintListOutput:
+		p.decorateScope(&output.Scope)
+		p.projectSprintListResult(output.Sprints)
+	case *robotSprintShowOutput:
+		p.decorateScope(&output.Scope)
+		if output.Sprint != nil {
+			p.projectSprintBeadIDs(&output.Sprint.BeadIDs)
+		}
+	case *robotCapacityOutput:
+		p.decorateScope(&output.Scope)
+	case *robotTriageOutput:
+		p.decorateScope(&output.Scope)
+		p.projectTriageResult(&output.Triage)
+	case *briefTriageOutput:
+		p.decorateScope(&output.Scope)
+		output.QuickRef.TopPicks = p.projectTriageTopPicks(output.QuickRef.TopPicks)
+		filtered := output.Recommendations[:0]
+		for _, recommendation := range output.Recommendations {
+			if p.inScopeID[recommendation.ID] {
+				recommendation.BoundaryRefs = p.robotBoundaryRefs(recommendation.ID)
+				filtered = append(filtered, recommendation)
+			}
+		}
+		output.Recommendations = filtered
+		quickWins := output.QuickWins[:0]
+		for _, item := range output.QuickWins {
+			if p.inScopeID[item.ID] {
+				item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+				quickWins = append(quickWins, item)
+			}
+		}
+		output.QuickWins = quickWins
+		blockers := output.BlockersToClear[:0]
+		for _, item := range output.BlockersToClear {
+			if p.inScopeID[item.ID] {
+				item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+				blockers = append(blockers, item)
+			}
+		}
+		output.BlockersToClear = blockers
+	}
+	return nil
+}
+
+func (p *hubScopeProjection) decorateScope(scope **robotScopeMetadata) {
+	*scope = &robotScopeMetadata{
+		Mode:               string(p.scope.Mode),
+		Contexts:           append([]string(nil), p.scope.Contexts...),
+		IncludeContextless: p.scope.IncludeContextless,
+	}
+}
+
+func (p *hubScopeProjection) robotBoundaryRefs(issueID string) []robotBoundaryReference {
+	return p.hiddenOpenBlockers(issueID)
+}
+
+func (p *hubScopeProjection) projectPlanResult(plan *robotExecutionPlan) {
+	for i := range plan.Tracks {
+		items := plan.Tracks[i].Items[:0]
+		for _, item := range plan.Tracks[i].Items {
+			if !p.inScopeID[item.ID] {
+				continue
+			}
+			item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+			items = append(items, item)
+		}
+		plan.Tracks[i].Items = items
+	}
+	tracks := plan.Tracks[:0]
+	highestID := ""
+	highestCount := -1
+	for _, track := range plan.Tracks {
+		if len(track.Items) == 0 {
+			continue
+		}
+		tracks = append(tracks, track)
+		for _, item := range track.Items {
+			if len(item.UnblocksIDs) > highestCount || (len(item.UnblocksIDs) == highestCount && (highestID == "" || item.ID < highestID)) {
+				highestID = item.ID
+				highestCount = len(item.UnblocksIDs)
+			}
+		}
+	}
+	plan.Tracks = tracks
+	plan.Summary.HighestImpact = highestID
+	if highestCount < 0 {
+		highestCount = 0
+	}
+	plan.Summary.UnblocksCount = highestCount
+	if highestID == "" {
+		plan.Summary.ImpactReason = "No actionable item in scope"
+	} else {
+		plan.Summary.ImpactReason = fmt.Sprintf("Unblocks %d issue(s)", highestCount)
+	}
+}
+
+func (p *hubScopeProjection) projectGraphResult(result *export.GraphExportResult) {
+	if result == nil {
+		return
+	}
+	result.Adjacency = p.projectGraphAdjacency(result.Adjacency)
+	result.Nodes = len(result.Adjacency.Nodes)
+	result.Edges = len(result.Adjacency.Edges)
+}
+
+func (p *hubScopeProjection) projectLabelHealthResult(results *analysis.LabelAnalysisResult) {
+	for i := range results.Labels {
+		results.Labels[i].Issues = p.projectIDs(results.Labels[i].Issues)
+	}
+	for i := range results.Summaries {
+		if issues := p.projectIDsForLabel(results.Summaries[i].Label, results.Labels); len(issues) > 0 {
+			results.Summaries[i].TopIssue = issues[0]
+		} else {
+			results.Summaries[i].TopIssue = ""
+		}
+	}
+	if results.CrossLabelFlow != nil {
+		p.projectLabelFlowResult(results.CrossLabelFlow)
+	}
+}
+
+func (p *hubScopeProjection) projectIDs(ids []string) []string {
+	filtered := ids[:0]
+	for _, id := range ids {
+		if p.inScopeID[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
+}
+
+func (p *hubScopeProjection) projectIDsForLabel(label string, labels []analysis.LabelHealth) []string {
+	for _, entry := range labels {
+		if entry.Label == label {
+			return entry.Issues
+		}
+	}
+	return nil
+}
+
+func (p *hubScopeProjection) projectLabelFlowResult(flow *analysis.CrossLabelFlow) {
+	for i := range flow.Dependencies {
+		flow.Dependencies[i].IssueIDs = p.projectIDs(flow.Dependencies[i].IssueIDs)
+	}
+}
+
+func (p *hubScopeProjection) projectSprintListResult(sprints []model.Sprint) {
+	for i := range sprints {
+		p.projectSprintBeadIDs(&sprints[i].BeadIDs)
+	}
+}
+
+func (p *hubScopeProjection) projectSprintBeadIDs(ids *[]string) {
+	filtered := (*ids)[:0]
+	for _, id := range *ids {
+		if p.inScopeID[id] {
+			filtered = append(filtered, id)
+		}
+	}
+	*ids = filtered
+}
+
+func (p *hubScopeProjection) projectTriageResult(result *robotTriageResult) {
+	result.QuickRef.TopPicks = p.projectTriageTopPicks(result.QuickRef.TopPicks)
+	result.Recommendations = p.projectTriageRecommendations(result.Recommendations)
+	quickWins := result.QuickWins[:0]
+	for _, item := range result.QuickWins {
+		if p.inScopeID[item.ID] {
+			item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+			quickWins = append(quickWins, item)
+		}
+	}
+	result.QuickWins = quickWins
+	blockers := result.BlockersToClear[:0]
+	for _, item := range result.BlockersToClear {
+		if p.inScopeID[item.ID] {
+			item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+			blockers = append(blockers, item)
+		}
+	}
+	result.BlockersToClear = blockers
+	for i := range result.RecommendationsByTrack {
+		result.RecommendationsByTrack[i].Recommendations = p.projectTriageRecommendations(result.RecommendationsByTrack[i].Recommendations)
+		if pick := result.RecommendationsByTrack[i].TopPick; pick != nil {
+			if !p.inScopeID[pick.ID] {
+				result.RecommendationsByTrack[i].TopPick = nil
+				result.RecommendationsByTrack[i].ClaimCommand = ""
+			} else {
+				pick.BoundaryRefs = p.robotBoundaryRefs(pick.ID)
+			}
+		}
+	}
+	for i := range result.RecommendationsByLabel {
+		result.RecommendationsByLabel[i].Recommendations = p.projectTriageRecommendations(result.RecommendationsByLabel[i].Recommendations)
+		if pick := result.RecommendationsByLabel[i].TopPick; pick != nil {
+			if !p.inScopeID[pick.ID] {
+				result.RecommendationsByLabel[i].TopPick = nil
+				result.RecommendationsByLabel[i].ClaimCommand = ""
+			} else {
+				pick.BoundaryRefs = p.robotBoundaryRefs(pick.ID)
+			}
+		}
+	}
+	alerts := result.Alerts[:0]
+	for _, alert := range result.Alerts {
+		if alert.IssueID != "" && !p.inScopeID[alert.IssueID] {
+			continue
+		}
+		hadIssueIDs := len(alert.IssueIDs) > 0
+		alert.IssueIDs = p.projectIDs(alert.IssueIDs)
+		if hadIssueIDs && len(alert.IssueIDs) == 0 {
+			continue
+		}
+		alerts = append(alerts, alert)
+	}
+	result.Alerts = alerts
+	if len(result.QuickRef.TopPicks) == 0 {
+		result.Commands.ClaimTop = "CI=1 br ready --json  # No top pick available"
+		result.Commands.ShowTop = "CI=1 br ready --json  # No top pick available"
+	} else {
+		id := result.QuickRef.TopPicks[0].ID
+		result.Commands.ClaimTop = fmt.Sprintf("CI=1 br update %s --status in_progress --json", id)
+		result.Commands.ShowTop = fmt.Sprintf("CI=1 br show %s --json", id)
+	}
+}
+
+func (p *hubScopeProjection) projectTriageTopPicks(items []robotTriageTopPick) []robotTriageTopPick {
+	filtered := items[:0]
+	for _, item := range items {
+		if p.inScopeID[item.ID] {
+			item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func (p *hubScopeProjection) projectTriageRecommendations(items []robotTriageRecommendation) []robotTriageRecommendation {
+	filtered := items[:0]
+	for _, item := range items {
+		if p.inScopeID[item.ID] {
+			item.BoundaryRefs = p.robotBoundaryRefs(item.ID)
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func (p *hubScopeProjection) exportGraph(issues []model.Issue, stats *analysis.GraphStats, config export.GraphExportConfig) (*export.GraphExportResult, error) {
@@ -225,372 +506,12 @@ func (p *hubScopeProjection) projectGraphAdjacency(canonical *export.AdjacencyGr
 	return result
 }
 
-func (e hubScopeRobotEncoder) Encode(value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshaling scoped robot output: %w", err)
-	}
-	var output map[string]any
-	if err := json.Unmarshal(data, &output); err != nil {
-		return fmt.Errorf("decoding scoped robot output: %w", err)
-	}
-	e.projection.project(e.command, output)
-	return e.base.Encode(output)
-}
-
-func (p *hubScopeProjection) project(command string, output map[string]any) {
-	output["scope"] = map[string]any{
-		"mode":                string(p.scope.Mode),
-		"contexts":            append([]string(nil), p.scope.Contexts...),
-		"include_contextless": p.scope.IncludeContextless,
-	}
-
-	switch command {
-	case "robot-plan":
-		p.projectPlan(output)
-	case "robot-priority":
-		p.filterObjectArray(output, "recommendations", true, "issue_id")
-	case "robot-insights":
-		p.projectInsights(output)
-	case "robot-graph":
-		p.projectGraph(output)
-	case "robot-forecast":
-		p.filterObjectArray(output, "forecasts", false, "issue_id")
-	case "robot-capacity":
-		p.filterStringArray(output, "actionable")
-		p.filterObjectArray(output, "bottlenecks", false, "id")
-		if actionable, ok := output["actionable"].([]any); ok {
-			output["actionable_count"] = len(actionable)
-		}
-	case "robot-label-health":
-		p.projectLabelHealth(output)
-	case "robot-label-flow":
-		if flow, ok := output["flow"].(map[string]any); ok {
-			p.projectLabelFlow(flow)
-		}
-	case "robot-sprint-list":
-		p.projectSprintList(output)
-	case "robot-sprint-show":
-		if sprint, ok := output["sprint"].(map[string]any); ok {
-			p.filterStringArray(sprint, "bead_ids")
-		}
-	case "robot-triage", "robot-triage-by-track", "robot-triage-by-label":
-		p.projectTriage(output)
-	}
-}
-
-func (p *hubScopeProjection) projectLabelHealth(output map[string]any) {
-	results, ok := output["results"].(map[string]any)
-	if !ok {
-		return
-	}
-	labels, _ := results["labels"].([]any)
-	topIssueByLabel := make(map[string]string)
-	for _, rawLabel := range labels {
-		if label, ok := rawLabel.(map[string]any); ok {
-			p.filterStringArray(label, "issues")
-			issues, _ := label["issues"].([]any)
-			if len(issues) > 0 {
-				if name, ok := label["label"].(string); ok {
-					topIssueByLabel[name], _ = issues[0].(string)
-				}
-			}
-		}
-	}
-	if summaries, ok := results["summaries"].([]any); ok {
-		for _, rawSummary := range summaries {
-			summary, ok := rawSummary.(map[string]any)
-			if !ok {
-				continue
-			}
-			label, _ := summary["label"].(string)
-			if topIssue := topIssueByLabel[label]; topIssue != "" {
-				summary["top_issue"] = topIssue
-			} else {
-				delete(summary, "top_issue")
-			}
-		}
-	}
-	if flow, ok := results["cross_label_flow"].(map[string]any); ok {
-		p.projectLabelFlow(flow)
-	}
-}
-
-func (p *hubScopeProjection) projectLabelFlow(flow map[string]any) {
-	dependencies, _ := flow["dependencies"].([]any)
-	for _, rawDependency := range dependencies {
-		if dependency, ok := rawDependency.(map[string]any); ok {
-			p.filterStringArray(dependency, "issue_ids")
-		}
-	}
-}
-
-func (p *hubScopeProjection) projectPlan(output map[string]any) {
-	plan, ok := output["plan"].(map[string]any)
-	if !ok {
-		return
-	}
-	tracks, _ := plan["tracks"].([]any)
-	projected := tracks[:0]
-	highestImpactID := ""
-	highestImpactCount := -1
-	for _, rawTrack := range tracks {
-		track, ok := rawTrack.(map[string]any)
-		if !ok {
-			continue
-		}
-		p.filterObjectArray(track, "items", true, "id")
-		if items, _ := track["items"].([]any); len(items) > 0 {
-			for _, rawItem := range items {
-				item := rawItem.(map[string]any)
-				id := objectID(item, "id")
-				unblocks, _ := item["unblocks"].([]any)
-				if len(unblocks) > highestImpactCount || (len(unblocks) == highestImpactCount && (highestImpactID == "" || id < highestImpactID)) {
-					highestImpactID = id
-					highestImpactCount = len(unblocks)
-				}
-			}
-			projected = append(projected, track)
-		}
-	}
-	plan["tracks"] = projected
-	if summary, ok := plan["summary"].(map[string]any); ok {
-		summary["highest_impact"] = highestImpactID
-		if highestImpactCount < 0 {
-			highestImpactCount = 0
-		}
-		summary["unblocks_count"] = highestImpactCount
-		if highestImpactID == "" {
-			summary["impact_reason"] = "No actionable item in scope"
-		} else {
-			summary["impact_reason"] = fmt.Sprintf("Unblocks %d issue(s)", highestImpactCount)
-		}
-	}
-}
-
-func (p *hubScopeProjection) projectInsights(output map[string]any) {
-	for _, key := range []string{"Bottlenecks", "Keystones", "Influencers", "Hubs", "Authorities", "Cores", "Slack", "top_what_ifs"} {
-		p.filterObjectArray(output, key, false, "ID", "id", "issue_id")
-	}
-	for _, key := range []string{"Articulation", "Orphans"} {
-		p.filterStringArray(output, key)
-	}
-	if stats, ok := output["full_stats"].(map[string]any); ok {
-		for _, key := range []string{"pagerank", "betweenness", "eigenvector", "hubs", "authorities", "critical_path_score", "core_number", "slack"} {
-			if values, ok := stats[key].(map[string]any); ok {
-				for id := range values {
-					if !p.inScopeID[id] {
-						delete(values, id)
-					}
-				}
-			}
-		}
-		p.filterStringArray(stats, "articulation_points")
-	}
-	if advanced, ok := output["advanced_insights"].(map[string]any); ok {
-		p.projectNestedCandidates(advanced)
-	}
-}
-
-func (p *hubScopeProjection) projectNestedCandidates(value map[string]any) {
-	for key, raw := range value {
-		switch nested := raw.(type) {
-		case map[string]any:
-			p.projectNestedCandidates(nested)
-		case []any:
-			filtered := nested[:0]
-			for _, entry := range nested {
-				object, ok := entry.(map[string]any)
-				if !ok {
-					filtered = append(filtered, entry)
-					continue
-				}
-				id := objectID(object, "id", "issue_id")
-				if id == "" || p.inScopeID[id] {
-					p.projectNestedCandidates(object)
-					filtered = append(filtered, object)
-				}
-			}
-			value[key] = filtered
-		}
-	}
-}
-
-func (p *hubScopeProjection) projectGraph(output map[string]any) {
-	adjacency, ok := output["adjacency"].(map[string]any)
-	if !ok {
-		return
-	}
-	p.filterObjectArray(adjacency, "nodes", false, "id")
-	edges, _ := adjacency["edges"].([]any)
-	filtered := edges[:0]
-	for _, rawEdge := range edges {
-		edge, ok := rawEdge.(map[string]any)
-		if !ok {
-			continue
-		}
-		from, _ := edge["from"].(string)
-		to, _ := edge["to"].(string)
-		if p.inScopeID[from] && p.inScopeID[to] {
-			filtered = append(filtered, edge)
-		}
-	}
-	adjacency["edges"] = filtered
-	if nodes, ok := adjacency["nodes"].([]any); ok {
-		output["nodes"] = len(nodes)
-	}
-	output["edges"] = len(filtered)
-}
-
-func (p *hubScopeProjection) projectSprintList(output map[string]any) {
-	sprints, _ := output["sprints"].([]any)
-	for _, rawSprint := range sprints {
-		if sprint, ok := rawSprint.(map[string]any); ok {
-			p.filterStringArray(sprint, "bead_ids")
-		}
-	}
-}
-
-func (p *hubScopeProjection) projectTriage(output map[string]any) {
-	target := output
-	if triage, ok := output["triage"].(map[string]any); ok {
-		target = triage
-	}
-	for _, key := range []string{"recommendations", "quick_wins", "blockers_to_clear"} {
-		p.filterObjectArray(target, key, true, "id")
-	}
-	if quickRef, ok := target["quick_ref"].(map[string]any); ok {
-		p.filterObjectArray(quickRef, "top_picks", true, "id")
-		topPicks, _ := quickRef["top_picks"].([]any)
-		topID := ""
-		if len(topPicks) > 0 {
-			topID = objectID(topPicks[0].(map[string]any), "id")
-		}
-		if commands, ok := target["commands"].(map[string]any); ok {
-			if topID == "" {
-				commands["claim_top"] = "CI=1 br ready --json  # No top pick available"
-				commands["show_top"] = "CI=1 br ready --json  # No top pick available"
-			} else {
-				commands["claim_top"] = fmt.Sprintf("CI=1 br update %s --status in_progress --json", topID)
-				commands["show_top"] = fmt.Sprintf("CI=1 br show %s --json", topID)
-			}
-		}
-	}
-	p.projectTriageAlerts(target)
-	for _, groupKey := range []string{"recommendations_by_track", "recommendations_by_label"} {
-		groups, _ := target[groupKey].([]any)
-		projected := groups[:0]
-		for _, rawGroup := range groups {
-			group, ok := rawGroup.(map[string]any)
-			if !ok {
-				continue
-			}
-			p.filterObjectArray(group, "recommendations", true, "id")
-			if topPick, ok := group["top_pick"].(map[string]any); ok {
-				id := objectID(topPick, "id")
-				if !p.inScopeID[id] {
-					delete(group, "top_pick")
-					delete(group, "claim_command")
-				} else if refs := p.hiddenOpenBlockers(id); len(refs) > 0 {
-					topPick["boundary_refs"] = refs
-				}
-			}
-			if recommendations, _ := group["recommendations"].([]any); len(recommendations) > 0 {
-				projected = append(projected, group)
-			}
-		}
-		target[groupKey] = projected
-	}
-}
-
-func (p *hubScopeProjection) projectTriageAlerts(target map[string]any) {
-	alerts, ok := target["alerts"].([]any)
-	if !ok {
-		return
-	}
-	projected := alerts[:0]
-	for _, rawAlert := range alerts {
-		alert, ok := rawAlert.(map[string]any)
-		if !ok {
-			continue
-		}
-		if id := objectID(alert, "issue_id"); id != "" {
-			if p.inScopeID[id] {
-				projected = append(projected, alert)
-			}
-			continue
-		}
-		if _, exists := alert["issue_ids"]; exists {
-			p.filterStringArray(alert, "issue_ids")
-			if ids, _ := alert["issue_ids"].([]any); len(ids) > 0 {
-				projected = append(projected, alert)
-			}
-			continue
-		}
-		projected = append(projected, alert)
-	}
-	target["alerts"] = projected
-}
-
-func (p *hubScopeProjection) filterObjectArray(parent map[string]any, key string, boundaryRefs bool, idKeys ...string) {
-	items, ok := parent[key].([]any)
-	if !ok {
-		return
-	}
-	filtered := items[:0]
-	seen := make(map[string]bool, len(items))
-	for _, rawItem := range items {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			continue
-		}
-		id := objectID(item, idKeys...)
-		if id == "" || !p.inScopeID[id] || seen[id] {
-			continue
-		}
-		seen[id] = true
-		if boundaryRefs {
-			if refs := p.hiddenOpenBlockers(id); len(refs) > 0 {
-				item["boundary_refs"] = refs
-			}
-		}
-		filtered = append(filtered, item)
-	}
-	parent[key] = filtered
-}
-
-func (p *hubScopeProjection) filterStringArray(parent map[string]any, key string) {
-	items, ok := parent[key].([]any)
-	if !ok {
-		return
-	}
-	filtered := items[:0]
-	seen := make(map[string]bool, len(items))
-	for _, rawID := range items {
-		id, ok := rawID.(string)
-		if ok && p.inScopeID[id] && !seen[id] {
-			filtered = append(filtered, id)
-			seen[id] = true
-		}
-	}
-	parent[key] = filtered
-}
-
-func objectID(item map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if id, ok := item[key].(string); ok {
-			return id
-		}
-	}
-	return ""
-}
-
-func (p *hubScopeProjection) hiddenOpenBlockers(issueID string) []hubBoundaryReference {
+func (p *hubScopeProjection) hiddenOpenBlockers(issueID string) []robotBoundaryReference {
 	issue, ok := p.issues[issueID]
 	if !ok {
 		return nil
 	}
-	refs := make([]hubBoundaryReference, 0)
+	refs := make([]robotBoundaryReference, 0)
 	for _, dependency := range issue.Dependencies {
 		if dependency == nil || !dependency.Type.IsBlocking() || p.inScopeID[dependency.DependsOnID] {
 			continue
@@ -603,7 +524,7 @@ func (p *hubScopeProjection) hiddenOpenBlockers(issueID string) []hubBoundaryRef
 		if relationType == "" {
 			relationType = string(model.DepBlocks)
 		}
-		refs = append(refs, hubBoundaryReference{
+		refs = append(refs, robotBoundaryReference{
 			RelationType: relationType,
 			EndpointID:   blocker.ID,
 			IssueType:    blocker.IssueType,

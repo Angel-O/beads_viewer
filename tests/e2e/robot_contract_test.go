@@ -454,7 +454,7 @@ func TestRobotLabelFlowContract(t *testing.T) {
 	if payload.DataHash == "" {
 		t.Fatalf("label-flow missing data_hash")
 	}
-	wantLabels := []string{"api", "myctx:keep", "web"}
+	wantLabels := []string{"api", "ctx:project-one", "ctx:project-three", "ctx:project-two", "myctx:keep", "web"}
 	if len(payload.Flow.Labels) != len(wantLabels) {
 		t.Fatalf("label-flow labels = %v, want %v", payload.Flow.Labels, wantLabels)
 	}
@@ -463,15 +463,10 @@ func TestRobotLabelFlowContract(t *testing.T) {
 			t.Fatalf("label-flow labels = %v, want %v", payload.Flow.Labels, wantLabels)
 		}
 	}
-	if len(payload.Flow.Dependencies) != 2 || payload.Flow.TotalCrossDep != 2 {
-		t.Fatalf("label-flow dependencies = %v, total = %d; want two regular-label flows", payload.Flow.Dependencies, payload.Flow.TotalCrossDep)
+	if len(payload.Flow.Dependencies) != 7 || payload.Flow.TotalCrossDep != 7 {
+		t.Fatalf("label-flow dependencies = %v, total = %d; want all direct-mode label flows", payload.Flow.Dependencies, payload.Flow.TotalCrossDep)
 	}
-	for _, dep := range payload.Flow.Dependencies {
-		if dep.FromLabel == "ctx:project-one" || dep.ToLabel == "ctx:project-two" {
-			t.Fatalf("context label leaked into robot dependency: %+v", dep)
-		}
-	}
-	wantBottlenecks := []string{"api", "myctx:keep"}
+	wantBottlenecks := []string{"api", "ctx:project-one", "myctx:keep"}
 	if len(payload.Flow.Bottlenecks) != len(wantBottlenecks) {
 		t.Fatalf("label-flow bottlenecks = %v, want %v", payload.Flow.Bottlenecks, wantBottlenecks)
 	}

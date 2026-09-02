@@ -72,7 +72,8 @@ func TestHubRobotInsightsFiltersCandidatesBeforeTopKCap(t *testing.T) {
 		DataHashMatchesIssues: true,
 		Encoder:               newJSONRobotEncoder(&encoded),
 		Stdout:                &encoded,
-		HubProjection:         projection,
+		CandidatePredicate:    projection.candidateFilter(),
+		ResultDecorator:       projection.decorateRobotResult,
 	}
 	if err := handleRobotInsights(ctx, phaseThreeRobotHandlerConfig{}); err != nil {
 		t.Fatal(err)

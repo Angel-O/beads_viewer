@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
 func TestRobotRegistryValidate_RejectsModifierAlone(t *testing.T) {
@@ -195,6 +199,80 @@ func TestRobotRegistryDispatchFlag_RunsActiveHandler(t *testing.T) {
 	}
 	if called != 1 {
 		t.Fatalf("handler call count = %d, want 1", called)
+	}
+}
+
+func TestRobotRegistryDispatchUsesGenericTypedResultDecorator(t *testing.T) {
+	var active bool = true
+	var decorated RobotResult
+	var encoded bytes.Buffer
+	registry := newRobotRegistry()
+	registry.Register(RobotCommand{
+		Name: "robot-test", FlagName: "robot-test", FlagPtr: &active,
+		Handler: func(ctx RobotContext) error {
+			result := &robotPlanOutput{DataHash: "before"}
+			if err := ctx.EncodeResult("robot-test", result); err != nil {
+				return err
+			}
+			return nil
+		},
+	})
+	ctx := RobotContext{
+		Encoder: newJSONRobotEncoder(&encoded),
+		ResultDecorator: func(_ string, result RobotResult) error {
+			decorated = result
+			result.(*robotPlanOutput).DataHash = "after"
+			return nil
+		},
+	}
+	handled, err := registry.DispatchFlag("robot-test", ctx)
+	if err != nil || !handled {
+		t.Fatalf("dispatch = handled:%v err:%v", handled, err)
+	}
+	if decorated == nil {
+		t.Fatal("typed result decorator was not called")
+	}
+	if !strings.Contains(encoded.String(), `"data_hash":"after"`) {
+		t.Fatalf("decorated result was not encoded: %s", encoded.String())
+	}
+}
+
+func TestRobotLabelFlowLocalUsesNeutralLabelAdmission(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Labels: []string{"ctx:alpha", "api"}, Dependencies: []*model.Dependency{{DependsOnID: "beta", Type: model.DepBlocks}}},
+		{ID: "beta", Labels: []string{"ctx:beta", "web"}},
+	}
+	var encoded bytes.Buffer
+	err := handleRobotLabelFlow(RobotContext{
+		Issues:   issues,
+		DataHash: "hash",
+		Encoder:  newJSONRobotEncoder(&encoded),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output robotLabelFlowOutput
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	wantLabels := []string{"api", "ctx:alpha", "ctx:beta", "web"}
+	if !reflect.DeepEqual(output.Flow.Labels, wantLabels) {
+		t.Fatalf("local label flow labels = %#v, want all direct labels", output.Flow.Labels)
+	}
+}
+
+func TestRobotTriageResultCopiesTopPicksOnce(t *testing.T) {
+	input := analysis.TriageResult{QuickRef: analysis.QuickRef{TopPicks: []analysis.TopPick{
+		{ID: "one"}, {ID: "two"}, {ID: "three"},
+	}}}
+	converted := robotTriageResultFromAnalysis(input)
+	if len(converted.QuickRef.TopPicks) != len(input.QuickRef.TopPicks) {
+		t.Fatalf("top picks = %d, want %d", len(converted.QuickRef.TopPicks), len(input.QuickRef.TopPicks))
+	}
+	for i, pick := range converted.QuickRef.TopPicks {
+		if pick.ID != input.QuickRef.TopPicks[i].ID {
+			t.Fatalf("top pick %d = %q, want %q", i, pick.ID, input.QuickRef.TopPicks[i].ID)
+		}
 	}
 }
 

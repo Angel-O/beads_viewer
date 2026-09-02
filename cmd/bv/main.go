@@ -2699,7 +2699,9 @@ func main() {
 			if projectionErr != nil {
 				return fmt.Errorf("preparing Hub scope projection: %w", projectionErr)
 			}
-			robotDispatchContext.HubProjection = projection
+			robotDispatchContext.CandidatePredicate = projection.candidateFilter()
+			robotDispatchContext.LabelPredicate = hub.AdmitLabel
+			robotDispatchContext.ResultDecorator = projection.decorateRobotResult
 		}
 
 		// Handle semantic search CLI (bv-9gf.3)
