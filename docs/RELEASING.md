@@ -15,9 +15,10 @@ Stages, in order: `gofmt`, `go build` + `go vet`, unit tests with `-race`,
 e2e tests with `-race`, docs parity (`go generate` must not change the
 tree), GitHub Actions pin check (`scripts/check_action_pins.sh`), vendored
 asset hashes (`scripts/verify_vendor.sh` against `MANIFEST.json`), benchmark
-comparison (`benchstat` against `benchmarks/baseline.txt`, fails above 20%
-regression), and the robot smoke (`scripts/robot_smoke.sh`: every robot
-command on this repository and on a synthetic fixture).
+comparison (`scripts/benchmark.sh compare` against `benchmarks/baseline.txt`,
+fails above 20% median sec/op regression on any tracked benchmark), and the
+robot smoke (`scripts/robot_smoke.sh`: every robot command on this repository
+and on a synthetic fixture).
 
 Each stage prints its duration; the full log lands in
 `tests/artifacts/release_gate_<timestamp>.log` (git-ignored). A failed stage
@@ -27,10 +28,19 @@ helper script that does not exist yet into a logged skip instead of a
 failure. Skips are visible in the summary line, so a "passed" gate with
 skips is not the same as a clean pass.
 
-Stage 8 needs `benchstat` (`go install golang.org/x/perf/cmd/benchstat@latest`)
-and a baseline regenerated on the reference machine
-(`scripts/benchmark.sh baseline`); until that baseline lands (tracker item
-H6) the stage is skipped explicitly.
+Stage 8 has no dependency outside the Go toolchain: `scripts/benchmark.sh`
+runs the ten tracked benchmarks (`BenchmarkRealData_*`, `BenchmarkFullAnalysis_*`,
+`BenchmarkSnapshotSwap`, `BenchmarkKeyPressLatency`, `BenchmarkListItemBuild`,
+`BenchmarkParseIssuesPoolComparison`) five times each against the frozen
+dataset `tests/testdata/benchmark/medium.jsonl`, and compares the median
+`ns/op` of each with `benchmarks/baseline.txt`. The baseline carries a
+provenance header (date, Go version, CPU, OS, commit, dataset hash) and is
+regenerated only on the reference machine with `scripts/benchmark.sh baseline`.
+`BENCH_PCT` (gate: `RELEASE_GATE_BENCH_PCT`) sets the threshold;
+`tests/scripts/benchmark_compare_test.sh` proves the comparison turns red on a
+doubled median and on a missing benchmark. Timings on a shared, busy machine
+are noisy: a stage-8 failure on a loaded host is a signal to rerun when the
+machine is quiet, not a licence to raise the threshold.
 
 ## Where the gate runs
 

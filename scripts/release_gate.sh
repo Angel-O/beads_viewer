@@ -116,17 +116,11 @@ script_stage() {
 }
 
 benchmarks() {
-  local pct="${RELEASE_GATE_BENCH_PCT:-20}"
+  # scripts/benchmark.sh runs the tracked set against the frozen dataset and
+  # compares median sec/op per benchmark with benchmarks/baseline.txt; it
+  # exits non-zero above the threshold or when a tracked benchmark is missing.
   [ -f benchmarks/baseline.txt ] || { echo "no benchmarks/baseline.txt (run scripts/benchmark.sh baseline)"; return 1; }
-  command -v benchstat >/dev/null || { echo "benchstat not installed: go install golang.org/x/perf/cmd/benchstat@latest"; return 1; }
-  go test -run='^$' -bench=. -benchmem -count=3 ./pkg/analysis/... ./pkg/ui/... ./pkg/export/... >benchmarks/current.txt 2>&1 || return 1
-  benchstat benchmarks/baseline.txt benchmarks/current.txt | tee benchmarks/compare.txt
-  # benchstat prints deltas like "+23.45%"; any positive time delta above the
-  # threshold on the sec/op table is a regression.
-  local worst
-  worst=$(awk '/sec\/op/{intime=1} /B\/op|allocs\/op/{intime=0} intime && match($0,/[+-][0-9]+\.[0-9]+%/){v=substr($0,RSTART,RLENGTH); gsub(/[%+]/,"",v); if (v+0>max) max=v+0} END{print max+0}' benchmarks/compare.txt)
-  echo "worst sec/op regression: ${worst}% (threshold ${pct}%)"
-  awk -v w="$worst" -v p="$pct" 'BEGIN{exit !(w<=p)}'
+  BENCH_PCT="${RELEASE_GATE_BENCH_PCT:-20}" scripts/benchmark.sh compare
 }
 
 # Stages that wrap script_stage translate its MISSING_OK sentinel (200) into a skip.
