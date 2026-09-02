@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -473,6 +474,32 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 // DefaultMaxBufferSize is the default buffer size for the scanner (10MB).
 const DefaultMaxBufferSize = 1024 * 1024 * 10
 
+// MaxLineSizeEnvVar overrides DefaultMaxBufferSize; the value is in megabytes.
+const MaxLineSizeEnvVar = "BV_MAX_LINE_SIZE_MB"
+
+// maxLineSizeMB caps MaxLineSizeEnvVar so a typo cannot ask for terabytes.
+const maxLineSizeMB = 1024
+
+// MaxLineSizeFromEnv returns the maximum JSONL line size in bytes configured
+// through BV_MAX_LINE_SIZE_MB, or 0 when the variable is unset or invalid
+// (ParseOptions treats 0 as DefaultMaxBufferSize). Every loading path — TUI
+// and robot/datasource alike — must consult this so the documented variable
+// has one meaning.
+func MaxLineSizeFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv(MaxLineSizeEnvVar))
+	if raw == "" {
+		return 0
+	}
+	mb, err := strconv.Atoi(raw)
+	if err != nil || mb <= 0 {
+		return 0
+	}
+	if mb > maxLineSizeMB {
+		mb = maxLineSizeMB
+	}
+	return mb * 1024 * 1024
+}
+
 // ParseOptions configures the behavior of ParseIssues.
 type ParseOptions struct {
 	// WarningHandler is called with warning messages (e.g., malformed JSON).
@@ -515,7 +542,9 @@ type ParseStats struct {
 	// Valid is the number of unique issue-shaped lines that parsed and validated.
 	Valid int
 	// Errors is the number of issue-shaped lines that were malformed JSON or
-	// failed model validation (e.g. missing required fields), plus duplicate IDs.
+	// failed model validation (e.g. missing required fields), plus duplicate IDs
+	// and lines dropped for exceeding the per-line byte cap. Every dropped
+	// record counts here so load_stats can surface it.
 	Errors int
 	// Skipped is the number of recognized non-issue `_type` records (memory,
 	// sprint, forecast, burndown, ignore) plus unknown `_type` records — content
@@ -667,8 +696,13 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 		}
 
 		if isPrefix {
-			// Line too long. Discard the rest of the line.
+			// Line too long. Discard the rest of the line. It is a dropped
+			// record, so it counts as an error: robot load_stats must surface
+			// it just like malformed JSON (#190).
 			warn(fmt.Sprintf("skipping line %d: line too long (exceeds %d bytes)", lineNum, maxCapacity))
+			if opts.Stats != nil {
+				opts.Stats.Errors++
+			}
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
 				if err != nil && err != io.EOF {
@@ -1226,7 +1260,8 @@ func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseO
 		// raw line before trimming CR so CRLF consumes the same capacity as serial.
 		if len(line) >= maxCapacity {
 			message := fmt.Sprintf("skipping line %d: line too long (exceeds %d bytes)", lineNum, maxCapacity)
-			res.events = append(res.events, parsedLineEvent{lineNum: lineNum, warns: []string{message}})
+			// A dropped record is an error, matching the serial path (#190).
+			res.events = append(res.events, parsedLineEvent{lineNum: lineNum, stats: ParseStats{Errors: 1}, warns: []string{message}})
 			continue
 		}
 

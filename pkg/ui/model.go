@@ -1412,6 +1412,11 @@ func (m *Model) quitCommand() tea.Cmd {
 func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) *Model {
 	// Graph Analysis - Phase 1 is instant, Phase 2 runs in background
 	analyzer := analysis.NewAnalyzer(issues)
+	// bv-90: accept/ignore feedback tunes the factor weights the priority
+	// hints and actionable view rank with, exactly as --robot-triage does.
+	if w := feedbackWeightsForBeadsPath(beadsPath); w != nil {
+		analyzer.SetWeights(*w)
+	}
 	graphStats := analyzer.AnalyzeAsync(context.Background())
 
 	// Sort issues

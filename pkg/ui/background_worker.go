@@ -1577,6 +1577,7 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool) snapshotBuildResu
 	analyzeErr := w.safeCompute("analyze_phase1", func() error {
 		builder := NewSnapshotBuilder(issues).
 			WithRecipe(currentRecipe).
+			WithWeights(feedbackWeightsForBeadsPath(w.beadsPath)).
 			WithBuildConfig(snapshotBuildConfigForTier(tier))
 		if prevSnapshot != nil {
 			builder.WithPreviousSnapshot(prevSnapshot, diff)
@@ -1735,12 +1736,8 @@ func countJSONLLines(path string) (int, error) {
 }
 
 func envMaxLineSizeBytes() int {
-	mb, ok := envPositiveInt("BV_MAX_LINE_SIZE_MB")
-	if !ok {
-		return 0
-	}
-	// ParseOptions.BufferSize is in bytes.
-	return mb * 1024 * 1024
+	// One definition for every loading path (TUI, background worker, robot).
+	return loader.MaxLineSizeFromEnv()
 }
 
 func envBool(name string) bool {

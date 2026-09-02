@@ -3026,13 +3026,17 @@ func main() {
 				// Run post-export hooks (bv-qjc.3)
 				if pagesExecutor != nil {
 					fmt.Println("  → Running post-export hooks...")
-					if err := pagesExecutor.RunPostExport(); err != nil {
-						fmt.Printf("  → Warning: post-export hook failed: %v\n", err)
-					}
+					// RunPostExport only returns an error for a hook declared
+					// on_error: fail; the bundle is already written, so report the
+					// summary and then honour the policy with a failure.
+					postErr := pagesExecutor.RunPostExport()
 
 					if len(pagesExecutor.Results()) > 0 {
 						fmt.Println("")
 						fmt.Println(pagesExecutor.Summary())
+					}
+					if postErr != nil {
+						return fmt.Errorf("post-export hook failed (bundle already written): %w", postErr)
 					}
 				}
 
@@ -5544,6 +5548,9 @@ func main() {
 						Timestamp:    time.Now(),
 					}
 					executor = hooks.NewExecutor(hookLoader.Config(), ctx)
+					executor.SetLogger(func(msg string) {
+						fmt.Printf("  → %s\n", msg)
+					})
 
 					// Run pre-export hooks
 					if err := executor.RunPreExport(); err != nil {
@@ -5559,16 +5566,19 @@ func main() {
 				os.Exit(1)
 			}
 
-			// Run post-export hooks
+			// Run post-export hooks. RunPostExport only returns an error for a
+			// hook declared on_error: fail; the export file has already been
+			// written, so honour the policy with a non-zero exit after the summary.
 			if executor != nil {
-				if err := executor.RunPostExport(); err != nil {
-					fmt.Printf("Warning: post-export hook failed: %v\n", err)
-					// Don't exit, just warn
-				}
+				postErr := executor.RunPostExport()
 
 				// Print hook summary if any hooks ran
 				if len(executor.Results()) > 0 {
 					fmt.Println(executor.Summary())
+				}
+				if postErr != nil {
+					fmt.Printf("Error: %v (export written to %s)\n", postErr, *exportFile)
+					os.Exit(1)
 				}
 			}
 

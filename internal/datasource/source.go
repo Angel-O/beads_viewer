@@ -11,7 +11,22 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 )
+
+// isIssueFileName reports whether a JSONL file name is one bv may load as the
+// issue set. The allowlist is loader.PreferredJSONLNames (issues.jsonl,
+// beads.jsonl, beads.base.jsonl); explicit overrides (BEADS_DB, --db) bypass
+// discovery entirely and are not subject to it.
+func isIssueFileName(name string) bool {
+	for _, allowed := range loader.PreferredJSONLNames {
+		if name == allowed {
+			return true
+		}
+	}
+	return false
+}
 
 // SourceType identifies the type of data source
 type SourceType string
@@ -249,13 +264,17 @@ func discoverLocalJSONLSources(beadsDir string, opts DiscoveryOptions) ([]DataSo
 			continue
 		}
 
-		// Skip backups, merge artifacts, and deletion manifests
-		if strings.Contains(name, ".backup") ||
-			strings.Contains(name, ".orig") ||
-			strings.Contains(name, ".merge") ||
-			name == "deletions.jsonl" ||
-			strings.HasPrefix(name, "beads.left") ||
-			strings.HasPrefix(name, "beads.right") {
+		// Only the canonical issue-file names are candidates. Discovery picks
+		// the freshest candidate, so anything else that lives beside
+		// issues.jsonl — br's sync_base.jsonl (a full, valid, stale snapshot),
+		// bv's sprints.jsonl and correlation_feedback.jsonl, bd's memories and
+		// interactions files, merge artifacts, backups — must never compete:
+		// a fresher sync_base.jsonl silently replaced the whole issue set, and
+		// probing sprints.jsonl printed spurious loader warnings.
+		if !isIssueFileName(name) {
+			if opts.Verbose {
+				opts.Logger(fmt.Sprintf("Skipping %s: not an issue file name (candidates: %s)", name, strings.Join(loader.PreferredJSONLNames, ", ")))
+			}
 			continue
 		}
 

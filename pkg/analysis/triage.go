@@ -375,6 +375,10 @@ type TriageOptions struct {
 	// History report for staleness analysis
 	History *correlation.HistoryReport
 
+	// Weights, when non-nil, replaces the default composite-score factor
+	// weights (see FeedbackData.Weights). nil means DefaultWeights.
+	Weights *Weights
+
 	// SeedDataHash, when non-empty, is a pre-computed ComputeDataHash(issues)
 	// the caller has already calculated for the same issue set. It is used to
 	// seed the analyzer's disk-cache key so the identical SHA256 is not run
@@ -436,6 +440,10 @@ func ComputeTriageWithOptionsAndTime(issues []model.Issue, opts TriageOptions, n
 	// Time-gated readiness (defer_until) must use the same clock as the rest of
 	// this triage pass, so a pinned `now` yields deterministic output.
 	analyzer.SetNow(now)
+	// Feedback-adjusted (or otherwise configured) factor weights.
+	if opts.Weights != nil {
+		analyzer.SetWeights(*opts.Weights)
+	}
 	// Reuse a caller-supplied data hash when it still describes this exact issue
 	// set (i.e. no root-subgraph scoping happened above).
 	if opts.SeedDataHash != "" && opts.RootIssueID == "" {

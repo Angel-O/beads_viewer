@@ -1218,6 +1218,11 @@ type Analyzer struct {
 	// stays deterministic.
 	now time.Time
 
+	// weights are the composite-score factor weights (priority.go). Unset
+	// means DefaultWeights; SetWeights installs feedback-adjusted values.
+	weights    Weights
+	weightsSet bool
+
 	dataHashOnce sync.Once
 	dataHash     string
 }

@@ -707,6 +707,9 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		Handler: func(ctx RobotContext) error {
 			analyzer := analysis.NewAnalyzer(ctx.Issues)
 			analyzer.SetNow(robotNow())
+			if _, w := loadRobotFeedback(); w != nil {
+				analyzer.SetWeights(*w)
+			}
 			if ctx.DataHashMatchesIssues {
 				analyzer.SeedDataHash(ctx.DataHash)
 			}
@@ -1915,6 +1918,9 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	if ctx.DataHashMatchesIssues {
 		seedHash = ctx.DataHash
 	}
+	// bv-90: accept/ignore feedback tunes the factor weights once enough
+	// samples exist; the payload's feedback block reports whether it applied.
+	feedbackData, feedbackWeights := loadRobotFeedback()
 	triage := analysis.ComputeTriageWithOptionsAndTime(ctx.Issues, analysis.TriageOptions{
 		GroupByTrack:   cfg.RobotTriageByTrackFlag != nil && *cfg.RobotTriageByTrackFlag,
 		GroupByLabel:   cfg.RobotTriageByLabelFlag != nil && *cfg.RobotTriageByLabelFlag,
@@ -1924,6 +1930,7 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		RootIssueID:    rootIssueID,
 		SeedDataHash:   seedHash,
 		NotReadyLabels: resolveNotReadyLabels(cfg),
+		Weights:        feedbackWeights,
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 	triage.Meta.HistoryStatus = historyStatus
@@ -1937,11 +1944,9 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	}
 
 	var feedbackInfo *analysis.FeedbackJSON
-	if beadsDir, err := loader.GetBeadsDir(""); err == nil {
-		if feedbackData, err := analysis.LoadFeedback(beadsDir); err == nil && len(feedbackData.Events) > 0 {
-			info := feedbackData.ToJSON()
-			feedbackInfo = &info
-		}
+	if feedbackData != nil && len(feedbackData.Events) > 0 {
+		info := feedbackData.ToJSON()
+		feedbackInfo = &info
 	}
 
 	output := struct {
@@ -2168,6 +2173,28 @@ func robotNextClaimablePick(picks []analysis.TopPick, issues []model.Issue, now 
 	return analysis.TopPick{}, &firstDiagnostic, firstUnsafeReasons, false
 }
 
+// loadRobotFeedback loads .beads/feedback.json for the current workspace and
+// returns it together with the feedback-adjusted factor weights when enough
+// accept/ignore samples exist to apply them (analysis.MinFeedbackSamples).
+// A missing or unreadable file yields (nil, nil) so scoring uses the defaults.
+// Every scoring surface (triage, next, priority, TUI hints) goes through the
+// same rule so an agent's accept/ignore history changes what it is told next.
+func loadRobotFeedback() (*analysis.FeedbackData, *analysis.Weights) {
+	beadsDir, err := loader.GetBeadsDir("")
+	if err != nil {
+		return nil, nil
+	}
+	fb, err := analysis.LoadFeedback(beadsDir)
+	if err != nil || fb == nil {
+		return nil, nil
+	}
+	if !fb.Applies() {
+		return fb, nil
+	}
+	w := fb.Weights()
+	return fb, &w
+}
+
 func handleRobotNext(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	var rootIssueID string
 	if cfg.GraphRoot != nil && *cfg.GraphRoot != "" {
@@ -2175,11 +2202,13 @@ func handleRobotNext(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	}
 
 	now := robotNow()
+	_, feedbackWeights := loadRobotFeedback()
 	triage := analysis.ComputeTriageWithOptionsAndTime(ctx.Issues, analysis.TriageOptions{
 		WaitForPhase2:  true,
 		UseFastConfig:  true,
 		RootIssueID:    rootIssueID,
 		NotReadyLabels: resolveNotReadyLabels(cfg),
+		Weights:        feedbackWeights,
 	}, now)
 	stabilizeRobotTriageForPinnedClock(&triage)
 

@@ -70,7 +70,8 @@ func recordLoadReport(rep LoadReport) {
 type loadRecorder struct {
 	path     string
 	stats    loader.ParseStats
-	warnings []string
+	warnings []string // capped copy kept for the LoadReport
+	pending  []string // every warning, replayed to stderr only if this candidate is selected
 	robot    bool
 }
 
@@ -78,24 +79,35 @@ func newLoadRecorder(path string) *loadRecorder {
 	return &loadRecorder{path: path, robot: os.Getenv("BV_ROBOT") == "1"}
 }
 
+// options wires the parse to this recorder. Warnings are buffered rather than
+// printed: the smart loader probes candidates freshest-first and discards the
+// ones that fail the gate, and a discarded candidate's warnings must never
+// reach the user (they used to print "skipping invalid issue on line 1" for a
+// file that was then rejected). commit replays them for the selected source.
 func (r *loadRecorder) options() loader.ParseOptions {
 	return loader.ParseOptions{
-		Stats: &r.stats,
+		Stats:      &r.stats,
+		BufferSize: loader.MaxLineSizeFromEnv(),
 		WarningHandler: func(msg string) {
 			if len(r.warnings) < maxLoadReportWarnings {
 				r.warnings = append(r.warnings, msg)
 			}
 			if !r.robot {
-				fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+				r.pending = append(r.pending, msg)
 			}
 		},
 	}
 }
 
-// commit records the parse accounting as the process-wide last load report.
-// Call only after the load succeeded — failed candidates in the smart-load
-// fallthrough must not pollute the report for the source actually used.
+// commit records the parse accounting as the process-wide last load report and
+// replays the buffered warnings to stderr in interactive mode. Call only after
+// the load succeeded — failed candidates in the smart-load fallthrough must not
+// pollute the report (or stderr) for the source actually used.
 func (r *loadRecorder) commit() {
+	for _, msg := range r.pending {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+	}
+	r.pending = nil
 	recordLoadReport(LoadReport{
 		Path:     r.path,
 		Valid:    r.stats.Valid,

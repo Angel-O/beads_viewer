@@ -5,6 +5,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -404,6 +405,34 @@ func NewSnapshotBuilder(issues []model.Issue) *SnapshotBuilder {
 		analyzer: analysis.NewAnalyzer(issues),
 		cfg:      snapshotBuildConfigDefault(),
 	}
+}
+
+// WithWeights installs feedback-adjusted factor weights on the builder's
+// analyzer so triage and priority hints computed from this snapshot use them.
+// nil leaves the defaults in place.
+func (b *SnapshotBuilder) WithWeights(w *analysis.Weights) *SnapshotBuilder {
+	if w != nil {
+		b.analyzer.SetWeights(*w)
+	}
+	return b
+}
+
+// feedbackWeightsForBeadsPath loads .beads/feedback.json next to the issue
+// file and returns the adjusted factor weights when enough accept/ignore
+// samples exist to apply them (analysis.MinFeedbackSamples); nil otherwise.
+// This is the TUI counterpart of the robot path's loadRobotFeedback, so the
+// priority hints (p) and the actionable view rank issues the same way
+// --robot-triage does.
+func feedbackWeightsForBeadsPath(beadsPath string) *analysis.Weights {
+	if beadsPath == "" {
+		return nil
+	}
+	fb, err := analysis.LoadFeedback(filepath.Dir(beadsPath))
+	if err != nil || fb == nil || !fb.Applies() {
+		return nil
+	}
+	w := fb.Weights()
+	return &w
 }
 
 // WithAnalysis sets the pre-computed analysis (for when we have cached results).
