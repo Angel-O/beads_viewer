@@ -602,3 +602,52 @@ Epics (all P1): EA bv-uoyj (data source), EB bv-3n9s (robot contract), EC bv-tq9
 | V1 | bv-kaxg.7 | final verification | P1 |
 
 Refinement pass 1 (2026-09-02) added F6 after checking each bead against the frozen checklist; no bead was found to lose a feature or oversimplify. Further passes should look for: missing companion tests for I-workstream beads (currently embedded in each bead's criteria), whether B9's registry migration should split per view, and whether D3/I3/I5 decisions need the user before implementation starts.
+
+## 9. Re-score 2026-09-02
+
+Re-scored against the tree at the end of the 2026-09-02 execution session, after four full `scripts/release_gate.sh` runs (race-enabled unit and e2e stages, docs parity, action pins, vendor hashes, robot smoke) passed. "WORKING" means the gap's target state is implemented and covered by the tests named in the closing comment of its bead; anything else names the open bead that still owns it.
+
+| Gap | Status now | Evidence / owner |
+|---|---|---|
+| 1 discovery allowlist, probe silence, source in payloads | WORKING | A1-A4 closed; `tests/e2e/datasource_sidecar_test.go` |
+| 2 scoping honoured everywhere | WORKING | B1-B3 closed; `tests/e2e/robot_scoping_test.go` |
+| 3 tracker unopenable by br | WORKING | rebuilt DB promoted 2026-09-02; leftovers await the maintainer (H5) |
+| 4 no verification pipeline | WORKING | H1 closed; gate runs in 160-220 s; `ci.yml` calls it; `docs/RELEASING.md` |
+| 5 stranded 31k-line wip branch | TRIAGED, not landed | H4 `bv-kaxg.4` holds the first-pass triage (102 files apply cleanly, 44 conflict); landing waits on per-package review behind the gate |
+| 6 triage feedback inert | WORKING | C1-C3 closed; `tests/e2e/feedback_effect_test.go` |
+| 7 correlation feedback inert | WORKING | C4-C5 closed; `tests/e2e/correlation_feedback_test.go` |
+| 8 one of four strategies wired | WORKING | D1, D5 closed (three strategies; path matching deliberately not built, D3) |
+| 9 placeholders in robot output | WORKING | B4 (parallel gain), B5 (real metrics) closed |
+| 10 sprint dashboard unreachable, single at-risk rule | WORKING | E1, D6 closed; `at_risk` in `--robot-burndown` |
+| 11 attention view static | WORKING | E2 closed |
+| 12 tutorial progress not persisted | WORKING | E3 closed |
+| 13 recipes vs docs | WORKING | I1 closed |
+| 14 workspace auto-discovery | WORKING | I2 closed; `TestWorkspaceAutoDiscoveryFromNestedDir` |
+| 15 "semantic" search claim | DOCUMENTED | I3 option 2: hashed keyword vectors stated; providers remain erroring placeholders |
+| 16 alert catalogue vs README | WORKING | D7, D8 closed; `TestDrift_EveryAlertTypeHasEmitter`, `TestDocsParity_AlertTableMatchesCode` |
+| 17 README formulas/keys/flags/claims | WORKING (hand-maintained) | F3, F4, F2 closed; 11 parity guards in `tests/e2e/docs_parity_test.go`; generated tables (F1) not built |
+| 18 security residuals from #197 | PARTIAL | G2, G5, G6, G7 closed; open: G1 `bv-huf5.2` (install.ps1), G3 `bv-huf5.4` (wasm reproducibility), G4 `bv-huf5.5` (CSP) |
+| 19 export claims and WASM switch | WORKING | I4 closed; `TestGraphHTML_HasNoExternalRequests`, hybrid hook in built binary |
+| 20 performance claims | MEASURED | F5 closed; `tests/artifacts/perf/*`; regression baseline pending (H6 `bv-kaxg.6`) |
+| 21 cass oversold | WORKING | E4 closed |
+| 22 plan tie-break | WORKING | B6 closed |
+| 23 export hooks on_error | WORKING | B7 closed |
+| 24 --search-preset ignored | WORKING | B11 closed |
+| 25 orphan window | WORKING | D4 closed (ratio 0.93 on this repo is genuine and explained) |
+| 26 flaky preview test, config pollution | WORKING | H3 closed; three TestMain isolations |
+| 27 dead and duplicate code | PARTIAL | B8 `bv-3n9s.7` closed: 1,400 inline lines, the placeholder brief, and `pkg/beadscli` (deleted with written approval 2026-09-02) are gone; B9 `bv-3n9s.8` (key registry) open |
+| 28 BV_MAX_LINE_SIZE_MB on robot path | WORKING | folded into A1 |
+| 29 TUI key gaps | WORKING | E5 closed |
+| 30 versioned artifact names (#195) | WORKING (snapshot unverified) | G7 closed; goreleaser not installed here to run the snapshot build |
+| 31 undocumented surface | WORKING | `TestDocsParity_RobotCommandsDocumented`, `_KeyBindingsDocumented`, `_EnvVarsDocumented` |
+| 32 forecast/capacity described as scheduling | DOCUMENTED | I5 option 2 |
+| 33 history layout / sidebar names | WORKING | folded into F3 |
+| 34 background auto-promotion | WORKING | F4 closed |
+| 35 usage hints cite a missing script | WORKING | B10 closed |
+| 36 TOON larger than JSON | DOCUMENTED | I6 closed; `tests/artifacts/perf/toon_vs_json.md` |
+| 37 sparse --robot-help | WORKING | B12 closed |
+| 38 tracker repair leftovers | WORKING | H5 `bv-kaxg.5` closed: renamed-aside DB/WAL/SHM and the two rebuild migration markers removed with written approval 2026-09-02; `.beads/recovery_20260902T023914Z/` (42 files) stays until the maintainer runs the recursive removal, which the shell guard refuses to agents |
+| 39 beads for everything | DONE | 70 beads; 56 closed |
+
+Still open after this pass (each already owns its gap): B9 (key registry migration), F1 (table generation), G1 (install.ps1), G3 (wasm reproducibility), G4 (CSP), H4 (wip branch landing), H6 (benchmark baseline + benchstat), and the epics that contain them. B8 and H5 closed on 2026-09-02 after the maintainer's written approval of the deletions. GitHub issues #195 and #197 were not closed from this session: that is an outward-facing action left to the maintainer, with the landing commits listed in `CHANGELOG.md` under "Reality check 2026-09".
+

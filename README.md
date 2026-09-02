@@ -3533,7 +3533,7 @@ In complex software projects, tasks are not isolated. They are deeply interconne
 
 `bv` is engineered for speed. We believe that latency is the enemy of flow.
 
-*   **Startup Time:** about 20 ms of analysis (`bv --profile-startup`) and 60-90 ms wall time per robot command for 541 issues on a 2026 x86 server.
+*   **Startup Time:** about 20 ms of graph analysis (`bv --profile-startup`) for this repository's 611 issues. Wall time per robot command on the shared reference VM (AMD EPYC-Milan, Go 1.25) is 40-50 ms for `bv --version`, roughly 180-250 ms for `--robot-next`, `--robot-triage`, and `--robot-insights` with warm caches, and 500-700 ms for a first cold run; the per-command numbers are recorded by `scripts/robot_smoke.sh` in `tests/artifacts/perf/robot_wall.json` (single cold run per command). Engine benchmarks (`BenchmarkRealData_*`: full triage 1.2 ms, graph build 0.7 ms, exact full analysis 43 ms) are in `tests/artifacts/perf/analysis_bench.md`, and dashboard bundle sizes in `tests/artifacts/perf/pages_load.json`. All of these are point measurements on a shared machine; the regression baseline with `benchstat` is still pending.
 *   **Rendering:** 60 FPS UI updates using [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 *   **Virtualization:** List views and Markdown renderers are fully windowed. `bv` can handle repositories with **10,000+ issues** without UI lag, consuming minimal RAM.
 *   **Graph Compute:** A two-phase analyzer computes topo/degree/density instantly, then PageRank/Betweenness/HITS/Critical Path/Cycles asynchronously with size-aware timeouts.

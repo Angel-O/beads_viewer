@@ -1,3 +1,6 @@
+> **Status (2026-09-02): historical brief, superseded**
+> The code uses the `toon-go` module (with the `toon` CLI as the encoder), not the `tru` binary route this brief recommends. Measured TOON vs JSON sizes live in `tests/artifacts/perf/toon_vs_json.md`; README documents where TOON helps.
+
 # TOON Integration Brief: beads_viewer (bv)
 
 **Bead:** bd-19e
