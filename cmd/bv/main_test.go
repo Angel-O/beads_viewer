@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2357,4 +2358,47 @@ func TestIssuesFingerprintDetectsContentChangesOrderIndependently(t *testing.T) 
 	if issuesFingerprint(base) == issuesFingerprint(depChanged) {
 		t.Fatalf("fingerprint must change when a dependency changes without an updated_at bump")
 	}
+}
+
+// TestMain isolates HOME and XDG_CONFIG_HOME for every cmd/bv test (and the
+// bv binaries they exec, which inherit the environment) so nothing can write
+// into the real ~/.config/bv (H3). The teardown fails the package if the real
+// directory changed during the run.
+func TestMain(m *testing.M) {
+	realConfig, _ := os.UserConfigDir()
+	before := fingerprintConfigDir(realConfig)
+
+	tmp, err := os.MkdirTemp("", "bv-cmd-test-home-")
+	if err != nil {
+		panic("creating isolated HOME: " + err.Error())
+	}
+	os.Setenv("HOME", tmp)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	os.Setenv("BV_NO_BROWSER", "1")
+
+	code := m.Run()
+
+	if after := fingerprintConfigDir(realConfig); before != after {
+		fmt.Fprintf(os.Stderr, "cmd/bv tests modified the real config dir %s:\nbefore: %s\nafter:  %s\n", realConfig, before, after)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.RemoveAll(tmp)
+	os.Exit(code)
+}
+
+func fingerprintConfigDir(configDir string) string {
+	if configDir == "" {
+		return ""
+	}
+	var out string
+	_ = filepath.Walk(filepath.Join(configDir, "bv"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		out += fmt.Sprintf("%s:%d;", path, info.Size())
+		return nil
+	})
+	return out
 }
