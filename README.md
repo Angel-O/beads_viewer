@@ -2791,7 +2791,7 @@ The export uses a **hybrid architecture** so the graph can render before the dat
 | `graph_layout.json` | 116 KB for 611 issues / 746 edges | Pre-computed node positions + graph metrics |
 | `beads.sqlite3` | 3.3 MB for 611 issues | Full issue data for detail pane, search, tables |
 
-Sizes are measured, not estimated: `tests/e2e/export_pages_test.go` re-exports this repository on every e2e run and writes the numbers to `tests/artifacts/perf/pages_load.json` (whole bundle 9.7 MB, of which 5.6 MB is the vendored viewer libraries).
+Sizes are measured, not estimated: `tests/e2e/export_pages_test.go` re-exports this repository on every e2e run and checks the bundle against `tests/artifacts/perf/pages_load.json` (whole bundle 9.7 MB, of which 5.6 MB is the vendored viewer libraries); the record is rewritten only when the test runs with `BV_RECORD_PERF=1`, and a bundle that grows by more than a quarter fails the run.
 
 **How it works:**
 1. Browser loads the small `graph_layout.json` first
@@ -3533,7 +3533,7 @@ In complex software projects, tasks are not isolated. They are deeply interconne
 
 `bv` is engineered for speed. We believe that latency is the enemy of flow.
 
-*   **Startup Time:** about 20 ms of graph analysis (`bv --profile-startup`) for this repository's 611 issues. Wall time per robot command on the shared reference VM (AMD EPYC-Milan, Go 1.25) is 40-50 ms for `bv --version`, roughly 180-250 ms for `--robot-next`, `--robot-triage`, and `--robot-insights` with warm caches, and 500-700 ms for a first cold run; the per-command numbers are recorded by `scripts/robot_smoke.sh` in `tests/artifacts/perf/robot_wall.json` (single cold run per command). Engine benchmarks (`BenchmarkRealData_*`: full triage 1.2 ms, graph build 0.7 ms, exact full analysis 43 ms) are in `tests/artifacts/perf/analysis_bench.md`, and dashboard bundle sizes in `tests/artifacts/perf/pages_load.json`. All of these are point measurements on a shared machine; the regression baseline with `benchstat` is still pending.
+*   **Startup Time:** about 20 ms of graph analysis (`bv --profile-startup`) for this repository's 611 issues. Wall time per robot command on the shared reference VM (AMD EPYC-Milan, Go 1.25) is 40-50 ms for `bv --version`, roughly 180-250 ms for `--robot-next`, `--robot-triage`, and `--robot-insights` with warm caches, and 500-700 ms for a first cold run; the per-command numbers are recorded by `scripts/robot_smoke.sh` in `tests/artifacts/perf/robot_wall.json` (single cold run per command). Engine benchmarks (`BenchmarkRealData_*`: full triage 1.2 ms, graph build 0.7 ms, exact full analysis 43 ms) are in `tests/artifacts/perf/analysis_bench.md`, and dashboard bundle sizes in `tests/artifacts/perf/pages_load.json`. All of these are point measurements on a shared machine. Regressions are caught by release-gate stage 8: `scripts/benchmark.sh compare` runs ten tracked benchmarks against the frozen `tests/testdata/benchmark/medium.jsonl` dataset and fails when any median `ns/op` is more than 20% above `benchmarks/baseline.txt` (whose header records the machine, Go version, commit, and dataset hash it was produced on).
 *   **Rendering:** 60 FPS UI updates using [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 *   **Virtualization:** List views and Markdown renderers are fully windowed. `bv` can handle repositories with **10,000+ issues** without UI lag, consuming minimal RAM.
 *   **Graph Compute:** A two-phase analyzer computes topo/degree/density instantly, then PageRank/Betweenness/HITS/Critical Path/Cycles asynchronously with size-aware timeouts.
@@ -3726,6 +3726,7 @@ bv has a comprehensive built-in help system:
 | | `Ctrl+S` | Toggle **Search Mode** (Semantic ↔ Fuzzy) |
 | | `l` | **Label Picker** (quick filter by label) |
 | **List Sorting** | `s` | Cycle Sort Mode (Default → Created ↑ → Created ↓ → Priority → Updated) |
+| | `S` | Sort by triage score (applies the built-in `triage` recipe) |
 | **Views** | `b` | Toggle **Kanban Board** |
 | | `i` | Toggle **Insights Dashboard** |
 | | `g` | Toggle **Graph Visualizer** (from the list; `gg` jumps to the top in Board and Tree) |
