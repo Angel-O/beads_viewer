@@ -19,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -64,15 +65,84 @@ func TestBackgroundWorkerUsesResolvedIssuePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer worker.Stop()
-	if worker.beadsPath != selected || worker.issueChangePath != issueChange || len(worker.metadataChangePaths) != 1 || worker.metadataChangePaths[0] != metadata {
+	if worker.beadsPath != selected || worker.issueChangePath != issueChange || len(worker.metadataChangePaths) != 1 || worker.metadataChangePaths[0] != metadata || len(worker.metadataSources) != 1 {
 		t.Fatalf("worker paths = %#v/%#v/%#v", worker.beadsPath, worker.issueChangePath, worker.metadataChangePaths)
+	}
+}
+
+type testChangeSource struct {
+	changes chan struct{}
+}
+
+func (s *testChangeSource) Start() error             { return nil }
+func (s *testChangeSource) Stop()                    {}
+func (s *testChangeSource) Changed() <-chan struct{} { return s.changes }
+func (s *testChangeSource) Path() string             { return "test-metadata" }
+
+func TestBackgroundWorkerMetadataChangeInvalidatesWithoutSourceRefresh(t *testing.T) {
+	metadata := &testChangeSource{changes: make(chan struct{}, 1)}
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		MetadataSources: []ChangeSource{metadata},
+		IdleGC:          &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	metadata.changes <- struct{}{}
+	select {
+	case message := <-worker.Messages():
+		if _, ok := message.(MetadataChangedMsg); !ok {
+			t.Fatalf("metadata change message = %T, want MetadataChangedMsg", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for metadata invalidation")
+	}
+	if worker.GetSnapshot() != nil {
+		t.Fatal("metadata-only change rebuilt an issue snapshot")
+	}
+}
+
+func TestBackgroundWorkerMetadataChangePathIsObserved(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.jsonl")
+	if err := os.WriteFile(metadataPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		MetadataChangePaths: []string{metadataPath},
+		DebounceDelay:       5 * time.Millisecond,
+		IdleGC:              &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(metadataPath, []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-worker.Messages():
+		if _, ok := message.(MetadataChangedMsg); !ok {
+			t.Fatalf("metadata path message = %T, want MetadataChangedMsg", message)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for metadata path invalidation")
 	}
 }
 
 func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testing.T) {
 	m := Model{
-		activeRepos:       map[string]bool{"ctx:a": true, "ctx:removed": true},
-		catalogGeneration: 1,
+		repositoryScopeController: repositoryScopeController{
+			activeRepos:       map[string]bool{"ctx:a": true, "ctx:removed": true},
+			catalogGeneration: 1,
+			hubScope:          hub.NewAllItemsHubScope(),
+		},
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
 		Generation: 2,
@@ -662,8 +732,11 @@ func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
 func TestModelWorkspaceCatalogIgnoresHubCatalogMessages(t *testing.T) {
 	m := Model{
 		workspaceMode: true,
-		repositoryCatalog: repositorypkg.Catalog{
-			{ID: "api", Name: "api", Kind: repositorypkg.IdentityPrefix},
+		repositoryScopeController: repositoryScopeController{
+			repositoryCatalog: repositorypkg.Catalog{
+				{ID: "api", Name: "api", Kind: repositorypkg.IdentityPrefix},
+			},
+			hubScope: hub.NewAllItemsHubScope(),
 		},
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{

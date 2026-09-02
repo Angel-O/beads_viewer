@@ -192,6 +192,24 @@ func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
 }
 
+func TestRuntimeServicesApplyResolvedDefaultRepository(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "hub.yaml")
+	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:alpha": "/alpha", "ctx:beta": "/beta"})
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+		{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+	}, nil, "")
+	m.SetRuntimeServices(RuntimeServices{
+		CatalogPath:            configPath,
+		RepositoryPresentation: true,
+		DefaultRepositoryID:    "ctx:beta",
+	})
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:beta"] {
+		t.Fatalf("resolved default scope = %#v, want ctx:beta", scope)
+	}
+}
+
 func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
 	m := NewModel([]model.Issue{
 		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},

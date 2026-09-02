@@ -828,29 +828,18 @@ func updateIssueComments(issues []model.Issue, issueID string, comments []*model
 // Model is the main Bubble Tea model for the beads viewer
 type Model struct {
 	// Data
-	issues                    []model.Issue
-	pooledIssues              []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
-	issueMap                  map[string]*model.Issue
-	analyzer                  *analysis.Analyzer
-	analysis                  *analysis.GraphStats
-	beadsPath                 string // Path to beads.jsonl for reloading
-	semanticPath              string // Stable repository or dataset identity for semantic caching
-	runtimeServices           RuntimeServices
-	hubRepositoryMode         bool
-	repositoryCatalog         repositorypkg.Catalog
-	hubScope                  hub.HubScope
-	repositoryCatalogIssues   []model.Issue
-	contextlessBeadCountValue int
-	contextlessCountReady     bool
-	repositoryIssues          []model.Issue
-	repositoryIssueIDs        map[string]bool
-	repositoryCatalogReady    bool
-	currentRepositoryID       string
-	defaultRepositoryID       string
-	defaultRepositorySet      bool
-	catalogGeneration         uint64
-	watcher                   *watcher.Watcher // File watcher for live reload
-	instanceLock              *instance.Lock   // Multi-instance coordination lock
+	issues            []model.Issue
+	pooledIssues      []*model.Issue // Issue pool refs for sync reloads (return to pool on replace)
+	issueMap          map[string]*model.Issue
+	analyzer          *analysis.Analyzer
+	analysis          *analysis.GraphStats
+	beadsPath         string // Path to beads.jsonl for reloading
+	semanticPath      string // Stable repository or dataset identity for semantic caching
+	runtimeServices   RuntimeServices
+	hubRepositoryMode bool
+	repositoryScopeController
+	watcher      *watcher.Watcher // File watcher for live reload
+	instanceLock *instance.Lock   // Multi-instance coordination lock
 
 	// Background Worker (Phase 2 architecture - bv-m7v8)
 	// snapshot is the current immutable data snapshot from BackgroundWorker.
@@ -1029,8 +1018,7 @@ type Model struct {
 	workspaceMode    bool     // True when viewing multiple repos
 	availableRepos   []string // List of repo prefixes available
 	workspaceRepos   []WorkspaceRepositoryInfo
-	activeRepos      map[string]bool // Which repos are currently shown (nil = all)
-	workspaceSummary string          // Summary text for footer (e.g., "3 repos")
+	workspaceSummary string // Summary text for footer (e.g., "3 repos")
 
 	// Alerts panel (bv-168)
 	alerts          []drift.Alert
@@ -1661,7 +1649,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		hubChangeSignal = ""
 	}
 
-	if issueChangePath != "" && (backgroundModeRequested || hubChangeSignal != "") {
+	if (issueChangePath != "" || len(metadataChangePaths) > 0) && (backgroundModeRequested || hubChangeSignal != "") {
 		bw, err := NewBackgroundWorker(WorkerConfig{
 			BeadsPath:           beadsPath,
 			SelectedIssuePath:   selectedIssuePath,
@@ -1669,6 +1657,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			MetadataChangePaths: metadataChangePaths,
 			DebounceDelay:       200 * time.Millisecond,
 			HubChangeSignal:     hubChangeSignal,
+			CatalogLoader:       runtimeServices.CatalogLoader,
 		})
 		if err != nil {
 			backgroundModeErr = err
@@ -1744,40 +1733,40 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	}
 
 	m := Model{
-		issues:                 issues,
-		issueMap:               issueMap,
-		analyzer:               analyzer,
-		analysis:               graphStats,
-		beadsPath:              beadsPath,
-		runtimeServices:        runtimeServices,
-		semanticPath:           beadsPath,
-		hubScope:               hub.NewAllItemsHubScope(),
-		watcher:                fileWatcher,
-		snapshotInitPending:    backgroundWorker != nil && len(issues) == 0,
-		backgroundWorker:       backgroundWorker,
-		instanceLock:           instLock,
-		list:                   l,
-		viewport:               vp,
-		renderer:               renderer,
-		board:                  board,
-		labelDashboard:         labelDashboard,
-		velocityComparison:     velocityComparison,
-		shortcutsSidebar:       shortcutsSidebar,
-		graphView:              graphView,
-		tree:                   treeModel,
-		insightsPanel:          insightsPanel,
-		historyView:            NewHistoryModel(nil, theme), // Initialize with empty report for safe search access
-		theme:                  theme,
-		keyRegistry:            keyRegistry,
-		currentFilter:          "all",
-		semanticSearch:         semanticSearch,
-		semanticHybridEnabled:  false,
-		semanticHybridPreset:   search.PresetDefault,
-		semanticHybridBuilding: false,
-		semanticHybridReady:    false,
-		lastSearchTerm:         "",
-		focused:                focusList,
-		splitPaneRatio:         0.4, // Default: list pane gets 40% of width
+		issues:                    issues,
+		issueMap:                  issueMap,
+		analyzer:                  analyzer,
+		analysis:                  graphStats,
+		beadsPath:                 beadsPath,
+		runtimeServices:           runtimeServices,
+		semanticPath:              beadsPath,
+		repositoryScopeController: newRepositoryScopeController(),
+		watcher:                   fileWatcher,
+		snapshotInitPending:       backgroundWorker != nil && len(issues) == 0,
+		backgroundWorker:          backgroundWorker,
+		instanceLock:              instLock,
+		list:                      l,
+		viewport:                  vp,
+		renderer:                  renderer,
+		board:                     board,
+		labelDashboard:            labelDashboard,
+		velocityComparison:        velocityComparison,
+		shortcutsSidebar:          shortcutsSidebar,
+		graphView:                 graphView,
+		tree:                      treeModel,
+		insightsPanel:             insightsPanel,
+		historyView:               NewHistoryModel(nil, theme), // Initialize with empty report for safe search access
+		theme:                     theme,
+		keyRegistry:               keyRegistry,
+		currentFilter:             "all",
+		semanticSearch:            semanticSearch,
+		semanticHybridEnabled:     false,
+		semanticHybridPreset:      search.PresetDefault,
+		semanticHybridBuilding:    false,
+		semanticHybridReady:       false,
+		lastSearchTerm:            "",
+		focused:                   focusList,
+		splitPaneRatio:            0.4, // Default: list pane gets 40% of width
 		// Initialize as ready with default dimensions to eliminate "Initializing..." phase
 		ready:               true,
 		width:               defaultWidth,
@@ -1894,6 +1883,9 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			m.statusIsError = true
 		}
 	}
+	if services.DefaultRepositoryID != "" {
+		m.SetDefaultRepositoryScope(services.DefaultRepositoryID)
+	}
 }
 
 func (m Model) hubAutoRefreshEnabled() bool {
@@ -1921,8 +1913,7 @@ func (m Model) runtimeHistoryProvider() *correlation.Provider {
 // SetRepositoryCatalogIssues provides the unfiltered issue universe used for
 // stable total counts when the initial TUI view is recipe-filtered.
 func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
-	m.repositoryCatalogIssues = cloneIssuesForAsync(issues)
-	m.contextlessCountReady = false
+	m.repositoryScopeController.setCatalogIssues(issues)
 }
 
 func (m Model) contextlessBeadCount() int {
@@ -1966,7 +1957,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	}
 	loader := m.runtimeServices.CatalogLoader
 	if loader == nil {
-		loader = hub.LoadRepositoryCatalog
+		loader = defaultRepositoryMetadataProvider
 	}
 	catalog, err := loader(m.catalogPath(), issues)
 	if err != nil {
@@ -1974,7 +1965,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	}
 	beforeScope := m.HubScope()
 	beforeRepos := sortedRepoKeys(m.activeRepos)
-	m.repositoryCatalog = catalog
+	m.repositoryScopeController.setCatalog(catalog)
 	m.reconcileHubScopeCatalog()
 	contextSortFallback := m.normalizeContextSortMode()
 	scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
@@ -1984,7 +1975,6 @@ func (m *Model) reloadRepositoryCatalog() error {
 		m.sortListItems(m.list.Items())
 		m.updateViewportContent()
 	}
-	m.repositoryCatalogReady = true
 	if m.showRepoPicker {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
 		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
@@ -1995,10 +1985,9 @@ func (m *Model) reloadRepositoryCatalog() error {
 }
 
 func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, generation uint64, changed, recovered bool, err error) {
-	if m.workspaceMode || generation < m.catalogGeneration {
+	if m.workspaceMode || !m.repositoryScopeController.acceptCatalogGeneration(generation) {
 		return
 	}
-	m.catalogGeneration = generation
 	if err != nil {
 		m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", err)
 		m.statusIsError = true
@@ -2007,14 +1996,13 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, gene
 	if changed {
 		beforeScope := m.HubScope()
 		beforeRepos := sortedRepoKeys(m.activeRepos)
-		m.repositoryCatalog = append(repositorypkg.Catalog(nil), catalog...)
+		m.repositoryScopeController.setCatalog(catalog)
 		if m.usesHubScope() {
 			m.reconcileHubScopeCatalog()
 		} else {
 			m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
 		}
 		contextSortFallback := m.normalizeContextSortMode()
-		m.repositoryCatalogReady = true
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
 			m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
@@ -2590,7 +2578,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case HubSourceRefreshCompleteMsg:
+	case HubSourceRefreshCompleteMsg, MetadataChangedMsg:
 		if m.runtimeServices.ExternalHistory && len(m.issues) > 0 {
 			m.historyGeneration++
 			m.historyLoading = true

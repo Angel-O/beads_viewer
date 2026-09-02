@@ -24,7 +24,6 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	dbg "github.com/Dicklesworthstone/beads_viewer/pkg/debug"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -251,6 +250,10 @@ type BackgroundWorker struct {
 	watcher          *watcher.Watcher
 	hubChangeWatcher *watcher.Watcher
 	hubConfigWatcher *watcher.Watcher
+	issueSource      ChangeSource
+	metadataSources  []ChangeSource
+	sourceSource     ChangeSource
+	catalogSource    ChangeSource
 	msgCh            chan tea.Msg
 
 	// Lifecycle
@@ -278,7 +281,11 @@ type WorkerConfig struct {
 	MetadataChangePaths []string
 	DebounceDelay       time.Duration
 	MessageBuffer       int // Buffer size for worker -> UI messages (default: 8)
-	CatalogLoader       func(string, []model.Issue) (repositorypkg.Catalog, error)
+	CatalogLoader       RepositoryMetadataProvider
+	IssueSource         ChangeSource   // issue content changes rebuild snapshots
+	MetadataSources     []ChangeSource // metadata changes invalidate external-only views
+	SourceChangeSource  ChangeSource   // source/export changes use source-refresh semantics
+	CatalogChangeSource ChangeSource   // catalog changes rebuild repository metadata only
 
 	IdleGC *IdleGCConfig
 
@@ -406,12 +413,14 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		idleGCFunc:        runtime.GC,
 	}
 	if w.catalogLoader == nil {
-		w.catalogLoader = hub.LoadRepositoryCatalog
+		w.catalogLoader = defaultRepositoryMetadataProvider
 	}
 	w.lastActivityUnixNano.Store(time.Now().UnixNano())
 
-	// Initialize file watcher
-	if w.issueChangePath != "" {
+	// Initialize neutral change sources. Paths remain a convenience for the
+	// normal file-backed adapter; tests and other callers can inject sources.
+	w.issueSource = cfg.IssueSource
+	if w.issueSource == nil && w.issueChangePath != "" {
 		fw, err := watcher.NewWatcher(w.issueChangePath,
 			watcher.WithDebounceDuration(cfg.DebounceDelay),
 		)
@@ -419,8 +428,24 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 			return nil, err
 		}
 		w.watcher = fw
+		w.issueSource = fw
 	}
-	if cfg.HubChangeSignal != "" {
+	w.metadataSources = append([]ChangeSource(nil), cfg.MetadataSources...)
+	for _, path := range w.metadataChangePaths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		metadataWatcher, err := watcher.NewWatcher(path,
+			watcher.WithDebounceDuration(cfg.DebounceDelay),
+			watcher.WithContentCheck(true),
+		)
+		if err != nil {
+			return nil, err
+		}
+		w.metadataSources = append(w.metadataSources, metadataWatcher)
+	}
+	w.sourceSource = cfg.SourceChangeSource
+	if w.sourceSource == nil && cfg.HubChangeSignal != "" {
 		hubWatcher, err := watcher.NewWatcher(cfg.HubChangeSignal,
 			watcher.WithDebounceDuration(cfg.DebounceDelay),
 			watcher.WithContentCheck(true),
@@ -429,8 +454,10 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 			return nil, err
 		}
 		w.hubChangeWatcher = hubWatcher
+		w.sourceSource = hubWatcher
 	}
-	if cfg.CatalogPath != "" {
+	w.catalogSource = cfg.CatalogChangeSource
+	if w.catalogSource == nil && cfg.CatalogPath != "" {
 		configWatcher, err := watcher.NewWatcher(cfg.CatalogPath,
 			watcher.WithDebounceDuration(cfg.DebounceDelay),
 			watcher.WithContentCheck(true),
@@ -439,6 +466,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 			return nil, err
 		}
 		w.hubConfigWatcher = configWatcher
+		w.catalogSource = configWatcher
 	}
 
 	initialized = true
@@ -604,6 +632,20 @@ func (w *BackgroundWorker) recordUIUpdateLatency(d time.Duration) {
 	})
 }
 
+func (w *BackgroundWorker) changeSources() []ChangeSource {
+	if w == nil {
+		return nil
+	}
+	sources := make([]ChangeSource, 0, 3+len(w.metadataSources))
+	for _, source := range []ChangeSource{w.issueSource, w.sourceSource, w.catalogSource} {
+		if source != nil {
+			sources = append(sources, source)
+		}
+	}
+	sources = append(sources, w.metadataSources...)
+	return sources
+}
+
 // Start begins watching for file changes and processing in the background.
 // Start is idempotent - calling it multiple times has no effect.
 // Returns error if the worker has been stopped.
@@ -640,21 +682,12 @@ func (w *BackgroundWorker) Start() error {
 		idleGCGCPercent = 0
 	}
 
-	if w.watcher != nil || w.hubChangeWatcher != nil || w.hubConfigWatcher != nil {
-		if w.watcher != nil {
-			if err := w.watcher.Start(); err != nil {
-				// Reset started flag so caller can retry or Stop() won't block
-				w.mu.Lock()
-				w.started = false
-				w.mu.Unlock()
-				w.closeTraceFile()
-				return err
-			}
-		}
-		if w.hubChangeWatcher != nil {
-			if err := w.hubChangeWatcher.Start(); err != nil {
-				if w.watcher != nil {
-					w.watcher.Stop()
+	if sources := w.changeSources(); len(sources) > 0 {
+		startedSources := make([]ChangeSource, 0, len(sources))
+		for _, source := range sources {
+			if err := source.Start(); err != nil {
+				for _, startedSource := range startedSources {
+					startedSource.Stop()
 				}
 				w.mu.Lock()
 				w.started = false
@@ -662,21 +695,7 @@ func (w *BackgroundWorker) Start() error {
 				w.closeTraceFile()
 				return err
 			}
-		}
-		if w.hubConfigWatcher != nil {
-			if err := w.hubConfigWatcher.Start(); err != nil {
-				if w.watcher != nil {
-					w.watcher.Stop()
-				}
-				if w.hubChangeWatcher != nil {
-					w.hubChangeWatcher.Stop()
-				}
-				w.mu.Lock()
-				w.started = false
-				w.mu.Unlock()
-				w.closeTraceFile()
-				return err
-			}
+			startedSources = append(startedSources, source)
 		}
 
 		if idleGCEnabled && idleGCGCPercent > 0 {
@@ -751,14 +770,8 @@ func (w *BackgroundWorker) Stop() {
 		catalogRetryTimer.Stop()
 	}
 
-	if w.watcher != nil {
-		w.watcher.Stop()
-	}
-	if w.hubChangeWatcher != nil {
-		w.hubChangeWatcher.Stop()
-	}
-	if w.hubConfigWatcher != nil {
-		w.hubConfigWatcher.Stop()
+	for _, source := range w.changeSources() {
+		source.Stop()
 	}
 
 	// Only wait for done if Start() was called
@@ -1008,29 +1021,10 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 		}
 	}
 
-	if w.watcher != nil {
-		w.watcher.Stop()
-		if err := w.watcher.Start(); err != nil {
-			w.send(SnapshotErrorMsg{
-				Err:         fmt.Errorf("background worker recovery failed (watcher start): %w", err),
-				Recoverable: false,
-			})
-			w.Stop()
-			return
-		}
-	}
-	if w.hubChangeWatcher != nil {
-		w.hubChangeWatcher.Stop()
-		if err := w.hubChangeWatcher.Start(); err != nil {
-			w.send(SnapshotErrorMsg{Err: fmt.Errorf("background worker recovery failed (Hub signal watcher start): %w", err), Recoverable: false})
-			w.Stop()
-			return
-		}
-	}
-	if w.hubConfigWatcher != nil {
-		w.hubConfigWatcher.Stop()
-		if err := w.hubConfigWatcher.Start(); err != nil {
-			w.send(SnapshotErrorMsg{Err: fmt.Errorf("background worker recovery failed (Hub config watcher start): %w", err), Recoverable: false})
+	for _, source := range w.changeSources() {
+		source.Stop()
+		if err := source.Start(); err != nil {
+			w.send(SnapshotErrorMsg{Err: fmt.Errorf("background worker recovery failed (change source %s start): %w", source.Path(), err), Recoverable: false})
 			w.Stop()
 			return
 		}
@@ -1133,6 +1127,7 @@ func (w *BackgroundWorker) SetCatalogPath(path string, watch bool) error {
 			return err
 		}
 		w.hubConfigWatcher = configWatcher
+		w.catalogSource = configWatcher
 	}
 	return nil
 }
@@ -1255,23 +1250,41 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 
 	w.mu.RLock()
 	heartbeatInterval := w.heartbeatInterval
-	wch := w.watcher
-	hubWatcher := w.hubChangeWatcher
-	configWatcher := w.hubConfigWatcher
+	issueSource := w.issueSource
+	sourceSource := w.sourceSource
+	catalogSource := w.catalogSource
+	metadataSources := append([]ChangeSource(nil), w.metadataSources...)
 	w.mu.RUnlock()
 
-	if wch == nil && hubWatcher == nil && configWatcher == nil {
+	if issueSource == nil && sourceSource == nil && catalogSource == nil && len(metadataSources) == 0 {
 		return
 	}
-	var fileChanges, hubChanges, configChanges <-chan struct{}
-	if wch != nil {
-		fileChanges = wch.Changed()
+	var fileChanges, sourceChanges, catalogChanges <-chan struct{}
+	if issueSource != nil {
+		fileChanges = issueSource.Changed()
 	}
-	if hubWatcher != nil {
-		hubChanges = hubWatcher.Changed()
+	if sourceSource != nil {
+		sourceChanges = sourceSource.Changed()
 	}
-	if configWatcher != nil {
-		configChanges = configWatcher.Changed()
+	if catalogSource != nil {
+		catalogChanges = catalogSource.Changed()
+	}
+	metadataChanges := make(chan struct{}, 1)
+	for _, source := range metadataSources {
+		go func(source ChangeSource) {
+			for {
+				select {
+				case <-source.Changed():
+					select {
+					case metadataChanges <- struct{}{}:
+					case <-loopCtx.Done():
+						return
+					}
+				case <-loopCtx.Done():
+					return
+				}
+			}
+		}(source)
 	}
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
@@ -1290,14 +1303,18 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 			w.markCatalogDirty()
 			w.TriggerRefresh()
 
-		case <-hubChanges:
+		case <-sourceChanges:
 			w.noteFileChange(time.Now())
 			w.TriggerSourceRefresh()
 
-		case <-configChanges:
+		case <-catalogChanges:
 			w.noteFileChange(time.Now())
 			w.markCatalogDirty()
 			w.TriggerRefresh()
+
+		case <-metadataChanges:
+			w.noteFileChange(time.Now())
+			w.send(MetadataChangedMsg{})
 		}
 	}
 }
@@ -2287,6 +2304,10 @@ type SnapshotErrorMsg struct {
 // issue content was unchanged, so consumers can refresh external-only data.
 type HubSourceRefreshCompleteMsg struct{}
 
+// MetadataChangedMsg invalidates external-only metadata without rebuilding the
+// issue snapshot. It is deliberately separate from source refresh completion.
+type MetadataChangedMsg struct{}
+
 // RepositoryCatalogReadyMsg carries independently refreshed Hub metadata.
 type RepositoryCatalogReadyMsg struct {
 	Catalog               repositorypkg.Catalog
@@ -2430,7 +2451,7 @@ func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
 			return 4
 		}
 		return 3
-	case SnapshotErrorMsg, HubSourceRefreshCompleteMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
+	case SnapshotErrorMsg, HubSourceRefreshCompleteMsg, MetadataChangedMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
 		return 3
 	case WorkerProcessingMsg:
 		return 2
