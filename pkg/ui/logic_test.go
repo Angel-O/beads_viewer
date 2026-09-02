@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 )
@@ -289,5 +291,142 @@ func TestModel_InitSkipsUpdateCheckWhenDisabled(t *testing.T) {
 
 	if enabled != disabled+1 {
 		t.Fatalf("Init scheduled %d commands with the check enabled and %d disabled; want exactly one fewer when disabled", enabled, disabled)
+	}
+}
+
+// TestRenderAlertsPanel_ShowsEverySeverityAndSuggestedAction renders the `!`
+// panel with one alert per severity and checks the selected alert exposes
+// its issue, partner, and suggested action while dismissed alerts vanish.
+func TestRenderAlertsPanel_ShowsEverySeverityAndSuggestedAction(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.width, m.height = 120, 40
+	m.alerts = []drift.Alert{
+		{Type: drift.AlertStaleIssue, Severity: drift.SeverityCritical, Message: "Issue A inactive for 45 days", IssueID: "A", SuggestedAction: "Update, close, or re-triage the issue"},
+		{Type: drift.AlertPotentialDuplicate, Severity: drift.SeverityInfo, Message: "A looks like B", IssueID: "A", RelatedIssueID: "B", SuggestedAction: "Compare the two issues"},
+		{Type: drift.AlertVelocityDrop, Severity: drift.SeverityWarning, Message: "Closed 1 issue(s) in the last 7 days vs 6 before", SuggestedAction: "Check for blocked work"},
+	}
+	m.alertsCritical, m.alertsWarning, m.alertsInfo = 1, 1, 1
+	m.alertsCursor = 0
+
+	view := m.renderAlertsPanel()
+	for _, want := range []string{"3 total", "1 critical", "1 warning", "1 info", "⚠", "⚡", "ℹ", "Issue A inactive for 45 days", "Issue: A (press Enter to jump)", "Suggested: Update, close, or re-triage the issue"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("alerts panel missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Related: B") {
+		t.Fatalf("partner of an unselected alert must not render:\n%s", view)
+	}
+
+	m.alertsCursor = 1
+	view = m.renderAlertsPanel()
+	for _, want := range []string{"Related: B", "Suggested: Compare the two issues"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("selected duplicate alert missing %q:\n%s", want, view)
+		}
+	}
+
+	m.dismissedAlerts = map[string]bool{alertKey(m.alerts[0]): true}
+	view = m.renderAlertsPanel()
+	if strings.Contains(view, "inactive for 45 days") {
+		t.Fatalf("dismissed alert still rendered:\n%s", view)
+	}
+
+	m.alerts = nil
+	if view := m.renderAlertsPanel(); !strings.Contains(view, "No active alerts") {
+		t.Fatalf("empty panel should say so:\n%s", view)
+	}
+}
+
+// The three bindings README documents that E5 added: Shift+Tab in Insights,
+// n/N while time-travelling, and t in History.
+
+func TestInsightsKeys_ShiftTabAndTabCyclePanels(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.focused = focusInsights
+	m.insightsPanel.focusedPanel = 1
+
+	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})))
+	if got.insightsPanel.focusedPanel != 0 {
+		t.Fatalf("shift+tab: focusedPanel=%d; want 0 (previous panel)", got.insightsPanel.focusedPanel)
+	}
+	got = asModelPtr(t, must2(got.Update(tea.KeyMsg{Type: tea.KeyShiftTab})))
+	if got.insightsPanel.focusedPanel != PanelCount-1 {
+		t.Fatalf("shift+tab from the first panel should wrap to %d, got %d", PanelCount-1, got.insightsPanel.focusedPanel)
+	}
+	got = asModelPtr(t, must2(got.Update(tea.KeyMsg{Type: tea.KeyTab})))
+	if got.insightsPanel.focusedPanel != 0 {
+		t.Fatalf("tab should wrap forward to 0, got %d", got.insightsPanel.focusedPanel)
+	}
+}
+
+func TestTimeTravelKeys_NextPrevChangedIssue(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "B", Title: "B", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "C", Title: "C", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "D", Title: "D", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.focused = focusList
+	idAt := func(i int) string { return m.list.Items()[i].(IssueItem).Issue.ID }
+	changed := map[string]bool{idAt(1): true, idAt(3): true}
+	m.timeTravelMode = true
+	m.timeTravelDiff = &analysis.SnapshotDiff{}
+	m.modifiedIssueIDs = changed
+	m.list.Select(0)
+
+	press := func(key string) *Model {
+		t.Helper()
+		return asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})))
+	}
+	if got := press("n"); got.list.Index() != 1 {
+		t.Fatalf("n: index=%d; want 1 (first changed issue after the cursor)", got.list.Index())
+	}
+	if got := press("n"); got.list.Index() != 3 {
+		t.Fatalf("second n: index=%d; want 3", got.list.Index())
+	}
+	if got := press("n"); got.list.Index() != 1 {
+		t.Fatalf("n past the last changed issue should wrap to 1, got %d", got.list.Index())
+	}
+	if got := press("N"); got.list.Index() != 3 {
+		t.Fatalf("N should step backwards (wrapping) to 3, got %d", got.list.Index())
+	}
+	if !strings.Contains(m.statusMsg, "2") {
+		t.Fatalf("status should report position among changed issues, got %q", m.statusMsg)
+	}
+
+	m.timeTravelMode = false
+	m.list.Select(0)
+	if got := press("n"); got.list.Index() != 0 {
+		t.Fatalf("outside time-travel n must not move the cursor, got %d", got.list.Index())
+	}
+}
+
+func TestHistoryKeys_TTogglesTimelinePane(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.focused = focusHistory
+	m.historyView.SetSize(160, 40) // wide: timeline on by default
+	if !m.historyView.TimelineVisible() {
+		t.Fatalf("precondition: timeline should be visible at 160 columns")
+	}
+	tKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")}
+
+	m, _ = m.handleHistoryKeys(tKey)
+	if m.historyView.TimelineVisible() || !strings.Contains(m.statusMsg, "hidden") {
+		t.Fatalf("t should hide the timeline: visible=%v status=%q", m.historyView.TimelineVisible(), m.statusMsg)
+	}
+	m, _ = m.handleHistoryKeys(tKey)
+	if !m.historyView.TimelineVisible() || !strings.Contains(m.statusMsg, "shown") {
+		t.Fatalf("t again should show the timeline: visible=%v status=%q", m.historyView.TimelineVisible(), m.statusMsg)
+	}
+
+	m.historyView.SetSize(90, 40) // narrow: no timeline possible
+	m, _ = m.handleHistoryKeys(tKey)
+	if !m.statusIsError || !strings.Contains(m.statusMsg, "100 columns") {
+		t.Fatalf("narrow terminals should explain why t does nothing: err=%v status=%q", m.statusIsError, m.statusMsg)
 	}
 }

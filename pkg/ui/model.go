@@ -10130,6 +10130,18 @@ func (m Model) renderAlertsPanel() string {
 				sb.WriteString(unblockHint)
 				sb.WriteString("\n")
 			}
+
+			// Pairwise alerts name their partner; every alert says what to do.
+			if selected && a.RelatedIssueID != "" {
+				sb.WriteString(t.Renderer.NewStyle().Foreground(t.Muted).Italic(true).Render(
+					fmt.Sprintf("     Related: %s", a.RelatedIssueID)))
+				sb.WriteString("\n")
+			}
+			if selected && a.SuggestedAction != "" {
+				sb.WriteString(t.Renderer.NewStyle().Foreground(t.Secondary).Render(
+					"     Suggested: " + a.SuggestedAction))
+				sb.WriteString("\n")
+			}
 		}
 	}
 
