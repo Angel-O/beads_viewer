@@ -1303,6 +1303,7 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 			w.markCatalogDirty()
 			w.TriggerRefresh()
 
+		// Warning: keep source and catalog changes distinct: source refreshes exports, catalog refreshes metadata.
 		case <-sourceChanges:
 			w.noteFileChange(time.Now())
 			w.TriggerSourceRefresh()

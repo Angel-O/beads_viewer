@@ -151,6 +151,20 @@ The repository-aware UI follows this pattern:
   `pkg/ui/model.go` keeps its original method-call seam unchanged.
 - `pkg/ui/repo_picker_row.go` owns fixed-field allocation, truncation, and
   marker rendering while `RepoPickerModel.View` only supplies row data.
+- `cmd/bv/viewer_composition.go` resolves the shared Viewer services once;
+  `correlation.Provider` is the history-source seam for both robot and TUI
+  callers.
+- `pkg/ui/runtime_services.go` supplies neutral runtime services, the
+  `repositoryScopeController` in `pkg/ui/repository_scope.go` owns scope
+  reconciliation, and `BackgroundWorker` consumes `ChangeSource` instances
+  for issue, metadata, source, and catalog changes. The
+  `RepositoryMetadataProvider` keeps the Hub catalog loader behind the UI
+  metadata-provider adapter.
+- Robot handlers receive generic `CandidatePredicate`/`LabelPredicate`
+  admission contracts and emit typed `RobotResult` values through
+  `RobotResultDecorator`; `hubScopeProjection.decorateRobotResult` is the Hub
+  adapter boundary that decorates those results without coupling robot
+  dispatch to Hub types.
 - Dedicated test modules own width, toggle, ANSI, and Hub graph contracts.
 - The older inline policy is removed rather than retained as a duplicate
   implementation.
