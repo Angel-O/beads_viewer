@@ -2898,27 +2898,33 @@ The Alerts System surfaces potential problems before they become blockers. It co
 
 ### Alert Types
 
-Alert types are the `AlertType` constants in `pkg/drift/drift.go`; thresholds are `DefaultConfig()` in `pkg/drift/config.go` and can be overridden in `.bv/drift.yaml`. <!-- bv:pending:D7 -->
+Alert types are the `AlertType` constants in `pkg/drift/drift.go` (`AllAlertTypes()` lists every one, and a test proves each has an emitter); thresholds are `DefaultConfig()` in `pkg/drift/config.go`, overridable per project in `.bv/drift.yaml` (keys below). Every alert carries a `suggested_action`, and issue-level alerts carry the issue's `labels` so `--alert-label` can filter on them.
 
 **Proactive checks** (run on the current graph, no baseline needed):
 
-| Type | Trigger | Severity |
-|------|---------|----------|
-| `stale_issue` | No activity for 14+ days (warning) or 30+ days (critical); thresholds are halved for `in_progress` issues | Warning / Critical |
-| `blocking_cascade` | Actionable issue unblocks 3+ others (info) or 5+ others (warning) | Info / Warning |
+| Type | Trigger | Severity | `.bv/drift.yaml` keys (default) |
+|------|---------|----------|----------------------------------|
+| `stale_issue` | No activity for `stale_warning_days` (warning) or `stale_critical_days` (critical); thresholds are multiplied by `in_progress_stale_multiplier` for `in_progress` issues; `label_overrides` can tighten or loosen per label | Warning / Critical | `stale_warning_days` (14), `stale_critical_days` (30), `in_progress_stale_multiplier` (0.5) |
+| `blocking_cascade` | Actionable issue unblocks N+ others | Info / Warning | `blocking_cascade_info_threshold` (3), `blocking_cascade_warning_threshold` (5) |
+| `high_impact_unblock` | Actionable issue unblocks N+ others of which at least one is P0/P1 (two or more urgent items escalate to warning) | Info / Warning | `high_impact_unblock_min` (3), `high_impact_priority_max` (1) |
+| `abandoned_claim` | `in_progress` issue with an assignee idle longer than `stale_warning_days` x `in_progress_stale_multiplier` x `abandoned_claim_multiplier` (14 days by default) | Warning | `abandoned_claim_multiplier` (2) |
+| `potential_duplicate` | Two open issues whose title/description keyword Jaccard similarity reaches the threshold (same detector as `--robot-suggest`); closed issues are never paired | Info | `duplicate_jaccard_threshold` (0.7), `duplicate_max_alerts` (10) |
+| `priority_mismatch` | `--robot-priority` recommends a *higher* priority with confidence at or above the floor (downgrade suggestions stay in `--robot-priority`) | Warning | `priority_mismatch_min_confidence` (0.6) |
+| `velocity_drop` | Closes in the last window fell by the percentage or more versus the previous window, which must contain at least the baseline count of closes | Warning | `velocity_drop_pct` (50), `velocity_window_days` (7), `velocity_min_baseline` (5) |
 
-**Drift checks** (compare the current graph with the saved baseline):
+**Drift checks** (compare the current graph with the baseline saved by `bv --save-baseline`):
 
-| Type | Trigger | Severity |
-|------|---------|----------|
-| `new_cycle` | A cycle exists that the baseline did not have | Critical |
-| `density_growth` | Graph density up 20% (info) or 50% (warning) | Info / Warning |
-| `node_count_change` / `edge_count_change` | Node or edge count changed by 25% or more | Info |
-| `blocked_increase` | 5 or more additional blocked issues | Warning |
-| `actionable_change` | Actionable count down 30% (warning) or changed 20% (info) | Info / Warning |
-| `pagerank_change` | A top-metric issue's PageRank moved 50% or more | Warning |
+| Type | Trigger | Severity | `.bv/drift.yaml` keys (default) |
+|------|---------|----------|----------------------------------|
+| `new_cycle` | A cycle exists that the baseline did not have | Critical | (always on unless disabled) |
+| `density_growth` | Graph density up by the info or warning percentage | Info / Warning | `density_info_pct` (20), `density_warning_pct` (50) |
+| `node_count_change` / `edge_count_change` | Node or edge count changed by the percentage or more | Info | `node_growth_info_pct` (25), `edge_growth_info_pct` (25) |
+| `scope_creep` | Open-issue count grew by the percentage or more since the baseline | Info | `scope_creep_pct` (20) |
+| `blocked_increase` | N or more additional blocked issues | Warning | `blocked_increase_threshold` (5) |
+| `actionable_change` | Actionable count down by the warning percentage, or changed by the info percentage | Info / Warning | `actionable_decrease_warning_pct` (30), `actionable_increase_info_pct` (20) |
+| `pagerank_change` | A top-metric issue's PageRank moved by the percentage or more | Warning | `pagerank_change_warning_pct` (50) |
 
-`velocity_drop`, `high_impact_unblock`, `abandoned_claim`, and `potential_duplicate` are declared but have no emitter yet; there is no `priority_mismatch` or `scope_creep` alert (priority misalignment lives in `--robot-priority`).
+Any type can be switched off with `disabled_alerts: [type, ...]`. `--robot-alerts` runs both groups (drift checks compare against the saved baseline when one exists, otherwise against the current graph and stay silent); `--check-drift` runs only the drift checks and exits 0 (no alerts or info only), 2 (warnings), or 1 (critical, or no baseline saved yet).
 
 ### TUI Integration
 
