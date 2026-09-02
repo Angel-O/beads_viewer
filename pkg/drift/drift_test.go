@@ -1872,25 +1872,39 @@ func TestDrift_NewEmitterSemantics(t *testing.T) {
 		if hub == nil || hub.Severity != SeverityWarning || hub.BaselineVal != 4 || hub.CurrentVal >= 4 {
 			t.Fatalf("want a warning that P4 HUB deserves a higher priority, got %+v", got)
 		}
-		// A milder hub: its recommendation should land between the default
-		// floor and certainty, so raising the floor just above it silences it.
-		mild := []model.Issue{{ID: "HUB", Status: model.StatusOpen, Priority: 3, UpdatedAt: fresh}}
-		for i := 0; i < 3; i++ {
-			id := fmt.Sprintf("LEAF-%d", i)
-			mild = append(mild, model.Issue{ID: id, Status: model.StatusOpen, Priority: 2, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn(id, "HUB")}})
+		// Find a milder hub whose "increase" recommendation lands between
+		// the default floor and certainty, so raising the floor just above
+		// it must silence it. Shapes are probed because confidence saturates
+		// quickly on tiny graphs.
+		var mild []model.Issue
+		var conf float64
+		var seen []string
+	probe:
+		for _, hubPriority := range []int{2, 3, 4} {
+			for leaves := 1; leaves <= 6 && mild == nil; leaves++ {
+				candidate := []model.Issue{{ID: "HUB", Status: model.StatusOpen, Priority: hubPriority, UpdatedAt: fresh}}
+				for i := 0; i < leaves; i++ {
+					id := fmt.Sprintf("LEAF-%d", i)
+					candidate = append(candidate, model.Issue{ID: id, Status: model.StatusOpen, Priority: 1, UpdatedAt: fresh, Dependencies: []*model.Dependency{blocksOn(id, "HUB")}})
+				}
+				for _, rec := range analysis.NewAnalyzer(candidate).GenerateRecommendations() {
+					if rec.IssueID != "HUB" || rec.Direction != "increase" {
+						continue
+					}
+					seen = append(seen, fmt.Sprintf("P%d/%d leaves=%.2f", hubPriority, leaves, rec.Confidence))
+					if rec.Confidence >= 0.6 && rec.Confidence < 1.0 {
+						mild, conf = candidate, rec.Confidence
+						break probe
+					}
+				}
+			}
+		}
+		if mild == nil {
+			t.Fatalf("no probed fixture produced an increase recommendation in [0.6,1.0): %v", seen)
 		}
 		got = alertsOfType(newCalc(nil, mild), AlertPriorityMismatch)
 		if len(got) != 1 || got[0].IssueID != "HUB" {
 			t.Fatalf("mild hub fixture should produce exactly one HUB alert at the default floor, got %+v", got)
-		}
-		var conf float64
-		for _, rec := range analysis.NewAnalyzer(mild).GenerateRecommendations() {
-			if rec.IssueID == "HUB" {
-				conf = rec.Confidence
-			}
-		}
-		if conf < 0.6 || conf >= 1.0 {
-			t.Fatalf("fixture confidence %.2f must sit in [0.6,1.0) for the floor test", conf)
 		}
 		cfg := DefaultConfig()
 		cfg.PriorityMismatchMinConfidence = conf + 0.01
