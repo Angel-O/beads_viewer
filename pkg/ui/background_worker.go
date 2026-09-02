@@ -1303,7 +1303,7 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 			w.markCatalogDirty()
 			w.TriggerRefresh()
 
-		// Warning: keep source and catalog changes distinct: source refreshes exports, catalog refreshes metadata.
+		// BEGIN UPSTREAM INTEGRATION BOUNDARY: distinct change-source semantics
 		case <-sourceChanges:
 			w.noteFileChange(time.Now())
 			w.TriggerSourceRefresh()
@@ -1312,6 +1312,7 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 			w.noteFileChange(time.Now())
 			w.markCatalogDirty()
 			w.TriggerRefresh()
+		// END UPSTREAM INTEGRATION BOUNDARY
 
 		case <-metadataChanges:
 			w.noteFileChange(time.Now())
