@@ -70,3 +70,6 @@ target-*/
 .wrangler/
 # br doctor per-run artifacts
 .doctor/
+
+# Release gate run logs (scripts/release_gate.sh)
+tests/artifacts/release_gate_*.log
