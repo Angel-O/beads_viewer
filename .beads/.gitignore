@@ -51,3 +51,8 @@ beads.right.meta.json
 .br_history/
 .br_recovery/
 recovery_*/
+
+# Tracker recovery leftovers (2026-09-02): renamed-aside databases and
+# fsqlite migration markers; never committed, removed only on maintainer approval
+*.bad_*
+*.fsqlite-migration-state
