@@ -837,6 +837,7 @@ type Model struct {
 	semanticPath      string // Stable repository or dataset identity for semantic caching
 	runtimeServices   RuntimeServices
 	hubRepositoryMode bool
+	// Warning: keep repository scope state behind this controller; Model access is only composition convenience.
 	repositoryScopeController
 	watcher      *watcher.Watcher // File watcher for live reload
 	instanceLock *instance.Lock   // Multi-instance coordination lock

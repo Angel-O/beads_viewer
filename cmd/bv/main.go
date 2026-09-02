@@ -2007,6 +2007,7 @@ func main() {
 		if err != nil {
 			return fmt.Errorf("getting current directory: %w", err)
 		}
+		// Warning: keep CLI policy resolution in viewer composition so robot and TUI consumers share one service set.
 		composition, err := composeViewerServices(viewerCompositionInput{
 			HistoryMode:        resolvedMode,
 			HubConfigPath:      resolvedConfig,
@@ -2694,6 +2695,7 @@ func main() {
 		robotDispatchContext.AsOfCommit = asOfResolved
 		robotDispatchContext.LabelScope = *labelScope
 		robotDispatchContext.LabelContext = labelScopeContext
+		// Warning: keep Hub projection here as an additive hook; generic robot dispatch must stay Hub-agnostic.
 		if hubRobotScope != nil {
 			projection, projectionErr := newHubScopeProjection(*hubRobotScope, issues, *labelScope)
 			if projectionErr != nil {
