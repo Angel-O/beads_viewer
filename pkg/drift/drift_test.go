@@ -1952,6 +1952,52 @@ func TestDrift_NewEmitterSemantics(t *testing.T) {
 	})
 }
 
+// TestDrift_ExpensiveChecksSkipAboveCap: the TUI snapshot builder runs
+// Calculate on every refresh, so on big graphs the whole-graph checks must
+// step aside and say so instead of stalling the snapshot.
+func TestDrift_ExpensiveChecksSkipAboveCap(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-time.Hour)
+	issues := []model.Issue{{ID: "HUB", Status: model.StatusOpen, Priority: 4, UpdatedAt: fresh}}
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("LEAF-%d", i)
+		issues = append(issues, model.Issue{ID: id, Title: "Fix login timeout on slow networks", Status: model.StatusOpen, Priority: 0, UpdatedAt: fresh, Dependencies: []*model.Dependency{{IssueID: id, DependsOnID: "HUB", Type: model.DepBlocks}}})
+	}
+	stats := baseline.GraphStats{NodeCount: 9, EdgeCount: 8}
+	cfg := DefaultConfig()
+	cfg.ProactiveMaxIssues = 5
+	calc := NewCalculator(&baseline.Baseline{Stats: stats}, &baseline.Baseline{Stats: stats}, cfg)
+	calc.SetNow(now)
+	calc.SetIssues(issues)
+	result := calc.Calculate()
+
+	if got := alertsOfType(result, AlertPriorityMismatch); len(got) != 0 {
+		t.Fatalf("priority_mismatch must be skipped above the cap, got %+v", got)
+	}
+	if got := alertsOfType(result, AlertPotentialDuplicate); len(got) != 0 {
+		t.Fatalf("potential_duplicate must be skipped above the cap, got %+v", got)
+	}
+	if got := alertsOfType(result, AlertHighImpactUnblock); len(got) == 0 {
+		t.Fatalf("cheap checks must still run above the cap: %+v", result.Alerts)
+	}
+	skipped := map[AlertType]string{}
+	for _, s := range result.SkippedChecks {
+		skipped[s.Type] = s.Reason
+	}
+	if len(skipped) != 2 || !strings.Contains(skipped[AlertPriorityMismatch], "proactive_max_issues=5") || skipped[AlertPotentialDuplicate] == "" {
+		t.Fatalf("skipped_checks should name both expensive checks with the cap: %+v", result.SkippedChecks)
+	}
+
+	cfg.ProactiveMaxIssues = 0 // no cap
+	calc = NewCalculator(&baseline.Baseline{Stats: stats}, &baseline.Baseline{Stats: stats}, cfg)
+	calc.SetNow(now)
+	calc.SetIssues(issues)
+	result = calc.Calculate()
+	if len(result.SkippedChecks) != 0 || len(alertsOfType(result, AlertPriorityMismatch)) == 0 {
+		t.Fatalf("cap 0 must run everything: skipped=%+v alerts=%+v", result.SkippedChecks, result.Alerts)
+	}
+}
+
 func TestConfigValidate_ProactiveKeys(t *testing.T) {
 	cfg := &Config{DensityWarningPct: 50}
 	if err := cfg.Validate(); err != nil {
@@ -1969,6 +2015,7 @@ func TestConfigValidate_ProactiveKeys(t *testing.T) {
 		"confidence > 1":          {DensityWarningPct: 50, PriorityMismatchMinConfidence: 2},
 		"negative duplicate cap":  {DensityWarningPct: 50, DuplicateMaxAlerts: -1},
 		"abandoned multiplier 11": {DensityWarningPct: 50, AbandonedClaimMultiplier: 11},
+		"negative proactive cap":  {DensityWarningPct: 50, ProactiveMaxIssues: -5},
 	}
 	for name, c := range bad {
 		if err := c.Validate(); err == nil {
@@ -1990,7 +2037,7 @@ func TestConfigValidate_ProactiveKeys(t *testing.T) {
 	if loaded.VelocityWindowDays != 7 || loaded.DuplicateMaxAlerts != 10 || loaded.ScopeCreepPct != 20 || loaded.HighImpactPriorityMax != 1 {
 		t.Fatalf("example config keys not honoured: %+v", loaded)
 	}
-	for _, key := range []string{"scope_creep_pct", "velocity_drop_pct", "velocity_window_days", "velocity_min_baseline", "high_impact_unblock_min", "high_impact_priority_max", "abandoned_claim_multiplier", "duplicate_jaccard_threshold", "duplicate_max_alerts", "priority_mismatch_min_confidence"} {
+	for _, key := range []string{"proactive_max_issues", "scope_creep_pct", "velocity_drop_pct", "velocity_window_days", "velocity_min_baseline", "high_impact_unblock_min", "high_impact_priority_max", "abandoned_claim_multiplier", "duplicate_jaccard_threshold", "duplicate_max_alerts", "priority_mismatch_min_confidence"} {
 		if !strings.Contains(ExampleConfig(), key+":") {
 			t.Errorf("ExampleConfig missing key %s", key)
 		}

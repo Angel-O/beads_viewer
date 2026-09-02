@@ -104,6 +104,31 @@ type Result struct {
 	CriticalCount int `json:"critical_count"`
 	WarningCount  int `json:"warning_count"`
 	InfoCount     int `json:"info_count"`
+
+	// SkippedChecks lists alert types that were not evaluated and why (for
+	// example the graph exceeds proactive_max_issues), so silence is never
+	// mistaken for health.
+	SkippedChecks []SkippedCheck `json:"skipped_checks,omitempty"`
+}
+
+// SkippedCheck records one alert type that Calculate did not run.
+type SkippedCheck struct {
+	Type   AlertType `json:"type"`
+	Reason string    `json:"reason"`
+}
+
+// expensiveCheckAllowed reports whether the graph is small enough for the
+// checks that re-run whole-graph analysis, recording a SkippedCheck otherwise.
+func (c *Calculator) expensiveCheckAllowed(result *Result, typ AlertType) bool {
+	limit := c.config.ProactiveMaxIssues
+	if limit <= 0 || len(c.issues) <= limit {
+		return true
+	}
+	result.SkippedChecks = append(result.SkippedChecks, SkippedCheck{
+		Type:   typ,
+		Reason: fmt.Sprintf("%d issues exceed proactive_max_issues=%d", len(c.issues), limit),
+	})
+	return false
 }
 
 // Calculator performs drift detection
@@ -903,6 +928,9 @@ func (c *Calculator) checkPotentialDuplicate(result *Result) {
 	if c.config.IsAlertDisabled(string(AlertPotentialDuplicate)) || len(c.issues) < 2 {
 		return
 	}
+	if !c.expensiveCheckAllowed(result, AlertPotentialDuplicate) {
+		return
+	}
 	cfg := analysis.DefaultDuplicateConfig()
 	if c.config.DuplicateJaccardThreshold > 0 {
 		cfg.JaccardThreshold = c.config.DuplicateJaccardThreshold
@@ -945,6 +973,9 @@ func (c *Calculator) checkPotentialDuplicate(result *Result) {
 // P3 that the graph says is load-bearing shows up without a separate command.
 func (c *Calculator) checkPriorityMismatch(result *Result) {
 	if c.config.IsAlertDisabled(string(AlertPriorityMismatch)) || len(c.issues) == 0 {
+		return
+	}
+	if !c.expensiveCheckAllowed(result, AlertPriorityMismatch) {
 		return
 	}
 	minConfidence := c.config.PriorityMismatchMinConfidence

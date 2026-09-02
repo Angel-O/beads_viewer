@@ -70,6 +70,12 @@ type Config struct {
 	// Priority mismatch: minimum recommendation confidence (0-1) that becomes a warning
 	PriorityMismatchMinConfidence float64 `yaml:"priority_mismatch_min_confidence" json:"priority_mismatch_min_confidence"`
 
+	// ProactiveMaxIssues caps the graph size for the expensive proactive checks
+	// (priority_mismatch re-runs the full metric suite, potential_duplicate compares
+	// titles pairwise). Above it those checks are skipped and reported in
+	// skipped_checks; 0 means no cap.
+	ProactiveMaxIssues int `yaml:"proactive_max_issues" json:"proactive_max_issues"`
+
 	// Alert type enable/disable flags (bv-167)
 	// Disabled alert types will not generate alerts
 	DisabledAlerts []string `yaml:"disabled_alerts,omitempty" json:"disabled_alerts,omitempty"`
@@ -106,16 +112,17 @@ func DefaultConfig() *Config {
 		BlockingCascadeInfo:          3,   // Info alert when unblocks >=3
 		BlockingCascadeWarning:       5,   // Warning when unblocks >=5
 
-		ScopeCreepPct:                 20,  // Info when open issues grew 20%+ over the baseline
-		VelocityDropPct:               50,  // Warning when closes fell 50%+ window over window
-		VelocityWindowDays:            7,   // Compare the last 7 days with the 7 before
-		VelocityMinBaseline:           5,   // ...but only when the prior window closed 5+
-		HighImpactUnblockMin:          3,   // Unblocks 3+ items...
-		HighImpactPriorityMax:         1,   // ...including at least one P0/P1
-		AbandonedClaimMultiplier:      2,   // 2x the in-progress stale threshold (14d by default)
-		DuplicateJaccardThreshold:     0.7, // Keyword Jaccard similarity for potential_duplicate
-		DuplicateMaxAlerts:            10,  // At most 10 duplicate alerts per run
-		PriorityMismatchMinConfidence: 0.6, // Recommendation confidence that becomes a warning
+		ScopeCreepPct:                 20,   // Info when open issues grew 20%+ over the baseline
+		VelocityDropPct:               50,   // Warning when closes fell 50%+ window over window
+		VelocityWindowDays:            7,    // Compare the last 7 days with the 7 before
+		VelocityMinBaseline:           5,    // ...but only when the prior window closed 5+
+		HighImpactUnblockMin:          3,    // Unblocks 3+ items...
+		HighImpactPriorityMax:         1,    // ...including at least one P0/P1
+		AbandonedClaimMultiplier:      2,    // 2x the in-progress stale threshold (14d by default)
+		DuplicateJaccardThreshold:     0.7,  // Keyword Jaccard similarity for potential_duplicate
+		DuplicateMaxAlerts:            10,   // At most 10 duplicate alerts per run
+		PriorityMismatchMinConfidence: 0.6,  // Recommendation confidence that becomes a warning
+		ProactiveMaxIssues:            2000, // Skip the expensive checks above this many issues
 	}
 }
 
@@ -231,6 +238,9 @@ func (c *Config) Validate() error {
 	}
 	if c.PriorityMismatchMinConfidence == 0 {
 		c.PriorityMismatchMinConfidence = defaults.PriorityMismatchMinConfidence
+	}
+	if c.ProactiveMaxIssues < 0 {
+		return fmt.Errorf("proactive_max_issues must be non-negative (0 = no cap)")
 	}
 	if c.ScopeCreepPct < 0 || c.ScopeCreepPct > 1000 {
 		return fmt.Errorf("scope_creep_pct must be between 0 and 1000")
@@ -434,6 +444,10 @@ duplicate_max_alerts: 10         # Cap per run
 
 # Priority mismatch (from --robot-priority recommendations)
 priority_mismatch_min_confidence: 0.6  # Warning at this confidence or above
+
+# Graph-size cap for the expensive proactive checks (priority_mismatch, potential_duplicate);
+# larger graphs skip them and report skipped_checks. 0 disables the cap.
+proactive_max_issues: 2000
 
 # Disable specific alert types (bv-167)
 # Uncomment to disable:
