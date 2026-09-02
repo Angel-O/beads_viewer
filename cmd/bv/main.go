@@ -2007,7 +2007,7 @@ func main() {
 		if err != nil {
 			return fmt.Errorf("getting current directory: %w", err)
 		}
-		// Warning: keep CLI policy resolution in viewer composition so robot and TUI consumers share one service set.
+		// BEGIN UPSTREAM INTEGRATION BOUNDARY: viewer composition policy resolution
 		composition, err := composeViewerServices(viewerCompositionInput{
 			HistoryMode:        resolvedMode,
 			HubConfigPath:      resolvedConfig,
@@ -2019,6 +2019,7 @@ func main() {
 			WrapperScope:       os.Getenv("BV_WBV_HUB_SCOPE"),
 			RefreshEnvironment: os.Getenv("BV_HUB_AUTO_REFRESH"),
 		})
+		// END UPSTREAM INTEGRATION BOUNDARY
 		if err != nil {
 			return err
 		}
@@ -2695,7 +2696,7 @@ func main() {
 		robotDispatchContext.AsOfCommit = asOfResolved
 		robotDispatchContext.LabelScope = *labelScope
 		robotDispatchContext.LabelContext = labelScopeContext
-		// Warning: keep Hub projection here as an additive hook; generic robot dispatch must stay Hub-agnostic.
+		// BEGIN UPSTREAM INTEGRATION BOUNDARY: Hub robot-hook adapter wiring
 		if hubRobotScope != nil {
 			projection, projectionErr := newHubScopeProjection(*hubRobotScope, issues, *labelScope)
 			if projectionErr != nil {
@@ -2705,6 +2706,7 @@ func main() {
 			robotDispatchContext.LabelPredicate = hub.AdmitLabel
 			robotDispatchContext.ResultDecorator = projection.decorateRobotResult
 		}
+		// END UPSTREAM INTEGRATION BOUNDARY
 
 		// Handle semantic search CLI (bv-9gf.3)
 		if *semanticQuery != "" {

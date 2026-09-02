@@ -106,6 +106,9 @@ new contract.
 
 ## Upstream Synchronization
 
+Before upstream synchronization, maintainers must search for the exact marker
+phrase `UPSTREAM INTEGRATION BOUNDARY` and review every matched boundary.
+
 Before starting work:
 
 1. Record the upstream cutoff commit.

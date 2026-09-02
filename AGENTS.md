@@ -11,7 +11,7 @@
 ## Project guidance
 
 - Follow [`docs/project-focus.md`](docs/project-focus.md) for the reference branch and workflow.
-- Follow [`docs/fork-maintenance.md`](docs/fork-maintenance.md) for additive seams and synchronization.
+- Before upstream sync, read [`docs/fork-maintenance.md`](docs/fork-maintenance.md) and search for `UPSTREAM INTEGRATION BOUNDARY`.
 - Use Go Modules only. Keep dependency changes in `go.mod`/`go.sum`; never
   edit `go.sum` manually.
 - Make the smallest focused edit in the existing file. Avoid new abstractions,
