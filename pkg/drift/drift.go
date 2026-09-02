@@ -284,13 +284,14 @@ func (c *Calculator) checkDensity(result *Result) {
 
 	if pctChange >= c.config.DensityWarningPct {
 		result.Alerts = append(result.Alerts, Alert{
-			Type:        AlertDensityGrowth,
-			Severity:    SeverityWarning,
-			Message:     fmt.Sprintf("Graph density increased by %.1f%%", pctChange),
-			BaselineVal: blDensity,
-			CurrentVal:  curDensity,
-			Delta:       delta,
-			DetectedAt:  c.nowUTC(),
+			Type:            AlertDensityGrowth,
+			Severity:        SeverityWarning,
+			SuggestedAction: "Check whether new dependencies are real blockers; over-linking hides the true critical path",
+			Message:         fmt.Sprintf("Graph density increased by %.1f%%", pctChange),
+			BaselineVal:     blDensity,
+			CurrentVal:      curDensity,
+			Delta:           delta,
+			DetectedAt:      c.nowUTC(),
 		})
 	} else if pctChange >= c.config.DensityInfoPct {
 		result.Alerts = append(result.Alerts, Alert{
@@ -322,13 +323,14 @@ func (c *Calculator) checkGraphSize(result *Result) {
 		nodePct := float64(nodeDelta) / float64(blNodes) * 100
 		if nodePct >= c.config.NodeGrowthInfoPct || nodePct <= -c.config.NodeGrowthInfoPct {
 			result.Alerts = append(result.Alerts, Alert{
-				Type:        AlertNodeCountChange,
-				Severity:    SeverityInfo,
-				Message:     fmt.Sprintf("Node count changed by %+d (%.1f%%)", nodeDelta, nodePct),
-				BaselineVal: float64(blNodes),
-				CurrentVal:  float64(curNodes),
-				Delta:       float64(nodeDelta),
-				DetectedAt:  c.nowUTC(),
+				Type:            AlertNodeCountChange,
+				Severity:        SeverityInfo,
+				SuggestedAction: "Confirm the graph change is intended (bv --robot-diff --diff-since <baseline commit> lists it)",
+				Message:         fmt.Sprintf("Node count changed by %+d (%.1f%%)", nodeDelta, nodePct),
+				BaselineVal:     float64(blNodes),
+				CurrentVal:      float64(curNodes),
+				Delta:           float64(nodeDelta),
+				DetectedAt:      c.nowUTC(),
 			})
 		}
 	}
@@ -341,13 +343,14 @@ func (c *Calculator) checkGraphSize(result *Result) {
 		edgePct := float64(edgeDelta) / float64(blEdges) * 100
 		if edgePct >= c.config.EdgeGrowthInfoPct || edgePct <= -c.config.EdgeGrowthInfoPct {
 			result.Alerts = append(result.Alerts, Alert{
-				Type:        AlertEdgeCountChange,
-				Severity:    SeverityInfo,
-				Message:     fmt.Sprintf("Edge count changed by %+d (%.1f%%)", edgeDelta, edgePct),
-				BaselineVal: float64(blEdges),
-				CurrentVal:  float64(curEdges),
-				Delta:       float64(edgeDelta),
-				DetectedAt:  c.nowUTC(),
+				Type:            AlertEdgeCountChange,
+				Severity:        SeverityInfo,
+				SuggestedAction: "Review recently added or removed dependencies for accidental blockers",
+				Message:         fmt.Sprintf("Edge count changed by %+d (%.1f%%)", edgeDelta, edgePct),
+				BaselineVal:     float64(blEdges),
+				CurrentVal:      float64(curEdges),
+				Delta:           float64(edgeDelta),
+				DetectedAt:      c.nowUTC(),
 			})
 		}
 	}
@@ -366,13 +369,14 @@ func (c *Calculator) checkBlocked(result *Result) {
 
 	if delta > 0 && delta >= c.config.BlockedIncreaseThreshold {
 		result.Alerts = append(result.Alerts, Alert{
-			Type:        AlertBlockedIncrease,
-			Severity:    SeverityWarning,
-			Message:     fmt.Sprintf("Blocked issues increased by %d", delta),
-			BaselineVal: float64(blBlocked),
-			CurrentVal:  float64(curBlocked),
-			Delta:       float64(delta),
-			DetectedAt:  c.nowUTC(),
+			Type:            AlertBlockedIncrease,
+			Severity:        SeverityWarning,
+			SuggestedAction: "Clear the top blockers first: bv --robot-triage lists blockers_to_clear",
+			Message:         fmt.Sprintf("Blocked issues increased by %d", delta),
+			BaselineVal:     float64(blBlocked),
+			CurrentVal:      float64(curBlocked),
+			Delta:           float64(delta),
+			DetectedAt:      c.nowUTC(),
 		})
 	}
 }
@@ -392,13 +396,14 @@ func (c *Calculator) checkActionable(result *Result) {
 		pct := float64(delta) / float64(blAction) * 100
 		if pct <= -c.config.ActionableDecreaseWarningPct {
 			result.Alerts = append(result.Alerts, Alert{
-				Type:        AlertActionableChange,
-				Severity:    SeverityWarning,
-				Message:     fmt.Sprintf("Actionable issues decreased by %d (%.1f%%)", -delta, -pct),
-				BaselineVal: float64(blAction),
-				CurrentVal:  float64(curAction),
-				Delta:       float64(delta),
-				DetectedAt:  c.nowUTC(),
+				Type:            AlertActionableChange,
+				Severity:        SeverityWarning,
+				SuggestedAction: "Fewer ready items means work is piling up behind blockers; unblock before starting new work",
+				Message:         fmt.Sprintf("Actionable issues decreased by %d (%.1f%%)", -delta, -pct),
+				BaselineVal:     float64(blAction),
+				CurrentVal:      float64(curAction),
+				Delta:           float64(delta),
+				DetectedAt:      c.nowUTC(),
 			})
 		} else if pct >= c.config.ActionableIncreaseInfoPct || pct <= -c.config.ActionableIncreaseInfoPct {
 			result.Alerts = append(result.Alerts, Alert{
@@ -458,11 +463,12 @@ func (c *Calculator) checkPageRankChanges(result *Result) {
 
 	if len(changes) > 0 {
 		result.Alerts = append(result.Alerts, Alert{
-			Type:       AlertPageRankChange,
-			Severity:   SeverityWarning,
-			Message:    fmt.Sprintf("%d PageRank changes detected", len(changes)),
-			Details:    changes,
-			DetectedAt: c.nowUTC(),
+			Type:            AlertPageRankChange,
+			Severity:        SeverityWarning,
+			SuggestedAction: "Re-check the priority of the issues whose structural importance moved",
+			Message:         fmt.Sprintf("%d PageRank changes detected", len(changes)),
+			Details:         changes,
+			DetectedAt:      c.nowUTC(),
 		})
 	}
 }
@@ -939,7 +945,10 @@ func (c *Calculator) checkPriorityMismatch(result *Result) {
 	}
 	issueMap := c.issueMap()
 	for _, rec := range c.analyzer().GenerateRecommendationsWithThresholds(thresholds) {
-		if rec.Confidence < minConfidence {
+		// Only under-prioritised load-bearing issues are alerts; "could be
+		// lower" recommendations are hygiene for --robot-priority, and on
+		// small graphs they fire for nearly every leaf.
+		if rec.Confidence < minConfidence || rec.Direction != "increase" {
 			continue
 		}
 		result.Alerts = append(result.Alerts, Alert{
