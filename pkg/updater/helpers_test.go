@@ -68,24 +68,26 @@ func TestRelease_FindPlatformAssetWithChecksumFallsBackToCheckedLegacyName(t *te
 	}
 }
 
-func TestRelease_FindPlatformAssetWithChecksumPrefersCheckedStableName(t *testing.T) {
+func TestRelease_FindPlatformAssetWithChecksumPrefersCheckedVersionedName(t *testing.T) {
+	// Since #195 releases ship bv_<version>_<os>_<arch>; when a release still
+	// carries the old unversioned archive as well, the versioned one wins.
 	rel := &Release{TagName: "v1.2.3"}
-	stableTarget := stableAssetName()
-	legacyTarget := getAssetName(rel.TagName)
+	unversioned := stableAssetName()
+	versioned := getAssetName(rel.TagName)
 	rel.Assets = []Asset{
-		{Name: legacyTarget, BrowserDownloadURL: "http://example.com/legacy"},
-		{Name: stableTarget, BrowserDownloadURL: "http://example.com/stable"},
+		{Name: unversioned, BrowserDownloadURL: "http://example.com/unversioned"},
+		{Name: versioned, BrowserDownloadURL: "http://example.com/versioned"},
 	}
 
 	asset := rel.findPlatformAssetWithChecksum(map[string]string{
-		stableTarget: "hash",
-		legacyTarget: "hash",
+		unversioned: "hash",
+		versioned:   "hash",
 	})
 	if asset == nil {
-		t.Fatalf("expected checked stable asset %q", stableTarget)
+		t.Fatalf("expected checked versioned asset %q", versioned)
 	}
-	if asset.Name != stableTarget {
-		t.Fatalf("expected %q, got %q", stableTarget, asset.Name)
+	if asset.Name != versioned {
+		t.Fatalf("expected %q, got %q", versioned, asset.Name)
 	}
 }
 
