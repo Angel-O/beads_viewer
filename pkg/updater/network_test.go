@@ -544,3 +544,37 @@ func TestUpdater_StartupDisclosureRecordedOnce(t *testing.T) {
 		t.Fatalf("BV_NO_SAVED_CONFIG: config dir must not be created, stat err=%v", err)
 	}
 }
+
+// TestUpdater_MatchesVersionedAssetNames (#195): releases now ship
+// bv_<version>_<os>_<arch>.<ext>; the updater must pick that name, still
+// accept the unversioned name older releases used, and prefer the versioned
+// one when a release carries both.
+func TestUpdater_MatchesVersionedAssetNames(t *testing.T) {
+	versioned := getAssetName("v1.2.3")
+	legacy := stableAssetName()
+	if versioned == legacy || !strings.Contains(versioned, "1.2.3") {
+		t.Fatalf("versioned name %q should embed the version and differ from legacy %q", versioned, legacy)
+	}
+
+	rel := &Release{TagName: "v1.2.3", Assets: []Asset{{Name: "checksums.txt"}, {Name: versioned}}}
+	if got := rel.FindPlatformAsset(); got == nil || got.Name != versioned {
+		t.Fatalf("versioned-only release: got %+v, want %s", got, versioned)
+	}
+
+	rel = &Release{TagName: "v1.2.3", Assets: []Asset{{Name: legacy}}}
+	if got := rel.FindPlatformAsset(); got == nil || got.Name != legacy {
+		t.Fatalf("legacy-only release: got %+v, want %s", got, legacy)
+	}
+
+	rel = &Release{TagName: "v1.2.3", Assets: []Asset{{Name: legacy}, {Name: versioned}}}
+	if got := rel.FindPlatformAsset(); got == nil || got.Name != versioned {
+		t.Fatalf("both present: got %+v, want the versioned %s", got, versioned)
+	}
+
+	if names := platformAssetNames("v1.2.3"); names[0] != versioned || names[1] != legacy {
+		t.Fatalf("lookup order should be versioned then legacy, got %v", names)
+	}
+	if names := platformAssetNames(""); len(names) != 1 || names[0] != legacy {
+		t.Fatalf("without a tag only the legacy name applies, got %v", names)
+	}
+}

@@ -25,8 +25,12 @@ archives:
       - goos: windows
         formats:
           - zip
+    # Versioned names (#195): bv_<version>_<os>_<arch>.<ext>, so `gh release
+    # download` users can tell releases apart by file name. The updater and
+    # install.sh accept both this and the previous unversioned form.
     name_template: >-
       {{ .ProjectName }}_
+      {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
 

@@ -652,27 +652,36 @@ func platformArchiveExtension(goos string) string {
 	return ".tar.gz"
 }
 
+// stableAssetName is the unversioned archive name (bv_<os>_<arch>.<ext>)
+// that releases up to v0.22.0 used; kept as a fallback so the updater can
+// still install those releases and any release published by an older
+// goreleaser configuration.
 func stableAssetName() string {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 	return fmt.Sprintf("bv_%s_%s%s", goos, goarch, platformArchiveExtension(goos))
 }
 
-// getAssetName returns the legacy versioned asset name for older releases.
+// getAssetName returns the versioned archive name (bv_<version>_<os>_<arch>.<ext>)
+// that .goreleaser.yaml produces (#195).
 func getAssetName(version string) string {
 	ver := strings.TrimPrefix(version, "v")
 	return fmt.Sprintf("bv_%s_%s_%s%s", ver, runtime.GOOS, runtime.GOARCH, platformArchiveExtension(runtime.GOOS))
 }
 
+// platformAssetNames lists the archive names to try for this OS/arch, most
+// specific first: the versioned name, then the unversioned legacy name, then
+// the old Windows tar.gz variant.
 func platformAssetNames(version string) []string {
 	ver := strings.TrimPrefix(version, "v")
 
-	names := []string{stableAssetName()}
+	var names []string
 	if ver != "" {
 		names = append(names, getAssetName(version))
-		if runtime.GOOS == "windows" {
-			names = append(names, fmt.Sprintf("bv_%s_%s_%s.tar.gz", ver, runtime.GOOS, runtime.GOARCH))
-		}
+	}
+	names = append(names, stableAssetName())
+	if ver != "" && runtime.GOOS == "windows" {
+		names = append(names, fmt.Sprintf("bv_%s_%s_%s.tar.gz", ver, runtime.GOOS, runtime.GOARCH))
 	}
 	return names
 }
