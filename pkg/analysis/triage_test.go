@@ -2136,3 +2136,141 @@ func TestComputeTriageWithOptions_RootIssueID(t *testing.T) {
 		t.Errorf("expected 3 total issues with RootIssueID=epic-1, got %d", scopedTriage.ProjectHealth.Counts.Total)
 	}
 }
+
+// Issue #199: a bead parked in a non-open status (deferred/draft/blocked/...)
+// must never be surfaced as work to start. It is excluded from the actionable
+// set, from quick_wins and from every top pick, and its recommendation keeps
+// the "wait" action instead of the quick-win override — mirroring `br ready`,
+// which only surfaces status=open.
+func TestComputeTriage_ParkedStatusNeverAPick(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	for _, status := range []model.Status{model.StatusDeferred, model.StatusDraft, model.StatusBlocked, model.Status("custom-parked")} {
+		t.Run(string(status), func(t *testing.T) {
+			issues := []model.Issue{
+				// P0 blocker with fan-out: would win every ranking if it were open.
+				{ID: "bd-def1", Title: "Parked P0 blocker", Status: status, Priority: 0, IssueType: model.TypeTask, Labels: []string{"lane"}, UpdatedAt: now},
+				{ID: "bd-dep1", Title: "Downstream A", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, Labels: []string{"lane"}, UpdatedAt: now,
+					Dependencies: []*model.Dependency{{IssueID: "bd-dep1", DependsOnID: "bd-def1", Type: model.DepBlocks}}},
+				{ID: "bd-dep2", Title: "Downstream B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, Labels: []string{"lane"}, UpdatedAt: now,
+					Dependencies: []*model.Dependency{{IssueID: "bd-dep2", DependsOnID: "bd-def1", Type: model.DepBlocks}}},
+				{ID: "bd-ready1", Title: "Only claimable leaf", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeTask, Labels: []string{"lane"}, UpdatedAt: now},
+			}
+
+			got := ComputeTriageWithOptionsAndTime(issues, TriageOptions{
+				WaitForPhase2: true,
+				GroupByTrack:  true,
+				GroupByLabel:  true,
+			}, now)
+
+			// Counts match `br ready`: exactly one ready bead.
+			if got.QuickRef.ActionableCount != 1 {
+				t.Fatalf("actionable_count = %d, want 1", got.QuickRef.ActionableCount)
+			}
+			if got.QuickRef.NotActionableCount != 3 {
+				t.Fatalf("not_actionable_count = %d, want 3", got.QuickRef.NotActionableCount)
+			}
+			if got.QuickRef.NotClosedCount != got.QuickRef.ActionableCount+got.QuickRef.NotActionableCount {
+				t.Fatalf("partition invariant broken: %+v", got.QuickRef)
+			}
+
+			// top_picks / --robot-next: only the open leaf.
+			if len(got.QuickRef.TopPicks) != 1 || got.QuickRef.TopPicks[0].ID != "bd-ready1" {
+				t.Fatalf("top_picks = %#v, want [bd-ready1]", got.QuickRef.TopPicks)
+			}
+
+			// quick_wins: the parked bead is absent and every entry carries status.
+			for _, qw := range got.QuickWins {
+				if qw.ID == "bd-def1" {
+					t.Fatalf("parked bead leaked into quick_wins: %#v", got.QuickWins)
+				}
+				if qw.Status != string(model.StatusOpen) {
+					t.Fatalf("quick_wins entry %s has status %q, want open", qw.ID, qw.Status)
+				}
+			}
+			if len(got.QuickWins) != 1 || got.QuickWins[0].ID != "bd-ready1" {
+				t.Fatalf("quick_wins = %#v, want [bd-ready1]", got.QuickWins)
+			}
+
+			// recommendations: still listed for planning, but never labelled a
+			// quick win to start, and machine-readably non-claimable.
+			var parked *Recommendation
+			for i := range got.Recommendations {
+				rec := &got.Recommendations[i]
+				if rec.ID == "bd-def1" {
+					parked = rec
+				}
+				if rec.Claimable != (rec.ID == "bd-ready1") {
+					t.Fatalf("claimable for %s = %v, want %v", rec.ID, rec.Claimable, rec.ID == "bd-ready1")
+				}
+			}
+			if parked == nil {
+				t.Fatalf("parked bead missing from recommendations: %#v", got.Recommendations)
+			}
+			if strings.Contains(parked.Action, "Quick win") || strings.Contains(parked.Action, "Start work") {
+				t.Fatalf("parked bead action = %q, want a wait/resolve hint", parked.Action)
+			}
+
+			// Grouped top picks never surface it either.
+			for _, group := range got.RecommendationsByTrack {
+				if group.TopPick != nil && group.TopPick.ID == "bd-def1" {
+					t.Fatalf("parked bead leaked into track top pick: %#v", group)
+				}
+			}
+			for _, group := range got.RecommendationsByLabel {
+				if group.TopPick != nil && group.TopPick.ID == "bd-def1" {
+					t.Fatalf("parked bead leaked into label top pick: %#v", group)
+				}
+			}
+		})
+	}
+}
+
+// Issue #199 (#191 variant): an open bead with a future defer_until is
+// already withheld from top_picks; it must be withheld from quick_wins too.
+func TestComputeTriage_FutureDeferUntilExcludedFromQuickWins(t *testing.T) {
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	future := now.Add(30 * 24 * time.Hour)
+	issues := []model.Issue{
+		{ID: "bd-def1", Title: "Scheduled for later", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeTask, DeferUntil: &future, UpdatedAt: now},
+		{ID: "bd-dep1", Title: "Downstream A", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask, UpdatedAt: now,
+			Dependencies: []*model.Dependency{{IssueID: "bd-dep1", DependsOnID: "bd-def1", Type: model.DepBlocks}}},
+		{ID: "bd-ready1", Title: "Only claimable leaf", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeTask, UpdatedAt: now},
+	}
+
+	got := ComputeTriageWithOptionsAndTime(issues, TriageOptions{WaitForPhase2: true}, now)
+	if len(got.QuickWins) != 1 || got.QuickWins[0].ID != "bd-ready1" {
+		t.Fatalf("quick_wins = %#v, want [bd-ready1]", got.QuickWins)
+	}
+	if got.QuickRef.ActionableCount != 1 {
+		t.Fatalf("actionable_count = %d, want 1", got.QuickRef.ActionableCount)
+	}
+}
+
+// Issue #199: the quick-win action override must not clobber the status wait
+// hint for a parked bead, nor the resolve hint for a blocked-status bead.
+func TestGenerateTriageReasons_QuickWinKeepsParkedStatusHint(t *testing.T) {
+	cases := map[model.Status]string{
+		model.StatusDeferred: "Wait for status deferred to become open before claiming",
+		model.StatusDraft:    "Wait for status draft to become open before claiming",
+		model.StatusBlocked:  "Resolve blocked status before claiming this issue",
+	}
+	for status, want := range cases {
+		reasons := GenerateTriageReasons(TriageReasonContext{
+			Issue:       &model.Issue{ID: "x", Status: status},
+			IsQuickWin:  true,
+			UnblocksIDs: []string{"a", "b"},
+		})
+		if reasons.ActionHint != want {
+			t.Errorf("status %s: action = %q, want %q", status, reasons.ActionHint, want)
+		}
+	}
+
+	// An open bead still gets the quick-win hint.
+	open := GenerateTriageReasons(TriageReasonContext{
+		Issue:      &model.Issue{ID: "x", Status: model.StatusOpen},
+		IsQuickWin: true,
+	})
+	if open.ActionHint != "Quick win - start here for fast progress" {
+		t.Errorf("open: action = %q, want quick-win hint", open.ActionHint)
+	}
+}

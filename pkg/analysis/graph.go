@@ -2535,10 +2535,12 @@ func findArticulationPoints(adj undirectedAdjacency) map[int64]bool {
 
 // GetActionableIssues returns issues that can be worked on immediately.
 // An issue is actionable if:
-//  1. It is not closed or tombstone
+//  1. Its status is actionable (open or in_progress — see isActionableStatus;
+//     blocked/deferred/draft/pinned/hooked/review/custom/closed are not)
 //  2. All its blocking dependencies (type "blocks") are closed or tombstone
 //  3. None of its parent issues (via "parent-child" deps) are themselves blocked
 //     (transitive parent-blocked propagation, matching br's behavior)
+//  4. It is not scheduler-deferred (defer_until in the future)
 //
 // Missing blockers don't block (graceful degradation).
 // Returns list sorted by ID for determinism.
@@ -2606,11 +2608,14 @@ func (a *Analyzer) GetActionableIssues() []model.Issue {
 		}
 	}
 
-	// Phase 4: Collect actionable issues (not closed, not blocked, not
+	// Phase 4: Collect actionable issues (actionable status, not blocked, not
 	// scheduler-deferred). A bead with a future defer_until is withheld for
 	// parity with `br ready` (issue #191): it is neither claimable nor part of
 	// the actionable plan until the deferral lapses, even though nothing in
-	// the graph blocks it.
+	// the graph blocks it. Likewise a bead parked in a non-actionable status
+	// (deferred/draft/blocked/...) is withheld exactly as `br ready` withholds
+	// it (issue #199); such a bead still acts as a blocker for its dependents
+	// in Phase 1 because it is not closed.
 	//
 	// NOTE: a standalone open parent with open children remains actionable here
 	// (parent-child is a rollup edge that never gates the parent's own
@@ -2628,7 +2633,7 @@ func (a *Analyzer) GetActionableIssues() []model.Issue {
 	var actionable []model.Issue
 	for _, id := range ids {
 		issue := a.issueMap[id]
-		if isClosedLikeStatus(issue.Status) {
+		if !isActionableStatus(issue.Status) {
 			continue
 		}
 		if blocked[id] {
