@@ -1118,14 +1118,26 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 					continue
 				}
 				if cfg.AlertLabel != nil && strings.TrimSpace(*cfg.AlertLabel) != "" {
+					want := strings.ToLower(strings.TrimSpace(*cfg.AlertLabel))
 					found := false
-					for _, detail := range alert.Details {
-						if strings.Contains(strings.ToLower(detail), strings.ToLower(*cfg.AlertLabel)) {
+					for _, label := range alert.Labels {
+						if strings.ToLower(label) == want {
 							found = true
 							break
 						}
 					}
-					if !found && alert.Label != "" && !strings.Contains(strings.ToLower(alert.Label), strings.ToLower(*cfg.AlertLabel)) {
+					if !found && alert.Label != "" && strings.ToLower(alert.Label) == want {
+						found = true
+					}
+					if !found {
+						for _, detail := range alert.Details {
+							if strings.Contains(strings.ToLower(detail), want) {
+								found = true
+								break
+							}
+						}
+					}
+					if !found {
 						continue
 					}
 				}
@@ -1149,7 +1161,11 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				UsageHints: []string{
 					"--severity=warning --alert-type=stale_issue   # stale warnings only",
 					"--alert-type=blocking_cascade                 # high-unblock opportunities",
-					"jq '.alerts | map(.issue_id)'                # list impacted issues",
+					"--alert-type=high_impact_unblock|abandoned_claim|potential_duplicate|priority_mismatch|velocity_drop   # proactive checks (no baseline needed)",
+					"--alert-type=new_cycle|density_growth|node_count_change|edge_count_change|scope_creep|blocked_increase|actionable_change|pagerank_change   # drift vs saved baseline (bv --save-baseline)",
+					"--alert-label=backend                        # only alerts on issues carrying that label",
+					"jq '.alerts | map({issue_id, type, suggested_action})'   # what to do about each",
+					"thresholds: .bv/drift.yaml; every key and its default is listed in the README 'Alerts System' table",
 				},
 			}
 			for _, alert := range driftResult.Alerts {

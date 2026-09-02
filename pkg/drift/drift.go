@@ -39,7 +39,33 @@ const (
 	AlertHighImpactUnblock  AlertType = "high_impact_unblock"
 	AlertAbandonedClaim     AlertType = "abandoned_claim"
 	AlertPotentialDuplicate AlertType = "potential_duplicate"
+	AlertPriorityMismatch   AlertType = "priority_mismatch"
+	AlertScopeCreep         AlertType = "scope_creep"
 )
+
+// AllAlertTypes returns every alert type Calculate can emit. Tests iterate it
+// to prove each type has an emitter, and the README table is checked against
+// it, so adding a type here without an emitter and a docs row fails the build
+// gates rather than shipping a declared-but-dead alert.
+func AllAlertTypes() []AlertType {
+	return []AlertType{
+		AlertStaleIssue,
+		AlertBlockingCascade,
+		AlertHighImpactUnblock,
+		AlertAbandonedClaim,
+		AlertPotentialDuplicate,
+		AlertPriorityMismatch,
+		AlertVelocityDrop,
+		AlertNewCycle,
+		AlertDensityGrowth,
+		AlertNodeCountChange,
+		AlertEdgeCountChange,
+		AlertScopeCreep,
+		AlertBlockedIncrease,
+		AlertActionableChange,
+		AlertPageRankChange,
+	}
+}
 
 // Alert represents a single drift detection alert
 type Alert struct {
@@ -53,6 +79,13 @@ type Alert struct {
 	IssueID     string    `json:"issue_id,omitempty"`
 	Label       string    `json:"label,omitempty"`
 	DetectedAt  time.Time `json:"detected_at,omitempty"`
+
+	// RelatedIssueID names the second issue of a pairwise alert (potential_duplicate).
+	RelatedIssueID string `json:"related_issue_id,omitempty"`
+	// Labels carries the flagged issue's labels so --alert-label can filter on them.
+	Labels []string `json:"labels,omitempty"`
+	// SuggestedAction is the one-line remedy an agent or human should consider.
+	SuggestedAction string `json:"suggested_action,omitempty"`
 
 	// Blocking cascade specific fields (bv-165)
 	UnblocksCount         int `json:"unblocks_count,omitempty"`
@@ -80,6 +113,10 @@ type Calculator struct {
 	current  *baseline.Baseline
 	issues   []model.Issue
 	now      time.Time
+
+	// analyzerCache is the graph analyzer over issues, built on first use so
+	// the issue-level checks share unblock/actionable/impact computations.
+	analyzerCache *analysis.Analyzer
 }
 
 // NewCalculator creates a drift calculator with the given baseline and current snapshot.
@@ -112,6 +149,18 @@ func (c *Calculator) nowUTC() time.Time {
 // Optional: drift detection still works without issues attached.
 func (c *Calculator) SetIssues(issues []model.Issue) {
 	c.issues = issues
+	c.analyzerCache = nil
+}
+
+// analyzer returns the shared graph analyzer over the attached issues (nil
+// when no issues are attached).
+func (c *Calculator) analyzer() *analysis.Analyzer {
+	if c.analyzerCache == nil && len(c.issues) > 0 {
+		a := analysis.NewAnalyzer(c.issues)
+		a.SetNow(c.nowUTC())
+		c.analyzerCache = a
+	}
+	return c.analyzerCache
 }
 
 // Calculate performs drift detection and returns results
@@ -148,6 +197,16 @@ func (c *Calculator) Calculate() *Result {
 
 	// Check blocking cascades (uses current issues if provided)
 	c.checkBlockingCascade(result)
+
+	// Scope creep against the baseline's open count (info)
+	c.checkScopeCreep(result)
+
+	// Issue-level proactive checks (all need attached issues)
+	c.checkVelocityDrop(result)
+	c.checkHighImpactUnblock(result)
+	c.checkAbandonedClaim(result)
+	c.checkPotentialDuplicate(result)
+	c.checkPriorityMismatch(result)
 
 	// Compute summary
 	for _, alert := range result.Alerts {
@@ -193,14 +252,15 @@ func (c *Calculator) checkCycles(result *Result) {
 		}
 
 		result.Alerts = append(result.Alerts, Alert{
-			Type:        AlertNewCycle,
-			Severity:    SeverityCritical,
-			Message:     fmt.Sprintf("%d new cycle(s) detected", len(newCycles)),
-			BaselineVal: float64(len(c.baseline.Cycles)),
-			CurrentVal:  float64(len(c.current.Cycles)),
-			Delta:       float64(len(newCycles)),
-			Details:     details,
-			DetectedAt:  c.nowUTC(),
+			Type:            AlertNewCycle,
+			Severity:        SeverityCritical,
+			SuggestedAction: "Break the cycle by removing or reversing one dependency edge (bv --robot-suggest lists cycle-break candidates)",
+			Message:         fmt.Sprintf("%d new cycle(s) detected", len(newCycles)),
+			BaselineVal:     float64(len(c.baseline.Cycles)),
+			CurrentVal:      float64(len(c.current.Cycles)),
+			Delta:           float64(len(newCycles)),
+			Details:         details,
+			DetectedAt:      c.nowUTC(),
 		})
 	}
 }
@@ -456,11 +516,13 @@ func (c *Calculator) checkStaleness(result *Result) {
 		}
 
 		result.Alerts = append(result.Alerts, Alert{
-			Type:       AlertStaleIssue,
-			Severity:   severity,
-			Message:    fmt.Sprintf("Issue %s inactive for %.0f days", issue.ID, days),
-			IssueID:    issue.ID,
-			DetectedAt: now,
+			Type:            AlertStaleIssue,
+			Severity:        severity,
+			Labels:          issue.Labels,
+			SuggestedAction: "Update, close, or re-triage the issue; stale work hides real priorities",
+			Message:         fmt.Sprintf("Issue %s inactive for %.0f days", issue.ID, days),
+			IssueID:         issue.ID,
+			DetectedAt:      now,
 			Details: []string{
 				fmt.Sprintf("status=%s", issue.Status),
 				fmt.Sprintf("last_update=%s", lastActive.Format(time.RFC3339)),
@@ -493,9 +555,8 @@ func (c *Calculator) checkBlockingCascade(result *Result) {
 		issueMap[iss.ID] = iss
 	}
 
-	analyzer := analysis.NewAnalyzer(c.issues)
-	analyzer.SetNow(c.nowUTC())
-	actionable := analyzer.GetActionableIssues()
+	analyzer := c.analyzer()
+	actionable := sortedByID(analyzer.GetActionableIssues())
 	if len(actionable) == 0 {
 		return
 	}
@@ -525,6 +586,8 @@ func (c *Calculator) checkBlockingCascade(result *Result) {
 		result.Alerts = append(result.Alerts, Alert{
 			Type:                  AlertBlockingCascade,
 			Severity:              severity,
+			Labels:                iss.Labels,
+			SuggestedAction:       "Prioritize this issue: closing it releases the listed downstream items",
 			Message:               fmt.Sprintf("Completing %s unblocks %d downstream item(s)", iss.ID, count),
 			IssueID:               iss.ID,
 			DetectedAt:            c.nowUTC(),
@@ -632,4 +695,265 @@ func (r *Result) ExitCode() int {
 		return 2
 	}
 	return 0
+}
+
+// sortedByID returns a copy of issues ordered by ID so alert order is
+// deterministic regardless of how the analyzer enumerates them.
+func sortedByID(issues []model.Issue) []model.Issue {
+	out := append([]model.Issue(nil), issues...)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func (c *Calculator) issueMap() map[string]model.Issue {
+	m := make(map[string]model.Issue, len(c.issues))
+	for _, iss := range c.issues {
+		m[iss.ID] = iss
+	}
+	return m
+}
+
+// checkScopeCreep flags open-issue growth against the baseline (README's
+// "scope_creep"): the plan grew by ScopeCreepPct or more since the baseline
+// was saved. node_count_change stays as the raw graph-size signal; this one
+// is about unfinished work, not nodes.
+func (c *Calculator) checkScopeCreep(result *Result) {
+	if c.config.IsAlertDisabled(string(AlertScopeCreep)) || c.config.ScopeCreepPct <= 0 {
+		return
+	}
+	blOpen := c.baseline.Stats.OpenCount
+	curOpen := c.current.Stats.OpenCount
+	if blOpen <= 0 || curOpen <= blOpen {
+		return
+	}
+	growthPct := float64(curOpen-blOpen) / float64(blOpen) * 100
+	if growthPct < c.config.ScopeCreepPct {
+		return
+	}
+	result.Alerts = append(result.Alerts, Alert{
+		Type:            AlertScopeCreep,
+		Severity:        SeverityInfo,
+		Message:         fmt.Sprintf("Open issues grew %.0f%% since the baseline (%d → %d)", growthPct, blOpen, curOpen),
+		BaselineVal:     float64(blOpen),
+		CurrentVal:      float64(curOpen),
+		Delta:           float64(curOpen - blOpen),
+		DetectedAt:      c.nowUTC(),
+		SuggestedAction: "Review the issues opened since the baseline; defer or split work that was not planned",
+	})
+}
+
+// checkVelocityDrop compares closes in the most recent VelocityWindowDays
+// against the window before it. It only speaks when the prior window had at
+// least VelocityMinBaseline closes, so a quiet project does not alarm.
+func (c *Calculator) checkVelocityDrop(result *Result) {
+	if c.config.IsAlertDisabled(string(AlertVelocityDrop)) || len(c.issues) == 0 {
+		return
+	}
+	window := c.config.VelocityWindowDays
+	if window <= 0 || c.config.VelocityDropPct <= 0 {
+		return
+	}
+	now := c.nowUTC()
+	recentStart := now.AddDate(0, 0, -window)
+	priorStart := now.AddDate(0, 0, -2*window)
+	recent, prior := 0, 0
+	for _, iss := range c.issues {
+		if iss.ClosedAt == nil {
+			continue
+		}
+		closed := iss.ClosedAt.UTC()
+		switch {
+		case closed.After(recentStart) && !closed.After(now):
+			recent++
+		case closed.After(priorStart) && !closed.After(recentStart):
+			prior++
+		}
+	}
+	if prior == 0 || prior < c.config.VelocityMinBaseline {
+		return
+	}
+	dropPct := float64(prior-recent) / float64(prior) * 100
+	if dropPct < c.config.VelocityDropPct {
+		return
+	}
+	result.Alerts = append(result.Alerts, Alert{
+		Type:        AlertVelocityDrop,
+		Severity:    SeverityWarning,
+		Message:     fmt.Sprintf("Closed %d issue(s) in the last %d days vs %d in the %d days before (-%.0f%%)", recent, window, prior, window, dropPct),
+		BaselineVal: float64(prior),
+		CurrentVal:  float64(recent),
+		Delta:       float64(recent - prior),
+		DetectedAt:  now,
+		Details: []string{
+			fmt.Sprintf("window_days=%d", window),
+			fmt.Sprintf("prior_window_closed=%d", prior),
+			fmt.Sprintf("recent_window_closed=%d", recent),
+		},
+		SuggestedAction: "Check for blocked or abandoned in-progress work; bv --robot-triage shows what is actually ready",
+	})
+}
+
+// checkHighImpactUnblock is blocking_cascade's priority-aware sibling: an
+// actionable issue that unblocks HighImpactUnblockMin or more items of which
+// at least one is at HighImpactPriorityMax or more urgent. Two or more urgent
+// downstream items escalate to warning.
+func (c *Calculator) checkHighImpactUnblock(result *Result) {
+	if c.config.IsAlertDisabled(string(AlertHighImpactUnblock)) || len(c.issues) == 0 {
+		return
+	}
+	minUnblocks := c.config.HighImpactUnblockMin
+	if minUnblocks <= 0 {
+		return
+	}
+	maxPriority := c.config.HighImpactPriorityMax
+	issueMap := c.issueMap()
+	analyzer := c.analyzer()
+	for _, iss := range sortedByID(analyzer.GetActionableIssues()) {
+		unblocks := analyzer.ComputeUnblocks(iss.ID)
+		if len(unblocks) < minUnblocks {
+			continue
+		}
+		var urgent []string
+		for _, id := range unblocks {
+			if downstream, ok := issueMap[id]; ok && downstream.Priority <= maxPriority {
+				urgent = append(urgent, id)
+			}
+		}
+		if len(urgent) == 0 {
+			continue
+		}
+		sort.Strings(urgent)
+		severity := SeverityInfo
+		if len(urgent) >= 2 {
+			severity = SeverityWarning
+		}
+		result.Alerts = append(result.Alerts, Alert{
+			Type:            AlertHighImpactUnblock,
+			Severity:        severity,
+			Message:         fmt.Sprintf("Completing %s unblocks %d item(s), %d of them at P%d or higher", iss.ID, len(unblocks), len(urgent), maxPriority),
+			IssueID:         iss.ID,
+			Labels:          iss.Labels,
+			DetectedAt:      c.nowUTC(),
+			Details:         urgent,
+			UnblocksCount:   len(unblocks),
+			SuggestedAction: "Schedule this issue next; it releases high-priority downstream work",
+		})
+	}
+}
+
+// checkAbandonedClaim flags in_progress issues that carry an assignee but
+// have not been touched for longer than the in-progress stale threshold times
+// AbandonedClaimMultiplier. stale_issue already warns at the in-progress
+// threshold; this later, claim-specific signal says "release it".
+func (c *Calculator) checkAbandonedClaim(result *Result) {
+	if c.config.IsAlertDisabled(string(AlertAbandonedClaim)) || len(c.issues) == 0 {
+		return
+	}
+	now := c.nowUTC()
+	for _, iss := range sortedByID(c.issues) {
+		if iss.Status != model.StatusInProgress || strings.TrimSpace(iss.Assignee) == "" {
+			continue
+		}
+		lastActive := iss.UpdatedAt
+		if lastActive.IsZero() {
+			lastActive = iss.CreatedAt
+		}
+		if lastActive.IsZero() {
+			continue
+		}
+		warnDays, _, inProgressMult := c.config.GetStalenessThresholds(iss.Labels)
+		threshold := float64(warnDays)
+		if inProgressMult > 0 {
+			threshold *= inProgressMult
+		}
+		if c.config.AbandonedClaimMultiplier > 0 {
+			threshold *= c.config.AbandonedClaimMultiplier
+		}
+		days := now.Sub(lastActive).Hours() / 24.0
+		if days <= threshold {
+			continue
+		}
+		result.Alerts = append(result.Alerts, Alert{
+			Type:       AlertAbandonedClaim,
+			Severity:   SeverityWarning,
+			Message:    fmt.Sprintf("Claim on %s by %s idle for %.0f days", iss.ID, iss.Assignee, days),
+			IssueID:    iss.ID,
+			Labels:     iss.Labels,
+			DetectedAt: now,
+			Details: []string{
+				fmt.Sprintf("assignee=%s", iss.Assignee),
+				fmt.Sprintf("last_update=%s", lastActive.Format(time.RFC3339)),
+				fmt.Sprintf("threshold_days=%.0f", threshold),
+			},
+			SuggestedAction: "Ask the assignee for status, or release the claim so the issue returns to the ready queue",
+		})
+	}
+}
+
+// checkPotentialDuplicate reuses the analysis package's keyword Jaccard
+// detector (the same one behind --robot-suggest) and emits one info alert per
+// pair, capped at DuplicateMaxAlerts.
+func (c *Calculator) checkPotentialDuplicate(result *Result) {
+	if c.config.IsAlertDisabled(string(AlertPotentialDuplicate)) || len(c.issues) < 2 {
+		return
+	}
+	cfg := analysis.DefaultDuplicateConfig()
+	if c.config.DuplicateJaccardThreshold > 0 {
+		cfg.JaccardThreshold = c.config.DuplicateJaccardThreshold
+	}
+	maxAlerts := c.config.DuplicateMaxAlerts
+	if maxAlerts > 0 {
+		cfg.MaxSuggestions = maxAlerts
+	}
+	for i, suggestion := range analysis.DetectDuplicates(c.issues, cfg) {
+		if maxAlerts > 0 && i >= maxAlerts {
+			break
+		}
+		result.Alerts = append(result.Alerts, Alert{
+			Type:            AlertPotentialDuplicate,
+			Severity:        SeverityInfo,
+			Message:         suggestion.Summary,
+			IssueID:         suggestion.TargetBead,
+			RelatedIssueID:  suggestion.RelatedBead,
+			DetectedAt:      c.nowUTC(),
+			Details:         []string{suggestion.Reason},
+			SuggestedAction: "Compare the two issues; close one as a duplicate or link them with a related dependency",
+		})
+	}
+}
+
+// checkPriorityMismatch surfaces --robot-priority's recommendations whose
+// confidence reaches PriorityMismatchMinConfidence as warnings, so a stale
+// P3 that the graph says is load-bearing shows up without a separate command.
+func (c *Calculator) checkPriorityMismatch(result *Result) {
+	if c.config.IsAlertDisabled(string(AlertPriorityMismatch)) || len(c.issues) == 0 {
+		return
+	}
+	minConfidence := c.config.PriorityMismatchMinConfidence
+	if minConfidence <= 0 {
+		return
+	}
+	thresholds := analysis.DefaultThresholds()
+	if minConfidence > thresholds.MinConfidence {
+		thresholds.MinConfidence = minConfidence
+	}
+	issueMap := c.issueMap()
+	for _, rec := range c.analyzer().GenerateRecommendationsWithThresholds(thresholds) {
+		if rec.Confidence < minConfidence {
+			continue
+		}
+		result.Alerts = append(result.Alerts, Alert{
+			Type:            AlertPriorityMismatch,
+			Severity:        SeverityWarning,
+			Message:         fmt.Sprintf("%s is P%d but graph impact suggests P%d (confidence %.2f)", rec.IssueID, rec.CurrentPriority, rec.SuggestedPriority, rec.Confidence),
+			IssueID:         rec.IssueID,
+			Labels:          issueMap[rec.IssueID].Labels,
+			BaselineVal:     float64(rec.CurrentPriority),
+			CurrentVal:      float64(rec.SuggestedPriority),
+			Delta:           float64(rec.SuggestedPriority - rec.CurrentPriority),
+			DetectedAt:      c.nowUTC(),
+			Details:         rec.Reasoning,
+			SuggestedAction: fmt.Sprintf("Review with bv --robot-priority; if it holds, set the priority to P%d", rec.SuggestedPriority),
+		})
+	}
 }
