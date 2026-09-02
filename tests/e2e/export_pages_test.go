@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -219,10 +220,45 @@ func TestExportPages_HTMLStructure(t *testing.T) {
 		}
 	}
 
-	// Security headers (CSP)
+	// Security headers (CSP). The exported index must forbid inline scripts:
+	// every script is a same-origin file, so an injected <script> or on*=
+	// handler cannot run even if a rendering bug reintroduces an XSS sink.
 	if !strings.Contains(html, "Content-Security-Policy") {
 		t.Error("missing Content-Security-Policy meta tag")
 	}
+	scriptSrc := cspDirective(t, html, "script-src")
+	if strings.Contains(scriptSrc, "'unsafe-inline'") {
+		t.Errorf("script-src must not allow 'unsafe-inline': %q", scriptSrc)
+	}
+	if !strings.Contains(scriptSrc, "'wasm-unsafe-eval'") {
+		t.Errorf("script-src must allow 'wasm-unsafe-eval' for sql.js and bv_graph_bg.wasm: %q", scriptSrc)
+	}
+	for _, tag := range regexp.MustCompile(`(?is)<script\b[^>]*>`).FindAllString(html, -1) {
+		if !regexp.MustCompile(`(?i)\bsrc\s*=`).MatchString(tag) {
+			t.Errorf("exported index.html still contains an inline script block: %s", tag)
+		}
+	}
+	if m := regexp.MustCompile(`(?i)<[a-z][^>]*\son[a-z]+\s*=`).FindString(html); m != "" {
+		t.Errorf("exported index.html contains an inline event handler attribute: %s", m)
+	}
+}
+
+// cspDirective returns the value of one directive from the exported page's
+// Content-Security-Policy meta tag (the directives are separated by ';').
+func cspDirective(t *testing.T, html, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?is)http-equiv="Content-Security-Policy"\s+content="([^"]*)"`).FindStringSubmatch(html)
+	if m == nil {
+		t.Fatal("cannot locate the Content-Security-Policy meta content")
+	}
+	for _, directive := range strings.Split(m[1], ";") {
+		fields := strings.Fields(directive)
+		if len(fields) > 0 && fields[0] == name {
+			return strings.Join(fields[1:], " ")
+		}
+	}
+	t.Fatalf("CSP has no %s directive: %q", name, m[1])
+	return ""
 }
 
 func TestExportPages_IssueOverviewMetrics(t *testing.T) {
