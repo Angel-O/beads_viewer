@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -60,7 +62,7 @@ type DependencyMatch struct {
 // DetectMissingDependencies analyzes issues for potential missing dependencies
 // Optimized with inverted index to avoid O(N^2) comparisons.
 func DetectMissingDependencies(issues []model.Issue, config DependencySuggestionConfig) []Suggestion {
-	if len(issues) < 2 {
+	if len(issues) < 2 || config.MaxSuggestions <= 0 {
 		return nil
 	}
 
@@ -178,7 +180,7 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 			desc2Lower := strings.ToLower(issue2.Description)
 
 			// ID mentioned
-			if strings.Contains(desc2Lower, id1Lower) || strings.Contains(desc1Lower, id2Lower) {
+			if containsExactIssueID(desc2Lower, id1Lower) || containsExactIssueID(desc1Lower, id2Lower) {
 				baseConf += config.ExactMatchBonus * 2
 			}
 
@@ -243,8 +245,17 @@ func DetectMissingDependencies(issues []model.Issue, config DependencySuggestion
 			match.Reason,
 			match.Confidence,
 		).WithRelatedBead(match.To).
-			WithAction(fmt.Sprintf("br dep add %s %s", match.From, match.To)).
 			WithMetadata("shared_keywords", match.SharedKeywords)
+		fromArg, fromOK := quoteBeadsCommandID(match.From)
+		toArg, toOK := quoteBeadsCommandID(match.To)
+		if fromOK && toOK {
+			if canAdd, cyclePath, warning := CheckDependencyAddition(issues, match.From, match.To); canAdd {
+				sug = sug.WithAction(fmt.Sprintf("br dep add %s %s", fromArg, toArg))
+			} else {
+				sug = sug.WithMetadata("action_unavailable_reason", warning).
+					WithMetadata("cycle_path", cyclePath)
+			}
+		}
 
 		if len(match.SharedLabels) > 0 {
 			sug = sug.WithMetadata("shared_labels", match.SharedLabels)
@@ -265,6 +276,38 @@ func titleContainsKeyword(titleLower string, keywords []string) bool {
 	return false
 }
 
+// containsExactIssueID reports a case-normalized ID token, not a raw prefix.
+// A substring check treats bv-42 as an exact mention inside bv-420 and can turn
+// ordinary keyword overlap into a high-confidence dependency false positive.
+func containsExactIssueID(text, id string) bool {
+	if id == "" {
+		return false
+	}
+	for searchFrom := 0; searchFrom <= len(text)-len(id); {
+		relative := strings.Index(text[searchFrom:], id)
+		if relative < 0 {
+			return false
+		}
+		start := searchFrom + relative
+		end := start + len(id)
+		beforeIsID := false
+		if start > 0 {
+			r, _ := utf8.DecodeLastRuneInString(text[:start])
+			beforeIsID = isIssueIDRune(r)
+		}
+		afterIsID := false
+		if end < len(text) {
+			r, _ := utf8.DecodeRuneInString(text[end:])
+			afterIsID = isIssueIDRune(r)
+		}
+		if !beforeIsID && !afterIsID {
+			return true
+		}
+		searchFrom = start + 1
+	}
+	return false
+}
+
 func dependencyPrerequisiteLess(a, b *model.Issue) bool {
 	if !a.CreatedAt.Equal(b.CreatedAt) {
 		return a.CreatedAt.Before(b.CreatedAt)
@@ -273,6 +316,12 @@ func dependencyPrerequisiteLess(a, b *model.Issue) bool {
 		return a.Priority < b.Priority
 	}
 	return a.ID < b.ID
+}
+
+// isIssueIDRune reports whether r can be part of an issue ID token, which is
+// what containsExactIssueID uses to decide that a match is a whole ID.
+func isIssueIDRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '-' || r == '_' || r == '.'
 }
 
 // findSharedKeys returns keys present in both maps
