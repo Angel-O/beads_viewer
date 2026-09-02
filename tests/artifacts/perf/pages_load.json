@@ -1,0 +1,16 @@
+{
+  "bytes": {
+    "beads_sqlite3": 3292160,
+    "bundle_total": 9719528,
+    "graph_layout_json": 116153,
+    "history_json": 77822,
+    "index_html": 307145,
+    "triage_json": 23423,
+    "vendor_total": 5577759
+  },
+  "edges": 746,
+  "first_render_ms": null,
+  "generated_at": "2026-09-02T14:22:54Z",
+  "issues": 611,
+  "note": "first_render_ms is measured only when BV_HEADLESS_BROWSER names a browser; absent here"
+}

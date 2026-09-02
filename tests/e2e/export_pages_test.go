@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -1908,5 +1909,132 @@ func TestExportPages_GraphLayoutFetch(t *testing.T) {
 	}
 	if foundPositionHandling < 2 {
 		t.Errorf("graph.js missing position handling markers (found %d/3)", foundPositionHandling)
+	}
+}
+
+// TestExportPages_HybridWasmHookRunsInBuiltBinary (I4): BV_BUILD_HYBRID_WASM
+// must be honoured by the released binary, which ships embedded viewer
+// assets. Without wasm-pack on PATH the export has to fail loudly instead of
+// silently skipping the build; with wasm-pack present the hook would build,
+// so the test skips rather than spend minutes compiling Rust.
+func TestExportPages_HybridWasmHookRunsInBuiltBinary(t *testing.T) {
+	if _, err := exec.LookPath("wasm-pack"); err == nil {
+		t.Skip("wasm-pack is installed; the hook would run a real build")
+	}
+	bv := buildBvBinary(t)
+	env := t.TempDir()
+	writeBeads(t, env, `{"id":"W-1","title":"one","status":"open","priority":1,"issue_type":"task"}`)
+	out := filepath.Join(env, "bundle")
+
+	cmd := exec.Command(bv, "--export-pages", out)
+	cmd.Dir = env
+	cmd.Env = append(os.Environ(), "BV_BUILD_HYBRID_WASM=1")
+	combined, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("export should fail when the hybrid build was requested but wasm-pack is missing:\n%s", combined)
+	}
+	if !strings.Contains(string(combined), "wasm-pack") {
+		t.Fatalf("failure should name wasm-pack:\n%s", combined)
+	}
+
+	// Without the flag the same export succeeds and ships no wasm/ directory
+	// unless the assets carried one.
+	cmd = exec.Command(bv, "--export-pages", out)
+	cmd.Dir = env
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("plain export failed: %v\n%s", err, combined)
+	}
+	if _, err := os.Stat(filepath.Join(out, "index.html")); err != nil {
+		t.Fatalf("bundle missing index.html: %v", err)
+	}
+}
+
+// TestExportPages_RecordsLoadSizes (I4) exports this repository's dashboard
+// and records what a viewer has to download before first render into
+// tests/artifacts/perf/pages_load.json, so the README's bundle-size claims
+// come from a measurement that is re-taken on every e2e run. Time-to-first-
+// render needs a browser and is only measured when BV_HEADLESS_BROWSER names
+// one; without it the JSON says so instead of inventing a number.
+func TestExportPages_RecordsLoadSizes(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".beads", "issues.jsonl")); err != nil {
+		t.Skip("repository tracker not present")
+	}
+	bv := buildBvBinary(t)
+	out := filepath.Join(t.TempDir(), "bundle")
+	cmd := exec.Command(bv, "--export-pages", out)
+	cmd.Dir = repo
+	if combined, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("export failed: %v\n%s", err, combined)
+	}
+
+	size := func(rel string) int64 {
+		info, err := os.Stat(filepath.Join(out, rel))
+		if err != nil {
+			t.Fatalf("bundle file %s: %v", rel, err)
+		}
+		return info.Size()
+	}
+	var total, vendor int64
+	if err := filepath.Walk(out, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		total += info.Size()
+		if strings.Contains(path, string(filepath.Separator)+"vendor"+string(filepath.Separator)) {
+			vendor += info.Size()
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	layoutBytes, err := os.ReadFile(filepath.Join(out, "data", "graph_layout.json"))
+	if err != nil {
+		t.Fatalf("graph_layout.json: %v", err)
+	}
+	var layout struct {
+		NodeCount int `json:"node_count"`
+		EdgeCount int `json:"edge_count"`
+	}
+	if err := json.Unmarshal(layoutBytes, &layout); err != nil {
+		t.Fatalf("graph_layout.json decode: %v", err)
+	}
+
+	record := map[string]any{
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"issues":       layout.NodeCount,
+		"edges":        layout.EdgeCount,
+		"bytes": map[string]int64{
+			"index_html":        size("index.html"),
+			"beads_sqlite3":     size("beads.sqlite3"),
+			"graph_layout_json": int64(len(layoutBytes)),
+			"triage_json":       size(filepath.Join("data", "triage.json")),
+			"history_json":      size(filepath.Join("data", "history.json")),
+			"vendor_total":      vendor,
+			"bundle_total":      total,
+		},
+		"first_render_ms": nil,
+		"note":            "first_render_ms is measured only when BV_HEADLESS_BROWSER names a browser; absent here",
+	}
+	if browser := os.Getenv("BV_HEADLESS_BROWSER"); browser != "" {
+		record["note"] = "BV_HEADLESS_BROWSER is set but timing is not implemented yet; sizes only"
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perfDir := filepath.Join(repo, "tests", "artifacts", "perf")
+	if err := os.MkdirAll(perfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(perfDir, "pages_load.json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("pages bundle for %d issues / %d edges: %s", layout.NodeCount, layout.EdgeCount, data)
+	if layout.NodeCount == 0 || size("beads.sqlite3") == 0 {
+		t.Fatalf("bundle should carry the repository's issues")
 	}
 }
