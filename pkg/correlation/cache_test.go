@@ -999,3 +999,48 @@ func TestHistoryCache_RemoveEntryOrdering(t *testing.T) {
 		t.Errorf("order after invalidate = %d, want 0", len(cache.order))
 	}
 }
+
+// TestCachedCorrelator_FeedbackFingerprintChangesCacheKey guards the C4 cache
+// contract: the git-walk artifact caches ignore feedback (it is applied at
+// assembly), but the in-memory report cache must key on the store so a fresh
+// decision is never answered with a pre-feedback report.
+func TestCachedCorrelator_FeedbackFingerprintChangesCacheKey(t *testing.T) {
+	repo := initTempGitRepo(t)
+	beads := []BeadInfo{{ID: "bv-1", Title: "one", Status: "open"}}
+	opts := CorrelatorOptions{Limit: 10}
+
+	c := NewCachedCorrelator(repo)
+	before, err := c.buildKey(beads, opts)
+	if err != nil {
+		t.Fatalf("buildKey without store: %v", err)
+	}
+	if before.Feedback != "" {
+		t.Fatalf("no store attached: key.Feedback should be empty, got %q", before.Feedback)
+	}
+
+	store := NewFeedbackStore(filepath.Join(repo, ".beads"))
+	if err := store.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c.WithFeedbackStore(store)
+	empty, err := c.buildKey(beads, opts)
+	if err != nil {
+		t.Fatalf("buildKey with empty store: %v", err)
+	}
+	if err := store.Reject("abc123", "bv-1", "tester", 0.8, ""); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	after, err := c.buildKey(beads, opts)
+	if err != nil {
+		t.Fatalf("buildKey after reject: %v", err)
+	}
+	if after.Feedback == "" || after.Feedback == empty.Feedback {
+		t.Fatalf("a new decision must change the key fingerprint: before=%q after=%q", empty.Feedback, after.Feedback)
+	}
+	if after.String() == empty.String() {
+		t.Fatalf("cache key string ignores feedback: %q", after.String())
+	}
+	if after.HeadSHA != before.HeadSHA || after.BeadsHash != before.BeadsHash || after.Options != before.Options {
+		t.Fatalf("feedback must not disturb the other key components: before=%+v after=%+v", before, after)
+	}
+}

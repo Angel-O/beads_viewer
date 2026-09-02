@@ -1,6 +1,7 @@
 package correlation
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -407,5 +408,87 @@ func TestDescribeGitRange_Combined(t *testing.T) {
 
 	if result != "since 2024-01-01, until 2024-12-31, limit 100 commits" {
 		t.Errorf("unexpected result: %s", result)
+	}
+}
+
+// TestAssembleReport_AppliesFeedback proves the feedback loop changes report
+// output (C4): a rejected (commit, bead) pair disappears from the bead's
+// commits and the commit index, a confirmed pair is pinned to confidence 1.0,
+// untouched pairs and other beads are unchanged, and the cached artifact the
+// report was assembled from is never mutated.
+func TestAssembleReport_AppliesFeedback(t *testing.T) {
+	store := NewFeedbackStore(t.TempDir())
+	if err := store.Load(); err != nil {
+		t.Fatalf("load empty store: %v", err)
+	}
+	if err := store.Reject("aaa", "bv-9", "tester", 0.9, "unrelated refactor"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if err := store.Confirm("bbb", "bv-9", "tester", 0.5, ""); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	// Feedback about a pair the report does not contain must be ignored, not
+	// invented into the output.
+	if err := store.Confirm("zzz", "bv-9", "tester", 0.5, ""); err != nil {
+		t.Fatalf("confirm stray: %v", err)
+	}
+
+	art := &historyArtifact{
+		Commits: []CorrelatedCommit{
+			{SHA: "aaa", BeadID: "bv-9", Method: "explicit", Confidence: 0.9, Author: "a"},
+			{SHA: "bbb", BeadID: "bv-9", Method: "temporal", Confidence: 0.5, Author: "b"},
+			{SHA: "ccc", BeadID: "bv-9", Method: "cocommit", Confidence: 0.7, Author: "c"},
+			{SHA: "aaa", BeadID: "bv-10", Method: "explicit", Confidence: 0.9, Author: "a"},
+		},
+	}
+	beads := []BeadInfo{{ID: "bv-9", Title: "nine", Status: "open"}, {ID: "bv-10", Title: "ten", Status: "open"}}
+
+	withStore := (&Correlator{}).WithFeedbackStore(store)
+	report := withStore.assembleReport(beads, CorrelatorOptions{}, art)
+
+	nine := report.Histories["bv-9"]
+	if len(nine.Commits) != 2 {
+		t.Fatalf("bv-9 commits after feedback = %d (%+v); want 2 (aaa rejected)", len(nine.Commits), nine.Commits)
+	}
+	for _, c := range nine.Commits {
+		switch c.SHA {
+		case "aaa":
+			t.Fatalf("rejected commit aaa still listed for bv-9: %+v", c)
+		case "bbb":
+			if c.Confidence != 1.0 || !c.Confirmed {
+				t.Fatalf("confirmed commit bbb: confidence=%v confirmed=%v; want 1.0/true", c.Confidence, c.Confirmed)
+			}
+			if !strings.Contains(c.Reason, "confirmed by feedback (tester)") {
+				t.Fatalf("confirmed commit reason should say so: %q", c.Reason)
+			}
+		case "ccc":
+			if c.Confidence != 0.7 || c.Confirmed {
+				t.Fatalf("untouched commit ccc changed: %+v", c)
+			}
+		}
+	}
+	if beadsForAAA := report.CommitIndex["aaa"]; len(beadsForAAA) != 1 || beadsForAAA[0] != "bv-10" {
+		t.Fatalf("commit_index[aaa]=%v; want only bv-10 (bv-9 rejected, bv-10 untouched)", beadsForAAA)
+	}
+	if ten := report.Histories["bv-10"]; len(ten.Commits) != 1 || ten.Commits[0].Confidence != 0.9 {
+		t.Fatalf("bv-10 must be unaffected by bv-9 feedback: %+v", ten.Commits)
+	}
+	if fa := report.Stats.FeedbackApplied; fa == nil || fa.Confirmed != 1 || fa.Rejected != 1 || fa.Ignored != 0 {
+		t.Fatalf("stats.feedback_applied=%+v; want confirmed=1 rejected=1 ignored=0", fa)
+	}
+
+	// The artifact (what the disk/HEAD caches hold) is untouched, so feedback
+	// never needs a cache invalidation of the git walk.
+	if len(art.Commits) != 4 || art.Commits[0].Confidence != 0.9 || art.Commits[1].Confidence != 0.5 {
+		t.Fatalf("assembleReport mutated the artifact: %+v", art.Commits)
+	}
+
+	// Without a store nothing is applied and the payload says so (nil).
+	plain := (&Correlator{}).assembleReport(beads, CorrelatorOptions{}, art)
+	if plain.Stats.FeedbackApplied != nil {
+		t.Fatalf("no store attached: feedback_applied should be nil, got %+v", plain.Stats.FeedbackApplied)
+	}
+	if len(plain.Histories["bv-9"].Commits) != 3 {
+		t.Fatalf("no store attached: bv-9 should keep all 3 commits, got %d", len(plain.Histories["bv-9"].Commits))
 	}
 }

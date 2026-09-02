@@ -250,6 +250,10 @@ type CorrelationExplanation struct {
 	TotalWeight    int                 `json:"total_weight"`   // Sum of signal weights
 	Summary        string              `json:"summary"`        // One-line summary
 	Recommendation string              `json:"recommendation"` // Suggested action
+	// Feedback is the stored confirm/reject/ignore decision for this pair, if
+	// any. The explanation always describes the raw strategy score so a
+	// rejected pair can still be explained (and the rejection reconsidered).
+	Feedback *CorrelationFeedback `json:"feedback,omitempty"`
 }
 
 // FeedbackType categorizes user/agent feedback on correlations

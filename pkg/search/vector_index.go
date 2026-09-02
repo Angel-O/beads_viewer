@@ -18,13 +18,13 @@ import (
 )
 
 const (
-	vectorIndexMagic         = "BVVI"
-	vectorIndexVersion       = uint16(1)
-	vectorIndexHeaderSize    = int64(16)
-	maxVectorIndexDimension  = uint32(1 << 20) // 4 MiB per float32 vector
-	maxVectorIndexEntries    = uint32(1 << 20)
-	maxVectorIndexFileSize   = int64(512 << 20)
-	minVectorEntryOverhead   = int64(2 + 1 + sha256.Size) // id length, non-empty id, content hash
+	vectorIndexMagic        = "BVVI"
+	vectorIndexVersion      = uint16(1)
+	vectorIndexHeaderSize   = int64(16)
+	maxVectorIndexDimension = uint32(1 << 20) // 4 MiB per float32 vector
+	maxVectorIndexEntries   = uint32(1 << 20)
+	maxVectorIndexFileSize  = int64(512 << 20)
+	minVectorEntryOverhead  = int64(2 + 1 + sha256.Size) // id length, non-empty id, content hash
 )
 
 type ContentHash [32]byte

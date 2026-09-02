@@ -272,21 +272,16 @@ func TestPendingFeatureStatus(t *testing.T) {
 	cfg := DefaultAdvancedInsightsConfig()
 	insights := an.GenerateAdvancedInsights(cfg)
 
-	// Features that are still pending (awaiting implementation)
-	pendingFeatures := []struct {
-		name   string
-		status FeatureStatus
-	}{
-		{"ParallelGain", insights.ParallelGain.Status},
+	// No advanced insight ships as a placeholder any more: parallel gain
+	// (bv-129) is computed, so every feature reports an available state.
+	if insights.ParallelGain == nil {
+		t.Fatal("ParallelGain: expected a result, got nil")
 	}
-
-	for _, f := range pendingFeatures {
-		if f.status.State != "pending" {
-			t.Errorf("%s: expected pending state, got %s", f.name, f.status.State)
-		}
-		if f.status.Reason == "" {
-			t.Errorf("%s: expected reason for pending state", f.name)
-		}
+	if insights.ParallelGain.Status.State == "pending" {
+		t.Errorf("ParallelGain: must not ship as a pending placeholder, got %+v", insights.ParallelGain.Status)
+	}
+	if s := insights.ParallelGain.Status.State; s != "computed" && s != "available" {
+		t.Errorf("ParallelGain: expected a computed result, got %s (%s)", s, insights.ParallelGain.Status.Reason)
 	}
 
 	// CycleBreak should be available

@@ -53,7 +53,7 @@ func sqliteReadOnlyDSN(path string) string {
 	// borrowed connection with db.Exec does not configure the pool. modernc's
 	// repeated _pragma DSN parameter applies each setting to every connection.
 	query.Add("_pragma", "busy_timeout(5000)")
-	query.Add("_pragma", "cache_size(-64000)") // 64MB cache
+	query.Add("_pragma", "cache_size(-64000)")   // 64MB cache
 	query.Add("_pragma", "mmap_size(268435456)") // 256MB mmap
 	query.Add("_pragma", "temp_store(MEMORY)")
 	query.Add("_pragma", "query_only(1)")
