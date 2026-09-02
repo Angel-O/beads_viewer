@@ -245,11 +245,12 @@ type OrphanWindow struct {
 
 // OrphanStats provides statistics about orphan commits.
 type OrphanStats struct {
-	TotalCommits   int          `json:"total_commits"`      // All code commits in period
-	OrphanCommits  int          `json:"orphan_commits"`     // Commits with no bead
-	CorrelatedCmts int          `json:"correlated_commits"` // Commits with at least one bead
-	OrphanRatio    float64      `json:"orphan_ratio"`       // orphan / total
-	Window         OrphanWindow `json:"window"`             // Commit window scanned
+	TotalCommits     int          `json:"total_commits"`      // All code commits in period
+	OrphanCommits    int          `json:"orphan_commits"`     // Commits with no bead
+	CorrelatedCmts   int          `json:"correlated_commits"` // Commits with at least one bead
+	BeadsOnlyCommits int          `json:"beads_only_commits"` // Window commits that changed nothing outside .beads/ (skipped)
+	OrphanRatio      float64      `json:"orphan_ratio"`       // orphan / total
+	Window           OrphanWindow `json:"window"`             // Commit window scanned
 }
 
 // FindOrphanCommits finds commits that don't correlate to any bead. It scans
@@ -269,8 +270,10 @@ func (rl *ReverseLookup) FindOrphanCommits(opts ExtractOptions) ([]OrphanCommit,
 	var orphans []OrphanCommit
 	total := 0
 	correlated := 0
+	beadsOnly := 0
 	for _, wc := range walk {
 		if wc.beadsOnly() {
+			beadsOnly++
 			continue
 		}
 		total++
@@ -296,9 +299,10 @@ func (rl *ReverseLookup) FindOrphanCommits(opts ExtractOptions) ([]OrphanCommit,
 	}
 
 	stats := &OrphanStats{
-		TotalCommits:   total,
-		OrphanCommits:  len(orphans),
-		CorrelatedCmts: correlated,
+		TotalCommits:     total,
+		OrphanCommits:    len(orphans),
+		CorrelatedCmts:   correlated,
+		BeadsOnlyCommits: beadsOnly,
 		Window: OrphanWindow{
 			Commits: len(walk),
 			Limit:   opts.Limit,

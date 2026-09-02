@@ -94,7 +94,8 @@ type OrphanReport struct {
 // suspicion_score and orphan_ratio without consulting the source.
 var orphanUsageHints = []string{
 	"window: the non-merge commits scanned; source=history_index means the same bounded walk the correlation index (co_committed, explicit_id, temporal_author) covered, so an orphan is a code commit in that window no strategy linked",
-	"stats.total_commits counts window commits that changed something outside .beads/; beads-only bookkeeping commits are neither orphans nor correlated",
+	"stats.total_commits counts window commits that changed something outside .beads/; stats.beads_only_commits are the bookkeeping commits (e.g. `br sync`) skipped as neither orphans nor correlated, so window.commits = total_commits + beads_only_commits",
+	"a high orphan_ratio usually means code and tracker updates land in separate commits; only explicit bead ids in messages, temporal author overlap, or confirm feedback can link those code commits",
 	"suspicion_score (0-100, capped) sums signal weights: timing=30 per bead whose claimed→closed window contains the commit, files=25 per (file, bead) pair where a linked bead touched the same path, message<=35 for bead-like patterns in the subject, author=15 per bead the same author worked on within +/-7 days",
 	"probable_beads.confidence adds 35 when the message names the bead id; the top 3 beads are kept; candidates below --orphans-min-score are dropped",
 	"link a candidate with --robot-confirm-correlation SHA:BEAD (or exclude a false link with --robot-reject-correlation); both shape later history reports",
@@ -102,12 +103,13 @@ var orphanUsageHints = []string{
 
 // OrphanReportStats provides aggregate statistics.
 type OrphanReportStats struct {
-	TotalCommits    int     `json:"total_commits"`
-	CorrelatedCount int     `json:"correlated_count"`
-	OrphanCount     int     `json:"orphan_count"`
-	CandidateCount  int     `json:"candidate_count"` // Orphans with probable beads
-	OrphanRatio     float64 `json:"orphan_ratio"`
-	AvgSuspicion    float64 `json:"avg_suspicion_score"`
+	TotalCommits     int     `json:"total_commits"`
+	CorrelatedCount  int     `json:"correlated_count"`
+	OrphanCount      int     `json:"orphan_count"`
+	BeadsOnlyCommits int     `json:"beads_only_commits"` // Window commits skipped because they changed nothing outside .beads/
+	CandidateCount   int     `json:"candidate_count"`    // Orphans with probable beads
+	OrphanRatio      float64 `json:"orphan_ratio"`
+	AvgSuspicion     float64 `json:"avg_suspicion_score"`
 }
 
 // OrphanDetector finds commits that probably should be linked to beads.
@@ -260,11 +262,12 @@ func (od *OrphanDetector) DetectOrphans(opts ExtractOptions) (*OrphanReport, err
 
 	// Calculate stats
 	report.Stats = OrphanReportStats{
-		TotalCommits:    stats.TotalCommits,
-		CorrelatedCount: stats.CorrelatedCmts,
-		OrphanCount:     stats.OrphanCommits,
-		CandidateCount:  candidateCount,
-		OrphanRatio:     stats.OrphanRatio,
+		TotalCommits:     stats.TotalCommits,
+		CorrelatedCount:  stats.CorrelatedCmts,
+		OrphanCount:      stats.OrphanCommits,
+		BeadsOnlyCommits: stats.BeadsOnlyCommits,
+		CandidateCount:   candidateCount,
+		OrphanRatio:      stats.OrphanRatio,
 	}
 	if len(report.Candidates) > 0 {
 		report.Stats.AvgSuspicion = float64(totalSuspicion) / float64(len(report.Candidates))

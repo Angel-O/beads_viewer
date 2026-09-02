@@ -2914,15 +2914,19 @@ func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	output := struct {
 		RobotEnvelope
 		GitRange   string                        `json:"git_range"`
+		Window     correlation.OrphanWindow      `json:"window"`
 		Stats      correlation.OrphanReportStats `json:"stats"`
 		Candidates []correlation.OrphanCandidate `json:"candidates"`
 		ByBead     map[string][]string           `json:"by_bead,omitempty"`
+		UsageHints []string                      `json:"usage_hints"`
 	}{
 		RobotEnvelope: ctx.EnvelopeWithHash(orphanReport.DataHash),
 		GitRange:      orphanReport.GitRange,
+		Window:        orphanReport.Window,
 		Stats:         orphanReport.Stats,
 		Candidates:    orphanReport.Candidates,
 		ByBead:        orphanReport.ByBead,
+		UsageHints:    orphanReport.UsageHints,
 	}
 	if err := ctx.EncoderOrDefault().Encode(output); err != nil {
 		return fmt.Errorf("encoding orphans: %w", err)
