@@ -569,7 +569,7 @@ bv --robot-next          # Minimal: just the single top pick + claim command
 | Command | Returns |
 |---------|---------|
 | `--robot-burndown <sprint>` | Sprint burndown, scope changes, at-risk items |
-| `--robot-forecast <id\|all>` | ETA predictions with dependency-aware scheduling |
+| `--robot-forecast <id\|all>` | ETA estimates from a duration heuristic and 30-day closure velocity (not a scheduler) |
 | `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
 | `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions |
 | `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
@@ -673,6 +673,16 @@ rch queue                     # See active/waiting builds
 ```
 
 If rch or its workers are unavailable, it fails open — builds run locally as normal.
+
+### Trust boundary
+
+RCH is a remote build service, so treat every offloaded command as leaving this machine:
+
+- **What is shipped:** the working tree of the current project (source, vendor/, test fixtures, `.beads/`), the command line, and an allowlisted subset of environment variables needed by the Go toolchain. Workers cache Go modules and build outputs per project (`.rch-go/` locally mirrors that cache and is git-ignored).
+- **What must never be shipped:** secrets and tokens (`GITHUB_TOKEN`, `GH_TOKEN`, cloud credentials, `~/.netrc`, `.git/config` credential helpers), private keys, or a tree that contains customer data. Do not export such values into the shell before running a build, and do not commit them into the tree. If a build needs a credential (private module proxy, signed release), run it locally or get explicit approval first.
+- **Who runs the workers:** the 8 Contabo VPS hosts are operated by the project maintainer; they are not a shared public service. Assume anything sent there can be read by whoever administers those hosts and may be retained in caches until the next cleanup. Private or credential-bearing builds therefore require the maintainer's explicit approval per run.
+- **Fallback:** when RCH or its workers are unreachable it fails open to a local build, so a green build never proves the remote path was used; check `rch status` if that matters.
+- **Docs:** `rch doctor`, `rch --help`, and the RCH repository README describe the env allowlist and the cache lifecycle in detail.
 
 **Note for Codex/GPT-5.2:** Codex does not have the automatic PreToolUse hook, but you can (and should) still manually offload compute-intensive compilation commands using `rch exec -- <command>`. This avoids local resource contention when multiple agents are building simultaneously.
 
@@ -782,8 +792,12 @@ bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/
 bv --robot-triage        # THE MEGA-COMMAND: start here
 bv --robot-next          # Minimal: just the single top pick + claim command
 
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
+# TOON output (--format toon): a compact tabular encoding. Measured on this
+# repository it is 7% smaller than JSON for --robot-graph but 9-15% LARGER for
+# nested payloads (--robot-triage, --robot-plan, --robot-insights,
+# --robot-label-health); use --stats to see both sizes before adopting it.
+bv --robot-graph --format toon
+bv --robot-triage --format toon --stats
 ```
 
 Before claiming, verify current state with the selected tracker: `br show <id> --json`/`br ready --json` or `bd show <id> --json`/`bd ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.

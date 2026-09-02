@@ -54,27 +54,32 @@ scoop install dicklesworthstone/bv
 
 ### Alternative: Direct Download
 
-Download the latest release archive for your platform:
-- [Linux x86_64](https://github.com/Dicklesworthstone/beads_viewer/releases/latest/download/bv_linux_amd64.tar.gz)
-- [Linux ARM64](https://github.com/Dicklesworthstone/beads_viewer/releases/latest/download/bv_linux_arm64.tar.gz)
-- [macOS Intel](https://github.com/Dicklesworthstone/beads_viewer/releases/latest/download/bv_darwin_amd64.tar.gz)
-- [macOS ARM](https://github.com/Dicklesworthstone/beads_viewer/releases/latest/download/bv_darwin_arm64.tar.gz)
-- [Windows](https://github.com/Dicklesworthstone/beads_viewer/releases/latest/download/bv_windows_amd64.zip)
+Pick the archive for your platform from the [latest release page](https://github.com/Dicklesworthstone/beads_viewer/releases/latest). Archives are named `bv_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows), for example `bv_0.23.0_linux_amd64.tar.gz`, `bv_0.23.0_darwin_arm64.tar.gz`, `bv_0.23.0_windows_amd64.zip`, so a downloaded file always says which release it came from. Every release also ships `checksums.txt`; verify before extracting:
 
-These links target the moving `latest` release aliases.
+```bash
+sha256sum -c --ignore-missing checksums.txt
+```
+
+Releases up to v0.22.0 used unversioned names (`bv_linux_amd64.tar.gz`); `bv --update` and `install.sh` accept both forms.
 
 ### Alternative: Install Script
 
 **Linux/macOS:**
+Prefer Homebrew, Scoop, or a checksum-verified release archive above. If you do pipe the script, pin it to a commit you have read instead of the moving `main` branch:
+
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)" | bash
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.sh
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.sh" | bash
 ```
+
+> **Warning:** `curl ... | bash` runs whatever the URL serves at that moment. The pinned form above cannot change under you; the `main` form can. `install.sh` downloads the release archive for your platform, verifies it against the release `checksums.txt`, and refuses to install on a mismatch.
 
 **Windows (PowerShell):**
 ```powershell
-irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.ps1" | iex
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.ps1
+irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.ps1" | iex
 ```
-> **Note:** Windows requires Go 1.25+ ([download](https://go.dev/dl/)). For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
+> **Note:** `install.ps1` currently builds `bv` from source with `go install`, so Windows needs Go 1.25+ ([download](https://go.dev/dl/)); Scoop installs the prebuilt release archive and needs no Go toolchain. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
 
 ---
 
@@ -105,8 +110,10 @@ bv --robot-triage
 # 2) Minimal mode: just the top pick + claim command
 bv --robot-next
 
-# 3) Token-optimized output (TOON)
-bv --robot-triage --format toon
+# 3) TOON output: smaller only for wide tabular payloads (--robot-graph); larger
+#    for nested ones such as --robot-triage. Check with --stats before adopting.
+bv --robot-graph --format toon
+bv --robot-triage --format toon --stats
 export BV_OUTPUT_FORMAT=toon
 
 # 4) Full robot help
@@ -170,14 +177,26 @@ Configure pre- and post-export hooks in `.bv/hooks.yaml` to run validations, not
 
 ## 🤖 Ready-made Blurb to Drop Into Your AGENTS.md or CLAUDE.md Files
 
-```
+The text below is exactly what `bv --agents-add` (and the TUI's AGENTS.md prompt) installs (`pkg/agents/blurb.go`, `AgentBlurb`); a docs parity test keeps this copy identical to it.
+
+````markdown
+<!-- bv-agent-instructions-v4 -->
+
+---
+
+## Beads Workflow Integration
+
+This project uses a Beads tracker—either the Go `bd` CLI or the Rust `br` CLI—for issue tracking, plus [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/`. `bv` auto-discovers supported JSONL exports, including `.beads/issues.jsonl` and legacy `.beads/beads.jsonl`.
+
+**Choose the tracker CLI from this repository's instructions and configuration.** Use `bd` commands in a Go Beads workspace and `br` commands in a beads_rust workspace. Do not run both trackers against the same workspace or infer the tracker solely from the JSONL filename.
+
 ### Using bv as an AI sidecar
 
-bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` and Dolt-backed `bd` workspaces, with `.beads/beads.jsonl` supported for legacy workspaces). Instead of parsing JSONL or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
+bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
 
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail).
+**Scope boundary:** bv handles *what to work on* (triage, priority, planning). The selected tracker CLI (`bd` or `br`) handles creating, claiming, modifying, and closing beads.
 
-**⚠️ CRITICAL: Use ONLY `--robot-*` flags. Bare `bv` launches an interactive TUI that blocks your session.**
+**CRITICAL: Use ONLY --robot-* flags. Bare bv launches an interactive TUI that blocks your session.**
 
 #### The Workflow: Start With Triage
 
@@ -189,130 +208,92 @@ bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in c
 - `project_health`: status/type/priority distributions, graph metrics
 - `commands`: copy-paste shell commands for next steps
 
-**Count semantics (strict since #165):**
-- `quick_ref.open_count` / `project_health.counts.open` — issues with status exactly `open`; always equals `counts.by_status.open`
-- `quick_ref.blocked_count` / `counts.blocked` — issues with status exactly `blocked`; always equals `counts.by_status.blocked`
-- `quick_ref.in_progress_count` — status exactly `in_progress`
-- `counts.closed` — closed-like issues (`closed` + `tombstone`)
-- `quick_ref.not_closed_count` / `counts.not_closed` — every non-closed issue (`open`+`in_progress`+`blocked`+`deferred`); this is the pre-#165 meaning of `open_count`
-- `quick_ref.actionable_count` / `counts.actionable` — non-closed issues with no open blocking dependencies (ready to work now)
-- `quick_ref.not_actionable_count` / `counts.dependency_blocked` — non-closed issues blocked by open dependencies regardless of status; this is the pre-#165 meaning of `blocked_count`
-- Partition invariant: `not_closed == actionable + not_actionable` (every non-closed issue is exactly one of the two)
-
-**Liveness (#166):** the git-history prologue of `--robot-triage` is bounded (default 10s; tune via `--robot-history-timeout-ms <ms>` or `BV_ROBOT_HISTORY_TIMEOUT_MS`, `0` = unbounded). On timeout the in-flight git subprocess is killed and triage proceeds without history; `meta.history_status` reports `ok`, `error`, or `timeout` (omitted when history was not attempted).
-
+```bash
 bv --robot-triage        # THE MEGA-COMMAND: start here
 bv --robot-next          # Minimal: just the single top pick + claim command
 
-# Compact triage (#183): only decision-relevant fields — id, title, status,
-# assignee, blocked_by, unblocks, score — plus quick_ref/quick_wins/blockers.
-# Cuts payload size by ~80% versus the full output.
-bv --robot-triage --brief
+# TOON output (--format toon): a compact tabular encoding. Measured on this
+# repository it is 7% smaller than JSON for --robot-graph but 9-15% LARGER for
+# nested payloads (--robot-triage, --robot-plan, --robot-insights,
+# --robot-label-health); use --stats to see both sizes before adopting it.
+bv --robot-graph --format toon
+bv --robot-triage --format toon --stats
+```
 
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
-export BV_OUTPUT_FORMAT=toon
-bv --robot-next
+Before claiming, verify current state with the selected tracker: `br show <id> --json`/`br ready --json` or `bd show <id> --json`/`bd ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
 
-Before claiming, verify the current bead state with the configured tracker:
-`br show <id> --json` / `br ready --json`, or `bd show <id> --json` /
-`bd ready --json`. `recommendations` can include graph-important blocked or
-assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields
-represent claimable work.
+#### Other bv Commands
 
-#### Other Commands
-
-**Planning:**
 | Command | Returns |
 |---------|---------|
-| `--robot-plan` | Parallel execution tracks with `unblocks` lists |
+| `--robot-plan` | Parallel execution tracks with unblocks lists |
 | `--robot-priority` | Priority misalignment detection with confidence |
-
-**Graph Analysis:**
-| Command | Returns |
-|---------|---------|
-| `--robot-insights` | Full metrics: PageRank, betweenness, HITS (hubs/authorities), eigenvector, critical path, cycles, k-core, articulation points, slack |
-| `--robot-label-health` | Per-label health: `health_level` (healthy\|warning\|critical), `velocity_score`, `staleness`, `blocked_count` |
-| `--robot-label-flow` | Cross-label dependency: `flow_matrix`, `dependencies`, `bottleneck_labels` |
-| `--robot-label-attention [--attention-limit=N]` | Attention-ranked labels by: (pagerank × staleness × block_impact) / velocity |
-
-**History & Change Tracking:**
-| Command | Returns |
-|---------|---------|
-| `--robot-history` | Bead-to-commit correlations: `stats`, `histories` (per-bead events/commits/milestones), `commit_index` |
-| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues, cycles introduced/resolved |
-
-**Other Commands:**
-| Command | Returns |
-|---------|---------|
-| `--robot-burndown <sprint>` | Sprint burndown, ideal line, scope changes |
-| `--robot-forecast <id\|all>` | ETA predictions with dependency-aware scheduling |
-| `--robot-alerts` | Stale issues, blocking cascades, drift from baseline |
+| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |
+| `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
 | `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
+| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues |
 | `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
-| `--export-graph <file.html>` | Single-file interactive HTML visualization |
 
 #### Scoping & Filtering
 
+```bash
 bv --robot-plan --label backend              # Scope to label's subgraph
 bv --robot-insights --as-of HEAD~30          # Historical point-in-time
 bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blockers)
 bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
-bv --robot-triage --robot-triage-by-track    # Group by parallel work streams
-bv --robot-triage --robot-triage-by-label    # Group by domain
-
-#### Understanding Robot Output
-
-**All robot JSON includes:**
-- `data_hash` — Fingerprint of the source JSONL issue file (verify consistency across calls)
-- `status` — Per-metric state: `computed|timeout|skipped` + elapsed ms (sampled betweenness stays `computed` with `reason: "approximate"` and `sample`)
-- `as_of` / `as_of_commit` — Present when using `--as-of`; contains ref and resolved SHA
-- `load_stats` — Present only when issue records were dropped during load (malformed JSON or failed validation, e.g. `updated_at < created_at`): `{source_path, valid, errors, skipped, warnings}`. Check `.load_stats.errors > 0` to distinguish "issue absent from data" from "issue dropped by the loader"; stderr stays clean either way (#190)
-
-**Two-phase analysis:**
-- **Phase 1 (instant):** degree, topo sort, density — always available immediately
-- **Phase 2 (async, size-tiered timeouts from 2s down to 200ms):** PageRank, betweenness, HITS, eigenvector, cycles — check `status` flags
-
-**For large graphs (>500 nodes):** Some metrics may be approximated or skipped. Always check `status`.
-
-#### jq Quick Reference
-
-bv --robot-triage | jq '.quick_ref'                        # At-a-glance summary
-bv --robot-triage | jq '.recommendations[0]'               # Top recommendation
-bv --robot-plan | jq '.plan.summary.highest_impact'        # Best unblock target
-bv --robot-insights | jq '.status'                         # Check metric readiness
-bv --robot-insights | jq '.Cycles'                         # Circular deps (must fix!)
-bv --robot-label-health | jq '.results.labels[] | select(.health_level == "critical")'
-
-**Performance:** Phase 1 instant, Phase 2 async with size-tiered timeouts (2s to 200ms). Prefer `--robot-plan` over `--robot-insights` when speed matters. Results cached by data hash.
-
-Use bv instead of parsing Beads JSONL directly—it computes PageRank, critical paths, cycles, and parallel tracks deterministically.
 ```
 
-### Automatic Integration
+### Tracker Commands for Issue Management
 
-`bv` can automatically add the above instructions to your project's agent file:
+Use exactly one command family, matching the tracker configured for the repository.
 
-- **On first run**, bv checks for AGENTS.md (or similar files) and offers to inject the blurb if not present
-- Choose **"Yes"** to add the instructions, **"No"** to skip, or **"Don't ask again"** to remember your preference
-- Preferences are stored per-project in `~/.config/bv/agent-prompts/`
-
-**Supported Files** (checked in order):
-1. `AGENTS.md` (preferred)
-2. `CLAUDE.md`
-3. `agents.md`
-4. `claude.md`
-
-**Manual Control:**
+#### Rust beads_rust (`br`)
 
 ```bash
-bv --agents-check             # Check if blurb is present in agent file
-bv --agents-add               # Add blurb to agent file (creates file if needed)
-bv --agents-remove            # Remove blurb from agent file
-bv --agents-update            # Update blurb to latest version
-bv --agents-add --agents-dry-run       # Preview an add without writing
-bv --agents-update --agents-dry-run    # Preview an update without writing
+br ready --json                       # Show issues ready to work (no blockers)
+br list --status=open --json          # All open issues
+br show <id> --json                   # Full issue details with dependencies
+br create --title="..." --type=task --priority=2 --json
+br update <id> --status=in_progress --json
+br close <id> --reason="Completed" --json
+br close <id1> <id2> --reason="Completed" --json
+br sync --flush-only                  # Export DB to JSONL after Beads mutations
 ```
+
+#### Go Beads (`bd`)
+
+```bash
+bd ready --json                       # Show issues ready to work
+bd show <id> --json                   # Full issue details
+bd create "..." -t task -p 2 --json
+bd update <id> --claim --json         # Atomically claim work
+bd close <id> --json
+bd dep add <issue> <depends-on>
+bd export -o .beads/issues.jsonl        # Refresh the compatibility export read by bv
+```
+
+### Workflow Pattern
+
+1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
+2. **Verify**: Check the selected tracker's `show`/`ready` output before claiming
+3. **Claim**: Use `br update <id> --status=in_progress --json` or `bd update <id> --claim --json`
+4. **Work**: Implement the task
+5. **Complete**: Use the selected tracker's `close` command
+6. **Refresh for bv**: Run `br sync --flush-only` or the `bd export` command above so the JSONL export is current
+
+### Key Concepts
+
+- **Dependencies**: Issues can block other issues. `br ready --json` and `bd ready --json` show unblocked work.
+- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
+- **Types**: task, bug, feature, epic, chore, docs, question
+- **Blocking**: Use `br dep add <issue> <depends-on>` or `bd dep add <issue> <depends-on>` to add dependencies
+
+### Git Policy
+
+Tracker commands do not grant permission to commit or push application code. Follow this repository's own git and tracker instructions before staging, committing, syncing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
+
+<!-- end-bv-agent-instructions -->
+````
 
 **Version Tracking:**
 
@@ -935,7 +916,7 @@ start sprint_review.html   # Windows
 ### Technical Notes
 
 - **No Server Required**: Everything runs client-side in the browser
-- **Offline Capable**: Works offline once opened; only the web-font stylesheet is fetched from Google Fonts, and system fonts are used when it is unreachable
+- **Offline Capable**: Works offline once opened and makes no network requests at all; Inter and JetBrains Mono are used when installed locally, otherwise the system UI and monospace fonts
 - **Modern Browsers**: Tested on Chrome, Firefox, Safari, Edge
 - **Performance**: Handles 500+ nodes smoothly with Canvas 2D rendering (force-graph)
 - **File Size**: Typically 1-2 MB depending on project size and content
@@ -1805,7 +1786,7 @@ High attention scores indicate labels that are both important and neglected—th
 | `j` / `k` (`↓` / `↑`) | Move the cursor |
 | `g` / `G` | Jump to the first / last label |
 | `Enter` | Drill into the selected label's issues |
-| `1` - `9` | Filter the list to the label at that rank |
+| `1-9` | Filter the list to the label at that rank |
 | `]` / `Esc` / `q` | Exit attention view |
 
 ### Robot Command
@@ -2473,13 +2454,15 @@ graph LR
 
 | Status | Indicator | Meaning |
 |--------|-----------|---------|
-| **Healthy** | 🤖 in status bar | cass is installed, indexed, and ready |
-| **Needs Index** | ⚠️ in status bar | cass installed but needs `cass index` |
-| **Not Installed** | (none) | cass not in PATH—features hidden |
+| **Healthy** | `🤖 cass` in the footer | cass is installed, indexed, and ready |
+| **Needs Index** | `⚠ cass index` in the footer | cass installed but needs `cass index` |
+| **Not Installed** | (none) | cass not in PATH; `V` says so when pressed |
+
+The check runs once when the TUI starts (`cass health`, bounded to 2 seconds) and its result is reused when you press `V`, so a missing or unindexed cass costs one probe, not one per keypress.
 
 ### Session Preview Modal (`V` Key)
 
-Press `V` on any bead to open the **Session Preview Modal**—a view of AI coding sessions that may have contributed to that issue:
+Press `V` on any bead to open the **Session Preview Modal**—a view of AI coding sessions that may have contributed to that issue. `V` acts on whatever the current view has selected: the list or detail item, the board card, the tree node, or the history row.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -2514,13 +2497,7 @@ Press `V` on any bead to open the **Session Preview Modal**—a view of AI codin
 
 ### Status Bar Indicator
 
-When cass is healthy, the status bar shows agent activity:
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│  📋 437 issues  •  🤖 claude-opus-4 (active)  •  Last: 5m ago          │
-└────────────────────────────────────────────────────────────────────────┘
-```
+The footer carries two cass indicators: the health badge from the startup check (`🤖 cass` or `⚠ cass index`) and, once a session lookup has run, a `📎N` count of correlated sessions for the selected bead. bv does not show per-model "active" agent activity; that information is not part of the cass integration.
 
 | State | Display | Meaning |
 |-------|---------|---------|
@@ -2776,7 +2753,7 @@ bv --preview-pages ./bv-pages                   # Serve at localhost:9000 (or ne
 
 ### Optional: Hybrid Search WASM Scorer
 
-For very large datasets, you can build an optional WASM scorer used by the static viewer. The viewer only loads it once the export holds 5,000 or more issues (`threshold` in `wasm_loader.js`); smaller exports always use the JS scorer.
+For very large datasets, you can build an optional WASM scorer used by the static viewer. Setting `BV_BUILD_HYBRID_WASM=1` makes `--export-pages` run `wasm-pack` from a source checkout (`pkg/export/wasm_scorer`) and write the result into the bundle's `wasm/` directory, in the released binary as well as in development builds; it fails with a clear error when `wasm-pack` or the source tree is missing. The viewer only loads it once the export holds 5,000 or more issues (`threshold` in `wasm_loader.js`); smaller exports always use the JS scorer.
 
 ```bash
 # Build once (requires wasm-pack)
@@ -2793,9 +2770,9 @@ If the `wasm/` assets are missing, the viewer automatically falls back to the JS
 ```
 ./bv-pages/
 ├── index.html              # Main dashboard with Alpine.js + Tailwind
-├── beads.sqlite3           # Full SQLite database (~3 MB for ~500 issues)
+├── beads.sqlite3           # Full SQLite database (3.3 MB for this repository's 611 issues)
 ├── data/
-│   ├── graph_layout.json   # Pre-computed positions + metrics (~100 KB for ~500 issues)
+│   ├── graph_layout.json   # Pre-computed positions + metrics (116 KB for 611 issues / 746 edges)
 │   ├── meta.json           # Export metadata
 │   ├── triage.json         # Triage recommendations
 │   └── history.json        # Bead-commit correlation data
@@ -2811,8 +2788,10 @@ The export uses a **hybrid architecture** so the graph can render before the dat
 
 | Component | Size | Purpose |
 |-----------|------|---------|
-| `graph_layout.json` | ~100 KB for ~500 issues | Pre-computed node positions + graph metrics |
-| `beads.sqlite3` | ~3 MB for ~500 issues | Full issue data for detail pane, search, tables |
+| `graph_layout.json` | 116 KB for 611 issues / 746 edges | Pre-computed node positions + graph metrics |
+| `beads.sqlite3` | 3.3 MB for 611 issues | Full issue data for detail pane, search, tables |
+
+Sizes are measured, not estimated: `tests/e2e/export_pages_test.go` re-exports this repository on every e2e run and writes the numbers to `tests/artifacts/perf/pages_load.json` (whole bundle 9.7 MB, of which 5.6 MB is the vendored viewer libraries).
 
 **How it works:**
 1. Browser loads the small `graph_layout.json` first
@@ -3016,14 +2995,14 @@ These commands output **structured JSON** designed for programmatic consumption:
 | `--robot-diff` | JSON diff (with `--diff-since`) | Change tracking |
 | `--robot-recipes` | Available recipe list | Recipe discovery |
 | `--robot-graph` | Dependency graph as JSON/DOT/Mermaid | Graph visualization & export |
-| `--robot-forecast` | ETA predictions per issue | Completion timeline estimates |
-| `--robot-capacity` | Team capacity simulation | Resource planning |
+| `--robot-forecast` | ETA estimate per issue (heuristic duration / velocity) | Rough completion timelines |
+| `--robot-capacity` | Serial + parallel-over-agents capacity estimate | Rough resource planning |
 | `--robot-alerts` | Drift + proactive warnings | Health monitoring |
 | `--robot-blocker-chain <id>` | Full blocker chain analysis for one issue | Explaining why work is stuck |
 | `--robot-impact <paths>` | Impact of modifying the given comma-separated files | Change risk assessment |
 | `--robot-file-hotspots` | Files touched by the most beads | Finding churn hotspots |
 | `--robot-file-relations <path>` | Files that frequently co-change with the given file | Related-code discovery |
-| `--robot-metrics` | Performance metrics (timing, cache, memory) | Diagnosing slow runs |
+| `--robot-metrics` | In-process counters from the real caches and timers: `graph_cache` (analysis in-memory + disk cache), `correlation_cache` (history report/artifact caches), `search_cache` (on-disk vector index), `triage_cache`; timings `loader.parse`, `analysis.phase1`, `analysis.phase2`; plus memory stats. Counts cover the current process only, so a bare `--robot-metrics` shows the load it just did; `BV_METRICS=0` disables collection | Diagnosing slow runs |
 | `--robot-capabilities` | Machine-readable command capabilities | Agent self-configuration |
 | `--robot-schema` | JSON Schema definitions for all robot commands | Output validation |
 | `--robot-docs <topic>` | Machine-readable JSON docs: `guide`, `commands`, `examples`, `env`, `exit-codes`, `all` | Agent onboarding |
@@ -3112,6 +3091,8 @@ bv --agent-brief ./agent-bundle/
 ```
 
 ### ETA Forecasting & Capacity Planning
+
+These are heuristics, not a scheduler. Per issue, `--robot-forecast` estimates work as `estimated_minutes` when the bead carries one, otherwise the median estimate across beads times a type weight, a dependency-depth factor (up to 2x), and a description-length factor; velocity is minutes closed in the last 30 days per day (falling back to median/5 and then 60 min/day); ETA days = minutes / (velocity x agents) with a rule-based confidence band. `--robot-capacity` sums serial work on the critical path with the remaining parallel work divided by `--agents`; it does not assign issues to agents or respect per-agent availability. Every payload lists its `factors` so the numbers can be audited.
 
 ```bash
 # Forecast completion ETA for a specific issue
@@ -3219,7 +3200,7 @@ bv --search "login oauth" --search-mode hybrid \
   --search-weights '{"text":0.4,"pagerank":0.2,"status":0.15,"impact":0.1,"priority":0.1,"recency":0.05}'
 ```
 
-Semantic search builds a lightweight vector index from a weighted issue document (ID and title repeated, labels and description included). This keeps lookup fast while still behaving like a human-readable search.
+"Semantic" search builds a lightweight vector index from a weighted issue document (ID and title repeated, labels and description included). The vectors are **hashed keyword features** (FNV-1a feature hashing, `pkg/search/hash_embedder.go`), not a learned language model: two issues score as similar when they share words, not when they share meaning. That keeps the index dependency-free and instant to build, and it is the only embedder that ships; `BV_SEMANTIC_EMBEDDER` accepts `hash` only, and the `python-sentence-transformers` / `openai` provider names are reserved placeholders that fail with "not implemented".
 
 Hybrid mode is a two-stage pipeline: it first retrieves the top candidates by semantic similarity, then re-ranks those candidates using graph-aware signals (PageRank, status, impact, priority, recency). That keeps results anchored to your query while surfacing items that matter most in the dependency graph—a good fit for bv’s goal of making the “why this matters” visible.
 
@@ -3650,15 +3631,21 @@ A: They're the same thing! In the Beads ecosystem, the unit of work is called a 
 ### One-Line Install (Linux/macOS)
 The fastest way to get started. Detects your OS and architecture automatically.
 
+Prefer Homebrew, Scoop, or a checksum-verified release archive above. If you do pipe the script, pin it to a commit you have read instead of the moving `main` branch:
+
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)" | bash
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.sh
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.sh" | bash
 ```
+
+> **Warning:** `curl ... | bash` runs whatever the URL serves at that moment. The pinned form above cannot change under you; the `main` form can. `install.sh` downloads the release archive for your platform, verifies it against the release `checksums.txt`, and refuses to install on a mismatch.
 
 ### One-Line Install (Windows)
 For Windows users using PowerShell:
 
 ```powershell
-irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.ps1" | iex
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.ps1
+irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.ps1" | iex
 ```
 
 **Requirements:**
@@ -3750,13 +3737,15 @@ bv has a comprehensive built-in help system:
 | | `]` / `F4` | Toggle **Attention View** (label attention scores) |
 | **Kanban Board** | `h` / `l` | Move Between Columns |
 | | `j` / `k` | Move Within Column |
-| | `gg` | Jump to Top |
+| | `gg` / `Home` | Jump to Top |
 | | `/`, `n` / `N` | Search cards, next / previous match |
 | **Insights Dashboard** | `Tab` | Next Panel |
 | | `e` | Toggle Explanations |
 | | `x` | Toggle Calculation Proof |
 | | `m` | Toggle Heatmap Overlay |
-| **Graph View** | `H` / `L` | Scroll Left / Right |
+| **Graph View** | `hjkl` / arrows | Navigate the graph |
+| | `H` / `L` | Scroll Left / Right |
+| | `PgUp` / `PgDn` | Scroll up / down a page |
 | | `Ctrl+D` / `Ctrl+U` | Page Down / Up |
 | **Tree View** | `j` / `k` | Move cursor down / up |
 | | `h` / `l` | Collapse/parent or Expand/child |
@@ -3769,6 +3758,7 @@ bv has a comprehensive built-in help system:
 | **Actions** | `x` | Export to Markdown File |
 | | `C` | Copy Issue to Clipboard |
 | | `O` | Open in Editor |
+| | `U` | Self-update check (opens the update modal) |
 | **Help & Learning** | `?` | Toggle Help Overlay (keyboard shortcuts) |
 | | `` ` `` | Open Interactive Tutorial |
 | **Global** | `;` / `F2` | Toggle Shortcuts Sidebar |
@@ -3806,6 +3796,8 @@ bv has a comprehensive built-in help system:
 | `BV_NO_BROWSER` | Any value: never open a browser after exports or deployments. | (unset) |
 | `BV_TEST_MODE` | Any value: test harness mode; suppresses browser opening, terminal capability queries, and the background worker's idle GC tuning. | (unset) |
 | `BV_NO_SAVED_CONFIG` | Any value: the `--pages` wizard ignores the saved deployment configuration. | (unset) |
+| `BV_NO_UPDATE_CHECK` | Set to `1` to skip the TUI's startup release check (`updates: {check: false}` in `~/.config/bv/config.yaml` does the same); explicit `--check-update` / `--update` still work. | (check on) |
+| `BV_UPDATE_USE_TOKEN` | Set to `1` to let the update check and `--update` send the ambient `GITHUB_TOKEN` / `GH_TOKEN` to api.github.com (`updates: {use_token: true}` in config.yaml does the same). | (never sent) |
 | `BV_METRICS` | Set to `0` to disable internal timing metrics collection (`--robot-metrics`). | (enabled) |
 | `BV_DEBUG` | Any value: write `[BV_DEBUG]` diagnostics to stderr. | (off) |
 | `BV_WORKER_LOG_LEVEL` | Log level for the background snapshot worker. | (default) |
@@ -3826,9 +3818,9 @@ bv has a comprehensive built-in help system:
 | `BV_NO_GITIGNORE` | Disable automatic ignore-file management for `.bv/` entirely (any non-empty value). See [Automatic `.bv/` ignore handling](#automatic-bv-ignore-handling). | (enabled) |
 | `BV_SKIP_PHASE2` | Skip Phase 2 graph metrics (centrality, cycles, critical path) (`1`/`0`). | (disabled) |
 | `BV_PHASE2_TIMEOUT_S` | Override per-metric Phase 2 timeouts (seconds). | (size-based) |
-| `BV_SEMANTIC_EMBEDDER` | Semantic embedding provider for `bv --search` and TUI semantic mode. | `hash` |
-| `BV_SEMANTIC_DIM` | Embedding dimension for semantic search index. | `384` |
-| `BV_SEMANTIC_MODEL` | Provider-specific model name for semantic search (optional). | (empty) |
+| `BV_SEMANTIC_EMBEDDER` | Embedding provider for `bv --search` and TUI search. Only `hash` (FNV-1a keyword feature hashing) is implemented; `python-sentence-transformers` and `openai` are reserved names that fail with "not implemented". | `hash` |
+| `BV_SEMANTIC_DIM` | Embedding dimension for the hashed search index. | `384` |
+| `BV_SEMANTIC_MODEL` | Model name for a future non-hash provider; ignored by `hash`. | (empty) |
 
 **Use cases for `BEADS_DIR`:**
 - **Monorepos**: Single beads directory shared across multiple packages

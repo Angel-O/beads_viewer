@@ -18,6 +18,19 @@ retained below.
 
 ## [Unreleased]
 
+### Reality check 2026-09 (bridge plan `docs/planning/REALITY_CHECK_BRIDGE_PLAN_2026-09-01.md`)
+
+- **Data sources:** discovery only reads issue-file names from the loader allowlist (no more `sync_base.jsonl` shadowing), probe warnings are buffered and only surface for the source actually used, and every robot payload names its `source_path` / `source_kind` plus `as_of` / `scope` in one shared envelope.
+- **Robot registry:** five handlers that ignored `--label` / `--recipe` / `--repo` / `--as-of` now honour them; `--robot-file-hotspots` moved into the registry and roughly 1,400 lines of unreachable inline handler copies were deleted from `cmd/bv/main.go`; `--robot-help` is generated from the registries.
+- **Feedback loops:** `--feedback-*` weights change `--robot-triage` scoring (after three samples), and correlation confirm/reject changes `--robot-history`, the commit index, `--robot-explain-correlation`, and the History view.
+- **Correlation:** explicit-ID and temporal strategies run alongside co-commit; the artifact cache is format-versioned; `--robot-orphans` reports the scanned window and beads-only commit count.
+- **Sprints and alerts:** four-signal at-risk detection shared by the dashboard and `--robot-burndown` (`at_risk`), a scope-aware ideal line, `P` opens the dashboard; every declared alert type has an emitter (`velocity_drop`, `high_impact_unblock`, `abandoned_claim`, `potential_duplicate`) plus new `priority_mismatch` and `scope_creep`, each with a `suggested_action`, labels for `--alert-label`, a `proactive_max_issues` cap with `skipped_checks`, and every threshold documented from `.bv/drift.yaml`.
+- **TUI:** attention view with cursor and drilldown, tutorial progress persisted, `Shift+Tab` / `n` `N` / `t` bindings, startup update check opt-out (`BV_NO_UPDATE_CHECK`).
+- **Workspaces and recipes:** `.bv/workspace.yaml` is auto-discovered when no `.beads` is reachable; recipes load from `.beads/recipes/*.yaml` and `--recipe` accepts a file path.
+- **Release gate:** `scripts/release_gate.sh` (gofmt, build+vet, `-race` unit and e2e, docs parity, action pins, vendor hashes, benchmark compare, robot smoke) with `scripts/check_action_pins.sh`, `scripts/robot_smoke.sh`, `scripts/verify_vendor.sh`, a vendored-asset `MANIFEST.json` and `docs/PROVENANCE.md`; `ci.yml` runs the gate; `scripts/verify_isomorphic.sh` builds the baseline in a detached worktree instead of stashing the caller's tree.
+- **Decisions recorded:** no path-matching correlation strategy (README diagram and prose agree); downgrade priority recommendations are not alerts; `cycle_introduced` is documented as `new_cycle`.
+- **Tracker recovery (2026-09-02):** `.beads/beads.db` was at schema 0 and rejected by br 0.5.7 (`SCHEMA_MISMATCH expected 17, found 0`); the JSONL was harmonized (empty-string fields dropped, dependency `metadata` / `thread_id` added), a fresh DB was rebuilt from it and promoted, and the old DB was renamed aside (`beads.db.bad_20260902T030027Z`) rather than deleted. The renamed DB, the `recovery_*/` snapshot, and the `*.fsqlite-migration-state` files remain in `.beads/` (git-ignored) until the maintainer decides to remove them.
+
 ### Fixed
 
 - SQLite-backed reloads (Ctrl-R / F5 and file-watch refreshes) failed on Windows with
