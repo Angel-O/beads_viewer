@@ -37,8 +37,9 @@ type RobotCommand struct {
 }
 
 type RobotContext struct {
-	Issues   []model.Issue
-	DataHash string
+	Issues          []model.Issue
+	HistoryProvider *correlation.Provider
+	DataHash        string
 	// DataHashMatchesIssues is true when DataHash is the ComputeDataHash of the
 	// exact Issues slice carried here (i.e. no label-scope or recipe filtering
 	// changed Issues after DataHash was computed). When true, handlers may seed
@@ -1838,7 +1839,7 @@ func resolveNotReadyLabels(cfg phaseThreeRobotHandlerConfig) []string {
 //
 // The returned status is "ok", "partial", "error", or "timeout"; it is surfaced as
 // meta.history_status in the triage output.
-func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correlation.BeadInfo, limit int, timeout time.Duration) (*correlation.HistoryReport, string) {
+func generateTriageHistoryBounded(provider *correlation.Provider, beadInfos []correlation.BeadInfo, limit int, timeout time.Duration) (*correlation.HistoryReport, string) {
 	histCtx := context.Background()
 	cancel := context.CancelFunc(func() {})
 	if timeout > 0 {
@@ -1846,15 +1847,13 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	}
 	defer cancel()
 
-	correlator := newCorrelationCorrelator(workDir, beadsPath).WithContext(histCtx)
-
 	type historyResult struct {
 		report *correlation.HistoryReport
 		err    error
 	}
 	resCh := make(chan historyResult, 1)
 	go func() {
-		report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+		report, err := provider.GenerateReportCached(histCtx, beadInfos, correlation.CorrelatorOptions{Limit: limit})
 		resCh <- historyResult{report: report, err: err}
 	}()
 
@@ -1872,6 +1871,13 @@ func generateTriageHistoryBounded(workDir, beadsPath string, beadInfos []correla
 	}
 }
 
+func triageHistoryAvailable(provider *correlation.Provider, workDir string) bool {
+	if provider == nil || !provider.Enabled() {
+		return false
+	}
+	return validateCorrelationProvider(provider, workDir) == nil
+}
+
 func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
 	if cfg.RobotNextFlag != nil && *cfg.RobotNextFlag {
 		return handleRobotNext(ctx, cfg)
@@ -1887,27 +1893,17 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 		}
 	}
 
-	if hasOpenIssues && historyModeValue != "off" {
-		workDir, err := ctx.WorkDirOrDefault()
-		if err == nil {
-			beadsPath := ""
-			if historyModeValue == "git" {
-				if beadsDir, loadErr := loader.GetBeadsDir(""); loadErr == nil {
-					beadsPath, _ = loader.FindJSONLPath(beadsDir)
-				}
-			}
-			if (historyModeValue != "git" || beadsPath != "") && validateCorrelationRepository(workDir) == nil {
-				limit := 500
-				if cfg.HistoryLimit != nil {
-					limit = *cfg.HistoryLimit
-				}
-				if limit == 500 {
-					limit = 200
-				}
-				historyReport, historyStatus = generateTriageHistoryBounded(
-					workDir, beadsPath, buildCorrelationBeadInfos(ctx.Issues), limit, resolveRobotHistoryTimeout(cfg))
-			}
+	workDir, _ := ctx.WorkDirOrDefault()
+	if hasOpenIssues && triageHistoryAvailable(ctx.HistoryProvider, workDir) {
+		limit := 500
+		if cfg.HistoryLimit != nil {
+			limit = *cfg.HistoryLimit
 		}
+		if limit == 500 {
+			limit = 200
+		}
+		historyReport, historyStatus = generateTriageHistoryBounded(
+			ctx.HistoryProvider, buildCorrelationBeadInfos(ctx.Issues), limit, resolveRobotHistoryTimeout(cfg))
 	}
 
 	// bv-140: scope triage to a subgraph if --graph-root is specified
@@ -2275,20 +2271,8 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
-	}
-
-	beadsPath := ""
-	if historyModeValue == "git" {
-		beadsDir, err := loader.GetBeadsDir("")
-		if err != nil {
-			return fmt.Errorf("getting beads directory: %w", err)
-		}
-		beadsPath, err = loader.FindJSONLPath(beadsDir)
-		if err != nil {
-			return fmt.Errorf("finding beads file: %w", err)
-		}
 	}
 
 	opts := correlation.CorrelatorOptions{Limit: 500}
@@ -2310,7 +2294,10 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 
 	beadInfos := buildCorrelationBeadInfos(ctx.Issues)
 
-	report, err := newCorrelationCorrelator(workDir, beadsPath).GenerateReportCached(beadInfos, opts)
+	if ctx.HistoryProvider == nil {
+		return fmt.Errorf("history provider is not configured")
+	}
+	report, err := ctx.HistoryProvider.GenerateReportCached(context.Background(), beadInfos, opts)
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2373,20 +2360,22 @@ func buildCorrelationBeadInfos(issues []model.Issue) []correlation.BeadInfo {
 	return beadInfos
 }
 
-func generateCorrelationReport(workDir string, issues []model.Issue, opts correlation.CorrelatorOptions) (*correlation.HistoryReport, error) {
-	beadsPath := ""
-	if historyModeValue == "git" {
-		_, resolvedPath, err := resolveCorrelationBeadsPath(workDir)
-		if err != nil {
-			return nil, err
-		}
-		beadsPath = resolvedPath
+func generateCorrelationReport(provider *correlation.Provider, issues []model.Issue, opts correlation.CorrelatorOptions) (*correlation.HistoryReport, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("history provider is not configured")
 	}
-	report, err := newCorrelationCorrelator(workDir, beadsPath).GenerateReportCached(buildCorrelationBeadInfos(issues), opts)
+	report, err := provider.GenerateReportCached(context.Background(), buildCorrelationBeadInfos(issues), opts)
 	if err != nil {
 		return nil, fmt.Errorf("generating history report: %w", err)
 	}
 	return report, nil
+}
+
+func validateCorrelationProvider(provider *correlation.Provider, workDir string) error {
+	if provider == nil || provider.Mode() != "git" {
+		return nil
+	}
+	return correlation.ValidateRepository(workDir)
 }
 
 type robotHistoryDiagnostics struct {
@@ -2413,21 +2402,6 @@ func reportUnavailableCorrelation(ctx RobotContext, report *correlation.HistoryR
 		return fmt.Errorf("encoding partial history diagnostic: %w", err)
 	}
 	return newReportedRobotHandlerExit(1)
-}
-
-func newCorrelationCorrelator(workDir, beadsPath string) *correlation.Correlator {
-	correlator := correlation.NewCorrelator(workDir, beadsPath).WithHistoryMode(correlation.HistoryMode(historyModeValue))
-	if historyModeValue == "external" && hubConfigPath != "" {
-		correlator.WithHubConfig(hubConfigPath)
-	}
-	return correlator
-}
-
-func validateCorrelationRepository(workDir string) error {
-	if historyModeValue != "git" {
-		return nil
-	}
-	return correlation.ValidateRepository(workDir)
 }
 
 func loadCorrelationFeedbackStore(workDir string) (*correlation.FeedbackStore, error) {
@@ -2548,7 +2522,7 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 		return err
 	}
 
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
 	if err != nil {
 		return fmt.Errorf("generating report: %w", err)
 	}
@@ -2614,7 +2588,7 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		return err
 	}
 
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, ctx.Issues, correlation.CorrelatorOptions{BeadID: beadID})
 	if err != nil {
 		return fmt.Errorf("generating report: %w", err)
 	}
@@ -2679,7 +2653,7 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -2687,7 +2661,7 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -2724,14 +2698,18 @@ func handleRobotFileRelations(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 }
 
 func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	if historyModeValue != "git" {
-		return fmt.Errorf("--robot-orphans requires --history-mode git; repository-wide orphan inference is unavailable in %s mode", historyModeValue)
+	if ctx.HistoryProvider == nil || ctx.HistoryProvider.Mode() != "git" {
+		mode := "off"
+		if ctx.HistoryProvider != nil {
+			mode = ctx.HistoryProvider.Mode()
+		}
+		return fmt.Errorf("--robot-orphans requires --history-mode git; repository-wide orphan inference is unavailable in %s mode", mode)
 	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -2739,7 +2717,7 @@ func handleRobotOrphans(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return err
 	}
@@ -2804,7 +2782,7 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -2812,7 +2790,7 @@ func handleRobotFileBeads(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return err
 	}
@@ -2860,7 +2838,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -2868,7 +2846,7 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, ctx.Issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return err
 	}
@@ -2910,7 +2888,7 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -2920,7 +2898,7 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -3003,7 +2981,7 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -3013,7 +2991,7 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}
@@ -3062,7 +3040,7 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := validateCorrelationRepository(workDir); err != nil {
+	if err := validateCorrelationProvider(ctx.HistoryProvider, workDir); err != nil {
 		return err
 	}
 
@@ -3072,7 +3050,7 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if cfg.HistoryLimit != nil {
 		limit = *cfg.HistoryLimit
 	}
-	report, err := generateCorrelationReport(workDir, issues, correlation.CorrelatorOptions{Limit: limit})
+	report, err := generateCorrelationReport(ctx.HistoryProvider, issues, correlation.CorrelatorOptions{Limit: limit})
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}

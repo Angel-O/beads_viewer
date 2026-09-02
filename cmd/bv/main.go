@@ -1713,23 +1713,14 @@ func main() {
 		if err != nil {
 			return err
 		}
-		historyModeValue = resolvedMode
-		hubConfigPath = resolvedConfig
-		usesHubConfigStore := hubConfigPath != "" && historyModeValue != "git"
-		if usesHubConfigStore && *workspaceConfig != "" {
-			return fmt.Errorf("--workspace cannot be combined with the configured hub store; config.store is authoritative")
-		}
-		if usesHubConfigStore && *asOf != "" {
-			return fmt.Errorf("--as-of cannot be combined with the configured hub store; config.store is authoritative")
-		}
 		if *correlateAdd && *correlateRemove {
 			return fmt.Errorf("correlate add and correlate remove are mutually exclusive")
 		}
 		if *correlateAdd {
-			if hubConfigPath == "" {
+			if resolvedConfig == "" {
 				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, added, err := correlation.AddExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
+			record, added, err := correlation.AddExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil && !added {
 				return fmt.Errorf("adding correlation: %w", err)
 			}
@@ -1750,10 +1741,10 @@ func main() {
 			return nil
 		}
 		if *correlateRemove {
-			if hubConfigPath == "" {
+			if resolvedConfig == "" {
 				return fmt.Errorf("correlate remove requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, removed, err := correlation.RemoveExternalCorrelation(hubConfigPath, *correlateBead, *repoFilter, *correlateCommit)
+			record, removed, err := correlation.RemoveExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil && !removed {
 				return fmt.Errorf("removing correlation: %w", err)
 			}
@@ -1937,25 +1928,6 @@ func main() {
 			defer stopCPUProfile()
 		}
 
-		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
-		// Priority: --db flag > BEADS_DB env > BEADS_DIR env > auto-discovery.
-		if *dbPath != "" {
-			absDB, err := filepath.Abs(*dbPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error resolving --db path: %v\n", err)
-				os.Exit(1)
-			}
-			os.Setenv(loader.BeadsDBEnvVar, absDB)
-		} else if usesHubConfigStore {
-			store, err := correlation.HubConfigStore(hubConfigPath)
-			if err != nil {
-				return err
-			}
-			if err := os.Setenv(loader.BeadsDBEnvVar, store); err != nil {
-				return fmt.Errorf("setting external Beads store: %w", err)
-			}
-		}
-
 		// Apply --no-cache flag: set BV_NO_CACHE=1 so disk cache is bypassed.
 		if *noCache {
 			os.Setenv("BV_NO_CACHE", "1")
@@ -2031,9 +2003,40 @@ func main() {
 			// When stdout is non-TTY, --diff-since auto-enables JSON output. Mark this
 			// as robot mode early so parsers keep stdout JSON clean.
 			(*diffSince != "" && !stdoutIsTTY)
-		hubRobotScope, err := parseHubRobotScope(os.Getenv("BV_WBV_HUB_SCOPE"), hubConfigPath, usesHubConfigStore, robotMode)
+		compositionWorkDir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getting current directory: %w", err)
+		}
+		composition, err := composeViewerServices(viewerCompositionInput{
+			HistoryMode:        resolvedMode,
+			HubConfigPath:      resolvedConfig,
+			ExplicitDBPath:     *dbPath,
+			WorkspacePath:      *workspaceConfig,
+			AsOf:               *asOf,
+			WorkDir:            compositionWorkDir,
+			RobotMode:          robotMode,
+			WrapperScope:       os.Getenv("BV_WBV_HUB_SCOPE"),
+			RefreshEnvironment: os.Getenv("BV_HUB_AUTO_REFRESH"),
+		})
 		if err != nil {
 			return err
+		}
+		usesHubConfigStore := composition.UsesHubConfigStore
+		hubRobotScope := composition.HubScope
+
+		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
+		// Priority: --db flag > BEADS_DB env > BEADS_DIR env > auto-discovery.
+		if *dbPath != "" {
+			absDB, err := filepath.Abs(*dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error resolving --db path: %v\n", err)
+				os.Exit(1)
+			}
+			os.Setenv(loader.BeadsDBEnvVar, absDB)
+		} else if usesHubConfigStore {
+			if err := os.Setenv(loader.BeadsDBEnvVar, composition.SemanticStorePath); err != nil {
+				return fmt.Errorf("setting external Beads store: %w", err)
+			}
 		}
 		if hubRobotScope != nil && *repoFilter != "" {
 			return fmt.Errorf("--repo cannot be combined with wrapper Hub scope")
@@ -2057,6 +2060,7 @@ func main() {
 		robotDispatchContext := RobotContext{
 			Stdout:             os.Stdout,
 			Stderr:             os.Stderr,
+			HistoryProvider:    composition.HistoryProvider,
 			Encoder:            newRobotEncoder(os.Stdout),
 			FinalizeBeforeExit: stopCPUProfile,
 		}
@@ -2533,7 +2537,7 @@ func main() {
 		loadStart := time.Now()
 		var issues []model.Issue
 		var beadsPath string
-		var semanticDatasetPath string
+		semanticDatasetPath := composition.SemanticDatasetPath
 		var workspaceInfo *workspace.LoadSummary
 		var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
 
@@ -2606,7 +2610,7 @@ func main() {
 			}
 			// Get the selected source file for live reload.
 			beadsDir, _ := loader.GetBeadsDir("")
-			beadsPath, _ = resolveSingleRepoWatchFile("")
+			beadsPath = composition.IssueChangePath
 			semanticDatasetPath = beadsPath
 
 			// Automatically ensure .bv/ is git-ignored to prevent polluting git
@@ -2718,14 +2722,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			hubStore := ""
-			if usesHubConfigStore {
-				hubStore, err = correlation.HubConfigStore(hubConfigPath)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
-				}
-			}
+			hubStore := composition.SemanticStorePath
 			indexPath, err := search.SemanticIndexPath(semanticDatasetPath, hubStore, embedCfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2896,7 +2893,7 @@ func main() {
 
 		// Handle --pages wizard (bv-10g)
 		if *pagesWizard {
-			if err := runPagesWizard(beadsPath); err != nil {
+			if err := runPagesWizard(beadsPath, composition.HistoryProvider); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -3024,7 +3021,7 @@ func main() {
 				// Export history data for time-travel feature (bv-z38b)
 				if *pagesIncludeHistory {
 					fmt.Println("  → Generating time-travel history data...")
-					if historyReport, err := generateHistoryForExport(allIssues); err == nil && historyReport != nil {
+					if historyReport, err := generateHistoryForExport(allIssues, composition.HistoryProvider); err == nil && historyReport != nil {
 						historyPath := filepath.Join(*exportPages, "data", "history.json")
 						if historyJSON, err := json.MarshalIndent(historyReport, "", "  "); err == nil {
 							if err := os.WriteFile(historyPath, historyJSON, 0644); err != nil {
@@ -3883,34 +3880,29 @@ func main() {
 
 			if hasOpenIssues {
 				if cwd, err := os.Getwd(); err == nil {
-					if beadsDir, err := loader.GetBeadsDir(""); err == nil {
-						if beadsPath, err := loader.FindJSONLPath(beadsDir); err == nil {
-							// Use a smaller limit for triage to keep it fast, unless overridden
-							limit := *historyLimit
-							if limit == 500 { // If default
-								limit = 200 // Use smaller default for triage
+					// Use a smaller limit for triage to keep it fast, unless overridden
+					limit := *historyLimit
+					if limit == 500 { // If default
+						limit = 200 // Use smaller default for triage
+					}
+
+					// Validate repo first
+					if validateCorrelationProvider(composition.HistoryProvider, cwd) == nil {
+						beadInfos := make([]correlation.BeadInfo, len(issues))
+						for i, issue := range issues {
+							beadInfos[i] = correlation.BeadInfo{
+								ID:     issue.ID,
+								Title:  issue.Title,
+								Status: string(issue.Status),
+								Labels: issue.Labels,
 							}
+						}
 
-							// Validate repo first
-							if validateCorrelationRepository(cwd) == nil {
-								beadInfos := make([]correlation.BeadInfo, len(issues))
-								for i, issue := range issues {
-									beadInfos[i] = correlation.BeadInfo{
-										ID:     issue.ID,
-										Title:  issue.Title,
-										Status: string(issue.Status),
-										Labels: issue.Labels,
-									}
-								}
+						opts := correlation.CorrelatorOptions{Limit: limit}
 
-								correlator := newCorrelationCorrelator(cwd, beadsPath)
-								opts := correlation.CorrelatorOptions{Limit: limit}
-
-								// Swallow errors for triage flow - staleness is optional
-								if report, err := correlator.GenerateReport(beadInfos, opts); err == nil {
-									historyReport = report
-								}
-							}
+						// Swallow errors for triage flow - staleness is optional
+						if report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, opts); err == nil {
+							historyReport = report
 						}
 					}
 				}
@@ -4190,20 +4182,8 @@ func main() {
 			}
 
 			// Validate repository
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Resolve beads file path (bv-history fix, respects BEADS_DIR)
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -4237,8 +4217,7 @@ func main() {
 			}
 
 			// Generate report with explicit beads path
-			correlator := newCorrelationCorrelator(cwd, beadsPath)
-			report, err := correlator.GenerateReport(beadInfos, opts)
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, opts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error generating history report: %v\n", err)
 				os.Exit(1)
@@ -4315,18 +4294,6 @@ func main() {
 				}
 
 				// Generate history report to find the correlation
-				cwd, err := os.Getwd()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
-					os.Exit(1)
-				}
-				beadsPath, err := loader.FindJSONLPath(beadsDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
-					os.Exit(1)
-				}
-				correlator := newCorrelationCorrelator(cwd, beadsPath)
-
 				beadInfos := make([]correlation.BeadInfo, len(issues))
 				for i, issue := range issues {
 					beadInfos[i] = correlation.BeadInfo{
@@ -4338,7 +4305,7 @@ func main() {
 				}
 
 				opts := correlation.CorrelatorOptions{BeadID: beadID}
-				report, err := correlator.GenerateReport(beadInfos, opts)
+				report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, opts)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error generating report: %v\n", err)
 					os.Exit(1)
@@ -4392,25 +4359,13 @@ func main() {
 				}
 
 				// Get original confidence from history
-				cwd, err := os.Getwd()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
-					os.Exit(1)
-				}
-				beadsPath, err := loader.FindJSONLPath(beadsDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
-					os.Exit(1)
-				}
-				correlator := newCorrelationCorrelator(cwd, beadsPath)
-
 				beadInfos := make([]correlation.BeadInfo, len(issues))
 				for i, issue := range issues {
 					beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status), Labels: issue.Labels}
 				}
 
 				opts := correlation.CorrelatorOptions{BeadID: beadID}
-				report, err := correlator.GenerateReport(beadInfos, opts)
+				report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, opts)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error generating report: %v\n", err)
 					os.Exit(1)
@@ -4468,25 +4423,13 @@ func main() {
 				}
 
 				// Get original confidence from history
-				cwd, err := os.Getwd()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
-					os.Exit(1)
-				}
-				beadsPath, err := loader.FindJSONLPath(beadsDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
-					os.Exit(1)
-				}
-				correlator := newCorrelationCorrelator(cwd, beadsPath)
-
 				beadInfos := make([]correlation.BeadInfo, len(issues))
 				for i, issue := range issues {
 					beadInfos[i] = correlation.BeadInfo{ID: issue.ID, Title: issue.Title, Status: string(issue.Status), Labels: issue.Labels}
 				}
 
 				opts := correlation.CorrelatorOptions{BeadID: beadID}
-				report, err := correlator.GenerateReport(beadInfos, opts)
+				report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, opts)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error generating report: %v\n", err)
 					os.Exit(1)
@@ -4542,20 +4485,8 @@ func main() {
 			}
 
 			// Validate repository
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Get beads path
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -4571,12 +4502,11 @@ func main() {
 			}
 
 			// Generate history report first (to get existing correlations)
-			correlator := newCorrelationCorrelator(cwd, beadsPath)
 			correlatorOpts := correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			}
 
-			report, err := correlator.GenerateReport(beadInfos, correlatorOpts)
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, correlatorOpts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error generating history report: %v\n", err)
 				os.Exit(1)
@@ -4628,7 +4558,7 @@ func main() {
 			}
 
 			// Validate repository
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4637,7 +4567,7 @@ func main() {
 			// registry handlers for --robot-file-beads / --robot-impact use,
 			// so all three surfaces answer "which beads touch this file?"
 			// from an identical report (#184).
-			report, err := generateCorrelationReport(cwd, issues, correlation.CorrelatorOptions{
+			report, err := generateCorrelationReport(composition.HistoryProvider, issues, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {
@@ -4716,19 +4646,8 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -4742,8 +4661,7 @@ func main() {
 				}
 			}
 
-			correlator := newCorrelationCorrelator(cwd, beadsPath)
-			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {
@@ -4797,7 +4715,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4805,17 +4723,6 @@ func main() {
 			issues, err := datasource.LoadIssues(cwd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error loading beads: %v\n", err)
-				os.Exit(1)
-			}
-
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -4829,8 +4736,7 @@ func main() {
 				}
 			}
 
-			correlator := newCorrelationCorrelator(cwd, beadsPath)
-			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {
@@ -4875,7 +4781,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -4883,17 +4789,6 @@ func main() {
 			issues, err := datasource.LoadIssues(cwd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error loading beads: %v\n", err)
-				os.Exit(1)
-			}
-
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -4907,8 +4802,7 @@ func main() {
 				}
 			}
 
-			correlatorObj := newCorrelationCorrelator(cwd, beadsPath)
-			report, err := correlatorObj.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {
@@ -5021,20 +4915,8 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Find beads path
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -5057,8 +4939,7 @@ func main() {
 			}
 
 			// Generate history report
-			correlator := newCorrelationCorrelator(cwd, beadsPath)
-			report, err := correlator.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {
@@ -5123,7 +5004,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := validateCorrelationRepository(cwd); err != nil {
+			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -5131,17 +5012,6 @@ func main() {
 			issues, err := datasource.LoadIssues(cwd)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error loading beads: %v\n", err)
-				os.Exit(1)
-			}
-
-			beadsDir, err := loader.GetBeadsDir("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting beads directory: %v\n", err)
-				os.Exit(1)
-			}
-			beadsPath, err := loader.FindJSONLPath(beadsDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error finding beads file: %v\n", err)
 				os.Exit(1)
 			}
 
@@ -5155,8 +5025,7 @@ func main() {
 				}
 			}
 
-			correlatorObj := newCorrelationCorrelator(cwd, beadsPath)
-			report, err := correlatorObj.GenerateReport(beadInfos, correlation.CorrelatorOptions{
+			report, err := composition.HistoryProvider.GenerateReport(context.Background(), beadInfos, correlation.CorrelatorOptions{
 				Limit: *historyLimit,
 			})
 			if err != nil {
@@ -5543,10 +5412,37 @@ func main() {
 			}
 
 			// Launch TUI with historical issues (already loaded, no live reload)
-			m := ui.NewModel(issues, activeRecipe, "")
-			m.SetSemanticDatasetPath(semanticDatasetPath)
+			m := ui.NewModel(issues, activeRecipe, "", ui.RuntimeServices{
+				HistoryProvider:        composition.HistoryProvider,
+				SelectedIssuePath:      composition.SelectedIssuePath,
+				IssueChangePath:        composition.IssueChangePath,
+				MetadataChangePaths:    composition.MetadataChangePaths,
+				CatalogPath:            composition.HubConfigPath,
+				CatalogLoader:          composition.CatalogLoader,
+				SemanticDatasetPath:    composition.SemanticDatasetPath,
+				SemanticStorePath:      composition.SemanticStorePath,
+				RepositoryPresentation: composition.RepositoryPresentation,
+				DefaultRepositoryID:    composition.DefaultCurrentContext,
+				ExternalHistory:        composition.HistoryProvider.External(),
+				HubAutoRefresh:         composition.HubAutoRefresh,
+				RefreshResolved:        true,
+			})
 			m.SetRepositoryCatalogIssues(issues)
-			m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
+			m.SetRuntimeServices(ui.RuntimeServices{
+				HistoryProvider:        composition.HistoryProvider,
+				SelectedIssuePath:      composition.SelectedIssuePath,
+				IssueChangePath:        composition.IssueChangePath,
+				MetadataChangePaths:    composition.MetadataChangePaths,
+				CatalogPath:            composition.HubConfigPath,
+				CatalogLoader:          composition.CatalogLoader,
+				SemanticDatasetPath:    semanticDatasetPath,
+				SemanticStorePath:      composition.SemanticStorePath,
+				RepositoryPresentation: composition.RepositoryPresentation,
+				DefaultRepositoryID:    composition.DefaultCurrentContext,
+				ExternalHistory:        composition.HistoryProvider.External(),
+				HubAutoRefresh:         composition.HubAutoRefresh,
+				RefreshResolved:        true,
+			})
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
@@ -5642,13 +5538,38 @@ func main() {
 		}
 
 		// Initial Model with live reload support
-		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath)
-		m.SetSemanticDatasetPath(semanticDatasetPath)
+		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, ui.RuntimeServices{
+			HistoryProvider:        composition.HistoryProvider,
+			SelectedIssuePath:      composition.SelectedIssuePath,
+			IssueChangePath:        composition.IssueChangePath,
+			MetadataChangePaths:    composition.MetadataChangePaths,
+			CatalogPath:            composition.HubConfigPath,
+			CatalogLoader:          composition.CatalogLoader,
+			SemanticDatasetPath:    composition.SemanticDatasetPath,
+			SemanticStorePath:      composition.SemanticStorePath,
+			RepositoryPresentation: composition.RepositoryPresentation,
+			DefaultRepositoryID:    composition.DefaultCurrentContext,
+			ExternalHistory:        composition.HistoryProvider.External(),
+			HubAutoRefresh:         composition.HubAutoRefresh,
+			RefreshResolved:        true,
+		})
 		m.SetRepositoryCatalogIssues(catalogIssues)
-		m.SetHistoryProvider(correlation.HistoryMode(historyModeValue), hubConfigPath)
-		if cwd, err := os.Getwd(); err == nil {
-			m.SetDefaultRepositoryScope(currentHubRepositoryContext(cwd, usesHubConfigStore))
-		}
+		m.SetRuntimeServices(ui.RuntimeServices{
+			HistoryProvider:        composition.HistoryProvider,
+			SelectedIssuePath:      composition.SelectedIssuePath,
+			IssueChangePath:        composition.IssueChangePath,
+			MetadataChangePaths:    composition.MetadataChangePaths,
+			CatalogPath:            composition.HubConfigPath,
+			CatalogLoader:          composition.CatalogLoader,
+			SemanticDatasetPath:    semanticDatasetPath,
+			SemanticStorePath:      composition.SemanticStorePath,
+			RepositoryPresentation: composition.RepositoryPresentation,
+			DefaultRepositoryID:    composition.DefaultCurrentContext,
+			ExternalHistory:        composition.HistoryProvider.External(),
+			HubAutoRefresh:         composition.HubAutoRefresh,
+			RefreshResolved:        true,
+		})
+		m.SetDefaultRepositoryScope(composition.DefaultCurrentContext)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config
@@ -7098,7 +7019,7 @@ func runPreviewServer(dir string, liveReload bool) error {
 }
 
 // runPagesWizard runs the interactive deployment wizard (bv-10g).
-func runPagesWizard(beadsPath string) error {
+func runPagesWizard(beadsPath string, historyProvider *correlation.Provider) error {
 	wizard := export.NewWizard(beadsPath)
 
 	// Run interactive wizard to collect configuration
@@ -7235,7 +7156,7 @@ func runPagesWizard(beadsPath string) error {
 	// Export history data for time-travel feature if requested
 	if config.IncludeHistory {
 		fmt.Println("  -> Generating time-travel history data...")
-		if historyReport, err := generateHistoryForExport(exportIssues); err == nil && historyReport != nil {
+		if historyReport, err := generateHistoryForExport(exportIssues, historyProvider); err == nil && historyReport != nil {
 			historyPath := filepath.Join(bundlePath, "data", "history.json")
 			if historyJSON, err := json.MarshalIndent(historyReport, "", "  "); err == nil {
 				if err := os.WriteFile(historyPath, historyJSON, 0644); err != nil {
@@ -8222,27 +8143,14 @@ type TimeTravelCommit struct {
 }
 
 // generateHistoryForExport creates time-travel history data from git history
-func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) {
+func generateHistoryForExport(issues []model.Issue, provider *correlation.Provider) (*TimeTravelHistory, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
 
-	// Check if we're in a git repository
-	if err := validateCorrelationRepository(cwd); err != nil {
+	if err := validateCorrelationProvider(provider, cwd); err != nil {
 		return nil, err
-	}
-
-	beadsPath := ""
-	if historyModeValue == "git" {
-		beadsDir, err := loader.GetBeadsDir("")
-		if err != nil {
-			return nil, err
-		}
-		beadsPath, err = loader.FindJSONLPath(beadsDir)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	// Build bead info from issues
@@ -8267,8 +8175,7 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 	// the per-commit event cache. Without this the watcher re-materialized the
 	// entire blob history on every re-export. BV_NO_CACHE=1 still opts out.
 	correlation.SetDiskCacheEnabled(true)
-	correlator := newCorrelationCorrelator(cwd, beadsPath)
-	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{
+	report, err := provider.GenerateReportCached(context.Background(), beadInfos, correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for time-travel
 	})
 	if err != nil {
@@ -8360,8 +8267,6 @@ func generateHistoryForExport(issues []model.Issue) (*TimeTravelHistory, error) 
 }
 
 var robotOutputFormat = "json"
-var hubConfigPath string
-var historyModeValue = "git"
 var robotToonEncodeOptions = toon.DefaultEncodeOptions()
 var robotShowToonStats bool
 

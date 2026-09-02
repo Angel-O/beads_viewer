@@ -114,7 +114,7 @@ func TestIssueDetailSectionOrder(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 200})
 	m = updated.(Model)
-	m.hubConfigPath = "hub.yaml"
+	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.historyView.SetReport(&correlation.HistoryReport{
 		Histories: map[string]correlation.BeadHistory{
 			"selected": {

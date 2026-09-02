@@ -28,8 +28,7 @@ func TestLoadHistoryWithProviderOffFeedsTUIModel(t *testing.T) {
 	cmd := loadHistoryWithProviderCmd(
 		[]model.Issue{{ID: "work-1", Title: "Work", Status: model.StatusOpen, IssueType: model.TypeBug}},
 		"",
-		correlation.HistoryModeOff,
-		"",
+		correlation.NewDisabledProvider(),
 	)
 	msg, ok := cmd().(HistoryLoadedMsg)
 	if !ok {

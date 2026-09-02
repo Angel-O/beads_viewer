@@ -313,7 +313,7 @@ func TestCommentAddWithoutRegisteredRepositoryPathDoesNotInvokeWBD(t *testing.T)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	m := commentActionModel()
-	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
+	m.runtimeServices.CatalogPath = filepath.Join(t.TempDir(), "hub.yaml")
 	m.repositoryCatalog = repositorypkg.Catalog{{
 		ID:   "ctx:repo",
 		Name: "repo",
@@ -539,11 +539,11 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 	m.width, m.height = 120, 40
 	m.beadsPath = issuesPath
-	m.hubConfigPath = configPath
+	m.runtimeServices.CatalogPath = configPath
 	m.hubRepositoryMode = true
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:     issuesPath,
-		HubConfigPath: configPath,
+		CatalogPath:   configPath,
 		DebounceDelay: time.Millisecond,
 		IdleGC:        &IdleGCConfig{Enabled: false},
 	})
@@ -633,7 +633,7 @@ func targetedCommentModel(t *testing.T) Model {
 	}
 	m := NewModel(issues, nil, filepath.Join(t.TempDir(), "issues.jsonl"))
 	m.width, m.height = 120, 40
-	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
+	m.runtimeServices.CatalogPath = filepath.Join(t.TempDir(), "hub.yaml")
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:repo", Name: "repo", Path: t.TempDir(), Kind: repositorypkg.IdentityExact}}
 	m.list.Select(1)
@@ -732,7 +732,7 @@ func TestTargetedCommentRefreshDecodeFailureFallsBack(t *testing.T) {
 
 func TestTargetedCommentRefreshRoutingFailureFallsBack(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "B", Title: "Selected", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, filepath.Join(t.TempDir(), "issues.jsonl"))
-	m.hubConfigPath = filepath.Join(t.TempDir(), "hub.yaml")
+	m.runtimeServices.CatalogPath = filepath.Join(t.TempDir(), "hub.yaml")
 	m.hubRepositoryMode = true
 	updated, fallback := m.Update(commentAddedMsg{issueID: "B"})
 	m = updated.(Model)

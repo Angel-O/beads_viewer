@@ -682,14 +682,14 @@ func CheckAgentFileCmd(workDir string) tea.Cmd {
 
 // LoadHistoryCmd returns a command that loads history data in the background
 func LoadHistoryCmd(issues []model.Issue, beadsPath string) tea.Cmd {
-	return loadHistoryWithProviderCmd(issues, beadsPath, correlation.HistoryModeGit, "")
+	return loadHistoryWithProviderCmd(issues, beadsPath, nil)
 }
 
-func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, mode correlation.HistoryMode, hubConfig string) tea.Cmd {
-	return loadHistoryWithProviderGenerationCmd(issues, beadsPath, mode, hubConfig, 0)
+func loadHistoryWithProviderCmd(issues []model.Issue, beadsPath string, provider *correlation.Provider) tea.Cmd {
+	return loadHistoryWithProviderGenerationCmd(issues, beadsPath, provider, 0)
 }
 
-func loadHistoryWithProviderGenerationCmd(issues []model.Issue, beadsPath string, mode correlation.HistoryMode, hubConfig string, generation uint64) tea.Cmd {
+func loadHistoryWithProviderGenerationCmd(issues []model.Issue, beadsPath string, provider *correlation.Provider, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		var repoPath string
 		var err error
@@ -741,15 +741,14 @@ func loadHistoryWithProviderGenerationCmd(issues []model.Issue, beadsPath string
 			}
 		}
 
-		correlator := correlation.NewCorrelator(repoPath, correlationPath).WithHistoryMode(mode)
-		if hubConfig != "" {
-			correlator.WithHubConfig(hubConfig)
+		if provider == nil {
+			provider = correlation.NewGitProvider(repoPath, correlationPath)
 		}
 		opts := correlation.CorrelatorOptions{
 			Limit: 500, // Reasonable limit for TUI performance
 		}
 
-		report, err := correlator.GenerateReport(beads, opts)
+		report, err := provider.GenerateReport(context.Background(), beads, opts)
 		return HistoryLoadedMsg{Report: report, Error: err, Generation: generation}
 	}
 }
@@ -836,8 +835,7 @@ type Model struct {
 	analysis                  *analysis.GraphStats
 	beadsPath                 string // Path to beads.jsonl for reloading
 	semanticPath              string // Stable repository or dataset identity for semantic caching
-	hubConfigPath             string
-	historyMode               correlation.HistoryMode
+	runtimeServices           RuntimeServices
 	hubRepositoryMode         bool
 	repositoryCatalog         repositorypkg.Catalog
 	hubScope                  hub.HubScope
@@ -1374,9 +1372,23 @@ func (m *Model) issuesForAsync() []model.Issue {
 	return m.issues
 }
 
-// NewModel creates a new Model from the given issues
-// beadsPath is the path to the beads.jsonl file for live reload support
-func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string) Model {
+// NewModel creates a new Model from the given issues.
+// beadsPath is the path to the selected issue source for live reload support.
+// The optional runtime services are supplied by the CLI composition boundary.
+func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath string, serviceArgs ...RuntimeServices) Model {
+	var runtimeServices RuntimeServices
+	if len(serviceArgs) > 0 {
+		runtimeServices = serviceArgs[0]
+	}
+	selectedIssuePath := runtimeServices.SelectedIssuePath
+	if selectedIssuePath == "" {
+		selectedIssuePath = beadsPath
+	}
+	issueChangePath := runtimeServices.IssueChangePath
+	if issueChangePath == "" {
+		issueChangePath = beadsPath
+	}
+	metadataChangePaths := runtimeServices.MetadataChangePaths
 	// Graph Analysis - Phase 1 is instant, Phase 2 runs in background
 	analyzer := analysis.NewAnalyzer(issues)
 	graphStats := analyzer.AnalyzeAsync(context.Background())
@@ -1649,11 +1661,14 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		hubChangeSignal = ""
 	}
 
-	if beadsPath != "" && (backgroundModeRequested || hubChangeSignal != "") {
+	if issueChangePath != "" && (backgroundModeRequested || hubChangeSignal != "") {
 		bw, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:       beadsPath,
-			DebounceDelay:   200 * time.Millisecond,
-			HubChangeSignal: hubChangeSignal,
+			BeadsPath:           beadsPath,
+			SelectedIssuePath:   selectedIssuePath,
+			IssueChangePath:     issueChangePath,
+			MetadataChangePaths: metadataChangePaths,
+			DebounceDelay:       200 * time.Millisecond,
+			HubChangeSignal:     hubChangeSignal,
 		})
 		if err != nil {
 			backgroundModeErr = err
@@ -1662,8 +1677,8 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 
-	if beadsPath != "" && backgroundWorker == nil {
-		w, err := watcher.NewWatcher(beadsPath,
+	if issueChangePath != "" && backgroundWorker == nil {
+		w, err := watcher.NewWatcher(issueChangePath,
 			watcher.WithDebounceDuration(200*time.Millisecond),
 		)
 		if err != nil {
@@ -1734,6 +1749,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		analyzer:               analyzer,
 		analysis:               graphStats,
 		beadsPath:              beadsPath,
+		runtimeServices:        runtimeServices,
 		semanticPath:           beadsPath,
 		hubScope:               hub.NewAllItemsHubScope(),
 		watcher:                fileWatcher,
@@ -1835,12 +1851,14 @@ func hubAutoRefreshEnabled(value string) bool {
 	}
 }
 
-// SetHistoryProvider configures the shared TUI history provider.
-func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
-	m.historyMode = mode
-	m.hubConfigPath = path
-	m.hubRepositoryMode = path != "" && mode != correlation.HistoryModeGit
-	if path == "" {
+// SetRuntimeServices installs the already-resolved services used by the TUI.
+func (m *Model) SetRuntimeServices(services RuntimeServices) {
+	m.runtimeServices = services
+	if services.SemanticDatasetPath != "" {
+		m.semanticPath = services.SemanticDatasetPath
+	}
+	m.hubRepositoryMode = services.RepositoryPresentation
+	if services.CatalogPath == "" {
 		return
 	}
 	if err := m.reloadRepositoryCatalog(); err != nil {
@@ -1848,12 +1866,20 @@ func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 		m.statusIsError = true
 	}
 	m.refreshRepositoryPresentation()
-	autoRefresh := hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
+	autoRefresh := m.hubAutoRefreshEnabled()
 	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
+		selectedIssuePath := services.SelectedIssuePath
+		if selectedIssuePath == "" {
+			selectedIssuePath = m.beadsPath
+		}
 		worker, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:     m.beadsPath,
-			DebounceDelay: 200 * time.Millisecond,
-			HubConfigPath: path,
+			BeadsPath:           m.beadsPath,
+			SelectedIssuePath:   selectedIssuePath,
+			IssueChangePath:     services.IssueChangePath,
+			MetadataChangePaths: services.MetadataChangePaths,
+			DebounceDelay:       200 * time.Millisecond,
+			CatalogPath:         services.CatalogPath,
+			CatalogLoader:       services.CatalogLoader,
 		})
 		if err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
@@ -1863,11 +1889,33 @@ func (m *Model) SetHistoryProvider(mode correlation.HistoryMode, path string) {
 			m.snapshotInitPending = len(m.issues) == 0
 		}
 	} else if m.backgroundWorker != nil {
-		if err := m.backgroundWorker.SetHubConfigPath(path, autoRefresh); err != nil {
+		if err := m.backgroundWorker.SetCatalogPath(services.CatalogPath, autoRefresh); err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
 			m.statusIsError = true
 		}
 	}
+}
+
+func (m Model) hubAutoRefreshEnabled() bool {
+	if m.runtimeServices.RefreshResolved {
+		return m.runtimeServices.HubAutoRefresh
+	}
+	return hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
+}
+
+func (m Model) catalogPath() string {
+	return m.runtimeServices.CatalogPath
+}
+
+func (m Model) runtimeHistoryProvider() *correlation.Provider {
+	if m.runtimeServices.HistoryProvider != nil {
+		return m.runtimeServices.HistoryProvider
+	}
+	workDir := m.workDir
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
+	return correlation.NewGitProvider(workDir, resolveHistoryCorrelationPath(m.beadsPath, workDir))
 }
 
 // SetRepositoryCatalogIssues provides the unfiltered issue universe used for
@@ -1909,14 +1957,18 @@ func (m *Model) reloadRepositoryCatalog() error {
 		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false)
 		return nil
 	}
-	if strings.TrimSpace(m.hubConfigPath) == "" {
+	if strings.TrimSpace(m.catalogPath()) == "" {
 		return nil
 	}
 	issues := m.issues
 	if m.repositoryCatalogIssues != nil {
 		issues = m.repositoryCatalogIssues
 	}
-	catalog, err := hub.LoadRepositoryCatalog(m.hubConfigPath, issues)
+	loader := m.runtimeServices.CatalogLoader
+	if loader == nil {
+		loader = hub.LoadRepositoryCatalog
+	}
+	catalog, err := loader(m.catalogPath(), issues)
 	if err != nil {
 		return err
 	}
@@ -2054,7 +2106,7 @@ func (m Model) Init() tea.Cmd {
 	}
 	// Start loading history in background
 	if len(m.issues) > 0 {
-		cmds = append(cmds, loadHistoryWithProviderCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath))
+		cmds = append(cmds, loadHistoryWithProviderCmd(m.issuesForAsync(), m.beadsPath, m.runtimeHistoryProvider()))
 	}
 	// Check for AGENTS.md integration prompt (bv-i8dk)
 	if m.workDir != "" && !m.workspaceMode {
@@ -2539,10 +2591,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case HubSourceRefreshCompleteMsg:
-		if m.historyMode == correlation.HistoryModeExternal && len(m.issues) > 0 {
+		if m.runtimeServices.ExternalHistory && len(m.issues) > 0 {
 			m.historyGeneration++
 			m.historyLoading = true
-			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.runtimeHistoryProvider(), m.historyGeneration))
 		}
 		if m.backgroundWorker != nil {
 			cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
@@ -2682,7 +2734,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.historyGeneration++
 		m.historyLoading = len(m.issues) > 0
 		if m.historyLoading {
-			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.runtimeHistoryProvider(), m.historyGeneration))
 		} else {
 			m.historyReport = nil
 			m.historyView.SetReport(nil)
@@ -2910,7 +2962,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep semantic index current when enabled.
 		if m.semanticSearchEnabled && !m.semanticIndexBuilding {
 			m.semanticIndexBuilding = true
-			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.hubConfigPath, m.historyMode))
+			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.runtimeServices.SemanticStorePath))
 		}
 
 		// Reload sprints (bv-161)
@@ -3135,7 +3187,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.historyGeneration++
 		m.historyLoading = len(m.issues) > 0
 		if m.historyLoading {
-			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.historyMode, m.hubConfigPath, m.historyGeneration))
+			cmds = append(cmds, loadHistoryWithProviderGenerationCmd(m.issuesForAsync(), m.beadsPath, m.runtimeHistoryProvider(), m.historyGeneration))
 		} else {
 			m.historyReport = nil
 			m.historyView.SetReport(nil)
@@ -3374,7 +3426,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep semantic index current when enabled.
 		if m.semanticSearchEnabled && !m.semanticIndexBuilding {
 			m.semanticIndexBuilding = true
-			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.hubConfigPath, m.historyMode))
+			cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.runtimeServices.SemanticStorePath))
 		}
 
 		if cacheHit {
@@ -3421,12 +3473,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if autoAllowed {
 				bw, err := NewBackgroundWorker(WorkerConfig{
-					BeadsPath:     m.beadsPath,
-					DebounceDelay: 200 * time.Millisecond,
+					BeadsPath:           m.beadsPath,
+					SelectedIssuePath:   m.runtimeServices.SelectedIssuePath,
+					IssueChangePath:     m.runtimeServices.IssueChangePath,
+					MetadataChangePaths: m.runtimeServices.MetadataChangePaths,
+					DebounceDelay:       200 * time.Millisecond,
+					CatalogLoader:       m.runtimeServices.CatalogLoader,
 				})
 				if err == nil {
-					if m.hubConfigPath != "" {
-						err = bw.SetHubConfigPath(m.hubConfigPath, hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")))
+					if m.catalogPath() != "" {
+						err = bw.SetCatalogPath(m.catalogPath(), m.hubAutoRefreshEnabled())
 					}
 				}
 				if err == nil {
@@ -3956,7 +4012,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !m.semanticSearch.Snapshot().Ready && !m.semanticIndexBuilding {
 						m.semanticIndexBuilding = true
 						m.statusMsg = "Semantic search: building index…"
-						cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.hubConfigPath, m.historyMode))
+						cmds = append(cmds, BuildSemanticIndexCmd(m.issuesForAsync(), m.semanticPath, m.runtimeServices.SemanticStorePath))
 					} else if !m.semanticSearch.Snapshot().Ready && m.semanticIndexBuilding {
 						m.statusMsg = "Semantic search: indexing…"
 					} else {
@@ -5551,10 +5607,10 @@ func (m Model) getCommitURL(repository, sha string) (string, error) {
 	repository = strings.TrimSpace(repository)
 	repositoryDir := strings.TrimSpace(m.workDir)
 	if repository != "" {
-		if strings.TrimSpace(m.hubConfigPath) == "" {
+		if strings.TrimSpace(m.catalogPath()) == "" {
 			return "", fmt.Errorf("repository %q has no Hub configuration", repository)
 		}
-		config, err := hub.Resolve(m.hubConfigPath)
+		config, err := hub.Resolve(m.catalogPath())
 		if err != nil {
 			return "", fmt.Errorf("resolving Hub repository %q: %w", repository, err)
 		}
@@ -10015,13 +10071,6 @@ func (m Model) IsWorkspaceMode() bool {
 
 // enterHistoryView loads correlation data and shows the history view
 func (m *Model) enterHistoryView() {
-	cwd, err := os.Getwd()
-	if err != nil {
-		m.statusMsg = "Cannot get working directory for history"
-		m.statusIsError = true
-		return
-	}
-
 	// Convert model.Issue to correlation.BeadInfo
 	beads := make([]correlation.BeadInfo, len(m.issues))
 	for i, issue := range m.issues {
@@ -10034,21 +10083,12 @@ func (m *Model) enterHistoryView() {
 		}
 	}
 
-	// Load correlation data. History correlations come from the git history of
-	// the JSONL export, so redirect a DB (or other non-JSONL) selection to the
-	// git-tracked JSONL — see resolveHistoryCorrelationPath and bv #171. Without
-	// this, a beads.db that is a few ms newer than issues.jsonl (the normal state
-	// after `br sync`) silently yields a correlation-free history view.
-	correlationPath := resolveHistoryCorrelationPath(m.beadsPath, cwd)
-	correlator := correlation.NewCorrelator(cwd, correlationPath).WithHistoryMode(m.historyMode)
-	if m.hubConfigPath != "" {
-		correlator.WithHubConfig(m.hubConfigPath)
-	}
+	provider := m.runtimeHistoryProvider()
 	opts := correlation.CorrelatorOptions{
 		Limit: 500, // Reasonable limit for TUI performance
 	}
 
-	report, err := correlator.GenerateReport(beads, opts)
+	report, err := provider.GenerateReport(context.Background(), beads, opts)
 	if err != nil {
 		m.statusMsg = fmt.Sprintf("History load failed: %v", err)
 		m.statusIsError = true

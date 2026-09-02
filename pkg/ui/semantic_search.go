@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 
@@ -501,20 +500,12 @@ func BuildHybridMetricsCmd(issues []model.Issue) tea.Cmd {
 }
 
 // BuildSemanticIndexCmd builds or updates the semantic index for the given issues.
-func BuildSemanticIndexCmd(issues []model.Issue, datasetPath, hubConfigPath string, historyMode correlation.HistoryMode) tea.Cmd {
+func BuildSemanticIndexCmd(issues []model.Issue, datasetPath, hubStore string) tea.Cmd {
 	return func() tea.Msg {
 		cfg := search.EmbeddingConfigFromEnv()
 		embedder, err := search.NewEmbedderFromConfig(cfg)
 		if err != nil {
 			return SemanticIndexReadyMsg{Error: err}
-		}
-
-		hubStore := ""
-		if historyMode == correlation.HistoryModeExternal {
-			hubStore, err = correlation.HubConfigStore(hubConfigPath)
-			if err != nil {
-				return SemanticIndexReadyMsg{Error: fmt.Errorf("resolving Hub store for semantic index: %w", err)}
-			}
 		}
 
 		indexPath, err := search.SemanticIndexPath(datasetPath, hubStore, cfg)

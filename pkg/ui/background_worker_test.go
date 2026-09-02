@@ -45,6 +45,30 @@ func TestBackgroundWorker_NewWithoutPath(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorkerUsesResolvedIssuePaths(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "beads.db")
+	issueChange := filepath.Join(root, "issues.jsonl")
+	metadata := filepath.Join(root, "metadata.jsonl")
+	for _, path := range []string{selected, issueChange, metadata} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		SelectedIssuePath:   selected,
+		IssueChangePath:     issueChange,
+		MetadataChangePaths: []string{metadata},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if worker.beadsPath != selected || worker.issueChangePath != issueChange || len(worker.metadataChangePaths) != 1 || worker.metadataChangePaths[0] != metadata {
+		t.Fatalf("worker paths = %#v/%#v/%#v", worker.beadsPath, worker.issueChangePath, worker.metadataChangePaths)
+	}
+}
+
 func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testing.T) {
 	m := Model{
 		activeRepos:       map[string]bool{"ctx:a": true, "ctx:removed": true},
@@ -521,8 +545,8 @@ func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", filepath.Join(directory, "viewer-generation"))
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetHistoryProvider("external", configPath)
-	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigPath != configPath {
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
+	if m.backgroundWorker == nil || m.backgroundWorker.catalogPath != configPath {
 		t.Fatal("manual catalog refresh was not configured")
 	}
 	if m.backgroundWorker.hubConfigWatcher != nil || m.backgroundWorker.hubChangeWatcher != nil {
@@ -546,7 +570,7 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	if m.backgroundWorker != nil || m.watcher == nil {
 		t.Fatal("direct mode did not start with the ordinary file watcher")
 	}
-	m.SetHistoryProvider("external", configPath)
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigWatcher == nil || m.watcher == nil {
 		t.Fatal("Hub provider did not retain the file watcher during worker transition")
 	}
@@ -584,7 +608,7 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetHistoryProvider("external", configPath)
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.watcher == nil || !m.watcher.IsStarted() {
 		t.Fatal("Hub transition did not retain a live fallback watcher")
 	}
@@ -609,7 +633,7 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRepositoryCatalogIssues(nil)
-	m.SetHistoryProvider("external", configPath)
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:empty" || m.repositoryCatalog[0].BeadCount != 0 {
 		t.Fatalf("empty Hub catalog = %#v", m.repositoryCatalog)
 	}
@@ -629,7 +653,7 @@ func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
 	}
 	m := NewModel(filtered, nil, "")
 	m.SetRepositoryCatalogIssues(all)
-	m.SetHistoryProvider("external", configPath)
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
 	if got := catalogEntry(m.repositoryCatalog, "ctx:a").BeadCount; got != 2 {
 		t.Fatalf("unfiltered startup count = %d, want 2", got)
 	}
@@ -684,7 +708,7 @@ func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) 
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/team/a/repo", "ctx:zero": "/team/zero"})
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:       issuesPath,
-		HubConfigPath:   configPath,
+		CatalogPath:     configPath,
 		SourceRetryBase: time.Hour,
 	})
 	if err != nil {
@@ -749,7 +773,7 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 	}
 	repositories := map[string]string{"ctx:a": "/a"}
 	writeWorkerHubConfig(t, configPath, repositories)
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath, SourceRetryBase: time.Hour})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, SourceRetryBase: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +818,7 @@ func TestBackgroundWorkerPairsSnapshotAndCatalogInOneMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath, MessageBuffer: 1})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, MessageBuffer: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -822,7 +846,7 @@ func TestBackgroundWorkerCatalogGenerationSuppressesStaleResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -858,7 +882,7 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 	if err := os.WriteFile(issuesPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +932,7 @@ func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, HubConfigPath: configPath, DebounceDelay: 5 * time.Millisecond})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, DebounceDelay: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2069,7 +2093,7 @@ func countMessagesOfType[T any](messages []tea.Msg) int {
 func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t *testing.T) {
 	issue := model.Issue{ID: "fixture-1", Title: "Fixture", Status: model.StatusOpen, IssueType: model.TypeTask}
 	m := NewModel([]model.Issue{issue}, nil, "")
-	m.SetHistoryProvider(correlation.HistoryModeExternal, "fixture-hub.yaml")
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider("fixture-hub.yaml"), CatalogPath: "fixture-hub.yaml", RepositoryPresentation: true, ExternalHistory: true})
 	m.backgroundWorker = &BackgroundWorker{}
 	m.snapshot = &DataSnapshot{CreatedAt: time.Now().Add(-3 * time.Minute)}
 	m.historyGeneration = 4

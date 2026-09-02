@@ -172,16 +172,18 @@ type workerMetrics struct {
 // off the UI thread.
 type BackgroundWorker struct {
 	// Configuration
-	beadsPath         string
-	hubConfigPath     string
-	debounceDelay     time.Duration
-	heartbeatInterval time.Duration
-	watchdogInterval  time.Duration
-	heartbeatTimeout  time.Duration
-	processingTimeout time.Duration
-	maxRecoveries     int
-	sourceRetryBase   time.Duration
-	sourceRetryMax    time.Duration
+	beadsPath           string
+	issueChangePath     string
+	metadataChangePaths []string
+	catalogPath         string
+	debounceDelay       time.Duration
+	heartbeatInterval   time.Duration
+	watchdogInterval    time.Duration
+	heartbeatTimeout    time.Duration
+	processingTimeout   time.Duration
+	maxRecoveries       int
+	sourceRetryBase     time.Duration
+	sourceRetryMax      time.Duration
 
 	// State
 	mu                  sync.RWMutex
@@ -270,9 +272,13 @@ type IdleGCConfig struct {
 
 // WorkerConfig configures the BackgroundWorker.
 type WorkerConfig struct {
-	BeadsPath     string
-	DebounceDelay time.Duration
-	MessageBuffer int // Buffer size for worker -> UI messages (default: 8)
+	BeadsPath           string
+	SelectedIssuePath   string
+	IssueChangePath     string
+	MetadataChangePaths []string
+	DebounceDelay       time.Duration
+	MessageBuffer       int // Buffer size for worker -> UI messages (default: 8)
+	CatalogLoader       func(string, []model.Issue) (repositorypkg.Catalog, error)
 
 	IdleGC *IdleGCConfig
 
@@ -283,7 +289,7 @@ type WorkerConfig struct {
 	ProcessingTimeout time.Duration // default: 30s
 	MaxRecoveries     int           // default: 3
 	HubChangeSignal   string        // application-owned Hub generation file
-	HubConfigPath     string        // Hub config containing the repository registry
+	CatalogPath       string        // Resolved repository catalog source
 	SourceRetryBase   time.Duration // default: 1s
 	SourceRetryMax    time.Duration // default: 30s
 }
@@ -360,27 +366,37 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		}
 	}
 
+	selectedIssuePath := cfg.SelectedIssuePath
+	if selectedIssuePath == "" {
+		selectedIssuePath = cfg.BeadsPath
+	}
+	issueChangePath := cfg.IssueChangePath
+	if issueChangePath == "" {
+		issueChangePath = selectedIssuePath
+	}
 	w := &BackgroundWorker{
-		beadsPath:         cfg.BeadsPath,
-		hubConfigPath:     cfg.HubConfigPath,
-		debounceDelay:     cfg.DebounceDelay,
-		heartbeatInterval: cfg.HeartbeatInterval,
-		watchdogInterval:  cfg.WatchdogInterval,
-		heartbeatTimeout:  cfg.HeartbeatTimeout,
-		processingTimeout: cfg.ProcessingTimeout,
-		maxRecoveries:     cfg.MaxRecoveries,
-		sourceRetryBase:   cfg.SourceRetryBase,
-		sourceRetryMax:    cfg.SourceRetryMax,
-		state:             WorkerIdle,
-		msgCh:             make(chan tea.Msg, cfg.MessageBuffer),
-		ctx:               ctx,
-		cancel:            cancel,
-		done:              make(chan struct{}),
-		logLevel:          logLevel,
-		logJSON:           logJSON,
-		metricsEnabled:    metricsEnabled,
-		tracePath:         tracePath,
-		catalogLoader:     hub.LoadRepositoryCatalog,
+		beadsPath:           selectedIssuePath,
+		issueChangePath:     issueChangePath,
+		metadataChangePaths: append([]string(nil), cfg.MetadataChangePaths...),
+		catalogPath:         cfg.CatalogPath,
+		debounceDelay:       cfg.DebounceDelay,
+		heartbeatInterval:   cfg.HeartbeatInterval,
+		watchdogInterval:    cfg.WatchdogInterval,
+		heartbeatTimeout:    cfg.HeartbeatTimeout,
+		processingTimeout:   cfg.ProcessingTimeout,
+		maxRecoveries:       cfg.MaxRecoveries,
+		sourceRetryBase:     cfg.SourceRetryBase,
+		sourceRetryMax:      cfg.SourceRetryMax,
+		state:               WorkerIdle,
+		msgCh:               make(chan tea.Msg, cfg.MessageBuffer),
+		ctx:                 ctx,
+		cancel:              cancel,
+		done:                make(chan struct{}),
+		logLevel:            logLevel,
+		logJSON:             logJSON,
+		metricsEnabled:      metricsEnabled,
+		tracePath:           tracePath,
+		catalogLoader:       cfg.CatalogLoader,
 
 		idleGCEnabled:     idleGCConfig.Enabled,
 		idleGCThreshold:   idleGCConfig.Threshold,
@@ -389,11 +405,14 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		idleGCGCPercent:   idleGCConfig.GCPercent,
 		idleGCFunc:        runtime.GC,
 	}
+	if w.catalogLoader == nil {
+		w.catalogLoader = hub.LoadRepositoryCatalog
+	}
 	w.lastActivityUnixNano.Store(time.Now().UnixNano())
 
 	// Initialize file watcher
-	if cfg.BeadsPath != "" {
-		fw, err := watcher.NewWatcher(cfg.BeadsPath,
+	if w.issueChangePath != "" {
+		fw, err := watcher.NewWatcher(w.issueChangePath,
 			watcher.WithDebounceDuration(cfg.DebounceDelay),
 		)
 		if err != nil {
@@ -411,8 +430,8 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		}
 		w.hubChangeWatcher = hubWatcher
 	}
-	if cfg.HubConfigPath != "" {
-		configWatcher, err := watcher.NewWatcher(cfg.HubConfigPath,
+	if cfg.CatalogPath != "" {
+		configWatcher, err := watcher.NewWatcher(cfg.CatalogPath,
 			watcher.WithDebounceDuration(cfg.DebounceDelay),
 			watcher.WithContentCheck(true),
 		)
@@ -1092,10 +1111,10 @@ func (w *BackgroundWorker) markCatalogDirty() {
 	w.mu.Unlock()
 }
 
-// SetHubConfigPath configures repository catalog loading before the worker starts.
+// SetCatalogPath configures repository catalog loading before the worker starts.
 // watch controls live config replacement observation; manual refresh still loads
 // the catalog when watching is disabled.
-func (w *BackgroundWorker) SetHubConfigPath(path string, watch bool) error {
+func (w *BackgroundWorker) SetCatalogPath(path string, watch bool) error {
 	if w == nil || strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -1104,7 +1123,7 @@ func (w *BackgroundWorker) SetHubConfigPath(path string, watch bool) error {
 	if w.started {
 		return errors.New("cannot configure Hub catalog after worker start")
 	}
-	w.hubConfigPath = path
+	w.catalogPath = path
 	if watch {
 		configWatcher, err := watcher.NewWatcher(path,
 			watcher.WithDebounceDuration(w.debounceDelay),
@@ -1370,7 +1389,7 @@ func (w *BackgroundWorker) process() {
 	sourceRefreshUnchanged := refreshBDExport && snapshot == nil && w.lastError == nil
 	catalogChanged := false
 	catalogRecovered := false
-	if !catalogStale && w.hubConfigPath != "" {
+	if !catalogStale && w.catalogPath != "" {
 		if catalogErr != nil {
 			w.catalogFailed = true
 		} else {
@@ -1438,7 +1457,7 @@ func (w *BackgroundWorker) process() {
 			ContextlessBeadCount:  contextlessBeadCount,
 			ContextlessCountReady: contextlessCountReady,
 			CatalogGeneration:     catalogGeneration,
-			CatalogAvailable:      !catalogStale && catalogErr == nil && w.hubConfigPath != "",
+			CatalogAvailable:      !catalogStale && catalogErr == nil && w.catalogPath != "",
 			CatalogChanged:        !catalogStale && catalogChanged,
 			CatalogRecovered:      !catalogStale && catalogRecovered,
 			CatalogError:          deliveredCatalogErr,
@@ -1464,7 +1483,7 @@ func (w *BackgroundWorker) process() {
 				w.send(RepositoryCatalogReadyMsg{
 					Catalog:               catalog,
 					ContextlessBeadCount:  contextlessBeadCount,
-					ContextlessCountReady: w.hubConfigPath != "",
+					ContextlessCountReady: w.catalogPath != "",
 					Generation:            catalogGeneration,
 					Recovered:             catalogRecovered,
 				})
@@ -1566,7 +1585,7 @@ func (w *BackgroundWorker) scheduleSourceRetry() {
 
 func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repositorypkg.Catalog, int, bool, error) {
 	w.mu.RLock()
-	path := w.hubConfigPath
+	path := w.catalogPath
 	current := w.snapshot
 	w.mu.RUnlock()
 	if path == "" {

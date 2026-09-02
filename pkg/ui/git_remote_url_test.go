@@ -75,7 +75,7 @@ func TestGetCommitURLUsesCorrelatedCommitRepository(t *testing.T) {
 		"ctx:github-111": githubRepository,
 		"ctx:gitlab-222": gitlabRepository,
 	})
-	m := Model{workDir: localRepository, hubConfigPath: configPath}
+	m := Model{workDir: localRepository, runtimeServices: RuntimeServices{CatalogPath: configPath}}
 
 	tests := []struct {
 		name       string
@@ -181,7 +181,7 @@ func historyOpenTestModel(repository, sha, configPath string) Model {
 		}
 	}
 	m := NewModel(nil, nil, "")
-	m.hubConfigPath = configPath
+	m.runtimeServices.CatalogPath = configPath
 	m.historyView = NewHistoryModel(report, testTheme())
 	m.isHistoryView = true
 	m.focused = focusHistory

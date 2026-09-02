@@ -277,7 +277,7 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 }
 
 func (m *Model) hubRepositoryPresentation() bool {
-	return !m.workspaceMode && strings.TrimSpace(m.hubConfigPath) != ""
+	return !m.workspaceMode && strings.TrimSpace(m.catalogPath()) != ""
 }
 
 func (m *Model) decorateIssueItem(item *IssueItem) {
@@ -422,7 +422,7 @@ func (m Model) usesHubScope() bool {
 	if m.workspaceMode {
 		return false
 	}
-	if m.hubRepositoryMode || strings.TrimSpace(m.hubConfigPath) != "" {
+	if m.hubRepositoryMode || strings.TrimSpace(m.catalogPath()) != "" {
 		return true
 	}
 	for _, repository := range m.repositoryCatalog {
