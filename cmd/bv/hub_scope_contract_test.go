@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -55,7 +56,7 @@ func TestHubRobotInsightsFiltersCandidatesBeforeTopKCap(t *testing.T) {
 		}
 	}
 
-	scope, err := model.NewSelectedContextsHubScope([]string{selectedContext})
+	scope, err := hub.NewSelectedContextsHubScope([]string{selectedContext})
 	if err != nil {
 		t.Fatal(err)
 	}

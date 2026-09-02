@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -512,7 +513,7 @@ func TestRenderFooterStatusAndBadges(t *testing.T) {
 	m.updateTag = "v9.9.9"
 	m.workspaceMode = true
 	m.workspaceSummary = "2 repos"
-	m.repositoryCatalog = model.RepositoryCatalog{
+	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "api", Name: "api"},
 		{ID: "web", Name: "web"},
 	}
@@ -530,7 +531,7 @@ func TestRenderFooterStatusAndBadges(t *testing.T) {
 func TestRepositoryScopeBadgeIsResponsiveAndPersistsWithStatus(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{
+	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "ctx:api", Name: "api"},
 		{ID: "ctx:web", Name: "web"},
 		{ID: "ctx:worker", Name: "worker"},
@@ -558,7 +559,7 @@ func TestRepositoryScopeBadgeSurvivesLongNormalFooterContent(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.hubRepositoryMode = true
 	m.width = 48
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:api", Name: "api"}, {ID: "ctx:web", Name: "web"}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:api", Name: "api"}, {ID: "ctx:web", Name: "web"}}
 	m.activeRepos = map[string]bool{"ctx:api": true}
 	m.currentFilter = "recipe:" + strings.Repeat("very-long-filter-", 5)
 
@@ -574,7 +575,7 @@ func TestRepositoryScopeBadgeSurvivesLongNormalFooterContent(t *testing.T) {
 func TestRepositoryScopeBadgeTakesPriorityOverNarrowStatus(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.hubRepositoryMode = true
-	m.repositoryCatalog = model.RepositoryCatalog{{ID: "ctx:api", Name: "api"}, {ID: "ctx:web", Name: "web"}}
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:api", Name: "api"}, {ID: "ctx:web", Name: "web"}}
 	m.activeRepos = map[string]bool{"ctx:api": true}
 	m.statusMsg = strings.Repeat("status ", 10)
 	for _, width := range []int{24, 12} {

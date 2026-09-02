@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
@@ -32,7 +33,7 @@ type BoardModel struct {
 	// Issue lookup map: ID -> *Issue for getting blocker titles (bv-kklp)
 	issueMap              map[string]*model.Issue
 	candidateIDs          map[string]bool
-	repositoryCatalog     model.RepositoryCatalog
+	repositoryCatalog     repository.Catalog
 	hubPresentation       bool
 	currentRepositoryID   string
 	preferredRepositories map[string]bool
@@ -66,8 +67,8 @@ type BoardModel struct {
 
 // SetRepositoryPresentation updates Hub-only display metadata, primary-context
 // preference, and invalidates rendered details for stable selected issues.
-func (b *BoardModel) SetRepositoryPresentation(catalog model.RepositoryCatalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool) {
-	b.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+func (b *BoardModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool) {
+	b.repositoryCatalog = append(repository.Catalog(nil), catalog...)
 	b.hubPresentation = enabled
 	b.currentRepositoryID = currentRepositoryID
 	b.preferredRepositories = preferredRepositories

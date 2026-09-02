@@ -6,6 +6,24 @@ import (
 	"time"
 )
 
+func TestRepositoryAwareIdentityKeys(t *testing.T) {
+	if got := CommitIdentity("repo-a", "abc"); got != "repo-a:abc" {
+		t.Fatalf("qualified commit identity = %q", got)
+	}
+	if got := CommitIdentity("repo-b", "abc"); got == CommitIdentity("repo-a", "abc") {
+		t.Fatal("same SHA from different repositories collided")
+	}
+	if got := CommitIdentity("", "abc"); got != "abc" {
+		t.Fatalf("legacy commit identity = %q", got)
+	}
+	if got := FileIdentity("repo-a", "pkg/file.go"); got != "repo-a:pkg/file.go" {
+		t.Fatalf("qualified file identity = %q", got)
+	}
+	if got := FileIdentity("", "pkg/file.go"); got != "pkg/file.go" {
+		t.Fatalf("legacy file identity = %q", got)
+	}
+}
+
 func TestEventType_String(t *testing.T) {
 	tests := []struct {
 		e    EventType

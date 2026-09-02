@@ -12,6 +12,14 @@ import (
 	"gonum.org/v1/gonum/graph/topo"
 )
 
+// LabelPredicate controls which labels are admitted to label-result sets.
+// A nil predicate admits every label.
+type LabelPredicate func(label string) bool
+
+func labelAllowed(predicate LabelPredicate, label string) bool {
+	return predicate == nil || predicate(label)
+}
+
 // ============================================================================
 // Label Health Types (bv-100)
 // Foundation for all label-centric analysis features
@@ -207,21 +215,15 @@ type LabelAnalysisResult struct {
 	AttentionNeeded []string        `json:"attention_needed"`           // Labels requiring attention
 }
 
-func isContextLabel(label string) bool {
-	return strings.HasPrefix(label, "ctx:")
-}
-
 // ComputeCrossLabelFlow analyzes blocking dependencies between labels and returns counts.
 // It respects cfg.IncludeClosedInFlow: when false, closed issues are ignored.
-func ComputeCrossLabelFlow(issues []model.Issue, cfg LabelHealthConfig) CrossLabelFlow {
-	labels := ExtractLabels(issues)
-	labelList := make([]string, 0, len(labels.Labels))
-	for _, label := range labels.Labels {
-		if !isContextLabel(label) {
-			labelList = append(labelList, label)
-		}
+func ComputeCrossLabelFlow(issues []model.Issue, cfg LabelHealthConfig, predicates ...LabelPredicate) CrossLabelFlow {
+	var predicate LabelPredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
 	}
-	sort.Strings(labelList)
+	labels := ExtractLabels(issues, predicate)
+	labelList := labels.Labels
 
 	n := len(labelList)
 	matrix := make([][]int, n)
@@ -472,9 +474,12 @@ func ComputeFreshnessMetrics(issues []model.Issue, now time.Time, staleDays int)
 
 // ComputeLabelHealthForLabel computes health for a single label.
 // If stats is nil, it will compute graph stats once for the provided issues.
-func ComputeLabelHealthForLabel(label string, issues []model.Issue, cfg LabelHealthConfig, now time.Time, stats *GraphStats) LabelHealth {
+func ComputeLabelHealthForLabel(label string, issues []model.Issue, cfg LabelHealthConfig, now time.Time, stats *GraphStats, predicates ...LabelPredicate) LabelHealth {
 	health := NewLabelHealth(label)
 	health.Issues = []string{}
+	if len(predicates) > 0 && !labelAllowed(predicates[0], label) {
+		return health
+	}
 
 	// Collect issues with this label
 	var labeled []model.Issue
@@ -633,8 +638,12 @@ func ComputeLabelHealthForLabel(label string, issues []model.Issue, cfg LabelHea
 }
 
 // ComputeAllLabelHealth computes health for all labels in the issue set.
-func ComputeAllLabelHealth(issues []model.Issue, cfg LabelHealthConfig, now time.Time, stats *GraphStats) LabelAnalysisResult {
-	labels := ExtractLabels(issues)
+func ComputeAllLabelHealth(issues []model.Issue, cfg LabelHealthConfig, now time.Time, stats *GraphStats, predicates ...LabelPredicate) LabelAnalysisResult {
+	var predicate LabelPredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
+	}
+	labels := ExtractLabels(issues, predicate)
 	result := LabelAnalysisResult{
 		GeneratedAt:     now,
 		TotalLabels:     labels.LabelCount,
@@ -657,7 +666,7 @@ func ComputeAllLabelHealth(issues []model.Issue, cfg LabelHealthConfig, now time
 	}
 
 	for _, label := range labels.Labels {
-		health := ComputeLabelHealthForLabel(label, issues, cfg, now, fullStats)
+		health := ComputeLabelHealthForLabel(label, issues, cfg, now, fullStats, predicate)
 		result.Labels = append(result.Labels, health)
 		summary := LabelSummary{
 			Label:          label,
@@ -837,7 +846,11 @@ type LabelExtractionResult struct {
 
 // ExtractLabels extracts unique labels from a slice of issues with statistics
 // Handles edge cases: nil issues, empty labels, duplicate labels
-func ExtractLabels(issues []model.Issue) LabelExtractionResult {
+func ExtractLabels(issues []model.Issue, predicates ...LabelPredicate) LabelExtractionResult {
+	var predicate LabelPredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
+	}
 	result := LabelExtractionResult{
 		Stats:     make(map[string]*LabelStats),
 		Labels:    []string{},
@@ -860,7 +873,7 @@ func ExtractLabels(issues []model.Issue) LabelExtractionResult {
 		// Process each label on the issue
 		for _, label := range issue.Labels {
 			// Skip empty labels
-			if label == "" {
+			if label == "" || !labelAllowed(predicate, label) {
 				continue
 			}
 
@@ -1923,13 +1936,17 @@ type LabelAttentionResult struct {
 // - staleness_factor: 1 + (stale_count / open_count), higher if issues are stale
 // - block_impact: Number of issues blocked by this label
 // - velocity: Recent closures (higher = healthier, less attention needed)
-func ComputeLabelAttentionScores(issues []model.Issue, cfg LabelHealthConfig, now time.Time) LabelAttentionResult {
+func ComputeLabelAttentionScores(issues []model.Issue, cfg LabelHealthConfig, now time.Time, predicates ...LabelPredicate) LabelAttentionResult {
 	result := LabelAttentionResult{
 		GeneratedAt: now,
 		Labels:      []LabelAttentionScore{},
 	}
 
-	labels := ExtractLabels(issues)
+	var predicate LabelPredicate
+	if len(predicates) > 0 {
+		predicate = predicates[0]
+	}
+	labels := ExtractLabels(issues, predicate)
 	if labels.LabelCount == 0 {
 		return result
 	}
@@ -1943,9 +1960,6 @@ func ComputeLabelAttentionScores(issues []model.Issue, cfg LabelHealthConfig, no
 	// Compute attention for each label
 	var scores []LabelAttentionScore
 	for _, label := range labels.Labels {
-		if isContextLabel(label) {
-			continue
-		}
 		score := computeLabelAttention(label, issues, issueMap, cfg, now)
 		scores = append(scores, score)
 	}
@@ -2265,8 +2279,8 @@ func ComputeHistoricalVelocity(issues []model.Issue, label string, numWeeks int,
 }
 
 // ComputeAllHistoricalVelocity computes historical velocity for all labels
-func ComputeAllHistoricalVelocity(issues []model.Issue, numWeeks int, now time.Time) map[string]HistoricalVelocity {
-	labels := ExtractLabels(issues)
+func ComputeAllHistoricalVelocity(issues []model.Issue, numWeeks int, now time.Time, predicates ...LabelPredicate) map[string]HistoricalVelocity {
+	labels := ExtractLabels(issues, predicates...)
 	result := make(map[string]HistoricalVelocity, labels.LabelCount)
 
 	for _, label := range labels.Labels {

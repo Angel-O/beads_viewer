@@ -4253,7 +4253,7 @@ func main() {
 				report.CommitIndex = make(correlation.CommitIndex)
 				for beadID, history := range report.Histories {
 					for _, commit := range history.Commits {
-						key := correlation.CommitIdentity(commit)
+						key := correlation.CommitIdentity(commit.Repository, commit.SHA)
 						report.CommitIndex[key] = append(report.CommitIndex[key], beadID)
 					}
 				}

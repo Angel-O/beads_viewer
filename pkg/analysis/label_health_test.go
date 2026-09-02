@@ -265,6 +265,17 @@ func TestComputeCrossLabelFlow(t *testing.T) {
 	_ = now // suppress unused if future additions use time
 }
 
+func TestLabelResultsAdmitContextLabelsByDefault(t *testing.T) {
+	issues := []model.Issue{{ID: "one", Labels: []string{"ctx:one"}, Status: model.StatusOpen}}
+	if got := ExtractLabels(issues); got.Labels[0] != "ctx:one" {
+		t.Fatalf("default labels = %v, want ctx:one", got.Labels)
+	}
+	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig())
+	if len(flow.Labels) != 1 || flow.Labels[0] != "ctx:one" {
+		t.Fatalf("default flow labels = %v, want ctx:one", flow.Labels)
+	}
+}
+
 func TestComputeCrossLabelFlowExcludesContextLabels(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "mixed-blocker", Labels: []string{"ctx:project-one", "api", "myctx:keep", "Ctx:upper"}, Status: model.StatusOpen},
@@ -275,7 +286,7 @@ func TestComputeCrossLabelFlowExcludesContextLabels(t *testing.T) {
 		{ID: "blocked-by-unlabeled", Labels: []string{"ops"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "unlabeled-blocker", Type: model.DepBlocks}}},
 	}
 
-	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig())
+	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig(), func(label string) bool { return !strings.HasPrefix(label, "ctx:") })
 	wantLabels := []string{"Ctx:upper", "api", "docs", "myctx:keep", "ops", "web"}
 	if fmt.Sprint(flow.Labels) != fmt.Sprint(wantLabels) {
 		t.Fatalf("labels = %v, want %v", flow.Labels, wantLabels)
@@ -307,7 +318,7 @@ func TestComputeCrossLabelFlowWithOnlyContextLabels(t *testing.T) {
 		{ID: "unlabeled", Status: model.StatusOpen},
 	}
 
-	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig())
+	flow := ComputeCrossLabelFlow(issues, DefaultLabelHealthConfig(), func(label string) bool { return !strings.HasPrefix(label, "ctx:") })
 	if len(flow.Labels) != 0 || len(flow.FlowMatrix) != 0 || len(flow.Dependencies) != 0 || len(flow.BottleneckLabels) != 0 || flow.TotalCrossLabelDeps != 0 {
 		t.Fatalf("context-only flow should be empty: %+v", flow)
 	}
@@ -1698,7 +1709,7 @@ func TestComputeLabelAttentionScoresExcludesContextLabels(t *testing.T) {
 		{ID: "mixed", Labels: []string{"ctx:project-one", "api", "Ctx:upper", "myctx:keep"}, Status: model.StatusOpen, UpdatedAt: now},
 	}
 
-	result := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now)
+	result := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now, func(label string) bool { return !strings.HasPrefix(label, "ctx:") })
 	wantLabels := []string{"Ctx:upper", "api", "myctx:keep"}
 	if result.TotalLabels != len(wantLabels) {
 		t.Fatalf("TotalLabels = %d, want %d", result.TotalLabels, len(wantLabels))
@@ -1720,7 +1731,7 @@ func TestComputeLabelAttentionScoresWithOnlyContextLabels(t *testing.T) {
 		{ID: "two", Labels: []string{"ctx:project-two"}, Status: model.StatusOpen, UpdatedAt: now},
 	}
 
-	result := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now)
+	result := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now, func(label string) bool { return !strings.HasPrefix(label, "ctx:") })
 	if result.TotalLabels != 0 || len(result.Labels) != 0 || len(result.TopAttention) != 0 || len(result.LowAttention) != 0 {
 		t.Fatalf("context-only attention result should have empty label lists: %+v", result)
 	}
@@ -1746,7 +1757,7 @@ func TestComputeLabelAttentionScoresDerivesRankingFromRetainedLabels(t *testing.
 	)
 
 	want := ComputeLabelAttentionScores(ordinaryIssues, DefaultLabelHealthConfig(), now)
-	got := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now)
+	got := ComputeLabelAttentionScores(issues, DefaultLabelHealthConfig(), now, func(label string) bool { return !strings.HasPrefix(label, "ctx:") })
 	if got.TotalLabels != want.TotalLabels || got.MaxScore != want.MaxScore || got.MinScore != want.MinScore {
 		t.Fatalf("attention totals/bounds changed by context label: got %+v, want %+v", got, want)
 	}

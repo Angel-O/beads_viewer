@@ -2036,6 +2036,7 @@ func TestKeyDispatch_FlowMatrixExcludesContextLabels(t *testing.T) {
 		{ID: "frontend", Title: "Frontend", Labels: []string{"ctx:project-two", "frontend"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "backend", Type: model.DepBlocks}}},
 	}
 	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
 
 	updated, _ := m.Update(keyMsg("f"))
 	m = updated.(Model)
@@ -2069,6 +2070,7 @@ func TestKeyDispatch_FlowMatrixContextOnlySelectionSafety(t *testing.T) {
 		{ID: "two", Title: "Two", Labels: []string{"ctx:project-two"}, Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "one", Type: model.DepBlocks}}},
 	}
 	m := NewModel(issues, nil, "")
+	m.hubConfigPath = "hub.yaml"
 
 	updated, _ := m.Update(keyMsg("f"))
 	m = updated.(Model)

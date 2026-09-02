@@ -17,7 +17,6 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"golang.org/x/term"
 )
 
@@ -179,7 +178,7 @@ func (r runner) run(arguments []string) int {
 	if selectedMode == modeLocal {
 		viewerDirectory = gitRoot
 	} else {
-		var hubScope model.HubScope
+		var hubScope hub.HubScope
 		if scopeRequest.explicit {
 			hubScope, err = r.resolveHubScope(paths.Config, scopeRequest)
 			if err != nil {
@@ -268,37 +267,37 @@ func parseHubScopeRequest(arguments []string) (hubScopeRequest, []string, error)
 	return request, remaining, nil
 }
 
-func (r runner) resolveHubScope(configPath string, request hubScopeRequest) (model.HubScope, error) {
+func (r runner) resolveHubScope(configPath string, request hubScopeRequest) (hub.HubScope, error) {
 	if request.contextless && len(request.contexts) == 0 {
-		return model.NewContextlessHubScope(), nil
+		return hub.NewContextlessHubScope(), nil
 	}
 	config, err := hub.Resolve(configPath)
 	if len(request.contexts) > 0 {
 		if err != nil {
-			return model.HubScope{}, fmt.Errorf("loading registered Hub contexts: %w", err)
+			return hub.HubScope{}, fmt.Errorf("loading registered Hub contexts: %w", err)
 		}
-		var scope model.HubScope
+		var scope hub.HubScope
 		var scopeErr error
 		if request.contextless {
-			scope, scopeErr = model.NewSelectedContextsAndContextlessHubScope(request.contexts)
+			scope, scopeErr = hub.NewSelectedContextsAndContextlessHubScope(request.contexts)
 		} else {
-			scope, scopeErr = model.NewSelectedContextsHubScope(request.contexts)
+			scope, scopeErr = hub.NewSelectedContextsHubScope(request.contexts)
 		}
 		if scopeErr != nil {
-			return model.HubScope{}, scopeErr
+			return hub.HubScope{}, scopeErr
 		}
 		for _, contextID := range scope.Contexts {
 			if _, registered := config.Repositories[contextID]; !registered {
-				return model.HubScope{}, fmt.Errorf("Hub context is not registered: %s", contextID)
+				return hub.HubScope{}, fmt.Errorf("Hub context is not registered: %s", contextID)
 			}
 		}
 		return scope, nil
 	}
 	if request.explicit {
-		return model.HubScope{}, errors.New("at least one --context value is required")
+		return hub.HubScope{}, errors.New("at least one --context value is required")
 	}
 	if err != nil {
-		return model.NewAllItemsHubScope(), nil
+		return hub.NewAllItemsHubScope(), nil
 	}
 	resolveContext := r.hubContext
 	if resolveContext == nil {
@@ -306,12 +305,12 @@ func (r runner) resolveHubScope(configPath string, request hubScopeRequest) (mod
 	}
 	current, contextErr := resolveContext(r.directory)
 	if contextErr != nil {
-		return model.NewAllItemsHubScope(), nil
+		return hub.NewAllItemsHubScope(), nil
 	}
 	if _, registered := config.Repositories[current]; !registered {
-		return model.NewAllItemsHubScope(), nil
+		return hub.NewAllItemsHubScope(), nil
 	}
-	return model.NewSelectedContextsHubScope([]string{current})
+	return hub.NewSelectedContextsHubScope([]string{current})
 }
 
 func hubAutoRefreshEnabled(value string) bool {

@@ -15,7 +15,7 @@ import (
 )
 
 type hubScopeProjection struct {
-	scope     model.HubScope
+	scope     hub.HubScope
 	issues    map[string]model.Issue
 	inScopeID map[string]bool
 	label     string
@@ -36,7 +36,7 @@ type hubScopeRobotEncoder struct {
 	projection *hubScopeProjection
 }
 
-func parseHubRobotScope(raw, configPath string, hubMode, robotMode bool) (*model.HubScope, error) {
+func parseHubRobotScope(raw, configPath string, hubMode, robotMode bool) (*hub.HubScope, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
@@ -45,7 +45,7 @@ func parseHubRobotScope(raw, configPath string, hubMode, robotMode bool) (*model
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(raw))
 	decoder.DisallowUnknownFields()
-	var scope model.HubScope
+	var scope hub.HubScope
 	if err := decoder.Decode(&scope); err != nil {
 		return nil, fmt.Errorf("decoding wrapper Hub scope: %w", err)
 	}
@@ -55,7 +55,7 @@ func parseHubRobotScope(raw, configPath string, hubMode, robotMode bool) (*model
 	if err := scope.Validate(); err != nil {
 		return nil, fmt.Errorf("validating wrapper Hub scope: %w", err)
 	}
-	if scope.Mode == model.HubScopeSelectedContexts {
+	if scope.Mode == hub.HubScopeSelectedContexts {
 		config, err := hub.Resolve(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("loading registered Hub contexts: %w", err)
@@ -70,7 +70,7 @@ func parseHubRobotScope(raw, configPath string, hubMode, robotMode bool) (*model
 	return &clone, nil
 }
 
-func newHubScopeProjection(scope model.HubScope, issues []model.Issue, label string) (*hubScopeProjection, error) {
+func newHubScopeProjection(scope hub.HubScope, issues []model.Issue, label string) (*hubScopeProjection, error) {
 	if err := scope.Validate(); err != nil {
 		return nil, err
 	}
@@ -99,12 +99,12 @@ func issueHasExactLabel(issue model.Issue, label string) bool {
 	return false
 }
 
-func hubScopeContains(scope model.HubScope, issue model.Issue) bool {
+func hubScopeContains(scope hub.HubScope, issue model.Issue) bool {
 	return scope.MatchesLabels(issue.Labels)
 }
 
 func (p *hubScopeProjection) issuesInScope(issues []model.Issue) []model.Issue {
-	if p == nil || (p.scope.Mode == model.HubScopeAllItems && p.label == "") {
+	if p == nil || (p.scope.Mode == hub.HubScopeAllItems && p.label == "") {
 		return issues
 	}
 	result := make([]model.Issue, 0, len(issues))

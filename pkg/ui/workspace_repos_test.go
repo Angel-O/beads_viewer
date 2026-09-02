@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 // =============================================================================
@@ -124,10 +125,10 @@ func TestWorkspaceRepositoryCatalogUsesDistinctIdentityKind(t *testing.T) {
 	if len(catalog) != 3 {
 		t.Fatalf("catalog length = %d, want 3", len(catalog))
 	}
-	byID := make(map[string]model.RepositoryCatalogEntry, len(catalog))
+	byID := make(map[string]repositorypkg.CatalogEntry, len(catalog))
 	for _, entry := range catalog {
 		byID[entry.ID] = entry
-		if entry.Kind != model.RepositoryIdentityWorkspacePrefix {
+		if entry.Kind != repositorypkg.IdentityPrefix {
 			t.Fatalf("entry %q kind = %q", entry.ID, entry.Kind)
 		}
 	}

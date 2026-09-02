@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 func normalizeRepoKey(raw string) string {
@@ -42,14 +43,14 @@ func normalizeRepoPrefixes(prefixes []string) []string {
 	return out
 }
 
-func workspaceRepositoryCatalog(prefixes []string, repositories []WorkspaceRepositoryInfo, issues []model.Issue) model.RepositoryCatalog {
+func workspaceRepositoryCatalog(prefixes []string, repositories []WorkspaceRepositoryInfo, issues []model.Issue) repositorypkg.Catalog {
 	counts := make(map[string]int, len(prefixes))
 	for _, issue := range issues {
 		if key := issueRepoKey(issue); key != "" {
 			counts[key]++
 		}
 	}
-	catalog := make(model.RepositoryCatalog, 0, len(prefixes))
+	catalog := make(repositorypkg.Catalog, 0, len(prefixes))
 	metadata := make(map[string]WorkspaceRepositoryInfo, len(repositories))
 	for _, repository := range repositories {
 		if key := normalizeRepoKey(repository.Prefix); key != "" {
@@ -62,16 +63,16 @@ func workspaceRepositoryCatalog(prefixes []string, repositories []WorkspaceRepos
 		if name == "" {
 			name = key
 		}
-		catalog = append(catalog, model.RepositoryCatalogEntry{
+		catalog = append(catalog, repositorypkg.CatalogEntry{
 			ID:        key,
 			Name:      name,
 			Path:      repository.Path,
 			Detail:    repository.Path,
 			BeadCount: counts[key],
-			Kind:      model.RepositoryIdentityWorkspacePrefix,
+			Kind:      repositorypkg.IdentityPrefix,
 		})
 	}
-	model.SortRepositoryCatalog(catalog)
+	repositorypkg.SortCatalog(catalog)
 	return catalog
 }
 

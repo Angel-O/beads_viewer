@@ -17,6 +17,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -60,6 +61,13 @@ type RobotContext struct {
 	DiffHistoricalIssues  []model.Issue
 	DiffResolvedRevision  string
 	HubProjection         *hubScopeProjection
+}
+
+func (ctx RobotContext) labelPredicate() analysis.LabelPredicate {
+	if ctx.HubProjection != nil {
+		return hub.AdmitLabel
+	}
+	return nil
 }
 
 type RobotRegistry struct {
@@ -1450,7 +1458,7 @@ func registerPhaseThreeRobotHandlers(registry *RobotRegistry, cfg phaseThreeRobo
 
 func handleRobotLabelHealth(ctx RobotContext) error {
 	cfg := analysis.DefaultLabelHealthConfig()
-	results := analysis.ComputeAllLabelHealth(ctx.Issues, cfg, time.Now().UTC(), nil)
+	results := analysis.ComputeAllLabelHealth(ctx.Issues, cfg, time.Now().UTC(), nil, ctx.labelPredicate())
 
 	output := struct {
 		GeneratedAt    string                       `json:"generated_at"`
@@ -1478,7 +1486,7 @@ func handleRobotLabelHealth(ctx RobotContext) error {
 
 func handleRobotLabelFlow(ctx RobotContext) error {
 	cfg := analysis.DefaultLabelHealthConfig()
-	flow := analysis.ComputeCrossLabelFlow(ctx.Issues, cfg)
+	flow := analysis.ComputeCrossLabelFlow(ctx.Issues, cfg, hub.AdmitLabel)
 	output := struct {
 		GeneratedAt string                     `json:"generated_at"`
 		DataHash    string                     `json:"data_hash"`
@@ -1505,7 +1513,7 @@ func handleRobotLabelFlow(ctx RobotContext) error {
 }
 
 func handleRobotLabelAttention(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
-	result := analysis.ComputeLabelAttentionScores(ctx.Issues, analysis.DefaultLabelHealthConfig(), time.Now().UTC())
+	result := analysis.ComputeLabelAttentionScores(ctx.Issues, analysis.DefaultLabelHealthConfig(), time.Now().UTC(), ctx.labelPredicate())
 
 	limit := 5
 	if cfg.AttentionLimit != nil {
@@ -2313,7 +2321,7 @@ func handleRobotHistory(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 		report.CommitIndex = make(correlation.CommitIndex)
 		for beadID, history := range report.Histories {
 			for _, commit := range history.Commits {
-				key := correlation.CommitIdentity(commit)
+				key := correlation.CommitIdentity(commit.Repository, commit.SHA)
 				report.CommitIndex[key] = append(report.CommitIndex[key], beadID)
 			}
 		}
@@ -2471,7 +2479,7 @@ func resolveCorrelatedCommit(commits []correlation.CorrelatedCommit, sha string)
 		}
 		commitSHA := strings.ToLower(commits[i].SHA)
 		shortSHA := strings.ToLower(commits[i].ShortSHA)
-		identity := correlation.CommitIdentity(commits[i])
+		identity := correlation.CommitIdentity(commits[i].Repository, commits[i].SHA)
 		if (commitSHA == sha || shortSHA == sha || strings.HasPrefix(commitSHA, sha)) && !seen[identity] {
 			matches = append(matches, commitMatch{index: i, sha: identity})
 			seen[identity] = true
@@ -2564,7 +2572,7 @@ func handleRobotExplainCorrelation(ctx RobotContext, cfg phaseThreeRobotHandlerC
 	}
 
 	explanation := correlation.NewScorer().BuildExplanation(*targetCommit, beadID)
-	if fb, ok := feedbackStore.Get(correlation.CommitIdentity(*targetCommit), beadID); ok {
+	if fb, ok := feedbackStore.Get(correlation.CommitIdentity(targetCommit.Repository, targetCommit.SHA), beadID); ok {
 		explanation.Recommendation = fmt.Sprintf("Already has feedback: %s", fb.Type)
 	}
 	output := struct {
@@ -2628,7 +2636,7 @@ func handleRobotCorrelationFeedback(ctx RobotContext, cfg phaseThreeRobotHandler
 		return newReportedRobotHandlerExit(1)
 	}
 	originalConf := targetCommit.Confidence
-	commitSHA = correlation.CommitIdentity(*targetCommit)
+	commitSHA = correlation.CommitIdentity(targetCommit.Repository, targetCommit.SHA)
 
 	feedbackBy := "cli"
 	if cfg.CorrelationFeedbackBy != nil && strings.TrimSpace(*cfg.CorrelationFeedbackBy) != "" {

@@ -29,6 +29,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
@@ -838,8 +839,8 @@ type Model struct {
 	hubConfigPath             string
 	historyMode               correlation.HistoryMode
 	hubRepositoryMode         bool
-	repositoryCatalog         model.RepositoryCatalog
-	hubScope                  model.HubScope
+	repositoryCatalog         repositorypkg.Catalog
+	hubScope                  hub.HubScope
 	repositoryCatalogIssues   []model.Issue
 	contextlessBeadCountValue int
 	contextlessCountReady     bool
@@ -1082,7 +1083,7 @@ type labelFlowSummary struct {
 // getCrossFlowsForLabel returns outgoing cross-label dependency counts for a label
 func (m Model) getCrossFlowsForLabel(label string) labelFlowSummary {
 	cfg := analysis.DefaultLabelHealthConfig()
-	flow := analysis.ComputeCrossLabelFlow(m.repositoryIssues, cfg)
+	flow := analysis.ComputeCrossLabelFlow(m.repositoryIssues, cfg, m.labelPredicate())
 	out := labelFlowSummary{}
 	inCounts := make(map[string]int)
 	outCounts := make(map[string]int)
@@ -1734,7 +1735,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		analysis:               graphStats,
 		beadsPath:              beadsPath,
 		semanticPath:           beadsPath,
-		hubScope:               model.NewAllItemsHubScope(),
+		hubScope:               hub.NewAllItemsHubScope(),
 		watcher:                fileWatcher,
 		snapshotInitPending:    backgroundWorker != nil && len(issues) == 0,
 		backgroundWorker:       backgroundWorker,
@@ -1892,7 +1893,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 		beforeScope := m.HubScope()
 		beforeRepos := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
-		m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+		m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
 		contextSortFallback := m.normalizeContextSortMode()
 		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
 		if scopeChanged {
@@ -1941,7 +1942,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	return nil
 }
 
-func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, generation uint64, changed, recovered bool, err error) {
+func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, generation uint64, changed, recovered bool, err error) {
 	if m.workspaceMode || generation < m.catalogGeneration {
 		return
 	}
@@ -1954,11 +1955,11 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog model.RepositoryCatalog, ge
 	if changed {
 		beforeScope := m.HubScope()
 		beforeRepos := sortedRepoKeys(m.activeRepos)
-		m.repositoryCatalog = append(model.RepositoryCatalog(nil), catalog...)
+		m.repositoryCatalog = append(repositorypkg.Catalog(nil), catalog...)
 		if m.usesHubScope() {
 			m.reconcileHubScopeCatalog()
 		} else {
-			m.activeRepos = model.ReconcileRepositorySelection(m.activeRepos, m.repositoryCatalog)
+			m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
 		}
 		contextSortFallback := m.normalizeContextSortMode()
 		m.repositoryCatalogReady = true
@@ -2435,7 +2436,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.labelHealthCached = false
 		if m.focused == focusLabelDashboard {
 			cfg := analysis.DefaultLabelHealthConfig()
-			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
 			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -3315,7 +3316,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				attentionStart = time.Now()
 			}
 			cfg := analysis.DefaultLabelHealthConfig()
-			m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
+			m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC(), m.labelPredicate())
 			m.attentionCached = true
 			attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 			m.rebuildInsightsPanel()
@@ -4652,7 +4653,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Compute label health (fast; phase1 metrics only needed) with caching
 				if !m.labelHealthCached {
 					cfg := analysis.DefaultLabelHealthConfig()
-					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis)
+					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
 					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 					m.labelHealthCached = true
 				}
@@ -4665,7 +4666,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.attentionOrigin = m.focused
 				if !m.attentionCached {
 					cfg := analysis.DefaultLabelHealthConfig()
-					m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC())
+					m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC(), m.labelPredicate())
 					m.attentionCached = true
 				}
 				attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
@@ -7886,7 +7887,7 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 		return ""
 	}
 	selectedCount := len(m.activeRepos)
-	if m.hubRepositoryMode && m.hubScope.Mode == model.HubScopeContextless {
+	if m.hubRepositoryMode && m.hubScope.Mode == hub.HubScopeContextless {
 		return lipgloss.NewStyle().
 			Background(ThemeBg("#45B7D1")).
 			Foreground(ColorBg).
@@ -8977,7 +8978,7 @@ type contextSortGroup struct {
 func (m Model) contextSortGroupForIssue(issue model.Issue) contextSortGroup {
 	namesByID := make(map[string]string, len(m.repositoryCatalog))
 	for _, repository := range m.repositoryCatalog {
-		if repository.Kind != model.RepositoryIdentityHubContext {
+		if repository.Kind != repositorypkg.IdentityExact {
 			continue
 		}
 		name := repository.Name

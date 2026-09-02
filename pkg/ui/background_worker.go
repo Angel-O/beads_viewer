@@ -28,6 +28,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
 )
 
@@ -202,8 +203,8 @@ type BackgroundWorker struct {
 	sourceRetryTimer    *time.Timer
 	catalogRetryTimer   *time.Timer
 	catalogGeneration   uint64
-	catalog             model.RepositoryCatalog
-	catalogLoader       func(string, []model.Issue) (model.RepositoryCatalog, error)
+	catalog             repositorypkg.Catalog
+	catalogLoader       func(string, []model.Issue) (repositorypkg.Catalog, error)
 	catalogFailed       bool
 	currentRecipe       *recipe.Recipe
 	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
@@ -1563,7 +1564,7 @@ func (w *BackgroundWorker) scheduleSourceRetry() {
 	w.mu.Unlock()
 }
 
-func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (model.RepositoryCatalog, int, bool, error) {
+func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repositorypkg.Catalog, int, bool, error) {
 	w.mu.RLock()
 	path := w.hubConfigPath
 	current := w.snapshot
@@ -2241,7 +2242,7 @@ type SnapshotReadyMsg struct {
 	SnapshotVer           uint64
 	QueueDepth            int64
 	CoalesceCount         int64
-	Catalog               model.RepositoryCatalog
+	Catalog               repositorypkg.Catalog
 	ContextlessBeadCount  int
 	ContextlessCountReady bool
 	CatalogGeneration     uint64
@@ -2269,7 +2270,7 @@ type HubSourceRefreshCompleteMsg struct{}
 
 // RepositoryCatalogReadyMsg carries independently refreshed Hub metadata.
 type RepositoryCatalogReadyMsg struct {
-	Catalog               model.RepositoryCatalog
+	Catalog               repositorypkg.Catalog
 	ContextlessBeadCount  int
 	ContextlessCountReady bool
 	Generation            uint64

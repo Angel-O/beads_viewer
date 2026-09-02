@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"gopkg.in/yaml.v3"
 )
 
@@ -111,6 +112,130 @@ func Contexts(labels []string) []string {
 	}
 	sort.Strings(contexts)
 	return contexts
+}
+
+// IsContextLabel recognizes Hub-owned context labels exactly as stored.
+// Context matching is intentionally case-sensitive; only lowercase "ctx:"
+// labels are Hub metadata.
+func IsContextLabel(label string) bool { return strings.HasPrefix(label, "ctx:") }
+
+// AdmitLabel reports whether a label is available to Hub label analysis.
+func AdmitLabel(label string) bool { return !IsContextLabel(label) }
+
+// HubScopeMode identifies the candidate projection applied to the canonical
+// Hub issue universe.
+type HubScopeMode string
+
+const (
+	HubScopeAllItems         HubScopeMode = "all_items"
+	HubScopeSelectedContexts HubScopeMode = "contexts"
+	HubScopeContextless      HubScopeMode = "contextless"
+)
+
+// HubScope is an explicit Hub candidate selector. Contexts is populated only
+// for HubScopeSelectedContexts and is always sorted and unique.
+type HubScope struct {
+	Mode               HubScopeMode `json:"mode"`
+	Contexts           []string     `json:"contexts"`
+	IncludeContextless bool         `json:"include_contextless,omitempty"`
+}
+
+// NewAllItemsHubScope selects every loaded Hub issue exactly once.
+func NewAllItemsHubScope() HubScope { return HubScope{Mode: HubScopeAllItems, Contexts: []string{}} }
+
+// NewSelectedContextsHubScope selects issues whose ctx labels intersect the supplied set.
+func NewSelectedContextsHubScope(contexts []string) (HubScope, error) {
+	return newSelectedContextsHubScope(contexts, false)
+}
+
+// NewSelectedContextsAndContextlessHubScope selects selected contexts plus contextless issues.
+func NewSelectedContextsAndContextlessHubScope(contexts []string) (HubScope, error) {
+	return newSelectedContextsHubScope(contexts, true)
+}
+
+func newSelectedContextsHubScope(contexts []string, includeContextless bool) (HubScope, error) {
+	normalized := append([]string(nil), contexts...)
+	sort.Strings(normalized)
+	unique := normalized[:0]
+	for _, contextID := range normalized {
+		if contextID == "" || !IsContextLabel(contextID) {
+			return HubScope{}, fmt.Errorf("invalid Hub context identity: %q", contextID)
+		}
+		if len(unique) == 0 || unique[len(unique)-1] != contextID {
+			unique = append(unique, contextID)
+		}
+	}
+	if len(unique) == 0 {
+		return HubScope{}, fmt.Errorf("selected Hub contexts cannot be empty")
+	}
+	return HubScope{Mode: HubScopeSelectedContexts, Contexts: unique, IncludeContextless: includeContextless}, nil
+}
+
+// NewContextlessHubScope selects issues with no lowercase ctx: labels.
+func NewContextlessHubScope() HubScope {
+	return HubScope{Mode: HubScopeContextless, Contexts: []string{}}
+}
+
+// Validate checks that the scope is one of the supported explicit variants.
+func (s HubScope) Validate() error {
+	switch s.Mode {
+	case HubScopeAllItems, HubScopeContextless:
+		if len(s.Contexts) != 0 {
+			return fmt.Errorf("Hub scope %q cannot include contexts", s.Mode)
+		}
+		if s.IncludeContextless {
+			return fmt.Errorf("Hub scope %q cannot set include_contextless", s.Mode)
+		}
+		return nil
+	case HubScopeSelectedContexts:
+		normalized, err := newSelectedContextsHubScope(s.Contexts, s.IncludeContextless)
+		if err != nil {
+			return err
+		}
+		if len(normalized.Contexts) != len(s.Contexts) {
+			return fmt.Errorf("selected Hub contexts must be unique")
+		}
+		for i := range normalized.Contexts {
+			if normalized.Contexts[i] != s.Contexts[i] {
+				return fmt.Errorf("selected Hub contexts must be sorted")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid Hub scope mode: %q", s.Mode)
+	}
+}
+
+// MatchesLabels reports whether labels belong to this candidate scope.
+func (s HubScope) MatchesLabels(labels []string) bool {
+	if s.Mode == HubScopeAllItems {
+		return true
+	}
+	selected := make(map[string]bool, len(s.Contexts))
+	for _, contextID := range s.Contexts {
+		selected[contextID] = true
+	}
+	hasContext := false
+	for _, label := range labels {
+		if !IsContextLabel(label) {
+			continue
+		}
+		hasContext = true
+		if s.Mode == HubScopeSelectedContexts && selected[label] {
+			return true
+		}
+	}
+	if hasContext {
+		return false
+	}
+	return s.Mode == HubScopeContextless || s.Mode == HubScopeSelectedContexts && s.IncludeContextless
+}
+
+// Clone returns a detached copy suitable for API boundaries.
+func (s HubScope) Clone() HubScope {
+	clone := s
+	clone.Contexts = append([]string(nil), s.Contexts...)
+	return clone
 }
 
 // AdmitIssue validates the complete proposed membership before persistence.
@@ -336,7 +461,7 @@ type Registration struct {
 
 // LoadRepositoryCatalog loads only Hub configuration and builds repository
 // metadata from the complete issue set. It never opens the correlation ledger.
-func LoadRepositoryCatalog(path string, issues []model.Issue) (model.RepositoryCatalog, error) {
+func LoadRepositoryCatalog(path string, issues []model.Issue) (repository.Catalog, error) {
 	config, err := Resolve(path)
 	if err != nil {
 		return nil, err
@@ -354,19 +479,19 @@ func LoadRepositoryCatalog(path string, issues []model.Issue) (model.RepositoryC
 	}
 
 	names := shortestUniqueRepositoryNames(config.Repositories)
-	catalog := make(model.RepositoryCatalog, 0, len(config.Repositories))
+	catalog := make(repository.Catalog, 0, len(config.Repositories))
 	for _, context := range sortedRepositoryKeys(config.Repositories) {
 		path := config.Repositories[context].Path
-		catalog = append(catalog, model.RepositoryCatalogEntry{
+		catalog = append(catalog, repository.CatalogEntry{
 			ID:        context,
 			Name:      names[context],
 			Path:      path,
 			Detail:    path,
 			BeadCount: counts[context],
-			Kind:      model.RepositoryIdentityHubContext,
+			Kind:      repository.IdentityExact,
 		})
 	}
-	model.SortRepositoryCatalog(catalog)
+	repository.SortCatalog(catalog)
 	return catalog, nil
 }
 

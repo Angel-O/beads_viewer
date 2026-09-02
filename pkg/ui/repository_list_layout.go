@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 const repositoryListNameWidthCap = 16
@@ -17,9 +18,9 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		return 0, 0
 	}
 
-	repositories := make(model.RepositoryCatalog, 0, len(m.repositoryCatalog))
+	repositories := make(repositorypkg.Catalog, 0, len(m.repositoryCatalog))
 	for _, repository := range m.repositoryCatalog {
-		if repository.Kind == model.RepositoryIdentityHubContext {
+		if repository.Kind == repositorypkg.IdentityExact {
 			repositories = append(repositories, repository)
 		}
 	}
@@ -55,7 +56,7 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 func (m Model) repositoryListExtraWidth() int {
 	knownContexts := make(map[string]struct{}, len(m.repositoryCatalog))
 	for _, repository := range m.repositoryCatalog {
-		if repository.Kind == model.RepositoryIdentityHubContext {
+		if repository.Kind == repositorypkg.IdentityExact {
 			knownContexts[repository.ID] = struct{}{}
 		}
 	}
