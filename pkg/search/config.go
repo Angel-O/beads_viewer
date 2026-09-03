@@ -76,10 +76,12 @@ func SearchConfigFromEnv() (SearchConfig, error) {
 		Preset: PresetDefault,
 	}
 
+	modeSet := false
 	if mode := strings.TrimSpace(os.Getenv(EnvSearchMode)); mode != "" {
 		switch SearchMode(strings.ToLower(mode)) {
 		case SearchModeText, SearchModeHybrid:
 			cfg.Mode = SearchMode(strings.ToLower(mode))
+			modeSet = true
 		default:
 			return SearchConfig{}, fmt.Errorf("invalid %s: %q (expected text|hybrid)", EnvSearchMode, mode)
 		}
@@ -91,6 +93,18 @@ func SearchConfigFromEnv() (SearchConfig, error) {
 			return SearchConfig{}, err
 		}
 		cfg.Preset = name
+		// A preset only affects hybrid ranking: setting one implies hybrid
+		// mode unless the mode was pinned explicitly (text-only implies text).
+		switch {
+		case name == PresetTextOnly:
+			if !modeSet {
+				cfg.Mode = SearchModeText
+			}
+		case !modeSet:
+			cfg.Mode = SearchModeHybrid
+		case cfg.Mode == SearchModeText:
+			return SearchConfig{}, fmt.Errorf("%s=%q needs hybrid mode; unset %s=text or use %s=text-only", EnvSearchPreset, preset, EnvSearchMode, EnvSearchPreset)
+		}
 	}
 
 	if raw := strings.TrimSpace(os.Getenv(EnvSearchWeights)); raw != "" {

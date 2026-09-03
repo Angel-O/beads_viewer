@@ -62,6 +62,112 @@ const (
 	WeightRisk          = 0.10 // Volatility/risk signals (bv-82)
 )
 
+// Weights is the set of composite-score factor weights. The package constants
+// above are the defaults; feedback (feedback.go) and, later, per-project
+// configuration produce adjusted values that an Analyzer applies via SetWeights.
+type Weights struct {
+	PageRank      float64 `json:"pagerank"`
+	Betweenness   float64 `json:"betweenness"`
+	BlockerRatio  float64 `json:"blocker_ratio"`
+	Staleness     float64 `json:"staleness"`
+	PriorityBoost float64 `json:"priority_boost"`
+	TimeToImpact  float64 `json:"time_to_impact"`
+	Urgency       float64 `json:"urgency"`
+	Risk          float64 `json:"risk"`
+}
+
+// DefaultWeights returns the documented default factor weights (sum 1.0).
+func DefaultWeights() Weights {
+	return Weights{
+		PageRank:      WeightPageRank,
+		Betweenness:   WeightBetweenness,
+		BlockerRatio:  WeightBlockerRatio,
+		Staleness:     WeightStaleness,
+		PriorityBoost: WeightPriorityBoost,
+		TimeToImpact:  WeightTimeToImpact,
+		Urgency:       WeightUrgency,
+		Risk:          WeightRisk,
+	}
+}
+
+// Sum returns the total of all factor weights.
+func (w Weights) Sum() float64 {
+	return w.PageRank + w.Betweenness + w.BlockerRatio + w.Staleness + w.PriorityBoost + w.TimeToImpact + w.Urgency + w.Risk
+}
+
+// IsZero reports whether no weight has been set.
+func (w Weights) IsZero() bool { return w.Sum() == 0 }
+
+// Normalized scales the weights so they sum to 1.0. A zero-valued Weights
+// normalizes to DefaultWeights so a forgotten SetWeights can never zero out
+// every score.
+func (w Weights) Normalized() Weights {
+	total := w.Sum()
+	if total <= 0 {
+		return DefaultWeights()
+	}
+	return Weights{
+		PageRank:      w.PageRank / total,
+		Betweenness:   w.Betweenness / total,
+		BlockerRatio:  w.BlockerRatio / total,
+		Staleness:     w.Staleness / total,
+		PriorityBoost: w.PriorityBoost / total,
+		TimeToImpact:  w.TimeToImpact / total,
+		Urgency:       w.Urgency / total,
+		Risk:          w.Risk / total,
+	}
+}
+
+// AsMap returns the weights keyed by the factor names used in feedback.json.
+func (w Weights) AsMap() map[string]float64 {
+	return map[string]float64{
+		"PageRank":      w.PageRank,
+		"Betweenness":   w.Betweenness,
+		"BlockerRatio":  w.BlockerRatio,
+		"Staleness":     w.Staleness,
+		"PriorityBoost": w.PriorityBoost,
+		"TimeToImpact":  w.TimeToImpact,
+		"Urgency":       w.Urgency,
+		"Risk":          w.Risk,
+	}
+}
+
+// WeightsFromMap builds Weights from the factor-name map used in feedback.json.
+// Missing names fall back to the default for that factor.
+func WeightsFromMap(m map[string]float64) Weights {
+	w := DefaultWeights()
+	pick := func(name string, dst *float64) {
+		if v, ok := m[name]; ok && v >= 0 {
+			*dst = v
+		}
+	}
+	pick("PageRank", &w.PageRank)
+	pick("Betweenness", &w.Betweenness)
+	pick("BlockerRatio", &w.BlockerRatio)
+	pick("Staleness", &w.Staleness)
+	pick("PriorityBoost", &w.PriorityBoost)
+	pick("TimeToImpact", &w.TimeToImpact)
+	pick("Urgency", &w.Urgency)
+	pick("Risk", &w.Risk)
+	return w
+}
+
+// SetWeights overrides the factor weights used by impact scoring, priority
+// recommendations, and triage for this analyzer. The weights are normalized
+// to sum to 1.0. Pass DefaultWeights() to restore the documented defaults.
+func (a *Analyzer) SetWeights(w Weights) {
+	a.weights = w.Normalized()
+	a.weightsSet = true
+}
+
+// Weights returns the factor weights this analyzer scores with.
+func (a *Analyzer) Weights() Weights {
+	if !a.weightsSet {
+		return DefaultWeights()
+	}
+	return a.weights
+}
+
 // UrgencyLabels are labels that indicate high urgency
 var UrgencyLabels = []string{"urgent", "critical", "blocker", "hotfix", "asap"}
 
@@ -76,7 +182,7 @@ const UrgencyDecayDays = 7.0
 
 // ComputeImpactScores calculates impact scores for all open issues
 func (a *Analyzer) ComputeImpactScores() []ImpactScore {
-	return a.ComputeImpactScoresAt(time.Now())
+	return a.ComputeImpactScoresAt(a.Now())
 }
 
 // ComputeImpactScoresAt calculates impact scores as of a specific time
@@ -123,6 +229,9 @@ func (a *Analyzer) ComputeImpactScoresFromStats(stats *GraphStats, now time.Time
 	// Compute median estimated minutes for issues without estimates
 	medianMinutes := a.computeMedianEstimatedMinutes()
 
+	// Factor weights: defaults unless SetWeights applied feedback-adjusted ones.
+	w := a.Weights()
+
 	// Compute impact scores from stats
 	var scores []ImpactScore
 
@@ -157,16 +266,16 @@ func (a *Analyzer) ComputeImpactScoresFromStats(stats *GraphStats, now time.Time
 		// Compute risk signals (bv-82)
 		riskSignals := ComputeRiskSignals(&issue, stats, a.issueMap, now)
 
-		// Compute weighted score
+		// Compute weighted score with the analyzer's (possibly feedback-adjusted) weights
 		breakdown := ScoreBreakdown{
-			PageRank:      prNorm * WeightPageRank,
-			Betweenness:   bwNorm * WeightBetweenness,
-			BlockerRatio:  blockerNorm * WeightBlockerRatio,
-			Staleness:     stalenessNorm * WeightStaleness,
-			PriorityBoost: priorityNorm * WeightPriorityBoost,
-			TimeToImpact:  timeToImpactNorm * WeightTimeToImpact,
-			Urgency:       urgencyNorm * WeightUrgency,
-			Risk:          riskSignals.CompositeRisk * WeightRisk,
+			PageRank:      prNorm * w.PageRank,
+			Betweenness:   bwNorm * w.Betweenness,
+			BlockerRatio:  blockerNorm * w.BlockerRatio,
+			Staleness:     stalenessNorm * w.Staleness,
+			PriorityBoost: priorityNorm * w.PriorityBoost,
+			TimeToImpact:  timeToImpactNorm * w.TimeToImpact,
+			Urgency:       urgencyNorm * w.Urgency,
+			Risk:          riskSignals.CompositeRisk * w.Risk,
 
 			PageRankNorm:      prNorm,
 			BetweennessNorm:   bwNorm,
@@ -506,7 +615,7 @@ func (a *Analyzer) GenerateRecommendations() []PriorityRecommendation {
 
 // GenerateRecommendationsWithThresholds generates recommendations with custom thresholds
 func (a *Analyzer) GenerateRecommendationsWithThresholds(thresholds RecommendationThresholds) []PriorityRecommendation {
-	scores := a.ComputeImpactScores()
+	scores := a.ComputeImpactScoresAt(a.Now())
 	if len(scores) == 0 {
 		return nil
 	}

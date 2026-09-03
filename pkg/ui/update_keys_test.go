@@ -5,11 +5,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -31,7 +33,7 @@ func TestFooterShortcutLabelsMatchDispatch(t *testing.T) {
 	}
 
 	updated, _ := list.Update(keyMsg("b"))
-	board := updated.(Model)
+	board := updated.(*Model)
 	if footer := ansi.Strip(board.renderFooter()); strings.Contains(footer, "L:labels") || !strings.Contains(footer, "tab:detail") || !strings.Contains(footer, "e:cycle empty") {
 		t.Fatalf("Board footer has incorrect contextual shortcuts: %q", footer)
 	}
@@ -40,7 +42,7 @@ func TestFooterShortcutLabelsMatchDispatch(t *testing.T) {
 	insights.width = 240
 	insights.height = 40
 	updated, _ = insights.Update(keyMsg("i"))
-	insights = updated.(Model)
+	insights = updated.(*Model)
 	footer = ansi.Strip(insights.renderFooter())
 	for _, want := range []string{"i:list"} {
 		if !strings.Contains(footer, want) {
@@ -57,7 +59,7 @@ func TestFooterShortcutLabelsMatchDispatch(t *testing.T) {
 	history.width = 240
 	history.height = 40
 	updated, _ = history.Update(keyMsg("h"))
-	history = updated.(Model)
+	history = updated.(*Model)
 	footer = ansi.Strip(history.renderFooter())
 	if !strings.Contains(footer, "h:list") || strings.Contains(footer, "h/esc/q close") || strings.Contains(footer, "H close") {
 		t.Fatalf("History footer has incorrect close shortcut: %q", footer)
@@ -67,7 +69,7 @@ func TestFooterShortcutLabelsMatchDispatch(t *testing.T) {
 	help.width = 240
 	help.height = 40
 	updated, _ = help.Update(keyMsg("?"))
-	help = updated.(Model)
+	help = updated.(*Model)
 	footer = ansi.Strip(help.renderFooter())
 	for _, want := range []string{"j/k scroll", "space tutorial", "?/esc/q close"} {
 		if !strings.Contains(footer, want) {
@@ -82,7 +84,7 @@ func TestFooterShortcutLabelsMatchDispatch(t *testing.T) {
 	detail.width = 80
 	detail.height = 40
 	updated, _ = detail.Update(keyMsg("enter"))
-	detail = updated.(Model)
+	detail = updated.(*Model)
 	footer = ansi.Strip(detail.renderFooter())
 	for _, stale := range []string{"y ID", "x export", "Ctrl+R refresh"} {
 		if strings.Contains(footer, stale) {
@@ -131,7 +133,7 @@ func TestAlternateViewFootersUseListReturnHints(t *testing.T) {
 			m := NewModel(issues, nil, "")
 			m.width = 240
 			m.height = 40
-			tc.setup(&m)
+			tc.setup(m)
 			footer := ansi.Strip(m.renderFooter())
 			if !strings.Contains(footer, tc.want) {
 				t.Fatalf("footer missing %q: %q", tc.want, footer)
@@ -187,9 +189,9 @@ func TestHelpUsesAttentionAndSprintOriginControls(t *testing.T) {
 
 	attention := NewModel(issues, nil, "")
 	updated, _ := attention.Update(keyMsg("]"))
-	attention = updated.(Model)
+	attention = updated.(*Model)
 	updated, _ = attention.Update(keyMsg("?"))
-	attention = updated.(Model)
+	attention = updated.(*Model)
 	attentionHelp := ansi.Strip(attention.renderHelpOverlay())
 	for _, want := range []string{"1-9", "Close Attention", "Esc / q"} {
 		if !strings.Contains(attentionHelp, want) {
@@ -206,7 +208,7 @@ func TestHelpUsesAttentionAndSprintOriginControls(t *testing.T) {
 	sprint.isSprintView = true
 	sprint.focused = focusSprint
 	updated, _ = sprint.Update(keyMsg("?"))
-	sprint = updated.(Model)
+	sprint = updated.(*Model)
 	sprintHelp := ansi.Strip(sprint.renderHelpOverlay())
 	for _, want := range []string{"j /", "k /", "P / Esc", "Close Sprint"} {
 		if !strings.Contains(sprintHelp, want) {
@@ -223,19 +225,29 @@ func TestHelpUsesAttentionAndSprintOriginControls(t *testing.T) {
 func TestDetailDispatchAllowsDocumentedSharedActions(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
 	updated, _ := m.Update(keyMsg("enter"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusDetail {
 		t.Fatalf("expected Detail focus, got %v", m.focused)
 	}
+	updated, _ = m.Update(keyMsg("]"))
+	m = updated.(*Model)
+	if !m.showAttentionView || m.focused != focusInsights || m.attentionOrigin != focusDetail {
+		t.Fatalf("Detail did not open Attention: shown=%v focus=%v origin=%v", m.showAttentionView, m.focused, m.attentionOrigin)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showAttentionView || m.focused != focusDetail {
+		t.Fatalf("Attention did not restore Detail: shown=%v focus=%v", m.showAttentionView, m.focused)
+	}
 
 	updated, _ = m.Update(keyMsg("C"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.statusMsg == "" {
 		t.Fatal("Detail swallowed documented C copy action")
 	}
 
 	updated, _ = m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusGraph || !m.isGraphView {
 		t.Fatalf("Detail swallowed documented Graph switch: focus=%v graph=%v", m.focused, m.isGraphView)
 	}
@@ -246,13 +258,13 @@ func TestDetailDispatchAllowsSelfUpdate(t *testing.T) {
 	m.updateAvailable = true
 	m.updateTag = "v9.9.9"
 	updated, _ := m.Update(keyMsg("enter"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusDetail {
 		t.Fatalf("expected Detail focus, got %v", m.focused)
 	}
 
 	updated, _ = m.Update(keyMsg("U"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showUpdateModal || m.focused != focusUpdateModal {
 		t.Fatalf("Detail swallowed documented self-update action: modal=%v focus=%v", m.showUpdateModal, m.focused)
 	}
@@ -261,17 +273,17 @@ func TestDetailDispatchAllowsSelfUpdate(t *testing.T) {
 func TestDetailDispatchRejectsListOnlyCommands(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen, Labels: []string{"backend"}}}, nil, "")
 	updated, _ := m.Update(keyMsg("enter"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusDetail {
 		t.Fatalf("expected Detail focus, got %v", m.focused)
 	}
 
-	for _, key := range []string{"'", "l", "I", "w", "o", "c", "r", "s", "S", "V", "U", "f", "[", "]"} {
+	for _, key := range []string{"'", "l", "I", "w", "o", "c", "r", "s", "S", "V", "U", "f", "["} {
 		t.Run(key, func(t *testing.T) {
 			beforeFilter := m.currentFilter
 			beforeSort := m.sortMode
 			updated, _ := m.Update(keyMsg(key))
-			result := updated.(Model)
+			result := updated.(*Model)
 			if result.focused != focusDetail || result.showRecipePicker || result.showLabelPicker || result.showTypePicker || result.showRepoPicker || result.isActionableView || result.isBoardView || result.isGraphView || result.isHistoryView || result.focused == focusFlowMatrix || result.focused == focusLabelDashboard || result.showAttentionView {
 				t.Fatalf("Detail accepted List-only command: focus=%v recipe=%v label=%v type=%v repo=%v", result.focused, result.showRecipePicker, result.showLabelPicker, result.showTypePicker, result.showRepoPicker)
 			}
@@ -287,7 +299,7 @@ func TestSplitHelpOmitsListEnterAndEscape(t *testing.T) {
 	m.isSplitView = true
 	m.focused = focusList
 	updated, _ := m.Update(keyMsg("?"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	help := ansi.Strip(m.renderHelpOverlay())
 	if strings.Contains(help, "Select / open") || strings.Contains(help, "Back / close") {
 		t.Fatalf("Split Help retained List-only Enter/Esc guidance:\n%s", help)
@@ -304,7 +316,7 @@ func TestListHelpRendersTreeAndExactTypePickerShortcuts(t *testing.T) {
 	m.focused = focusList
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showHelp || m.focused != focusHelp {
 		t.Fatalf("? did not open List help: shown=%v focus=%v", m.showHelp, m.focused)
 	}
@@ -332,10 +344,10 @@ func TestGraphTransitionSynchronizesListSelection(t *testing.T) {
 		{ID: "target", Title: "Target", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeFeature},
 	}
 	m := NewModel(issues, nil, "")
-	selectListIssueForTest(t, &m, "target")
+	selectListIssueForTest(t, m, "target")
 
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "target" {
 		t.Fatalf("List -> Graph selection = %#v, want target", selected)
 	}
@@ -362,10 +374,10 @@ func TestTreeTransitionSynchronizesListSelection(t *testing.T) {
 			r := &recipe.Recipe{Name: "focused", Filters: recipe.FilterConfig{Tags: []string{"focus"}}}
 			m.setActiveRecipe(r)
 			m.applyRecipe(r)
-			selectListIssueForTest(t, &m, tc.selectedID)
+			selectListIssueForTest(t, m, tc.selectedID)
 
 			updated, _ := m.Update(keyMsg("E"))
-			m = updated.(Model)
+			m = updated.(*Model)
 
 			if m.focused != focusTree {
 				t.Fatalf("List -> Tree focus=%v, want tree", m.focused)
@@ -393,13 +405,13 @@ func TestGraphToTreeRevealsCollapsedDescendant(t *testing.T) {
 	m.tree.issueMap["tree-parent"].Expanded = false
 	m.tree.rebuildFlatList()
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.graphView.SelectByID("tree-target") {
 		t.Fatal("test graph selection failed")
 	}
 
 	updated, _ = m.Update(keyMsg("E"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusTree || m.tree.GetSelectedID() != "tree-target" {
 		t.Fatalf("Graph -> Tree selection = %q, focus=%v, want tree-target/tree", m.tree.GetSelectedID(), m.focused)
 	}
@@ -420,13 +432,13 @@ func TestGraphToTreeUsesProjectionFallback(t *testing.T) {
 	m.setActiveRecipe(r)
 	m.applyRecipe(r)
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.graphView.SelectByID("tree-cycle-a") {
 		t.Fatal("test graph selection failed")
 	}
 
 	updated, _ = m.Update(keyMsg("E"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusTree || m.tree.GetSelectedID() != "tree-root" {
 		t.Fatalf("Graph -> Tree fallback = %q, focus=%v, want tree-root/tree", m.tree.GetSelectedID(), m.focused)
 	}
@@ -445,18 +457,18 @@ func TestTreeToGraphTransfersSelectionAndViewport(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.width, m.height = 120, 8
 	updated, _ := m.Update(keyMsg("E"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.tree.SelectByID("graph-target") {
 		t.Fatal("test tree selection failed")
 	}
 
 	updated, _ = m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusTree {
 		t.Fatalf("first Tree graph shortcut changed focus to %v", m.focused)
 	}
 	updated, _ = m.Update(comboTickMsg{key: "g"})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusGraph || m.graphView.SelectedIssue() == nil || m.graphView.SelectedIssue().ID != "graph-target" {
 		t.Fatalf("Tree -> Graph selection = %#v, focus=%v, want graph-target/graph", m.graphView.SelectedIssue(), m.focused)
 	}
@@ -477,16 +489,16 @@ func TestTreeToGraphUsesProjectionFallback(t *testing.T) {
 	r := &recipe.Recipe{Name: "focused", Filters: recipe.FilterConfig{Tags: []string{"focus"}}}
 	m.setActiveRecipe(r)
 	m.applyRecipe(r)
-	selectListIssueForTest(t, &m, "todo-note")
+	selectListIssueForTest(t, m, "todo-note")
 	updated, _ := m.Update(keyMsg("E"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.tree.GetSelectedID() != "todo-note" {
 		t.Fatalf("Tree setup selection = %q, want todo-note", m.tree.GetSelectedID())
 	}
 	updated, _ = m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(comboTickMsg{key: "g"})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "visible-a" {
 		t.Fatalf("Tree -> Graph fallback = %#v, want visible-a", selected)
 	}
@@ -499,13 +511,13 @@ func TestGraphTransitionSynchronizesGraphSelectionBackToList(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.graphView.SelectByID("target") {
 		t.Fatal("test graph selection failed")
 	}
 
 	updated, _ = m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if selected := m.list.SelectedItem(); selected == nil {
 		t.Fatal("List selection is nil after Graph -> List")
 	} else if item, ok := selected.(IssueItem); !ok || item.Issue.ID != "target" {
@@ -521,17 +533,17 @@ func TestGraphExitKeysSynchronizeGraphSelectionBackToList(t *testing.T) {
 				{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeTask},
 			}, nil, "")
 			updated, _ := m.Update(keyMsg("g"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.graphView.SelectByID("target") {
 				t.Fatal("test graph selection failed")
 			}
 
 			updated, _ = m.Update(keyMsg(key))
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.isGraphView || m.focused != focusList {
 				t.Fatalf("Graph exit key %q left focus=%v graph=%v", key, m.focused, m.isGraphView)
 			}
-			if selected := m.selectedListIssueID(); selected != "target" {
+			if selected := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()); selected != "target" {
 				t.Fatalf("Graph exit key %q selected list bead %q, want target", key, selected)
 			}
 		})
@@ -545,7 +557,7 @@ func TestGraphEnterSelectsVisibleFilteredBead(t *testing.T) {
 		{ID: "after", Title: "After", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}, nil, "")
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.graphView.SelectByID("target") {
 		t.Fatal("test graph selection failed")
 	}
@@ -555,29 +567,29 @@ func TestGraphEnterSelectsVisibleFilteredBead(t *testing.T) {
 	}
 
 	updated, _ = m.Update(keyMsg("enter"))
-	m = updated.(Model)
-	if m.focused != focusDetail || m.selectedListIssueID() != "target" {
-		t.Fatalf("filtered Graph -> Enter selected focus=%v bead=%q, want detail/target", m.focused, m.selectedListIssueID())
+	m = updated.(*Model)
+	if m.focused != focusDetail || m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()) != "target" {
+		t.Fatalf("filtered Graph -> Enter selected focus=%v bead=%q, want detail/target", m.focused, m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()))
 	}
 	if !strings.Contains(m.viewport.View(), "Target") {
 		t.Fatalf("filtered Graph -> Enter omitted target detail: %s", m.viewport.View())
 	}
 }
 
-func graphModelWithExcludedListFilter(t *testing.T) Model {
+func graphModelWithExcludedListFilter(t *testing.T) *Model {
 	t.Helper()
 	m := NewModel([]model.Issue{
 		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
 		{ID: "target", Title: "Target", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}, nil, "")
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.graphView.SelectByID("target") {
 		t.Fatal("test graph selection failed")
 	}
 	m.list.SetFilterText("alpha")
-	if m.selectedListIssueID() != "alpha" {
-		t.Fatalf("test setup selected %q, want alpha", m.selectedListIssueID())
+	if m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()) != "alpha" {
+		t.Fatalf("test setup selected %q, want alpha", m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()))
 	}
 	return m
 }
@@ -589,9 +601,9 @@ func TestGraphEnterSelectsBeadExcludedByListTextFilter(t *testing.T) {
 	}
 
 	updated, _ := m.Update(keyMsg("enter"))
-	m = updated.(Model)
-	if m.focused != focusDetail || m.selectedListIssueID() != "target" {
-		t.Fatalf("filtered Graph -> Enter selected focus=%v bead=%q, want detail/target", m.focused, m.selectedListIssueID())
+	m = updated.(*Model)
+	if m.focused != focusDetail || m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()) != "target" {
+		t.Fatalf("filtered Graph -> Enter selected focus=%v bead=%q, want detail/target", m.focused, m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()))
 	}
 	if m.list.FilterValue() != "" {
 		t.Fatalf("incompatible list text filter remained %q", m.list.FilterValue())
@@ -606,12 +618,12 @@ func TestGraphExitKeysSelectBeadExcludedByListTextFilter(t *testing.T) {
 		t.Run(key, func(t *testing.T) {
 			m := graphModelWithExcludedListFilter(t)
 			updated, _ := m.Update(keyMsg(key))
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.isGraphView || m.focused != focusList {
 				t.Fatalf("Graph exit key %q left focus=%v graph=%v", key, m.focused, m.isGraphView)
 			}
-			if m.list.FilterValue() != "" || m.selectedListIssueID() != "target" {
-				t.Fatalf("Graph exit key %q left filter=%q selected=%q, want cleared/target", key, m.list.FilterValue(), m.selectedListIssueID())
+			if m.list.FilterValue() != "" || m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()) != "target" {
+				t.Fatalf("Graph exit key %q left filter=%q selected=%q, want cleared/target", key, m.list.FilterValue(), m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()))
 			}
 		})
 	}
@@ -624,14 +636,14 @@ func TestGraphTransitionUsesFirstNodeWhenListSelectionIsFilteredOut(t *testing.T
 		{ID: "visible-b", Title: "Visible B", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}
 	m := NewModel(issues, nil, "")
-	selectListIssueForTest(t, &m, "todo-note")
+	selectListIssueForTest(t, m, "todo-note")
 
 	updated, _ := m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "visible-a" {
 		t.Fatalf("filtered List -> Graph selection = %#v, want visible-a fallback", selected)
 	}
-	if selected := m.selectedListIssueID(); selected != "todo-note" {
+	if selected := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()); selected != "todo-note" {
 		t.Fatalf("filtered List selection changed to %q, want todo-note", selected)
 	}
 }
@@ -643,18 +655,18 @@ func TestGraphSelectionRoundTripToDetailPreservesBeadIdentity(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	m = updated.(Model)
-	selectListIssueForTest(t, &m, "target")
+	m = updated.(*Model)
+	selectListIssueForTest(t, m, "target")
 
 	updated, _ = m.Update(keyMsg("g"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(keyMsg("enter"))
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.FocusState() != "detail" {
 		t.Fatalf("Graph -> Enter did not open detail: focus=%s", m.FocusState())
 	}
-	if selected := m.selectedListIssueID(); selected != "target" {
+	if selected := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()); selected != "target" {
 		t.Fatalf("round-trip list selection = %q, want target", selected)
 	}
 	if !strings.Contains(m.viewport.View(), "Target") {
@@ -666,15 +678,15 @@ func TestUpdateInsightsHeatmapKey(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusInsights {
 		t.Fatalf("expected Insights focus, got %v", m.focused)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.insightsPanel.showHeatmap {
 		t.Fatal("expected m to enable the Insights heatmap")
 	}
@@ -686,7 +698,7 @@ func TestUpdateInsightsHeatmapKey(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsPanel.showHeatmap {
 		t.Fatal("expected second m to disable the Insights heatmap")
 	}
@@ -696,17 +708,17 @@ func TestUpdateInsightsHeatmapKeyFromHelp(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showHelp || m.focusBeforeHelp != focusInsights {
 		t.Fatal("expected help overlay opened from Insights")
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showHelp || m.focused != focusInsights {
 		t.Fatal("expected m to close help and restore Insights focus")
 	}
@@ -719,12 +731,12 @@ func TestUpdateInsightsCalculationKeyReportsNarrowLayout(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsPanel.showCalculation {
 		t.Fatal("expected x to hide calculation proof")
 	}
@@ -733,9 +745,9 @@ func TestUpdateInsightsCalculationKeyReportsNarrowLayout(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.insightsPanel.showCalculation {
 		t.Fatal("expected x from Insights help to enable calculation proof")
 	}
@@ -753,16 +765,16 @@ func TestUpdateHelpQuitAndTabFocus(t *testing.T) {
 
 	// Make model ready and split view
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	// Help toggle via ? then dismiss with another key
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showHelp || m.focused != focusHelp {
 		t.Fatalf("expected help overlay shown")
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showHelp || m.focused != focusList {
 		t.Fatalf("expected help overlay dismissed")
 	}
@@ -772,19 +784,19 @@ func TestUpdateHelpQuitAndTabFocus(t *testing.T) {
 		t.Fatalf("expected list focus before tab")
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusDetail {
 		t.Fatalf("expected detail focus after tab")
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusList {
 		t.Fatalf("expected list focus after second tab")
 	}
 
 	// Escape should show quit confirm, 'y' should issue tea.Quit
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showQuitConfirm {
 		t.Fatalf("expected quit confirm after esc")
 	}
@@ -794,10 +806,89 @@ func TestUpdateHelpQuitAndTabFocus(t *testing.T) {
 	}
 }
 
+func TestHelpRestoresExactUnderlyingFocus(t *testing.T) {
+	tests := []struct {
+		name  string
+		focus focus
+		setup func(*Model)
+	}{
+		{name: "list", focus: focusList},
+		{name: "tree", focus: focusTree},
+		{name: "split detail", focus: focusDetail, setup: func(m *Model) { m.isSplitView = true }},
+		{name: "tutorial", focus: focusTutorial, setup: func(m *Model) { m.showTutorial = true }},
+		{name: "time-travel input", focus: focusTimeTravelInput, setup: func(m *Model) {
+			m.showTimeTravelPrompt = true
+			m.timeTravelInput.Focus()
+		}},
+		{name: "label picker", focus: focusLabelPicker, setup: func(m *Model) {
+			m.showLabelPicker = true
+			m.labelPicker.Focus()
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+			m.focused = tt.focus
+			if tt.setup != nil {
+				tt.setup(m)
+			}
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+			m = updated.(*Model)
+			if m.focused != focusHelp {
+				t.Fatalf("focus after opening help=%v, want help", m.focused)
+			}
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(*Model)
+			if m.focused != tt.focus {
+				t.Fatalf("focus after closing help=%v, want %v", m.focused, tt.focus)
+			}
+		})
+	}
+}
+
+func TestHelpPreservesActiveInputOwnership(t *testing.T) {
+	tests := []struct {
+		name  string
+		focus focus
+		setup func(*Model)
+		owned func(*Model) bool
+	}{
+		{
+			name:  "time-travel",
+			focus: focusTimeTravelInput,
+			setup: func(m *Model) { m.showTimeTravelPrompt = true; m.timeTravelInput.Focus() },
+			owned: func(m *Model) bool { return m.showTimeTravelPrompt && m.timeTravelInput.Focused() },
+		},
+		{
+			name:  "label-picker",
+			focus: focusLabelPicker,
+			setup: func(m *Model) { m.showLabelPicker = true; m.labelPicker.Focus() },
+			owned: func(m *Model) bool { return m.showLabelPicker && m.labelPicker.input.Focused() },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+			m.focused = tt.focus
+			tt.setup(m)
+			updated, _ := m.Update(keyMsg("?"))
+			m = updated.(*Model)
+			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			m = updated.(*Model)
+			if m.focused != tt.focus || !tt.owned(m) {
+				t.Fatalf("Help did not restore active %s input: focus=%v owned=%v", tt.name, m.focused, tt.owned(m))
+			}
+		})
+	}
+}
+
 func TestUpdateMsgSetsUpdateAvailable(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 	updated, _ := m.Update(UpdateMsg{TagName: "v9.9.9", URL: "https://example"})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.updateAvailable || m.updateTag != "v9.9.9" {
 		t.Fatalf("update flag not set")
 	}
@@ -806,7 +897,7 @@ func TestUpdateMsgSetsUpdateAvailable(t *testing.T) {
 func TestUpdateMsgIgnoresCurrentVersion(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
 	updated, _ := m.Update(UpdateMsg{TagName: version.Version, URL: "https://example"})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.updateAvailable || m.updateTag != "" || m.updateURL != "" {
 		t.Fatalf("current-version update message should be ignored: available=%v tag=%q url=%q",
@@ -821,11 +912,90 @@ func TestUpdateMsgClearsStaleEqualVersionNotice(t *testing.T) {
 	m.updateURL = "https://example/old"
 
 	updated, _ := m.Update(UpdateMsg{TagName: version.Version, URL: "https://example/current"})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.updateAvailable || m.updateTag != "" || m.updateURL != "" {
 		t.Fatalf("equal-version update message should clear stale notice: available=%v tag=%q url=%q",
 			m.updateAvailable, m.updateTag, m.updateURL)
+	}
+}
+
+func TestUpdateCompleteClearsNoticeOnlyAfterSuccess(t *testing.T) {
+	tests := []struct {
+		name      string
+		success   bool
+		version   string
+		wantClear bool
+	}{
+		{name: "successful install", success: true, version: "v9.9.9", wantClear: true},
+		{name: "failed install", success: false, version: "v9.9.9", wantClear: false},
+		{name: "stale successful install", success: true, version: "v9.9.8", wantClear: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+			m.updateAvailable = true
+			m.updateTag = "v9.9.9"
+			m.updateURL = "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v9.9.9"
+
+			updated, _ := m.Update(UpdateCompleteMsg{Success: tt.success, NewVersion: tt.version})
+			m = updated.(*Model)
+
+			if tt.wantClear {
+				if m.updateAvailable || m.updateTag != "" || m.updateURL != "" {
+					t.Fatalf("successful update left a repeatable notice: available=%v tag=%q url=%q",
+						m.updateAvailable, m.updateTag, m.updateURL)
+				}
+				return
+			}
+			if !m.updateAvailable || m.updateTag != "v9.9.9" || m.updateURL == "" {
+				t.Fatalf("failed update cleared the retry notice: available=%v tag=%q url=%q",
+					m.updateAvailable, m.updateTag, m.updateURL)
+			}
+		})
+	}
+}
+
+func TestUpdateStateRefreshesVisibleDetailNotice(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.isSplitView = true
+	m.focused = focusDetail
+	m.viewport.Width = 120
+	m.viewport.Height = 40
+	m.updateViewportContent()
+
+	updated, _ := m.Update(UpdateMsg{
+		TagName: "v9.9.9",
+		URL:     "https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v9.9.9",
+	})
+	m = updated.(*Model)
+	if view := m.viewport.View(); !strings.Contains(view, "v9.9.9") {
+		t.Fatalf("visible detail pane did not refresh after update discovery: %q", view)
+	}
+
+	updated, _ = m.Update(UpdateCompleteMsg{Success: true, NewVersion: "v9.9.9"})
+	m = updated.(*Model)
+	if view := m.viewport.View(); strings.Contains(view, "v9.9.9") {
+		t.Fatalf("visible detail pane retained completed update notice: %q", view)
+	}
+}
+
+func TestUpdateModalTickIsForwardedByModel(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.showUpdateModal = true
+	m.updateModal = NewUpdateModal("v9.9.9", "", m.theme)
+	m.updateModal.state = UpdateStateDownloading
+	m.updateModal.startTime = time.Now()
+	m.focused = focusUpdateModal
+
+	updated, cmd := m.Update(updateTickMsg{startedAt: m.updateModal.startTime})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("parent model dropped the update modal's repaint tick")
+	}
+	if m.updateModal.state != UpdateStateDownloading {
+		t.Fatalf("tick changed update state to %v", m.updateModal.state)
 	}
 }
 
@@ -837,7 +1007,7 @@ func TestHistoryViewToggle(t *testing.T) {
 
 	// Make model ready
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	// h should toggle history view on
 	if m.isHistoryView {
@@ -845,7 +1015,7 @@ func TestHistoryViewToggle(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if !m.isHistoryView {
 		t.Fatalf("expected history view to be on after h key")
@@ -856,7 +1026,7 @@ func TestHistoryViewToggle(t *testing.T) {
 
 	// h again should toggle off
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.isHistoryView {
 		t.Fatalf("expected history view to be off after second h key")
@@ -874,15 +1044,15 @@ func TestHistoryViewKeys(t *testing.T) {
 
 	// Make model ready
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	// Enter history view
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	// Esc should close history view
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.isHistoryView {
 		t.Fatalf("expected history view to be closed after Esc")
@@ -890,11 +1060,12 @@ func TestHistoryViewKeys(t *testing.T) {
 
 	// Re-enter and test 'c' key cycles confidence
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
-	m = updated.(Model)
+	m = updated.(*Model)
+	makeHistoryReportCurrent(m, createTestHistoryReport())
 
 	initialConf := m.historyView.GetMinConfidence()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.historyView.GetMinConfidence() == initialConf {
 		t.Fatalf("expected confidence to change after 'c' key")
@@ -909,12 +1080,12 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	m := NewModel(issues, nil, "")
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.isSplitView = true
 	m.focused = focusList
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.focused != focusLabelDashboard {
 		t.Fatalf("expected label dashboard focus, got %v", m.focused)
@@ -941,7 +1112,7 @@ func TestLabelDashboardFromSplitViewRendersAndReturns(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusList || !m.isSplitView {
 		t.Fatalf("expected escape to restore split list, focus=%v split=%v", m.focused, m.isSplitView)
 	}
@@ -958,9 +1129,9 @@ func TestFlowMatrixFooterStaysOnBottomRow(t *testing.T) {
 	m := NewModel(issues, nil, "")
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.focused != focusFlowMatrix {
 		t.Fatalf("expected Flow focus, got %v", m.focused)
@@ -988,9 +1159,9 @@ func TestFlowMatrixZeroFlowFooterOmitsDrilldown(t *testing.T) {
 		{ID: "frontend", Title: "Frontend", Status: model.StatusOpen, Labels: []string{"frontend"}},
 	}, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	lines := strings.Split(m.View(), "\n")
 	footer := lines[len(lines)-1]
@@ -1009,11 +1180,11 @@ func TestFlowMatrixDrilldownFooterDescribesIssueNavigation(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if !m.flowMatrix.showDrilldown {
 		t.Fatal("Enter did not open Flow drilldown")
@@ -1043,7 +1214,7 @@ func TestFlowEnterDoesNotOpenIssueExcludedByListFilter(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.statusFilter = "closed"
 	m.applyFilter()
-	if got := m.selectedListIssueID(); got != "unrelated" {
+	if got := m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()); got != "unrelated" {
 		t.Fatalf("filtered List selection = %q, want unrelated", got)
 	}
 
@@ -1062,9 +1233,9 @@ func TestFlowEnterDoesNotOpenIssueExcludedByListFilter(t *testing.T) {
 	}
 
 	updated, _ := m.Update(keyMsg("enter"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusFlowMatrix || !m.flowMatrix.showDrilldown || m.showDetails {
-		t.Fatalf("Flow opened stale Detail selection: focus=%v drilldown=%v details=%v selected=%q", m.focused, m.flowMatrix.showDrilldown, m.showDetails, m.selectedListIssueID())
+		t.Fatalf("Flow opened stale Detail selection: focus=%v drilldown=%v details=%v selected=%q", m.focused, m.flowMatrix.showDrilldown, m.showDetails, m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value()))
 	}
 }
 
@@ -1102,19 +1273,19 @@ func TestLabelDashboardToggleCloseFromSplitView(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewModel(issues, nil, "")
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-			m = updated.(Model)
+			m = updated.(*Model)
 			m.isSplitView = true
 			m.focused = focusList
 			originalFilter := m.currentFilter
 
 			updated, _ = m.Update(tt.key)
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.focused != focusLabelDashboard {
 				t.Fatalf("expected label dashboard focus after opening with %s, got %v", tt.name, m.focused)
 			}
 
 			updated, _ = m.Update(tt.key)
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.focused != focusList || !m.isSplitView {
 				t.Fatalf("expected %s to restore split list, focus=%v split=%v", tt.name, m.focused, m.isSplitView)
 			}
@@ -1142,11 +1313,11 @@ func TestLabelDashboardDrilldownUsesVisibleSelection(t *testing.T) {
 	m := NewModel(issues, nil, "")
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 4})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	selected := m.labelDashboard.labels[m.labelDashboard.cursor].Label
 	other := m.labelDashboard.labels[1-m.labelDashboard.cursor].Label
@@ -1156,7 +1327,7 @@ func TestLabelDashboardDrilldownUsesVisibleSelection(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showLabelDrilldown {
 		t.Fatal("expected drilldown overlay")
 	}
@@ -1186,18 +1357,18 @@ func TestAttentionViewToggleCloseFromSplitView(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewModel(issues, nil, "")
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-			m = updated.(Model)
+			m = updated.(*Model)
 			m.isSplitView = true
 			m.focused = focusList
 
 			updated, _ = m.Update(tt.key)
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showAttentionView || m.focused != focusInsights {
 				t.Fatalf("expected Attention to open with %s, shown=%v focus=%v", tt.name, m.showAttentionView, m.focused)
 			}
 
 			updated, _ = m.Update(tt.key)
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.showAttentionView || m.focused != focusList || !m.isSplitView {
 				t.Fatalf("expected %s to restore split list, shown=%v focus=%v split=%v", tt.name, m.showAttentionView, m.focused, m.isSplitView)
 			}
@@ -1211,18 +1382,46 @@ func TestAttentionViewToggleCloseFromSplitView(t *testing.T) {
 	}
 }
 
+func TestAttentionOverlayClearsOnCrossViewTransitions(t *testing.T) {
+	keys := []struct {
+		key       string
+		wantFocus focus
+	}{
+		{key: "b", wantFocus: focusBoard},
+		{key: "g", wantFocus: focusGraph},
+		{key: "a", wantFocus: focusActionable},
+		{key: "E", wantFocus: focusTree},
+		{key: "i", wantFocus: focusInsights},
+		{key: "h", wantFocus: focusHistory},
+		{key: "[", wantFocus: focusLabelDashboard},
+		{key: "f", wantFocus: focusFlowMatrix},
+	}
+	for _, tt := range keys {
+		t.Run(tt.key, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+			updated, _ := m.Update(keyMsg("]"))
+			m = updated.(*Model)
+			updated, _ = m.Update(keyMsg(tt.key))
+			m = updated.(*Model)
+			if m.showAttentionView || m.focused != tt.wantFocus {
+				t.Fatalf("%s left Attention active: shown=%v focus=%v", tt.key, m.showAttentionView, m.focused)
+			}
+		})
+	}
+}
+
 func TestAttentionViewConsumesInsightsStatusKeys(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "bv-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
 	m.currentFilter = "label:keep"
 	m.statusFilter = "closed"
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showAttentionView || m.focused != focusInsights {
 		t.Fatalf("Attention did not open: shown=%v focus=%v", m.showAttentionView, m.focused)
 	}
 	for _, key := range []string{"o", "r", "c"} {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if m.currentFilter != "label:keep" || m.statusFilter != "closed" || !m.showAttentionView || m.focused != focusInsights {
 			t.Fatalf("Attention key %q changed shared state: filter=%q status=%q shown=%v focus=%v", key, m.currentFilter, m.statusFilter, m.showAttentionView, m.focused)
 		}
@@ -1235,9 +1434,9 @@ func TestInsightsEnterShowsDirectDetailAndPreservesClosedFilter(t *testing.T) {
 		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
 	}, nil, "")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusInsights || m.currentFilter != "closed" {
 		t.Fatalf("closed-filter Insights entry failed: focus=%v filter=%q", m.focused, m.currentFilter)
 	}
@@ -1246,7 +1445,7 @@ func TestInsightsEnterShowsDirectDetailAndPreservesClosedFilter(t *testing.T) {
 	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusDetail || !m.showDetails || m.insightsDetailID != "active" {
 		t.Fatalf("Enter did not bind direct Insights detail: focus=%v details=%v id=%q", m.focused, m.showDetails, m.insightsDetailID)
 	}
@@ -1254,7 +1453,7 @@ func TestInsightsEnterShowsDirectDetailAndPreservesClosedFilter(t *testing.T) {
 		t.Fatalf("direct Insights detail omitted active issue: %s", m.viewport.View())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusInsights || m.showDetails || m.insightsDetailID != "" || m.currentFilter != "closed" {
 		t.Fatalf("leaving direct detail did not preserve Insights/filter state: focus=%v details=%v id=%q filter=%q", m.focused, m.showDetails, m.insightsDetailID, m.currentFilter)
 	}
@@ -1266,29 +1465,29 @@ func TestInsightsDirectDetailClearsOnSplitListInteraction(t *testing.T) {
 		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
 	}, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
 	m.insightsPanel.focusedPanel = PanelBottlenecks
 	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.isSplitView || m.insightsDetailID != "active" {
 		t.Fatalf("split direct detail setup failed: split=%v id=%q", m.isSplitView, m.insightsDetailID)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusList || m.insightsDetailID != "" {
 		t.Fatalf("Tab leaked direct detail into List: focus=%v id=%q", m.focused, m.insightsDetailID)
 	}
 
 	m.insightsDetailID = "active"
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsDetailID != "" {
 		t.Fatal("List selection retained direct Insights detail binding")
 	}
@@ -1317,14 +1516,14 @@ func TestInsightsDirectDetailClearsWhenIssueClosesOnRefresh(t *testing.T) {
 		{ID: "closed", Title: "Closed", Status: model.StatusClosed},
 	}, nil, "")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.insightsPanel.insights.Bottlenecks = []analysis.InsightItem{{ID: "active"}}
 	m.insightsPanel.focusedPanel = PanelBottlenecks
 	m.insightsPanel.selectedIndex[PanelBottlenecks] = 0
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsDetailID != "active" {
 		t.Fatalf("direct detail setup failed: %q", m.insightsDetailID)
 	}
@@ -1377,13 +1576,13 @@ func TestAttentionViewEscapeAndQRestoreOrigin(t *testing.T) {
 				m.isSplitView = origin.split
 
 				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-				m = updated.(Model)
+				m = updated.(*Model)
 				if !m.showAttentionView || m.attentionOrigin != origin.focus {
 					t.Fatalf("expected Attention origin %v, shown=%v origin=%v", origin.focus, m.showAttentionView, m.attentionOrigin)
 				}
 
 				updated, _ = m.Update(closeKey)
-				m = updated.(Model)
+				m = updated.(*Model)
 				if m.showAttentionView || m.focused != origin.focus {
 					t.Fatalf("expected return to %v, shown=%v focus=%v", origin.focus, m.showAttentionView, m.focused)
 				}
@@ -1429,7 +1628,7 @@ func TestRecipePickerToggleCancelRestoresOriginAndDraft(t *testing.T) {
 			appliedListIndex := m.list.Index()
 
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showRecipePicker || m.focused != focusRecipePicker || m.recipePickerOrigin != origin.focus {
 				t.Fatalf("recipe picker open state: shown=%v focus=%v origin=%v", m.showRecipePicker, m.focused, m.recipePickerOrigin)
 			}
@@ -1439,7 +1638,7 @@ func TestRecipePickerToggleCancelRestoresOriginAndDraft(t *testing.T) {
 			}
 
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.showRecipePicker || m.focused != origin.focus || m.isBoardView != origin.board {
 				t.Fatalf("recipe cancel did not restore origin: shown=%v focus=%v board=%v", m.showRecipePicker, m.focused, m.isBoardView)
 			}
@@ -1448,7 +1647,7 @@ func TestRecipePickerToggleCancelRestoresOriginAndDraft(t *testing.T) {
 			}
 
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.recipePicker.SelectedIndex() != appliedIndex {
 				t.Fatalf("recipe draft survived cancel: got index %d, want %d", m.recipePicker.SelectedIndex(), appliedIndex)
 			}
@@ -1460,9 +1659,9 @@ func TestRecipeShortcutRemainsListSearchInput(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "one", Title: "One", Status: model.StatusOpen}}, nil, "")
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("'")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showRecipePicker || m.list.FilterInput.Value() != "'" {
 		t.Fatalf("recipe shortcut escaped active list search: shown=%v query=%q", m.showRecipePicker, m.list.FilterInput.Value())
 	}
@@ -1479,11 +1678,11 @@ func TestAttentionViewNumericKeyFiltersAndTransitionsToList(t *testing.T) {
 	m.isBoardView = true
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	selectedLabel := m.attentionCache.Labels[1].Label
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.currentFilter != "label:"+selectedLabel {
 		t.Fatalf("filter=%q, want label:%s", m.currentFilter, selectedLabel)
 	}
@@ -1523,12 +1722,12 @@ func TestAttentionViewInvalidNumericKeyDoesNothing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewModel(tt.issues, nil, "")
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			beforeFilter := m.currentFilter
 			beforeItems := len(m.list.Items())
 
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showAttentionView || m.focused != focusInsights {
 				t.Fatalf("invalid numeric key closed Attention: shown=%v focus=%v", m.showAttentionView, m.focused)
 			}
@@ -1545,12 +1744,12 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	}}
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.isSplitView = true
 	m.focused = focusList
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	view := m.View()
 	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "1-9 filter list by ranked label") ||
 		!strings.Contains(view, "]/F4 close") || !strings.Contains(view, "esc/q back") {
@@ -1562,5 +1761,48 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	lines := strings.Split(view, "\n")
 	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "]/F4 close") {
 		t.Fatalf("expected Attention footer on terminal bottom row, lines=%d last=%q", len(lines), lines[len(lines)-1])
+	}
+}
+
+func TestForceRefreshUsesExistingBackgroundWorkerWaiter(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.backgroundWorker = worker
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("force refresh started an additional worker-channel waiter")
+	}
+	if m.statusMsg != "Refreshing…" || m.statusIsError {
+		t.Fatalf("refresh status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestForceRefreshDetachesStoppedBackgroundWorker(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	worker.Stop()
+
+	m := NewModel([]model.Issue{{ID: "1", Title: "One", Status: model.StatusOpen}}, nil, "")
+	m.backgroundWorker = worker
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("unavailable stopped-worker refresh unexpectedly scheduled work")
+	}
+	if m.backgroundWorker != nil {
+		t.Fatal("stopped background worker remained installed")
+	}
+	if m.statusMsg != "Refresh unavailable" || !m.statusIsError {
+		t.Fatalf("stopped-worker refresh status=%q error=%v", m.statusMsg, m.statusIsError)
 	}
 }

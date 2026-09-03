@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
@@ -20,9 +21,33 @@ type RobotResult interface {
 type RobotResultDecorator func(command string, result RobotResult) error
 
 type robotScopeMetadata struct {
+	// CLI scope fields are supplied by RobotEnvelope. Hub fields are added by
+	// the optional Hub decorator; EncodeResult merges both objects so the two
+	// representations never compete for the JSON "scope" key.
+	Label              string   `json:"label,omitempty"`
+	Recipe             string   `json:"recipe,omitempty"`
+	Repo               string   `json:"repo,omitempty"`
+	Unsupported        []string `json:"unsupported,omitempty"`
 	Mode               string   `json:"mode"`
 	Contexts           []string `json:"contexts"`
 	IncludeContextless bool     `json:"include_contextless"`
+}
+
+func mergeRobotScopeJSON(payload, envelope json.RawMessage) (json.RawMessage, error) {
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &merged); err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(envelope, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range fields {
+		if _, exists := merged[key]; !exists {
+			merged[key] = value
+		}
+	}
+	return json.Marshal(merged)
 }
 
 type robotBoundaryReference struct {

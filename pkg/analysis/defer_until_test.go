@@ -130,10 +130,10 @@ func TestGetActionableIssues_ExcludesFutureDeferred(t *testing.T) {
 		t.Fatalf("actionable at deferral instant = %v, want [F N P]", got)
 	}
 
-	// A zero SetNow is ignored (clock unchanged).
+	// Go's zero time is a valid explicit reproducible epoch.
 	analyzer.SetNow(time.Time{})
-	if !analyzer.Now().Equal(future) {
-		t.Fatalf("SetNow(zero) must be a no-op, clock = %v", analyzer.Now())
+	if !analyzer.Now().IsZero() {
+		t.Fatalf("SetNow(zero) clock = %v, want zero", analyzer.Now())
 	}
 
 	// Plan output (what --robot-plan serves) follows the same set.

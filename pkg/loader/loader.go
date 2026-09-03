@@ -11,12 +11,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
 	json "github.com/goccy/go-json"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -506,6 +508,32 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 // DefaultMaxBufferSize is the default buffer size for the scanner (10MB).
 const DefaultMaxBufferSize = 1024 * 1024 * 10
 
+// MaxLineSizeEnvVar overrides DefaultMaxBufferSize; the value is in megabytes.
+const MaxLineSizeEnvVar = "BV_MAX_LINE_SIZE_MB"
+
+// maxLineSizeMB caps MaxLineSizeEnvVar so a typo cannot ask for terabytes.
+const maxLineSizeMB = 1024
+
+// MaxLineSizeFromEnv returns the maximum JSONL line size in bytes configured
+// through BV_MAX_LINE_SIZE_MB, or 0 when the variable is unset or invalid
+// (ParseOptions treats 0 as DefaultMaxBufferSize). Every loading path — TUI
+// and robot/datasource alike — must consult this so the documented variable
+// has one meaning.
+func MaxLineSizeFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv(MaxLineSizeEnvVar))
+	if raw == "" {
+		return 0
+	}
+	mb, err := strconv.Atoi(raw)
+	if err != nil || mb <= 0 {
+		return 0
+	}
+	if mb > maxLineSizeMB {
+		mb = maxLineSizeMB
+	}
+	return mb * 1024 * 1024
+}
+
 // ParseOptions configures the behavior of ParseIssues.
 type ParseOptions struct {
 	// WarningHandler is called with warning messages (e.g., malformed JSON).
@@ -521,8 +549,8 @@ type ParseOptions struct {
 	// When nil, all valid issues are included.
 	IssueFilter func(*model.Issue) bool
 
-	// Stats, when non-nil, receives per-line accounting as the stream is
-	// parsed. This lets a single fused loader pass also serve as the
+	// Stats, when non-nil, receives source-order per-line accounting as the
+	// stream is parsed. This lets a single fused loader pass also serve as the
 	// validation pass (issue count + malformed-error-rate gate) so the
 	// 1.9MB issues.jsonl is read once instead of validate-then-load.
 	// Only issue-shaped records are accounted; non-issue `_type` records,
@@ -536,17 +564,21 @@ type ParseOptions struct {
 // second read of the file. The categories mirror datasource.validateJSONL: a line
 // counts toward Valid when its JSON decodes AND the resulting issue passes model
 // validation (which subsumes the required id/title/status check), and toward
-// Errors when the JSON is malformed OR the issue fails validation. Empty lines
-// and over-long skipped lines are not accounted. Recognized non-issue `_type`
+// Errors when the JSON is malformed, the issue fails validation, OR a later
+// validated record repeats an earlier issue ID. Duplicate records are removed
+// from Valid and added to Errors. Empty lines and over-long skipped lines are
+// not accounted. Recognized non-issue `_type`
 // records (and unknown `_type`) count toward Skipped — they are not errors, but
 // a file made ENTIRELY of them yielded zero issues, which callers use to reject a
 // wrong/non-issue source (e.g. a stray sprints.jsonl) rather than treat it as a
 // valid empty project.
 type ParseStats struct {
-	// Valid is the number of issue-shaped lines that parsed and validated.
+	// Valid is the number of unique issue-shaped lines that parsed and validated.
 	Valid int
 	// Errors is the number of issue-shaped lines that were malformed JSON or
-	// failed model validation (e.g. missing required fields).
+	// failed model validation (e.g. missing required fields), plus duplicate IDs
+	// and lines dropped for exceeding the per-line byte cap. Every dropped
+	// record counts here so load_stats can surface it.
 	Errors int
 	// Skipped is the number of recognized non-issue `_type` records (memory,
 	// sprint, forecast, burndown, ignore) plus unknown `_type` records — content
@@ -566,6 +598,7 @@ func (s ParseStats) ErrorRate() float64 {
 
 // LoadIssuesFromFileWithOptions reads issues from a file with custom options.
 func LoadIssuesFromFileWithOptions(path string, opts ParseOptions) ([]model.Issue, error) {
+	defer metrics.Timer(metrics.LoaderParse)()
 	// Check if file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no beads issues found at %s", path)
@@ -631,10 +664,7 @@ func ParseIssuesWithOptionsPooled(r io.Reader, opts ParseOptions) (PooledIssues,
 
 func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]model.Issue, []*model.Issue, error) {
 	// Determine buffer size (the 10MB-default per-line cap).
-	maxCapacity := opts.BufferSize
-	if maxCapacity <= 0 {
-		maxCapacity = DefaultMaxBufferSize
-	}
+	maxCapacity := effectiveMaxCapacity(opts.BufferSize)
 
 	// Parallel fast path: for large on-disk files, JSONL is line-independent
 	// (one JSON object per line), so the decode is embarrassingly parallel.
@@ -642,9 +672,10 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 	// chunks across a bounded worker pool, and reassemble in ORIGINAL ORDER.
 	// This is the alien-graveyard §8.2 "morsel-driven parallelism" pattern:
 	// fixed-size morsels pulled by a bounded set of workers, with results
-	// stitched back deterministically. The path is byte-equivalent to the
+	// stitched back deterministically. The path is behavior-equivalent to the
 	// serial loop below (same BOM strip, same _type dispatch, same warnings in
-	// original line order, same ParseStats, same pooled deep-copy semantics);
+	// original line order, same sequential filter calls, same ParseStats, and
+	// the same pooled deep-copy semantics);
 	// see parseIssuesParallel and the differential test in loader_test.go.
 	if f, ok := r.(*os.File); ok {
 		if info, err := f.Stat(); err == nil && info.Size() >= parallelParseMinBytes {
@@ -678,6 +709,9 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 	reader := bufio.NewReaderSize(r, maxCapacity)
 
 	warn := resolveWarnHandler(opts.WarningHandler)
+	decodeOpts := opts
+	decodeOpts.IssueFilter = nil
+	seenIDs := make(map[string]struct{})
 
 	lineNum := 0
 	for {
@@ -697,8 +731,13 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 		}
 
 		if isPrefix {
-			// Line too long. Discard the rest of the line.
+			// Line too long. Discard the rest of the line. It is a dropped
+			// record, so it counts as an error: robot load_stats must surface
+			// it just like malformed JSON (#190).
 			warn(fmt.Sprintf("skipping line %d: line too long (exceeds %d bytes)", lineNum, maxCapacity))
+			if opts.Stats != nil {
+				opts.Stats.Errors++
+			}
 			for isPrefix {
 				_, isPrefix, err = reader.ReadLine()
 				if err != nil && err != io.EOF {
@@ -723,17 +762,96 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 			line = stripBOM(line)
 		}
 
-		issues, poolRefs = processIssueLine(line, lineNum, opts, usePool, issues, poolRefs, opts.Stats, warn)
+		before := len(issues)
+		issues, poolRefs = processIssueLine(line, lineNum, decodeOpts, usePool, issues, poolRefs, opts.Stats, warn)
+		if len(issues) != before && !keepParsedIssue(
+			&issues[len(issues)-1], pooledRefAt(poolRefs, len(issues)-1), lineNum,
+			opts, seenIDs, warn,
+		) {
+			clear(issues[len(issues)-1:])
+			issues = issues[:len(issues)-1]
+			if usePool {
+				clear(poolRefs[len(poolRefs)-1:])
+				poolRefs = poolRefs[:len(poolRefs)-1]
+			}
+		}
 	}
 
+	issues, poolRefs = normalizeEmptyIssueResults(issues, poolRefs)
+	internRepeatedIssueStrings(issues, poolRefs)
 	return issues, poolRefs, nil
+}
+
+// keepParsedIssue applies the order-sensitive policies that must remain serial:
+// duplicate rejection and the caller-provided filter. Duplicate accounting is
+// intentionally performed before filtering, so every validated record
+// participates in data-integrity checks even when its canonical record is not
+// selected for the returned view.
+func keepParsedIssue(
+	issue *model.Issue,
+	poolRef *model.Issue,
+	lineNum int,
+	opts ParseOptions,
+	seenIDs map[string]struct{},
+	warn func(string),
+) bool {
+	if _, exists := seenIDs[issue.ID]; exists {
+		if opts.Stats != nil {
+			if opts.Stats.Valid > 0 {
+				opts.Stats.Valid--
+			}
+			opts.Stats.Errors++
+		}
+		// Match malformed and validation warnings: callbacks observe the
+		// accounting state after this source line has been fully classified.
+		warn(fmt.Sprintf("skipping duplicate issue ID %q on line %d", issue.ID, lineNum))
+		if poolRef != nil {
+			PutIssue(poolRef)
+		}
+		return false
+	}
+	seenIDs[issue.ID] = struct{}{}
+
+	filterTarget := issue
+	if poolRef != nil {
+		filterTarget = poolRef
+	}
+	if opts.IssueFilter != nil && !opts.IssueFilter(filterTarget) {
+		if poolRef != nil {
+			PutIssue(poolRef)
+		}
+		return false
+	}
+	if poolRef != nil {
+		*issue = *poolRef
+		DeepCopyIssueSlices(issue)
+	}
+	return true
+}
+
+func pooledRefAt(poolRefs []*model.Issue, index int) *model.Issue {
+	if index >= 0 && index < len(poolRefs) {
+		return poolRefs[index]
+	}
+	return nil
+}
+
+func normalizeEmptyIssueResults(issues []model.Issue, poolRefs []*model.Issue) ([]model.Issue, []*model.Issue) {
+	if len(issues) == 0 {
+		issues = nil
+	}
+	if len(poolRefs) == 0 {
+		poolRefs = nil
+	}
+	return issues, poolRefs
 }
 
 // processIssueLine applies the full per-line loader semantics to a single
 // (BOM-stripped, non-empty, end-of-line-trimmed) JSONL line and appends any
 // resulting issue. It is the single source of truth shared by the serial reader
 // loop and the parallel chunk workers, guaranteeing the two paths are
-// byte-equivalent: same `_type` dispatch, same malformed/invalid handling, same
+// behavior-equivalent: same `_type` dispatch, same malformed/invalid handling,
+// same
 // warning text keyed by lineNum, same ParseStats accounting, and the same
 // pooled deep-copy semantics (bv-fn4b). It returns the (possibly grown) issues
 // and poolRefs slices. stats may be nil; warn must be non-nil.
@@ -806,12 +924,10 @@ func processIssueLine(
 			return issues, poolRefs
 		}
 
-		// Append the struct value first, then deep-copy slice fields on the VALUE
-		// copy to break sharing with pooled backing arrays. This ensures that when
-		// the pooled issue is returned to the pool and its backing arrays are reused,
-		// the copied issue in the snapshot is not affected (bv-fn4b).
+		// Defer the deep copy until duplicate/filter policy accepts this record.
+		// Until then the value intentionally shares slice storage with poolRef;
+		// rejected rows can return to the pool without allocating a throwaway copy.
 		issues = append(issues, *issue)
-		DeepCopyIssueSlices(&issues[len(issues)-1])
 		poolRefs = append(poolRefs, issue)
 		return issues, poolRefs
 	}
@@ -932,21 +1048,32 @@ func countLines(data []byte) int {
 	return n
 }
 
-// pendingWarn is a warning captured by a chunk worker, tagged with its global
-// line number so the orchestrator can replay warnings in original line order.
-type pendingWarn struct {
-	lineNum int
-	msg     string
+func effectiveMaxCapacity(requested int) int {
+	if requested <= 0 {
+		return DefaultMaxBufferSize
+	}
+	// bufio.Reader clamps smaller buffers to its internal minimum. Use the same
+	// effective cap in the parallel path so boundary behavior matches.
+	if requested < 16 {
+		return 16
+	}
+	return requested
+}
+
+type parsedLineEvent struct {
+	lineNum  int
+	stats    ParseStats
+	warns    []string
+	hasIssue bool
 }
 
 // chunkResult holds one chunk's decoded output in original intra-chunk order,
-// plus its accumulated stats and ordered warnings. Each worker owns its result
+// plus its ordered per-line events. Each worker owns its result
 // exclusively (no shared mutable state), so there are no data races.
 type chunkResult struct {
 	issues   []model.Issue
 	poolRefs []*model.Issue
-	stats    ParseStats
-	warns    []pendingWarn
+	events   []parsedLineEvent
 }
 
 // parseIssuesParallel decodes a whole JSONL buffer concurrently while remaining
@@ -958,7 +1085,11 @@ type chunkResult struct {
 // per-line cap, _type filtering, tombstone/normalize/validate semantics, and
 // ParseStats accounting all match the serial path exactly.
 func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapacity int) ([]model.Issue, []*model.Issue, error) {
+	maxCapacity = effectiveMaxCapacity(maxCapacity)
 	warn := resolveWarnHandler(opts.WarningHandler)
+	decodeOpts := opts
+	decodeOpts.IssueFilter = nil
+	decodeOpts.Stats = nil
 
 	// Build line-aligned chunk boundaries. Each chunk is [start,end) over data,
 	// ending exactly after a '\n' (except possibly the last). We also record the
@@ -1043,7 +1174,7 @@ func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapaci
 					res.poolRefs = make([]*model.Issue, 0, est)
 				}
 			}
-			parseChunkLines(data[span.start:span.end], span.startLine, ci == 0, opts, usePool, maxCapacity, res)
+			parseChunkLines(data[span.start:span.end], span.startLine, ci == 0, decodeOpts, usePool, maxCapacity, res)
 		}
 	}
 	wg.Add(workers)
@@ -1060,33 +1191,80 @@ func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapaci
 		totalRefs += len(results[i].poolRefs)
 	}
 
-	issues := make([]model.Issue, 0, total)
+	var issues []model.Issue
+	if total > 0 {
+		issues = make([]model.Issue, 0, total)
+	}
 	var poolRefs []*model.Issue
-	if usePool {
+	if usePool && totalRefs > 0 {
 		poolRefs = make([]*model.Issue, 0, totalRefs)
 	}
-	var stats ParseStats
 	for i := range results {
 		issues = append(issues, results[i].issues...)
 		if usePool {
 			poolRefs = append(poolRefs, results[i].poolRefs...)
 		}
-		stats.Valid += results[i].stats.Valid
-		stats.Errors += results[i].stats.Errors
-		stats.Skipped += results[i].stats.Skipped
-		// Warnings within a chunk are already in line order; chunks are in
-		// order, so concatenating preserves global line order.
-		for _, pw := range results[i].warns {
-			warn(pw.msg)
+	}
+	decodedEvents := 0
+	for i := range results {
+		for _, event := range results[i].events {
+			if event.hasIssue {
+				decodedEvents++
+			}
 		}
 	}
-
-	if opts.Stats != nil {
-		opts.Stats.Valid += stats.Valid
-		opts.Stats.Errors += stats.Errors
-		opts.Stats.Skipped += stats.Skipped
+	if decodedEvents != len(issues) || (usePool && len(poolRefs) != len(issues)) {
+		// Validate the worker result before policy replay starts returning
+		// rejected objects to the pool. That keeps this defensive failure path
+		// from ever double-returning a reference after in-place compaction.
+		if usePool {
+			ReturnIssuePtrsToPool(poolRefs)
+		}
+		return nil, nil, fmt.Errorf(
+			"internal loader error: decoded %d issues, %d issue events, and %d pooled references",
+			len(issues), decodedEvents, len(poolRefs),
+		)
 	}
 
+	seenIDs := make(map[string]struct{}, len(issues))
+	keptIssues := issues[:0]
+	var keptRefs []*model.Issue
+	if usePool {
+		keptRefs = poolRefs[:0]
+	}
+	issueCursor := 0
+	for i := range results {
+		for _, event := range results[i].events {
+			if opts.Stats != nil {
+				opts.Stats.Valid += event.stats.Valid
+				opts.Stats.Errors += event.stats.Errors
+				opts.Stats.Skipped += event.stats.Skipped
+			}
+			for _, message := range event.warns {
+				warn(message)
+			}
+			if !event.hasIssue {
+				continue
+			}
+			ref := pooledRefAt(poolRefs, issueCursor)
+			if keepParsedIssue(&issues[issueCursor], ref, event.lineNum, opts, seenIDs, warn) {
+				keptIssues = append(keptIssues, issues[issueCursor])
+				if usePool {
+					keptRefs = append(keptRefs, ref)
+				}
+			}
+			issueCursor++
+		}
+	}
+	clear(issues[len(keptIssues):])
+	issues = keptIssues
+	if usePool {
+		clear(poolRefs[len(keptRefs):])
+		poolRefs = keptRefs
+	}
+	issues, poolRefs = normalizeEmptyIssueResults(issues, poolRefs)
+
+	internRepeatedIssueStrings(issues, poolRefs)
 	return issues, poolRefs, nil
 }
 
@@ -1096,18 +1274,15 @@ func parseIssuesParallel(data []byte, opts ParseOptions, usePool bool, maxCapaci
 // consuming logic, strips the BOM from the very first line when isFirstChunk,
 // enforces the per-line byte cap (lines longer than maxCapacity are skipped
 // with the identical "line too long" warning and consume exactly one lineNum),
-// and otherwise defers to processIssueLine. Warnings are buffered with their
-// global line number for ordered replay by the caller.
+// and otherwise defers to processIssueLine. Per-line stats and warnings are
+// buffered for source-order replay by the caller before its filter callback.
 func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseOptions, usePool bool, maxCapacity int, res *chunkResult) {
-	warn := func(lineNum int, msg string) {
-		res.warns = append(res.warns, pendingWarn{lineNum: lineNum, msg: msg})
-	}
-
 	lineNum := startLine - 1
 	for len(chunk) > 0 {
 		lineNum++
 		nl := bytes.IndexByte(chunk, '\n')
 		var line []byte
+		hasNewline := nl >= 0
 		if nl < 0 {
 			line = chunk
 			chunk = nil
@@ -1115,18 +1290,20 @@ func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseO
 			line = chunk[:nl]
 			chunk = chunk[nl+1:]
 		}
-		// bufio.Reader.ReadLine strips the trailing CR of a CRLF line ending.
-		if n := len(line); n > 0 && line[n-1] == '\r' {
-			line = line[:n-1]
+		// Per-line byte cap. The serial path uses bufio.Reader.ReadLine, which
+		// sets isPrefix (→ skip) when bytes before '\n' fill the buffer. Check the
+		// raw line before trimming CR so CRLF consumes the same capacity as serial.
+		if len(line) >= maxCapacity {
+			message := fmt.Sprintf("skipping line %d: line too long (exceeds %d bytes)", lineNum, maxCapacity)
+			// A dropped record is an error, matching the serial path (#190).
+			res.events = append(res.events, parsedLineEvent{lineNum: lineNum, stats: ParseStats{Errors: 1}, warns: []string{message}})
+			continue
 		}
 
-		// Per-line byte cap. The serial path uses bufio.Reader.ReadLine, which
-		// sets isPrefix (→ skip) once a line's content length REACHES the buffer
-		// size, i.e. for len >= maxCapacity. Mirror that exactly (>=, not >), so a
-		// line of length exactly maxCapacity is skipped identically to serial.
-		if len(line) >= maxCapacity {
-			warn(lineNum, fmt.Sprintf("skipping line %d: line too long (exceeds %d bytes)", lineNum, maxCapacity))
-			continue
+		// bufio.Reader.ReadLine strips CR only when it is immediately before a
+		// consumed newline. A bare CR on the final unterminated line is content.
+		if n := len(line); hasNewline && n > 0 && line[n-1] == '\r' {
+			line = line[:n-1]
 		}
 
 		if len(line) == 0 {
@@ -1137,11 +1314,20 @@ func parseChunkLines(chunk []byte, startLine int, isFirstChunk bool, opts ParseO
 			line = stripBOM(line)
 		}
 
+		before := len(res.issues)
+		var lineStats ParseStats
+		var lineWarns []string
 		res.issues, res.poolRefs = processIssueLine(
 			line, lineNum, opts, usePool,
-			res.issues, res.poolRefs, &res.stats,
-			func(msg string) { warn(lineNum, msg) },
+			res.issues, res.poolRefs, &lineStats,
+			func(msg string) { lineWarns = append(lineWarns, msg) },
 		)
+		res.events = append(res.events, parsedLineEvent{
+			lineNum:  lineNum,
+			stats:    lineStats,
+			warns:    lineWarns,
+			hasIssue: len(res.issues) != before,
+		})
 	}
 }
 
@@ -1228,6 +1414,101 @@ func normalizeLoadedIssue(issue *model.Issue) {
 		}
 		if dep.IssueID == "" {
 			dep.IssueID = issue.ID
+		}
+	}
+}
+
+const (
+	issueStringInternerSlots     = 128
+	issueStringInternerMaxProbes = 8
+)
+
+// issueStringInterner is a bounded, stack-friendly table for the low-cardinality
+// strings repeated across issues. A fixed table avoids both a process-global
+// retention leak and a fresh map allocation on every reload.
+type issueStringInterner struct {
+	slots [issueStringInternerSlots]string
+}
+
+func (in *issueStringInterner) intern(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	const fnvOffset64 = uint64(14695981039346656037)
+	const fnvPrime64 = uint64(1099511628211)
+	hash := fnvOffset64
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= fnvPrime64
+	}
+
+	start := int(hash & (issueStringInternerSlots - 1))
+	for probe := 0; probe < issueStringInternerMaxProbes; probe++ {
+		index := (start + probe) & (issueStringInternerSlots - 1)
+		canonical := in.slots[index]
+		if canonical == value {
+			return canonical
+		}
+		if canonical == "" {
+			in.slots[index] = value
+			return value
+		}
+	}
+
+	// This hash cluster exceeded the fixed probe budget. Preserve correctness and
+	// skip interning this value: high-cardinality input must not turn every later
+	// string into a full-table scan.
+	return value
+}
+
+// internRepeatedIssueStrings shares immutable string storage within one parsed
+// snapshot. The table is deliberately parse-scoped: labels, assignees, repo
+// names, enums, and dependency targets repeat heavily, while a process-global
+// interner would retain arbitrary user input forever.
+func internRepeatedIssueStrings(issues []model.Issue, poolRefs []*model.Issue) {
+	if len(issues) == 0 {
+		return
+	}
+
+	var interner issueStringInterner
+	for i := range issues {
+		issue := &issues[i]
+		issue.Status = model.Status(interner.intern(string(issue.Status)))
+		issue.IssueType = model.IssueType(interner.intern(string(issue.IssueType)))
+		issue.Assignee = interner.intern(issue.Assignee)
+		issue.SourceRepo = interner.intern(issue.SourceRepo)
+		for labelIndex := range issue.Labels {
+			issue.Labels[labelIndex] = interner.intern(issue.Labels[labelIndex])
+		}
+
+		if i < len(poolRefs) && poolRefs[i] != nil {
+			ref := poolRefs[i]
+			ref.Status = issue.Status
+			ref.IssueType = issue.IssueType
+			ref.Assignee = issue.Assignee
+			ref.SourceRepo = issue.SourceRepo
+			for labelIndex := range ref.Labels {
+				ref.Labels[labelIndex] = issue.Labels[labelIndex]
+			}
+		}
+	}
+
+	for i := range issues {
+		issue := &issues[i]
+		for _, dep := range issue.Dependencies {
+			if dep == nil {
+				continue
+			}
+			dep.Type = model.DependencyType(interner.intern(string(dep.Type)))
+			dep.CreatedBy = interner.intern(dep.CreatedBy)
+		}
+		for _, comment := range issue.Comments {
+			if comment == nil {
+				continue
+			}
+			comment.IssueID = interner.intern(comment.IssueID)
+			comment.Author = interner.intern(comment.Author)
 		}
 	}
 }

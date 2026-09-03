@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
@@ -159,6 +160,7 @@ func TestRobotFlagsOutputJSON(t *testing.T) {
 		{"--robot-docs", "commands"},
 		{"--robot-next"},
 		{"--robot-triage"},
+		{"--bead-history", "A", "--history-mode", "off"},
 		{"--robot-label-health"},
 		{"--robot-label-flow"},
 		{"--robot-label-attention"},
@@ -507,6 +509,7 @@ func TestMissingFlagArgumentErrorSuggestsValueShape(t *testing.T) {
 func TestRobotNowHonorsSourceDateEpoch(t *testing.T) {
 	t.Setenv("SOURCE_DATE_EPOCH", "1234567890")
 	requireString(t, robotNow().Format(time.RFC3339), "2009-02-13T23:31:30Z")
+	requireString(t, NewRobotEnvelope("hash").GeneratedAt, "2009-02-13T23:31:30Z")
 }
 
 func TestAgentIntentArgRewrite(t *testing.T) {
@@ -691,6 +694,11 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 			want: []string{"--update-dry-run"},
 		},
 		{
+			name: "update dry-run stays non-robot with structured-output alias",
+			args: []string{"--update-dry-run", "--json"},
+			want: []string{"--update-dry-run", "--format", "json"},
+		},
+		{
 			name: "upgrade --rollback maps to --rollback",
 			args: []string{"upgrade", "--rollback"},
 			want: []string{"--rollback"},
@@ -710,6 +718,34 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requireArgs(t, rewriteAgentIntentArgs(tt.args), tt.want)
+		})
+	}
+}
+
+func TestReadUpdateConfirmation(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		want      bool
+		wantError bool
+	}{
+		{name: "blank line accepts default", input: "\n", want: true},
+		{name: "yes accepts", input: " YES \n", want: true},
+		{name: "single y at EOF accepts", input: "y", want: true},
+		{name: "no cancels", input: "n\n", want: false},
+		{name: "arbitrary response cancels", input: "later\n", want: false},
+		{name: "empty EOF fails closed", input: "", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readUpdateConfirmation(strings.NewReader(tt.input))
+			if (err != nil) != tt.wantError {
+				t.Fatalf("readUpdateConfirmation error = %v, wantError %v", err, tt.wantError)
+			}
+			if got != tt.want {
+				t.Fatalf("readUpdateConfirmation = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }
@@ -1114,6 +1150,7 @@ func TestRobotTriageSchemaIncludesPartialHistoryMetadata(t *testing.T) {
 	status := metaProps["history_status"].(map[string]interface{})
 	values := status["enum"].([]string)
 	requireContainsString(t, values, "partial")
+	requireContainsString(t, values, "skipped")
 	warnings := metaProps["history_warnings"].(map[string]interface{})
 	warningProps := requireNestedSchemaProperties(t, warnings["items"], "robot-triage history warning")
 	for _, name := range []string{"code", "context", "reason", "skipped_correlations", "message"} {
@@ -2143,136 +2180,127 @@ func TestModifierFlagValidation(t *testing.T) {
 	}
 }
 
-func TestApplyRecipeFilters_ActionableAndHasBlockers(t *testing.T) {
-	now := time.Now()
-	a := model.Issue{ID: "A", Title: "Root", Status: model.StatusOpen, Priority: 2, CreatedAt: now}
-	b := model.Issue{
-		ID:     "B",
-		Title:  "Blocked by A",
-		Status: model.StatusOpen,
-		Dependencies: []*model.Dependency{
-			{DependsOnID: "A", Type: model.DepBlocks},
-		},
-		CreatedAt: now.Add(-time.Hour),
+// mustApplyRecipe runs the CLI's single recipe entry point (applyRecipe, which
+// wires analyzer/triage metrics into recipe.Apply) and fails the test on error.
+func mustApplyRecipe(t *testing.T, issues []model.Issue, r *recipe.Recipe) []model.Issue {
+	t.Helper()
+	got, err := applyRecipe(issues, r)
+	if err != nil {
+		t.Fatalf("applyRecipe: %v", err)
 	}
-	issues := []model.Issue{a, b}
+	return got
+}
+
+// The per-filter and per-sort-field semantics are covered in pkg/recipe
+// (apply_test.go); this proves the CLI path routes every FilterConfig field,
+// the sort chain and view.max_items through that one engine.
+func TestApplyRecipe_FiltersSortAndLimitThroughSharedEngine(t *testing.T) {
+	now := time.Now()
+	issues := []model.Issue{
+		{ID: "A", Title: "Root", Status: model.StatusOpen, Priority: 2, CreatedAt: now, UpdatedAt: now},
+		{ID: "B", Title: "Blocked by A", Status: model.StatusOpen, Priority: 0, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+			Dependencies: []*model.Dependency{{DependsOnID: "A", Type: model.DepBlocks}}},
+		{ID: "C", Title: "Login endpoint", Status: model.StatusClosed, Priority: 1, Labels: []string{"backend", "p0"},
+			CreatedAt: now.Add(-72 * time.Hour), UpdatedAt: now.Add(-72 * time.Hour)},
+	}
+
+	r := &recipe.Recipe{Filters: recipe.FilterConfig{Actionable: ptrBool(true)}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "A", "C")
+	r = &recipe.Recipe{Filters: recipe.FilterConfig{Status: []string{"open"}, HasBlockers: ptrBool(true)}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "B")
+	r = &recipe.Recipe{Filters: recipe.FilterConfig{Priority: []int{1, 2}, TitleContains: "login", Tags: []string{"BACKEND"}, IDPrefix: "C"}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "C")
+	r = &recipe.Recipe{Filters: recipe.FilterConfig{CreatedBefore: "1d", UpdatedBefore: "1d"}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "C")
+	r = &recipe.Recipe{Filters: recipe.FilterConfig{CreatedAfter: "1d", UpdatedAfter: "1d", ExcludeTags: []string{"P0"}}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "A", "B")
+
+	// Sort chain and max_items go through the same call.
+	r = &recipe.Recipe{Sort: recipe.SortConfig{Field: "priority", Secondary: &recipe.SortConfig{Field: "id"}}, View: recipe.ViewConfig{MaxItems: 2}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "B", "C")
+	r = &recipe.Recipe{Sort: recipe.SortConfig{Field: "created"}} // dates default newest-first
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "A", "B", "C")
+
+	// The caller's slice is never reordered or truncated.
+	requireIssueIDs(t, issues, "A", "B", "C")
+
+	// A nil recipe passes issues through untouched.
+	if got, err := applyRecipe(issues, nil); err != nil || len(got) != len(issues) {
+		t.Fatalf("applyRecipe(nil) = %d issues, %v", len(got), err)
+	}
+
+	// A malformed time filter is an error naming the field, never a silently skipped filter.
+	r = &recipe.Recipe{Name: "bad", Filters: recipe.FilterConfig{UpdatedAfter: "whenever"}}
+	if _, err := applyRecipe(issues, r); err == nil || !strings.Contains(err.Error(), "filters.updated_after") {
+		t.Fatalf("applyRecipe(bad) error = %v, want filters.updated_after named", err)
+	}
+}
+
+// Metric sorts need real scores: applyRecipe must run the analyzer for
+// pagerank/betweenness and compute triage scores for triage, on the same
+// issue set the robot handlers see.
+func TestApplyRecipe_MetricSortsUseAnalyzerAndTriage(t *testing.T) {
+	blocks := func(on string) []*model.Dependency {
+		return []*model.Dependency{{DependsOnID: on, Type: model.DepBlocks}}
+	}
+	// root blocks mid blocks leaf; solo is independent; done is closed.
+	issues := []model.Issue{
+		{ID: "leaf", Title: "Leaf", Status: model.StatusOpen, Priority: 1, Dependencies: blocks("mid")},
+		{ID: "solo", Title: "Solo", Status: model.StatusOpen, Priority: 0},
+		{ID: "root", Title: "Root", Status: model.StatusOpen, Priority: 3},
+		{ID: "mid", Title: "Mid", Status: model.StatusOpen, Priority: 2, Dependencies: blocks("root")},
+		{ID: "done", Title: "Done", Status: model.StatusClosed, Priority: 0},
+	}
+
+	stats := analysis.NewAnalyzer(issues).AnalyzeAsync(context.Background())
+	stats.WaitForPhase2()
+	if stats.GetPageRankScore("root") <= stats.GetPageRankScore("leaf") {
+		t.Fatalf("fixture has no PageRank gradient: root=%v leaf=%v", stats.GetPageRankScore("root"), stats.GetPageRankScore("leaf"))
+	}
 
 	r := &recipe.Recipe{
-		Filters: recipe.FilterConfig{
-			Actionable: ptrBool(true),
-		},
+		Name:    "pagerank-desc",
+		Filters: recipe.FilterConfig{Status: []string{"open"}},
+		Sort:    recipe.SortConfig{Field: "pagerank", Direction: "desc", Secondary: &recipe.SortConfig{Field: "priority"}},
 	}
-	actionable := applyRecipeFilters(issues, r)
-	requireIssueIDs(t, actionable, "A")
+	got := mustApplyRecipe(t, issues, r)
+	if len(got) != 4 || got[0].ID != "root" {
+		t.Fatalf("pagerank order = %v, want root first and the closed issue gone", issueIDs(got))
+	}
+	for i := 1; i < len(got); i++ {
+		prev, cur := stats.GetPageRankScore(got[i-1].ID), stats.GetPageRankScore(got[i].ID)
+		if prev < cur {
+			t.Fatalf("not in descending PageRank order at %d: %v", i, issueIDs(got))
+		}
+		if prev == cur && got[i-1].Priority > got[i].Priority {
+			t.Fatalf("secondary priority sort not applied on PageRank tie: %v", issueIDs(got))
+		}
+	}
 
-	r.Filters.Actionable = nil
-	r.Filters.HasBlockers = ptrBool(true)
-	blocked := applyRecipeFilters(issues, r)
-	requireIssueIDs(t, blocked, "B")
+	// mid is the only node on the root->leaf path, so it has the top betweenness;
+	// the rest tie at 0 and fall through to natural ID order.
+	r = &recipe.Recipe{Name: "bottleneck", Filters: recipe.FilterConfig{Status: []string{"open"}}, Sort: recipe.SortConfig{Field: "betweenness"}}
+	requireIssueIDs(t, mustApplyRecipe(t, issues, r), "mid", "leaf", "root", "solo")
+
+	// Triage order equals the analysis package's own triage ranking.
+	open := issues[:4]
+	var want []string
+	for _, ts := range analysis.ComputeTriageScores(open) {
+		want = append(want, ts.IssueID)
+	}
+	if len(want) != 4 {
+		t.Fatalf("ComputeTriageScores returned %d scores for 4 open issues", len(want))
+	}
+	r = &recipe.Recipe{Name: "triage-desc", Sort: recipe.SortConfig{Field: "triage"}}
+	requireIssueIDs(t, mustApplyRecipe(t, open, r), want...)
 }
 
-func TestApplyRecipeFilters_TitleAndPrefix(t *testing.T) {
-	issues := []model.Issue{
-		{ID: "UI-1", Title: "Add login button"},
-		{ID: "API-2", Title: "Login endpoint"},
-		{ID: "API-3", Title: "Health check"},
+func issueIDs(issues []model.Issue) []string {
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		ids = append(ids, issue.ID)
 	}
-	r := &recipe.Recipe{
-		Filters: recipe.FilterConfig{
-			TitleContains: "login",
-			IDPrefix:      "API",
-		},
-	}
-	got := applyRecipeFilters(issues, r)
-	requireIssueIDs(t, got, "API-2")
-}
-
-func TestApplyRecipeFilters_TagsAndDates(t *testing.T) {
-	now := time.Now()
-	old := now.Add(-48 * time.Hour)
-	issues := []model.Issue{
-		{ID: "T1", Title: "Tagged", Labels: []string{"backend", "p0"}, CreatedAt: now, UpdatedAt: now},
-		{ID: "T2", Title: "Old", Labels: []string{"backend"}, CreatedAt: old, UpdatedAt: old},
-	}
-	r := &recipe.Recipe{
-		Filters: recipe.FilterConfig{
-			Tags:         []string{"backend"},
-			ExcludeTags:  []string{"p0"},
-			CreatedAfter: "1d",
-			UpdatedAfter: "1d",
-		},
-	}
-	got := applyRecipeFilters(issues, r)
-	if len(got) != 0 {
-		t.Fatalf("expected all filtered out (exclude p0 and date), got %#v", got)
-	}
-}
-
-func TestApplyRecipeFilters_DatesBlockersAndPrefix(t *testing.T) {
-	now := time.Now()
-	early := now.Add(-72 * time.Hour)
-	issues := []model.Issue{
-		{ID: "API-1", Title: "Fresh", CreatedAt: now, UpdatedAt: now},
-		{ID: "API-2", Title: "Stale", CreatedAt: early, UpdatedAt: early,
-			Dependencies: []*model.Dependency{{DependsOnID: "API-1", Type: model.DepBlocks}}},
-	}
-	r := &recipe.Recipe{Filters: recipe.FilterConfig{
-		CreatedBefore: "1h",
-		UpdatedBefore: "1h",
-		HasBlockers:   ptrBool(true),
-		IDPrefix:      "API-2",
-	}}
-	got := applyRecipeFilters(issues, r)
-	requireIssueIDs(t, got, "API-2")
-
-	r.Filters.HasBlockers = ptrBool(false)
-	got = applyRecipeFilters(issues, r)
-	if len(got) != 0 {
-		t.Fatalf("expected blockers=false to exclude API-2, got %#v", got)
-	}
-}
-
-func TestApplyRecipeSort_DefaultsAndFields(t *testing.T) {
-	now := time.Now()
-	issues := []model.Issue{
-		{ID: "A", Title: "zzz", Priority: 2, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-30 * time.Minute)},
-		{ID: "B", Title: "aaa", Priority: 0, CreatedAt: now, UpdatedAt: now},
-	}
-
-	// Priority default ascending
-	r := &recipe.Recipe{Sort: recipe.SortConfig{Field: "priority"}}
-	sorted := applyRecipeSort(append([]model.Issue{}, issues...), r)
-	requireIssueIDs(t, sorted[:1], "B")
-
-	// Created default descending (newest first)
-	r.Sort = recipe.SortConfig{Field: "created"}
-	sorted = applyRecipeSort(append([]model.Issue{}, issues...), r)
-	requireIssueIDs(t, sorted[:1], "B")
-
-	// Title ascending explicit desc
-	r.Sort = recipe.SortConfig{Field: "title", Direction: "desc"}
-	sorted = applyRecipeSort(append([]model.Issue{}, issues...), r)
-	requireIssueIDs(t, sorted[:1], "A")
-
-	// Status ascending (string compare)
-	r.Sort = recipe.SortConfig{Field: "status"}
-	sorted = applyRecipeSort(append([]model.Issue{}, issues...), r)
-	requireIssueIDs(t, sorted[:1], "A")
-
-	// ID natural sort
-	idIssues := []model.Issue{
-		{ID: "bv-10"},
-		{ID: "bv-2"},
-		{ID: "bv-1"},
-	}
-	r.Sort = recipe.SortConfig{Field: "id"}
-	sortedIDs := applyRecipeSort(append([]model.Issue{}, idIssues...), r)
-	requireIssueIDs(t, sortedIDs, "bv-1", "bv-2", "bv-10")
-
-	// Unknown field should preserve order
-	r.Sort = recipe.SortConfig{Field: "unknown"}
-	sorted = applyRecipeSort(append([]model.Issue{}, issues...), r)
-	requireIssueIDs(t, sorted, "A", "B")
+	return ids
 }
 
 func TestFormatCycle(t *testing.T) {

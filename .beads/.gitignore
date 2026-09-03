@@ -13,6 +13,11 @@ bd.sock
 sync-state.json
 last-touched
 .sync.lock
+.write.lock
+*.lock
+
+# Temporary files
+*.tmp
 
 # Local version tracking (prevents upgrade notification spam after git ops)
 .local_version
@@ -44,3 +49,10 @@ beads.right.meta.json
 
 # Local history backups
 .br_history/
+.br_recovery/
+recovery_*/
+
+# Tracker recovery leftovers (2026-09-02): renamed-aside databases and
+# fsqlite migration markers; never committed, removed only on maintainer approval
+*.bad_*
+*.fsqlite-migration-state

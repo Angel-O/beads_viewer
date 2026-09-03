@@ -27,7 +27,7 @@ func typeFilterIssues() []model.Issue {
 func TestTypePickerAppliesExactMultiSelectionAndShowsActiveState(t *testing.T) {
 	m := NewModel(typeFilterIssues(), nil, "")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showTypePicker || m.focused != focusTypePicker {
 		t.Fatalf("type picker did not open: shown=%v focus=%v", m.showTypePicker, m.focused)
 	}
@@ -47,11 +47,11 @@ func TestTypePickerAppliesExactMultiSelectionAndShowsActiveState(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.typePicker.MoveDown()
 	m.typePicker.ToggleSelected()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("I")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showTypePicker || m.focused != focusList {
 		t.Fatalf("uppercase I did not cancel type picker: shown=%v focus=%v", m.showTypePicker, m.focused)
 	}
@@ -178,7 +178,7 @@ func TestStatusKeysToggleAndPreserveComposedListFilters(t *testing.T) {
 	m.list.SetFilterText("needle")
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.currentFilter != "label:urgent" || m.statusFilter != "closed" {
 		t.Fatalf("closed toggle changed composed filters: base=%q status=%q", m.currentFilter, m.statusFilter)
 	}
@@ -188,14 +188,14 @@ func TestStatusKeysToggleAndPreserveComposedListFilters(t *testing.T) {
 	requireIssueIDs(t, visibleIssueIDs(m), "api-closed")
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.statusFilter != "open" {
 		t.Fatalf("switch to open status = %q", m.statusFilter)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "api-bug")
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.statusFilter != "" || m.currentFilter != "label:urgent" {
 		t.Fatalf("second open did not clear only status: base=%q status=%q", m.currentFilter, m.statusFilter)
 	}
@@ -210,19 +210,19 @@ func TestStatusFilterBadgeRendersWithComposedFilters(t *testing.T) {
 		m.applyFilter()
 
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "CLOSED") {
 			t.Fatalf("label + closed footer missing status badge: %q", footer)
 		}
 
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "OPEN") {
 			t.Fatalf("label + open footer missing status badge: %q", footer)
 		}
 
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		footer := ansi.Strip(m.renderFooter())
 		if strings.Contains(footer, "OPEN") || strings.Contains(footer, "CLOSED") || strings.Contains(footer, "READY") || !strings.Contains(footer, "label:urgent") {
 			t.Fatalf("cleared label status changed footer filter: %q", footer)
@@ -237,19 +237,19 @@ func TestStatusFilterBadgeRendersWithComposedFilters(t *testing.T) {
 		m.applyRecipe(r)
 
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "CLOSED") {
 			t.Fatalf("recipe + closed footer missing status badge: %q", footer)
 		}
 
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "OPEN") {
 			t.Fatalf("recipe + open footer missing status badge: %q", footer)
 		}
 
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		footer := ansi.Strip(m.renderFooter())
 		if strings.Contains(footer, "OPEN") || strings.Contains(footer, "CLOSED") || strings.Contains(footer, "READY") || !strings.Contains(footer, "URGENT") {
 			t.Fatalf("cleared recipe status changed footer filter: %q", footer)
@@ -282,7 +282,7 @@ func TestStatusKeysRenderNormalFooterImmediately(t *testing.T) {
 			m.SetRepositoryScope(map[string]bool{"api": true})
 
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
-			m = updated.(Model)
+			m = updated.(*Model)
 			view := ansi.Strip(m.View())
 			footer := footerLine(view)
 			if !strings.Contains(footer, "📦 api") || !strings.Contains(footer, testCase.badge) {
@@ -296,7 +296,7 @@ func TestStatusKeysRenderNormalFooterImmediately(t *testing.T) {
 			}
 
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
-			m = updated.(Model)
+			m = updated.(*Model)
 			view = ansi.Strip(m.View())
 			footer = footerLine(view)
 			for _, badge := range []string{"CLOSED", "OPEN", "READY"} {
@@ -317,13 +317,13 @@ func TestStatusTogglePreservesRecipeAndBoardContract(t *testing.T) {
 	m.setActiveRecipe(r)
 	m.applyRecipe(r)
 
-	m = m.handleListKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m, _ = m.handleListKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	if m.activeRecipe != r || m.currentFilter != "recipe:urgent" || m.statusFilter != "closed" {
 		t.Fatalf("list status toggle changed recipe: active=%p base=%q status=%q", m.activeRecipe, m.currentFilter, m.statusFilter)
 	}
 	requireIssueIDs(t, visibleIssueIDs(m), "api-closed")
 
-	m = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m, _ = m.handleBoardKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	if m.activeRecipe != r || m.currentFilter != "recipe:urgent" || m.statusFilter != "" {
 		t.Fatalf("board second toggle did not clear only status: active=%p base=%q status=%q", m.activeRecipe, m.currentFilter, m.statusFilter)
 	}
@@ -344,7 +344,7 @@ func TestTreeStatusKeysRebuildAndToggleOff(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.tree.SetBeadsDir(t.TempDir())
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusTree {
 		t.Fatalf("Tree entry focus = %v, want Tree", m.focused)
 	}
@@ -352,12 +352,12 @@ func TestTreeStatusKeysRebuildAndToggleOff(t *testing.T) {
 		t.Fatalf("initial Tree rows = %v, want all issues", got)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("-")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"tree-root", "tree-ready"}) {
 		t.Fatalf("Collapse All Tree rows = %v, want collapsed roots", got)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := treeRowIDs(&m.tree); len(got) != 4 {
 		t.Fatalf("Expand All Tree rows = %v, want all issues", got)
 	}
@@ -374,7 +374,7 @@ func TestTreeStatusKeysRebuildAndToggleOff(t *testing.T) {
 		{key: "r", filter: "", wantRows: []string{"tree-root", "tree-open-child", "tree-closed-child", "tree-ready"}},
 	} {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(testCase.key)})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if got := m.activeStatusFilter(); got != testCase.filter {
 			t.Fatalf("key %q active status = %q, want %q", testCase.key, got, testCase.filter)
 		}
@@ -393,18 +393,18 @@ func TestTreeStatusKeysComposeWithScopeAndTypeFilters(t *testing.T) {
 	m.applyFilter()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"api-bug", "api-closed"}) {
 		t.Fatalf("composed Tree rows = %v, want scoped/type/label rows", got)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"api-closed"}) {
 		t.Fatalf("composed closed Tree rows = %v, want api-closed", got)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"api-bug", "api-closed"}) {
 		t.Fatalf("toggle-off composed Tree rows = %v, want both scoped rows", got)
 	}
@@ -413,7 +413,7 @@ func TestTreeStatusKeysComposeWithScopeAndTypeFilters(t *testing.T) {
 func TestTreeSearchOwnsStatusKeysAndStatusRebuildPreservesState(t *testing.T) {
 	m := NewModel(treeStatusIssues(), nil, "")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.tree.issueMap["tree-root"].Expanded = true
 	m.tree.rebuildFlatList()
 	if !m.tree.SelectByID("tree-open-child") {
@@ -421,10 +421,10 @@ func TestTreeSearchOwnsStatusKeysAndStatusRebuildPreservesState(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	for _, key := range []string{"o", "c", "r"} {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-		m = updated.(Model)
+		m = updated.(*Model)
 	}
 	if got := m.tree.SearchQuery(); got != "ocr" {
 		t.Fatalf("active Tree search query = %q, want ocr", got)
@@ -445,7 +445,7 @@ func TestTreeSearchOwnsStatusKeysAndStatusRebuildPreservesState(t *testing.T) {
 	m.tree.viewportOffset = 50
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.tree.SearchQuery() != "child" || !m.tree.searchSubtrees {
 		t.Fatalf("status rebuild changed search state: query=%q subtrees=%v", m.tree.SearchQuery(), m.tree.searchSubtrees)
 	}
@@ -463,7 +463,7 @@ func TestTreeSearchOwnsStatusKeysAndStatusRebuildPreservesState(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := m.tree.GetSelectedID(); got != "tree-closed-child" {
 		t.Fatalf("toggle-off changed surviving selection: %q", got)
 	}
@@ -523,7 +523,7 @@ func TestTypeFilterSurvivesSnapshotRefresh(t *testing.T) {
 		{ID: "new-kind", Title: "New kind", Status: model.StatusOpen, IssueType: "incident"},
 	}).Build()
 	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.activeIssueTypes[model.TypeBug] {
 		t.Fatalf("active type selection was lost: %#v", m.activeIssueTypes)
 	}
@@ -535,12 +535,29 @@ func TestTypeFilterSurvivesSnapshotRefresh(t *testing.T) {
 	}
 }
 
+func TestTypeFilterSurvivesMatchingRecipeSnapshotRefresh(t *testing.T) {
+	r := &recipe.Recipe{Name: "open-only", Filters: recipe.FilterConfig{Status: []string{"open"}}}
+	m := NewModel(typeFilterIssues()[:2], nil, "")
+	m.setActiveRecipe(r)
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.applyRecipe(r)
+
+	snapshot := NewSnapshotBuilder([]model.Issue{
+		{ID: "new-bug", Title: "New bug", Status: model.StatusOpen, IssueType: model.TypeBug},
+		{ID: "new-task", Title: "New task", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}).WithRecipe(r).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+	m = updated.(*Model)
+
+	requireIssueIDs(t, visibleIssueIDs(m), "new-bug")
+}
+
 func TestBareTypeNameRemainsFuzzySearchText(t *testing.T) {
 	m := NewModel(typeFilterIssues(), nil, "")
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("bug")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if len(m.activeIssueTypes) != 0 || m.list.FilterValue() != "bug" {
 		t.Fatalf("bare text became a type filter: types=%v text=%q", m.activeIssueTypes, m.list.FilterValue())
 	}

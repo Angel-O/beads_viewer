@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -959,6 +960,18 @@ func TestGenerateTriageReasons_EmptyContext(t *testing.T) {
 	}
 	if reasons.ActionHint == "" {
 		t.Error("expected non-empty action hint")
+	}
+}
+
+func TestGenerateTriageReasonsAcceptsExplicitZeroEpoch(t *testing.T) {
+	deferUntil := time.Time{}.Add(time.Hour)
+	reasons := GenerateTriageReasons(TriageReasonContext{
+		Issue:  &model.Issue{ID: "future", Status: model.StatusOpen, DeferUntil: &deferUntil},
+		Now:    time.Time{},
+		HasNow: true,
+	})
+	if !strings.Contains(reasons.ActionHint, "Deferred until") {
+		t.Fatalf("zero-epoch action hint=%q, want deferred", reasons.ActionHint)
 	}
 }
 

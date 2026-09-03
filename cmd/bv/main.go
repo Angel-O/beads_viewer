@@ -1008,11 +1008,27 @@ func hasNonRobotPrimaryArg(args []string) bool {
 	for _, arg := range args {
 		name := strings.TrimPrefix(strings.SplitN(arg, "=", 2)[0], "--")
 		switch name {
-		case "version", "help", "check-update", "update", "rollback", "pages", "export-pages", "preview-pages", "export-md", "export-graph":
+		case "version", "help", "check-update", "update", "update-dry-run", "rollback", "pages", "export-pages", "preview-pages", "export-md", "export-graph":
 			return true
 		}
 	}
 	return false
+}
+
+func readUpdateConfirmation(input io.Reader) (bool, error) {
+	response, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read update confirmation: %w", err)
+	}
+
+	response = strings.ToLower(strings.TrimSpace(response))
+	if response == "" {
+		if errors.Is(err, io.EOF) {
+			return false, fmt.Errorf("no update confirmation received")
+		}
+		return true, nil
+	}
+	return response == "y" || response == "yes", nil
 }
 
 func agentIntentCommandNames() []string {
@@ -1169,7 +1185,24 @@ func sourceDateEpochActive() bool {
 func stabilizeRobotTriageForPinnedClock(triage *analysis.TriageResult) {
 	if sourceDateEpochActive() {
 		triage.Meta.ComputeTimeMs = 0
+		triage.Status = stabilizeRobotMetricStatusForPinnedClock(triage.Status)
 	}
+}
+
+func stabilizeRobotMetricStatusForPinnedClock(status analysis.MetricStatus) analysis.MetricStatus {
+	if !sourceDateEpochActive() {
+		return status
+	}
+	status.PageRank.Elapsed = 0
+	status.Betweenness.Elapsed = 0
+	status.Eigenvector.Elapsed = 0
+	status.HITS.Elapsed = 0
+	status.Critical.Elapsed = 0
+	status.Cycles.Elapsed = 0
+	status.KCore.Elapsed = 0
+	status.Articulation.Elapsed = 0
+	status.Slack.Elapsed = 0
+	return status
 }
 
 func enrichCommandParseError(err error, args []string) error {
@@ -1485,7 +1518,7 @@ func main() {
 	alertSeverity := flag.String("severity", "", "Filter robot alerts by severity (info|warning|critical)")
 	alertType := flag.String("alert-type", "", "Filter robot alerts by alert type (e.g., stale_issue)")
 	alertLabel := flag.String("alert-label", "", "Filter robot alerts by label match")
-	recipeName := flag.StringP("recipe", "r", "", "Apply named recipe (e.g., triage, actionable, high-impact)")
+	recipeName := flag.StringP("recipe", "r", "", "Apply a recipe by name (e.g., triage, actionable, high-impact) or by .yaml/.yml file path (e.g., .beads/recipes/sprint.yaml)")
 	semanticQuery := flag.String("search", "", "Semantic search query (vector-based; builds/updates index on first run)")
 	robotSearch := flag.Bool("robot-search", false, "Output semantic search results as JSON for AI agents (use with --search)")
 	searchLimit := flag.Int("search-limit", 10, "Max results for --search/--robot-search")
@@ -1684,6 +1717,8 @@ func main() {
 		OrphansMinScore:         orphansMinScore,
 		RobotFileBeadsFlag:      robotFileBeads,
 		FileBeadsLimit:          fileBeadsLimit,
+		RobotFileHotspotsFlag:   fileHotspots,
+		HotspotsLimit:           hotspotsLimit,
 		RobotImpactFlag:         robotImpact,
 		RobotFileRelationsFlag:  robotFileRelations,
 		RobotRelatedFlag:        robotRelatedWork,
@@ -1855,7 +1890,8 @@ func main() {
 			{flags: []string{"robot-insights"}},
 			{flags: []string{"robot-plan"}},
 			{flags: []string{"robot-priority"}},
-			{flags: []string{"robot-triage", "robot-next", "robot-triage-by-track", "robot-triage-by-label"}},
+			{flags: []string{"robot-next"}},
+			{flags: []string{"robot-triage", "robot-triage-by-track", "robot-triage-by-label"}},
 			{flags: []string{"robot-diff"}},
 			{flags: []string{"robot-recipes"}},
 			{flags: []string{"robot-label-health"}},
@@ -1980,6 +2016,7 @@ func main() {
 			*robotSearch ||
 			*robotDriftCheck ||
 			*robotHistory ||
+			*beadHistory != "" ||
 			*robotFileBeads != "" ||
 			*fileHotspots ||
 			*robotImpact != "" ||
@@ -2059,6 +2096,8 @@ func main() {
 			os.Exit(2)
 		}
 
+		// --robot-help lists every registered command from these registries.
+		robotHelpRegistries = []*RobotRegistry{&phaseOneRobotRegistry, &phaseTwoRobotRegistry, &phaseThreeRobotRegistry}
 		robotDispatchContext := RobotContext{
 			Stdout:             os.Stdout,
 			Stderr:             os.Stderr,
@@ -2079,7 +2118,7 @@ func main() {
 			}
 			if available {
 				fmt.Printf("New version available: %s (current: %s)\n", newVersion, version.Version)
-				fmt.Printf("Download: %s\n", releaseURL)
+				fmt.Printf("Release: %s\n", releaseURL)
 				fmt.Println("\nRun 'bv --update' to update automatically")
 			} else {
 				fmt.Printf("bv is up to date (version %s)\n", version.Version)
@@ -2097,25 +2136,26 @@ func main() {
 			}
 
 			newVersion := release.TagName
-			if !updater.IsNewerThanCurrent(newVersion) {
+			newer, err := updater.CheckNewerThanCurrent(newVersion)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Cannot compare release versions: %v\n", err)
+				os.Exit(1)
+			}
+			if !newer {
 				fmt.Printf("bv is already up to date (version %s)\n", version.Version)
 				os.Exit(0)
 			}
+			if err := updater.ValidateReleaseForUpdate(release); err != nil {
+				fmt.Fprintf(os.Stderr, "Latest release cannot be installed automatically: %v\n", err)
+				os.Exit(1)
+			}
 
 			fmt.Printf("[dry-run] Would update bv from %s to %s\n", version.Version, newVersion)
-			if asset := release.FindPlatformAsset(); asset != nil {
-				fmt.Printf("[dry-run] Would download %s (%d bytes) for %s/%s\n",
-					asset.Name, asset.Size, runtime.GOOS, runtime.GOARCH)
-				fmt.Printf("[dry-run] From: %s\n", asset.BrowserDownloadURL)
-			} else {
-				fmt.Fprintf(os.Stderr, "[dry-run] No matching release asset found for %s/%s\n",
-					runtime.GOOS, runtime.GOARCH)
-			}
-			if checksum := release.FindChecksumAsset(); checksum != nil {
-				fmt.Printf("[dry-run] Would verify SHA-256 checksum via %s\n", checksum.Name)
-			} else {
-				fmt.Println("[dry-run] Warning: no checksum file found; download integrity could not be verified")
-			}
+			asset := release.FindPlatformAsset()
+			fmt.Printf("[dry-run] Would download %s (%d bytes) for %s/%s\n",
+				asset.Name, asset.Size, runtime.GOOS, runtime.GOARCH)
+			fmt.Printf("[dry-run] From: %s\n", asset.BrowserDownloadURL)
+			fmt.Printf("[dry-run] Would verify SHA-256 checksum via %s\n", release.FindChecksumAsset().Name)
 			fmt.Println("[dry-run] No changes made. Run 'bv upgrade' to apply.")
 			os.Exit(0)
 		}
@@ -2129,24 +2169,35 @@ func main() {
 			}
 
 			newVersion := release.TagName
-			if !updater.IsNewerThanCurrent(newVersion) {
+			newer, err := updater.CheckNewerThanCurrent(newVersion)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Cannot compare release versions: %v\n", err)
+				os.Exit(1)
+			}
+			if !newer {
 				fmt.Printf("bv is already up to date (version %s)\n", version.Version)
 				os.Exit(0)
+			}
+			if err := updater.ValidateReleaseForUpdate(release); err != nil {
+				fmt.Fprintf(os.Stderr, "Latest release cannot be installed automatically: %v\n", err)
+				os.Exit(1)
 			}
 
 			// Confirm unless --yes is provided
 			if !*yesFlag {
 				fmt.Printf("Update bv from %s to %s? [Y/n]: ", version.Version, newVersion)
-				var response string
-				fmt.Scanln(&response)
-				response = strings.ToLower(strings.TrimSpace(response))
-				if response != "" && response != "y" && response != "yes" {
+				confirmed, err := readUpdateConfirmation(os.Stdin)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Cannot read update confirmation: %v\n", err)
+					os.Exit(1)
+				}
+				if !confirmed {
 					fmt.Println("Update cancelled")
 					os.Exit(0)
 				}
 			}
 
-			result, err := updater.PerformUpdate(release, *yesFlag)
+			result, err := updater.PerformUpdate(release, os.Stdout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 				if result != nil && result.BackupPath != "" {
@@ -2190,15 +2241,20 @@ func main() {
 			if robotMode {
 				// JSON output for AI agents
 				result := map[string]interface{}{
-					"found":            detection.Found(),
-					"file_path":        detection.FilePath,
-					"file_type":        detection.FileType,
-					"has_blurb":        detection.HasBlurb,
-					"has_legacy_blurb": detection.HasLegacyBlurb,
-					"blurb_version":    detection.BlurbVersion,
-					"current_version":  agents.BlurbVersion,
-					"needs_blurb":      detection.Found() && detection.NeedsBlurb(),
-					"needs_upgrade":    detection.NeedsUpgrade(),
+					"found":                 detection.Found(),
+					"file_path":             detection.FilePath,
+					"file_type":             detection.FileType,
+					"has_blurb":             detection.HasBlurb,
+					"has_legacy_blurb":      detection.HasLegacyBlurb,
+					"blurb_version":         detection.BlurbVersion,
+					"blurb_count":           detection.BlurbCount,
+					"blurb_structure_error": detection.BlurbStructureError,
+					"has_malformed_blurb":   detection.HasMalformedBlurb(),
+					"has_duplicate_blurbs":  detection.HasDuplicateBlurbs(),
+					"has_future_blurb":      detection.HasFutureBlurb(),
+					"current_version":       agents.BlurbVersion,
+					"needs_blurb":           detection.Found() && detection.NeedsBlurb(),
+					"needs_upgrade":         detection.NeedsUpgrade(),
 				}
 				data, _ := json.MarshalIndent(result, "", "  ")
 				fmt.Println(string(data))
@@ -2210,6 +2266,24 @@ func main() {
 				if !detection.Found() {
 					fmt.Printf("No agent file found (searched up to 3 parent directories from %s)\n", workDir)
 					fmt.Println("Run 'bv --agents-add' to create AGENTS.md with beads workflow instructions.")
+					os.Exit(0)
+				}
+				if detection.HasMalformedBlurb() {
+					fmt.Printf("Found %s at %s with malformed bv blurb markers: %s\n",
+						detection.FileType, detection.FilePath, detection.BlurbStructureError)
+					fmt.Println("Repair the marker structure before adding, updating, or removing the blurb.")
+					os.Exit(1)
+				}
+				if detection.HasFutureBlurb() {
+					fmt.Printf("Found %s at %s with bv blurb v%d, newer than this bv binary (v%d)\n",
+						detection.FileType, detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
+					fmt.Println("Use a matching or newer bv binary; this version will not modify the blurb.")
+					os.Exit(1)
+				}
+				if detection.HasDuplicateBlurbs() {
+					fmt.Printf("Found %s at %s with %d versioned blurbs — needs normalization\n",
+						detection.FileType, detection.FilePath, detection.BlurbCount)
+					fmt.Println("Run 'bv --agents-update' to consolidate them into one current blurb.")
 					os.Exit(0)
 				}
 				if detection.HasLegacyBlurb {
@@ -2235,13 +2309,22 @@ func main() {
 			}
 
 			if *agentsAdd {
+				if detection.Found() && detection.HasMalformedBlurb() {
+					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
+				if detection.Found() && detection.HasFutureBlurb() {
+					fmt.Fprintf(os.Stderr, "%s contains bv blurb v%d, newer than this bv binary (v%d); refusing to modify it.\n",
+						detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
+					os.Exit(1)
+				}
+				if detection.Found() && detection.NeedsUpgrade() {
+					fmt.Println("Existing blurb found but it needs update or normalization. Use --agents-update instead.")
+					os.Exit(1)
+				}
 				if detection.Found() && detection.HasBlurb && detection.BlurbVersion >= agents.BlurbVersion {
 					fmt.Printf("%s already has current blurb (v%d) — no action needed.\n", detection.FilePath, detection.BlurbVersion)
 					os.Exit(0)
-				}
-				if detection.Found() && (detection.HasLegacyBlurb || (detection.HasBlurb && detection.BlurbVersion < agents.BlurbVersion)) {
-					fmt.Println("Existing blurb found but outdated. Use --agents-update instead.")
-					os.Exit(1)
 				}
 
 				targetPath := detection.FilePath
@@ -2289,7 +2372,11 @@ func main() {
 					fmt.Printf("Appended beads workflow instructions to %s.\n", targetPath)
 				}
 
-				ok, _ := agents.VerifyBlurbPresent(targetPath)
+				ok, verifyErr := agents.VerifyBlurbPresent(targetPath)
+				if verifyErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: verification failed: %v\n", verifyErr)
+					os.Exit(1)
+				}
 				if !ok {
 					fmt.Fprintf(os.Stderr, "Warning: verification failed — blurb may not have been written correctly.\n")
 					os.Exit(1)
@@ -2302,17 +2389,29 @@ func main() {
 					fmt.Println("No agent file found. Use --agents-add to create one.")
 					os.Exit(1)
 				}
+				if detection.HasMalformedBlurb() {
+					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
+				if detection.HasFutureBlurb() {
+					fmt.Fprintf(os.Stderr, "%s contains bv blurb v%d, newer than this bv binary (v%d); refusing to downgrade it.\n",
+						detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
+					os.Exit(1)
+				}
 				if !detection.HasBlurb && !detection.HasLegacyBlurb {
 					fmt.Printf("%s has no blurb to update. Use --agents-add to add one.\n", detection.FilePath)
 					os.Exit(1)
 				}
-				if detection.HasBlurb && detection.BlurbVersion >= agents.BlurbVersion {
+				if !detection.NeedsUpgrade() {
 					fmt.Printf("%s already has current blurb (v%d) — no update needed.\n", detection.FilePath, detection.BlurbVersion)
 					os.Exit(0)
 				}
 
 				if *agentsDryRun {
-					if detection.HasLegacyBlurb {
+					if detection.HasDuplicateBlurbs() {
+						fmt.Printf("[dry-run] Would consolidate %d versioned blurbs into v%d in %s.\n",
+							detection.BlurbCount, agents.BlurbVersion, detection.FilePath)
+					} else if detection.HasLegacyBlurb {
 						fmt.Printf("[dry-run] Would upgrade legacy blurb to v%d in %s.\n", agents.BlurbVersion, detection.FilePath)
 					} else {
 						fmt.Printf("[dry-run] Would update blurb from v%d to v%d in %s.\n",
@@ -2338,7 +2437,11 @@ func main() {
 				}
 				fmt.Printf("Updated blurb to v%d in %s.\n", agents.BlurbVersion, detection.FilePath)
 
-				ok, _ := agents.VerifyBlurbPresent(detection.FilePath)
+				ok, verifyErr := agents.VerifyBlurbPresent(detection.FilePath)
+				if verifyErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: verification failed: %v\n", verifyErr)
+					os.Exit(1)
+				}
 				if !ok {
 					fmt.Fprintf(os.Stderr, "Warning: verification failed — blurb may not have been written correctly.\n")
 					os.Exit(1)
@@ -2350,6 +2453,15 @@ func main() {
 				if !detection.Found() {
 					fmt.Println("No agent file found — nothing to remove.")
 					os.Exit(0)
+				}
+				if detection.HasMalformedBlurb() {
+					fmt.Fprintf(os.Stderr, "%s has malformed bv blurb markers: %s\n", detection.FilePath, detection.BlurbStructureError)
+					os.Exit(1)
+				}
+				if detection.HasFutureBlurb() {
+					fmt.Fprintf(os.Stderr, "%s contains bv blurb v%d, newer than this bv binary (v%d); refusing to remove it.\n",
+						detection.FilePath, detection.BlurbVersion, agents.BlurbVersion)
+					os.Exit(1)
 				}
 				if !detection.HasBlurb && !detection.HasLegacyBlurb {
 					fmt.Printf("%s has no blurb — nothing to remove.\n", detection.FilePath)
@@ -2520,18 +2632,35 @@ func main() {
 			os.Exit(0)
 		}
 
-		// Validate recipe name if provided (before loading issues)
+		// Resolve the recipe if provided (before loading issues): a loaded name,
+		// or a .yaml/.yml path parsed as a single recipe file.
 		var activeRecipe *recipe.Recipe
 		if *recipeName != "" {
-			activeRecipe = recipeLoader.Get(*recipeName)
-			if activeRecipe == nil {
-				fmt.Fprintf(os.Stderr, "Error: Unknown recipe '%s'\n\n", *recipeName)
-				fmt.Fprintln(os.Stderr, "Available recipes:")
-				for _, name := range recipeLoader.Names() {
-					r := recipeLoader.Get(name)
-					fmt.Fprintf(os.Stderr, "  %-15s %s\n", name, r.Description)
+			resolved, err := recipeLoader.Resolve(*recipeName)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				// A project recipe file that failed to parse explains an unknown name.
+				for _, warning := range recipeLoader.Warnings() {
+					fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+				}
+				var unknown *recipe.UnknownRecipeError
+				if errors.As(err, &unknown) {
+					fmt.Fprintln(os.Stderr, "\nAvailable recipes:")
+					for _, name := range unknown.Available {
+						description := ""
+						if r := recipeLoader.Get(name); r != nil {
+							description = r.Description
+						}
+						fmt.Fprintf(os.Stderr, "  %-15s %s\n", name, description)
+					}
+					fmt.Fprintln(os.Stderr, "\nA path ending in .yaml or .yml loads one recipe file, e.g. --recipe .beads/recipes/sprint.yaml")
 				}
 				os.Exit(1)
+			}
+			activeRecipe = resolved
+			// Parsed-but-unhonoured fields are called out rather than ignored.
+			for _, field := range activeRecipe.UnappliedFields() {
+				fmt.Fprintf(os.Stderr, "Warning: recipe %s: %s is not applied yet\n", activeRecipe.Name, field)
 			}
 		}
 
@@ -2542,6 +2671,20 @@ func main() {
 		semanticDatasetPath := composition.SemanticDatasetPath
 		var workspaceInfo *workspace.LoadSummary
 		var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
+
+		// Workspace auto-discovery (I2): without --workspace, when no .beads
+		// directory is reachable from the working directory (or BEADS_DIR /
+		// BEADS_DB), a .bv/workspace.yaml here or in any parent directory
+		// selects workspace mode for the TUI and every robot command.
+		// --workspace stays the explicit override; --as-of never uses it.
+		if *workspaceConfig == "" && *asOf == "" {
+			if found := discoverWorkspaceConfig(); found != "" {
+				*workspaceConfig = found
+				if !envRobot {
+					fmt.Fprintf(os.Stderr, "No .beads directory found; using workspace %s\n", found)
+				}
+			}
+		}
 
 		if *asOf != "" {
 			// Time-travel mode: load historical issues from git
@@ -2662,7 +2805,7 @@ func main() {
 				dataHashMatchesIssues = false
 				// Compute label health for context
 				cfg := analysis.DefaultLabelHealthConfig()
-				allHealth := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
+				allHealth := analysis.ComputeAllLabelHealth(issues, cfg, robotNow(), nil)
 				for i := range allHealth.Labels {
 					if allHealth.Labels[i].Label == *labelScope {
 						labelScopeContext = &allHealth.Labels[i]
@@ -2672,7 +2815,7 @@ func main() {
 			}
 		} else if *labelScope != "" {
 			cfg := analysis.DefaultLabelHealthConfig()
-			allHealth := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
+			allHealth := analysis.ComputeAllLabelHealth(issues, cfg, robotNow(), nil)
 			for i := range allHealth.Labels {
 				if allHealth.Labels[i].Label == *labelScope {
 					labelScopeContext = &allHealth.Labels[i]
@@ -2684,9 +2827,17 @@ func main() {
 		// Apply recipe filtering early for robot modes (bv-93)
 		// This ensures --recipe filters are applied before robot modes exit.
 		// dataHash uses pre-filtered issues for stability.
-		if activeRecipe != nil && hubRobotScope == nil && (*robotTriage || *robotNext || *robotTriageByTrack || *robotTriageByLabel || *robotPriority || *robotInsights || *robotPlan) {
-			issues = applyRecipeFilters(issues, activeRecipe)
-			issues = applyRecipeSort(issues, activeRecipe)
+		// --recipe scopes EVERY robot command, not just the triage family:
+		// a recipe is a declarative filter and an agent asking any robot
+		// question under it expects the same issue set (reality check
+		// 2026-09-01, gap 2). The envelope reports the active recipe.
+		if activeRecipe != nil && envRobot {
+			applied, err := applyRecipe(issues, activeRecipe)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: recipe %s: %v\n", activeRecipe.Name, err)
+				os.Exit(1)
+			}
+			issues = applied
 			dataHashMatchesIssues = false
 		}
 		robotDispatchContext.Issues = issues
@@ -2707,6 +2858,24 @@ func main() {
 			robotDispatchContext.ResultDecorator = projection.decorateRobotResult
 		}
 		// END UPSTREAM INTEGRATION BOUNDARY
+		robotDispatchContext.Recipe = *recipeName
+		robotDispatchContext.Repo = *repoFilter
+		// Name the source every payload was computed from (reality check
+		// 2026-09-01: a fresher sidecar could be loaded with nothing in the
+		// output revealing it).
+		switch {
+		case *asOf != "":
+			robotDispatchContext.SourceKind = "git"
+			robotDispatchContext.SourcePath = fmt.Sprintf(".beads@%s", *asOf)
+		case *workspaceConfig != "":
+			robotDispatchContext.SourceKind = "workspace"
+			robotDispatchContext.SourcePath = *workspaceConfig
+		default:
+			if src, ok := datasource.LastSource(); ok {
+				robotDispatchContext.SourcePath = src.Path
+				robotDispatchContext.SourceKind = string(src.Type)
+			}
+		}
 
 		// Handle semantic search CLI (bv-9gf.3)
 		if *semanticQuery != "" {
@@ -2828,7 +2997,7 @@ func main() {
 
 			if *robotSearch {
 				out := robotSearchOutput{
-					GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+					GeneratedAt:  robotNow().Format(time.RFC3339),
 					DataHash:     dataHash,
 					OutputFormat: robotOutputFormat,
 					Version:      version.Version,
@@ -3044,13 +3213,17 @@ func main() {
 				// Run post-export hooks (bv-qjc.3)
 				if pagesExecutor != nil {
 					fmt.Println("  → Running post-export hooks...")
-					if err := pagesExecutor.RunPostExport(); err != nil {
-						fmt.Printf("  → Warning: post-export hook failed: %v\n", err)
-					}
+					// RunPostExport only returns an error for a hook declared
+					// on_error: fail; the bundle is already written, so report the
+					// summary and then honour the policy with a failure.
+					postErr := pagesExecutor.RunPostExport()
 
 					if len(pagesExecutor.Results()) > 0 {
 						fmt.Println("")
 						fmt.Println(pagesExecutor.Summary())
+					}
+					if postErr != nil {
+						return fmt.Errorf("post-export hook failed (bundle already written): %w", postErr)
 					}
 				}
 
@@ -3266,153 +3439,8 @@ func main() {
 		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-label-attention", robotDispatchContext)
 
 		// Handle --robot-label-health
-		if *robotLabelHealth {
-			cfg := analysis.DefaultLabelHealthConfig()
-			results := analysis.ComputeAllLabelHealth(issues, cfg, time.Now().UTC(), nil)
-
-			output := struct {
-				GeneratedAt    string                       `json:"generated_at"`
-				DataHash       string                       `json:"data_hash"`
-				AnalysisConfig analysis.LabelHealthConfig   `json:"analysis_config"`
-				Results        analysis.LabelAnalysisResult `json:"results"`
-				UsageHints     []string                     `json:"usage_hints"`
-			}{
-				GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
-				DataHash:       dataHash,
-				AnalysisConfig: cfg,
-				Results:        results,
-				UsageHints: []string{
-					"jq '.results.summaries | sort_by(.health) | .[:3]' - Critical labels",
-					"jq '.results.labels[] | select(.health_level == \"critical\")' - Critical details",
-					"jq '.results.cross_label_flow.bottleneck_labels' - Bottleneck labels",
-					"jq '.results.attention_needed' - Labels needing attention",
-				},
-			}
-			encoder := newRobotEncoder(os.Stdout)
-			if err := encoder.Encode(output); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding label health: %v\n", err)
-				os.Exit(1)
-			}
-			os.Exit(0)
-		}
-
 		// Handle --robot-label-flow (can be used stand-alone to avoid full health computation)
-		if *robotLabelFlow {
-			cfg := analysis.DefaultLabelHealthConfig()
-			flow := analysis.ComputeCrossLabelFlow(issues, cfg)
-			output := struct {
-				GeneratedAt string                     `json:"generated_at"`
-				DataHash    string                     `json:"data_hash"`
-				LoadStats   *RobotLoadStats            `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-				Flow        analysis.CrossLabelFlow    `json:"flow"`
-				Config      analysis.LabelHealthConfig `json:"analysis_config"`
-				UsageHints  []string                   `json:"usage_hints"`
-			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-				DataHash:    dataHash,
-				LoadStats:   robotLoadStatsFromLastLoad(),
-				Flow:        flow,
-				Config:      cfg,
-				UsageHints: []string{
-					"jq '.flow.bottleneck_labels' - labels blocking the most others",
-					"jq '.flow.dependencies[] | select(.issue_count > 0) | {from:.from_label,to:.to_label,count:.issue_count}'",
-					"jq '.flow.flow_matrix' - raw matrix (row=from, col=to, align with .flow.labels)",
-				},
-			}
-			encoder := newRobotEncoder(os.Stdout)
-			if err := encoder.Encode(output); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding label flow: %v\n", err)
-				os.Exit(1)
-			}
-			os.Exit(0)
-		}
-
 		// Handle --robot-label-attention (bv-121)
-		if *robotLabelAttention {
-			cfg := analysis.DefaultLabelHealthConfig()
-			result := analysis.ComputeLabelAttentionScores(issues, cfg, time.Now().UTC())
-
-			// Apply limit
-			limit := *attentionLimit
-			if limit <= 0 {
-				limit = 5
-			}
-			if limit > len(result.Labels) {
-				limit = len(result.Labels)
-			}
-
-			// Build limited output
-			type AttentionOutput struct {
-				GeneratedAt string          `json:"generated_at"`
-				DataHash    string          `json:"data_hash"`
-				LoadStats   *RobotLoadStats `json:"load_stats,omitempty"` // Present when records were dropped during load (#190)
-				Limit       int             `json:"limit"`
-				TotalLabels int             `json:"total_labels"`
-				Labels      []struct {
-					Rank            int     `json:"rank"`
-					Label           string  `json:"label"`
-					AttentionScore  float64 `json:"attention_score"`
-					NormalizedScore float64 `json:"normalized_score"`
-					Reason          string  `json:"reason"`
-					OpenCount       int     `json:"open_count"`
-					BlockedCount    int     `json:"blocked_count"`
-					StaleCount      int     `json:"stale_count"`
-					PageRankSum     float64 `json:"pagerank_sum"`
-					VelocityFactor  float64 `json:"velocity_factor"`
-				} `json:"labels"`
-				UsageHints []string `json:"usage_hints"`
-			}
-
-			output := AttentionOutput{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-				DataHash:    dataHash,
-				LoadStats:   robotLoadStatsFromLastLoad(),
-				Limit:       limit,
-				TotalLabels: result.TotalLabels,
-				UsageHints: []string{
-					"jq '.labels[0]' - top attention label details",
-					"jq '.labels[] | select(.blocked_count > 0)' - labels with blocked issues",
-					"jq '.labels[] | {label:.label,score:.attention_score,reason:.reason}'",
-				},
-			}
-
-			for i := 0; i < limit; i++ {
-				score := result.Labels[i]
-				// Build human-readable reason
-				reason := buildAttentionReason(score)
-				output.Labels = append(output.Labels, struct {
-					Rank            int     `json:"rank"`
-					Label           string  `json:"label"`
-					AttentionScore  float64 `json:"attention_score"`
-					NormalizedScore float64 `json:"normalized_score"`
-					Reason          string  `json:"reason"`
-					OpenCount       int     `json:"open_count"`
-					BlockedCount    int     `json:"blocked_count"`
-					StaleCount      int     `json:"stale_count"`
-					PageRankSum     float64 `json:"pagerank_sum"`
-					VelocityFactor  float64 `json:"velocity_factor"`
-				}{
-					Rank:            score.Rank,
-					Label:           score.Label,
-					AttentionScore:  score.AttentionScore,
-					NormalizedScore: score.NormalizedScore,
-					Reason:          reason,
-					OpenCount:       score.OpenCount,
-					BlockedCount:    score.BlockedCount,
-					StaleCount:      score.StaleCount,
-					PageRankSum:     score.PageRankSum,
-					VelocityFactor:  score.VelocityFactor,
-				})
-			}
-
-			encoder := newRobotEncoder(os.Stdout)
-			if err := encoder.Encode(output); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding label attention: %v\n", err)
-				os.Exit(1)
-			}
-			os.Exit(0)
-		}
-
 		// Handle --robot-graph (bv-136)
 		dispatchRobotFlagOrExit(&phaseTwoRobotRegistry, "robot-graph", robotDispatchContext)
 
@@ -3589,8 +3617,12 @@ func main() {
 				os.Exit(1)
 			}
 
-			// Run analysis on current issues
+			// Run analysis on current issues. Use one captured instant throughout
+			// the snapshot and drift calculation so SOURCE_DATE_EPOCH controls
+			// nested scoring values as well as the output envelope.
+			driftNow := robotNow()
 			analyzer := analysis.NewAnalyzer(issues)
+			analyzer.SetNow(driftNow)
 			if *forceFullAnalysis {
 				cfg := analysis.FullAnalysisConfig()
 				analyzer.SetConfig(&cfg)
@@ -3642,6 +3674,7 @@ func main() {
 			}
 
 			calc := drift.NewCalculator(bl, current, driftConfig)
+			calc.SetNow(driftNow)
 			result := calc.Calculate()
 
 			if *robotDriftCheck {
@@ -3661,7 +3694,7 @@ func main() {
 						CommitSHA string `json:"commit_sha,omitempty"`
 					} `json:"baseline"`
 				}{
-					GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+					GeneratedAt: driftNow.Format(time.RFC3339),
 					HasDrift:    result.HasDrift,
 					ExitCode:    result.ExitCode(),
 					Alerts:      result.Alerts,
@@ -3686,178 +3719,6 @@ func main() {
 		}
 
 		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-insights", robotDispatchContext)
-
-		if *robotInsights {
-			analyzer := analysis.NewAnalyzer(issues)
-			if *forceFullAnalysis {
-				cfg := analysis.FullAnalysisConfig()
-				analyzer.SetConfig(&cfg)
-			}
-			stats := analyzer.Analyze()
-			// Generate top 50 lists for summary, but full stats are included in the struct
-			insights := stats.GenerateInsights(50)
-
-			// Add project-level velocity snapshot (using dedicated helper for efficiency)
-			if v := analysis.ComputeProjectVelocity(issues, time.Now(), 8); v != nil {
-				snap := &analysis.VelocitySnapshot{
-					Closed7:   v.ClosedLast7Days,
-					Closed30:  v.ClosedLast30Days,
-					AvgDays:   v.AvgDaysToClose,
-					Estimated: v.Estimated,
-				}
-				if len(v.Weekly) > 0 {
-					snap.Weekly = make([]int, len(v.Weekly))
-					for i := range v.Weekly {
-						snap.Weekly[i] = v.Weekly[i].Closed
-					}
-				}
-				insights.Velocity = snap
-			}
-
-			// Optional cap for metric maps to avoid overload
-			limitMaps := func(m map[string]float64, limit int) map[string]float64 {
-				if limit <= 0 || limit >= len(m) {
-					return m
-				}
-				type kv struct {
-					k string
-					v float64
-				}
-				var items []kv
-				for k, v := range m {
-					items = append(items, kv{k, v})
-				}
-				sort.Slice(items, func(i, j int) bool {
-					if items[i].v == items[j].v {
-						return items[i].k < items[j].k
-					}
-					return items[i].v > items[j].v
-				})
-				trim := make(map[string]float64, limit)
-				for i := 0; i < limit; i++ {
-					trim[items[i].k] = items[i].v
-				}
-				return trim
-			}
-
-			limitMapInt := func(m map[string]int, limit int) map[string]int {
-				if limit <= 0 || len(m) <= limit {
-					return m
-				}
-				type kv struct {
-					k string
-					v int
-				}
-				var items []kv
-				for k, v := range m {
-					items = append(items, kv{k, v})
-				}
-				sort.Slice(items, func(i, j int) bool {
-					if items[i].v == items[j].v {
-						return items[i].k < items[j].k
-					}
-					return items[i].v > items[j].v
-				})
-				trim := make(map[string]int, limit)
-				for i := 0; i < limit; i++ {
-					trim[items[i].k] = items[i].v
-				}
-				return trim
-			}
-
-			limitSlice := func(s []string, limit int) []string {
-				if limit <= 0 || len(s) <= limit {
-					return s
-				}
-				return s[:limit]
-			}
-
-			// Default cap to keep payload small; allow override via env
-			mapLimit := 200
-			if v := os.Getenv("BV_INSIGHTS_MAP_LIMIT"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					mapLimit = n
-				}
-			}
-
-			fullStats := struct {
-				PageRank          map[string]float64 `json:"pagerank"`
-				Betweenness       map[string]float64 `json:"betweenness"`
-				Eigenvector       map[string]float64 `json:"eigenvector"`
-				Hubs              map[string]float64 `json:"hubs"`
-				Authorities       map[string]float64 `json:"authorities"`
-				CriticalPathScore map[string]float64 `json:"critical_path_score"`
-				CoreNumber        map[string]int     `json:"core_number"`
-				Slack             map[string]float64 `json:"slack"`
-				Articulation      []string           `json:"articulation_points"`
-			}{
-				PageRank:          limitMaps(stats.PageRank(), mapLimit),
-				Betweenness:       limitMaps(stats.Betweenness(), mapLimit),
-				Eigenvector:       limitMaps(stats.Eigenvector(), mapLimit),
-				Hubs:              limitMaps(stats.Hubs(), mapLimit),
-				Authorities:       limitMaps(stats.Authorities(), mapLimit),
-				CriticalPathScore: limitMaps(stats.CriticalPathScore(), mapLimit),
-				CoreNumber:        limitMapInt(stats.CoreNumber(), mapLimit),
-				Slack:             limitMaps(stats.Slack(), mapLimit),
-				Articulation:      limitSlice(stats.ArticulationPoints(), mapLimit),
-			}
-
-			// Get top what-if deltas for issues with highest downstream impact (bv-83)
-			topWhatIfs := analyzer.TopWhatIfDeltas(10)
-
-			// Generate advanced insights with canonical structure (bv-181)
-			advancedInsights := analyzer.GenerateAdvancedInsights(analysis.DefaultAdvancedInsightsConfig())
-
-			output := struct {
-				GeneratedAt    string                  `json:"generated_at"`
-				DataHash       string                  `json:"data_hash"`
-				LoadStats      *RobotLoadStats         `json:"load_stats,omitempty"`   // Present when records were dropped during load (#190)
-				AsOf           string                  `json:"as_of,omitempty"`        // Historical snapshot ref
-				AsOfCommit     string                  `json:"as_of_commit,omitempty"` // Resolved commit SHA
-				AnalysisConfig analysis.AnalysisConfig `json:"analysis_config"`
-				Status         analysis.MetricStatus   `json:"status"`
-				LabelScope     string                  `json:"label_scope,omitempty"`   // bv-122: Label filter applied
-				LabelContext   *analysis.LabelHealth   `json:"label_context,omitempty"` // bv-122: Health context for scoped label
-				analysis.Insights
-				FullStats        interface{}                `json:"full_stats"`
-				TopWhatIfs       []analysis.WhatIfEntry     `json:"top_what_ifs,omitempty"`      // Issues with highest downstream impact (bv-83)
-				AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"` // bv-181: Canonical advanced features
-				UsageHints       []string                   `json:"usage_hints"`                 // bv-84: Agent-friendly hints
-			}{
-				GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
-				DataHash:         dataHash,
-				LoadStats:        robotLoadStatsFromLastLoad(),
-				AsOf:             *asOf,
-				AsOfCommit:       asOfResolved,
-				AnalysisConfig:   stats.Config,
-				Status:           stats.Status(),
-				LabelScope:       *labelScope,
-				LabelContext:     labelScopeContext,
-				Insights:         insights,
-				FullStats:        fullStats,
-				TopWhatIfs:       topWhatIfs,
-				AdvancedInsights: advancedInsights,
-				UsageHints: []string{
-					"jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
-					"jq '.CriticalPath[:3]' - Top 3 critical path items",
-					"jq '.top_what_ifs[] | select(.delta.direct_unblocks > 2)' - High-impact items",
-					"jq '.full_stats.pagerank | to_entries | sort_by(-.value)[:5]' - Top PageRank",
-					"jq '.full_stats.core_number | to_entries | sort_by(-.value)[:5]' - Strongly embedded nodes (k-core)",
-					"jq '.full_stats.articulation_points' - Structural cut points",
-					"jq '.Slack[:5]' - Nodes with slack (good parallel work candidates)",
-					"jq '.Cycles | length' - Count of detected cycles",
-					"jq '.advanced_insights.cycle_break' - Cycle break suggestions (bv-181)",
-					"BV_INSIGHTS_MAP_LIMIT=50 bv --robot-insights - Reduce map sizes",
-				},
-			}
-
-			encoder := newRobotEncoder(os.Stdout)
-			if err := encoder.Encode(output); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding insights: %v\n", err)
-				os.Exit(1)
-			}
-			os.Exit(0)
-		}
 
 		dispatchRobotFlagOrExit(&phaseTwoRobotRegistry, "robot-plan", robotDispatchContext)
 		dispatchRobotFlagOrExit(&phaseTwoRobotRegistry, "robot-priority", robotDispatchContext)
@@ -3956,7 +3817,7 @@ func main() {
 				Feedback    *analysis.FeedbackJSON `json:"feedback,omitempty"` // bv-90: Feedback loop state
 				UsageHints  []string               `json:"usage_hints"`        // bv-84: Agent-friendly hints
 			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt: robotNow().Format(time.RFC3339),
 				DataHash:    dataHash,
 				LoadStats:   robotLoadStatsFromLastLoad(),
 				AsOf:        *asOf,
@@ -4085,7 +3946,7 @@ func main() {
 				Version     string   `json:"version"`
 				Files       []string `json:"files"`
 			}{
-				GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+				GeneratedAt: robotNow().Format(time.RFC3339),
 				DataHash:    dataHash,
 				IssueCount:  len(issues),
 				Version:     version.Version,
@@ -4130,7 +3991,7 @@ func main() {
 				sb.WriteString("set -euo pipefail\n")
 			}
 
-			sb.WriteString(fmt.Sprintf("# Generated by bv --emit-script at %s\n", time.Now().UTC().Format(time.RFC3339)))
+			sb.WriteString(fmt.Sprintf("# Generated by bv --emit-script at %s\n", robotNow().Format(time.RFC3339)))
 			sb.WriteString(fmt.Sprintf("# Data hash: %s\n", dataHash))
 			sb.WriteString(fmt.Sprintf("# Top %d recommendations from %d actionable items\n", len(recs), len(triage.Recommendations)))
 			sb.WriteString("#\n")
@@ -4201,7 +4062,7 @@ func main() {
 
 			// Parse --history-since if provided
 			if *historySince != "" {
-				since, err := recipe.ParseRelativeTime(*historySince, time.Now())
+				since, err := recipe.ParseRelativeTime(*historySince, robotNow())
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Error parsing --history-since: %v\n", err)
 					os.Exit(1)
@@ -4554,93 +4415,7 @@ func main() {
 		if !*fileHotspots {
 			dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-file-beads", robotDispatchContext)
 		}
-
-		// Handle --robot-file-beads and --robot-file-hotspots flags (bv-hmib)
-		if *robotFileBeads != "" || *fileHotspots {
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Validate repository
-			if err := validateCorrelationProvider(composition.HistoryProvider, cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Generate history report through the same shared pipeline the
-			// registry handlers for --robot-file-beads / --robot-impact use,
-			// so all three surfaces answer "which beads touch this file?"
-			// from an identical report (#184).
-			report, err := generateCorrelationReport(composition.HistoryProvider, issues, correlation.CorrelatorOptions{
-				Limit: *historyLimit,
-			})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error generating history report: %v\n", err)
-				os.Exit(1)
-			}
-
-			// Create file lookup
-			fileLookup := correlation.NewFileLookup(report)
-
-			encoder := newRobotEncoder(os.Stdout)
-
-			if *fileHotspots {
-				// Output hotspots
-				type HotspotsOutput struct {
-					RobotEnvelope
-					robotHistoryDiagnostics
-					Hotspots []correlation.FileHotspot  `json:"hotspots"`
-					Stats    correlation.FileIndexStats `json:"stats"`
-				}
-
-				hotspots := fileLookup.GetHotspots(*hotspotsLimit)
-				output := HotspotsOutput{
-					RobotEnvelope:           NewRobotEnvelope(report.DataHash),
-					robotHistoryDiagnostics: historyDiagnostics(report),
-					Hotspots:                hotspots,
-					Stats:                   fileLookup.GetStats(),
-				}
-
-				if err := encoder.Encode(output); err != nil {
-					fmt.Fprintf(os.Stderr, "Error encoding hotspots: %v\n", err)
-					os.Exit(1)
-				}
-			} else {
-				// Output file-beads lookup
-				result := fileLookup.LookupByFile(*robotFileBeads)
-
-				// Limit closed beads if specified
-				if len(result.ClosedBeads) > *fileBeadsLimit {
-					result.ClosedBeads = result.ClosedBeads[:*fileBeadsLimit]
-				}
-
-				type FileBeadsOutput struct {
-					RobotEnvelope
-					robotHistoryDiagnostics
-					FilePath    string                      `json:"file_path"`
-					TotalBeads  int                         `json:"total_beads"`
-					OpenBeads   []correlation.BeadReference `json:"open_beads"`
-					ClosedBeads []correlation.BeadReference `json:"closed_beads"`
-				}
-
-				output := FileBeadsOutput{
-					RobotEnvelope:           NewRobotEnvelope(report.DataHash),
-					robotHistoryDiagnostics: historyDiagnostics(report),
-					FilePath:                *robotFileBeads,
-					TotalBeads:              result.TotalBeads,
-					OpenBeads:               result.OpenBeads,
-					ClosedBeads:             result.ClosedBeads,
-				}
-
-				if err := encoder.Encode(output); err != nil {
-					fmt.Fprintf(os.Stderr, "Error encoding file beads: %v\n", err)
-					os.Exit(1)
-				}
-			}
-			os.Exit(0)
-		}
+		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-file-hotspots", robotDispatchContext)
 
 		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-impact", robotDispatchContext)
 
@@ -4868,48 +4643,6 @@ func main() {
 		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-blocker-chain", robotDispatchContext)
 
 		// Handle --robot-blocker-chain flag (bv-nlo0)
-		if *robotBlockerChain != "" {
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
-				os.Exit(1)
-			}
-
-			issues, err := datasource.LoadIssues(cwd)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error loading beads: %v\n", err)
-				os.Exit(1)
-			}
-
-			an := analysis.NewAnalyzer(issues)
-			result := an.GetBlockerChain(*robotBlockerChain)
-
-			if result == nil {
-				fmt.Fprintf(os.Stderr, "Issue not found: %s\n", *robotBlockerChain)
-				os.Exit(1)
-			}
-
-			type BlockerChainOutput struct {
-				RobotEnvelope
-				Result *analysis.BlockerChainResult `json:"result"`
-			}
-
-			// Compute data hash for consistency
-			dataHash := analysis.ComputeDataHash(issues)
-
-			output := BlockerChainOutput{
-				RobotEnvelope: NewRobotEnvelope(dataHash),
-				Result:        result,
-			}
-
-			encoder := newRobotEncoder(os.Stdout)
-			if err := encoder.Encode(output); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding blocker chain: %v\n", err)
-				os.Exit(1)
-			}
-			os.Exit(0)
-		}
-
 		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-impact-network", robotDispatchContext)
 
 		// Handle --robot-impact-network flag (bv-48kr)
@@ -5155,210 +4888,6 @@ func main() {
 		dispatchRobotFlagOrExit(&phaseThreeRobotRegistry, "robot-capacity", robotDispatchContext)
 
 		// Handle --robot-capacity flag (bv-160)
-		if *robotCapacity {
-			// Build graph stats for analysis
-			analyzer := analysis.NewAnalyzer(issues)
-			graphStats := analyzer.Analyze()
-
-			// Filter issues by label if specified
-			targetIssues := issues
-			if *capacityLabel != "" {
-				filtered := make([]model.Issue, 0)
-				for _, iss := range issues {
-					for _, l := range iss.Labels {
-						if l == *capacityLabel {
-							filtered = append(filtered, iss)
-							break
-						}
-					}
-				}
-				targetIssues = filtered
-			}
-
-			// Calculate open issues only
-			openIssues := make([]model.Issue, 0)
-			issueMap := make(map[string]model.Issue)
-			for _, iss := range targetIssues {
-				issueMap[iss.ID] = iss
-				if iss.Status != model.StatusClosed {
-					openIssues = append(openIssues, iss)
-				}
-			}
-
-			now := time.Now()
-			agents := *capacityAgents
-			if agents <= 0 {
-				agents = 1
-			}
-
-			// Calculate total work remaining
-			medianMinutes := 60 // default
-			totalMinutes := 0
-			for _, iss := range openIssues {
-				eta, err := analysis.EstimateETAForIssue(targetIssues, &graphStats, iss.ID, 1, now)
-				if err == nil {
-					totalMinutes += eta.EstimatedMinutes
-				}
-			}
-
-			// Analyze parallelizability by finding dependency chains
-			// Serial work = longest chain (critical path)
-			// Parallelizable = work that can run concurrently
-
-			// Build dependency adjacency for open issues
-			blockedBy := make(map[string][]string) // issue -> its blockers
-			blocks := make(map[string][]string)    // issue -> issues it blocks
-			for _, iss := range openIssues {
-				for _, dep := range iss.Dependencies {
-					if dep == nil {
-						continue
-					}
-					depID := dep.DependsOnID
-					if _, exists := issueMap[depID]; exists {
-						blockedBy[iss.ID] = append(blockedBy[iss.ID], depID)
-						blocks[depID] = append(blocks[depID], iss.ID)
-					}
-				}
-			}
-
-			// Find issues with no blockers (can start immediately)
-			actionable := make([]string, 0)
-			for _, iss := range openIssues {
-				hasOpenBlocker := false
-				for _, depID := range blockedBy[iss.ID] {
-					if dep, ok := issueMap[depID]; ok && dep.Status != model.StatusClosed {
-						hasOpenBlocker = true
-						break
-					}
-				}
-				if !hasOpenBlocker {
-					actionable = append(actionable, iss.ID)
-				}
-			}
-
-			// Calculate critical path (longest chain)
-			var longestChain []string
-			var dfs func(id string, path []string)
-			visited := make(map[string]bool)
-			dfs = func(id string, path []string) {
-				if visited[id] {
-					return
-				}
-				visited[id] = true
-				path = append(path, id)
-				if len(path) > len(longestChain) {
-					longestChain = make([]string, len(path))
-					copy(longestChain, path)
-				}
-				for _, nextID := range blocks[id] {
-					if dep, ok := issueMap[nextID]; ok && dep.Status != model.StatusClosed {
-						dfs(nextID, path)
-					}
-				}
-				visited[id] = false
-			}
-			for _, startID := range actionable {
-				dfs(startID, nil)
-			}
-
-			// Calculate serial minutes (work on critical path)
-			serialMinutes := 0
-			for _, id := range longestChain {
-				eta, err := analysis.EstimateETAForIssue(targetIssues, &graphStats, id, 1, now)
-				if err == nil {
-					serialMinutes += eta.EstimatedMinutes
-				}
-			}
-
-			// Parallelizable percentage
-			parallelizablePct := 0.0
-			if totalMinutes > 0 {
-				parallelizablePct = float64(totalMinutes-serialMinutes) / float64(totalMinutes) * 100
-			}
-
-			// Calculate estimated completion with N agents
-			// Serial work must be done sequentially, parallel work can be divided
-			parallelMinutes := totalMinutes - serialMinutes
-			effectiveMinutes := serialMinutes + parallelMinutes/agents
-			estimatedDays := float64(effectiveMinutes) / (60.0 * 8.0) // 8hr workday
-
-			// Find bottlenecks (issues blocking the most other issues)
-			type Bottleneck struct {
-				ID          string   `json:"id"`
-				Title       string   `json:"title"`
-				BlocksCount int      `json:"blocks_count"`
-				Blocks      []string `json:"blocks,omitempty"`
-			}
-			bottlenecks := make([]Bottleneck, 0)
-			for _, iss := range openIssues {
-				if len(blocks[iss.ID]) > 1 {
-					blockedIssues := blocks[iss.ID]
-					bottlenecks = append(bottlenecks, Bottleneck{
-						ID:          iss.ID,
-						Title:       iss.Title,
-						BlocksCount: len(blockedIssues),
-						Blocks:      blockedIssues,
-					})
-				}
-			}
-			// Sort by blocks count descending
-			sort.Slice(bottlenecks, func(i, j int) bool {
-				return bottlenecks[i].BlocksCount > bottlenecks[j].BlocksCount
-			})
-			if len(bottlenecks) > 5 {
-				bottlenecks = bottlenecks[:5]
-			}
-
-			// Build output
-			type CapacityOutput struct {
-				RobotEnvelope
-				Agents            int          `json:"agents"`
-				Label             string       `json:"label,omitempty"`
-				OpenIssueCount    int          `json:"open_issue_count"`
-				TotalMinutes      int          `json:"total_minutes"`
-				TotalDays         float64      `json:"total_days"`
-				SerialMinutes     int          `json:"serial_minutes"`
-				ParallelMinutes   int          `json:"parallel_minutes"`
-				ParallelizablePct float64      `json:"parallelizable_pct"`
-				EstimatedDays     float64      `json:"estimated_days"`
-				CriticalPathLen   int          `json:"critical_path_length"`
-				CriticalPath      []string     `json:"critical_path,omitempty"`
-				ActionableCount   int          `json:"actionable_count"`
-				Actionable        []string     `json:"actionable,omitempty"`
-				Bottlenecks       []Bottleneck `json:"bottlenecks,omitempty"`
-			}
-
-			output := CapacityOutput{
-				RobotEnvelope:     NewRobotEnvelope(analysis.ComputeDataHash(issues)),
-				Agents:            agents,
-				OpenIssueCount:    len(openIssues),
-				TotalMinutes:      totalMinutes,
-				TotalDays:         float64(totalMinutes) / (60.0 * 8.0),
-				SerialMinutes:     serialMinutes,
-				ParallelMinutes:   parallelMinutes,
-				ParallelizablePct: parallelizablePct,
-				EstimatedDays:     estimatedDays,
-				CriticalPathLen:   len(longestChain),
-				CriticalPath:      longestChain,
-				ActionableCount:   len(actionable),
-				Actionable:        actionable,
-				Bottlenecks:       bottlenecks,
-			}
-			if *capacityLabel != "" {
-				output.Label = *capacityLabel
-			}
-
-			// Suppress unused variable warning
-			_ = medianMinutes
-
-			encoder := newRobotEncoder(os.Stdout)
-			if err := encoder.Encode(output); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding capacity: %v\n", err)
-				os.Exit(1)
-			}
-			os.Exit(0)
-		}
-
 		// Handle --robot-metrics flag (bv-84tp)
 		dispatchRobotFlagOrExit(&phaseOneRobotRegistry, "robot-metrics", robotDispatchContext)
 
@@ -5478,6 +5007,9 @@ func main() {
 						Timestamp:    time.Now(),
 					}
 					executor = hooks.NewExecutor(hookLoader.Config(), ctx)
+					executor.SetLogger(func(msg string) {
+						fmt.Printf("  → %s\n", msg)
+					})
 
 					// Run pre-export hooks
 					if err := executor.RunPreExport(); err != nil {
@@ -5493,16 +5025,19 @@ func main() {
 				os.Exit(1)
 			}
 
-			// Run post-export hooks
+			// Run post-export hooks. RunPostExport only returns an error for a
+			// hook declared on_error: fail; the export file has already been
+			// written, so honour the policy with a non-zero exit after the summary.
 			if executor != nil {
-				if err := executor.RunPostExport(); err != nil {
-					fmt.Printf("Warning: post-export hook failed: %v\n", err)
-					// Don't exit, just warn
-				}
+				postErr := executor.RunPostExport()
 
 				// Print hook summary if any hooks ran
 				if len(executor.Results()) > 0 {
 					fmt.Println(executor.Summary())
+				}
+				if postErr != nil {
+					fmt.Printf("Error: %v (export written to %s)\n", postErr, *exportFile)
+					os.Exit(1)
 				}
 			}
 
@@ -5518,8 +5053,12 @@ func main() {
 		catalogIssues := issues
 		// Apply recipe filters and sorting if specified
 		if activeRecipe != nil {
-			issues = applyRecipeFilters(issues, activeRecipe)
-			issues = applyRecipeSort(issues, activeRecipe)
+			applied, err := applyRecipe(issues, activeRecipe)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: recipe %s: %v\n", activeRecipe.Name, err)
+				os.Exit(1)
+			}
+			issues = applied
 		}
 
 		// Background mode rollout (bv-o11l):
@@ -5639,7 +5178,7 @@ func currentHubRepositoryContext(cwd string, hubMode bool) string {
 	return context
 }
 
-func runTUIProgram(m ui.Model) error {
+func runTUIProgram(m *ui.Model) error {
 	p := tea.NewProgram(
 		m,
 		tea.WithAltScreen(),
@@ -5950,261 +5489,37 @@ func formatCycle(cycle []string) string {
 	return result
 }
 
-// naturalLess compares two strings using natural sort order (numeric parts sorted numerically)
-func naturalLess(s1, s2 string) bool {
-	// Simple heuristic: if both strings end with numbers, compare the prefix then the number
-	// e.g. "bv-2" vs "bv-10" -> "bv-" == "bv-", 2 < 10
-
-	// Helper to split into prefix and numeric suffix
-	split := func(s string) (string, int, bool) {
-		lastDigit := -1
-		for i := len(s) - 1; i >= 0; i-- {
-			if s[i] >= '0' && s[i] <= '9' {
-				lastDigit = i
-			} else {
-				break
-			}
-		}
-		if lastDigit == -1 {
-			return s, 0, false
-		}
-		// If the whole string is number, prefix is empty
-		prefix := s[:lastDigit]
-		numStr := s[lastDigit:]
-		num, err := strconv.Atoi(numStr)
-		if err != nil {
-			return s, 0, false
-		}
-		return prefix, num, true
-	}
-
-	p1, n1, ok1 := split(s1)
-	p2, n2, ok2 := split(s2)
-
-	if ok1 && ok2 && p1 == p2 {
-		return n1 < n2
-	}
-
-	return s1 < s2
-}
-
-// applyRecipeFilters filters issues based on recipe configuration
-func applyRecipeFilters(issues []model.Issue, r *recipe.Recipe) []model.Issue {
+// applyRecipe is the CLI's single entry point into the shared recipe engine
+// (recipe.Apply): it narrows and orders issues with r, computing graph metrics
+// and triage scores only when r's sort chain reads them. The result is a new
+// slice; the caller's issues are untouched.
+func applyRecipe(issues []model.Issue, r *recipe.Recipe) ([]model.Issue, error) {
 	if r == nil {
-		return issues
+		return issues, nil
 	}
-
-	f := r.Filters
-	now := time.Now()
-
-	// Build a set of open blocker IDs for actionable filtering
-	openBlockers := make(map[string]bool)
-	for _, issue := range issues {
-		if issue.Status != model.StatusClosed {
-			openBlockers[issue.ID] = true
-		}
-	}
-
-	var result []model.Issue
-	for _, issue := range issues {
-		// Status filter
-		if len(f.Status) > 0 {
-			match := false
-			for _, s := range f.Status {
-				if strings.EqualFold(string(issue.Status), s) {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// Priority filter
-		if len(f.Priority) > 0 {
-			match := false
-			for _, p := range f.Priority {
-				if issue.Priority == p {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// Tags filter (must have all)
-		if len(f.Tags) > 0 {
-			match := true
-			for _, tag := range f.Tags {
-				found := false
-				for _, label := range issue.Labels {
-					if strings.EqualFold(label, tag) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					match = false
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// ExcludeTags filter
-		if len(f.ExcludeTags) > 0 {
-			excluded := false
-			for _, excludeTag := range f.ExcludeTags {
-				for _, label := range issue.Labels {
-					if strings.EqualFold(label, excludeTag) {
-						excluded = true
-						break
-					}
-				}
-				if excluded {
-					break
-				}
-			}
-			if excluded {
-				continue
-			}
-		}
-
-		// CreatedAfter filter
-		if f.CreatedAfter != "" {
-			threshold, err := recipe.ParseRelativeTime(f.CreatedAfter, now)
-			if err == nil && !issue.CreatedAt.IsZero() && issue.CreatedAt.Before(threshold) {
-				continue
-			}
-		}
-
-		// CreatedBefore filter
-		if f.CreatedBefore != "" {
-			threshold, err := recipe.ParseRelativeTime(f.CreatedBefore, now)
-			if err == nil && !issue.CreatedAt.IsZero() && issue.CreatedAt.After(threshold) {
-				continue
-			}
-		}
-
-		// UpdatedAfter filter
-		if f.UpdatedAfter != "" {
-			threshold, err := recipe.ParseRelativeTime(f.UpdatedAfter, now)
-			if err == nil && !issue.UpdatedAt.IsZero() && issue.UpdatedAt.Before(threshold) {
-				continue
-			}
-		}
-
-		// UpdatedBefore filter
-		if f.UpdatedBefore != "" {
-			threshold, err := recipe.ParseRelativeTime(f.UpdatedBefore, now)
-			if err == nil && !issue.UpdatedAt.IsZero() && issue.UpdatedAt.After(threshold) {
-				continue
-			}
-		}
-
-		// HasBlockers filter
-		if f.HasBlockers != nil {
-			hasOpenBlockers := false
-			for _, dep := range issue.Dependencies {
-				if dep != nil && dep.Type.IsBlocking() && openBlockers[dep.DependsOnID] {
-					hasOpenBlockers = true
-					break
-				}
-			}
-			if *f.HasBlockers != hasOpenBlockers {
-				continue
-			}
-		}
-
-		// Actionable filter (no open blockers, not scheduler-deferred).
-		// A future defer_until withholds the bead exactly as `br ready` does
-		// (issue #191); the deferral lapses on its own once the instant passes.
-		if f.Actionable != nil && *f.Actionable {
-			if issue.IsDeferredAt(now) {
-				continue
-			}
-			hasOpenBlockers := false
-			for _, dep := range issue.Dependencies {
-				if dep != nil && dep.Type.IsBlocking() && openBlockers[dep.DependsOnID] {
-					hasOpenBlockers = true
-					break
-				}
-			}
-			if hasOpenBlockers {
-				continue
-			}
-		}
-
-		// TitleContains filter
-		if f.TitleContains != "" {
-			if !strings.Contains(strings.ToLower(issue.Title), strings.ToLower(f.TitleContains)) {
-				continue
-			}
-		}
-
-		// IDPrefix filter
-		if f.IDPrefix != "" {
-			if !strings.HasPrefix(issue.ID, f.IDPrefix) {
-				continue
-			}
-		}
-
-		result = append(result, issue)
-	}
-
-	return result
+	return recipe.Apply(issues, recipeMetrics(issues, r), r, robotNow())
 }
 
-// applyRecipeSort sorts issues based on recipe configuration
-func applyRecipeSort(issues []model.Issue, r *recipe.Recipe) []model.Issue {
-	if r == nil || r.Sort.Field == "" {
-		return issues
+// recipeMetrics computes only the metric sources r needs. Scores are taken
+// over every issue handed in, so a blocker hidden by the recipe's filters still
+// feeds the PageRank/betweenness of what remains, exactly as the TUI's stats do.
+func recipeMetrics(issues []model.Issue, r *recipe.Recipe) recipe.Metrics {
+	var metrics recipe.Metrics
+	if r.NeedsGraphMetrics() {
+		analyzer := analysis.NewAnalyzer(issues)
+		analyzer.SetNow(robotNow())
+		stats := analyzer.AnalyzeAsync(context.Background())
+		stats.WaitForPhase2()
+		metrics.Graph = stats
 	}
-
-	s := r.Sort
-	ascending := s.Direction != "desc"
-
-	// For priority, default to ascending (P0 first)
-	if s.Field == "priority" && s.Direction == "" {
-		ascending = true
-	}
-	// For dates, default to descending (newest first)
-	if (s.Field == "created" || s.Field == "updated") && s.Direction == "" {
-		ascending = false
-	}
-
-	sort.SliceStable(issues, func(i, j int) bool {
-		// For descending, swap comparison operands
-		a, b := i, j
-		if !ascending {
-			a, b = j, i
+	if r.NeedsTriageScores() {
+		scores := analysis.ComputeTriageScores(issues)
+		metrics.Triage = make(map[string]float64, len(scores))
+		for _, score := range scores {
+			metrics.Triage[score.IssueID] = score.TriageScore
 		}
-
-		switch s.Field {
-		case "priority":
-			return issues[a].Priority < issues[b].Priority
-		case "created":
-			return issues[a].CreatedAt.Before(issues[b].CreatedAt)
-		case "updated":
-			return issues[a].UpdatedAt.Before(issues[b].UpdatedAt)
-		case "title":
-			return strings.ToLower(issues[a].Title) < strings.ToLower(issues[b].Title)
-		case "id":
-			return naturalLess(issues[a].ID, issues[b].ID)
-		case "status":
-			return issues[a].Status < issues[b].Status
-		default:
-			// Unknown sort field, maintain order
-			return false
-		}
-	})
-
-	return issues
+	}
+	return metrics
 }
 
 // runProfileStartup runs profiled startup analysis and outputs results
@@ -6254,7 +5569,7 @@ func runProfileStartup(issues []model.Issue, loadDuration time.Duration, jsonOut
 			TotalWithLoad   string                   `json:"total_with_load"`
 			Recommendations []string                 `json:"recommendations"`
 		}{
-			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+			GeneratedAt:     robotNow().Format(time.RFC3339),
 			DataPath:        dataPath,
 			LoadJSONL:       loadDuration.String(),
 			Profile:         profile,
@@ -6546,17 +5861,18 @@ func buildAttentionReason(score analysis.LabelAttentionScore) string {
 func copyViewerAssets(outputDir, title string) error {
 	// First try to use embedded assets (production builds)
 	if export.HasEmbeddedAssets() {
-		return export.CopyEmbeddedAssets(outputDir, title)
+		if err := export.CopyEmbeddedAssets(outputDir, title); err != nil {
+			return err
+		}
+		// The optional hybrid scorer is built from source straight into the
+		// bundle so BV_BUILD_HYBRID_WASM works in the released binary too.
+		return maybeBuildHybridWasmAssets(outputDir)
 	}
 
 	// Fall back to filesystem-based approach (development mode)
 	assetsDir := findViewerAssetsDir()
 	if assetsDir == "" {
 		return fmt.Errorf("viewer assets not found")
-	}
-
-	if err := maybeBuildHybridWasmAssets(assetsDir); err != nil {
-		return err
 	}
 
 	// Files to copy
@@ -6609,6 +5925,9 @@ func copyViewerAssets(outputDir, title string) error {
 			return fmt.Errorf("copy wasm: %w", err)
 		}
 	}
+	if err := maybeBuildHybridWasmAssets(outputDir); err != nil {
+		return err
+	}
 
 	// Always add GitHub Actions workflow for reliable Pages deployment
 	// This ensures the workflow is in the bundle regardless of deployment target
@@ -6620,7 +5939,13 @@ func copyViewerAssets(outputDir, title string) error {
 	return nil
 }
 
-func maybeBuildHybridWasmAssets(assetsDir string) error {
+// maybeBuildHybridWasmAssets builds the optional hybrid search scorer with
+// wasm-pack when BV_BUILD_HYBRID_WASM is set, writing the artifacts into
+// <outputDir>/wasm of the bundle being exported. The Rust source lives next
+// to the viewer assets in a source checkout (pkg/export/wasm_scorer); the
+// embedded assets of a released binary do not carry it, so the checkout must
+// be reachable from the working directory.
+func maybeBuildHybridWasmAssets(outputDir string) error {
 	if os.Getenv("BV_BUILD_HYBRID_WASM") == "" {
 		return nil
 	}
@@ -6630,13 +5955,17 @@ func maybeBuildHybridWasmAssets(assetsDir string) error {
 		return fmt.Errorf("BV_BUILD_HYBRID_WASM is set but wasm-pack was not found in PATH")
 	}
 
+	assetsDir := findViewerAssetsDir()
+	if assetsDir == "" {
+		return fmt.Errorf("BV_BUILD_HYBRID_WASM is set but the source checkout (pkg/export/wasm_scorer) is not reachable from %s", mustGetwd())
+	}
 	wasmSrc := filepath.Join(assetsDir, "..", "wasm_scorer")
 	info, err := os.Stat(wasmSrc)
 	if err != nil || !info.IsDir() {
 		return fmt.Errorf("hybrid wasm source directory not found at %s", wasmSrc)
 	}
 
-	outDir := filepath.Join(assetsDir, "wasm")
+	outDir := filepath.Join(outputDir, "wasm")
 	cmd := exec.Command(wasmPackPath, "build", "--release", "--target", "web", "--out-dir", outDir)
 	cmd.Dir = wasmSrc
 	cmd.Stdout = os.Stdout
@@ -7665,6 +6994,9 @@ type BurndownOutput struct {
 	DailyPoints       []model.BurndownPoint `json:"daily_points"`
 	IdealLine         []model.BurndownPoint `json:"ideal_line"`
 	ScopeChanges      []ScopeChangeEvent    `json:"scope_changes,omitempty"`
+	// AtRisk lists sprint beads flagged by analysis.DetectAtRisk (blocked too
+	// long, no activity, critical blocked, blockers not closing).
+	AtRisk []analysis.AtRiskItem `json:"at_risk"`
 }
 
 // ScopeChangeEvent represents when issues were added/removed from sprint
@@ -7990,7 +7322,91 @@ func calculateBurndownAt(sprint *model.Sprint, issues []model.Issue, now time.Ti
 		DailyPoints:       dailyPoints,
 		IdealLine:         idealLine,
 		ScopeChanges:      nil,
+		AtRisk:            analysis.DetectAtRisk(issues, sprint, now, analysis.DefaultAtRiskThresholds()),
 	}
+}
+
+// generateIdealLineScoped is generateIdealLine made scope-aware: at each
+// scope-change date the remaining count moves by the added/removed beads and
+// the ideal trajectory re-linearizes from that day's remaining count to zero at
+// the sprint end, so a mid-sprint addition shows as a slope change instead of a
+// misleading "behind schedule" gap. Without events it equals generateIdealLine.
+func generateIdealLineScoped(sprint *model.Sprint, totalIssues int, events []ScopeChangeEvent) []model.BurndownPoint {
+	if len(events) == 0 {
+		return generateIdealLine(sprint, totalIssues)
+	}
+	if sprint.StartDate.IsZero() || sprint.EndDate.IsZero() {
+		return nil
+	}
+	totalDays := int(sprint.EndDate.Sub(sprint.StartDate).Hours()/24) + 1
+	if totalDays <= 0 {
+		return nil
+	}
+	dayOf := func(t time.Time) int {
+		return int(t.Sub(sprint.StartDate).Hours() / 24)
+	}
+	// Net scope change per sprint day; events before the start count as part
+	// of the initial scope, events after the end are ignored.
+	delta := make(map[int]int)
+	initial := totalIssues
+	for _, ev := range events {
+		change := 0
+		switch ev.Action {
+		case "added":
+			change = 1
+		case "removed":
+			change = -1
+		}
+		d := dayOf(ev.Date)
+		switch {
+		case d <= 0:
+			// Already part of the starting scope: nothing to replay.
+		case d > totalDays:
+			// After the sprint window: not part of the plan.
+		default:
+			delta[d] += change
+			initial -= change
+		}
+	}
+	if initial < 0 {
+		initial = 0
+	}
+
+	// Each segment burns linearly from segRemaining at segStart to zero at the
+	// sprint end, using the same truncating arithmetic as generateIdealLine so
+	// a sprint whose events all fall outside the window yields the identical
+	// line.
+	var points []model.BurndownPoint
+	segStart := 0
+	segRemaining := initial
+	idealAt := func(day int) int {
+		daysLeft := totalDays - segStart
+		if daysLeft <= 0 {
+			return segRemaining
+		}
+		burnPerDay := float64(segRemaining) / float64(daysLeft)
+		rem := segRemaining - int(float64(day-segStart)*burnPerDay)
+		if rem < 0 {
+			rem = 0
+		}
+		return rem
+	}
+	for i := 0; i <= totalDays; i++ {
+		if d, ok := delta[i]; ok && d != 0 && i > 0 {
+			segRemaining = idealAt(i) + d
+			if segRemaining < 0 {
+				segRemaining = 0
+			}
+			segStart = i
+		}
+		rem := idealAt(i)
+		points = append(points, model.BurndownPoint{
+			Date:      sprint.StartDate.AddDate(0, 0, i),
+			Remaining: rem,
+			Completed: totalIssues - rem,
+		})
+	}
+	return points
 }
 
 // generateDailyBurndown creates actual burndown points based on issue closure dates
@@ -8267,7 +7683,7 @@ func generateHistoryForExport(issues []model.Issue, provider *correlation.Provid
 	})
 
 	return &TimeTravelHistory{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: robotNow().Format(time.RFC3339),
 		Commits:     commits,
 	}, nil
 }
@@ -8353,7 +7769,24 @@ type RobotEnvelope struct {
 	DataHash     string          `json:"data_hash"`               // Fingerprint of source data
 	OutputFormat string          `json:"output_format,omitempty"` // "json" or "toon"
 	Version      string          `json:"version,omitempty"`       // bv version (e.g., "1.0.0")
+	SourcePath   string          `json:"source_path,omitempty"`   // File (or "<file>@<rev>") the issue set was loaded from
+	SourceKind   string          `json:"source_kind,omitempty"`   // jsonl | sqlite | git | workspace | bd
+	AsOf         string          `json:"as_of,omitempty"`         // --as-of ref, when time-travelling
+	AsOfCommit   string          `json:"as_of_commit,omitempty"`  // Resolved SHA for --as-of
+	Scope        *RobotScope     `json:"scope,omitempty"`         // Active --label/--recipe/--repo scoping and what this command could not honour
 	LoadStats    *RobotLoadStats `json:"load_stats,omitempty"`    // Present when records were dropped during load (#190)
+}
+
+// RobotScope reports the scoping flags in effect for a robot payload so a
+// consumer can tell a scoped answer from a whole-project one, and lists the
+// flags the command could not honour (for example sprint definitions are read
+// from disk, so --as-of does not apply to them) instead of silently ignoring
+// them.
+type RobotScope struct {
+	Label       string   `json:"label,omitempty"`
+	Recipe      string   `json:"recipe,omitempty"`
+	Repo        string   `json:"repo,omitempty"`
+	Unsupported []string `json:"unsupported,omitempty"`
 }
 
 // RobotLoadStats surfaces per-line parse accounting for the JSONL source that
@@ -8385,7 +7818,7 @@ type RobotMeta struct {
 // in every robot surface instead of the records simply not existing (#190).
 func NewRobotEnvelope(dataHash string) RobotEnvelope {
 	env := RobotEnvelope{
-		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt:  robotNow().Format(time.RFC3339),
 		DataHash:     dataHash,
 		OutputFormat: robotOutputFormat,
 		Version:      version.Version,
@@ -8438,11 +7871,20 @@ func (e *toonRobotEncoder) Encode(v any) error {
 		if jsonBytes, jerr := json.Marshal(v); jerr == nil {
 			jsonTokens := estimateTokens(string(jsonBytes))
 			toonTokens := estimateTokens(out)
+			// Signed: negative means TOON is the larger encoding for this
+			// payload (common for nested outputs such as --robot-triage).
 			savings := 0
-			if jsonTokens > 0 && toonTokens <= jsonTokens {
+			if jsonTokens > 0 {
 				savings = int((1.0 - (float64(toonTokens) / float64(jsonTokens))) * 100.0)
 			}
-			fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (%d%% savings)\n", jsonTokens, toonTokens, savings)
+			switch {
+			case savings > 0:
+				fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (TOON %d%% smaller)\n", jsonTokens, toonTokens, savings)
+			case savings < 0:
+				fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (TOON %d%% larger; JSON is the smaller encoding for this payload)\n", jsonTokens, toonTokens, -savings)
+			default:
+				fmt.Fprintf(os.Stderr, "[stats] JSON≈%d tok, TOON≈%d tok (same size)\n", jsonTokens, toonTokens)
+			}
 		}
 	}
 
@@ -8768,6 +8210,7 @@ func robotCommandDocs() map[string]robotCommandDoc {
 		},
 		"robot-sprint-list": {
 			Flag:        "--robot-sprint-list",
+			NeedsSprint: true,
 			Description: "List all sprints as JSON.",
 			NeedsIssues: true,
 		},
@@ -8854,7 +8297,7 @@ func generateRobotCapabilities() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"generated_at":          time.Now().UTC().Format(time.RFC3339),
+		"generated_at":          robotNow().Format(time.RFC3339),
 		"tool":                  "bv",
 		"version":               version.Version,
 		"contract_version":      robotContractVersion,
@@ -9107,7 +8550,7 @@ func agentIntentAliasDocs() []map[string]string {
 // generateRobotDocs returns machine-readable documentation for AI agents (bd-2v50).
 // Topics: guide, commands, examples, env, exit-codes, all.
 func generateRobotDocs(topic string) map[string]interface{} {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := robotNow().Format(time.RFC3339)
 	result := map[string]interface{}{
 		"generated_at":  now,
 		"output_format": robotOutputFormat,
@@ -9196,7 +8639,7 @@ type RobotSchemas struct {
 
 // generateRobotSchemas creates JSON Schema definitions for robot command outputs
 func generateRobotSchemas() RobotSchemas {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := robotNow().Format(time.RFC3339)
 
 	// Common envelope schema (present in all robot outputs)
 	envelope := map[string]interface{}{
@@ -9220,6 +8663,37 @@ func generateRobotSchemas() RobotSchemas {
 				"type":        "string",
 				"description": "bv version that generated this output",
 			},
+			"source_path": map[string]interface{}{
+				"type":        "string",
+				"description": "File the issue set was loaded from (or '<beads>@<rev>' for --as-of, or the workspace config path)",
+			},
+			"source_kind": map[string]interface{}{
+				"type":        "string",
+				"enum":        []string{"jsonl_local", "jsonl_worktree", "sqlite", "git", "workspace"},
+				"description": "Kind of source behind source_path",
+			},
+			"as_of": map[string]interface{}{
+				"type":        "string",
+				"description": "The --as-of ref when time-travelling",
+			},
+			"as_of_commit": map[string]interface{}{
+				"type":        "string",
+				"description": "Resolved commit SHA for --as-of",
+			},
+			"scope": map[string]interface{}{
+				"type":        "object",
+				"description": "Active --label/--recipe/--repo scoping; 'unsupported' lists scoping flags this command could not honour (for example as_of for commands that read sprint files or live git history)",
+				"properties": map[string]interface{}{
+					"label":       map[string]interface{}{"type": "string"},
+					"recipe":      map[string]interface{}{"type": "string"},
+					"repo":        map[string]interface{}{"type": "string"},
+					"unsupported": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				},
+			},
+			"load_stats": map[string]interface{}{
+				"type":        "object",
+				"description": "Present only when records were dropped during load (#190)",
+			},
 		},
 		"required": []string{"generated_at", "data_hash"},
 	}
@@ -9241,7 +8715,7 @@ func generateRobotSchemas() RobotSchemas {
 				"data_hash":    map[string]interface{}{"type": "string"},
 				"history_status": map[string]interface{}{
 					"type": "string",
-					"enum": []string{"ok", "partial", "error", "timeout"},
+					"enum": []string{"ok", "partial", "error", "timeout", "skipped"},
 				},
 				"history_warnings": historyWarningsSchema(),
 				"triage": map[string]interface{}{
@@ -9256,8 +8730,8 @@ func generateRobotSchemas() RobotSchemas {
 								"issue_count":  map[string]interface{}{"type": "integer"},
 								"history_status": map[string]interface{}{
 									"type":        "string",
-									"enum":        []string{"ok", "partial", "error", "timeout"},
-									"description": "Outcome of the git-history correlation prologue; omitted when history was not attempted (#166)",
+									"enum":        []string{"ok", "partial", "error", "timeout", "skipped"},
+									"description": "Outcome of the git-history correlation prologue; skipped when deterministic output intentionally omits history (#166)",
 								},
 								"history_warnings": historyWarningsSchema(),
 							},
@@ -10091,7 +9565,8 @@ func recipeSummarySchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"name":        map[string]interface{}{"type": "string"},
 			"description": map[string]interface{}{"type": "string"},
-			"source":      map[string]interface{}{"type": "string", "enum": []string{"builtin", "user", "project"}},
+			"source":      map[string]interface{}{"type": "string", "enum": []string{recipe.SourceBuiltin, recipe.SourceUser, recipe.SourceProject, recipe.SourceProjectFile}},
+			"path":        map[string]interface{}{"type": "string", "description": "Defining file for project-file recipes"},
 		},
 		"required": []string{"name", "description", "source"},
 	}
@@ -10941,4 +10416,32 @@ func titleCaseRobotCommand(name string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, " ")
+}
+
+// discoverWorkspaceConfig returns the nearest .bv/workspace.yaml (searching
+// upward from the working directory) when no .beads directory is reachable,
+// and "" otherwise. A present .beads always wins so a nested single repo
+// inside a workspace keeps its own view unless --workspace is passed.
+func discoverWorkspaceConfig() string {
+	beadsDir, err := loader.GetBeadsDir("")
+	if err == nil {
+		if info, statErr := os.Stat(beadsDir); statErr == nil && info.IsDir() {
+			return ""
+		}
+	}
+	found, err := workspace.FindWorkspaceConfig("")
+	if err != nil {
+		return ""
+	}
+	return found
+}
+
+// mustGetwd returns the working directory or "." when it cannot be read; it
+// only feeds error messages.
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
 }

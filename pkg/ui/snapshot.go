@@ -5,12 +5,19 @@ package ui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
+	"github.com/charmbracelet/bubbles/list"
 )
 
 type datasetTier int
@@ -67,6 +74,17 @@ func issueHasUnresolvedBlockingDependency(issue model.Issue, issueMap map[string
 		}
 	}
 	return false
+}
+
+// isIssueReadyAt centralizes the TUI's ready semantics. Only open or
+// in-progress issues are executable work, and an otherwise-ready issue with a
+// future defer_until is withheld until that instant passes (parity with br
+// ready and the actionable recipe).
+func isIssueReadyAt(issue model.Issue, issueMap map[string]*model.Issue, now time.Time) bool {
+	if !issue.Status.IsOpen() || issue.IsDeferredAt(now) {
+		return false
+	}
+	return !issueHasUnresolvedBlockingDependency(issue, issueMap)
 }
 
 type snapshotBuildConfig struct {
@@ -129,6 +147,45 @@ type IssueDiffStats struct {
 	Ratio   float64
 }
 
+// pooledIssueLease gives Phase 1 and Phase 2 snapshots shared, one-shot
+// ownership of pooled parser structs. A Phase 2 snapshot is a distinct object,
+// so copying the raw pointer slice would otherwise let shutdown return the same
+// objects to sync.Pool twice.
+type pooledIssueLease struct {
+	once     sync.Once
+	released atomic.Bool
+	refs     []*model.Issue
+	release  func([]*model.Issue)
+}
+
+func newPooledIssueLease(refs []*model.Issue) *pooledIssueLease {
+	if len(refs) == 0 {
+		return nil
+	}
+	return &pooledIssueLease{
+		refs:    refs,
+		release: loader.ReturnIssuePtrsToPool,
+	}
+}
+
+func (l *pooledIssueLease) releaseOnce() {
+	if l == nil {
+		return
+	}
+	l.once.Do(func() {
+		refs := l.refs
+		l.refs = nil
+		if len(refs) > 0 && l.release != nil {
+			l.release(refs)
+		}
+		l.released.Store(true)
+	})
+}
+
+func (l *pooledIssueLease) active() bool {
+	return l != nil && !l.released.Load()
+}
+
 // DataSnapshot is an immutable, self-contained representation of all data
 // the UI needs to render. Once created, it never changes - this is critical
 // for thread safety when the background worker is building the next snapshot.
@@ -139,9 +196,9 @@ type DataSnapshot struct {
 	// Core data
 	Issues   []model.Issue           // All issues (sorted)
 	IssueMap map[string]*model.Issue // Lookup by ID
-	// pooledIssues holds pooled backing structs used during parse.
-	// It must be returned to the pool when the snapshot is replaced.
-	pooledIssues []*model.Issue
+	// pooledIssues is shared by Phase 1/Phase 2 snapshots so parser refs are
+	// returned exactly once even though both snapshot objects can outlive a swap.
+	pooledIssues *pooledIssueLease
 	// ViewIssues are the issues included in the current view context (e.g. recipe).
 	// When empty, callers should fall back to Issues.
 	ViewIssues []model.Issue
@@ -157,14 +214,24 @@ type DataSnapshot struct {
 	CountBlocked int
 	CountClosed  int
 
-	// Pre-computed UI data (Phase 3 will populate these)
-	// For now, they're nil and the UI computes on demand
-	ListItems     []IssueItem // Pre-built list items with scores
-	TriageScores  map[string]float64
-	TriageReasons map[string]analysis.TriageReasons
-	QuickWinSet   map[string]bool
-	BlockerSet    map[string]bool
-	UnblocksMap   map[string][]string
+	// Pre-computed UI data. The unexported adapter/cache fields let the UI install
+	// the common unfiltered view without rebuilding interface slices, search
+	// documents, alert state, or selection indexes on the event loop.
+	ListItems      []IssueItem // Pre-built list items with scores
+	listModelItems []list.Item
+	listIndexByID  map[string]int
+	listOrderHash  uint64
+	semanticIDs    []string
+	semanticDocs   map[string]string
+	alerts         []drift.Alert
+	alertsCritical int
+	alertsWarning  int
+	alertsInfo     int
+	TriageScores   map[string]float64
+	TriageReasons  map[string]analysis.TriageReasons
+	QuickWinSet    map[string]bool
+	BlockerSet     map[string]bool
+	UnblocksMap    map[string][]string
 	// TreeRoots and TreeNodeMap contain a pre-built parent/child tree for the Tree view.
 	// These are computed off-thread by SnapshotBuilder to avoid UI-thread work when
 	// entering the tree view for large datasets.
@@ -216,6 +283,24 @@ type DataSnapshot struct {
 	LoadError    error     // Non-nil if last load had recoverable errors
 	ErrorTime    time.Time // When error occurred
 	StaleWarning bool      // True if data is from previous successful load
+}
+
+func (s *DataSnapshot) attachPooledIssues(refs []*model.Issue) {
+	if s == nil {
+		return
+	}
+	s.pooledIssues = newPooledIssueLease(refs)
+}
+
+func (s *DataSnapshot) releasePooledIssues() {
+	if s == nil {
+		return
+	}
+	s.pooledIssues.releaseOnce()
+}
+
+func (s *DataSnapshot) hasPooledIssues() bool {
+	return s != nil && s.pooledIssues.active()
 }
 
 // IsPhase2Ready returns whether expensive Phase 2 metrics are computed.
@@ -326,6 +411,34 @@ func NewSnapshotBuilder(issues []model.Issue) *SnapshotBuilder {
 	}
 }
 
+// WithWeights installs feedback-adjusted factor weights on the builder's
+// analyzer so triage and priority hints computed from this snapshot use them.
+// nil leaves the defaults in place.
+func (b *SnapshotBuilder) WithWeights(w *analysis.Weights) *SnapshotBuilder {
+	if w != nil {
+		b.analyzer.SetWeights(*w)
+	}
+	return b
+}
+
+// feedbackWeightsForBeadsPath loads .beads/feedback.json next to the issue
+// file and returns the adjusted factor weights when enough accept/ignore
+// samples exist to apply them (analysis.MinFeedbackSamples); nil otherwise.
+// This is the TUI counterpart of the robot path's loadRobotFeedback, so the
+// priority hints (p) and the actionable view rank issues the same way
+// --robot-triage does.
+func feedbackWeightsForBeadsPath(beadsPath string) *analysis.Weights {
+	if beadsPath == "" {
+		return nil
+	}
+	fb, err := analysis.LoadFeedback(filepath.Dir(beadsPath))
+	if err != nil || fb == nil || !fb.Applies() {
+		return nil
+	}
+	w := fb.Weights()
+	return &w
+}
+
 // WithAnalysis sets the pre-computed analysis (for when we have cached results).
 func (b *SnapshotBuilder) WithAnalysis(a *analysis.GraphStats) *SnapshotBuilder {
 	b.analysis = a
@@ -356,6 +469,7 @@ func (b *SnapshotBuilder) WithPreviousSnapshot(prev *DataSnapshot, diff *analysi
 // or call GetGraphStats().WaitForPhase2() if you need Phase 2 data immediately.
 func (b *SnapshotBuilder) Build() *DataSnapshot {
 	issues := b.issues
+	now := time.Now()
 
 	// Apply default sorting to match the legacy reload path:
 	// Open first, then priority (ascending), then created date (newest first).
@@ -408,21 +522,8 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		cOpen++
 		if issue.Status == model.StatusBlocked {
 			cBlocked++
-			continue
 		}
-
-		// Check if blocked by open dependencies
-		isBlocked := false
-		for _, dep := range issue.Dependencies {
-			if dep == nil || !dep.Type.IsBlocking() {
-				continue
-			}
-			if blocker, exists := issueMap[dep.DependsOnID]; exists && !isClosedLikeStatus(blocker.Status) {
-				isBlocked = true
-				break
-			}
-		}
-		if !isBlocked {
+		if isIssueReadyAt(*issue, issueMap, now) {
 			cReady++
 		}
 	}
@@ -447,10 +548,12 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 	if b.analysis == nil {
 		statsForListItems = nil
 	}
-	listItems := buildListItems(viewIssues, statsForListItems)
-	if shouldUseIncrementalList(b.prevSnapshot, b.diff, b.recipe, b.diffStats) {
-		listItems = buildListItemsIncremental(viewIssues, statsForListItems, b.prevSnapshot.ListItems, b.diff)
+	var listItems []IssueItem
+	if shouldUseIncrementalList(b.prevSnapshot, b.diff, b.recipe, b.diffStats, viewIssues) {
+		listItems = buildListItemsIncremental(viewIssues, statsForListItems, b.prevSnapshot, b.diff)
 		listItemsIncremental = true
+	} else {
+		listItems = buildListItems(viewIssues, statsForListItems)
 	}
 
 	var (
@@ -463,7 +566,7 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 
 	// Compute triage insights (may be skipped for large/huge datasets; bv-9thm).
 	if b.cfg.PrecomputeTriage {
-		triageResult := analysis.ComputeTriageFromAnalyzer(b.analyzer, graphStats, issues, analysis.TriageOptions{}, time.Now())
+		triageResult := analysis.ComputeTriageFromAnalyzer(b.analyzer, graphStats, issues, analysis.TriageOptions{}, now)
 		triageScores = make(map[string]float64, len(triageResult.Recommendations))
 		triageReasons = make(map[string]analysis.TriageReasons, len(triageResult.Recommendations))
 		quickWinSet = make(map[string]bool, len(triageResult.QuickWins))
@@ -525,30 +628,56 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		graphLayout = buildGraphLayout(issues, graphStats)
 	}
 
+	listModelItems := make([]list.Item, len(listItems))
+	listIndexByID := make(map[string]int, len(listItems))
+	semanticIDs := make([]string, len(listItems))
+	semanticDocs := make(map[string]string, len(listItems))
+	for i := range listItems {
+		item := listItems[i]
+		listModelItems[i] = item
+		id := item.Issue.ID
+		listIndexByID[id] = i
+		semanticIDs[i] = id
+		semanticDocs[id] = search.IssueDocument(item.Issue)
+	}
+
+	alerts, alertsCritical, alertsWarning, alertsInfo := computeAlerts(issues, graphStats, b.analyzer)
+
 	return &DataSnapshot{
-		Issues:        issues,
-		IssueMap:      issueMap,
-		ViewIssues:    viewIssues,
-		Analyzer:      b.analyzer,
-		Analysis:      graphStats,
-		insights:      insights,
-		CountOpen:     cOpen,
-		CountReady:    cReady,
-		CountBlocked:  cBlocked,
-		CountClosed:   cClosed,
-		ListItems:     listItems,
-		TriageScores:  triageScores,
-		TriageReasons: triageReasons,
-		QuickWinSet:   quickWinSet,
-		BlockerSet:    blockerSet,
-		UnblocksMap:   unblocksMap,
-		TreeRoots:     treeRoots,
-		TreeNodeMap:   treeNodeMap,
-		BoardState:    boardState,
-		graphLayout:   graphLayout,
-		CreatedAt:     time.Now(),
-		phase2Ready:   graphStats.IsPhase2Ready(),
-		IssueDiff:     b.diff,
+		Issues:         issues,
+		IssueMap:       issueMap,
+		ViewIssues:     viewIssues,
+		Analyzer:       b.analyzer,
+		Analysis:       graphStats,
+		insights:       insights,
+		CountOpen:      cOpen,
+		CountReady:     cReady,
+		CountBlocked:   cBlocked,
+		CountClosed:    cClosed,
+		ListItems:      listItems,
+		listModelItems: listModelItems,
+		listIndexByID:  listIndexByID,
+		listOrderHash:  listOrderFingerprint(listItems),
+		semanticIDs:    semanticIDs,
+		semanticDocs:   semanticDocs,
+		alerts:         alerts,
+		alertsCritical: alertsCritical,
+		alertsWarning:  alertsWarning,
+		alertsInfo:     alertsInfo,
+		TriageScores:   triageScores,
+		TriageReasons:  triageReasons,
+		QuickWinSet:    quickWinSet,
+		BlockerSet:     blockerSet,
+		UnblocksMap:    unblocksMap,
+		TreeRoots:      treeRoots,
+		TreeNodeMap:    treeNodeMap,
+		BoardState:     boardState,
+		graphLayout:    graphLayout,
+		CreatedAt:      now,
+		RecipeName:     recipeName(b.recipe),
+		RecipeHash:     recipeFingerprint(b.recipe),
+		phase2Ready:    graphStats.IsPhase2Ready(),
+		IssueDiff:      b.diff,
 		IssueDiffStats: IssueDiffStats{
 			Changed: b.diffStats.Changed,
 			Total:   b.diffStats.Total,
@@ -556,6 +685,24 @@ func (b *SnapshotBuilder) Build() *DataSnapshot {
 		},
 		IncrementalListUsed: listItemsIncremental,
 	}
+}
+
+func listOrderFingerprint(items []IssueItem) uint64 {
+	const (
+		offset64 = uint64(14695981039346656037)
+		prime64  = uint64(1099511628211)
+	)
+	hash := offset64
+	for i := range items {
+		id := items[i].Issue.ID
+		for j := 0; j < len(id); j++ {
+			hash ^= uint64(id[j])
+			hash *= prime64
+		}
+		hash ^= 0xff
+		hash *= prime64
+	}
+	return hash
 }
 
 func issueDiffStats(diff *analysis.IssueDiff) IssueDiffStats {
@@ -575,8 +722,17 @@ func issueDiffStats(diff *analysis.IssueDiff) IssueDiffStats {
 	}
 }
 
-func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *recipe.Recipe, stats IssueDiffStats) bool {
+func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *recipe.Recipe, stats IssueDiffStats, currentIssues []model.Issue) bool {
 	if prev == nil || diff == nil || len(prev.ListItems) == 0 {
+		return false
+	}
+	if diff.HasDuplicateIDs {
+		return false
+	}
+	// Topology changes can alter graph-derived scores for otherwise unchanged
+	// issues, so reusing their old list items would be incorrect. Additions and
+	// removals also change pagination and may shift recipe membership.
+	if len(diff.Added) > 0 || len(diff.Removed) > 0 || len(diff.DependencyChanged) > 0 {
 		return false
 	}
 
@@ -589,6 +745,14 @@ func shouldUseIncrementalList(prev *DataSnapshot, diff *analysis.IssueDiff, r *r
 
 	if prev.RecipeName != currentRecipeName || prev.RecipeHash != currentRecipeHash {
 		return false
+	}
+	if len(currentIssues) != len(prev.ListItems) {
+		return false
+	}
+	for i := range currentIssues {
+		if currentIssues[i].ID != prev.ListItems[i].Issue.ID {
+			return false
+		}
 	}
 	if stats.Total == 0 {
 		return false
@@ -604,31 +768,22 @@ func buildListItems(issues []model.Issue, stats *analysis.GraphStats) []IssueIte
 	return listItems
 }
 
-func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats, prevItems []IssueItem, diff *analysis.IssueDiff) []IssueItem {
-	if len(prevItems) == 0 || diff == nil {
+func buildListItemsIncremental(issues []model.Issue, stats *analysis.GraphStats, prev *DataSnapshot, diff *analysis.IssueDiff) []IssueItem {
+	if prev == nil || len(prev.ListItems) != len(issues) || diff == nil {
 		return buildListItems(issues, stats)
-	}
-	prevByID := make(map[string]IssueItem, len(prevItems))
-	for _, item := range prevItems {
-		prevByID[item.Issue.ID] = item
-	}
-	changed := make(map[string]struct{}, len(diff.Added)+len(diff.Modified))
-	for _, id := range diff.Added {
-		changed[id] = struct{}{}
-	}
-	for _, id := range diff.Modified {
-		changed[id] = struct{}{}
 	}
 
 	listItems := make([]IssueItem, len(issues))
-	for i := range issues {
-		issue := issues[i]
-		item, ok := prevByID[issue.ID]
-		if !ok || isChangedID(changed, issue.ID) {
-			item = IssueItem{}
+	copy(listItems, prev.ListItems)
+	for i := range listItems {
+		clearIssueItemEphemeral(&listItems[i])
+	}
+	for _, id := range diff.Modified {
+		index, ok := prev.listIndexByID[id]
+		if !ok || index < 0 || index >= len(issues) || issues[index].ID != id {
+			return buildListItems(issues, stats)
 		}
-		resetIssueItemForSnapshot(&item, issue, stats)
-		listItems[i] = item
+		listItems[index] = buildIssueItemForSnapshot(issues[index], stats)
 	}
 	return listItems
 }
@@ -649,6 +804,10 @@ func resetIssueItemForSnapshot(item *IssueItem, issue model.Issue, stats *analys
 		item.Impact = 0
 	}
 	item.RepoPrefix = issueRepoKey(issue)
+	clearIssueItemEphemeral(item)
+}
+
+func clearIssueItemEphemeral(item *IssueItem) {
 	item.DiffStatus = DiffStatusNone
 
 	item.SearchScore = 0
@@ -664,9 +823,11 @@ func resetIssueItemForSnapshot(item *IssueItem, issue model.Issue, stats *analys
 	item.UnblocksCount = 0
 }
 
-func isChangedID(changed map[string]struct{}, id string) bool {
-	_, ok := changed[id]
-	return ok
+func recipeName(r *recipe.Recipe) string {
+	if r == nil {
+		return ""
+	}
+	return r.Name
 }
 
 func issueMatchesRecipe(issue model.Issue, issueMap map[string]*model.Issue, r *recipe.Recipe) bool {
@@ -1028,8 +1189,9 @@ func deepCopyTree(roots []*IssueTreeNode, nodeMap map[string]*IssueTreeNode, iss
 }
 
 // deepCopyListItems creates a deep copy of a ListItems slice.
-// Each IssueItem contains mutable fields (SearchComponents map, TriageReasons slice)
-// that must be copied to prevent race conditions between snapshots.
+// Each IssueItem contains mutable issue backing state plus mutable adapter
+// fields (SearchComponents map, TriageReasons slice) that must be copied to
+// prevent race conditions between snapshots.
 func deepCopyListItems(items []IssueItem) []IssueItem {
 	if len(items) == 0 {
 		return nil
@@ -1037,6 +1199,7 @@ func deepCopyListItems(items []IssueItem) []IssueItem {
 	cloned := make([]IssueItem, len(items))
 	for i := range items {
 		cloned[i] = items[i]
+		cloned[i].Issue = items[i].Issue.Clone()
 		// Deep copy the mutable SearchComponents map
 		if len(items[i].SearchComponents) > 0 {
 			cloned[i].SearchComponents = make(map[string]float64, len(items[i].SearchComponents))
@@ -1177,20 +1340,36 @@ func (s *DataSnapshot) WithPhase2(stats *analysis.GraphStats, insights analysis.
 	// Rebind tree nodes to cloned issues so the new snapshot stays detached from
 	// legacy m.issues sorting and pointer churn.
 	treeRoots, treeNodeMap := deepCopyTree(s.TreeRoots, s.TreeNodeMap, clonedIssueMap)
+	listItems := deepCopyListItems(s.ListItems)
+	listModelItems := make([]list.Item, len(listItems))
+	listIndexByID := make(map[string]int, len(listItems))
+	for i := range listItems {
+		listModelItems[i] = listItems[i]
+		listIndexByID[listItems[i].Issue.ID] = i
+	}
+	alerts, alertsCritical, alertsWarning, alertsInfo := computeAlerts(issuesClone, stats, analyzer)
 
 	return &DataSnapshot{
 		// Clone mutable Phase 1 data so the new snapshot stays immutable even if
 		// legacy UI state continues mutating its own slices or maps.
 		Issues:   issuesClone,
 		IssueMap: clonedIssueMap,
-		// Pool ownership is transferred by the model while coordinating with the
-		// background worker; snapshot cloning itself remains side-effect free.
-		pooledIssues: nil,
-		ViewIssues:   s.ViewIssues,
-		ListItems:    deepCopyListItems(s.ListItems),   // Deep copy - contains mutable SearchComponents/TriageReasons
-		TreeRoots:    treeRoots,                        // Deep copy - tree view mutates these
-		TreeNodeMap:  treeNodeMap,                      // Deep copy - tree view mutates these
-		BoardState:   deepCopyBoardState(s.BoardState), // Deep copy - contains mutable [4][]model.Issue arrays
+		// Phase 2 shares the one-shot parser lease with its source snapshot.
+		pooledIssues:   s.pooledIssues,
+		ViewIssues:     cloneIssuesForAsync(s.ViewIssues),
+		ListItems:      listItems, // Deep copy - contains mutable SearchComponents/TriageReasons
+		listModelItems: listModelItems,
+		listIndexByID:  listIndexByID,
+		listOrderHash:  s.listOrderHash,
+		semanticIDs:    s.semanticIDs,
+		semanticDocs:   s.semanticDocs,
+		alerts:         alerts,
+		alertsCritical: alertsCritical,
+		alertsWarning:  alertsWarning,
+		alertsInfo:     alertsInfo,
+		TreeRoots:      treeRoots,                        // Deep copy - tree view mutates these
+		TreeNodeMap:    treeNodeMap,                      // Deep copy - tree view mutates these
+		BoardState:     deepCopyBoardState(s.BoardState), // Deep copy - contains mutable [4][]model.Issue arrays
 
 		// Updated with Phase 2 data
 		Analyzer:      analyzer,

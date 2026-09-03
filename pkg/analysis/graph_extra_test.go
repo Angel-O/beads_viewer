@@ -2,6 +2,8 @@ package analysis
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -178,5 +180,274 @@ func TestAnalyzerAnalyzeAsyncWithConfig_DisableCacheForcesFreshAnalysis(t *testi
 	}
 	if got := outerFresh.OutDegree[dependentID]; got != 1 {
 		t.Fatalf("DisableCache CachedAnalyzer reused mutated cached data: got out-degree %d, want 1", got)
+	}
+}
+
+func TestAnalyzerRunToCompletionIgnoresMetricTimeoutRaces(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	t.Setenv(EnvSourceDateEpoch, "1234567890")
+	t.Setenv(EnvSkipPhase2, "")
+	t.Setenv(EnvPhase2TimeoutSeconds, "")
+
+	// A non-trivial directed ring makes every metric produce data and ensures a
+	// zero-duration timer would win well before an asynchronous worker completed.
+	const nodeCount = 64
+	issues := make([]model.Issue, nodeCount)
+	for i := range issues {
+		id := fmt.Sprintf("N%02d", i)
+		dependency := fmt.Sprintf("N%02d", (i+1)%nodeCount)
+		issues[i] = model.Issue{
+			ID:           id,
+			Status:       model.StatusOpen,
+			Dependencies: []*model.Dependency{{DependsOnID: dependency, Type: model.DepBlocks}},
+		}
+	}
+
+	type metricSnapshot struct {
+		pageRank     map[string]float64
+		betweenness  map[string]float64
+		hubs         map[string]float64
+		authorities  map[string]float64
+		cycles       [][]string
+		metricStates []string
+	}
+	var want metricSnapshot
+
+	for i, timeout := range []time.Duration{0, time.Nanosecond} {
+		cfg := ApplyEnvOverrides(AnalysisConfig{
+			DisableCache:       true,
+			ComputePageRank:    true,
+			PageRankTimeout:    timeout,
+			ComputeBetweenness: true,
+			BetweennessMode:    BetweennessExact,
+			BetweennessTimeout: timeout,
+			ComputeHITS:        true,
+			HITSTimeout:        timeout,
+			ComputeCycles:      true,
+			CyclesTimeout:      timeout,
+			MaxCyclesToStore:   10,
+		})
+		if !cfg.RunToCompletion {
+			t.Fatal("valid SOURCE_DATE_EPOCH did not enable RunToCompletion")
+		}
+
+		stats, profile := NewAnalyzer(issues).AnalyzeWithProfile(cfg)
+		if profile.PageRankTO || profile.BetweennessTO || profile.HITSTO || profile.CyclesTO {
+			t.Fatalf("run-to-completion analysis timed out with configured deadline %v: %+v", timeout, profile)
+		}
+		status := stats.Status()
+		got := metricSnapshot{
+			pageRank:    stats.PageRank(),
+			betweenness: stats.Betweenness(),
+			hubs:        stats.Hubs(),
+			authorities: stats.Authorities(),
+			cycles:      stats.Cycles(),
+			metricStates: []string{
+				status.PageRank.State,
+				status.Betweenness.State,
+				status.HITS.State,
+				status.Cycles.State,
+			},
+		}
+		if len(got.pageRank) != len(issues) || len(got.betweenness) != len(issues) ||
+			len(got.hubs) != len(issues) || len(got.authorities) != len(issues) || len(got.cycles) == 0 {
+			t.Fatalf("run-to-completion metrics are incomplete for deadline %v: %+v", timeout, got)
+		}
+		for _, state := range got.metricStates {
+			if state != "computed" {
+				t.Fatalf("run-to-completion metric state=%q for deadline %v, want computed", state, timeout)
+			}
+		}
+
+		if i == 0 {
+			want = got
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("metric results changed with deadline %v\nwant: %#v\n got: %#v", timeout, want, got)
+		}
+	}
+}
+
+func TestAnalyzerRunToCompletionIsIndependentOfIssueAndDependencyOrder(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	t.Setenv(EnvSourceDateEpoch, "1234567890")
+	t.Setenv(EnvSkipPhase2, "")
+	t.Setenv(EnvPhase2TimeoutSeconds, "")
+
+	const nodeCount = 64
+	issues := make([]model.Issue, nodeCount)
+	for i := range issues {
+		dependencies := []*model.Dependency{
+			{DependsOnID: fmt.Sprintf("N%02d", (i+1)%nodeCount), Type: model.DepBlocks},
+			{DependsOnID: fmt.Sprintf("N%02d", (i+7)%nodeCount), Type: model.DepBlocks},
+		}
+		issues[i] = model.Issue{
+			ID:           fmt.Sprintf("N%02d", i),
+			Status:       model.StatusOpen,
+			Dependencies: dependencies,
+		}
+	}
+
+	permuted := make([]model.Issue, len(issues))
+	for i := range issues {
+		issue := issues[len(issues)-1-i]
+		issue.Dependencies = append([]*model.Dependency(nil), issue.Dependencies...)
+		for left, right := 0, len(issue.Dependencies)-1; left < right; left, right = left+1, right-1 {
+			issue.Dependencies[left], issue.Dependencies[right] = issue.Dependencies[right], issue.Dependencies[left]
+		}
+		permuted[i] = issue
+	}
+	if first, second := ComputeDataHash(issues), ComputeDataHash(permuted); first != second {
+		t.Fatalf("order-independent inputs produced different data hashes: %s != %s", first, second)
+	}
+
+	config := ApplyEnvOverrides(AnalysisConfig{
+		DisableCache:          true,
+		ComputePageRank:       true,
+		PageRankTimeout:       0,
+		ComputeBetweenness:    true,
+		BetweennessMode:       BetweennessApproximate,
+		BetweennessSampleSize: 17,
+		BetweennessTimeout:    0,
+		ComputeEigenvector:    true,
+		ComputeHITS:           true,
+		HITSTimeout:           0,
+		ComputeCriticalPath:   true,
+		ComputeCycles:         true,
+		CyclesTimeout:         0,
+		MaxCyclesToStore:      10,
+		ComputeKCore:          true,
+		ComputeArticulation:   true,
+		ComputeSlack:          true,
+	})
+
+	type resultSnapshot struct {
+		pageRank     map[string]float64
+		betweenness  map[string]float64
+		eigenvector  map[string]float64
+		hubs         map[string]float64
+		authorities  map[string]float64
+		criticalPath map[string]float64
+		cycles       [][]string
+		topological  []string
+		metricStates []string
+	}
+	analyze := func(input []model.Issue) resultSnapshot {
+		stats, profile := NewAnalyzer(input).AnalyzeWithProfile(config)
+		if profile.PageRankTO || profile.BetweennessTO || profile.HITSTO || profile.CyclesTO {
+			t.Fatalf("reproducible approximate analysis timed out: %+v", profile)
+		}
+		status := stats.Status()
+		return resultSnapshot{
+			pageRank:     stats.PageRank(),
+			betweenness:  stats.Betweenness(),
+			eigenvector:  stats.Eigenvector(),
+			hubs:         stats.Hubs(),
+			authorities:  stats.Authorities(),
+			criticalPath: stats.CriticalPathScore(),
+			cycles:       stats.Cycles(),
+			topological:  append([]string(nil), stats.TopologicalOrder...),
+			metricStates: []string{
+				status.PageRank.State,
+				status.Betweenness.State,
+				status.Eigenvector.State,
+				status.HITS.State,
+				status.Critical.State,
+				status.Cycles.State,
+			},
+		}
+	}
+
+	want := analyze(issues)
+	for i := 0; i < 3; i++ {
+		if got := analyze(permuted); !reflect.DeepEqual(got, want) {
+			t.Fatalf("reproducible analysis changed for input permutation on run %d\nwant: %#v\n got: %#v", i, want, got)
+		}
+	}
+}
+
+func TestAnalyzerDAGMetricsAreIndependentOfIssueAndDependencyOrder(t *testing.T) {
+	issues := []model.Issue{
+		{
+			ID: "A", Status: model.StatusOpen,
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "C", Type: model.DepBlocks},
+				{DependsOnID: "B", Type: model.DepBlocks},
+			},
+		},
+		{ID: "B", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "D", Type: model.DepBlocks}}},
+		{ID: "C", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "D", Type: model.DepBlocks}}},
+		{ID: "D", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "E", Type: model.DepBlocks}}},
+		{ID: "E", Status: model.StatusOpen},
+	}
+	permuted := []model.Issue{issues[4], issues[3], issues[2], issues[1], issues[0]}
+	permuted[4].Dependencies = []*model.Dependency{
+		{DependsOnID: "B", Type: model.DepBlocks},
+		{DependsOnID: "C", Type: model.DepBlocks},
+	}
+
+	config := AnalysisConfig{
+		DisableCache:        true,
+		RunToCompletion:     true,
+		ComputeCriticalPath: true,
+		ComputeKCore:        true,
+		ComputeArticulation: true,
+		ComputeSlack:        true,
+	}
+	type dagSnapshot struct {
+		topological  []string
+		criticalPath map[string]float64
+		core         map[string]int
+		articulation []string
+		slack        map[string]float64
+	}
+	analyze := func(input []model.Issue) dagSnapshot {
+		stats, _ := NewAnalyzer(input).AnalyzeWithProfile(config)
+		return dagSnapshot{
+			topological:  append([]string(nil), stats.TopologicalOrder...),
+			criticalPath: stats.CriticalPathScore(),
+			core:         stats.CoreNumber(),
+			articulation: stats.ArticulationPoints(),
+			slack:        stats.Slack(),
+		}
+	}
+
+	want := analyze(issues)
+	if len(want.topological) != len(issues) || len(want.criticalPath) == 0 || len(want.slack) == 0 {
+		t.Fatalf("DAG fixture did not exercise requested metrics: %#v", want)
+	}
+	if got := analyze(permuted); !reflect.DeepEqual(got, want) {
+		t.Fatalf("DAG metrics changed for input permutation\nwant: %#v\n got: %#v", want, got)
+	}
+}
+
+func TestRunMetricSafelyContainsPanics(t *testing.T) {
+	if got, completed := runMetricSafely(func() int { return 42 }); !completed || got != 42 {
+		t.Fatalf("successful metric result=(%d, %v), want (42, true)", got, completed)
+	}
+	if got, completed := runMetricSafely(func() int { panic("metric failure") }); completed || got != 0 {
+		t.Fatalf("panicking metric result=(%d, %v), want (0, false)", got, completed)
+	}
+}
+
+func TestAnalyzerNegativeCycleLimitUsesSafeDefault(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}}},
+		{ID: "B", Dependencies: []*model.Dependency{{DependsOnID: "A", Type: model.DepBlocks}}},
+	}
+	config := AnalysisConfig{
+		DisableCache:     true,
+		RunToCompletion:  true,
+		ComputeCycles:    true,
+		MaxCyclesToStore: -1,
+	}
+
+	stats, profile := NewAnalyzer(issues).AnalyzeWithProfile(config)
+	if profile.CyclesTO {
+		t.Fatal("negative cycle limit unexpectedly timed out")
+	}
+	if got := stats.Cycles(); len(got) != 1 {
+		t.Fatalf("negative cycle limit returned %d cycles, want safe-default result", len(got))
 	}
 }

@@ -43,7 +43,9 @@ const (
 	WorkerStopped
 )
 
-const minWorkerMessageBuffer = 2
+const (
+	minWorkerMessageBuffer = 2
+)
 
 // WorkerLogLevel controls background worker log verbosity.
 type WorkerLogLevel int
@@ -185,7 +187,11 @@ type BackgroundWorker struct {
 	sourceRetryMax      time.Duration
 
 	// State
+	// SAFETY: never invoke logging, callbacks, channel operations, or other
+	// caller-controlled work while holding mu. Go's package logger ultimately
+	// calls a replaceable io.Writer, which may re-enter worker accessors.
 	mu                  sync.RWMutex
+	sendMu              sync.Mutex // Serializes priority-aware mailbox replacement.
 	state               WorkerState
 	dirty               bool // True if a change came in while processing
 	processScheduled    bool // True after process() is queued but before it starts processing
@@ -216,7 +222,6 @@ type BackgroundWorker struct {
 	tracePath           string
 	traceFile           *os.File
 	traceMu             sync.Mutex
-	sendMu              sync.Mutex
 
 	// Idle-time GC management (bv-4yje).
 	idleGCEnabled     bool
@@ -257,12 +262,13 @@ type BackgroundWorker struct {
 	msgCh            chan tea.Msg
 
 	// Lifecycle
-	ctx        context.Context
-	cancel     context.CancelFunc
-	loopCtx    context.Context
-	loopCancel context.CancelFunc
-	done       chan struct{}
-	workWG     sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	loopCtx     context.Context
+	loopCancel  context.CancelFunc
+	done        chan struct{}
+	loopStarted bool
+	workWG      sync.WaitGroup
 }
 
 type IdleGCConfig struct {
@@ -394,16 +400,17 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		maxRecoveries:       cfg.MaxRecoveries,
 		sourceRetryBase:     cfg.SourceRetryBase,
 		sourceRetryMax:      cfg.SourceRetryMax,
-		state:               WorkerIdle,
-		msgCh:               make(chan tea.Msg, cfg.MessageBuffer),
-		ctx:                 ctx,
-		cancel:              cancel,
-		done:                make(chan struct{}),
 		logLevel:            logLevel,
 		logJSON:             logJSON,
 		metricsEnabled:      metricsEnabled,
 		tracePath:           tracePath,
 		catalogLoader:       cfg.CatalogLoader,
+		generation:          1, // Generation zero is reserved for non-worker messages.
+		state:               WorkerIdle,
+		msgCh:               make(chan tea.Msg, cfg.MessageBuffer),
+		ctx:                 ctx,
+		cancel:              cancel,
+		done:                make(chan struct{}),
 
 		idleGCEnabled:     idleGCConfig.Enabled,
 		idleGCThreshold:   idleGCConfig.Threshold,
@@ -660,6 +667,13 @@ func (w *BackgroundWorker) Start() error {
 		return nil // Already started
 	}
 	w.started = true
+	// Publish the latch that belongs to this Start attempt before releasing the
+	// mutex. Stop must never capture the constructor's never-closed placeholder
+	// while Start is between watcher startup and process-loop launch.
+	done := make(chan struct{})
+	w.done = done
+	w.workWG.Add(1)
+	defer w.workWG.Done()
 	now := time.Now()
 	if w.startTime.IsZero() {
 		w.startTime = now
@@ -682,53 +696,43 @@ func (w *BackgroundWorker) Start() error {
 		idleGCGCPercent = 0
 	}
 
-	if sources := w.changeSources(); len(sources) > 0 {
-		startedSources := make([]ChangeSource, 0, len(sources))
-		for _, source := range sources {
-			if err := source.Start(); err != nil {
-				for _, startedSource := range startedSources {
-					startedSource.Stop()
-				}
-				w.mu.Lock()
-				w.started = false
-				w.mu.Unlock()
-				w.closeTraceFile()
-				return err
+	startedSources := make([]ChangeSource, 0)
+	for _, source := range w.changeSources() {
+		if err := source.Start(); err != nil {
+			for _, startedSource := range startedSources {
+				startedSource.Stop()
 			}
-			startedSources = append(startedSources, source)
-		}
-
-		if idleGCEnabled && idleGCGCPercent > 0 {
 			w.mu.Lock()
-			if w.state != WorkerStopped && w.started && !w.idleGCAppliedGCPercent {
-				w.idleGCPrevGCPercent = debug.SetGCPercent(idleGCGCPercent)
-				w.idleGCAppliedGCPercent = true
-			}
+			w.started = false
 			w.mu.Unlock()
+			w.closeTraceFile()
+			return err
 		}
-		if idleGCEnabled && idleGCCheckEvery > 0 {
-			go w.idleGCLoop(idleGCCheckEvery)
-		}
-
-		w.startLoop()
-		w.startWatchdog()
-	} else {
-		// No watcher - close done channel immediately so Stop() doesn't block
-		if idleGCEnabled && idleGCGCPercent > 0 {
-			w.mu.Lock()
-			if w.state != WorkerStopped && w.started && !w.idleGCAppliedGCPercent {
-				w.idleGCPrevGCPercent = debug.SetGCPercent(idleGCGCPercent)
-				w.idleGCAppliedGCPercent = true
-			}
-			w.mu.Unlock()
-		}
-		if idleGCEnabled && idleGCCheckEvery > 0 {
-			go w.idleGCLoop(idleGCCheckEvery)
-		}
-
-		close(w.done)
+		startedSources = append(startedSources, source)
 	}
-
+	w.mu.Lock()
+	if w.state == WorkerStopped || w.ctx.Err() != nil {
+		w.started = false
+		w.mu.Unlock()
+		for _, startedSource := range startedSources {
+			startedSource.Stop()
+		}
+		w.closeTraceFile()
+		return fmt.Errorf("worker was stopped during start")
+	}
+	if idleGCEnabled && idleGCGCPercent > 0 {
+		if w.state != WorkerStopped && w.started && !w.idleGCAppliedGCPercent {
+			w.idleGCPrevGCPercent = debug.SetGCPercent(idleGCGCPercent)
+			w.idleGCAppliedGCPercent = true
+		}
+	}
+	if idleGCEnabled && idleGCCheckEvery > 0 {
+		go w.idleGCLoop(idleGCCheckEvery)
+	}
+	w.lastHeartbeat = time.Now()
+	w.startProcessLoopLocked(done)
+	w.mu.Unlock()
+	w.startWatchdog()
 	return nil
 }
 
@@ -737,12 +741,19 @@ func (w *BackgroundWorker) Start() error {
 func (w *BackgroundWorker) Stop() {
 	w.mu.Lock()
 	if w.state == WorkerStopped {
+		loopStarted := w.loopStarted
+		done := w.done
 		w.mu.Unlock()
+		if loopStarted {
+			<-done
+		}
+		w.workWG.Wait()
 		return
 	}
 	w.state = WorkerStopped
 	w.processScheduled = false
 	wasStarted := w.started
+	loopStarted := w.loopStarted
 	loopCancel := w.loopCancel
 	done := w.done
 	retryTimer := w.sourceRetryTimer
@@ -774,13 +785,10 @@ func (w *BackgroundWorker) Stop() {
 		source.Stop()
 	}
 
-	// Only wait for done if Start() was called
-	if wasStarted {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			w.logEvent(LogLevelWarn, "shutdown_timeout", nil)
-		}
+	// Wait for the processing loop only after it has been launched. A failed
+	// Start can leave the worker started without ever creating that loop.
+	if wasStarted && loopStarted {
+		<-done
 	}
 	w.workWG.Wait()
 	retainedMessages := make([]tea.Msg, 0, cap(w.msgCh))
@@ -788,7 +796,7 @@ func (w *BackgroundWorker) Stop() {
 		select {
 		case msg := <-w.msgCh:
 			if _, isSnapshot := msg.(SnapshotReadyMsg); isSnapshot {
-				w.releaseDroppedWorkerMessage(msg)
+				w.releaseDroppedMessage(msg)
 			} else {
 				retainedMessages = append(retainedMessages, msg)
 			}
@@ -805,16 +813,12 @@ drainedMessages:
 		}
 	}
 
-	var pooledRefs []*model.Issue
 	w.mu.Lock()
-	if w.snapshot != nil && len(w.snapshot.pooledIssues) > 0 {
-		pooledRefs = w.snapshot.pooledIssues
-		w.snapshot.pooledIssues = nil
-	}
+	snapshot := w.snapshot
 	w.snapshot = nil
 	w.mu.Unlock()
-	if len(pooledRefs) > 0 {
-		loader.ReturnIssuePtrsToPool(pooledRefs)
+	if snapshot != nil {
+		snapshot.releasePooledIssues()
 	}
 
 	w.logEvent(LogLevelInfo, "worker_stop", nil)
@@ -825,7 +829,7 @@ drainedMessages:
 // references while holding the worker lock. Snapshot clones must not mutate
 // pooledIssues directly because the worker may be stopping or draining a
 // dropped snapshot concurrently.
-func (w *BackgroundWorker) takeSnapshotPooledIssues(snapshot *DataSnapshot) []*model.Issue {
+func (w *BackgroundWorker) takeSnapshotPooledIssues(snapshot *DataSnapshot) *pooledIssueLease {
 	if w == nil || snapshot == nil {
 		return nil
 	}
@@ -842,44 +846,20 @@ func (w *BackgroundWorker) snapshotHasPooledIssues(snapshot *DataSnapshot) bool 
 	}
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return len(snapshot.pooledIssues) > 0
+	return snapshot.pooledIssues.active()
 }
 
-func (w *BackgroundWorker) startLoop() {
-	if w == nil {
-		return
-	}
-
-	w.mu.Lock()
-	if w.state == WorkerStopped {
-		w.mu.Unlock()
-		return
-	}
-
-	done := make(chan struct{})
-
-	w.done = done
-	w.lastHeartbeat = time.Now()
-	w.mu.Unlock()
-
-	go w.runProcessLoop(done)
-}
-
-func (w *BackgroundWorker) runProcessLoop(done chan struct{}) {
+// startProcessLoopLocked publishes the loop's cancellation handle before the
+// goroutine can be observed by Stop or recovery. The caller must hold w.mu.
+func (w *BackgroundWorker) startProcessLoopLocked(done chan struct{}) {
 	loopCtx, loopCancel := context.WithCancel(w.ctx)
-	defer loopCancel()
-
-	w.mu.Lock()
-	if w.state == WorkerStopped {
-		w.mu.Unlock()
-		close(done)
-		return
-	}
 	w.loopCtx = loopCtx
 	w.loopCancel = loopCancel
-	w.mu.Unlock()
-
-	w.processLoop(loopCtx, done)
+	w.loopStarted = true
+	go func() {
+		defer loopCancel()
+		w.processLoop(loopCtx, done)
+	}()
 }
 
 func (w *BackgroundWorker) startWatchdog() {
@@ -978,6 +958,7 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 
 	// Invalidate any in-flight processing and reset to an idle baseline.
 	w.generation++
+	generation := w.generation
 	w.state = WorkerIdle
 	w.dirty = false
 	w.processScheduled = false
@@ -997,8 +978,9 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 
 	if maxRecoveries > 0 && attempt > maxRecoveries {
 		w.send(SnapshotErrorMsg{
-			Err:         fmt.Errorf("background worker unresponsive (giving up): %s", reason),
-			Recoverable: false,
+			Err:              fmt.Errorf("background worker unresponsive (giving up): %s", reason),
+			Recoverable:      false,
+			WorkerGeneration: generation,
 		})
 		w.Stop()
 		return
@@ -1029,8 +1011,17 @@ func (w *BackgroundWorker) attemptRecovery(reason string) {
 			return
 		}
 	}
+	w.mu.Lock()
+	if w.state == WorkerStopped || w.ctx.Err() != nil {
+		w.mu.Unlock()
+		return
+	}
+	nextDone := make(chan struct{})
+	w.done = nextDone
+	w.lastHeartbeat = time.Now()
+	w.startProcessLoopLocked(nextDone)
+	w.mu.Unlock()
 
-	w.startLoop()
 	w.ForceRefresh()
 }
 
@@ -1046,10 +1037,10 @@ func (w *BackgroundWorker) TriggerRefresh() {
 	if w.state == WorkerProcessing || w.processScheduled {
 		w.dirty = true
 		coalesced := w.coalesceCount.Add(1)
+		w.mu.Unlock()
 		w.logEvent(LogLevelDebug, "coalesce", map[string]any{
 			"count": coalesced,
 		})
-		w.mu.Unlock()
 		return
 	}
 	w.processScheduled = true
@@ -1151,10 +1142,10 @@ func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
 	if w.state == WorkerProcessing || w.processScheduled {
 		w.dirty = true
 		coalesced := w.coalesceCount.Add(1)
+		w.mu.Unlock()
 		w.logEvent(LogLevelDebug, "coalesce", map[string]any{
 			"count": coalesced,
 		})
-		w.mu.Unlock()
 		return
 	}
 	w.processScheduled = true
@@ -1167,6 +1158,20 @@ func (w *BackgroundWorker) forceRefresh(refreshBDExport bool) {
 func (w *BackgroundWorker) runProcess() {
 	defer w.workWG.Done()
 	w.process()
+}
+
+// HandleRefreshRequest applies a UI refresh request on the worker side. Recipe
+// changes and forced reloads are folded into one processing run.
+func (w *BackgroundWorker) HandleRefreshRequest(msg RefreshRequestMsg) {
+	recipeChanged := false
+	if msg.Recipe != nil {
+		recipeChanged = w.setRecipe(msg.Recipe)
+	}
+	if msg.Force || recipeChanged {
+		w.ForceRefresh()
+		return
+	}
+	w.TriggerRefresh()
 }
 
 func recipeFingerprint(r *recipe.Recipe) string {
@@ -1187,10 +1192,16 @@ func recipeFingerprint(r *recipe.Recipe) string {
 // SetRecipe updates the worker's current recipe and triggers a refresh (bv-2h40).
 // This allows Phase 3 view builders to incorporate recipe/filter state off-thread.
 func (w *BackgroundWorker) SetRecipe(r *recipe.Recipe) {
+	if w.setRecipe(r) {
+		w.ForceRefresh()
+	}
+}
+
+func (w *BackgroundWorker) setRecipe(r *recipe.Recipe) bool {
 	w.mu.Lock()
 	if w.state == WorkerStopped {
 		w.mu.Unlock()
-		return
+		return false
 	}
 
 	nextID := ""
@@ -1205,10 +1216,7 @@ func (w *BackgroundWorker) SetRecipe(r *recipe.Recipe) {
 	w.currentRecipeID = nextID
 	w.currentRecipeHash = nextHash
 	w.mu.Unlock()
-
-	if changed {
-		w.ForceRefresh()
-	}
+	return changed
 }
 
 // GetSnapshot returns the current snapshot (may be nil).
@@ -1223,6 +1231,17 @@ func (w *BackgroundWorker) State() WorkerState {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.state
+}
+
+// Generation returns the current worker lifecycle generation. Recovery bumps
+// this value so callers can reject messages emitted by invalidated work.
+func (w *BackgroundWorker) Generation() uint64 {
+	if w == nil {
+		return 0
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.generation
 }
 
 // ProcessingDuration returns how long the worker has been in the processing state.
@@ -1323,6 +1342,12 @@ func (w *BackgroundWorker) processLoop(loopCtx context.Context, done chan struct
 
 // process builds a new snapshot from the current file.
 func (w *BackgroundWorker) process() {
+	w.processWithSnapshotBuilder(nil)
+}
+
+// processWithSnapshotBuilder keeps the generation-fenced completion path
+// independently testable without relying on filesystem timing.
+func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotBuildResult) {
 	w.mu.Lock()
 	w.processScheduled = false
 	if w.state != WorkerIdle {
@@ -1345,10 +1370,10 @@ func (w *BackgroundWorker) process() {
 	w.lastHeartbeat = now
 	gen := w.generation
 	catalogGeneration := w.catalogGeneration
+	w.mu.Unlock()
 	w.logEvent(LogLevelDebug, "state_change", map[string]any{
 		"state": "processing",
 	})
-	w.mu.Unlock()
 	w.send(WorkerProcessingMsg{Worker: w})
 
 	processStart := time.Now()
@@ -1359,12 +1384,18 @@ func (w *BackgroundWorker) process() {
 		"queue_depth": queueDepth,
 	})
 
-	// Load and build snapshot
-	// Returns nil if content unchanged (dedup) or on error
-	snapshot := w.buildSnapshot(forceNext, refreshBDExport)
+	// Load and build snapshot. Error publication is deferred until after the
+	// generation fence so a timed-out build cannot publish stale results.
+	result := snapshotBuildResult{}
+	if build != nil {
+		result = build(forceNext)
+	} else {
+		result = w.buildSnapshotResult(forceNext, refreshBDExport)
+	}
+	snapshot := result.snapshot
 	catalog, contextlessBeadCount, contextlessCountReady, catalogErr := w.buildRepositoryCatalog(snapshot)
 	if refreshBDExport {
-		if w.LastError() != nil {
+		if result.err != nil {
 			w.scheduleSourceRetry()
 		} else {
 			w.cancelSourceRetry()
@@ -1375,8 +1406,8 @@ func (w *BackgroundWorker) process() {
 	// If we recovered while processing, ignore this stale result.
 	if w.generation != gen {
 		w.mu.Unlock()
-		if snapshot != nil && len(snapshot.pooledIssues) > 0 {
-			loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+		if snapshot != nil {
+			snapshot.releasePooledIssues()
 		}
 		return
 	}
@@ -1384,18 +1415,23 @@ func (w *BackgroundWorker) process() {
 	// Check if stopped while we were processing - don't overwrite stopped state
 	if w.state == WorkerStopped {
 		w.mu.Unlock()
-		if snapshot != nil && len(snapshot.pooledIssues) > 0 {
-			loader.ReturnIssuePtrsToPool(snapshot.pooledIssues)
+		if snapshot != nil {
+			snapshot.releasePooledIssues()
 		}
 		return
+	}
+	if result.err != nil || result.clearError {
+		w.recordErrorLocked(result.err)
 	}
 	w.processingStart = time.Time{}
 	// Only update snapshot if we got a new one (nil means deduped or error)
 	var swapLatency time.Duration
 	var version uint64
+	var previousSnapshot *DataSnapshot
 	if snapshot != nil {
 		swapStart := time.Now()
 		w.lastHash = snapshot.DataHash
+		previousSnapshot = w.snapshot
 		w.snapshot = snapshot
 		swapLatency = time.Since(swapStart)
 		version = w.metrics.snapshotVersion.Add(1)
@@ -1429,10 +1465,13 @@ func (w *BackgroundWorker) process() {
 	coalesced := w.coalesceCount.Load()
 	w.state = WorkerIdle
 	w.lastHeartbeat = time.Now()
+	w.mu.Unlock()
 	w.logEvent(LogLevelDebug, "state_change", map[string]any{
 		"state": "idle",
 	})
-	w.mu.Unlock()
+	if previousSnapshot != nil && previousSnapshot != snapshot {
+		previousSnapshot.releasePooledIssues()
+	}
 
 	processingDuration := time.Since(processStart)
 	w.metrics.processingCount.Add(1)
@@ -1446,6 +1485,22 @@ func (w *BackgroundWorker) process() {
 	deliveredCatalogErr := catalogErr
 	if catalogStale {
 		deliveredCatalogErr = nil
+	}
+
+	if result.err != nil {
+		fields := map[string]any{
+			"phase": result.err.Phase,
+			"error": result.err.Error(),
+		}
+		if result.err.Phase == "load" {
+			fields["path"] = w.beadsPath
+		}
+		w.logEvent(LogLevelError, "snapshot_build_failed", fields)
+		w.send(SnapshotErrorMsg{
+			Err:              result.err,
+			Recoverable:      true,
+			WorkerGeneration: gen,
+		})
 	}
 
 	// Notify UI only if we have a new snapshot
@@ -1470,6 +1525,7 @@ func (w *BackgroundWorker) process() {
 			FileChangeAt:          fileChangeAt,
 			SentAt:                readyAt,
 			SnapshotVer:           version,
+			WorkerGeneration:      gen,
 			QueueDepth:            queueDepth,
 			CoalesceCount:         coalesced,
 			Catalog:               catalog,
@@ -1544,6 +1600,14 @@ func (w *BackgroundWorker) safeCompute(phase string, fn func() error) *WorkerErr
 // recordError tracks an error and updates error state.
 func (w *BackgroundWorker) recordError(err *WorkerError) {
 	w.mu.Lock()
+	w.recordErrorLocked(err)
+	w.mu.Unlock()
+}
+
+// recordErrorLocked updates error state while the caller holds w.mu. process
+// uses this form so generation validation and error-state publication are one
+// atomic decision.
+func (w *BackgroundWorker) recordErrorLocked(err *WorkerError) {
 	w.lastError = err
 	if err != nil {
 		w.errorCount++
@@ -1551,7 +1615,6 @@ func (w *BackgroundWorker) recordError(err *WorkerError) {
 	} else {
 		w.errorCount = 0
 	}
-	w.mu.Unlock()
 }
 
 func (w *BackgroundWorker) cancelSourceRetry() {
@@ -1796,12 +1859,25 @@ func (w *BackgroundWorker) maybeIdleGC(now time.Time) {
 	w.mu.Unlock()
 }
 
-// buildSnapshot loads data and constructs a new DataSnapshot.
-// This is called from the worker goroutine (NOT the UI thread).
-// Returns nil if beadsPath is empty, loading fails, or content is unchanged.
-func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataSnapshot {
+type snapshotBuildResult struct {
+	snapshot   *DataSnapshot
+	err        *WorkerError
+	clearError bool
+}
+
+// buildSnapshot loads data and constructs a new DataSnapshot. The optional
+// refresh flag is retained for callers that need compatibility-export reloads.
+func (w *BackgroundWorker) buildSnapshot(forceNext bool, refresh ...bool) *DataSnapshot {
+	return w.buildSnapshotResult(forceNext, refresh...).snapshot
+}
+
+// buildSnapshotResult is called from the worker goroutine (NOT the UI thread).
+// It is intentionally side-effect free with respect to worker error state and
+// UI messages: process owns those effects after its generation fence.
+func (w *BackgroundWorker) buildSnapshotResult(forceNext bool, refresh ...bool) snapshotBuildResult {
+	refreshBDExport := len(refresh) > 0 && refresh[0]
 	if w.beadsPath == "" {
-		return nil
+		return snapshotBuildResult{}
 	}
 	refreshBDExport = refreshBDExport && shouldRefreshBDExport(w.beadsPath)
 	watcherPaused := refreshBDExport && w.watcher != nil && w.watcher.IsStarted()
@@ -1827,13 +1903,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	}
 	if err != nil {
 		loadErr := &WorkerError{Phase: "load", Cause: err}
-		w.logEvent(LogLevelError, "snapshot_load_failed", map[string]any{
-			"path":  w.beadsPath,
-			"error": loadErr.Error(),
-		})
-		w.recordError(loadErr)
-		w.send(SnapshotErrorMsg{Err: loadErr, Recoverable: true})
-		return nil
+		return snapshotBuildResult{err: loadErr}
 	}
 
 	start := time.Now()
@@ -1865,7 +1935,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	recipeHash := w.currentRecipeHash
 	w.mu.RUnlock()
 
-	// Determine dataset tier using a fast line count (bv-9thm).
+	// Determine dataset tier using a fast source-record count (bv-9thm).
 	sourceLineCount := 0
 	tier := datasetTierUnknown
 	var countStart time.Time
@@ -1873,7 +1943,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 		countStart = time.Now()
 	}
 	countErr := w.safeCompute("count_lines", func() error {
-		n, err := countJSONLLines(reloadPath)
+		n, err := countIssuesForReload(reloadPath)
 		if err != nil {
 			return err
 		}
@@ -1897,7 +1967,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	// Load issues from file with panic recovery
 	var issues []model.Issue
 	var pooledRefs []*model.Issue
-	var loadWarnings []string
+	loadWarningCount := 0
 	var loadStart time.Time
 	if profileSnapshot {
 		loadStart = time.Now()
@@ -1906,8 +1976,8 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 		var err error
 		var loaded loader.PooledIssues
 		opts := loader.ParseOptions{
-			WarningHandler: func(msg string) {
-				loadWarnings = append(loadWarnings, msg)
+			WarningHandler: func(string) {
+				loadWarningCount++
 			},
 			BufferSize: envMaxLineSizeBytes(),
 		}
@@ -1928,18 +1998,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	}
 
 	if loadErr != nil {
-		w.logEvent(LogLevelError, "snapshot_load_failed", map[string]any{
-			"path":  w.beadsPath,
-			"error": loadErr.Error(),
-		})
-		w.recordError(loadErr)
-
-		// Send error to UI
-		w.send(SnapshotErrorMsg{
-			Err:         loadErr,
-			Recoverable: true, // File errors are usually recoverable
-		})
-		return nil
+		return snapshotBuildResult{err: loadErr}
 	}
 
 	loadDuration := time.Since(start)
@@ -1950,21 +2009,23 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	// Check if content is unchanged (dedup optimization)
 	w.mu.RLock()
 	lastHash := w.lastHash
+	prevSnapshot := w.snapshot
 	w.mu.RUnlock()
 
-	if !forceNext && hash == lastHash && lastHash != "" {
+	loadMetadataUnchanged := prevSnapshot != nil &&
+		prevSnapshot.SourceIssueCountHint == sourceLineCount &&
+		prevSnapshot.LoadWarningCount == loadWarningCount &&
+		prevSnapshot.DatasetTier == tier &&
+		prevSnapshot.LoadedOpenOnly == loadOpenOnly &&
+		prevSnapshot.RecipeName == recipeID &&
+		prevSnapshot.RecipeHash == recipeHash
+	if !forceNext && hash == lastHash && lastHash != "" && loadMetadataUnchanged {
 		w.logEvent(LogLevelDebug, "snapshot_deduped", map[string]any{
 			"hash": hashPrefix(hash),
 		})
 		loader.ReturnIssuePtrsToPool(pooledRefs)
-		// Clear any previous error on successful dedup
-		w.recordError(nil)
-		return nil
+		return snapshotBuildResult{clearError: true}
 	}
-
-	w.mu.RLock()
-	prevSnapshot := w.snapshot
-	w.mu.RUnlock()
 
 	var diff *analysis.IssueDiff
 	if prevSnapshot != nil {
@@ -1988,6 +2049,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	analyzeErr := w.safeCompute("analyze_phase1", func() error {
 		builder := NewSnapshotBuilder(issues).
 			WithRecipe(currentRecipe).
+			WithWeights(feedbackWeightsForBeadsPath(w.beadsPath)).
 			WithBuildConfig(snapshotBuildConfigForTier(tier))
 		if prevSnapshot != nil {
 			builder.WithPreviousSnapshot(prevSnapshot, diff)
@@ -2005,30 +2067,17 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 	}
 
 	if analyzeErr != nil {
-		w.logEvent(LogLevelError, "snapshot_analyze_failed", map[string]any{
-			"error": analyzeErr.Error(),
-		})
-		w.recordError(analyzeErr)
 		loader.ReturnIssuePtrsToPool(pooledRefs)
-
-		// Send error to UI
-		w.send(SnapshotErrorMsg{
-			Err:         analyzeErr,
-			Recoverable: true,
-		})
-		return nil
+		return snapshotBuildResult{err: analyzeErr}
 	}
-
-	// Clear error on success
-	w.recordError(nil)
 
 	// Store hash in snapshot for external access
 	if snapshot != nil {
 		snapshot.DataHash = hash
-		snapshot.LoadWarningCount = len(loadWarnings)
+		snapshot.LoadWarningCount = loadWarningCount
 		snapshot.RecipeName = recipeID
 		snapshot.RecipeHash = recipeHash
-		snapshot.pooledIssues = pooledRefs
+		snapshot.attachPooledIssues(pooledRefs)
 		snapshot.DatasetTier = tier
 		snapshot.SourceIssueCountHint = sourceLineCount
 		snapshot.LoadedOpenOnly = loadOpenOnly
@@ -2081,16 +2130,7 @@ func (w *BackgroundWorker) buildSnapshot(forceNext, refreshBDExport bool) *DataS
 		)
 	}
 
-	// Spawn Phase 2 completion watcher if Phase 2 isn't ready yet
-	if snapshot != nil && !snapshot.IsPhase2Ready() {
-		w.workWG.Add(1)
-		go func() {
-			defer w.workWG.Done()
-			w.runPhase2Analysis(snapshot.Analysis, hash)
-		}()
-	}
-
-	return snapshot
+	return snapshotBuildResult{snapshot: snapshot, clearError: true}
 }
 
 func cfgString(w *watcher.Watcher) string {
@@ -2175,20 +2215,8 @@ func countJSONLLines(path string) (int, error) {
 }
 
 func envMaxLineSizeBytes() int {
-	mb, ok := envPositiveInt("BV_MAX_LINE_SIZE_MB")
-	if !ok {
-		return 0
-	}
-	// ParseOptions.BufferSize is in bytes.
-	return mb * 1024 * 1024
-}
-
-func envPositiveIntOr(name string, fallback int) int {
-	n, ok := envPositiveInt(name)
-	if !ok {
-		return fallback
-	}
-	return n
+	// One definition for every loading path (TUI, background worker, robot).
+	return loader.MaxLineSizeFromEnv()
 }
 
 func envBool(name string) bool {
@@ -2216,6 +2244,14 @@ func envPositiveInt(name string) (int, bool) {
 	return n, true
 }
 
+func envPositiveIntOr(name string, fallback int) int {
+	value, ok := envPositiveInt(name)
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
 func envDurationSeconds(name string, fallback time.Duration) time.Duration {
 	n, ok := envPositiveInt(name)
 	if !ok {
@@ -2234,11 +2270,12 @@ func envDurationMilliseconds(name string, fallback time.Duration) time.Duration 
 
 // runPhase2Analysis waits for Phase 2 analysis to complete and notifies the UI.
 // This runs in a goroutine so it doesn't block snapshot delivery.
-// The dataHash is used by the UI to verify the update matches the current snapshot.
-func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHash string) {
-	if stats == nil {
+func (w *BackgroundWorker) runPhase2Analysis(snapshot *DataSnapshot, snapshotVer, workerGeneration uint64) {
+	if snapshot == nil || snapshot.Analysis == nil {
 		return
 	}
+	stats := snapshot.Analysis
+	dataHash := snapshot.DataHash
 
 	// Wait for Phase 2 to complete (blocking)
 	phase2Start := time.Now()
@@ -2255,9 +2292,10 @@ func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHas
 	w.mu.RLock()
 	stopped := w.state == WorkerStopped
 	current := w.snapshot
+	currentGeneration := w.generation
 	w.mu.RUnlock()
 
-	if stopped || current == nil || current.Analysis != stats || current.DataHash != dataHash {
+	if stopped || current != snapshot || currentGeneration != workerGeneration {
 		w.logEvent(LogLevelDebug, "phase2_skip", map[string]any{
 			"hash": hashPrefix(dataHash),
 		})
@@ -2269,7 +2307,13 @@ func (w *BackgroundWorker) runPhase2Analysis(stats *analysis.GraphStats, dataHas
 	})
 
 	// Notify UI that Phase 2 metrics are ready
-	w.send(Phase2UpdateMsg{DataHash: dataHash})
+	w.send(Phase2UpdateMsg{
+		DataHash:         dataHash,
+		Stats:            stats,
+		Snapshot:         snapshot,
+		SnapshotVer:      snapshotVer,
+		WorkerGeneration: workerGeneration,
+	})
 }
 
 // SnapshotReadyMsg is sent to the UI when a new snapshot is ready.
@@ -2278,6 +2322,7 @@ type SnapshotReadyMsg struct {
 	FileChangeAt          time.Time
 	SentAt                time.Time
 	SnapshotVer           uint64
+	WorkerGeneration      uint64
 	QueueDepth            int64
 	CoalesceCount         int64
 	Catalog               repositorypkg.Catalog
@@ -2297,9 +2342,10 @@ type WorkerProcessingMsg struct {
 
 // SnapshotErrorMsg is sent to the UI when snapshot building fails.
 type SnapshotErrorMsg struct {
-	Err          error
-	Recoverable  bool // True if we expect to recover on next file change
-	StartFailure bool
+	Err              error
+	Recoverable      bool // True if we expect to recover on next file change
+	StartFailure     bool
+	WorkerGeneration uint64
 }
 
 // HubSourceRefreshCompleteMsg reports a successful Hub source refresh whose
@@ -2332,7 +2378,19 @@ type RepositoryCatalogErrorMsg struct {
 // This allows the UI to update without waiting for full rebuild.
 // The UI should check DataHash matches current snapshot before using.
 type Phase2UpdateMsg struct {
-	DataHash string // Content hash to verify this matches current snapshot
+	DataHash         string // Content hash to verify this matches current snapshot
+	Stats            *analysis.GraphStats
+	Snapshot         *DataSnapshot
+	SnapshotVer      uint64
+	WorkerGeneration uint64
+}
+
+// RefreshRequestMsg asks the BackgroundWorker to reload data. Force bypasses
+// content-hash deduplication; Recipe applies new background view configuration.
+// A nil Recipe keeps the worker's current recipe.
+type RefreshRequestMsg struct {
+	Force  bool
+	Recipe *recipe.Recipe
 }
 
 func (w *BackgroundWorker) send(msg tea.Msg) {
@@ -2341,142 +2399,241 @@ func (w *BackgroundWorker) send(msg tea.Msg) {
 	}
 	w.sendMu.Lock()
 	defer w.sendMu.Unlock()
+
+	// Reject invalidated work before it consumes queue capacity. The UI repeats
+	// this fence because recovery can advance the generation immediately after
+	// this check.
+	if !w.workerMessageIsCurrent(msg) {
+		w.releaseDroppedMessage(msg)
+		return
+	}
+
 	select {
-	case w.msgCh <- msg:
-		return
 	case <-w.ctx.Done():
+		w.releaseDroppedMessage(msg)
 		return
 	default:
 	}
 
-	pending := make([]tea.Msg, 0, cap(w.msgCh)+1)
-	draining := true
-	for draining {
-		select {
-		case queued := <-w.msgCh:
-			pending = append(pending, queued)
-		default:
-			draining = false
-		}
-	}
-	pending = append(pending, msg)
-	for len(pending) > cap(w.msgCh) {
-		drop := w.mergeCatalogReadyIntoSnapshot(pending)
-		if drop < 0 {
-			drop = 0
-			for i := 1; i < len(pending); i++ {
-				if w.workerMessagePriority(pending[i]) < w.workerMessagePriority(pending[drop]) {
-					drop = i
-				}
-			}
-		}
-		w.releaseDroppedWorkerMessage(pending[drop])
-		pending = append(pending[:drop], pending[drop+1:]...)
-	}
-	for _, queued := range pending {
-		select {
-		case w.msgCh <- queued:
-		case <-w.ctx.Done():
-			return
-		}
-	}
-}
-
-func (w *BackgroundWorker) mergeCatalogReadyIntoSnapshot(messages []tea.Msg) int {
-	w.mu.RLock()
-	current := w.snapshot
-	w.mu.RUnlock()
-	for i, message := range messages {
-		catalog, ok := message.(RepositoryCatalogReadyMsg)
-		if !ok {
-			continue
-		}
-		best := -1
-		for j, candidate := range messages {
-			snapshot, ok := candidate.(SnapshotReadyMsg)
-			if ok {
-				if best < 0 {
-					best = j
-					continue
-				}
-				bestSnapshot := messages[best].(SnapshotReadyMsg)
-				if snapshot.Snapshot == current || (bestSnapshot.Snapshot != current && snapshot.SnapshotVer > bestSnapshot.SnapshotVer) {
-					best = j
-				}
-			}
-		}
-		if best >= 0 {
-			snapshot := messages[best].(SnapshotReadyMsg)
-			switch {
-			case catalog.Generation > snapshot.CatalogGeneration:
-				snapshot.Catalog = catalog.Catalog
-				snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
-				snapshot.ContextlessCountReady = catalog.ContextlessCountReady
-				snapshot.CatalogGeneration = catalog.Generation
-				snapshot.CatalogAvailable = true
-				snapshot.CatalogChanged = true
-				snapshot.CatalogRecovered = catalog.Recovered
-				snapshot.CatalogError = nil
-			case catalog.Generation == snapshot.CatalogGeneration && !snapshot.CatalogAvailable:
-				snapshot.Catalog = catalog.Catalog
-				snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
-				snapshot.ContextlessCountReady = catalog.ContextlessCountReady
-				snapshot.CatalogAvailable = true
-				snapshot.CatalogChanged = true
-				snapshot.CatalogRecovered = catalog.Recovered
-				snapshot.CatalogError = nil
-			case catalog.Generation == snapshot.CatalogGeneration:
-				// Equal generations describe the same catalog state. Keep the
-				// snapshot payload while preserving standalone delivery/recovery.
-				snapshot.CatalogChanged = true
-				if catalog.ContextlessCountReady {
-					snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
-					snapshot.ContextlessCountReady = true
-				}
-				snapshot.CatalogRecovered = snapshot.CatalogRecovered || catalog.Recovered
-				snapshot.CatalogError = nil
-			}
-			messages[best] = snapshot
-			return i
-		}
-	}
-	return -1
-}
-
-func (w *BackgroundWorker) workerMessagePriority(msg tea.Msg) int {
-	switch message := msg.(type) {
+	queued := drainWorkerMailbox(w.msgCh)
+	switch typed := msg.(type) {
 	case SnapshotReadyMsg:
-		w.mu.RLock()
-		current := w.snapshot
-		w.mu.RUnlock()
-		if message.Snapshot != nil && message.Snapshot == current {
-			return 4
-		}
-		return 3
-	case SnapshotErrorMsg, HubSourceRefreshCompleteMsg, MetadataChangedMsg, RepositoryCatalogReadyMsg, RepositoryCatalogErrorMsg:
-		return 3
-	case WorkerProcessingMsg:
-		return 2
+		queued = replaceWorkerSnapshot(queued, typed, w)
 	default:
-		return 1
+		queued = append(queued, msg)
+	}
+
+	// Catalog messages are delivery state, not independent work. Once a
+	// snapshot is retained, fold the newest catalog state into it so the bounded
+	// mailbox can retain the snapshot and the latest source error together.
+	queued = mergeWorkerCatalogState(queued)
+	for len(queued) > cap(w.msgCh) {
+		idx := workerMessageDropIndex(queued)
+		w.releaseDroppedMessage(queued[idx])
+		queued = append(queued[:idx], queued[idx+1:]...)
+	}
+
+	for _, queuedMsg := range queued {
+		select {
+		case w.msgCh <- queuedMsg:
+		case <-w.ctx.Done():
+			w.releaseDroppedMessage(queuedMsg)
+		}
 	}
 }
 
-func (w *BackgroundWorker) releaseDroppedWorkerMessage(msg tea.Msg) {
+func drainWorkerMailbox(ch chan tea.Msg) []tea.Msg {
+	messages := make([]tea.Msg, 0, len(ch))
+	for {
+		select {
+		case msg := <-ch:
+			messages = append(messages, msg)
+		default:
+			return messages
+		}
+	}
+}
+
+func replaceWorkerSnapshot(messages []tea.Msg, incoming SnapshotReadyMsg, w *BackgroundWorker) []tea.Msg {
+	latest := -1
+	for i, msg := range messages {
+		if _, ok := msg.(SnapshotReadyMsg); ok {
+			latest = i
+		}
+	}
+	if latest < 0 {
+		return append(messages, incoming)
+	}
+
+	queued := messages[latest].(SnapshotReadyMsg)
+	if queued.SnapshotVer > 0 && incoming.SnapshotVer > 0 && queued.SnapshotVer > incoming.SnapshotVer {
+		w.releaseDroppedMessage(incoming)
+		return messages
+	}
+	// Preserve delivery state from the snapshot being replaced. Issue snapshot
+	// versions and catalog generations advance independently, so the newer issue
+	// snapshot may carry an older catalog payload.
+	if queued.CatalogGeneration > incoming.CatalogGeneration {
+		incoming.Catalog = queued.Catalog
+		incoming.ContextlessBeadCount = queued.ContextlessBeadCount
+		incoming.ContextlessCountReady = queued.ContextlessCountReady
+		incoming.CatalogGeneration = queued.CatalogGeneration
+		incoming.CatalogAvailable = queued.CatalogAvailable
+		incoming.CatalogChanged = queued.CatalogChanged
+		incoming.CatalogRecovered = queued.CatalogRecovered
+		incoming.CatalogError = queued.CatalogError
+	} else if queued.CatalogGeneration == incoming.CatalogGeneration {
+		if queued.CatalogAvailable && !incoming.CatalogAvailable {
+			incoming.Catalog = queued.Catalog
+			incoming.ContextlessBeadCount = queued.ContextlessBeadCount
+			incoming.ContextlessCountReady = queued.ContextlessCountReady
+			incoming.CatalogAvailable = true
+			incoming.CatalogError = nil
+		}
+		incoming.CatalogChanged = incoming.CatalogChanged || queued.CatalogChanged
+		incoming.CatalogRecovered = incoming.CatalogRecovered || queued.CatalogRecovered
+	}
+	w.releaseDroppedMessage(queued)
+	messages[latest] = incoming
+	return messages
+}
+
+func mergeWorkerCatalogState(messages []tea.Msg) []tea.Msg {
+	latestSnapshot := -1
+	for i, msg := range messages {
+		if _, ok := msg.(SnapshotReadyMsg); ok {
+			latestSnapshot = i
+		}
+	}
+	if latestSnapshot < 0 {
+		return messages
+	}
+
+	snapshot := messages[latestSnapshot].(SnapshotReadyMsg)
+	retained := make([]tea.Msg, 0, len(messages))
+	retainedSnapshot := -1
+	for i, msg := range messages {
+		switch catalog := msg.(type) {
+		case RepositoryCatalogReadyMsg:
+			snapshot = mergeCatalogReady(snapshot, catalog)
+		case RepositoryCatalogErrorMsg:
+			snapshot = mergeCatalogError(snapshot, catalog)
+		default:
+			if i == latestSnapshot {
+				retainedSnapshot = len(retained)
+				retained = append(retained, nil)
+			} else {
+				retained = append(retained, msg)
+			}
+		}
+	}
+	retained[retainedSnapshot] = snapshot
+	return retained
+}
+
+func mergeCatalogReady(snapshot SnapshotReadyMsg, catalog RepositoryCatalogReadyMsg) SnapshotReadyMsg {
+	if catalog.Generation < snapshot.CatalogGeneration {
+		return snapshot
+	}
+	newer := catalog.Generation > snapshot.CatalogGeneration
+	if newer || !snapshot.CatalogAvailable {
+		snapshot.Catalog = catalog.Catalog
+		snapshot.CatalogGeneration = catalog.Generation
+	}
+	if newer || !snapshot.CatalogAvailable {
+		snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
+		snapshot.ContextlessCountReady = catalog.ContextlessCountReady
+	}
+	snapshot.CatalogAvailable = true
+	snapshot.CatalogChanged = true
+	snapshot.CatalogRecovered = snapshot.CatalogRecovered || catalog.Recovered
+	snapshot.CatalogError = nil
+	return snapshot
+}
+
+func mergeCatalogError(snapshot SnapshotReadyMsg, catalog RepositoryCatalogErrorMsg) SnapshotReadyMsg {
+	if catalog.Generation < snapshot.CatalogGeneration ||
+		(catalog.Generation == snapshot.CatalogGeneration && snapshot.CatalogAvailable) {
+		return snapshot
+	}
+	snapshot.CatalogGeneration = catalog.Generation
+	snapshot.CatalogAvailable = false
+	snapshot.CatalogError = catalog.Err
+	if catalog.ContextlessCountReady {
+		snapshot.ContextlessBeadCount = catalog.ContextlessBeadCount
+		snapshot.ContextlessCountReady = true
+	}
+	return snapshot
+}
+
+func workerMessageDropIndex(messages []tea.Msg) int {
+	idx := 0
+	priority := workerMessagePriority(messages[0])
+	for i := 1; i < len(messages); i++ {
+		candidate := workerMessagePriority(messages[i])
+		if candidate < priority {
+			idx = i
+			priority = candidate
+		}
+	}
+	return idx
+}
+
+func workerMessagePriority(msg tea.Msg) int {
+	switch typed := msg.(type) {
+	case SnapshotReadyMsg:
+		return 2
+	case SnapshotErrorMsg:
+		// A recoverable error may be superseded by the last usable snapshot. A
+		// terminal error must win, because it is the UI's signal to detach the
+		// stopped worker and fall back to synchronous refreshes.
+		if !typed.Recoverable {
+			return 3
+		}
+		return 1
+	case Phase2UpdateMsg:
+		return 0
+	default:
+		// Ordinary notifications are disposable when the mailbox also holds the
+		// current snapshot and a recoverable source error.
+		return 0
+	}
+}
+
+func workerMessageGeneration(msg tea.Msg) (uint64, bool) {
+	switch typed := msg.(type) {
+	case SnapshotReadyMsg:
+		return typed.WorkerGeneration, true
+	case SnapshotErrorMsg:
+		return typed.WorkerGeneration, true
+	case Phase2UpdateMsg:
+		return typed.WorkerGeneration, true
+	default:
+		return 0, false
+	}
+}
+
+func (w *BackgroundWorker) workerMessageIsCurrent(msg tea.Msg) bool {
+	generation, tagged := workerMessageGeneration(msg)
+	// Generation zero denotes a manually constructed or non-worker message and
+	// preserves direct Model.Update/test compatibility.
+	return !tagged || generation == 0 || generation == w.Generation()
+}
+
+func (w *BackgroundWorker) releaseDroppedMessage(msg tea.Msg) {
 	ready, ok := msg.(SnapshotReadyMsg)
 	if !ok || ready.Snapshot == nil {
 		return
 	}
-	w.mu.Lock()
+	w.mu.RLock()
 	current := w.snapshot
-	if ready.Snapshot == current {
-		w.mu.Unlock()
-		return
+	w.mu.RUnlock()
+	// The worker retains its current snapshot until replacement/Stop. Older
+	// dropped messages have no remaining owner unless the UI already installed
+	// them, whose release path shares the same one-shot lease.
+	if ready.Snapshot != current {
+		ready.Snapshot.releasePooledIssues()
 	}
-	pooled := ready.Snapshot.pooledIssues
-	ready.Snapshot.pooledIssues = nil
-	w.mu.Unlock()
-	loader.ReturnIssuePtrsToPool(pooled)
 }
 
 // WatcherChanged returns the watcher's change notification channel.

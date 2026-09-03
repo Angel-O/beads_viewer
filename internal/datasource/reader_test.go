@@ -1,9 +1,12 @@
 package datasource
 
 import (
+	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +288,50 @@ func TestSQLiteReader_EscapesURIControlCharsInPath(t *testing.T) {
 	}
 }
 
+func TestSQLiteReader_ConfiguresEveryPooledConnection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pool.db")
+	createContractTestSQLiteDB(t, dbPath)
+
+	r, err := NewSQLiteReader(DataSource{Type: SourceTypeSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteReader: %v", err)
+	}
+	defer r.Close()
+
+	r.db.SetMaxOpenConns(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	first, err := r.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire first pooled connection: %v", err)
+	}
+	defer first.Close()
+	second, err := r.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire second pooled connection: %v", err)
+	}
+	defer second.Close()
+
+	for i, conn := range []*sql.Conn{first, second} {
+		var busyTimeout int
+		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+			t.Fatalf("connection %d busy_timeout: %v", i+1, err)
+		}
+		if busyTimeout != 5000 {
+			t.Errorf("connection %d busy_timeout = %d, want 5000", i+1, busyTimeout)
+		}
+
+		var queryOnly int
+		if err := conn.QueryRowContext(ctx, "PRAGMA query_only").Scan(&queryOnly); err != nil {
+			t.Fatalf("connection %d query_only: %v", i+1, err)
+		}
+		if queryOnly != 1 {
+			t.Errorf("connection %d query_only = %d, want 1", i+1, queryOnly)
+		}
+	}
+}
+
 func TestSQLiteReader_FallbackSchemaLoadsGraphMetadata(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "export.db")
@@ -457,5 +504,108 @@ func createContractTestJSONL(t *testing.T, path string) {
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// bv #198: url.URL{Scheme:"file", Path:p}.String() emits "file://" + p, so a
+// Windows drive path or a relative path put its first segment in the URI
+// authority slot and SQLite refused it with "invalid uri authority".
+func TestSQLiteURIPath(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	cases := []struct {
+		name    string
+		path    string
+		windows bool
+		want    string
+	}{
+		{
+			name:    "windows drive path",
+			path:    `E:\Shared\Workspaces\personal\wp-block-x\.beads\beads.db`,
+			windows: true,
+			want:    "/E:/Shared/Workspaces/personal/wp-block-x/.beads/beads.db",
+		},
+		{
+			name:    "windows drive path with forward slashes",
+			path:    "c:/repo/.beads/beads.db",
+			windows: true,
+			want:    "/c:/repo/.beads/beads.db",
+		},
+		{
+			name:    "windows UNC path",
+			path:    `\\server\share\repo\.beads\beads.db`,
+			windows: true,
+			want:    "//server/share/repo/.beads/beads.db",
+		},
+		{
+			name:    "posix absolute path unchanged",
+			path:    "/home/u/repo/.beads/beads.db",
+			windows: false,
+			want:    "/home/u/repo/.beads/beads.db",
+		},
+		{
+			name:    "posix path with URI control characters unchanged (escaped later by net/url)",
+			path:    "/home/u/odd?dir#x/beads.db",
+			windows: false,
+			want:    "/home/u/odd?dir#x/beads.db",
+		},
+		{
+			name:    "relative path is made absolute",
+			path:    filepath.Join(".beads", "beads.db"),
+			windows: false,
+			want:    filepath.Join(cwd, ".beads", "beads.db"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sqliteURIPath(tc.path, tc.windows); got != tc.want {
+				t.Fatalf("sqliteURIPath(%q, windows=%v) = %q, want %q", tc.path, tc.windows, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSQLiteFileDSN_WindowsDrivePathHasEmptyAuthority(t *testing.T) {
+	u := url.URL{
+		Scheme:   "file",
+		Path:     sqliteURIPath(`E:\Shared\Workspaces\personal\wp-block-x\.beads\beads.db`, true),
+		RawQuery: "mode=ro",
+	}
+	got := u.String()
+	want := "file:///E:/Shared/Workspaces/personal/wp-block-x/.beads/beads.db?mode=ro"
+	if got != want {
+		t.Fatalf("DSN = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "%5C") {
+		t.Fatalf("DSN still carries escaped backslashes: %q", got)
+	}
+}
+
+func TestSQLiteFileDSN_RelativePathIsRooted(t *testing.T) {
+	got := sqliteFileDSN(filepath.Join(".beads", "beads.db"), "mode=ro")
+	if !strings.HasPrefix(got, "file:///") {
+		t.Fatalf("relative path DSN must have an empty authority, got %q", got)
+	}
+}
+
+func TestSQLiteReader_OpensRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	createContractTestSQLiteDB(t, filepath.Join(dir, "beads.db"))
+	t.Chdir(dir)
+
+	r, err := NewSQLiteReader(DataSource{Type: SourceTypeSQLite, Path: "beads.db"})
+	if err != nil {
+		t.Fatalf("NewSQLiteReader(relative path): %v", err)
+	}
+	defer r.Close()
+
+	issue, err := r.GetIssueByID("CTR-1")
+	if err != nil {
+		t.Fatalf("GetIssueByID: %v", err)
+	}
+	if issue.ID != "CTR-1" {
+		t.Fatalf("opened wrong SQLite database: got issue %q", issue.ID)
 	}
 }

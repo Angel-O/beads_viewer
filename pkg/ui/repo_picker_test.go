@@ -221,7 +221,7 @@ func TestRepoPickerOpeningClearsStaleStatusForGuidance(t *testing.T) {
 	m.statusIsError = true
 
 	updated, _ := m.Update(keyMsg("w"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showRepoPicker || m.statusMsg != "" || m.statusIsError {
 		t.Fatalf("opening Repository Scope retained stale status: shown=%v status=%q error=%v", m.showRepoPicker, m.statusMsg, m.statusIsError)
 	}
@@ -244,7 +244,7 @@ func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showRepoPicker {
 		t.Fatal("repository picker did not open")
 	}
@@ -262,7 +262,7 @@ func TestHubRepositoryPickerRefreshesContextlessBeadCountWithSnapshot(t *testing
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (0)") {
 		t.Fatalf("initial contextless picker row = %q", picker)
 	}
@@ -275,7 +275,7 @@ func TestHubRepositoryPickerRefreshesContextlessBeadCountWithSnapshot(t *testing
 		CatalogGeneration: 1,
 		CatalogAvailable:  true,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (1)") {
 		t.Fatalf("refreshed contextless picker row = %q", picker)
 	}
@@ -290,7 +290,7 @@ func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	completeIssues := []model.Issue{
 		{ID: "open", Labels: []string{}},
@@ -307,7 +307,7 @@ func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
 		CatalogGeneration:     1,
 		CatalogAvailable:      true,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (2)") {
 		t.Fatalf("open-only picker row omitted closed contextless bead:\n%s", picker)
 	}
@@ -322,7 +322,7 @@ func TestHubRepositoryPickerCatalogFailurePreservesFreshContextlessCount(t *test
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "open"}}).Build()
 	snapshot.LoadedOpenOnly = true
 	updated, _ = m.Update(SnapshotReadyMsg{
@@ -333,7 +333,7 @@ func TestHubRepositoryPickerCatalogFailurePreservesFreshContextlessCount(t *test
 		CatalogGeneration:     1,
 		CatalogError:          errors.New("catalog unavailable"),
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (2)") {
 		t.Fatalf("catalog failure lost fresh contextless count:\n%s", picker)
 	}
@@ -347,7 +347,7 @@ func TestHubRepositoryPickerCatalogFailurePreservesFreshContextlessCount(t *test
 		Generation:            2,
 		Recovered:             true,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (0)") {
 		t.Fatalf("catalog recovery did not propagate valid zero:\n%s", picker)
 	}
@@ -365,13 +365,13 @@ func TestHubRepositoryPickerIgnoresStaleSnapshotContextlessCount(t *testing.T) {
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{
 		Catalog:               repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
 		ContextlessCountReady: true,
 		Generation:            2,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	staleSnapshot := NewSnapshotBuilder([]model.Issue{{ID: "old"}}).Build()
 	staleSnapshot.LoadedOpenOnly = true
@@ -383,7 +383,7 @@ func TestHubRepositoryPickerIgnoresStaleSnapshotContextlessCount(t *testing.T) {
 		CatalogGeneration:     1,
 		CatalogAvailable:      true,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if picker := m.repoPicker.View(); !strings.Contains(picker, "no-context (0)") {
 		t.Fatalf("stale snapshot overwrote newer zero contextless count:\n%s", picker)
 	}
@@ -670,7 +670,7 @@ func TestLocalModeRepositoryPickerMessageRecommendsHub(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.ready = true
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showRepoPicker || !strings.Contains(m.statusMsg, "wbv --hub") {
 		t.Fatalf("local w behavior: shown=%v message=%q", m.showRepoPicker, m.statusMsg)
 	}
@@ -691,7 +691,7 @@ func TestWorkspaceRepositoryPickerUsesCatalogAndAppliesPrefixScope(t *testing.T)
 	})
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showRepoPicker || m.repoPicker.FilteredCount() != 2 {
 		t.Fatalf("workspace picker state: shown=%v entries=%d", m.showRepoPicker, m.repoPicker.FilteredCount())
 	}
@@ -719,10 +719,10 @@ func TestWorkspaceRepositoryPickerWCancelPreservesAppliedScopeAndSearchInput(t *
 	m.SetRepositoryScope(map[string]bool{"api": true})
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.repoPicker.SelectAll()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showRepoPicker || m.focused != focusList {
 		t.Fatalf("second w did not cancel picker: shown=%v focus=%v", m.showRepoPicker, m.focused)
 	}
@@ -731,11 +731,11 @@ func TestWorkspaceRepositoryPickerWCancelPreservesAppliedScopeAndSearchInput(t *
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showRepoPicker || !m.repoPicker.IsSearching() || m.repoPicker.SearchValue() != "w" {
 		t.Fatalf("search did not own printable w: shown=%v searching=%v query=%q", m.showRepoPicker, m.repoPicker.IsSearching(), m.repoPicker.SearchValue())
 	}
@@ -753,14 +753,14 @@ func TestWorkspaceRepositoryPickerWCancelRestoresInsights(t *testing.T) {
 	m.insightsPanel.selectedIndex[PanelKeystones] = 1
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showRepoPicker || m.repoPickerOrigin != focusInsights {
 		t.Fatalf("workspace picker did not open from Insights: shown=%v origin=%v", m.showRepoPicker, m.repoPickerOrigin)
 	}
 	m.repoPicker.ClearSelection()
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showRepoPicker || m.focused != focusInsights {
 		t.Fatalf("w cancel did not restore Insights: shown=%v focus=%v", m.showRepoPicker, m.focused)
 	}

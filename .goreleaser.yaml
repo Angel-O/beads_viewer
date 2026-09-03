@@ -25,8 +25,12 @@ archives:
       - goos: windows
         formats:
           - zip
+    # Versioned names (#195): bv_<version>_<os>_<arch>.<ext>, so `gh release
+    # download` users can tell releases apart by file name. The updater and
+    # install.sh accept both this and the previous unversioned form.
     name_template: >-
       {{ .ProjectName }}_
+      {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
 
@@ -54,7 +58,9 @@ brews:
     directory: Formula
     homepage: https://github.com/Dicklesworthstone/beads_viewer
     description: "Graph-aware task management TUI for beads projects"
-    license: "MIT"
+    custom_block: |
+      license :cannot_represent
+    skip_upload: true
     install: |
       bin.install "bv"
     test: |
@@ -78,4 +84,5 @@ scoops:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/Dicklesworthstone/beads_viewer
     description: "Graph-aware task management TUI for beads projects"
-    license: MIT
+    license: https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/LICENSE
+    skip_upload: true

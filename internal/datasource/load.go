@@ -19,15 +19,16 @@ const maxLoadReportWarnings = 10
 // JSONL load, so callers (robot payload emitters in particular) can surface
 // records that were dropped during load instead of silently reporting them as
 // nonexistent (#190). Errors counts issue-shaped lines that were malformed JSON
-// or failed model validation (e.g. updated_at < created_at); each such skip
-// also contributes a human-readable reason to Warnings (capped).
+// or failed model validation (e.g. updated_at < created_at), plus later records
+// that repeat an earlier issue ID; each such skip also contributes a
+// human-readable reason to Warnings (capped).
 type LoadReport struct {
 	// Path is the JSONL file the report describes.
 	Path string
-	// Valid is the number of issue lines that parsed and validated.
+	// Valid is the number of unique issue lines that parsed and validated.
 	Valid int
 	// Errors is the number of issue-shaped lines dropped as malformed JSON or
-	// failed model validation.
+	// failed model validation, or rejected because the issue ID was duplicated.
 	Errors int
 	// Skipped is the number of recognized non-issue `_type` records.
 	Skipped int
@@ -61,6 +62,30 @@ func recordLoadReport(rep LoadReport) {
 	lastLoadReport = &rep
 }
 
+var (
+	lastSourceMu sync.Mutex
+	lastSource   *DataSource
+)
+
+// LastSource returns the source (JSONL or SQLite) the most recent successful
+// load in this process read from, so robot payloads can name the file that
+// actually backed them. ok is false when no load has completed.
+func LastSource() (DataSource, bool) {
+	lastSourceMu.Lock()
+	defer lastSourceMu.Unlock()
+	if lastSource == nil {
+		return DataSource{}, false
+	}
+	return *lastSource, true
+}
+
+func recordLastSource(src DataSource) {
+	lastSourceMu.Lock()
+	defer lastSourceMu.Unlock()
+	cp := src
+	lastSource = &cp
+}
+
 // loadRecorder wires a single JSONL parse to a LoadReport: it collects
 // ParseStats plus the loader's per-line skip warnings, mirroring the default
 // warning behavior (stderr in interactive mode, quiet under BV_ROBOT=1 so
@@ -69,7 +94,8 @@ func recordLoadReport(rep LoadReport) {
 type loadRecorder struct {
 	path     string
 	stats    loader.ParseStats
-	warnings []string
+	warnings []string // capped copy kept for the LoadReport
+	pending  []string // every warning, replayed to stderr only if this candidate is selected
 	robot    bool
 }
 
@@ -77,24 +103,35 @@ func newLoadRecorder(path string) *loadRecorder {
 	return &loadRecorder{path: path, robot: os.Getenv("BV_ROBOT") == "1"}
 }
 
+// options wires the parse to this recorder. Warnings are buffered rather than
+// printed: the smart loader probes candidates freshest-first and discards the
+// ones that fail the gate, and a discarded candidate's warnings must never
+// reach the user (they used to print "skipping invalid issue on line 1" for a
+// file that was then rejected). commit replays them for the selected source.
 func (r *loadRecorder) options() loader.ParseOptions {
 	return loader.ParseOptions{
-		Stats: &r.stats,
+		Stats:      &r.stats,
+		BufferSize: loader.MaxLineSizeFromEnv(),
 		WarningHandler: func(msg string) {
 			if len(r.warnings) < maxLoadReportWarnings {
 				r.warnings = append(r.warnings, msg)
 			}
 			if !r.robot {
-				fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+				r.pending = append(r.pending, msg)
 			}
 		},
 	}
 }
 
-// commit records the parse accounting as the process-wide last load report.
-// Call only after the load succeeded — failed candidates in the smart-load
-// fallthrough must not pollute the report for the source actually used.
+// commit records the parse accounting as the process-wide last load report and
+// replays the buffered warnings to stderr in interactive mode. Call only after
+// the load succeeded — failed candidates in the smart-load fallthrough must not
+// pollute the report (or stderr) for the source actually used.
 func (r *loadRecorder) commit() {
+	for _, msg := range r.pending {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
+	}
+	r.pending = nil
 	recordLoadReport(LoadReport{
 		Path:     r.path,
 		Valid:    r.stats.Valid,
@@ -116,7 +153,12 @@ func LoadIssues(repoPath string) ([]model.Issue, error) {
 	if source, ok, err := ExplicitBeadsDBSource(); err != nil {
 		return nil, err
 	} else if ok {
-		return LoadFromSource(source)
+		issues, err := LoadFromSource(source)
+		if err != nil {
+			return nil, err
+		}
+		recordLastSource(source)
+		return issues, nil
 	}
 
 	beadsDir, err := loader.GetBeadsDir(repoPath)
@@ -164,6 +206,7 @@ func loadLegacyJSONL(beadsDir string) ([]model.Issue, error) {
 		return nil, err
 	}
 	rec.commit()
+	recordLastSource(DataSource{Type: SourceTypeJSONLLocal, Path: jsonlPath, Priority: PriorityJSONLLocal})
 	return issues, nil
 }
 
@@ -199,11 +242,17 @@ func loadBDWorkspace(beadsDir string) ([]model.Issue, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bd/Dolt workspace detected at %s: %w", beadsDir, err)
 	}
-	return loadAndValidateJSONL(DataSource{
+	src := DataSource{
 		Type:     SourceTypeJSONLLocal,
 		Path:     jsonlPath,
 		Priority: PriorityJSONLLocal,
-	})
+	}
+	issues, err := loadAndValidateJSONL(src)
+	if err != nil {
+		return nil, err
+	}
+	recordLastSource(src)
+	return issues, nil
 }
 
 // ExplicitBeadsDBSource returns the direct source named by BEADS_DB when it
@@ -322,17 +371,26 @@ func loadSmartWithOptions(beadsDir, repoPath string, skipWorktrees bool) ([]mode
 // parse IS the validation pass: a single read materializes issues and yields the
 // parse stats used to apply the malformed-error-rate gate.
 func loadAndValidate(source DataSource) ([]model.Issue, error) {
+	var (
+		issues []model.Issue
+		err    error
+	)
 	switch source.Type {
 	case SourceTypeSQLite:
 		if err := ValidateSource(&source); err != nil {
 			return nil, err
 		}
-		return LoadFromSource(source)
+		issues, err = LoadFromSource(source)
 	case SourceTypeJSONLLocal, SourceTypeJSONLWorktree:
-		return loadAndValidateJSONL(source)
+		issues, err = loadAndValidateJSONL(source)
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", source.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+	recordLastSource(source)
+	return issues, nil
 }
 
 // loadAndValidateJSONL performs the fused validate-and-materialize pass for a

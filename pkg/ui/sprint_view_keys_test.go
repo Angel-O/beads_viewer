@@ -11,7 +11,7 @@ import (
 )
 
 func TestHandleSprintKeys_Exit(t *testing.T) {
-	m := Model{
+	m := &Model{
 		isSprintView: true,
 		focused:      focusDetail,
 		theme:        DefaultTheme(lipgloss.NewRenderer(nil)),
@@ -36,7 +36,7 @@ func TestSprintExitKeysClearStateAndRenderList(t *testing.T) {
 			m.sprintViewText = "Sprint dashboard"
 
 			updated, cmd := m.Update(keyMsg(key))
-			result := updated.(Model)
+			result := updated.(*Model)
 			if cmd != nil {
 				t.Fatalf("%q returned quit/other command: %v", key, cmd)
 			}
@@ -57,7 +57,7 @@ func TestHandleSprintKeys_NextPrevSprint(t *testing.T) {
 		{ID: "s2", Name: "Sprint 2", StartDate: now.AddDate(0, 0, -1), EndDate: now.AddDate(0, 0, 7), BeadIDs: []string{"A"}},
 	}
 
-	m := Model{
+	m := &Model{
 		isSprintView:   true,
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
@@ -169,7 +169,7 @@ func TestTruncateStrSprint(t *testing.T) {
 // =============================================================================
 
 func TestRenderSprintDashboard_NoSprintSelected(t *testing.T) {
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         40,
@@ -192,7 +192,7 @@ func TestRenderSprintDashboard_BasicSprint(t *testing.T) {
 		BeadIDs:   []string{"A", "B"},
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         40,
@@ -231,7 +231,7 @@ func TestRenderSprintDashboard_AllStatusTypes(t *testing.T) {
 		BeadIDs:   []string{"A", "B", "C", "D"},
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         50,
@@ -267,7 +267,7 @@ func TestRenderSprintDashboard_AtRiskItems(t *testing.T) {
 		BeadIDs:   []string{"A", "B"},
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         50,
@@ -301,7 +301,7 @@ func TestRenderSprintDashboard_NoAtRiskItems(t *testing.T) {
 		BeadIDs:   []string{"A"},
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         50,
@@ -329,7 +329,7 @@ func TestRenderSprintDashboard_NarrowWidth(t *testing.T) {
 		BeadIDs:   []string{"A"},
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          30, // Very narrow
 		height:         40,
@@ -356,7 +356,7 @@ func TestRenderSprintDashboard_ZeroDaysRemaining(t *testing.T) {
 		BeadIDs:   []string{"A"},
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         40,
@@ -397,7 +397,7 @@ func TestRenderSprintDashboard_ManyBeads(t *testing.T) {
 		BeadIDs:   beadIDs,
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         50,
@@ -422,7 +422,7 @@ func TestRenderSprintDashboard_InsufficientData(t *testing.T) {
 		// No start/end dates
 	}
 
-	m := Model{
+	m := &Model{
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
 		height:         40,
@@ -440,7 +440,7 @@ func TestRenderSprintDashboard_InsufficientData(t *testing.T) {
 }
 
 func TestHandleSprintKeys_EscExit(t *testing.T) {
-	m := Model{
+	m := &Model{
 		isSprintView: true,
 		focused:      focusDetail,
 		theme:        DefaultTheme(lipgloss.NewRenderer(nil)),
@@ -464,7 +464,7 @@ func TestHandleSprintKeys_DownArrow(t *testing.T) {
 		{ID: "s2", Name: "Sprint 2", StartDate: now.AddDate(0, 0, -1), EndDate: now.AddDate(0, 0, 7), BeadIDs: []string{"A"}},
 	}
 
-	m := Model{
+	m := &Model{
 		isSprintView:   true,
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
@@ -487,7 +487,7 @@ func TestHandleSprintKeys_UpArrow(t *testing.T) {
 		{ID: "s2", Name: "Sprint 2", StartDate: now.AddDate(0, 0, -1), EndDate: now.AddDate(0, 0, 7), BeadIDs: []string{"A"}},
 	}
 
-	m := Model{
+	m := &Model{
 		isSprintView:   true,
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
@@ -509,7 +509,7 @@ func TestHandleSprintKeys_BoundaryAtFirst(t *testing.T) {
 		{ID: "s1", Name: "Sprint 1", StartDate: now.AddDate(0, 0, -7), EndDate: now.AddDate(0, 0, -1), BeadIDs: []string{"A"}},
 	}
 
-	m := Model{
+	m := &Model{
 		isSprintView:   true,
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
@@ -532,7 +532,7 @@ func TestHandleSprintKeys_BoundaryAtLast(t *testing.T) {
 		{ID: "s1", Name: "Sprint 1", StartDate: now.AddDate(0, 0, -7), EndDate: now.AddDate(0, 0, -1), BeadIDs: []string{"A"}},
 	}
 
-	m := Model{
+	m := &Model{
 		isSprintView:   true,
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
@@ -555,7 +555,7 @@ func TestHandleSprintKeys_NilSelectedSprint(t *testing.T) {
 		{ID: "s1", Name: "Sprint 1", StartDate: now.AddDate(0, 0, -7), EndDate: now.AddDate(0, 0, -1), BeadIDs: []string{"A"}},
 	}
 
-	m := Model{
+	m := &Model{
 		isSprintView:   true,
 		theme:          DefaultTheme(lipgloss.NewRenderer(nil)),
 		width:          100,
@@ -580,3 +580,78 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// asModelPtr unwraps the tea.Model returned by Update so tests can inspect
+// internal state.
+func asModelPtr(t *testing.T, tm tea.Model) *Model {
+	t.Helper()
+	m, ok := tm.(*Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want *Model", tm)
+	}
+	return m
+}
+
+func TestModel_PKeyOpensActiveSprintAndEscCloses(t *testing.T) {
+	now := time.Now().UTC()
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, UpdatedAt: now}}
+	m := NewModel(issues, nil, "")
+	m.sprints = []model.Sprint{
+		{ID: "old", Name: "Old Sprint", StartDate: now.AddDate(0, 0, -20), EndDate: now.AddDate(0, 0, -10), BeadIDs: []string{"A"}},
+		{ID: "cur", Name: "Current Sprint", StartDate: now.AddDate(0, 0, -2), EndDate: now.AddDate(0, 0, 5), BeadIDs: []string{"A"}},
+	}
+	m.focused = focusList
+
+	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})))
+	if !got.isSprintView || got.focused != focusSprint {
+		t.Fatalf("after P: isSprintView=%v focused=%v; want sprint view focused", got.isSprintView, got.focused)
+	}
+	if got.selectedSprint == nil || got.selectedSprint.ID != "cur" {
+		t.Fatalf("after P: selectedSprint=%+v; want the sprint active today", got.selectedSprint)
+	}
+	if !strings.Contains(got.sprintViewText, "Current Sprint") {
+		t.Fatalf("sprint dashboard text missing sprint name:\n%s", got.sprintViewText)
+	}
+	if view := got.View(); !strings.Contains(view, "Current Sprint") {
+		t.Fatalf("View() should render the sprint dashboard while it is open")
+	}
+
+	got = asModelPtr(t, must2(got.Update(tea.KeyMsg{Type: tea.KeyEsc})))
+	if got.isSprintView || got.focused != focusList {
+		t.Fatalf("after esc: isSprintView=%v focused=%v; want list", got.isSprintView, got.focused)
+	}
+}
+
+func TestModel_PKeyWithoutSprintsReportsStatus(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.focused = focusList
+
+	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})))
+	if got.isSprintView {
+		t.Fatalf("P with no sprints must not open the sprint view")
+	}
+	if got.statusMsg != noSprintsStatus {
+		t.Fatalf("statusMsg=%q; want %q", got.statusMsg, noSprintsStatus)
+	}
+	if got.statusIsError {
+		t.Fatalf("missing sprints is informational, not an error")
+	}
+}
+
+func TestModel_PKeyIgnoredOutsideListAndDetail(t *testing.T) {
+	now := time.Now().UTC()
+	issues := []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask}}
+	m := NewModel(issues, nil, "")
+	m.sprints = []model.Sprint{{ID: "cur", Name: "Current Sprint", StartDate: now.AddDate(0, 0, -2), EndDate: now.AddDate(0, 0, 5), BeadIDs: []string{"A"}}}
+	m.isBoardView = true
+	m.focused = focusBoard
+
+	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("P")})))
+	if got.isSprintView {
+		t.Fatalf("P from the board view must not open the sprint dashboard")
+	}
+}
+
+// must2 drops the tea.Cmd half of an Update result.
+func must2(tm tea.Model, _ tea.Cmd) tea.Model { return tm }

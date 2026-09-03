@@ -111,7 +111,7 @@ func TestHistoryOpenCommit(t *testing.T) {
 	}
 
 	updated, _ := m.Update(keyMsg("o"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if openedURL != "https://github.com/owner/external/commit/abcdef123456" {
 		t.Fatalf("opened URL = %q", openedURL)
 	}
@@ -128,7 +128,7 @@ func TestHistoryOpenCommitReportsOpenerFailureInGitMode(t *testing.T) {
 	m.browserOpener = func(string) error { return errors.New("opener unavailable") }
 
 	updated, _ := m.Update(keyMsg("o"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.statusIsError || !strings.Contains(m.statusMsg, "opener unavailable") {
 		t.Fatalf("status = %q, error=%v", m.statusMsg, m.statusIsError)
 	}
@@ -159,7 +159,7 @@ func TestHistoryOpenCommitReportsMissingMetadata(t *testing.T) {
 			}
 
 			updated, _ := m.Update(keyMsg("o"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.statusIsError || !strings.Contains(m.statusMsg, test.want) {
 				t.Fatalf("status = %q, error=%v; want %q", m.statusMsg, m.statusIsError, test.want)
 			}
@@ -167,7 +167,7 @@ func TestHistoryOpenCommitReportsMissingMetadata(t *testing.T) {
 	}
 }
 
-func historyOpenTestModel(repository, sha, configPath string) Model {
+func historyOpenTestModel(repository, sha, configPath string) *Model {
 	report := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{}}
 	if sha != "" {
 		report.Histories["global-test"] = correlation.BeadHistory{
@@ -183,6 +183,7 @@ func historyOpenTestModel(repository, sha, configPath string) Model {
 	m := NewModel(nil, nil, "")
 	m.runtimeServices.CatalogPath = configPath
 	m.historyView = NewHistoryModel(report, testTheme())
+	makeHistoryReportCurrent(m, report)
 	m.isHistoryView = true
 	m.focused = focusHistory
 	return m

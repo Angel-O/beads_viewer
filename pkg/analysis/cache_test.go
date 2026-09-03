@@ -49,6 +49,9 @@ func TestComputeDataHash_Deterministic(t *testing.T) {
 	if hash1 != hash2 {
 		t.Errorf("Hash should be deterministic: %s != %s", hash1, hash2)
 	}
+	if len(hash1) != sha256.Size*2 {
+		t.Errorf("Hash length = %d, want full SHA-256 hex length %d", len(hash1), sha256.Size*2)
+	}
 }
 
 func TestComputeDataHash_OrderIndependent(t *testing.T) {
@@ -66,6 +69,63 @@ func TestComputeDataHash_OrderIndependent(t *testing.T) {
 
 	if hash1 != hash2 {
 		t.Errorf("Hash should be order-independent: %s != %s", hash1, hash2)
+	}
+}
+
+func TestComputeDataHash_DuplicateIDOrderIsSemantic(t *testing.T) {
+	issues1 := []model.Issue{
+		{ID: "A", Title: "first"},
+		{ID: "A", Title: "second"},
+	}
+	issues2 := []model.Issue{issues1[1], issues1[0]}
+
+	if hash1, hash2 := analysis.ComputeDataHash(issues1), analysis.ComputeDataHash(issues2); hash1 == hash2 {
+		t.Fatalf("duplicate-ID reorder produced a false cache hit: %s", hash1)
+	}
+}
+
+func TestComputeDataHash_LengthPrefixesPreventEmbeddedNULCollision(t *testing.T) {
+	issues1 := []model.Issue{{ID: "A", Title: "a\x00b", Description: "c"}}
+	issues2 := []model.Issue{{ID: "A", Title: "a", Description: "b\x00c"}}
+
+	if hash1, hash2 := analysis.ComputeDataHash(issues1), analysis.ComputeDataHash(issues2); hash1 == hash2 {
+		t.Fatalf("structurally distinct embedded-NUL fields collided: %s", hash1)
+	}
+	fp1 := analysis.ComputeIssueFingerprint(issues1[0])
+	fp2 := analysis.ComputeIssueFingerprint(issues2[0])
+	if fp1.ContentHash == fp2.ContentHash {
+		t.Fatalf("content fingerprints collided across embedded-NUL field boundary: %s", fp1.ContentHash)
+	}
+}
+
+func TestComputeDataHash_CoversPointerPresenceAndCompactionFields(t *testing.T) {
+	empty := ""
+	zero := 0
+	zeroTime := time.Time{}
+	tests := []struct {
+		name   string
+		mutate func(*model.Issue)
+	}{
+		{name: "external ref presence", mutate: func(issue *model.Issue) { issue.ExternalRef = &empty }},
+		{name: "estimated minutes presence", mutate: func(issue *model.Issue) { issue.EstimatedMinutes = &zero }},
+		{name: "due date presence", mutate: func(issue *model.Issue) { issue.DueDate = &zeroTime }},
+		{name: "defer until presence", mutate: func(issue *model.Issue) { issue.DeferUntil = &zeroTime }},
+		{name: "closed at presence", mutate: func(issue *model.Issue) { issue.ClosedAt = &zeroTime }},
+		{name: "compaction level", mutate: func(issue *model.Issue) { issue.CompactionLevel = 1 }},
+		{name: "compacted at presence", mutate: func(issue *model.Issue) { issue.CompactedAt = &zeroTime }},
+		{name: "compacted commit presence", mutate: func(issue *model.Issue) { issue.CompactedAtCommit = &empty }},
+		{name: "original size", mutate: func(issue *model.Issue) { issue.OriginalSize = 1 }},
+	}
+
+	baseHash := analysis.ComputeDataHash([]model.Issue{{ID: "A"}})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := model.Issue{ID: "A"}
+			tt.mutate(&issue)
+			if got := analysis.ComputeDataHash([]model.Issue{issue}); got == baseHash {
+				t.Fatalf("field change did not change aggregate data hash %q", got)
+			}
+		})
 	}
 }
 
@@ -345,6 +405,77 @@ func TestComputeIssueFingerprint_Deterministic(t *testing.T) {
 	}
 }
 
+func TestComputeIssueFingerprint_CommentTieOrderIndependent(t *testing.T) {
+	ts := time.Date(2024, 2, 10, 12, 0, 0, 0, time.UTC)
+	alice := &model.Comment{ID: "same", IssueID: "A", Author: "alice", Text: "first", CreatedAt: ts}
+	bob := &model.Comment{ID: "same", IssueID: "A", Author: "bob", Text: "second", CreatedAt: ts}
+
+	issueA := model.Issue{ID: "A", Comments: []*model.Comment{alice, bob}}
+	issueB := model.Issue{ID: "A", Comments: []*model.Comment{bob, alice}}
+
+	fpA := analysis.ComputeIssueFingerprint(issueA)
+	fpB := analysis.ComputeIssueFingerprint(issueB)
+	if fpA.ContentHash != fpB.ContentHash {
+		t.Fatalf("comment input order changed ContentHash: %s vs %s", fpA.ContentHash, fpB.ContentHash)
+	}
+}
+
+func TestComputeIssueFingerprint_NilDependenciesIgnored(t *testing.T) {
+	withoutDependencies := analysis.ComputeIssueFingerprint(model.Issue{ID: "A"})
+	withNilDependency := analysis.ComputeIssueFingerprint(model.Issue{
+		ID:           "A",
+		Dependencies: []*model.Dependency{nil},
+	})
+
+	if withoutDependencies.DependencyHash != withNilDependency.DependencyHash {
+		t.Fatalf("nil dependency changed DependencyHash: %s vs %s", withoutDependencies.DependencyHash, withNilDependency.DependencyHash)
+	}
+}
+
+func TestComputeIssueFingerprint_IncludesNestedIssueIDs(t *testing.T) {
+	commentA := model.Issue{ID: "A", Comments: []*model.Comment{{ID: "comment", IssueID: "A"}}}
+	commentB := model.Issue{ID: "A", Comments: []*model.Comment{{ID: "comment", IssueID: "B"}}}
+	if a, b := analysis.ComputeIssueFingerprint(commentA), analysis.ComputeIssueFingerprint(commentB); a.ContentHash == b.ContentHash {
+		t.Fatalf("comment IssueID change did not change content hash %q", a.ContentHash)
+	}
+
+	dependencyA := model.Issue{ID: "A", Dependencies: []*model.Dependency{{IssueID: "A", DependsOnID: "B"}}}
+	dependencyB := model.Issue{ID: "A", Dependencies: []*model.Dependency{{IssueID: "C", DependsOnID: "B"}}}
+	if a, b := analysis.ComputeIssueFingerprint(dependencyA), analysis.ComputeIssueFingerprint(dependencyB); a.DependencyHash == b.DependencyHash {
+		t.Fatalf("dependency IssueID change did not change dependency hash %q", a.DependencyHash)
+	}
+}
+
+func TestComputeIssueFingerprint_PointerPresenceChangesContentHash(t *testing.T) {
+	empty := ""
+	zero := 0
+	zeroTime := time.Time{}
+	tests := []struct {
+		name   string
+		mutate func(*model.Issue)
+	}{
+		{name: "external ref", mutate: func(issue *model.Issue) { issue.ExternalRef = &empty }},
+		{name: "estimated minutes", mutate: func(issue *model.Issue) { issue.EstimatedMinutes = &zero }},
+		{name: "due date", mutate: func(issue *model.Issue) { issue.DueDate = &zeroTime }},
+		{name: "defer until", mutate: func(issue *model.Issue) { issue.DeferUntil = &zeroTime }},
+		{name: "closed at", mutate: func(issue *model.Issue) { issue.ClosedAt = &zeroTime }},
+		{name: "compacted at", mutate: func(issue *model.Issue) { issue.CompactedAt = &zeroTime }},
+		{name: "compacted at commit", mutate: func(issue *model.Issue) { issue.CompactedAtCommit = &empty }},
+	}
+
+	baseHash := analysis.ComputeIssueFingerprint(model.Issue{ID: "A"}).ContentHash
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := model.Issue{ID: "A"}
+			tt.mutate(&issue)
+			got := analysis.ComputeIssueFingerprint(issue).ContentHash
+			if got == baseHash {
+				t.Fatalf("present empty/zero pointer did not change ContentHash %q", got)
+			}
+		})
+	}
+}
+
 func TestComputeIssueDiff(t *testing.T) {
 	ts := time.Date(2024, 3, 10, 12, 0, 0, 0, time.UTC)
 	oldIssues := []model.Issue{
@@ -397,6 +528,97 @@ func TestComputeIssueDiff(t *testing.T) {
 	}
 	if got := strings.Join(diff.Unchanged, ","); got != "E" {
 		t.Fatalf("Unchanged=%q, want %q", got, "E")
+	}
+}
+
+func TestComputeIssueDiff_OrderIndependent(t *testing.T) {
+	oldIssues := []model.Issue{
+		{ID: "A", Title: "changed"},
+		{ID: "B", Title: "removed"},
+		{ID: "C", Title: "unchanged"},
+	}
+	newIssues := []model.Issue{
+		{ID: "D", Title: "added"},
+		{ID: "C", Title: "unchanged"},
+		{ID: "A", Title: "updated"},
+	}
+	want := analysis.ComputeIssueDiff(oldIssues, newIssues)
+
+	permutedOld := []model.Issue{oldIssues[2], oldIssues[0], oldIssues[1]}
+	permutedNew := []model.Issue{newIssues[2], newIssues[0], newIssues[1]}
+	got := analysis.ComputeIssueDiff(permutedOld, permutedNew)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("input order changed diff:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestComputeIssueDiff_ContentAndDependencyChange(t *testing.T) {
+	oldIssues := []model.Issue{{
+		ID:           "A",
+		Title:        "before",
+		Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}},
+	}}
+	newIssues := []model.Issue{{
+		ID:           "A",
+		Title:        "after",
+		Dependencies: []*model.Dependency{{DependsOnID: "C", Type: model.DepBlocks}},
+	}}
+
+	diff := analysis.ComputeIssueDiff(oldIssues, newIssues)
+	if !reflect.DeepEqual(diff.Modified, []string{"A"}) {
+		t.Fatalf("Modified=%v, want [A] exactly once", diff.Modified)
+	}
+	if !reflect.DeepEqual(diff.ContentChanged, []string{"A"}) {
+		t.Fatalf("ContentChanged=%v, want [A]", diff.ContentChanged)
+	}
+	if !reflect.DeepEqual(diff.DependencyChanged, []string{"A"}) {
+		t.Fatalf("DependencyChanged=%v, want [A]", diff.DependencyChanged)
+	}
+}
+
+func TestComputeIssueDiff_DuplicateIDsForceFullRebuild(t *testing.T) {
+	tests := []struct {
+		name string
+		old  []model.Issue
+		new  []model.Issue
+	}{
+		{
+			name: "duplicate added",
+			old:  []model.Issue{{ID: "A", Title: "old"}},
+			new: []model.Issue{
+				{ID: "A", Title: "old"},
+				{ID: "B", Title: "first"},
+				{ID: "B", Title: "second"},
+			},
+		},
+		{
+			name: "duplicate removed",
+			old: []model.Issue{
+				{ID: "A", Title: "old"},
+				{ID: "A", Title: "shadow"},
+			},
+			new: []model.Issue{{ID: "A", Title: "old"}},
+		},
+		{
+			name: "duplicate unchanged",
+			old: []model.Issue{
+				{ID: "A", Title: "first"},
+				{ID: "A", Title: "second"},
+			},
+			new: []model.Issue{
+				{ID: "A", Title: "first"},
+				{ID: "A", Title: "second"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diff := analysis.ComputeIssueDiff(tt.old, tt.new)
+			if !diff.HasDuplicateIDs {
+				t.Fatalf("duplicate IDs were not reported: %#v", diff)
+			}
+		})
 	}
 }
 
@@ -462,8 +684,8 @@ func TestRobotDiskCache_WritesAndHits(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("parsing cache entry json: %v", err)
 	}
-	if entry.Version != 3 {
-		t.Fatalf("cache entry version: got %d, want %d", entry.Version, 3)
+	if entry.Version != 4 {
+		t.Fatalf("cache entry version: got %d, want %d", entry.Version, 4)
 	}
 	if entry.Key != fullKey {
 		t.Fatalf("cache entry key: got %q, want %q", entry.Key, fullKey)

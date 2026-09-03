@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // createCorrelationRepo seeds a git repo with multiple beads and commits that
@@ -309,12 +310,19 @@ func TestCorrelationRobotOrphans(t *testing.T) {
 	}
 
 	var payload struct {
+		Window struct {
+			Commits int    `json:"commits"`
+			Limit   int    `json:"limit"`
+			Source  string `json:"source"`
+		} `json:"window"`
 		Stats struct {
-			TotalCommits    int     `json:"total_commits"`
-			CorrelatedCount int     `json:"correlated_count"`
-			OrphanCount     int     `json:"orphan_count"`
-			OrphanRatio     float64 `json:"orphan_ratio"`
+			TotalCommits     int     `json:"total_commits"`
+			CorrelatedCount  int     `json:"correlated_count"`
+			OrphanCount      int     `json:"orphan_count"`
+			BeadsOnlyCommits int     `json:"beads_only_commits"`
+			OrphanRatio      float64 `json:"orphan_ratio"`
 		} `json:"stats"`
+		UsageHints []string `json:"usage_hints"`
 		Candidates []struct {
 			SHA           string `json:"sha"`
 			Message       string `json:"message"`
@@ -333,6 +341,21 @@ func TestCorrelationRobotOrphans(t *testing.T) {
 	// Should have some commits
 	if payload.Stats.TotalCommits == 0 {
 		t.Error("expected total_commits > 0")
+	}
+
+	// D4: the scan window is the correlation index's window and the payload
+	// accounts for every commit in it.
+	if payload.Window.Source != "history_index" || payload.Window.Commits == 0 {
+		t.Errorf("window=%+v; want source=history_index with commits > 0", payload.Window)
+	}
+	if got := payload.Stats.TotalCommits + payload.Stats.BeadsOnlyCommits; got != payload.Window.Commits {
+		t.Errorf("total_commits+beads_only_commits=%d; want window.commits=%d", got, payload.Window.Commits)
+	}
+	if payload.Stats.BeadsOnlyCommits == 0 {
+		t.Errorf("fixture's final beads-only commit should be counted in beads_only_commits: %+v", payload.Stats)
+	}
+	if len(payload.UsageHints) == 0 {
+		t.Error("expected usage_hints explaining the window and scores")
 	}
 
 	// Should have some correlated commits (from explicit mentions)
@@ -659,5 +682,119 @@ func TestCorrelationManyBeads(t *testing.T) {
 
 	if payload.Stats.TotalBeads != 50 {
 		t.Errorf("expected 50 total_beads, got %d", payload.Stats.TotalBeads)
+	}
+}
+
+// TestCorrelationOnThisRepository_StrategyCounts (D5) runs the real
+// correlator over this repository's own history: every strategy must
+// contribute, the orphan scan must report its window, and explaining an
+// explicit-id commit must list the explicit_id signal. Runtime is bounded so
+// a regression that makes the multi-strategy walk slow shows up here.
+func TestCorrelationOnThisRepository_StrategyCounts(t *testing.T) {
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".beads", "issues.jsonl")); err != nil {
+		t.Skip("repository tracker not present")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		t.Skip("not a git checkout")
+	}
+	bv := buildBvBinary(t)
+	run := func(args ...string) []byte {
+		t.Helper()
+		cmd := exec.Command(bv, args...)
+		cmd.Dir = repo
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%v failed: %v", args, err)
+		}
+		return out
+	}
+
+	start := time.Now()
+	var history struct {
+		Stats struct {
+			MethodDistribution map[string]int `json:"method_distribution"`
+			Strategies         []struct {
+				Name       string `json:"name"`
+				Ran        bool   `json:"ran"`
+				Candidates int    `json:"candidates"`
+			} `json:"strategies"`
+		} `json:"stats"`
+		Window *struct {
+			Commits int `json:"commits"`
+		} `json:"window"`
+		Histories map[string]struct {
+			Commits []struct {
+				SHA     string   `json:"sha"`
+				Methods []string `json:"methods"`
+			} `json:"commits"`
+		} `json:"histories"`
+	}
+	if err := json.Unmarshal(run("--robot-history"), &history); err != nil {
+		t.Fatalf("history decode: %v", err)
+	}
+	dist := history.Stats.MethodDistribution
+	t.Logf("method_distribution=%v strategies=%+v window=%+v elapsed=%s", dist, history.Stats.Strategies, history.Window, time.Since(start))
+	if dist["explicit_id"] < 6 || dist["co_committed"] < 500 {
+		t.Fatalf("expected explicit_id>=6 and co_committed>=500 on this repository, got %v", dist)
+	}
+	temporalRan := false
+	temporalCandidates := 0
+	for _, strategy := range history.Stats.Strategies {
+		if strategy.Name == "temporal_author" {
+			temporalRan = strategy.Ran
+			temporalCandidates = strategy.Candidates
+			break
+		}
+	}
+	if !temporalRan || temporalCandidates < 1 {
+		t.Fatalf("expected temporal_author to run with candidates on this repository, got ran=%v candidates=%d", temporalRan, temporalCandidates)
+	}
+	if len(history.Stats.Strategies) != 3 {
+		t.Fatalf("stats.strategies should record three runs: %+v", history.Stats.Strategies)
+	}
+	if history.Window == nil || history.Window.Commits == 0 {
+		t.Fatalf("history should report the commit window it walked")
+	}
+
+	var orphans struct {
+		Window struct {
+			Source  string `json:"source"`
+			Commits int    `json:"commits"`
+		} `json:"window"`
+	}
+	if err := json.Unmarshal(run("--robot-orphans"), &orphans); err != nil {
+		t.Fatalf("orphans decode: %v", err)
+	}
+	if orphans.Window.Source != "history_index" || orphans.Window.Commits != history.Window.Commits {
+		t.Fatalf("orphan window %+v should be the history index window (%d commits)", orphans.Window, history.Window.Commits)
+	}
+
+	// Explain one explicit-id pair.
+	var sha, bead string
+	for id, h := range history.Histories {
+		for _, c := range h.Commits {
+			for _, m := range c.Methods {
+				if m == "explicit_id" {
+					sha, bead = c.SHA, id
+				}
+			}
+		}
+		if sha != "" {
+			break
+		}
+	}
+	if sha == "" {
+		t.Fatalf("no explicit_id commit found in histories")
+	}
+	explain := run("--robot-explain-correlation", sha+":"+bead)
+	if !strings.Contains(string(explain), "explicit_id") {
+		t.Fatalf("explain for %s:%s should list the explicit_id signal:\n%s", sha[:7], bead, explain)
+	}
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("correlation e2e on this repository took %s; want under 15s", elapsed)
 	}
 }

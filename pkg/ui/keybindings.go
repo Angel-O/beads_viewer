@@ -339,7 +339,9 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"i", "Insights panel", "Views", "board,graph,tree,history,actionable,flow"},
 		{"E", "Enter Tree (uppercase)", "Views", "board,graph,insights,history,actionable,flow"},
 		{"h", "History view", "Views", "actionable,flow"},
-
+		{"P", "Sprint dashboard", "Views", "list,detail"},
+		{"[", "Label dashboard", "Views", "list,detail"},
+		{"]", "Attention view", "Views", "list,detail"},
 		// Filters
 		{"o", "Open issues only", "Filters", "list,board,tree"},
 		{"c", "Closed issues only", "Filters", "list,board,tree"},
@@ -355,6 +357,10 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// Actions
 		{"t", "Choose revision / exit diff", "Actions", "list,detail"},
 		{"T", "Quick HEAD~5 / exit diff", "Actions", "list,detail"},
+		{"t", "Time travel (custom revision)", "Actions", "list,detail"},
+		{"T", "Time travel (HEAD~5)", "Actions", "list,detail"},
+		{"n", "Next changed issue (time travel)", "Actions", "list"},
+		{"N", "Previous changed issue (time travel)", "Actions", "list"},
 		{"x", "Export to markdown", "Actions", "list,detail"},
 		{"y", "Copy issue ID", "Actions", "list,detail,board"},
 		{"C", "Copy full issue", "Actions", "list,detail"},
@@ -419,6 +425,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"ctrl+k", "Scroll detail up", "Insights", "insights"},
 		{"o", "Active work", "Filters", "insights"},
 		{"r", "Ready-only toggle", "Filters", "insights"},
+		{"shift+tab", "Previous panel", "Insights", "insights"},
 		{"e", "Toggle explanations", "Insights", "insights"},
 		{"x", "Calculation proof", "Insights", "insights"},
 		{"m", "Heatmap toggle", "Insights", "insights"},
@@ -428,6 +435,8 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// History View
 		{"v", "Toggle git/bead mode", "History", "history"},
 		{"tab", "Toggle focus", "History", "history"},
+		{"t", "Toggle timeline pane", "History", "history"},
+		{"f", "Toggle file tree", "History", "history"},
 		{"J", "Detail scroll down", "History", "history"},
 		{"K", "Detail scroll up", "History", "history"},
 		{"enter", "Open selected bead", "History", "history"},
@@ -449,8 +458,13 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"f", "Close Flow or drilldown", "Flow", "flow"},
 		{"P", "Close Sprint", "Sprint", "sprint"},
 		{"1-9", "Filter by ranked label", "Attention", "attention"},
-		{"d", "Close Attention", "Attention", "attention"},
+		{"enter", "Label drilldown", "Attention", "attention"},
 		{"] / F4", "Close Attention", "Attention", "attention"},
 		{"esc / q", "Back to previous view", "Attention", "attention"},
+
+		// Sprint Dashboard (P)
+		{"P", "Close sprint dashboard", "Sprint", "sprint"},
+		{"j", "Next sprint", "Sprint", "sprint"},
+		{"k", "Previous sprint", "Sprint", "sprint"},
 	}
 }

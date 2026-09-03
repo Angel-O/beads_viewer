@@ -161,18 +161,25 @@ func (s Suggestion) WithAction(cmd string) Suggestion {
 
 // WithMetadata adds metadata to the suggestion
 func (s Suggestion) WithMetadata(key string, value interface{}) Suggestion {
-	if s.Metadata == nil {
-		s.Metadata = make(map[string]interface{})
+	metadata := make(map[string]interface{}, len(s.Metadata)+1)
+	for existingKey, existingValue := range s.Metadata {
+		metadata[existingKey] = existingValue
 	}
-	s.Metadata[key] = value
+	metadata[key] = value
+	s.Metadata = metadata
 	return s
 }
 
 // NewSuggestionSet creates a new suggestion set and computes stats
 func NewSuggestionSet(suggestions []Suggestion, dataHash string) SuggestionSet {
+	return NewSuggestionSetAt(suggestions, dataHash, time.Now())
+}
+
+// NewSuggestionSetAt creates a suggestion set at a caller-supplied instant.
+func NewSuggestionSetAt(suggestions []Suggestion, dataHash string, now time.Time) SuggestionSet {
 	set := SuggestionSet{
 		Suggestions: suggestions,
-		GeneratedAt: time.Now(),
+		GeneratedAt: now,
 		DataHash:    dataHash,
 	}
 	set.computeStats()

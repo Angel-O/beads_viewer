@@ -695,3 +695,307 @@ improved 2.59% with interval [-3.55%, +8.28%], total CPU 4.75% with interval
 estimates >=3%; user CPU failed, so no 50-pair cohort ran and no build/release
 change was made. Evidence root: `/data/tmp/bv-p20-20260824.pgo-cold-triage`;
 TSV SHA-256 `3c576c0e8807dee9e00edb81ab1a7c2985a9fdf7c2aa5f99a77e7f3050be46ba`.
+
+## 2026-08-24 pass-21 Git delta-base-cache rejection
+
+A same-binary environment A/B tested Git's `core.deltaBaseCacheLimit=32m`
+before any source wiring. The injected candidate config was independently read
+back as `32m`; a malformed-assignment plant failed before execution. This
+isolated cache policy from compiler or source differences.
+
+The cache bound substantially lowered memory: across 12 seed-21021 pairs mean
+maximum RSS moved 110,216 to 75,202 KiB (-31.77%), won all 12 pairs, and had an
+improvement interval of [+28.32%, +35.50%]. But user CPU regressed 2.82%, total
+CPU improved only 0.99%, and wall improved 1.69%; all CPU/wall intervals crossed
+zero, CVs reached 46.80%, and candidate total/wall p95 and worst regressed. All
+24 normalized outputs remained exact.
+
+The frozen gate requires >=3% point gains in both user and total CPU with stable
+tails before confirmation. It fails, so no 50-pair cohort and no source override
+were made. Evidence root: `/data/tmp/bv-p21-20260824.git-delta-cache`; TSV
+SHA-256 `01314f3ae8325fc0a4c99cff382107a394e91e4168d783992c768567098974e0`.
+The RSS reduction is real evidence, not an accepted overall performance win.
+
+## 2026-08-24 pass-22 two-request window rejection
+
+The current profile and fixture justified a bounded AMAC-style experiment:
+`blobReader.read` held 0.26 s, post-receive indexing held about 0.33 s, and 496
+of 498 unique blobs exceeded the 65,536-byte pipe. A two-scalar cursor submitted
+response N+1 before indexing payload N without goroutines, channels, request
+arrays, queues, or a second Go payload. Removing the just-received SHA guard
+caused the exact duplicate request `[a b b e f g]`; restoration passed, as did
+FIFO/framing/lifetime tests, the 1,776-event differential, correlation
+ordinary/race, build, vet, format, diff, and scoped zero-critical UBS gates.
+
+The direct seam was genuinely faster: eight randomized three-extraction pairs
+moved mean wall 2.689640 to 1.813798 s (-32.56%, 8/8 wins) and total CPU
+3.951964 to 2.757087 s (-30.24%). It did not survive the whole-product boundary.
+Twelve seed-22022 cold-triage pairs kept all outputs at normalized SHA-256
+`f8f098b0...`, but user CPU improved only 1.93%, total CPU regressed 0.48%, and
+wall improved 2.19%; every interval crossed zero.
+
+The frozen screen required >=3% user and total point gains before confirmation.
+It fails, so no 50-pair cohort or source integration followed. Evidence root:
+`/data/tmp/bv-p22-20260824.two-request-window`; direct/product TSV SHA-256
+`b3c28666e787a17e7f1ee3ee4f7f234d1f2095baa639efb1368f3c736f2fd495` /
+`c62698add43c9b34415e4cc8a2e8c80eab6abbc43c623e248c3aa5824d0625e2`.
+The direct overlap is real evidence, not an accepted product improvement.
+
+## 2026-08-24 passes 23-25 bounded rejections
+
+Pass 23 activated reproducible Go 1.25.5 `GOAMD64=v3` codegen on an AVX2 EPYC
+worker, but 12 exact product pairs regressed user/total/wall by
+2.71%/2.91%/2.26% and worsened tails. The build-only lever is rejected; evidence
+root `/data/tmp/bv-p23-20260824.goamd64v3`.
+
+Pass 24 found a hard fusion ceiling. Descriptor scanning and exact record
+hashing overlap by at most 0.04 s / 2.01 s = 1.99%; the current binary already
+uses SSE/AVX newline search and AES hashing. A different fused hash would change
+collision semantics. No implementation can clear the 3% gate under the current
+profile; disassembly is preserved at
+`/data/tmp/bv-p24-20260824.fused-scan-hash`.
+
+Pass 25 measured rather than guessed pack locality. For the same 498 OIDs,
+newest-first averaged 0.10000 s, reverse 0.14625 s, and pack-offset 0.10125 s.
+Pack order also needs payload reassociation that widens the 384 MB logical live
+set. Current ordering is the fastest bounded choice on this pack; evidence root
+`/data/tmp/bv-p25-20260824.pack-order`.
+
+No runtime bytes changed in these three passes. Their positive evidence is
+activation and negative bounds, not accepted performance improvement.
+
+## 2026-08-24 passes 26-27 request-train and fusion rejections
+
+Pass 26 batched seven SHA requests into a <=455-byte train and reduced
+handshakes without a goroutine or payload queue. The order/width mutation and
+focused lifetime gates passed, but eight direct pairs improved wall only 7.66%,
+left user/total CPU flat, and slightly regressed RSS. It stopped before product
+measurement. Evidence root:
+`/data/tmp/bv-p26-20260824.catfile-request-trains`.
+
+Pass 27 revisited the strongest prior near-miss against the current runtime.
+Direct event fusion removed synthesized diff/Scanner allocation, cut benchmark
+bytes/op 38.21%, and improved direct user/total CPU 6.12%/5.65%. The 50-pair
+product cohort kept all outputs exact and improved point user/total/wall by
+5.34%/4.10%/2.97%, with every measured p95/worst tail lower. Nevertheless its
+lower-95% user/total gains were only 2.78%/1.51%, baseline total/wall CVs exceeded
+10%, and RSS moved 0.035% higher. The frozen conjunction fails, so no source was
+retained. Evidence root:
+`/data/tmp/bv-p27-20260824.direct-event-fusion-v2`.
+
+These passes prove two mechanisms and reject two product claims. They do not
+increase the campaign's accepted measured improvement.
+
+## 2026-08-24 pass-28 single-ID fusion rejection
+
+The zero-map specialization of Pass 27 was mutation-sensitive and exact on the
+focused suite plus the 1,776-event history differential. It reduced direct
+benchmark bytes/op 7.82%, but its conservative multi-ID fallback forfeited most
+of the general fusion's allocation reduction. Across eight seed-28028 pairs,
+user CPU, system CPU, and wall time each regressed about 1.3%; RSS rose 0.088%.
+It therefore stopped before a product cohort. Evidence root:
+`/data/tmp/bv-p28-20260824.single-id-fusion`; credited TSV SHA-256
+`634746e0300c99ab2e49b029d52aefc8ccdf14a03c9acc4d3c22d19729b954d1`.
+
+No runtime bytes changed. The remaining accepted campaign result is still only
+the Pass-1 blob-buffer CPU/GC improvement; Pass 28 adds no speedup claim.
+
+## 2026-08-24 pass-29 byte-native JSON rejection
+
+Pass 27's direct-event candidate was the control, isolating only removal of its
+changed-record `[]byte -> string -> []byte` round trip. The live byte path passed
+the 1,776-event differential and a one-byte input mutation changed a closed
+event into created. It reduced bytes/op 14.79% and allocations/op 2.77%, but
+eight seed-29029 pairs were user-CPU flat (-0.15% regression), regressed total
+CPU about 4.57%, and regressed wall 4.23%. Evidence root:
+`/data/tmp/bv-p29-20260824.byte-native-json`; TSV SHA-256
+`a5bafb28050b23c294e687dfa29f40c098e7d0bfc3d8b8fd4a4bb6be45d019a2`.
+
+The allocator signal is real but non-causal for speed on this workload. No
+runtime bytes changed and no product improvement is claimed.
+
+## 2026-08-24 pass-30 reused diff-arena rejection
+
+Reusing one reset `bytes.Buffer` across synthesized per-commit record diffs
+targeted the profile's 0.09 s / 4.48% grow frame. Omitting the reset expanded
+the exact history from 1,776 to 130,343 events, while restored code passed.
+Eight direct pairs improved user/system/wall 8.05%/9.70%/7.03% and cut bytes/op
+12.77%. The 12-pair product screen was positive, but the predeclared 50-pair
+cohort settled at only 2.39% user, 0.93% total, and 0.44% wall improvement, all
+with intervals crossing zero; system CPU and several worst tails regressed.
+Evidence root: `/data/tmp/bv-p30-20260824.reused-diff-arena`; confirmation TSV
+SHA-256 `e546b98b59a814c1e921164e090fa4fc5115c5aaea96c3b9cee55d4f8958b6ef`.
+
+No runtime bytes changed. The direct mechanism is real but too diluted and
+unstable for an accepted product claim.
+
+## 2026-08-24 pass-31 raw-splice cache-writer no-go
+
+Cold cache payloads are real and moderately large (673,954-byte HEAD artifact,
+772,000-byte report), but the exact profile places all goccy marshaling at
+7.96% and the removable second normalization/compaction traversal at no more
+than about 4.48%. Raw payload creation plus final copying, writing, locking, and
+sync remain. The prior exact RawMessage candidate made the focused cache path
+worse (4.00% to 4.97%), and Pass 30 demonstrated that a 4.48%-sized seam win is
+not enough product margin. A bespoke segmented JSON encoder was therefore
+rejected before adding a second codec implementation.
+
+No runtime or cache bytes changed; this is an Amdahl/materiality rejection, not
+an optimization claim.
+
+## 2026-08-24 pass-32 GOMAXPROCS sweep rejection
+
+The same exact binary was swept at 1, 2, and 4 Ps with schedtrace activation.
+Only P2 cleared a six-pair exploratory selector, but its independent 12-pair
+seed regressed system CPU 27.62%, total CPU 9.39%, and wall 6.53%; CVs reached
+90.23%. All normalized outputs remained exact and RSS was flat. Evidence root:
+`/data/tmp/bv-p32-20260824.gomaxprocs-sweep`; credited screen TSV SHA-256
+`101c80a374c19fa4d99f74cc35caedf9ef76bbf2dd80b705a0de5e3a1b837d1f`.
+
+No runtime default, environment, or source changed. The exploratory P2 result
+is selection noise, not an accepted improvement.
+
+## 2026-08-24 passes 33-34 framing and cumulative-I/O no-gos
+
+Pass 33 bounded all cat-file header `ReadString`/`ReadSlice` work to 0.03 s /
+1.49% despite 498 live responses; a manual byte parser cannot clear the product
+gate. Pass 34 separated `readFull`'s 0.21 s cumulative ownership from its zero
+flat CPU: the time is the same mandatory 384,364,934-byte reader/syscall path.
+Swapping in `io.ReadFull` only changes wrapper branches and short-read errors.
+
+Neither pass changed source. These are profile attribution corrections, not
+performance claims.
+
+## 2026-08-24 pass-35 Linux response-pipe rejection
+
+An isolated 1 MiB stdout pipe retained the 64 KiB request pipe and exact
+498-object/384,364,934-byte framing. Eight direct pairs improved user/total/wall
+7.98%/11.68%/11.95%, and strace proved the source candidate's
+`F_SETPIPE_SZ(1048576)` succeeded. The 12-pair product screen kept every output
+exact and improved user/wall 4.91%/4.15%, but system CPU regressed 17.41%, total
+CPU 2.96%, and RSS 0.063%. Evidence roots:
+`/data/tmp/bv-p35-20260824.pipe-capacity` and
+`/data/tmp/bv-p35-20260824.pipe-source`.
+
+No platform helper entered production. Producer-seam latency does not offset
+the measured system/total-CPU regression.
+
+## 2026-08-24 passes 36-37 build-shape rejections
+
+Pass 36 reproducibly stripped the unchanged binary from 54.05 MB to 42.41 MB
+(-21.53%), but 12 exact product pairs improved total CPU only 1.36% and wall
+0.25%, with several worse tails. Pass 37's reproducible GOAMD64=v2 binary
+improved user/total/wall only 0.51%/2.19%/1.85% and slightly regressed RSS.
+Evidence roots: `/data/tmp/bv-p36-20260824.stripped-link` and
+`/data/tmp/bv-p37-20260824.goamd64v2`.
+
+No build or release default changed. Binary size is not reported as runtime
+speed, and neither codegen screen cleared the CPU gate.
+
+## 2026-08-24 pass-38 static no-CGO rejection
+
+Duplicate CGO-disabled binaries were byte-identical and statically linked, but
+12 paired exact robot runs regressed user CPU 1.43%, total CPU 0.43%, wall
+1.63%, and RSS 0.025%. Evidence root:
+`/data/tmp/bv-p38-20260824.static-nocgo`; TSV SHA-256
+`14b59957f76809f9816b609844761062968ede980a76277608dca3795f434adf`.
+
+No build/release default changed. Static linking is not a startup win for this
+workload.
+
+## 2026-08-24 pass-39 async-preemption rejection
+
+Disabling async preemption reduced traced SIGURG records from 238 to eight, but
+12 exact product pairs improved total CPU only 0.60% while system CPU and RSS
+regressed. Wall's 5.71% point gain came with 13-27% CV and only 7/12 wins.
+Evidence root `/data/tmp/bv-p39-20260824.asyncpreemptoff`; TSV SHA-256
+`02f8721a1fc8e101d04bfd7f309c0733f16f89e4c46e77f699877f7123ff7fdb`.
+
+No runtime default changed; fewer preemption signals are not sufficient product
+evidence and would trade away liveness responsiveness.
+
+## 2026-08-24 passes 40-42 direct-event representation rejections
+
+The 16-entry stack vector (Pass 40) preserved all 1,776 events and cut
+bytes/op 38.25%, but regressed direct benchmark time 31.82%, total CPU 28.95%,
+and wall 28.07%. Retuning the promotion threshold to four (Pass 42) preserved
+behavior but still regressed total CPU 3.76% and wall 3.90% against the
+16-entry candidate. Comparator-reversal plants failed both multi-ID and
+promotion-order oracles. Evidence roots:
+`/tmp/bv-p40-independent-20260824` and
+`/tmp/bv-p42-independent-20260824`.
+
+The specialized JSON-parser proposal (Pass 41) did not cross the mutation
+gate: `parseBeadJSON` is only 0.06/2.01 s cumulative, or 2.985%. Even a free
+parser cannot clear the 3% end-to-end gate, while exact goccy semantics and
+buffer ownership create a broad correctness surface. No source change or
+speedup is credited for any of these passes.
+
+## 2026-08-24 passes 43-44 storage and residence no-gos
+
+The exact history workload is 99.60% delta-backed: 496 of 498 requested
+objects expand 2,453,578 stored bytes into 384,364,934 logical bytes. The pack
+contains 11,238 deltas with mean depth 5.39 and maximum depth 38. A causal
+negative proved that a 28-byte inflated delta instruction stream is not its
+7,979-byte logical blob. A direct mmap/zlib path therefore requires a complete,
+security-sensitive Git delta/object engine for at most the 12.94% cumulative
+`blobReader.read` envelope. Pass 43 rejected it before implementation.
+
+Pass 44 rejected second-hit cache admission because report put/write is only
+0.06/2.01 s and deferral likely makes the second request worse. Persistent
+residence has a 69.8% startup-amortization proxy ceiling (98 ms warm triage
+versus 29.6 ms startup), but it is a new execution contract with no exact
+resident-history profile. A caller-owned stdio worker is the bounded future
+experiment; no daemon or performance claim entered production.
+
+## 2026-08-24 passes 45-48 runtime and memory-policy rejections
+
+| Pass | Activated lever | Exact screen result | Binding rejection |
+|---:|---|---|---|
+| 45 | Go 1.25.5 Green Tea GC experiment | user/total/wall regressed 6.06%/15.26%/12.71% | Direct performance loss |
+| 46 | `madvdontneed=0` / `MADV_FREE` | 50-pair gains: user 0.51%, total 4.70%, wall 3.74% | All primary 95% intervals cross zero; only 24-26/50 wins |
+| 47 | `GOGC=400` plus `MADV_FREE` | user/total/wall improved 13.73%/12.56%/7.23% | RSS regressed 6.08%, losing 12/12 pairs |
+| 48 | Git delta-base cache 96 MiB to 256 MiB | user/total/wall improved 4.38%/11.35%/9.01% | RSS regressed 16.51%, losing 12/12 pairs |
+
+All outputs were exact and all activation controls were live. Pass 46's
+promising 12-pair screen was explicitly overturned by its 50-pair confirmation;
+Passes 47-48 stopped at their preregistered hard resource gates. Evidence
+roots: `/tmp/bv-p45-independent-20260824` through
+`/tmp/bv-p48-independent-20260824`. No runtime, environment, Git, build, or
+release default changed.
+
+## 2026-08-24 passes 49-50 final profile and counterfactual
+
+The fresh eight-run merged profile contains 6.29 s sampled CPU over 12.26 s.
+Its strongest frames remain syscall/read transport and mandatory materialization:
+`syscall.Syscall6` 22.42% flat, `FD.Read` 19.08% cumulative,
+`buildRecordLineSnapshot` 17.97% cumulative, `mallocgc` 12.08% cumulative,
+and `synthesizeRecordDiff` 6.68% cumulative. Profile SHA-256:
+`e7acf8b2077877008074322a8692038cb0d8dbff6f7f5dd0ba27c8ff80b304a0`;
+evidence root `/tmp/bv-p49-independent-20260824`.
+
+The resulting Pass 50 historical full-hash-snapshot counterfactual passed the
+1,776-event differential, lifetime/frontier/collision tests, and a mutation
+that otherwise reduced events to zero. Yet 12 exact product pairs regressed
+user/total/wall 2.35%/3.77%/6.48%. Evidence root
+`/tmp/bv-p50-independent-20260824`; TSV SHA-256
+`d45463415ba8b272a1eacecf77923b58e5f79c4266e8e505e047f651bdef2a01`.
+The current implementation wins; no source change was retained.
+
+## 2026-08-24 fifty-pass performance closure
+
+All 50 required passes are complete. The only accepted result in this active
+campaign remains approximately 11-15% lower user CPU and about 50% fewer GC
+cycles from Pass 1's buffer reuse. Independent replay measured 11.44% and
+49.61%, respectively. Wall and peak RSS did not clear acceptance and are not
+claimed. Later screen-only CPU/wall gains are rejected evidence, especially
+where confidence intervals crossed zero or RSS regressed 6-17%.
+
+Final source SHA-256 values are
+`2faf6679fa1d90fc52e201554834831a33d9c263e831989d5ce7d5e7147c3548`
+for `extractor_snapshot.go` and
+`314b2ffd468cab000fb0c9928afa0520c8b683679555e8e6553a4863228237d9`
+for the differential test. Exact-Go-1.25.5 build, vet, ordinary, and race gates
+passed in a fresh complete Git-backed clone under non-root `ubuntu`, including
+E2E. Formatting still names a pre-existing peer-owned differential test; this
+documentation-only closeout did not mutate it.

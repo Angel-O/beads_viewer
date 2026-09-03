@@ -202,8 +202,9 @@ func TestHubRobotScopeEndToEndAndLegacyRepoIsolation(t *testing.T) {
 	if err := json.Unmarshal(localData, &local); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := local["scope"]; exists {
-		t.Fatalf("legacy local output acquired Hub scope: %#v", local)
+	localScope, ok := local["scope"].(map[string]any)
+	if !ok || localScope["repo"] != "alpha" {
+		t.Fatalf("legacy local output missing repository scope metadata: %#v", local)
 	}
 	wantHash := analysis.ComputeDataHash(filterByRepo(issues, "alpha"))
 	if local["data_hash"] != wantHash {

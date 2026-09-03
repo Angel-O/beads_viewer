@@ -503,3 +503,36 @@ func TestGetExecutionPlanLegacyDependencyGrouping(t *testing.T) {
 		t.Errorf("Expected 1 track (grouped via legacy dependency), got %d tracks", len(plan.Tracks))
 	}
 }
+
+// The documented tie-break for the plan summary is: most unblocks, then
+// priority (P0 first), then ID. Two actionable issues that each unblock two
+// tasks must be separated by priority, and equal priority by lowest ID.
+func TestExecutionPlan_HighestImpactTieBreaksByPriority(t *testing.T) {
+	build := func(prioLow, prioHigh int) []model.Issue {
+		return []model.Issue{
+			// "zz" sorts after "aa" by ID; give it the better priority so a
+			// priority-aware tie-break must pick it over the ID order.
+			{ID: "aa", Title: "A", Status: model.StatusOpen, Priority: prioLow},
+			{ID: "zz", Title: "Z", Status: model.StatusOpen, Priority: prioHigh},
+			{ID: "a1", Title: "A1", Status: model.StatusOpen, Priority: 2, Dependencies: []*model.Dependency{{DependsOnID: "aa", Type: model.DepBlocks}}},
+			{ID: "a2", Title: "A2", Status: model.StatusOpen, Priority: 2, Dependencies: []*model.Dependency{{DependsOnID: "aa", Type: model.DepBlocks}}},
+			{ID: "z1", Title: "Z1", Status: model.StatusOpen, Priority: 2, Dependencies: []*model.Dependency{{DependsOnID: "zz", Type: model.DepBlocks}}},
+			{ID: "z2", Title: "Z2", Status: model.StatusOpen, Priority: 2, Dependencies: []*model.Dependency{{DependsOnID: "zz", Type: model.DepBlocks}}},
+		}
+	}
+
+	// aa is P3, zz is P1: equal unblocks (2 each) -> zz wins on priority.
+	plan := analysis.NewAnalyzer(build(3, 1)).GetExecutionPlan()
+	if plan.Summary.HighestImpact != "zz" {
+		t.Fatalf("priority tie-break: highest_impact = %q, want zz (P1 over P3 with equal unblocks)", plan.Summary.HighestImpact)
+	}
+	if plan.Summary.UnblocksCount != 2 {
+		t.Fatalf("unblocks_count = %d, want 2", plan.Summary.UnblocksCount)
+	}
+
+	// Equal priority -> lowest ID wins.
+	plan = analysis.NewAnalyzer(build(2, 2)).GetExecutionPlan()
+	if plan.Summary.HighestImpact != "aa" {
+		t.Fatalf("ID tie-break: highest_impact = %q, want aa", plan.Summary.HighestImpact)
+	}
+}

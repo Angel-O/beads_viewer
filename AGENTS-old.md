@@ -75,7 +75,7 @@ go mod tidy                       # Clean up unused deps
 | `charmbracelet/bubbles` | Reusable TUI components (viewport, list, etc.) |
 | `charmbracelet/huh` | Interactive form components |
 | `charmbracelet/glamour` | Markdown rendering |
-| `modernc.org/sqlite` | Pure-Go SQLite for FTS5 search index |
+| `modernc.org/sqlite` | Pure-Go SQLite for the static-site export (`beads.sqlite3` with an FTS5 index) |
 | `gonum.org/v1/gonum` | Graph algorithms (PageRank, betweenness, HITS, eigenvector) |
 | `goccy/go-json` | High-performance JSON serialization |
 | `fsnotify/fsnotify` | Filesystem event watching (daemon mode) |
@@ -202,7 +202,7 @@ go test -run TestSpecificName ./pkg/...
 | Package | Focus Areas |
 |---------|-------------|
 | `pkg/analysis` | Graph metrics (PageRank, betweenness, HITS, eigenvector, k-core), triage, planning, priority detection |
-| `pkg/search` | Hybrid semantic search (text + graph metrics), FTS5, ranking, presets |
+| `pkg/search` | Hybrid semantic search (text + graph metrics), hash embedder, ranking, presets |
 | `pkg/correlation` | Bead-to-commit correlation, orphan detection, history tracking |
 | `pkg/export` | Static site export, HTML bundle generation, GitHub Pages deployment |
 | `pkg/loader` | JSONL parsing, bead loading, validation |
@@ -230,7 +230,7 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ## beads_viewer — This Project
 
-**This is the project you're working on.** beads_viewer (`bv`) is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` workspaces, with `.beads/beads.jsonl` supported for legacy/`bd` workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically. It provides both an interactive TUI and machine-readable `--robot-*` JSON outputs for AI agent consumption.
+**This is the project you're working on.** beads_viewer (`bv`) is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` and Dolt-backed `bd` workspaces, with `.beads/beads.jsonl` supported for legacy workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically. It provides both an interactive TUI and machine-readable `--robot-*` JSON outputs for AI agent consumption.
 
 ### What It Does
 
@@ -262,7 +262,7 @@ beads_viewer/
 ├── cmd/bv/                         # CLI entry point (cobra)
 ├── pkg/
 │   ├── analysis/                   # Graph metrics, triage, planning, priority, forecasting
-│   ├── search/                     # Hybrid semantic search (text + graph, FTS5)
+│   ├── search/                     # Hybrid semantic search (text + graph metrics)
 │   ├── correlation/                # Bead-to-commit correlation, orphan detection
 │   ├── export/                     # Static site export (HTML/JS bundle, GitHub Pages)
 │   ├── loader/                     # JSONL parsing, bead loading, validation
@@ -290,9 +290,9 @@ beads_viewer/
 
 ### Key Design Decisions
 
-- **Two-phase analysis**: Phase 1 metrics (degree, topo sort, density) are instant; Phase 2 (PageRank, betweenness, HITS, eigenvector, cycles) runs async with a 500ms timeout — check `status` flags
+- **Two-phase analysis**: Phase 1 metrics (degree, topo sort, density) are instant; Phase 2 (PageRank, betweenness, HITS, eigenvector, cycles) runs async with size-tiered timeouts (2 s down to 200 ms, `ConfigForSize` in `pkg/analysis/config.go`) — check `status` flags
 - **Robot-first API**: All `--robot-*` flags emit deterministic JSON to stdout; human TUI is secondary
-- **Pure-Go SQLite** (`modernc.org/sqlite`) for FTS5 search index — no CGO dependency
+- **Pure-Go SQLite** (`modernc.org/sqlite`) for the static-site export's FTS5 index — no CGO dependency; `pkg/search` itself is an in-memory hash-embedding index, not SQLite
 - **Hybrid search** combines text relevance with graph metrics (PageRank, status, impact, priority, recency) via configurable weight presets
 - **Elm architecture TUI** via bubbletea — all state transitions are message-based
 - **Structured error wrapping** with `fmt.Errorf("context: %w", err)` for traceability
@@ -477,9 +477,8 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
 ### Conventions
 
 - **Single source of truth:** Beads for task status/priority/dependencies; Agent Mail for conversation and audit
-- **Visibility boundary:** Repository-local identifiers may be shared in coordination metadata only when repository policy permits it. Private Hub IDs and `ctx:` identities stay in private Hub operations and private conversation; never put them in Agent Mail archives or Git-visible metadata.
-- **Git metadata:** Keep private Hub IDs and contexts out of branch and tag names, commit messages, source, tests, docs, fixtures, release notes, and pull-request titles, bodies, comments, labels, or other metadata. Use an ID-free description of the work instead.
-- **Reservations:** For private Hub work, use an ID-free purpose in reservation reasons. Use an issue ID only for repository-local work that is explicitly safe to expose.
+- **Shared identifiers:** Use Beads issue ID (e.g., `br-123`) as Mail `thread_id` and prefix subjects with `[br-123]`
+- **Reservations:** When starting a task, call `file_reservation_paths()` with the issue ID in `reason`
 
 ### Typical Agent Flow
 
@@ -510,24 +509,20 @@ Beads provides a lightweight, dependency-aware issue database and CLI (`br` - be
    ```
    Final Mail reply: `[br-123] Completed` with summary
 
-### Repository-Local Mapping Cheat Sheet
-
-Use this mapping only for repository-local identifiers that are approved for
-Git-visible coordination. It never applies to private Hub identifiers or
-contexts.
+### Mapping Cheat Sheet
 
 | Concept | Value |
 |---------|-------|
 | Mail `thread_id` | `br-###` |
 | Mail subject | `[br-###] ...` |
 | File reservation `reason` | `br-###` |
-| Commit messages | Follow repository policy; never include private Hub identifiers |
+| Commit messages | Include `br-###` for traceability |
 
 ---
 
 ## bv — Graph-Aware Triage Engine
 
-bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` workspaces, with `.beads/beads.jsonl` supported for legacy/`bd` workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
+bv is a graph-aware triage engine for Beads projects (`.beads/issues.jsonl` in current `br` and Dolt-backed `bd` workspaces, with `.beads/beads.jsonl` supported for legacy workspaces). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
 
 **Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
 
@@ -574,7 +569,7 @@ bv --robot-next          # Minimal: just the single top pick + claim command
 | Command | Returns |
 |---------|---------|
 | `--robot-burndown <sprint>` | Sprint burndown, scope changes, at-risk items |
-| `--robot-forecast <id\|all>` | ETA predictions with dependency-aware scheduling |
+| `--robot-forecast <id\|all>` | ETA estimates from a duration heuristic and 30-day closure velocity (not a scheduler) |
 | `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
 | `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions |
 | `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
@@ -679,6 +674,16 @@ rch queue                     # See active/waiting builds
 
 If rch or its workers are unavailable, it fails open — builds run locally as normal.
 
+### Trust boundary
+
+RCH is a remote build service, so treat every offloaded command as leaving this machine:
+
+- **What is shipped:** the working tree of the current project (source, vendor/, test fixtures, `.beads/`), the command line, and an allowlisted subset of environment variables needed by the Go toolchain. Workers cache Go modules and build outputs per project (`.rch-go/` locally mirrors that cache and is git-ignored).
+- **What must never be shipped:** secrets and tokens (`GITHUB_TOKEN`, `GH_TOKEN`, cloud credentials, `~/.netrc`, `.git/config` credential helpers), private keys, or a tree that contains customer data. Do not export such values into the shell before running a build, and do not commit them into the tree. If a build needs a credential (private module proxy, signed release), run it locally or get explicit approval first.
+- **Who runs the workers:** the 8 Contabo VPS hosts are operated by the project maintainer; they are not a shared public service. Assume anything sent there can be read by whoever administers those hosts and may be retained in caches until the next cleanup. Private or credential-bearing builds therefore require the maintainer's explicit approval per run.
+- **Fallback:** when RCH or its workers are unreachable it fails open to a local build, so a green build never proves the remote path was used; check `rch status` if that matters.
+- **Docs:** `rch doctor`, `rch --help`, and the RCH repository README describe the env allowlist and the cache lifecycle in detail.
+
 **Note for Codex/GPT-5.2:** Codex does not have the automatic PreToolUse hook, but you can (and should) still manually offload compute-intensive compilation commands using `rch exec -- <command>`. This avoids local resource contention when multiple agents are building simultaneously.
 
 ---
@@ -755,19 +760,21 @@ Returns structured results with file paths, line ranges, and extracted code snip
 - **Don't** use `ripgrep` to understand "how does X work" → wastes time with manual reads
 - **Don't** use `ripgrep` for codemods → risks collateral edits
 
-<!-- bv-agent-instructions-v3 -->
+<!-- bv-agent-instructions-v4 -->
 
 ---
 
 ## Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git. Current `br` workspaces normally export `.beads/issues.jsonl`; older `bd`/legacy workspaces may use `.beads/beads.jsonl`. `bv` auto-discovers the supported JSONL files, so agents should use `br`/`bv` commands instead of hard-coding a single filename.
+This project uses a Beads tracker—either the Go `bd` CLI or the Rust `br` CLI—for issue tracking, plus [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/`. `bv` auto-discovers supported JSONL exports, including `.beads/issues.jsonl` and legacy `.beads/beads.jsonl`.
+
+**Choose the tracker CLI from this repository's instructions and configuration.** Use `bd` commands in a Go Beads workspace and `br` commands in a beads_rust workspace. Do not run both trackers against the same workspace or infer the tracker solely from the JSONL filename.
 
 ### Using bv as an AI sidecar
 
 bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/issues.jsonl / .beads/beads.jsonl directly or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
 
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). `br` handles creating, modifying, and closing beads.
+**Scope boundary:** bv handles *what to work on* (triage, priority, planning). The selected tracker CLI (`bd` or `br`) handles creating, claiming, modifying, and closing beads.
 
 **CRITICAL: Use ONLY --robot-* flags. Bare bv launches an interactive TUI that blocks your session.**
 
@@ -785,11 +792,15 @@ bv is a graph-aware triage engine for Beads projects. Instead of parsing .beads/
 bv --robot-triage        # THE MEGA-COMMAND: start here
 bv --robot-next          # Minimal: just the single top pick + claim command
 
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
+# TOON output (--format toon): a compact tabular encoding. Measured on this
+# repository it is 7% smaller than JSON for --robot-graph but 9-15% LARGER for
+# nested payloads (--robot-triage, --robot-plan, --robot-insights,
+# --robot-label-health); use --stats to see both sizes before adopting it.
+bv --robot-graph --format toon
+bv --robot-triage --format toon --stats
 ```
 
-Before claiming, verify current state with `br show <id> --json` or `br ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
+Before claiming, verify current state with the selected tracker: `br show <id> --json`/`br ready --json` or `bd show <id> --json`/`bd ready --json`. `recommendations` can include graph-important blocked or assigned work; only `quick_ref.top_picks` and non-empty `claim_command` fields represent claimable work.
 
 #### Other bv Commands
 
@@ -812,7 +823,11 @@ bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blo
 bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
 ```
 
-### br Commands for Issue Management
+### Tracker Commands for Issue Management
+
+Use exactly one command family, matching the tracker configured for the repository.
+
+#### Rust beads_rust (`br`)
 
 ```bash
 br ready --json                       # Show issues ready to work (no blockers)
@@ -825,24 +840,37 @@ br close <id1> <id2> --reason="Completed" --json
 br sync --flush-only                  # Export DB to JSONL after Beads mutations
 ```
 
+#### Go Beads (`bd`)
+
+```bash
+bd ready --json                       # Show issues ready to work
+bd show <id> --json                   # Full issue details
+bd create "..." -t task -p 2 --json
+bd update <id> --claim --json         # Atomically claim work
+bd close <id> --json
+bd dep add <issue> <depends-on>
+bd export -o .beads/issues.jsonl      # Refresh the compatibility export read by bv
+```
+
 ### Workflow Pattern
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Use `br update <id> --status=in_progress --json`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id> --reason="Completed" --json`
-5. **Sync**: Run `br sync --flush-only` after Beads mutations so the JSONL export is current
+2. **Verify**: Check the selected tracker's `show`/`ready` output before claiming
+3. **Claim**: Use `br update <id> --status=in_progress --json` or `bd update <id> --claim --json`
+4. **Work**: Implement the task
+5. **Complete**: Use the selected tracker's `close` command
+6. **Refresh for bv**: Run `br sync --flush-only` or the `bd export` command above so the JSONL export is current
 
 ### Key Concepts
 
-- **Dependencies**: Issues can block other issues. `br ready --json` shows only unblocked work.
+- **Dependencies**: Issues can block other issues. `br ready --json` and `bd ready --json` show unblocked work.
 - **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
 - **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
+- **Blocking**: Use `br dep add <issue> <depends-on>` or `bd dep add <issue> <depends-on>` to add dependencies
 
 ### Git Policy
 
-`br` never commits or pushes. Follow this repository's own git instructions before staging, committing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
+Tracker commands do not grant permission to commit or push application code. Follow this repository's own git and tracker instructions before staging, committing, syncing, or pushing. If the repository says "commit only when asked," that rule overrides any generic workflow advice.
 
 <!-- end-bv-agent-instructions -->
 

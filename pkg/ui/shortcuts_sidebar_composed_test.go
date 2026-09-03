@@ -32,7 +32,7 @@ func TestShortcutsSidebarComposedWidthFitsTerminal(t *testing.T) {
 
 	// composeWidth rebuilds the same body+sidebar join View() performs, before
 	// the final full-screen clamp, for the currently-focused list/detail body.
-	composeWidth := func(m Model, showDetails bool) int {
+	composeWidth := func(m *Model, showDetails bool) int {
 		var body string
 		if m.isSplitView {
 			body = m.renderSplitView()
@@ -68,7 +68,7 @@ func TestShortcutsSidebarComposedWidthFitsTerminal(t *testing.T) {
 
 			// Open the sidebar via the real `;` key path.
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showShortcutsSidebar {
 				t.Fatalf("`;` did not enable the shortcuts sidebar")
 			}
@@ -136,7 +136,7 @@ func TestShortcutsSidebarFullScreenViewsKeepSidebarVisible(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := sizedModel(t, mouseTestIssues(40), 200, 40)
 			m.showShortcutsSidebar = true
-			tc.setup(&m)
+			tc.setup(m)
 			m.applyContentSizing()
 
 			view := m.View()
@@ -188,18 +188,18 @@ func TestTimeTravelShortcutsSidebarComposition(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			m := sizedModel(t, mouseTestIssues(2), test.width, 30)
 			updated, _ := m.Update(keyMsg("t"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showTimeTravelPrompt || m.showShortcutsSidebar {
 				t.Fatalf("opening time-travel prompt changed initial state: prompt=%v sidebar=%v", m.showTimeTravelPrompt, m.showShortcutsSidebar)
 			}
 			updated, _ = m.Update(keyMsg(";"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showTimeTravelPrompt || !m.showShortcutsSidebar {
 				t.Fatalf("semicolon did not keep the time-travel prompt/sidebar state: prompt=%v sidebar=%v", m.showTimeTravelPrompt, m.showShortcutsSidebar)
 			}
 			if test.width == 80 {
 				updated, _ = m.Update(keyMsg("HEAD~1"))
-				m = updated.(Model)
+				m = updated.(*Model)
 			}
 
 			// Rebuild the same pre-clamp composition performed by View(). This catches
@@ -265,7 +265,7 @@ func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
 		t.Fatal("projected-parent marker missing from Tree rows")
 	}
 
-	assertTreeBody := func(m Model) string {
+	assertTreeBody := func(m *Model) string {
 		body := m.renderTreeBody()
 		if got, want := len(strings.Split(body, "\n")), len(strings.Split(m.tree.View(), "\n")); got != want {
 			t.Fatalf("Tree rows wrapped: got %d rendered lines, want %d", got, want)
@@ -280,7 +280,7 @@ func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
 	assertTreeBody(m)
 
 	updated, _ := m.Update(keyMsg(";"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showShortcutsSidebar {
 		t.Fatal("semicolon did not open Tree sidebar")
 	}
@@ -303,7 +303,7 @@ func TestTreeSidebarBoundsLongProjectedRowsAtNormalWidths(t *testing.T) {
 	}
 
 	updated, _ = m.Update(keyMsg(";"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showShortcutsSidebar || m.tree.GetSelectedID() != selectedID || !strings.Contains(ansi.Strip(assertTreeBody(m)), "┃") {
 		t.Fatal("closing sidebar changed or hid bottom Tree selection")
 	}
@@ -326,7 +326,7 @@ func TestFullScreenTreeAndTutorialLayoutAtNormalSize(t *testing.T) {
 		t.Run(size.name, func(t *testing.T) {
 			m := sizedModel(t, mouseTestIssues(2), size.width, size.height)
 			updated, _ := m.Update(keyMsg("E"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			treeView := m.View()
 			if got := lipgloss.Height(treeView); got != size.height {
 				t.Fatalf("Tree view height = %d, want %d", got, size.height)
@@ -336,11 +336,11 @@ func TestFullScreenTreeAndTutorialLayoutAtNormalSize(t *testing.T) {
 			}
 
 			updated, _ = m.Update(keyMsg(";"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			updated, _ = m.Update(keyMsg("?"))
-			m = updated.(Model)
+			m = updated.(*Model)
 			updated, _ = m.Update(keyMsg(" "))
-			m = updated.(Model)
+			m = updated.(*Model)
 			tutorialView := m.View()
 			if !m.showTutorial || !m.showShortcutsSidebar {
 				t.Fatalf("Help-to-Tutorial did not preserve full-screen/sidebar state: tutorial=%v sidebar=%v", m.showTutorial, m.showShortcutsSidebar)
@@ -394,7 +394,7 @@ func TestShortcutsSidebarKeepsLongIssueRowsSingleLine(t *testing.T) {
 		t.Fatalf("long issue row wrapped before opening sidebar: got %d non-empty lines, want 1:\n%s", got, m.list.View())
 	}
 	updated, _ := m.Update(keyMsg(";"))
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showShortcutsSidebar {
 		t.Fatal("semicolon did not open shortcuts sidebar")
 	}
@@ -464,7 +464,7 @@ func TestUnderfilledNormalViewsAnchorGlobalStatuslineAtBottom(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := sizedModel(t, mouseTestIssues(2), 120, 30)
-			tc.setup(&m)
+			tc.setup(m)
 			m.showShortcutsSidebar = tc.withSidebar
 			m.applyContentSizing()
 

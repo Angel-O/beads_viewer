@@ -260,6 +260,26 @@ func TestGenerateEnhancedRecommendations_WithIssues(t *testing.T) {
 	}
 }
 
+func TestGenerateEnhancedRecommendations_UsesAnalyzerClock(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 34, 56, 0, time.UTC)
+	issues := []model.Issue{
+		{ID: "blocker", Title: "Blocker", Status: model.StatusOpen, Priority: 4, UpdatedAt: pinned.Add(-30 * 24 * time.Hour)},
+		{ID: "dependent", Title: "Dependent", Status: model.StatusOpen, Priority: 0, Dependencies: []*model.Dependency{{DependsOnID: "blocker", Type: model.DepBlocks}}},
+	}
+	analyzer := NewAnalyzer(issues)
+	analyzer.SetNow(pinned)
+
+	recommendations := analyzer.GenerateEnhancedRecommendations()
+	if len(recommendations) == 0 {
+		t.Fatal("expected at least one enhanced recommendation")
+	}
+	for _, recommendation := range recommendations {
+		if got, want := recommendation.Explanation.Status.ComputedAt, pinned.Format(time.RFC3339); got != want {
+			t.Fatalf("computed_at = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestTopWhatIfDeltas_SkipsTombstone(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "A", Title: "Removed blocker", Status: model.StatusTombstone},
