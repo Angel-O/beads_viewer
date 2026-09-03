@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -39,20 +41,6 @@ func NewSQLiteReader(source DataSource) (*SQLiteReader, error) {
 		return nil, fmt.Errorf("cannot connect to database: %w", err)
 	}
 
-	// Set pragmas for read performance
-	pragmas := []string{
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA cache_size = -64000",   // 64MB cache
-		"PRAGMA mmap_size = 268435456", // 256MB mmap
-		"PRAGMA temp_store = MEMORY",
-		"PRAGMA query_only = ON",
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			// Non-fatal, just log
-		}
-	}
-
 	return &SQLiteReader{
 		db:   db,
 		path: source.Path,
@@ -60,12 +48,79 @@ func NewSQLiteReader(source DataSource) (*SQLiteReader, error) {
 }
 
 func sqliteReadOnlyDSN(path string) string {
-	return sqliteFileDSN(path, "mode=ro")
+	query := url.Values{}
+	query.Set("mode", "ro")
+	// SAFETY: SQLite PRAGMAs are connection-local. database/sql may open new
+	// pooled connections after NewSQLiteReader returns, so configuring one
+	// borrowed connection with db.Exec does not configure the pool. modernc's
+	// repeated _pragma DSN parameter applies each setting to every connection.
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "cache_size(-64000)")   // 64MB cache
+	query.Add("_pragma", "mmap_size(268435456)") // 256MB mmap
+	query.Add("_pragma", "temp_store(MEMORY)")
+	query.Add("_pragma", "query_only(1)")
+	return sqliteFileDSN(path, query.Encode())
 }
 
 func sqliteFileDSN(path, rawQuery string) string {
-	u := url.URL{Scheme: "file", Path: path, RawQuery: rawQuery}
+	u := url.URL{Scheme: "file", Path: sqliteURIPath(path, runtime.GOOS == "windows"), RawQuery: rawQuery}
 	return u.String()
+}
+
+// sqliteURIPath converts a filesystem path into the path component of a
+// "file:" URI that SQLite maps back onto the same file.
+//
+// url.URL.String() always emits "file://" + path, so the first path segment
+// lands in the URI *authority* position unless the path starts with "/".
+// SQLite only accepts an empty authority (or "localhost") and rejects
+// anything else with "invalid uri authority: ...". Two path shapes hit that:
+//
+//   - Windows drive paths: `E:\repo\.beads\beads.db` became
+//     `file://E:%5Crepo%5C...` (bv #198). SQLite's documented Windows form
+//     is `file:///E:/repo/.beads/beads.db`, so backslashes are converted to
+//     forward slashes and the drive letter is prefixed with "/".
+//   - Relative paths: `.beads/beads.db` became `file://.beads/beads.db`.
+//     They are made absolute first so the URI path is always rooted.
+//
+// UNC paths (`\\server\share\x.db`) come out as `file:////server/share/x.db`:
+// empty authority, path `//server/share/x.db`, which the Windows file APIs
+// accept with forward slashes.
+//
+// windows selects the Windows path rules explicitly so the conversion is
+// unit-testable on every platform.
+func sqliteURIPath(path string, windows bool) string {
+	if !isRootedPath(path, windows) {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+	}
+	if windows {
+		path = strings.ReplaceAll(path, `\`, "/")
+		if hasDriveLetter(path) {
+			path = "/" + path
+		}
+	}
+	return path
+}
+
+func isRootedPath(path string, windows bool) bool {
+	if strings.HasPrefix(path, "/") {
+		return true
+	}
+	if !windows {
+		return false
+	}
+	return strings.HasPrefix(path, `\`) || hasDriveLetter(path)
+}
+
+// hasDriveLetter reports whether path starts with a Windows drive
+// designator such as "E:" (with or without a following separator).
+func hasDriveLetter(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
 // Close closes the database connection

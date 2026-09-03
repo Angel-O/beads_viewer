@@ -762,7 +762,6 @@ func (m *InsightsModel) View() string {
 			MaxHeight(m.height).
 			Render(m.extraText)
 	}
-
 	t := m.theme
 
 	// Optional throughput summary

@@ -218,12 +218,67 @@ func TestFullAnalysisConfig(t *testing.T) {
 }
 
 func TestAnalysisConfigDisableCacheIsNotSerialized(t *testing.T) {
-	encoded, err := json.Marshal(AnalysisConfig{DisableCache: true})
+	encoded, err := json.Marshal(AnalysisConfig{DisableCache: true, RunToCompletion: true})
 	if err != nil {
 		t.Fatalf("marshalling analysis config: %v", err)
 	}
 	if bytes.Contains(encoded, []byte("DisableCache")) {
 		t.Fatalf("DisableCache is an execution control and must not change robot output schema: %s", encoded)
+	}
+	if bytes.Contains(encoded, []byte("RunToCompletion")) {
+		t.Fatalf("RunToCompletion is an execution control and must not change robot output schema: %s", encoded)
+	}
+}
+
+func TestApplyEnvOverrides_SourceDateEpochRunToCompletion(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "positive integer", value: "1234567890", want: true},
+		{name: "unix epoch", value: "0", want: true},
+		{name: "signed integer", value: "-1", want: true},
+		{name: "surrounding whitespace", value: " 42 ", want: true},
+		{name: "empty", value: "", want: false},
+		{name: "fractional", value: "1.5", want: false},
+		{name: "nonnumeric", value: "tomorrow", want: false},
+		{name: "int64 overflow", value: "9223372036854775808", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(EnvSourceDateEpoch, tt.value)
+			// Start in the opposite state to prove ApplyEnvOverrides derives the
+			// mode from the validated environment rather than retaining stale state.
+			cfg := ApplyEnvOverrides(AnalysisConfig{RunToCompletion: !tt.want})
+			if cfg.RunToCompletion != tt.want {
+				t.Fatalf("RunToCompletion=%v for %q, want %v", cfg.RunToCompletion, tt.value, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyEnvOverrides_SourceDateEpochDoesNotUnboundInteractiveAnalysis(t *testing.T) {
+	t.Setenv("BV_ROBOT", "0")
+	t.Setenv(EnvSourceDateEpoch, "1234567890")
+
+	cfg := ApplyEnvOverrides(AnalysisConfig{RunToCompletion: true})
+	if cfg.RunToCompletion {
+		t.Fatal("SOURCE_DATE_EPOCH enabled run-to-completion outside robot mode")
+	}
+}
+
+func TestComputeConfigHash_DistinguishesRunToCompletion(t *testing.T) {
+	regular := AnalysisConfig{ComputePageRank: true, PageRankTimeout: time.Millisecond}
+	reproducible := regular
+	reproducible.RunToCompletion = true
+
+	regularHash := ComputeConfigHash(&regular)
+	reproducibleHash := ComputeConfigHash(&reproducible)
+	if regularHash == reproducibleHash {
+		t.Fatalf("config hash ignored RunToCompletion: %s", regularHash)
 	}
 }
 

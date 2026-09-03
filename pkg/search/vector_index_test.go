@@ -1,6 +1,8 @@
 package search
 
 import (
+	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -95,6 +97,61 @@ func TestVectorIndex_Errors(t *testing.T) {
 	}
 	if _, err := idx.SearchTopK([]float32{1, 2}, 1); err == nil {
 		t.Fatalf("Expected dim mismatch error on SearchTopK")
+	}
+}
+
+func TestLoadVectorIndexRejectsUntrustedAllocationHeaders(t *testing.T) {
+	tests := []struct {
+		name  string
+		dim   uint32
+		count uint32
+	}{
+		{name: "oversized dimension", dim: maxVectorIndexDimension + 1},
+		{name: "oversized entry count", dim: 1, count: maxVectorIndexEntries + 1},
+		{name: "impossible entry count for file size", dim: 4, count: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "index.bvvi")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatalf("create vector index: %v", err)
+			}
+			writeErr := func() error {
+				if _, err := file.WriteString(vectorIndexMagic); err != nil {
+					return err
+				}
+				for _, value := range []any{vectorIndexVersion, uint16(0), tc.dim, tc.count} {
+					if err := binary.Write(file, binary.LittleEndian, value); err != nil {
+						return err
+					}
+				}
+				return nil
+			}()
+			if closeErr := file.Close(); writeErr == nil {
+				writeErr = closeErr
+			}
+			if writeErr != nil {
+				t.Fatalf("write vector index header: %v", writeErr)
+			}
+
+			if _, err := LoadVectorIndex(path); err == nil {
+				t.Fatal("LoadVectorIndex accepted a corrupt allocation header")
+			}
+		})
+	}
+}
+
+func TestVectorIndexSaveRejectsUnreloadableDimension(t *testing.T) {
+	idx := NewVectorIndex(int(maxVectorIndexDimension) + 1)
+	path := filepath.Join(t.TempDir(), "index.bvvi")
+
+	if err := idx.Save(path); err == nil {
+		t.Fatal("Save accepted a dimension that LoadVectorIndex rejects")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("rejected save left an index artifact: %v", err)
 	}
 }
 

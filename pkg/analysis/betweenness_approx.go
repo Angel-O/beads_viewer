@@ -268,6 +268,19 @@ type BetweennessResult struct {
 //   - "A Faster Algorithm for Betweenness Centrality" (Brandes, 2001)
 //   - "Approximating Betweenness Centrality" (Bader et al., 2007)
 func ApproxBetweenness(g graph.Directed, sampleSize int, seed int64) BetweennessResult {
+	return approxBetweenness(g, sampleSize, seed, false)
+}
+
+// approxBetweennessDeterministic performs the same seeded sampling while
+// reducing pivot contributions in sample order. The ordinary implementation
+// keeps its parallel fast path; reproducible robot mode uses this serial
+// reduction because floating-point addition in goroutine completion order is
+// not associative and can otherwise change output bytes between runs.
+func approxBetweennessDeterministic(g graph.Directed, sampleSize int, seed int64) BetweennessResult {
+	return approxBetweenness(g, sampleSize, seed, true)
+}
+
+func approxBetweenness(g graph.Directed, sampleSize int, seed int64, deterministic bool) BetweennessResult {
 	start := time.Now()
 	nodes := pooledNodesOf(g.Nodes())
 	defer putPooledNodes(nodes)
@@ -313,36 +326,47 @@ func ApproxBetweenness(g graph.Directed, sampleSize int, seed int64) Betweenness
 	// Sample k random pivot indices
 	pivots := sampleIndices(n, sampleSize, seed)
 
-	// Compute partial betweenness from sampled pivots in parallel
+	// Compute partial betweenness from sampled pivots.
 	partialBC := make([]float64, n)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	// Limit concurrency to avoid excessive goroutines
-	sem := make(chan struct{}, runtime.NumCPU())
-
-	for _, pivot := range pivots {
-		wg.Add(1)
-		go func(sourceIdx int) {
-			defer wg.Done()
-			sem <- struct{}{} // Acquire token
-			defer func() { <-sem }()
-
-			buf := brandesPool.Get().(*brandesBuffers)
-			defer brandesPool.Put(buf)
-
-			// Compute local contribution into pooled buffers (buf.bc)
-			singleSourceBetweennessDense(adj, sourceIdx, buf)
-
-			// Merge into global result using visited nodes only.
-			mu.Lock()
+	if deterministic {
+		buf := brandesPool.Get().(*brandesBuffers)
+		for _, pivot := range pivots {
+			singleSourceBetweennessDense(adj, pivot, buf)
 			for _, w := range buf.stack {
 				partialBC[w] += buf.bc[w]
 			}
-			mu.Unlock()
-		}(pivot)
+		}
+		brandesPool.Put(buf)
+	} else {
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		// Limit concurrency to avoid excessive goroutines
+		sem := make(chan struct{}, runtime.NumCPU())
+
+		for _, pivot := range pivots {
+			wg.Add(1)
+			go func(sourceIdx int) {
+				defer wg.Done()
+				sem <- struct{}{} // Acquire token
+				defer func() { <-sem }()
+
+				buf := brandesPool.Get().(*brandesBuffers)
+				defer brandesPool.Put(buf)
+
+				// Compute local contribution into pooled buffers (buf.bc)
+				singleSourceBetweennessDense(adj, sourceIdx, buf)
+
+				// Merge into global result using visited nodes only.
+				mu.Lock()
+				for _, w := range buf.stack {
+					partialBC[w] += buf.bc[w]
+				}
+				mu.Unlock()
+			}(pivot)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	// Scale up: BC_approx = BC_partial * (n / k)
 	// This extrapolates from the sample to the full graph

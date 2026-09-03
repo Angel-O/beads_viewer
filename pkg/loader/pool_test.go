@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -107,6 +108,51 @@ func TestPooledIssueEmptySlicesDropPooledCapacity(t *testing.T) {
 	}
 	if cap(issue.Comments) != 0 {
 		t.Fatalf("expected detached Comments capacity 0, got %d", cap(issue.Comments))
+	}
+}
+
+func TestIssueStringInterner_DeduplicatesAndStaysBounded(t *testing.T) {
+	var interner issueStringInterner
+	first := strings.Clone("shared-label")
+	second := strings.Clone("shared-label")
+
+	if got := interner.intern(first); got != first {
+		t.Fatalf("first intern=%q, want %q", got, first)
+	}
+	if got := interner.intern(second); got != first {
+		t.Fatalf("duplicate intern=%q, want canonical %q", got, first)
+	} else if unsafe.StringData(got) != unsafe.StringData(first) {
+		t.Fatal("duplicate value did not reuse the canonical string backing storage")
+	}
+
+	occupied := 0
+	for _, value := range interner.slots {
+		if value != "" {
+			occupied++
+		}
+	}
+	if occupied != 1 {
+		t.Fatalf("occupied slots=%d, want 1", occupied)
+	}
+
+	for i := 0; i < issueStringInternerSlots*2; i++ {
+		value := fmt.Sprintf("unique-%d", i)
+		if got := interner.intern(value); got != value {
+			t.Fatalf("intern(%q)=%q", value, got)
+		}
+	}
+
+	occupied = 0
+	for _, value := range interner.slots {
+		if value != "" {
+			occupied++
+		}
+	}
+	if occupied <= 0 || occupied > issueStringInternerSlots {
+		t.Fatalf("occupied slots=%d, want within 1..%d", occupied, issueStringInternerSlots)
+	}
+	if issueStringInternerMaxProbes >= issueStringInternerSlots {
+		t.Fatalf("probe budget=%d must remain below table capacity %d", issueStringInternerMaxProbes, issueStringInternerSlots)
 	}
 }
 

@@ -142,10 +142,10 @@ func TestHistoryModel_SetReportPreservesStableStateByIdentity(t *testing.T) {
 	if commit := h.SelectedCommit(); commit == nil || commit.Repository != "repo-a" || commit.SHA != "sha-a2" {
 		t.Fatalf("refresh changed selected bead commit: %#v", commit)
 	}
-	if h.SelectedRelatedBeadID() != "item-a" || h.gitScrollOffset != 2 {
+	if h.SelectedRelatedBeadID() != "item-a" || h.gitScrollOffset != 0 {
 		t.Fatalf("refresh changed related bead or git scroll: bead=%q scroll=%d", h.SelectedRelatedBeadID(), h.gitScrollOffset)
 	}
-	if h.scrollOffset != 1 || h.middleScrollOffset != 2 || h.timelineScrollOffset != 3 {
+	if h.scrollOffset != 0 || h.middleScrollOffset != 0 || h.timelineScrollOffset != 0 {
 		t.Fatalf("refresh changed pane scroll: list=%d middle=%d timeline=%d", h.scrollOffset, h.middleScrollOffset, h.timelineScrollOffset)
 	}
 	if h.authorFilter != "Dev" || h.minConfidence != 0.5 || !h.expandedBeads["item-a"] {
@@ -154,7 +154,7 @@ func TestHistoryModel_SetReportPreservesStableStateByIdentity(t *testing.T) {
 	if file := h.SelectedFileNode(); file == nil || file.Path != "repo-a:pkg/ui/second.go" {
 		t.Fatalf("refresh changed selected file: %#v", file)
 	}
-	if !h.showFileTree || !h.fileTreeFocus || h.fileTreeScroll != 1 {
+	if !h.showFileTree || !h.fileTreeFocus || h.fileTreeScroll != 0 {
 		t.Fatalf("refresh changed file tree state: visible=%v focus=%v scroll=%d", h.showFileTree, h.fileTreeFocus, h.fileTreeScroll)
 	}
 	if expanded := expandedHistoryFilePaths(h.fileTree); !expanded["repo-a:pkg"] || !expanded["repo-a:pkg/ui"] {

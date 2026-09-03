@@ -260,7 +260,13 @@ func extractKeywords(title, description string) []string {
 // Uses sort.Slice for O(n log n) performance instead of bubble sort O(n²)
 func sortPairsBySimilarity(pairs []DuplicatePair) {
 	sort.Slice(pairs, func(i, j int) bool {
-		return pairs[i].Similarity > pairs[j].Similarity
+		if pairs[i].Similarity != pairs[j].Similarity {
+			return pairs[i].Similarity > pairs[j].Similarity
+		}
+		if pairs[i].Issue1 != pairs[j].Issue1 {
+			return pairs[i].Issue1 < pairs[j].Issue1
+		}
+		return pairs[i].Issue2 < pairs[j].Issue2
 	})
 }
 

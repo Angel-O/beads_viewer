@@ -132,6 +132,31 @@ func TestFindCyclesSafe_Limit(t *testing.T) {
 	}
 }
 
+func TestFindCyclesSafe_LimitChoosesCanonicalSubset(t *testing.T) {
+	// More disjoint SCCs than the limit used to truncate Tarjan's map-derived
+	// order before sorting, so identical graphs could return different subsets.
+	edges := [][2]int{
+		{8, 9}, {9, 8},
+		{2, 3}, {3, 2},
+		{6, 7}, {7, 6},
+		{0, 1}, {1, 0},
+		{4, 5}, {5, 4},
+	}
+	g := buildTestGraph(10, edges)
+	cycles := findCyclesSafe(g, 3)
+	if len(cycles) != 3 {
+		t.Fatalf("cycle count=%d, want 3", len(cycles))
+	}
+	for i, wantStart := range []int64{0, 2, 4} {
+		if got := cycles[i][0].ID(); got != wantStart {
+			t.Fatalf("cycle %d starts at %d, want canonical %d; cycles=%v", i, got, wantStart, cycles)
+		}
+	}
+	if got := findCyclesSafe(g, 0); len(got) != 0 {
+		t.Fatalf("zero limit returned %d cycles", len(got))
+	}
+}
+
 func TestFindCyclesSafe_SortedByLength(t *testing.T) {
 	// Create cycles of different lengths
 	// Short cycle: 0 -> 1 -> 0 (length 2)

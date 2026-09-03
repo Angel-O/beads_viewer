@@ -38,6 +38,14 @@ func CopyEmbeddedAssets(outputDir, title string) error {
 			return nil
 		}
 
+		// Skip development-only assets. graph-demo.html loads third-party
+		// scripts from remote CDNs (unpkg/d3js.org) without SRI, which would
+		// let CDN-served JavaScript run on the exported dashboard's origin
+		// next to the exported project database. Test files are dev-only too.
+		if !d.IsDir() && isDevOnlyAsset(relPath) {
+			return nil
+		}
+
 		// Convert to platform-specific path separator for the destination
 		destPath := filepath.Join(outputDir, filepath.FromSlash(relPath))
 
@@ -83,6 +91,15 @@ func CopyEmbeddedAssets(outputDir, title string) error {
 	}
 
 	return nil
+}
+
+// isDevOnlyAsset reports whether a viewer asset is development-only and must
+// not be included in production export bundles.
+func isDevOnlyAsset(relPath string) bool {
+	if relPath == "graph-demo.html" {
+		return true
+	}
+	return strings.HasSuffix(relPath, ".test.js")
 }
 
 // replaceTitle replaces the default title in HTML content with the provided title.

@@ -23,6 +23,28 @@ func TestReplaceTitle_Basic(t *testing.T) {
 	}
 }
 
+func TestCopyEmbeddedAssets_ExcludesDevOnlyAssets(t *testing.T) {
+	outDir := t.TempDir()
+	if err := CopyEmbeddedAssets(outDir, ""); err != nil {
+		t.Fatalf("CopyEmbeddedAssets failed: %v", err)
+	}
+
+	// graph-demo.html loads remote CDN scripts (unpkg/d3js.org) that would run
+	// on the exported dashboard's origin; it must never ship in a bundle.
+	for _, excluded := range []string{"graph-demo.html", "hybrid_scorer.test.js"} {
+		if _, err := os.Stat(filepath.Join(outDir, excluded)); !os.IsNotExist(err) {
+			t.Errorf("dev-only asset %s must not be exported", excluded)
+		}
+	}
+
+	// Production assets must still be present.
+	for _, required := range []string{"index.html", "viewer.js", "graph.js", "hybrid_scorer.js"} {
+		if _, err := os.Stat(filepath.Join(outDir, required)); err != nil {
+			t.Errorf("expected production asset %s in bundle: %v", required, err)
+		}
+	}
+}
+
 func TestReplaceTitle_Empty(t *testing.T) {
 	html := `<title>Beads Viewer</title>`
 	result := replaceTitle(html, "")

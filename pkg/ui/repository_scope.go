@@ -1232,10 +1232,18 @@ func (m Model) repositoryHistoryReport(report *correlation.HistoryReport) *corre
 	return projectHistoryReport(report, m.repositoryIssueIDs, repositories)
 }
 
+// refreshAttentionView recomputes scoped label attention and updates both the
+// navigable attention view and the insights presentation.
 func (m *Model) refreshAttentionView() {
 	cfg := analysis.DefaultLabelHealthConfig()
 	m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC(), m.labelPredicate())
 	m.attentionCached = true
+	m.attentionView.SetData(m.attentionCache)
+	height := m.height - 1
+	if height < 3 {
+		height = 3
+	}
+	m.attentionView.SetSize(m.width, height)
 	attText := RenderAttentionView(m.attentionCache, max(40, m.width-4))
 	m.rebuildInsightsPanel()
 	m.insightsPanel.labelAttention = m.attentionCache.Labels

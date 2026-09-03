@@ -1,5 +1,10 @@
 # Built-in bv recipes
-# These are embedded into the binary and serve as defaults
+# These are embedded into the binary and serve as defaults.
+#
+# Only fields that Apply honours appear here: filters, sort (primary and
+# secondary, including the pagerank/betweenness/impact/triage metric fields)
+# and view.max_items. view.columns, view.show_metrics, export.* and metrics
+# are parsed but not applied yet, so builtins do not set them.
 
 recipes:
   default:
@@ -12,13 +17,6 @@ recipes:
     sort:
       field: priority
       direction: asc
-    view:
-      columns:
-        - id
-        - title
-        - status
-        - priority
-      group_by: none
 
   actionable:
     description: Issues ready to work on (no open blockers)
@@ -30,13 +28,6 @@ recipes:
     sort:
       field: priority
       direction: asc
-    view:
-      columns:
-        - id
-        - title
-        - priority
-        - blockers
-      show_metrics: true
 
   recent:
     description: Issues updated in the last 7 days
@@ -45,12 +36,6 @@ recipes:
     sort:
       field: updated
       direction: desc
-    view:
-      columns:
-        - id
-        - title
-        - status
-        - updated
 
   blocked:
     description: Issues waiting on dependencies
@@ -63,13 +48,6 @@ recipes:
     sort:
       field: priority
       direction: asc
-    view:
-      columns:
-        - id
-        - title
-        - priority
-        - blockers
-      show_graph: true
 
   high-impact:
     description: Issues with highest blocking impact (PageRank)
@@ -80,17 +58,11 @@ recipes:
     sort:
       field: pagerank
       direction: desc
+      secondary:
+        field: priority
+        direction: asc
     view:
-      columns:
-        - id
-        - title
-        - priority
-        - pagerank
-      show_metrics: true
       max_items: 20
-    metrics:
-      - pagerank
-      - critical_path
 
   stale:
     description: Open issues not updated in 30+ days
@@ -102,12 +74,6 @@ recipes:
     sort:
       field: updated
       direction: asc
-    view:
-      columns:
-        - id
-        - title
-        - status
-        - updated
 
   triage:
     description: Issues sorted by computed triage score (high impact + unblocking potential)
@@ -119,13 +85,10 @@ recipes:
     sort:
       field: triage
       direction: desc
+      secondary:
+        field: priority
+        direction: asc
     view:
-      columns:
-        - id
-        - title
-        - priority
-        - triage
-      show_metrics: true
       max_items: 20
 
   closed:
@@ -137,10 +100,6 @@ recipes:
       field: updated
       direction: desc
     view:
-      columns:
-        - id
-        - title
-        - updated
       max_items: 25
 
   release-cut:
@@ -152,11 +111,6 @@ recipes:
     sort:
       field: updated
       direction: desc
-    view:
-      columns:
-        - id
-        - title
-        - updated
 
   quick-wins:
     description: Easy items with no blockers - good for quick progress
@@ -171,10 +125,6 @@ recipes:
       field: priority
       direction: asc
     view:
-      columns:
-        - id
-        - title
-        - priority
       max_items: 15
 
   bottlenecks:
@@ -186,14 +136,8 @@ recipes:
     sort:
       field: betweenness
       direction: desc
+      secondary:
+        field: pagerank
+        direction: desc
     view:
-      columns:
-        - id
-        - title
-        - priority
-        - betweenness
-      show_metrics: true
       max_items: 15
-    metrics:
-      - betweenness
-      - pagerank

@@ -213,7 +213,7 @@ func pruneAndBoundPerCommitEntries(now time.Time, entries map[string]perCommitNa
 	var all []item
 	for ns, bucket := range entries {
 		for sha, e := range bucket.Commits {
-			if e.CreatedAt.IsZero() || now.Sub(e.CreatedAt) > perCommitEventCacheMaxAge {
+			if !cacheCreatedAtIsFresh(e.CreatedAt, now, perCommitEventCacheMaxAge) {
 				delete(bucket.Commits, sha)
 				continue
 			}
@@ -279,7 +279,7 @@ func loadPerCommitEvents(namespace string) map[string]perCommitEventEntry {
 	// Filter aged entries out of the returned view without rewriting the file.
 	out := make(map[string]perCommitEventEntry, len(bucket.Commits))
 	for sha, e := range bucket.Commits {
-		if e.CreatedAt.IsZero() || now.Sub(e.CreatedAt) > perCommitEventCacheMaxAge {
+		if !cacheCreatedAtIsFresh(e.CreatedAt, now, perCommitEventCacheMaxAge) {
 			continue
 		}
 		out[sha] = e

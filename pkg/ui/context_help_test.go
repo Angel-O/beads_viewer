@@ -273,7 +273,7 @@ func TestContextHelpTreeDocumentsExactEntryAndExitKeys(t *testing.T) {
 
 func TestContextHelpInsightsDocumentsOnlyActiveStatusControls(t *testing.T) {
 	content := GetContextHelp(ContextInsights)
-	for _, expected := range []string{"o         Active work (default)", "r         Ready-only; toggle off for active work"} {
+	for _, expected := range []string{"Tab / Shift+Tab  Next/previous panel", "o         Active work (default)", "r         Ready-only; toggle off for active work"} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("Insights help missing %q", expected)
 		}

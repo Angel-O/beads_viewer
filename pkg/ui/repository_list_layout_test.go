@@ -495,7 +495,7 @@ func TestIssueListRightEdgeContractAcrossViewLayouts(t *testing.T) {
 		IssueType: model.TypeTask, CreatedAt: time.Now().Add(-2 * time.Hour),
 		Comments: []*model.Comment{{ID: "one"}},
 	}
-	assertLayout := func(t *testing.T, m Model, view string) {
+	assertLayout := func(t *testing.T, m *Model, view string) {
 		t.Helper()
 		header, row := listHeaderAndRow(t, view, issue.ID)
 		for headerMarker, rowMarker := range map[string]string{
@@ -506,7 +506,7 @@ func TestIssueListRightEdgeContractAcrossViewLayouts(t *testing.T) {
 			}
 		}
 	}
-	assertManagedWidth := func(t *testing.T, m Model) {
+	assertManagedWidth := func(t *testing.T, m *Model) {
 		t.Helper()
 		delegate := m.issueListDelegate()
 		if !delegate.useFullWidth {
@@ -564,7 +564,7 @@ func TestIssueListRightEdgeContractAcrossViewLayouts(t *testing.T) {
 	t.Run("shortcuts sidebar", func(t *testing.T) {
 		m := sizedModel(t, []model.Issue{issue}, 80, 24)
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if !m.showShortcutsSidebar {
 			t.Fatal("shortcuts sidebar did not open")
 		}
@@ -829,7 +829,7 @@ func TestListPaginationFooterMatchesPaginatorAfterArrowNavigation(t *testing.T) 
 				{key: "left", page: 1},
 			} {
 				updated, _ := m.Update(keyMsg(step.key))
-				m = updated.(Model)
+				m = updated.(*Model)
 				assertFooter(step.page)
 			}
 		})
@@ -975,7 +975,7 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 	m.unblocksMap = map[string][]string{issues[2].ID: {"hidden-a", "hidden-b"}}
 	m.refreshRepositoryPresentation()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	delegateWidth := func() int {
 		t.Helper()
@@ -1014,7 +1014,7 @@ func TestHubListRepositoryWidthStaysStableAcrossStatusToggles(t *testing.T) {
 	}
 	for _, transition := range transitions {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{transition.key}})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if got := visibleIssueIDs(m); !reflect.DeepEqual(got, transition.wantIDs) {
 			t.Fatalf("key %q visible IDs = %v, want %v", transition.key, got, transition.wantIDs)
 		}

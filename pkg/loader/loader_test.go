@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -489,6 +490,42 @@ func TestParseIssuesWithOptionsPooled_IssueFilter_SkipsClosed(t *testing.T) {
 	loader.ReturnIssuePtrsToPool(result.PoolRefs)
 }
 
+func TestLoadIssuesFromFile_AllSkippedReturnsNilOnSerialAndParallelPaths(t *testing.T) {
+	memoryLine := `{"_type":"memory","value":"` + strings.Repeat("x", 8*1024) + `"}` + "\n"
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "serial", content: `{"_type":"memory","value":"small"}` + "\n"},
+		{name: "parallel", content: strings.Repeat(memoryLine, 600)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "issues.jsonl")
+			if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+
+			issues, err := loader.LoadIssuesFromFile(path)
+			if err != nil {
+				t.Fatalf("LoadIssuesFromFile: %v", err)
+			}
+			if issues != nil {
+				t.Fatalf("plain all-skipped result=%#v, want nil", issues)
+			}
+
+			pooled, err := loader.LoadIssuesFromFilePooled(path)
+			if err != nil {
+				t.Fatalf("LoadIssuesFromFilePooled: %v", err)
+			}
+			if pooled.Issues != nil || pooled.PoolRefs != nil {
+				t.Fatalf("pooled all-skipped result issues=%#v refs=%#v, want both nil", pooled.Issues, pooled.PoolRefs)
+			}
+		})
+	}
+}
+
 // Regression test for issue #145: bd export emits memories, sprints,
 // and other non-issue records into the same JSONL stream, tagged with
 // `_type`. The loader must skip them silently rather than try to parse
@@ -598,6 +635,64 @@ func TestLoadIssuesFromFileWithOptionsPooled_ReturnsPoolRefs(t *testing.T) {
 		if len(ref.Dependencies) != 0 || len(ref.Comments) != 0 || len(ref.Labels) != 0 {
 			t.Fatalf("expected pooled issue %d slices to be reset", i)
 		}
+	}
+}
+
+func TestParseIssuesWithOptions_RejectsDuplicateIDsDeterministically(t *testing.T) {
+	input := strings.Join([]string{
+		`{"id":"same","title":"first","status":"open","priority":1,"issue_type":"task"}`,
+		`{"id":"other","title":"other","status":"open","priority":2,"issue_type":"task"}`,
+		`{"id":"same","title":"second","status":"closed","priority":3,"issue_type":"bug"}`,
+	}, "\n")
+
+	var warnings []string
+	stats := loader.ParseStats{}
+	issues, err := loader.ParseIssuesWithOptions(strings.NewReader(input), loader.ParseOptions{
+		Stats:          &stats,
+		WarningHandler: func(message string) { warnings = append(warnings, message) },
+	})
+	if err != nil {
+		t.Fatalf("ParseIssuesWithOptions failed: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("issues=%d, want 2 unique IDs", len(issues))
+	}
+	if issues[0].ID != "same" || issues[0].Title != "first" || issues[1].ID != "other" {
+		t.Fatalf("duplicate handling changed order or did not keep first record: %#v", issues)
+	}
+	if stats.Valid != 2 || stats.Errors != 1 {
+		t.Fatalf("stats=%+v, want Valid=2 Errors=1", stats)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `duplicate issue ID "same"`) {
+		t.Fatalf("warnings=%q, want one duplicate-ID warning", warnings)
+	}
+}
+
+func TestParseIssuesWithOptionsPooled_RejectsDuplicateAndKeepsRefsAligned(t *testing.T) {
+	input := strings.Join([]string{
+		`{"id":"same","title":"first","status":"open","priority":1,"issue_type":"task","labels":["first"]}`,
+		`{"id":"same","title":"second","status":"open","priority":2,"issue_type":"bug","labels":["second"]}`,
+		`{"id":"other","title":"other","status":"open","priority":3,"issue_type":"task","labels":["other"]}`,
+	}, "\n")
+
+	pooled, err := loader.ParseIssuesWithOptionsPooled(strings.NewReader(input), loader.ParseOptions{
+		WarningHandler: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("ParseIssuesWithOptionsPooled failed: %v", err)
+	}
+	defer loader.ReturnIssuePtrsToPool(pooled.PoolRefs)
+
+	if len(pooled.Issues) != 2 || len(pooled.PoolRefs) != 2 {
+		t.Fatalf("issues=%d refs=%d, want two aligned unique records", len(pooled.Issues), len(pooled.PoolRefs))
+	}
+	for i := range pooled.Issues {
+		if pooled.PoolRefs[i] == nil || pooled.PoolRefs[i].ID != pooled.Issues[i].ID {
+			t.Fatalf("pool ref %d is not aligned with issue: issue=%#v ref=%#v", i, pooled.Issues[i], pooled.PoolRefs[i])
+		}
+	}
+	if pooled.Issues[0].Title != "first" || pooled.Issues[1].ID != "other" {
+		t.Fatalf("unexpected surviving issues: %#v", pooled.Issues)
 	}
 }
 
@@ -961,6 +1056,13 @@ func TestLoadIssuesFromFile_PermissionDenied(t *testing.T) {
 	if err := os.Chmod(path, 0000); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_ = os.Chmod(path, 0o600)
+	})
+	if readable, openErr := os.Open(path); openErr == nil {
+		_ = readable.Close()
+		t.Skip("permission bits do not make the fixture unreadable for this test user")
+	}
 
 	_, err := loader.LoadIssuesFromFile(path)
 	if err == nil {
@@ -1304,23 +1406,21 @@ func TestGetBeadsDir_EmptyRepoPath_UsesCwd(t *testing.T) {
 	}
 	defer os.Chdir(oldCwd)
 
-	canonicalTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	// os.Getwd canonicalizes macOS's /var symlink to /private/var, while
+	// t.TempDir may retain the non-canonical spelling. Compare against the
+	// actual cwd that GetBeadsDir observes rather than the pre-chdir string.
+	currentDir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("Failed to canonicalize temp directory: %v", err)
+		t.Fatalf("Failed to get temp cwd: %v", err)
 	}
+	expected := filepath.Join(currentDir, ".beads")
 
 	result, err := loader.GetBeadsDir("")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	canonicalResultDir, err := filepath.EvalSymlinks(filepath.Dir(result))
-	if err != nil {
-		t.Fatalf("Failed to canonicalize result directory: %v", err)
-	}
-	canonicalResult := filepath.Join(canonicalResultDir, filepath.Base(result))
-	expected := filepath.Join(canonicalTmpDir, ".beads")
-	if canonicalResult != expected {
-		t.Errorf("Empty repoPath should use cwd: got %s, want %s", canonicalResult, expected)
+	if result != expected {
+		t.Errorf("Empty repoPath should use cwd: got %s, want %s", result, expected)
 	}
 }
 
@@ -1548,5 +1648,23 @@ func TestFindJSONLPath_BDWorkspaceAcceptsEmptyIssuesJSONL(t *testing.T) {
 	}
 	if got != issuesPath {
 		t.Fatalf("FindJSONLPath() = %q, want %q (empty export = legitimately empty project)", got, issuesPath)
+	}
+}
+
+// TestMetrics_LoaderParseRecorded (B5): every file load records a
+// loader.parse timing so --robot-metrics can show how long parsing took.
+func TestMetrics_LoaderParseRecorded(t *testing.T) {
+	metrics.SetEnabled(true)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "issues.jsonl")
+	if err := os.WriteFile(path, []byte(`{"id":"M-1","title":"one","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := metrics.LoaderParse.Count()
+	if _, err := loader.LoadIssuesFromFileWithOptions(path, loader.ParseOptions{}); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := metrics.LoaderParse.Count() - before; got != 1 {
+		t.Fatalf("loader.parse count advanced by %d, want 1", got)
 	}
 }

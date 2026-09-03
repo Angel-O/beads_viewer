@@ -210,6 +210,11 @@ var (
 	HITSCompute        = newTimingMetric("hits_compute")
 	GraphLoad          = newTimingMetric("graph_load")
 	UIRender           = newTimingMetric("ui_render")
+
+	// Fed by pkg/loader and pkg/analysis on every load and analysis.
+	LoaderParse    = newTimingMetric("loader.parse")
+	AnalysisPhase1 = newTimingMetric("analysis.phase1")
+	AnalysisPhase2 = newTimingMetric("analysis.phase2")
 )
 
 // AllTimingMetrics returns all registered timing metrics.
@@ -226,6 +231,9 @@ func AllTimingMetrics() []*TimingMetric {
 		HITSCompute,
 		GraphLoad,
 		UIRender,
+		LoaderParse,
+		AnalysisPhase1,
+		AnalysisPhase2,
 	}
 }
 

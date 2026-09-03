@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,7 +66,7 @@ func TestDataSnapshotWithCommentUpdateDoesNotMutatePoolOwnership(t *testing.T) {
 	pooled := &model.Issue{ID: "pooled"}
 	source := &DataSnapshot{
 		Issues:       []model.Issue{{ID: "issue-1"}},
-		pooledIssues: []*model.Issue{pooled},
+		pooledIssues: newPooledIssueLease([]*model.Issue{pooled}),
 	}
 	comments := []*model.Comment{{ID: "comment-1", IssueID: "issue-1", Text: "updated"}}
 	updated := source.WithCommentUpdate("issue-1", comments)
@@ -73,7 +74,7 @@ func TestDataSnapshotWithCommentUpdateDoesNotMutatePoolOwnership(t *testing.T) {
 	if updated == nil || updated.pooledIssues != nil {
 		t.Fatal("targeted snapshot unexpectedly claimed pooled ownership")
 	}
-	if len(source.pooledIssues) != 1 || source.pooledIssues[0] != pooled {
+	if source.pooledIssues == nil || !source.pooledIssues.active() {
 		t.Fatal("source snapshot ownership changed during cloning")
 	}
 	if got := updated.IssueMap["issue-1"].Comments[0].Text; got != "updated" {
@@ -179,6 +180,41 @@ func TestSnapshotBuilder_WithDependencies(t *testing.T) {
 	// Only test-1 and test-3 should be counted as ready
 	if snapshot.CountReady != 2 {
 		t.Errorf("Expected 2 ready issues (test-1, test-3), got %d", snapshot.CountReady)
+	}
+}
+
+func TestSnapshotBuilder_ReadyUsesExecutableStatusesAndDeferral(t *testing.T) {
+	deferUntil := time.Now().Add(time.Hour)
+	issues := []model.Issue{
+		{ID: "ready", Title: "Ready", Status: model.StatusOpen},
+		{ID: "active", Title: "Active", Status: model.StatusInProgress},
+		{ID: "scheduled", Title: "Scheduled", Status: model.StatusOpen, DeferUntil: &deferUntil},
+		{ID: "draft", Title: "Draft", Status: model.StatusDraft},
+		{ID: "deferred", Title: "Deferred", Status: model.StatusDeferred},
+		{ID: "blocked", Title: "Blocked", Status: model.StatusBlocked},
+		{ID: "pinned", Title: "Pinned", Status: model.StatusPinned},
+		{ID: "hooked", Title: "Hooked", Status: model.StatusHooked},
+		{ID: "review", Title: "Review", Status: model.StatusReview},
+	}
+
+	snapshot := NewSnapshotBuilder(issues).Build()
+	if snapshot.CountReady != 2 {
+		t.Fatalf("CountReady = %d, want the executable open and in-progress issues", snapshot.CountReady)
+	}
+	if snapshot.CountBlocked != 1 {
+		t.Fatalf("CountBlocked = %d, want 1", snapshot.CountBlocked)
+	}
+
+	m := Model{currentFilter: "ready", issueMap: snapshot.IssueMap}
+	for _, id := range []string{"ready", "active"} {
+		if !m.matchesCurrentFilter(*snapshot.IssueMap[id]) {
+			t.Errorf("ready filter rejected executable issue %q", id)
+		}
+	}
+	for _, id := range []string{"scheduled", "draft", "deferred", "blocked", "pinned", "hooked", "review"} {
+		if m.matchesCurrentFilter(*snapshot.IssueMap[id]) {
+			t.Errorf("ready filter accepted non-executable issue %q", id)
+		}
 	}
 }
 
@@ -633,6 +669,596 @@ func TestSnapshotBuilder_IncrementalListMatchesFull(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilder_IncrementalListFallsBackForTopologyChanges(t *testing.T) {
+	base := make([]model.Issue, 10)
+	for i := range base {
+		base[i] = model.Issue{
+			ID:        fmt.Sprintf("T-%02d", i),
+			Title:     fmt.Sprintf("Issue %d", i),
+			Status:    model.StatusOpen,
+			Priority:  i,
+			IssueType: model.TypeTask,
+		}
+	}
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+	prev := NewSnapshotBuilder(copyIssues(base)).WithBuildConfig(cfg).Build()
+
+	tests := []struct {
+		name   string
+		mutate func([]model.Issue) []model.Issue
+	}{
+		{
+			name: "addition",
+			mutate: func(issues []model.Issue) []model.Issue {
+				return append(issues, model.Issue{ID: "T-10", Title: "Added", Status: model.StatusOpen, Priority: 10, IssueType: model.TypeTask})
+			},
+		},
+		{
+			name: "removal",
+			mutate: func(issues []model.Issue) []model.Issue {
+				return issues[:len(issues)-1]
+			},
+		},
+		{
+			name: "dependency change",
+			mutate: func(issues []model.Issue) []model.Issue {
+				issues[1].Dependencies = []*model.Dependency{{DependsOnID: issues[0].ID, Type: model.DepBlocks}}
+				return issues
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := tc.mutate(copyIssues(base))
+			diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+			incremental := NewSnapshotBuilder(copyIssues(changed)).
+				WithBuildConfig(cfg).
+				WithPreviousSnapshot(prev, &diff).
+				Build()
+			full := NewSnapshotBuilder(copyIssues(changed)).WithBuildConfig(cfg).Build()
+
+			if incremental.IncrementalListUsed {
+				t.Fatal("expected full list rebuild")
+			}
+			if !reflect.DeepEqual(incremental.ListItems, full.ListItems) {
+				t.Fatal("fallback list differs from full rebuild")
+			}
+		})
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListFallsBackForRecipeMembershipChange(t *testing.T) {
+	issues := make([]model.Issue, 10)
+	for i := range issues {
+		status := model.StatusOpen
+		if i == len(issues)-1 {
+			status = model.StatusClosed
+		}
+		issues[i] = model.Issue{ID: fmt.Sprintf("T-%02d", i), Title: fmt.Sprintf("Issue %d", i), Status: status, Priority: i, IssueType: model.TypeTask}
+	}
+	r := &recipe.Recipe{Name: "open-only", Filters: recipe.FilterConfig{Status: []string{"open"}}}
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+	prev := NewSnapshotBuilder(copyIssues(issues)).WithBuildConfig(cfg).WithRecipe(r).Build()
+
+	changed := copyIssues(issues)
+	changed[len(changed)-1].Status = model.StatusOpen
+	diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+	incremental := NewSnapshotBuilder(copyIssues(changed)).
+		WithBuildConfig(cfg).
+		WithRecipe(r).
+		WithPreviousSnapshot(prev, &diff).
+		Build()
+	full := NewSnapshotBuilder(copyIssues(changed)).WithBuildConfig(cfg).WithRecipe(r).Build()
+
+	if incremental.IncrementalListUsed {
+		t.Fatal("expected recipe membership change to use full list build")
+	}
+	if !reflect.DeepEqual(incremental.ListItems, full.ListItems) {
+		t.Fatal("incremental recipe list differs from full rebuild")
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListThreshold(t *testing.T) {
+	issues := make([]model.Issue, 10)
+	for i := range issues {
+		issues[i] = model.Issue{
+			ID:        fmt.Sprintf("T-%02d", i),
+			Title:     fmt.Sprintf("Issue %d", i),
+			Status:    model.StatusOpen,
+			Priority:  i,
+			IssueType: model.TypeTask,
+		}
+	}
+	cfg := snapshotBuildConfigDefault()
+	cfg.PrecomputeTriage = false
+	prev := NewSnapshotBuilder(copyIssues(issues)).WithBuildConfig(cfg).Build()
+
+	for _, tc := range []struct {
+		name            string
+		changedCount    int
+		wantIncremental bool
+	}{
+		{name: "exactly twenty percent", changedCount: 2, wantIncremental: true},
+		{name: "over twenty percent", changedCount: 3, wantIncremental: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := copyIssues(issues)
+			for i := 0; i < tc.changedCount; i++ {
+				changed[i].Title += " updated"
+			}
+			diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+			got := NewSnapshotBuilder(copyIssues(changed)).
+				WithBuildConfig(cfg).
+				WithPreviousSnapshot(prev, &diff).
+				Build()
+			full := NewSnapshotBuilder(copyIssues(changed)).WithBuildConfig(cfg).Build()
+
+			if got.IncrementalListUsed != tc.wantIncremental {
+				t.Fatalf("IncrementalListUsed=%v, want %v", got.IncrementalListUsed, tc.wantIncremental)
+			}
+			if !reflect.DeepEqual(got.ListItems, full.ListItems) {
+				t.Fatal("threshold-selected list differs from full rebuild")
+			}
+		})
+	}
+}
+
+func TestSnapshotBuilder_IncrementalListFallsBackForRecipeHashChange(t *testing.T) {
+	issues := make([]model.Issue, 10)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("T-%02d", i), Title: fmt.Sprintf("Issue %d", i), Status: model.StatusOpen, Priority: i}
+	}
+	beforeRecipe := &recipe.Recipe{Name: "same-name", Filters: recipe.FilterConfig{Status: []string{"open"}}}
+	afterRecipe := &recipe.Recipe{Name: "same-name", Filters: recipe.FilterConfig{Priority: []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}}
+	prev := NewSnapshotBuilder(copyIssues(issues)).WithRecipe(beforeRecipe).Build()
+	changed := copyIssues(issues)
+	changed[0].Title += " updated"
+	diff := analysis.ComputeIssueDiff(prev.Issues, changed)
+
+	got := NewSnapshotBuilder(changed).
+		WithRecipe(afterRecipe).
+		WithPreviousSnapshot(prev, &diff).
+		Build()
+	if got.IncrementalListUsed {
+		t.Fatal("expected changed recipe hash to force full list build")
+	}
+}
+
+func TestSnapshotSwap_IncrementalListInstallsDetachedBuffer(t *testing.T) {
+	issues := make([]model.Issue, 6)
+	for i := range issues {
+		issues[i] = model.Issue{
+			ID:        fmt.Sprintf("item-%d", i),
+			Title:     fmt.Sprintf("Item %d", i),
+			Status:    model.StatusOpen,
+			Priority:  i,
+			IssueType: model.TypeTask,
+		}
+	}
+	m := NewModel(copyIssues(issues), nil, "")
+	first := NewSnapshotBuilder(copyIssues(issues)).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: first})
+	m = updated.(*Model)
+
+	before := m.list.Items()
+	if len(before) == 0 {
+		t.Fatal("expected populated list")
+	}
+	backing := &before[0]
+
+	changed := copyIssues(issues)
+	changed[1].Title = "Item 1 updated"
+	diff := analysis.ComputeIssueDiff(first.Issues, changed)
+	next := NewSnapshotBuilder(copyIssues(changed)).
+		WithPreviousSnapshot(first, &diff).
+		Build()
+	if !next.IncrementalListUsed {
+		t.Fatal("expected one of six same-order changes to use incremental list build")
+	}
+
+	// Simulate a graph-wide derived-field change on an issue that was not in
+	// diff.Modified. The installer must copy the snapshot's complete row state,
+	// not only the directly modified title.
+	unchangedIndex := next.listIndexByID["item-2"]
+	unchanged := next.listModelItems[unchangedIndex].(IssueItem)
+	unchanged.TriageScore = 0.987
+	unchanged.TriageReason = "derived state changed"
+	unchanged.IsQuickWin = true
+	unchanged.UnblocksCount = 4
+	next.listModelItems[unchangedIndex] = unchanged
+	next.ListItems[unchangedIndex] = unchanged
+
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: next})
+	m = updated.(*Model)
+
+	after := m.list.Items()
+	if &after[0] == backing {
+		t.Fatal("incremental snapshot reused a list buffer that an asynchronous filter may still be reading")
+	}
+	if !reflect.DeepEqual(after, next.listModelItems) {
+		t.Fatalf("installed list rows differ from snapshot\n got: %#v\nwant: %#v", after, next.listModelItems)
+	}
+}
+
+func TestSnapshotSwapRefiltersAndRestoresVisibleSelection(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Title: "Alpha one", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "two", Title: "Alpha two", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "three", Title: "Beta", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(copyIssues(issues), nil, "")
+	first := NewSnapshotBuilder(copyIssues(issues)).Build()
+	first.Analysis = nil
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: first})
+	m = updated.(*Model)
+
+	m.list.SetFilterText("alpha")
+	if got := len(m.list.VisibleItems()); got != 2 {
+		t.Fatalf("initial visible item count=%d, want 2", got)
+	}
+	m.list.Select(1)
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "two" {
+		t.Fatalf("initial selected ID=%q, want two", selected)
+	}
+
+	changed := copyIssues(issues)
+	changed[0].Title = "Gamma one"
+	changed[2].Title = "Alpha three"
+	next := NewSnapshotBuilder(changed).Build()
+	next.Analysis = nil
+	updated, cmd := m.Update(SnapshotReadyMsg{Snapshot: next})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("snapshot swap did not return active-filter refresh command")
+	}
+	if got := len(m.list.VisibleItems()); got != 0 {
+		t.Fatalf("visible items before async refilter=%d, want 0", got)
+	}
+
+	raw := cmd()
+	filterMsg, ok := raw.(snapshotListFilterMsg)
+	if batch, isBatch := raw.(tea.BatchMsg); isBatch {
+		// The snapshot also schedules history refresh work. Search backward so
+		// this unit test executes only the list-refilter command, which is added
+		// after the unrelated background commands.
+		for i := len(batch) - 1; i >= 0 && !ok; i-- {
+			filterMsg, ok = batch[i]().(snapshotListFilterMsg)
+		}
+	}
+	if !ok {
+		t.Fatalf("snapshot command returned %T without a list-filter message", raw)
+	}
+	updated, _ = m.Update(filterMsg)
+	m = updated.(*Model)
+
+	visible := m.list.VisibleItems()
+	gotIDs := make([]string, len(visible))
+	for i, raw := range visible {
+		gotIDs[i] = raw.(IssueItem).Issue.ID
+	}
+	if want := []string{"two", "three"}; !reflect.DeepEqual(gotIDs, want) {
+		t.Fatalf("visible IDs=%v, want %v", gotIDs, want)
+	}
+	if got := m.list.FilterInput.Value(); got != "alpha" {
+		t.Fatalf("filter term=%q, want alpha", got)
+	}
+	if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "two" {
+		t.Fatalf("selected ID after refilter=%q, want two", selected)
+	}
+}
+
+func TestSnapshotListFilterFencePreservesNonFilterBatchCommands(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "one", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "two", Title: "Beta", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	m := NewModel(copyIssues(issues), nil, "")
+	m.list.SetFilterText("alpha")
+	filterCmd := m.list.SetItems(m.list.Items())
+	if filterCmd == nil {
+		t.Fatal("active filter SetItems returned no refilter command")
+	}
+	marker := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}
+	batched := tea.Batch(
+		func() tea.Msg { return marker },
+		filterCmd,
+	)
+	wrapped := waitForSnapshotListFilterCmd(nil, 3, 4, "alpha", "one", batched)
+	raw := wrapped()
+	rawBatch, ok := raw.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("wrapped command returned %T, want tea.BatchMsg", raw)
+	}
+	if len(rawBatch) != 2 {
+		t.Fatalf("wrapped batch length=%d, want 2", len(rawBatch))
+	}
+
+	var sawMarker, sawFencedFilter bool
+	for _, child := range rawBatch {
+		msg := child()
+		switch typed := msg.(type) {
+		case tea.KeyMsg:
+			sawMarker = typed.String() == marker.String()
+		case snapshotListFilterMsg:
+			sawFencedFilter = typed.dataGeneration == 3 &&
+				typed.queryGeneration == 4 && typed.term == "alpha" &&
+				typed.selectedID == "one" && typed.matches != nil
+		}
+	}
+	if !sawMarker || !sawFencedFilter {
+		t.Fatalf("batch delivery marker=%v fencedFilter=%v, want both", sawMarker, sawFencedFilter)
+	}
+}
+
+func TestSnapshotSwapRejectsOutOfOrderVersionAndReleasesLease(t *testing.T) {
+	cfg := snapshotBuildConfigDefault()
+	cfg.SkipPhase2 = true
+
+	olderIssues := []model.Issue{
+		{ID: "issue-1", Title: "Older snapshot", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	newerIssues := []model.Issue{
+		{ID: "issue-1", Title: "Newer snapshot", Status: model.StatusOpen, IssueType: model.TypeTask},
+	}
+	older := NewSnapshotBuilder(copyIssues(olderIssues)).WithBuildConfig(cfg).Build()
+	newer := NewSnapshotBuilder(copyIssues(newerIssues)).WithBuildConfig(cfg).Build()
+
+	staleReleases := 0
+	older.pooledIssues = &pooledIssueLease{
+		refs: []*model.Issue{{ID: "pooled-older"}},
+		release: func([]*model.Issue) {
+			staleReleases++
+		},
+	}
+
+	m := NewModel(copyIssues(olderIssues), nil, "")
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: newer, SnapshotVer: 2})
+	m = updated.(*Model)
+	if m.snapshot != newer || m.lastAppliedSnapshotVer != 2 {
+		t.Fatalf("newer snapshot was not installed: snapshot=%p want=%p version=%d", m.snapshot, newer, m.lastAppliedSnapshotVer)
+	}
+
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: older, SnapshotVer: 1})
+	m = updated.(*Model)
+	if m.snapshot != newer {
+		t.Fatalf("out-of-order snapshot replaced current snapshot: got=%p want=%p", m.snapshot, newer)
+	}
+	if m.lastAppliedSnapshotVer != 2 {
+		t.Fatalf("last applied snapshot version=%d, want 2", m.lastAppliedSnapshotVer)
+	}
+	if got := m.issues[0].Title; got != "Newer snapshot" {
+		t.Fatalf("model data rolled back to stale snapshot: title=%q", got)
+	}
+	if staleReleases != 1 || older.hasPooledIssues() {
+		t.Fatalf("stale snapshot lease release count=%d active=%v, want 1/false", staleReleases, older.hasPooledIssues())
+	}
+
+	unversioned := NewSnapshotBuilder(copyIssues(olderIssues)).WithBuildConfig(cfg).Build()
+	unversionedReleases := 0
+	unversioned.pooledIssues = &pooledIssueLease{
+		refs: []*model.Issue{{ID: "pooled-unversioned"}},
+		release: func([]*model.Issue) {
+			unversionedReleases++
+		},
+	}
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: unversioned})
+	m = updated.(*Model)
+	if m.snapshot != newer || m.lastAppliedSnapshotVer != 2 {
+		t.Fatal("unversioned snapshot rolled back a versioned model")
+	}
+	if unversionedReleases != 1 || unversioned.hasPooledIssues() {
+		t.Fatalf("unversioned stale lease release count=%d active=%v, want 1/false", unversionedReleases, unversioned.hasPooledIssues())
+	}
+
+	newer.phase2Ready = false
+	updated, _ = m.Update(Phase2UpdateMsg{
+		DataHash: newer.DataHash,
+		Stats:    newer.Analysis,
+		Snapshot: newer,
+	})
+	m = updated.(*Model)
+	if newer.phase2Ready {
+		t.Fatal("unversioned Phase 2 update bypassed the active snapshot version fence")
+	}
+	updated, _ = m.Update(Phase2UpdateMsg{
+		DataHash:    newer.DataHash,
+		Stats:       newer.Analysis,
+		Snapshot:    newer,
+		SnapshotVer: 2,
+	})
+	m = updated.(*Model)
+	if !newer.phase2Ready {
+		t.Fatal("matching versioned Phase 2 update was rejected")
+	}
+}
+
+func TestSnapshotSwapRejectsPreRecoveryGenerationBeforeReplacementArrives(t *testing.T) {
+	cfg := snapshotBuildConfigDefault()
+	cfg.SkipPhase2 = true
+	current := NewSnapshotBuilder([]model.Issue{{
+		ID: "current", Title: "Current", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	current.Analysis = nil
+
+	worker := &BackgroundWorker{generation: 1}
+	m := NewModel(copyIssues(current.Issues), nil, "")
+	m.backgroundWorker = worker
+	updated, _ := m.Update(SnapshotReadyMsg{
+		Snapshot:         current,
+		SnapshotVer:      1,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if m.snapshot != current || m.lastWorkerGeneration != 1 {
+		t.Fatalf("generation-1 snapshot was not accepted: snapshot=%p generation=%d", m.snapshot, m.lastWorkerGeneration)
+	}
+
+	// Recovery advances the worker before any generation-2 message reaches the
+	// model. A queued generation-1 message with a newer snapshot version must
+	// still be rejected against the worker's authoritative generation.
+	worker.mu.Lock()
+	worker.generation = 2
+	worker.mu.Unlock()
+	stale := NewSnapshotBuilder([]model.Issue{{
+		ID: "stale", Title: "Stale", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	stale.Analysis = nil
+	releases := 0
+	stale.pooledIssues = &pooledIssueLease{
+		refs: []*model.Issue{{ID: "pooled-stale"}},
+		release: func([]*model.Issue) {
+			releases++
+		},
+	}
+	updated, waitCmd := m.Update(SnapshotReadyMsg{
+		Snapshot:         stale,
+		SnapshotVer:      2,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if waitCmd == nil {
+		t.Fatal("stale generation rejection did not re-arm the worker wait command")
+	}
+	if m.snapshot != current || m.lastSnapshotVersion != 1 || m.lastAppliedSnapshotVer != 1 || m.lastWorkerGeneration != 1 {
+		t.Fatal("stale pre-recovery message changed the accepted snapshot fence")
+	}
+	if releases != 1 || stale.hasPooledIssues() {
+		t.Fatalf("stale generation lease release count=%d active=%v, want 1/false", releases, stale.hasPooledIssues())
+	}
+
+	m.statusMsg = "current status"
+	updated, waitCmd = m.Update(SnapshotErrorMsg{
+		Err:              fmt.Errorf("stale generation error"),
+		Recoverable:      true,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if waitCmd == nil {
+		t.Fatal("stale generation error did not re-arm the worker wait command")
+	}
+	if m.statusMsg != "current status" || m.lastWorkerGeneration != 1 {
+		t.Fatal("stale generation error changed current model state")
+	}
+
+	replacement := NewSnapshotBuilder([]model.Issue{{
+		ID: "replacement", Title: "Replacement", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	updated, _ = m.Update(SnapshotReadyMsg{
+		Snapshot:         replacement,
+		SnapshotVer:      3,
+		WorkerGeneration: 2,
+	})
+	m = updated.(*Model)
+	if m.snapshot != replacement || m.lastWorkerGeneration != 2 || m.lastAppliedSnapshotVer != 3 {
+		t.Fatal("current post-recovery snapshot was not accepted")
+	}
+
+	replacement.phase2Ready = false
+	updated, waitCmd = m.Update(Phase2UpdateMsg{
+		DataHash:         replacement.DataHash,
+		Stats:            replacement.Analysis,
+		Snapshot:         replacement,
+		SnapshotVer:      3,
+		WorkerGeneration: 1,
+	})
+	m = updated.(*Model)
+	if waitCmd == nil {
+		t.Fatal("stale generation Phase 2 update did not re-arm the worker wait command")
+	}
+	if replacement.phase2Ready {
+		t.Fatal("stale generation Phase 2 update marked the current snapshot ready")
+	}
+	updated, _ = m.Update(Phase2UpdateMsg{
+		DataHash:         replacement.DataHash,
+		Stats:            replacement.Analysis,
+		Snapshot:         replacement,
+		SnapshotVer:      3,
+		WorkerGeneration: 2,
+	})
+	m = updated.(*Model)
+	if !replacement.phase2Ready {
+		t.Fatal("current generation Phase 2 update was rejected")
+	}
+}
+
+func TestPhase2UpdateRejectsSameHashFromDifferentStats(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "root", Title: "Root", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{ID: "child", Title: "Child", Status: model.StatusOpen, IssueType: model.TypeTask,
+			Dependencies: []*model.Dependency{{DependsOnID: "root", Type: model.DepBlocks}}},
+	}
+	cfg := snapshotBuildConfigDefault()
+	cfg.SkipPhase2 = true
+	current := NewSnapshotBuilder(copyIssues(issues)).WithBuildConfig(cfg).Build()
+	staleIssues := copyIssues(issues)
+	staleIssues[1].Title = "Stale child"
+	stale := NewSnapshotBuilder(staleIssues).WithBuildConfig(cfg).Build()
+	// GraphStats may legitimately be shared by the analysis cache when only
+	// non-graph content differs. Give the stale snapshot a distinct stats
+	// identity so this test exercises the model's identity fence directly.
+	// GraphStats embeds a mutex, so build a fresh instance instead of copying
+	// the struct (which `go vet` copylocks rejects).
+	stale.Analysis.WaitForPhase2()
+	staleStats := analysis.NewAnalyzer(copyIssues(staleIssues)).AnalyzeAsync(context.Background())
+	staleStats.WaitForPhase2()
+	stale.Analysis = staleStats
+	if current.Analysis == stale.Analysis {
+		t.Fatal("expected snapshots to have distinct GraphStats pointers")
+	}
+	current.DataHash = "same-content-hash"
+	stale.DataHash = current.DataHash
+	current.phase2Ready = false
+
+	m := NewModel(copyIssues(issues), nil, "")
+	m.snapshot = current
+	m.analysis = current.Analysis
+	updated, _ := m.Update(Phase2UpdateMsg{DataHash: current.DataHash, Stats: stale.Analysis})
+	m = updated.(*Model)
+	if m.snapshot != current {
+		t.Fatal("stale Phase 2 notification replaced the current snapshot")
+	}
+	if m.snapshot.phase2Ready {
+		t.Fatal("same-hash Phase 2 notification with stale stats marked current snapshot ready")
+	}
+
+	updated, _ = m.Update(Phase2UpdateMsg{DataHash: current.DataHash, Stats: current.Analysis})
+	m = updated.(*Model)
+	if !m.snapshot.phase2Ready {
+		t.Fatal("matching Phase 2 notification did not mark current snapshot ready")
+	}
+}
+
+func TestSnapshotSwap_ReorderedListUsesFullBufferRefresh(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+	}
+	m := NewModel(copyIssues(issues), nil, "")
+	first := NewSnapshotBuilder(copyIssues(issues)).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: first})
+	m = updated.(*Model)
+
+	changed := copyIssues(issues)
+	changed[1].Priority = 0
+	diff := analysis.ComputeIssueDiff(first.Issues, changed)
+	next := NewSnapshotBuilder(copyIssues(changed)).
+		WithPreviousSnapshot(first, &diff).
+		Build()
+	if next.listOrderHash == first.listOrderHash {
+		t.Fatal("expected list order fingerprint to change")
+	}
+	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: next})
+	m = updated.(*Model)
+
+	firstItem := m.list.Items()[0].(IssueItem)
+	if firstItem.Issue.ID != "b" {
+		t.Fatalf("first item=%q, want reordered issue b", firstItem.Issue.ID)
+	}
+}
+
 func TestSortIssuesByRecipe_PriorityAsc(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "A", Priority: 2},
@@ -675,6 +1301,65 @@ func TestSnapshotBuilder_WithPrecomputedAnalysis(t *testing.T) {
 	}
 }
 
+func TestSnapshotSwap_PreservesListSelectionByID(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.currentFilter = "all"
+
+	for i, raw := range m.list.Items() {
+		item, ok := raw.(IssueItem)
+		if ok && item.Issue.ID == "a" {
+			m.list.Select(i)
+			break
+		}
+	}
+	if selected, ok := m.list.SelectedItem().(IssueItem); !ok || selected.Issue.ID != "a" {
+		t.Fatalf("expected initial selection a, got %#v", m.list.SelectedItem())
+	}
+
+	updated := []model.Issue{
+		{ID: "c", Title: "C", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeTask},
+		issues[0],
+		issues[1],
+	}
+	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(updated).Build()})
+	m = newM.(*Model)
+
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok || selected.Issue.ID != "a" {
+		t.Fatalf("expected list selection a after swap, got %#v", m.list.SelectedItem())
+	}
+}
+
+func TestSnapshotSwap_SelectsRemainingIssueWhenSelectionRemoved(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Title: "A", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "b", Title: "B", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask},
+	}
+	m := NewModel(issues, nil, "")
+	m.currentFilter = "all"
+
+	for i, raw := range m.list.Items() {
+		item, ok := raw.(IssueItem)
+		if ok && item.Issue.ID == "a" {
+			m.list.Select(i)
+			break
+		}
+	}
+
+	remaining := []model.Issue{issues[1]}
+	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(remaining).Build()})
+	m = newM.(*Model)
+
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok || selected.Issue.ID != "b" {
+		t.Fatalf("expected remaining issue b after selected issue removal, got %#v", m.list.SelectedItem())
+	}
+}
+
 func TestSnapshotSwap_PreservesBoardSelectionByID(t *testing.T) {
 	now := time.Now()
 	issues := []model.Issue{
@@ -684,7 +1369,7 @@ func TestSnapshotSwap_PreservesBoardSelectionByID(t *testing.T) {
 
 	m := NewModel(issues, nil, "")
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusBoard {
 		t.Fatalf("expected focusBoard, got %v", m.focused)
@@ -705,7 +1390,7 @@ func TestSnapshotSwap_PreservesBoardSelectionByID(t *testing.T) {
 	snapshot := NewSnapshotBuilder(updatedIssues).Build()
 
 	newM, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusBoard {
 		t.Fatalf("expected focusBoard after swap, got %v", m.focused)
@@ -726,10 +1411,57 @@ func TestSnapshotSwap_UsesSnapshotInsights(t *testing.T) {
 	snapshot.insights.Bottlenecks = []analysis.InsightItem{{ID: "test-1", Value: 1}}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if len(m.insightsPanel.insights.Bottlenecks) == 0 || m.insightsPanel.insights.Bottlenecks[0].ID != "test-1" {
 		t.Fatalf("expected insights to come from snapshot")
+	}
+}
+
+func TestSnapshotSwap_InstallsPrecomputedSearchDocuments(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "test-1", Title: "Issue 1", Status: model.StatusOpen, Priority: 1},
+	}
+	m := NewModel(issues, nil, "")
+	m.currentFilter = "all"
+
+	snapshot := NewSnapshotBuilder(issues).Build()
+	const sentinel = "prepared off the UI thread"
+	snapshot.semanticDocs["test-1"] = sentinel
+
+	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+	m = newM.(*Model)
+
+	got := m.semanticSearch.Snapshot()
+	if got.Docs["test-1"] != sentinel {
+		t.Fatalf("expected precomputed search document, got %q", got.Docs["test-1"])
+	}
+}
+
+func TestSnapshotSwapPreservesHubSelectedContextlessProjection(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Title: "Alpha", Labels: []string{"ctx:alpha"}, Status: model.StatusOpen},
+		{ID: "beta", Title: "Beta", Labels: []string{"ctx:beta"}, Status: model.StatusOpen},
+		{ID: "contextless", Title: "Contextless", Status: model.StatusOpen},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	if err := m.repositoryScopeController.setHubRepositoryScope(map[string]bool{"ctx:alpha": true}, true); err != nil {
+		t.Fatal(err)
+	}
+	m.currentFilter = "all"
+
+	snapshot := NewSnapshotBuilder(issues).Build()
+	snapshot.Analysis = nil
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
+	m = updated.(*Model)
+
+	if got := visibleIssueIDs(m); !reflect.DeepEqual(got, []string{"alpha", "contextless"}) {
+		t.Fatalf("Hub-projected list IDs=%v, want selected plus contextless", got)
+	}
+	if got := m.semanticSearch.Snapshot().IDs; !reflect.DeepEqual(got, []string{"alpha", "contextless"}) {
+		t.Fatalf("Hub-projected semantic IDs=%v, want selected plus contextless", got)
 	}
 }
 
@@ -760,7 +1492,7 @@ func TestSnapshotSwap_UsesSnapshotGraphLayoutWhenUnfiltered(t *testing.T) {
 	snapshot.graphLayout.Blockers["A"] = []string{"SENTINEL"}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if got := m.graphView.SelectedIssue(); got == nil {
 		t.Fatal("expected graph view to have a selection")
@@ -790,12 +1522,12 @@ func TestPhase2ReadyMsg_DoesNotRebuildGraphViewWhenSnapshotHasLayout(t *testing.
 	snapshot.graphLayout.Blockers["A"] = []string{"SENTINEL"}
 
 	newM, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	// Simulate Phase 2 completion message; Stats identity must match m.analysis.
 	ins := m.analysis.GenerateInsights(len(m.issues))
 	newM, _ = m.Update(Phase2ReadyMsg{Stats: m.analysis, Insights: ins})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if got := m.graphView.blockers["A"]; len(got) != 1 || got[0] != "SENTINEL" {
 		t.Fatalf("expected Phase2ReadyMsg to preserve snapshot GraphLayout, got blockers[A]=%#v", got)
@@ -811,7 +1543,7 @@ func TestSnapshotSwap_PreservesInsightsNavigationState(t *testing.T) {
 
 	m := NewModel(issues, nil, "")
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusInsights {
 		t.Fatalf("expected focusInsights, got %v", m.focused)
@@ -825,7 +1557,7 @@ func TestSnapshotSwap_PreservesInsightsNavigationState(t *testing.T) {
 	snapshot := NewSnapshotBuilder(updated).Build()
 
 	newM, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
+	m = newM.(*Model)
 
 	if m.focused != focusInsights {
 		t.Fatalf("expected focusInsights after swap, got %v", m.focused)
@@ -870,7 +1602,7 @@ func TestSnapshotSwap_RebuildsTreeWhenFocusedAndPreservesSelection(t *testing.T)
 
 	// Enter tree view and select the child.
 	newM, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
-	m = newM.(Model)
+	m = newM.(*Model)
 	if m.focused != focusTree {
 		t.Fatalf("expected focusTree, got %v", m.focused)
 	}
@@ -880,6 +1612,11 @@ func TestSnapshotSwap_RebuildsTreeWhenFocusedAndPreservesSelection(t *testing.T)
 		t.Fatal("expected non-nil tree selection")
 	}
 	selectedID := selected.ID
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m = newM.(*Model)
+	if m.focused != focusHelp || m.focusBeforeHelp != focusTree {
+		t.Fatalf("expected help over tree, got focus=%v underlying=%v", m.focused, m.focusBeforeHelp)
+	}
 
 	// New snapshot keeps the selected issue but adds another sibling.
 	updated := []model.Issue{
@@ -900,12 +1637,17 @@ func TestSnapshotSwap_RebuildsTreeWhenFocusedAndPreservesSelection(t *testing.T)
 	snapshot := NewSnapshotBuilder(updated).Build()
 
 	newM, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = newM.(Model)
-	if m.focused != focusTree {
-		t.Fatalf("expected focusTree after swap, got %v", m.focused)
+	m = newM.(*Model)
+	if m.focused != focusHelp {
+		t.Fatalf("expected help to remain open after swap, got %v", m.focused)
 	}
 	if sel := m.tree.SelectedIssue(); sel == nil || sel.ID != selectedID {
 		t.Fatalf("expected tree selection preserved (%s), got %#v", selectedID, sel)
+	}
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = newM.(*Model)
+	if m.focused != focusTree {
+		t.Fatalf("expected focusTree after closing help, got %v", m.focused)
 	}
 }
 
@@ -944,7 +1686,16 @@ func TestWithPhase2_ReturnsNewPointer(t *testing.T) {
 // alias the original snapshot's mutable issue backing structures.
 func TestWithPhase2_DetachesMutableIssueState(t *testing.T) {
 	issues := []model.Issue{
-		{ID: "A", Title: "Issue A", Status: model.StatusOpen, IssueType: model.TypeTask},
+		{
+			ID:        "A",
+			Title:     "Issue A",
+			Status:    model.StatusOpen,
+			IssueType: model.TypeTask,
+			Labels:    []string{"original"},
+			Dependencies: []*model.Dependency{
+				{DependsOnID: "B", Type: model.DepRelated},
+			},
+		},
 		{ID: "B", Title: "Issue B", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}
 
@@ -970,9 +1721,49 @@ func TestWithPhase2_DetachesMutableIssueState(t *testing.T) {
 		t.Error("WithPhase2 should rebuild IssueMap to avoid stale pointers into the old slice")
 	}
 
-	original.Issues[0].Title = "mutated old snapshot"
+	original.IssueMap["A"].Title = "mutated old snapshot"
 	if got := newSnapshot.IssueMap["A"].Title; got == "mutated old snapshot" {
 		t.Error("mutating the old snapshot should not affect the cloned Phase 2 snapshot")
+	}
+
+	findListItem := func(items []IssueItem, id string) *IssueItem {
+		for i := range items {
+			if items[i].Issue.ID == id {
+				return &items[i]
+			}
+		}
+		return nil
+	}
+	oldItem := findListItem(original.ListItems, "A")
+	newItem := findListItem(newSnapshot.ListItems, "A")
+	if oldItem == nil || newItem == nil {
+		t.Fatal("expected A in both snapshots' list items")
+	}
+	oldItem.Issue.Labels[0] = "mutated old list item"
+	oldItem.Issue.Dependencies[0].DependsOnID = "mutated-old-dependency"
+	if got := newItem.Issue.Labels[0]; got != "original" {
+		t.Errorf("new list item label = %q, want detached original value", got)
+	}
+	if got := newItem.Issue.Dependencies[0].DependsOnID; got != "B" {
+		t.Errorf("new list item dependency = %q, want detached original value", got)
+	}
+
+	findViewIssue := func(view []model.Issue, id string) *model.Issue {
+		for i := range view {
+			if view[i].ID == id {
+				return &view[i]
+			}
+		}
+		return nil
+	}
+	oldView := findViewIssue(original.ViewIssues, "A")
+	newView := findViewIssue(newSnapshot.ViewIssues, "A")
+	if oldView == nil || newView == nil {
+		t.Fatal("expected A in both snapshots' view issues")
+	}
+	oldView.Labels[0] = "mutated old view"
+	if got := newView.Labels[0]; got != "original" {
+		t.Errorf("new view issue label = %q, want detached original value", got)
 	}
 }
 

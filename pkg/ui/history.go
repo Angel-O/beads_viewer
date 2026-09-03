@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/cass"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -166,6 +167,44 @@ type HistoryModel struct {
 
 	// View mode transition state (bv-kvlx)
 	modeChangedAt time.Time // Timestamp of last mode toggle for transition animation
+
+	// Timeline pane override (bv-1x6o). The pane is shown by default at
+	// >= layoutBreakpointWide columns; pressing t pins it on or off.
+	timelinePinned  bool // true once the user toggled explicitly
+	timelineVisible bool // the pinned value; ignored until timelinePinned
+}
+
+// TimelineAvailable reports whether the timeline pane can be shown at all:
+// bead mode (git mode has no per-bead timeline) at a width that fits three
+// or more panes.
+func (h *HistoryModel) TimelineAvailable() bool {
+	return h.viewMode != historyModeGit && h.determineLayout() != layoutNarrow
+}
+
+// TimelineVisible reports whether the timeline pane is currently shown: the
+// explicit toggle wins, otherwise the width rule applies.
+func (h *HistoryModel) TimelineVisible() bool {
+	if !h.TimelineAvailable() {
+		return false
+	}
+	if h.timelinePinned {
+		return h.timelineVisible
+	}
+	return h.determineLayout() == layoutWide
+}
+
+// ToggleTimeline flips the timeline pane and returns the new visibility.
+// When the pane is unavailable it stays hidden and false is returned.
+func (h *HistoryModel) ToggleTimeline() bool {
+	if !h.TimelineAvailable() {
+		return false
+	}
+	h.timelineVisible = !h.TimelineVisible()
+	h.timelinePinned = true
+	if !h.timelineVisible && h.focused == historyFocusTimeline {
+		h.focused = historyFocusList
+	}
+	return h.timelineVisible
 }
 
 // NewHistoryModel creates a new history view from a correlation report
@@ -248,6 +287,54 @@ func (h *HistoryModel) SetReport(report *correlation.HistoryReport) {
 		h.gitScrollOffset = gitScrollOffset
 	} else {
 		h.gitScrollOffset = 0
+	}
+	h.ensureBeadVisible()
+	h.ensureGitCommitVisible()
+	if h.viewMode == historyModeGit {
+		if commit := h.SelectedGitCommit(); commit != nil {
+			h.ensureMiddleScrollVisible(h.selectedRelatedBead, len(commit.BeadIDs))
+		} else {
+			h.middleScrollOffset = 0
+		}
+	} else if history := h.SelectedHistory(); history != nil {
+		h.ensureMiddleScrollVisible(h.selectedCommit, len(history.Commits))
+	} else {
+		h.middleScrollOffset = 0
+	}
+	if history := h.SelectedHistory(); history != nil {
+		entries := h.buildTimeline(*history)
+		maxVisible := h.height - 6
+		if maxVisible < 3 {
+			maxVisible = 3
+		}
+		maxScroll := len(entries) - maxVisible
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if h.timelineScrollOffset < 0 {
+			h.timelineScrollOffset = 0
+		} else if h.timelineScrollOffset > maxScroll {
+			h.timelineScrollOffset = maxScroll
+		}
+	} else {
+		h.timelineScrollOffset = 0
+	}
+	if len(h.flatFileList) == 0 {
+		h.fileTreeScroll = 0
+	} else {
+		visibleItems := h.height - 5
+		if visibleItems < 1 {
+			visibleItems = 1
+		}
+		maxScroll := len(h.flatFileList) - visibleItems
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if h.fileTreeScroll < 0 {
+			h.fileTreeScroll = 0
+		} else if h.fileTreeScroll > maxScroll {
+			h.fileTreeScroll = maxScroll
+		}
 	}
 
 	validExpandedBeads := make(map[string]bool, len(h.expandedBeads))
@@ -956,17 +1043,17 @@ func (h *HistoryModel) ToggleExpand() {
 // Search and Filter methods (bv-nkrj)
 
 // StartSearch activates the search input
-func (h *HistoryModel) StartSearch() {
+func (h *HistoryModel) StartSearch() tea.Cmd {
 	h.searchActive = true
 	h.searchMode = searchModeAll
-	h.searchInput.Focus()
+	return h.searchInput.Focus()
 }
 
 // StartSearchWithMode activates search with a specific mode
-func (h *HistoryModel) StartSearchWithMode(mode historySearchMode) {
+func (h *HistoryModel) StartSearchWithMode(mode historySearchMode) tea.Cmd {
 	h.searchActive = true
 	h.searchMode = mode
-	h.searchInput.Focus()
+	cmd := h.searchInput.Focus()
 
 	// Set appropriate placeholder based on mode
 	switch mode {
@@ -981,6 +1068,7 @@ func (h *HistoryModel) StartSearchWithMode(mode historySearchMode) {
 	default:
 		h.searchInput.Placeholder = "Search commits, beads, authors..."
 	}
+	return cmd
 }
 
 // CancelSearch cancels the search and clears the query
@@ -1021,9 +1109,11 @@ func (h *HistoryModel) HasSearchQuery() bool {
 	return strings.TrimSpace(h.searchInput.Value()) != ""
 }
 
-// UpdateSearchInput updates the search input model (call from Update)
-func (h *HistoryModel) UpdateSearchInput(msg interface{}) {
-	h.searchInput, _ = h.searchInput.Update(msg)
+// UpdateSearchInput updates the search input model (call from Update) and
+// returns any follow-up command, such as an asynchronous clipboard paste.
+func (h *HistoryModel) UpdateSearchInput(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	h.searchInput, cmd = h.searchInput.Update(msg)
 
 	// Check if query changed and apply filter
 	currentQuery := h.searchInput.Value()
@@ -1031,6 +1121,7 @@ func (h *HistoryModel) UpdateSearchInput(msg interface{}) {
 		h.lastSearchQuery = currentQuery
 		h.applySearchFilter()
 	}
+	return cmd
 }
 
 // applySearchFilter filters the data based on current search query
@@ -1600,7 +1691,7 @@ func (h *HistoryModel) determineLayout() historyLayout {
 // paneCount returns the number of visible panes for the current layout (bv-xrfh)
 func (h *HistoryModel) paneCount() int {
 	layout := h.determineLayout()
-	if layout == layoutWide && h.viewMode != historyModeGit {
+	if h.TimelineVisible() {
 		return 4
 	}
 	switch layout {
@@ -1674,9 +1765,10 @@ func (h *HistoryModel) renderThreePaneView() string {
 	header := h.renderHeader()
 	panelHeight := h.historyPanelHeight()
 
-	// Wide layout: 4 panes with timeline (bv-1x6o)
-	if layout == layoutWide && h.viewMode != historyModeGit {
-		// Wide bead mode: 22% beads (minimum 37) | 22% timeline | 25% commits | remainder details
+	// Four panes with the timeline (bv-1x6o): default in wide layout, or
+	// pinned on with t in the standard layout.
+	if h.TimelineVisible() {
+		// Wide bead mode: use the shared allocation, including its 37-column minimum.
 		listWidth, timelineWidth, middleWidth, detailWidth := h.wideBeadPaneWidths()
 
 		listPanel := h.renderListPanel(listWidth, panelHeight)

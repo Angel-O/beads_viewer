@@ -455,6 +455,39 @@ try_binary_install() {
         return 1
     fi
 
+    # Verify the archive against the release's published checksums.txt
+    # (produced by goreleaser). Fail closed: no checksum, no install.
+    if [ -z "$asset_name" ]; then
+        asset_name="${download_url##*/}"
+    fi
+    local checksums_url="${download_url%/*}/checksums.txt"
+    local checksums_path="$tmp_dir/checksums.txt"
+    # Note: these paths exit (not return) so a verification failure can never
+    # silently fall back to the unverified build-from-main path.
+    if ! download_file "$checksums_url" "$checksums_path"; then
+        print_error "Could not download checksums.txt from the release; refusing unverified install"
+        exit 1
+    fi
+    local expected_sha actual_sha
+    expected_sha=$(awk -v n="$asset_name" '$2 == n || $2 == ("*" n) {print $1; exit}' "$checksums_path")
+    if [ -z "$expected_sha" ]; then
+        print_error "checksums.txt does not list $asset_name; refusing to install"
+        exit 1
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual_sha=$(sha256sum "$archive_path" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual_sha=$(shasum -a 256 "$archive_path" | awk '{print $1}')
+    else
+        print_error "No SHA-256 tool (sha256sum/shasum) available; refusing unverified install"
+        exit 1
+    fi
+    if [ "$expected_sha" != "$actual_sha" ]; then
+        print_error "SHA-256 mismatch for $asset_name: expected $expected_sha, got $actual_sha"
+        exit 1
+    fi
+    print_info "SHA-256 verified against release checksums.txt"
+
     # Extract the binary
     print_info "Extracting..."
 

@@ -252,7 +252,7 @@ const contextHelpInsights = `## Insights Panel
   h/l       Switch between panels
   j/k       Move within panel
   Ctrl+j/k  Scroll detail section
-  Tab       Next panel
+  Tab / Shift+Tab  Next/previous panel
 
 **Filtering**
   o         Active work (default)

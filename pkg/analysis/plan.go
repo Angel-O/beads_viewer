@@ -280,13 +280,18 @@ func (a *Analyzer) computePlanSummary(actionable []model.Issue, unblocksMap map[
 		return sortedActionable[i].ID < sortedActionable[j].ID
 	})
 
+	// Tie-break order: most unblocks, then highest priority (lowest number),
+	// then lowest ID (the slice is already ID-sorted, so the first winner on
+	// (count, priority) is the lowest ID).
 	highestID := ""
 	highestCount := -1
+	highestPriority := 0
 
 	for _, issue := range sortedActionable {
 		count := len(unblocksMap[issue.ID])
-		if count > highestCount {
+		if count > highestCount || (count == highestCount && issue.Priority < highestPriority) {
 			highestCount = count
+			highestPriority = issue.Priority
 			highestID = issue.ID
 		}
 	}

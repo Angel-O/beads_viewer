@@ -4,14 +4,80 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
+
+func TestRobotHistoryTimeoutFromMillisecondsChecked(t *testing.T) {
+	tests := []struct {
+		name string
+		ms   int64
+		want time.Duration
+		ok   bool
+	}{
+		{name: "negative is unset", ms: -1, want: 0, ok: false},
+		{name: "zero remains unbounded sentinel", ms: 0, want: 0, ok: true},
+		{name: "ordinary duration", ms: 1250, want: 1250 * time.Millisecond, ok: true},
+		{
+			name: "largest exact millisecond duration",
+			ms:   maxRobotHistoryTimeoutMillis,
+			want: time.Duration(maxRobotHistoryTimeoutMillis) * time.Millisecond,
+			ok:   true,
+		},
+		{
+			name: "one millisecond beyond duration range saturates",
+			ms:   maxRobotHistoryTimeoutMillis + 1,
+			want: time.Duration(math.MaxInt64),
+			ok:   true,
+		},
+		{
+			name: "largest parsed integer saturates",
+			ms:   math.MaxInt64,
+			want: time.Duration(math.MaxInt64),
+			ok:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := robotHistoryTimeoutFromMilliseconds(tt.ms)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("robotHistoryTimeoutFromMilliseconds(%d) = (%s, %v), want (%s, %v)", tt.ms, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestResolveRobotHistoryTimeoutSaturatesOverflow(t *testing.T) {
+	t.Setenv("BV_ROBOT_HISTORY_TIMEOUT_MS", strconv.FormatInt(maxRobotHistoryTimeoutMillis+1, 10))
+	unset := -1
+	if got := resolveRobotHistoryTimeout(phaseThreeRobotHandlerConfig{HistoryTimeoutMs: &unset}); got != time.Duration(math.MaxInt64) {
+		t.Fatalf("overflowing environment timeout = %s, want saturation at %s", got, time.Duration(math.MaxInt64))
+	}
+	if strconv.IntSize == 64 {
+		overflowingMillis := int64(maxRobotHistoryTimeoutMillis + 1)
+		overflowingFlag := int(overflowingMillis)
+		if got := resolveRobotHistoryTimeout(phaseThreeRobotHandlerConfig{HistoryTimeoutMs: &overflowingFlag}); got != time.Duration(math.MaxInt64) {
+			t.Fatalf("overflowing flag timeout = %s, want saturation at %s", got, time.Duration(math.MaxInt64))
+		}
+	}
+
+	flagValue := 25
+	if got := resolveRobotHistoryTimeout(phaseThreeRobotHandlerConfig{HistoryTimeoutMs: &flagValue}); got != 25*time.Millisecond {
+		t.Fatalf("explicit flag timeout = %s, want 25ms and precedence over environment", got)
+	}
+}
 
 func TestRobotRegistryValidate_RejectsModifierAlone(t *testing.T) {
 	var robotTriage bool
@@ -74,6 +140,115 @@ func TestTriageHistoryAvailableSkipsGitOutsideRepository(t *testing.T) {
 	}
 	if triageHistoryAvailable(correlation.NewDisabledProvider(), t.TempDir()) {
 		t.Fatal("expected disabled history to be skipped")
+	}
+}
+
+func TestRobotHistoryAppliesFeedbackAndExplainReportsIt(t *testing.T) {
+	repo := t.TempDir()
+	beadsDir := filepath.Join(repo, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runRobotTestGit(t, repo, "init", "-b", "main")
+	runRobotTestGit(t, repo, "config", "user.email", "dev@example.com")
+	runRobotTestGit(t, repo, "config", "user.name", "Dev")
+	issuesPath := filepath.Join(beadsDir, "issues.jsonl")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"bv-1","title":"One","status":"open","issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runRobotTestGit(t, repo, "add", issuesPath)
+	runRobotTestGit(t, repo, "commit", "-m", "seed tracker")
+
+	writeCode := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("package test\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitSHA := func() string {
+		t.Helper()
+		command := exec.Command("git", "rev-parse", "HEAD")
+		command.Dir = repo
+		output, err := command.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	writeCode("first.go")
+	runRobotTestGit(t, repo, "add", "first.go")
+	runRobotTestGit(t, repo, "commit", "-m", "fix(bv-1): first")
+	rejectedSHA := commitSHA()
+	writeCode("second.go")
+	runRobotTestGit(t, repo, "add", "second.go")
+	runRobotTestGit(t, repo, "commit", "-m", "fix(bv-1): second")
+	confirmedSHA := commitSHA()
+
+	store := correlation.NewFeedbackStore(beadsDir)
+	if err := store.Reject(rejectedSHA, "bv-1", "tester", 0.8, "wrong link"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Confirm(confirmedSHA, "bv-1", "tester", 0.8, "verified"); err != nil {
+		t.Fatal(err)
+	}
+
+	issues := []model.Issue{{ID: "bv-1", Title: "One", Status: model.StatusOpen}}
+	limit := 100
+	var historyJSON bytes.Buffer
+	if err := handleRobotHistory(RobotContext{
+		Issues:          issues,
+		HistoryProvider: correlation.NewGitProvider(repo, issuesPath),
+		WorkDir:         repo,
+		Encoder:         newJSONRobotEncoder(&historyJSON),
+	}, phaseThreeRobotHandlerConfig{HistoryLimit: &limit}); err != nil {
+		t.Fatalf("robot history: %v", err)
+	}
+	var historyOutput struct {
+		Stats     correlation.HistoryStats           `json:"stats"`
+		Histories map[string]correlation.BeadHistory `json:"histories"`
+	}
+	if err := json.Unmarshal(historyJSON.Bytes(), &historyOutput); err != nil {
+		t.Fatalf("decode robot history: %v\n%s", err, historyJSON.String())
+	}
+	history := historyOutput.Histories["bv-1"]
+	if len(history.Commits) != 1 || history.Commits[0].SHA != confirmedSHA {
+		t.Fatalf("feedback-applied history commits = %+v, want only confirmed commit", history.Commits)
+	}
+	if history.Commits[0].Confidence != 1 || !history.Commits[0].Confirmed {
+		t.Fatalf("confirmed history commit = %+v, want pinned confidence", history.Commits[0])
+	}
+	if applied := historyOutput.Stats.FeedbackApplied; applied == nil || applied.Confirmed != 1 || applied.Rejected != 1 {
+		t.Fatalf("feedback_applied = %+v, want one confirm and reject", applied)
+	}
+
+	var explainJSON bytes.Buffer
+	flag := rejectedSHA + ":bv-1"
+	if err := handleRobotExplainCorrelation(RobotContext{
+		Issues:          issues,
+		HistoryProvider: correlation.NewGitProvider(repo, issuesPath),
+		WorkDir:         repo,
+		Encoder:         newJSONRobotEncoder(&explainJSON),
+	}, phaseThreeRobotHandlerConfig{RobotExplainCorrFlag: &flag}); err != nil {
+		t.Fatalf("robot explain: %v", err)
+	}
+	var explanation correlation.CorrelationExplanation
+	if err := json.Unmarshal(explainJSON.Bytes(), &explanation); err != nil {
+		t.Fatalf("decode robot explain: %v\n%s", err, explainJSON.String())
+	}
+	if explanation.Feedback == nil || explanation.Feedback.Type != correlation.FeedbackReject {
+		t.Fatalf("explanation feedback = %+v, want rejection", explanation.Feedback)
+	}
+	if got, want := explanation.Recommendation, describeCorrelationFeedback(*explanation.Feedback); got != want {
+		t.Fatalf("explanation recommendation = %q, want %q", got, want)
+	}
+}
+
+func runRobotTestGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = repo
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 }
 
@@ -261,6 +436,99 @@ func TestRobotLabelFlowLocalUsesNeutralLabelAdmission(t *testing.T) {
 	}
 }
 
+func TestRobotLabelAttentionUsesPredicateAndPinnedTimestamp(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 34, 56, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(pinned.Unix(), 10))
+
+	var encoded bytes.Buffer
+	err := handleRobotLabelAttention(RobotContext{
+		Issues: []model.Issue{{
+			ID:     "alpha",
+			Status: model.StatusOpen,
+			Labels: []string{"ctx:alpha", "api"},
+		}},
+		DataHash: "hash",
+		Encoder:  newJSONRobotEncoder(&encoded),
+		LabelPredicate: func(label string) bool {
+			return !strings.HasPrefix(label, "ctx:")
+		},
+	}, phaseThreeRobotHandlerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output robotAttentionOutput
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.GeneratedAt != pinned.Format(time.RFC3339) {
+		t.Fatalf("generated_at = %q, want %q", output.GeneratedAt, pinned.Format(time.RFC3339))
+	}
+	for _, label := range output.Labels {
+		if strings.HasPrefix(label.Label, "ctx:") {
+			t.Fatalf("context label was not filtered from attention output: %q", label.Label)
+		}
+	}
+}
+
+func TestRobotTriagePinnedHistoryStatusIsSkipped(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 34, 56, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(pinned.Unix(), 10))
+
+	var encoded bytes.Buffer
+	err := handleRobotTriage(RobotContext{
+		Issues:          []model.Issue{{ID: "alpha", Status: model.StatusOpen}},
+		DataHash:        "hash",
+		HistoryProvider: correlation.NewDisabledProvider(),
+		Encoder:         newJSONRobotEncoder(&encoded),
+	}, phaseThreeRobotHandlerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output robotTriageOutput
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Triage.Meta.HistoryStatus != "skipped" {
+		t.Fatalf("pinned history_status = %q, want skipped", output.Triage.Meta.HistoryStatus)
+	}
+}
+
+func TestRobotFileHotspotsDispatchUsesSharedReportContract(t *testing.T) {
+	active := true
+	limit := 1
+	registry := newRobotRegistry()
+	registerPhaseThreeRobotHandlers(&registry, phaseThreeRobotHandlerConfig{
+		RobotFileHotspotsFlag: &active,
+		HotspotsLimit:         &limit,
+	})
+
+	var encoded bytes.Buffer
+	handled, err := registry.DispatchFlag("robot-file-hotspots", RobotContext{
+		Issues:          []model.Issue{{ID: "alpha", Status: model.StatusOpen}},
+		HistoryProvider: correlation.NewDisabledProvider(),
+		WorkDir:         t.TempDir(),
+		Encoder:         newJSONRobotEncoder(&encoded),
+	})
+	if err != nil {
+		t.Fatalf("dispatch robot-file-hotspots: %v", err)
+	}
+	if !handled {
+		t.Fatal("robot-file-hotspots handler was not dispatched")
+	}
+
+	var output map[string]json.RawMessage
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil {
+		t.Fatalf("decode robot-file-hotspots output: %v\n%s", err, encoded.String())
+	}
+	for _, field := range []string{"generated_at", "data_hash", "hotspots", "stats"} {
+		if output[field] == nil {
+			t.Fatalf("robot-file-hotspots output missing %q: %s", field, encoded.String())
+		}
+	}
+}
+
 func TestRobotTriageResultCopiesTopPicksOnce(t *testing.T) {
 	input := analysis.TriageResult{QuickRef: analysis.QuickRef{TopPicks: []analysis.TopPick{
 		{ID: "one"}, {ID: "two"}, {ID: "three"},
@@ -273,6 +541,52 @@ func TestRobotTriageResultCopiesTopPicksOnce(t *testing.T) {
 		if pick.ID != input.QuickRef.TopPicks[i].ID {
 			t.Fatalf("top pick %d = %q, want %q", i, pick.ID, input.QuickRef.TopPicks[i].ID)
 		}
+	}
+}
+
+func TestRobotDiffHandlerPinsNestedTimestampWithoutMutatingInput(t *testing.T) {
+	pinned := time.Date(2026, 8, 26, 12, 34, 56, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(pinned.Unix(), 10))
+
+	active := true
+	registry := newRobotRegistry()
+	registerPhaseTwoRobotHandlers(&registry, phaseTwoRobotHandlerConfig{RobotDiffFlag: &active})
+
+	from := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	originalTo := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
+	diff := &analysis.SnapshotDiff{FromTimestamp: from, ToTimestamp: originalTo}
+	var output bytes.Buffer
+	handled, err := registry.DispatchFlag("robot-diff", RobotContext{
+		DataHash:             "current-hash",
+		Diff:                 diff,
+		DiffResolvedRevision: "abc123",
+		DiffHistoricalIssues: nil,
+		Encoder:              json.NewEncoder(&output),
+	})
+	if err != nil {
+		t.Fatalf("dispatch robot-diff: %v", err)
+	}
+	if !handled {
+		t.Fatal("robot-diff handler was not dispatched")
+	}
+	var decoded struct {
+		GeneratedAt string `json:"generated_at"`
+		Diff        struct {
+			FromTimestamp time.Time `json:"from_timestamp"`
+			ToTimestamp   time.Time `json:"to_timestamp"`
+		} `json:"diff"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode robot-diff output: %v\n%s", err, output.String())
+	}
+	if decoded.GeneratedAt != pinned.Format(time.RFC3339) || !decoded.Diff.ToTimestamp.Equal(pinned) {
+		t.Fatalf("pinned output times = generated %q, nested %v; want %v", decoded.GeneratedAt, decoded.Diff.ToTimestamp, pinned)
+	}
+	if !decoded.Diff.FromTimestamp.Equal(from) {
+		t.Fatalf("from timestamp = %v, want %v", decoded.Diff.FromTimestamp, from)
+	}
+	if !diff.ToTimestamp.Equal(originalTo) {
+		t.Fatalf("handler mutated input diff timestamp to %v", diff.ToTimestamp)
 	}
 }
 
@@ -389,7 +703,8 @@ func TestWriteRobotHelp_ReturnsWriterErrorAfterIntro(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected writer error after intro")
 	}
-	if !strings.Contains(err.Error(), "key bindings") {
+	// The first write after the intro is the generated commands heading.
+	if !strings.Contains(err.Error(), "commands heading") {
 		t.Fatalf("expected contextual error for later write, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "write failed after intro") {

@@ -31,7 +31,7 @@ func hubScopeCatalog(ids ...string) repositorypkg.Catalog {
 	return catalog
 }
 
-func visibleIssueIDs(m Model) []string {
+func visibleIssueIDs(m *Model) []string {
 	ids := make([]string, 0, len(m.list.Items()))
 	for _, item := range m.list.Items() {
 		ids = append(ids, item.(IssueItem).Issue.ID)
@@ -166,7 +166,7 @@ func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
 		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
 	}).Build()
 	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.HubScope().Mode != hub.HubScopeContextless {
 		t.Fatalf("snapshot refresh changed scope to %#v", m.HubScope())
 	}
@@ -220,7 +220,7 @@ func TestDefaultRepositoryScopeWaitsForAsyncCatalog(t *testing.T) {
 		t.Fatal("default applied before the initial catalog arrived")
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
 		t.Fatalf("async scope = %#v, want ctx:alpha", scope)
 	}
@@ -250,7 +250,7 @@ func TestPendingDefaultScopeNormalizesActiveContextSort(t *testing.T) {
 		Generation: 1,
 		Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta"),
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.sortMode != SortDefault {
 		t.Fatalf("sort mode after pending default scope = %v, want Default", m.sortMode)
 	}
@@ -296,7 +296,7 @@ func TestRejectedHubScopePreservesPendingDefault(t *testing.T) {
 	}
 
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if scope := m.HubScope(); scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:alpha" {
 		t.Fatalf("pending current-context default did not apply: %#v", scope)
 	}
@@ -323,7 +323,7 @@ func TestPendingDefaultDoesNotOverridePickerChoiceOnCatalogRecovery(t *testing.T
 			Generation: 1,
 			Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma"),
 		})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if m.RepositoryScope() != nil {
 			t.Fatalf("recovery replaced explicit all scope: %#v", m.RepositoryScope())
 		}
@@ -347,7 +347,7 @@ func TestPendingDefaultDoesNotOverridePickerChoiceOnCatalogRecovery(t *testing.T
 			Generation: 1,
 			Catalog:    hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma"),
 		})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:beta"] {
 			t.Fatalf("recovery replaced explicit subset scope: %#v", scope)
 		}
@@ -363,7 +363,7 @@ func TestDefaultRepositoryScopeFallbacksLeaveAll(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.hubRepositoryMode = true
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.SetDefaultRepositoryScope("ctx:unregistered") || m.RepositoryScope() != nil {
 		t.Fatalf("unregistered context changed scope: %#v", m.RepositoryScope())
 	}
@@ -377,12 +377,12 @@ func TestDefaultRepositoryScopeSingleCatalogStaysExplicitOnGrowth(t *testing.T) 
 	}, nil, "")
 	m.hubRepositoryMode = true
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.SetDefaultRepositoryScope("ctx:alpha") {
 		t.Fatal("single-entry default was not applied")
 	}
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{Generation: 2, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
 		t.Fatalf("scope after catalog growth = %#v, want explicit ctx:alpha", scope)
 	}
@@ -397,7 +397,7 @@ func TestRepositoryPickerChoiceOverridesDefaultAcrossRefresh(t *testing.T) {
 	}, nil, "")
 	m.hubRepositoryMode = true
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.SetDefaultRepositoryScope("ctx:alpha")
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 	m.repoPicker.SetActiveRepos(m.activeRepos)
@@ -408,7 +408,7 @@ func TestRepositoryPickerChoiceOverridesDefaultAcrossRefresh(t *testing.T) {
 	}
 
 	updated, _ = m.Update(RepositoryCatalogReadyMsg{Generation: 2, Catalog: hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.RepositoryScope() != nil {
 		t.Fatalf("refresh reapplied default over user choice: %#v", m.RepositoryScope())
 	}
@@ -857,8 +857,8 @@ func TestHubCatalogRefreshPreservesActiveFuzzyResults(t *testing.T) {
 	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "old/name", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
-	m.list.SetFilterText("Stable")
-	if len(m.list.VisibleItems()) != 1 {
+	m.list.SetFilterText("new/name")
+	if len(m.list.VisibleItems()) != 0 {
 		t.Fatalf("initial fuzzy matches = %d", len(m.list.VisibleItems()))
 	}
 
@@ -871,10 +871,41 @@ func TestHubCatalogRefreshPreservesActiveFuzzyResults(t *testing.T) {
 	}
 
 	reloaded := model.Issue{ID: "two", Title: "Stable title", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
-	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder([]model.Issue{reloaded}).Build(), SnapshotVer: 1})
-	m = updated.(Model)
+	updated, cmd := m.Update(SnapshotReadyMsg{
+		Snapshot:          NewSnapshotBuilder([]model.Issue{reloaded}).Build(),
+		SnapshotVer:       1,
+		Catalog:           []repositorypkg.CatalogEntry{{ID: "ctx:alpha", Name: "new/name", Kind: repositorypkg.IdentityExact}},
+		CatalogGeneration: 2,
+		CatalogAvailable:  true,
+		CatalogChanged:    true,
+	})
+	m = updated.(*Model)
+	for _, message := range runUISemanticCommands(cmd) {
+		updated, _ = m.Update(message)
+		m = updated.(*Model)
+	}
 	if len(m.list.VisibleItems()) != 1 || m.list.SelectedItem().(IssueItem).Issue.ID != "two" {
 		t.Fatalf("snapshot reload lost fuzzy result: %+v", m.list.VisibleItems())
+	}
+	if !strings.Contains(m.list.VisibleItems()[0].FilterValue(), "new/name") {
+		t.Fatalf("stale snapshot refilter replaced catalog presentation: %q", m.list.VisibleItems()[0].FilterValue())
+	}
+}
+
+func TestRepositoryPresentationDoesNotMutateLiveListItems(t *testing.T) {
+	issue := model.Issue{ID: "one", Title: "Stable title", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.runtimeServices.CatalogPath = "hub.yaml"
+	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "new/name", Kind: repositorypkg.IdentityExact}}
+
+	liveItems := m.list.Items()
+	before := liveItems[0].(IssueItem).FilterValue()
+	m.setListItemsPreservingFilter(liveItems)
+	if got := liveItems[0].(IssueItem).FilterValue(); got != before {
+		t.Fatalf("repository decoration mutated live list item: before=%q after=%q", before, got)
+	}
+	if got := m.list.Items()[0].(IssueItem).FilterValue(); !strings.Contains(got, "new/name") {
+		t.Fatalf("decorated list item lost repository presentation: %q", got)
 	}
 }
 
@@ -914,7 +945,7 @@ func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
 				}
 
 				updated, _ := m.Update(RepositoryCatalogReadyMsg{Generation: 1, Catalog: newCatalog})
-				m = updated.(Model)
+				m = updated.(*Model)
 				requireIssueIDs(t, visibleIssueIDs(m), "one", "two")
 				if selected := m.list.SelectedItem().(IssueItem).Issue.ID; selected != "one" {
 					t.Fatalf("selected after catalog refresh = %q, want one", selected)
@@ -938,7 +969,7 @@ func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
 			Generation: 2,
 			Catalog:    repositorypkg.Catalog{oldCatalog[0]},
 		})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if m.sortMode != SortDefault {
 			t.Fatalf("sort mode after catalog shrink = %v, want Default", m.sortMode)
 		}
@@ -1175,7 +1206,7 @@ func TestAsyncCatalogScopeReconcilePreservesSelectionAfterContextFallback(t *tes
 			{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
 		},
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.sortMode != SortDefault {
 		t.Fatalf("sort mode after scope reconciliation = %v, want Default", m.sortMode)
 	}
@@ -1196,14 +1227,14 @@ func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	m.refreshRepositoryPresentation()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := strings.Join(m.labelPicker.allLabels, ","); got != "Ctx:upper,backend,myctx:keep" {
 		t.Fatalf("Hub label picker labels = %q", got)
 	}
 	m.showLabelPicker = false
 	m.focused = focusList
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	for _, health := range m.labelDashboard.labels {
 		if strings.HasPrefix(health.Label, "ctx:") {
 			t.Fatalf("label dashboard contains context metadata: %+v", m.labelDashboard.labels)
@@ -1212,7 +1243,7 @@ func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	m.focused = focusList
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
-	m = updated.(Model)
+	m = updated.(*Model)
 	for _, score := range m.attentionCache.Labels {
 		if strings.HasPrefix(score.Label, "ctx:") {
 			t.Fatalf("attention cache contains context metadata: %+v", m.attentionCache.Labels)
@@ -1220,7 +1251,7 @@ func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	}
 	if len(m.attentionCache.Labels) > 0 {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if strings.HasPrefix(m.currentFilter, "label:ctx:") {
 			t.Fatalf("attention action selected context metadata: %q", m.currentFilter)
 		}
@@ -1453,7 +1484,7 @@ func TestRepositoryScopeSurvivesPhase2AndSnapshotReload(t *testing.T) {
 
 	m.analysis.WaitForPhase2()
 	updated, _ := m.Update(Phase2ReadyMsg{Stats: m.analysis, Insights: m.analysis.GenerateInsights(len(m.issues))})
-	m = updated.(Model)
+	m = updated.(*Model)
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha")
 	requireIssueIDs(t, m.graphView.sortedIDs, "alpha")
 
@@ -1463,7 +1494,7 @@ func TestRepositoryScopeSurvivesPhase2AndSnapshotReload(t *testing.T) {
 	}
 	snapshot := NewSnapshotBuilder(reloaded).Build()
 	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
-	m = updated.(Model)
+	m = updated.(*Model)
 	requireIssueIDs(t, visibleIssueIDs(m), "alpha-2")
 	if !m.RepositoryScope()["ctx:alpha"] {
 		t.Fatalf("scope changed across snapshot reload: %v", m.RepositoryScope())
@@ -1486,7 +1517,7 @@ func TestRepositoryScopeSurvivesSynchronousReload(t *testing.T) {
 	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
 
 	updated, _ := m.Update(FileChangedMsg{})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.statusIsError {
 		t.Fatalf("synchronous reload failed: %s", m.statusMsg)
 	}
@@ -1693,12 +1724,12 @@ func TestInsightsStatusScopeIsIndependentFromListAndBoard(t *testing.T) {
 	m := NewModel(issues, nil, "")
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.currentFilter != "closed" {
 		t.Fatalf("list did not enter closed filter: %q", m.currentFilter)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusInsights || m.insightsStatusFilter != "" {
 		t.Fatalf("Insights inherited List state: focus=%v status=%q", m.focused, m.insightsStatusFilter)
 	}
@@ -1707,47 +1738,47 @@ func TestInsightsStatusScopeIsIndependentFromListAndBoard(t *testing.T) {
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "ready" || len(m.insightsIssueIDs()) != 1 || !m.insightsIssueIDs()["ready"] {
 		t.Fatalf("ready scope = %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "" || len(m.insightsIssueIDs()) != 2 {
 		t.Fatalf("active scope after ready toggle = %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "open" || len(m.insightsIssueIDs()) != 2 || !strings.Contains(m.renderFooter(), "OPEN") {
 		t.Fatalf("o did not enable open scope: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "" || len(m.insightsIssueIDs()) != 2 || !strings.Contains(m.renderFooter(), "ACTIVE") {
 		t.Fatalf("o did not clear to broad active scope: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "ready" || len(m.insightsIssueIDs()) != 1 {
 		t.Fatalf("r did not enable ready scope after open toggle: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "open" || len(m.insightsIssueIDs()) != 2 || !strings.Contains(m.renderFooter(), "OPEN") {
 		t.Fatalf("o did not switch ready scope to open: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "ready" || len(m.insightsIssueIDs()) != 1 {
 		t.Fatalf("r did not switch open scope to ready: %q, ids=%v", m.insightsStatusFilter, m.insightsIssueIDs())
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.insightsStatusFilter != "ready" || m.currentFilter != "closed" {
 		t.Fatalf("Insights c disturbed state: insights=%q list=%q", m.insightsStatusFilter, m.currentFilter)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusList {
 		t.Fatalf("Insights escape focus = %v, want list", m.focused)
 	}
@@ -1757,11 +1788,11 @@ func TestInsightsStatusScopeIsIndependentFromListAndBoard(t *testing.T) {
 
 	boardModel := NewModel(issues, nil, "")
 	updated, _ = boardModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
-	boardModel = updated.(Model)
+	boardModel = updated.(*Model)
 	updated, _ = boardModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
-	boardModel = updated.(Model)
+	boardModel = updated.(*Model)
 	updated, _ = boardModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	boardModel = updated.(Model)
+	boardModel = updated.(*Model)
 	if boardModel.focused != focusInsights || len(boardModel.insightsIssueIDs()) != 2 {
 		t.Fatalf("Insights from closed Board was not broad active: focus=%v ids=%v", boardModel.focused, boardModel.insightsIssueIDs())
 	}
@@ -1778,13 +1809,13 @@ func TestInsightsProjectionSurvivesPhaseAndSnapshotRefresh(t *testing.T) {
 	m.insightsStatusFilter = "ready"
 	m.analysis.WaitForPhase2()
 	updated, _ := m.Update(Phase2ReadyMsg{Stats: m.analysis, Insights: m.analysis.GenerateInsights(len(m.issues))})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if len(m.insightsPanel.topPicks) > 0 && m.insightsPanel.topPicks[0].ID != "active" {
 		t.Fatalf("phase refresh top pick = %+v", m.insightsPanel.topPicks)
 	}
 	snapshot := NewSnapshotBuilder(issues).Build()
 	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
-	m = updated.(Model)
+	m = updated.(*Model)
 	for _, pick := range m.insightsPanel.topPicks {
 		if pick.ID == "closed" || pick.ID == "tombstone" {
 			t.Fatalf("snapshot refresh reintroduced closed top pick %q", pick.ID)
@@ -1802,7 +1833,7 @@ func TestRepositoryScopeEmptySnapshotClearsHistory(t *testing.T) {
 	}}
 	m.historyView.SetReport(m.historyReport)
 	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(nil).Build(), SnapshotVer: 1})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if m.historyReport != nil || m.historyView.report != nil {
 		t.Fatalf("empty reload retained stale history: report=%v view=%v", m.historyReport, m.historyView.report)

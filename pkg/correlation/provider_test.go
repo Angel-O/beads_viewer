@@ -19,6 +19,25 @@ func TestProviderConstructors(t *testing.T) {
 	}
 }
 
+func TestProviderWithFeedbackStoreCopiesSourceSelection(t *testing.T) {
+	store := NewFeedbackStore(t.TempDir())
+	original := NewGitProvider("repo", "issues.jsonl")
+	decorated := original.WithFeedbackStore(store)
+
+	if decorated == original {
+		t.Fatal("feedback-aware provider should be a copy")
+	}
+	if original.feedback != nil {
+		t.Fatal("source provider was mutated")
+	}
+	if decorated.feedback != store {
+		t.Fatal("feedback store was not attached to provider copy")
+	}
+	if got := decorated.correlator(context.Background()); got.feedback != store {
+		t.Fatal("provider correlator did not attach feedback store")
+	}
+}
+
 func TestDisabledProviderMatchesCorrelatorOffReport(t *testing.T) {
 	beads := []BeadInfo{{ID: "bv-1", Title: "one", IssueType: "task", Status: "open"}}
 	got, err := NewDisabledProvider().GenerateReport(context.Background(), beads, CorrelatorOptions{})

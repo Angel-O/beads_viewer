@@ -10,6 +10,7 @@ type Provider struct {
 	repositoryRoot string
 	issuePath      string
 	configPath     string
+	feedback       *FeedbackStore
 }
 
 // Mode reports the resolved source kind for diagnostics and capability gates.
@@ -48,6 +49,17 @@ func NewDisabledProvider() *Provider {
 	return &Provider{mode: HistoryModeOff}
 }
 
+// WithFeedbackStore returns a provider copy that applies stored correlation
+// decisions without changing the source-selection provider shared by callers.
+func (p *Provider) WithFeedbackStore(store *FeedbackStore) *Provider {
+	if p == nil {
+		return nil
+	}
+	copy := *p
+	copy.feedback = store
+	return &copy
+}
+
 func (p *Provider) correlator(ctx context.Context) *Correlator {
 	if p == nil {
 		return NewDisabledProvider().correlator(ctx)
@@ -58,6 +70,7 @@ func (p *Provider) correlator(ctx context.Context) *Correlator {
 	c := NewCorrelator(p.repositoryRoot, p.issuePath)
 	c.historyMode = p.mode
 	c.hubConfigPath = p.configPath
+	c.WithFeedbackStore(p.feedback)
 	c.ctx = ctx
 	c.extractor.ctx = ctx
 	c.coCommitter.ctx = ctx

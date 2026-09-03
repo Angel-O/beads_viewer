@@ -68,3 +68,8 @@ target-*/
 
 # Wrangler local cache (account ids, deploy state)
 .wrangler/
+# br doctor per-run artifacts
+.doctor/
+
+# Release gate run logs (scripts/release_gate.sh)
+tests/artifacts/release_gate_*.log

@@ -47,7 +47,8 @@ type TriageMeta struct {
 	// "ok" (complete history report generated), "partial" (some required
 	// source repositories were unavailable), "error" (generation failed),
 	// "timeout" (generation exceeded the configured budget and was
-	// cancelled; triage proceeded without history), or empty when history
+	// cancelled; triage proceeded without history), "skipped" (a pinned
+	// SOURCE_DATE_EPOCH requested reproducible output), or empty when history
 	// generation was not attempted (no git repo / no open issues / callers
 	// outside the robot-triage path).
 	HistoryStatus   string                       `json:"history_status,omitempty"`
@@ -376,6 +377,10 @@ type TriageOptions struct {
 	// History report for staleness analysis
 	History *correlation.HistoryReport
 
+	// Weights, when non-nil, replaces the default composite-score factor
+	// weights (see FeedbackData.Weights). nil means DefaultWeights.
+	Weights *Weights
+
 	// SeedDataHash, when non-empty, is a pre-computed ComputeDataHash(issues)
 	// the caller has already calculated for the same issue set. It is used to
 	// seed the analyzer's disk-cache key so the identical SHA256 is not run
@@ -441,6 +446,10 @@ func ComputeTriageWithOptionsAndTime(issues []model.Issue, opts TriageOptions, n
 	// Time-gated readiness (defer_until) must use the same clock as the rest of
 	// this triage pass, so a pinned `now` yields deterministic output.
 	analyzer.SetNow(now)
+	// Feedback-adjusted (or otherwise configured) factor weights.
+	if opts.Weights != nil {
+		analyzer.SetWeights(*opts.Weights)
+	}
 	// Reuse a caller-supplied data hash when it still describes this exact issue
 	// set (i.e. no root-subgraph scoping happened above).
 	if opts.SeedDataHash != "" && opts.RootIssueID == "" {
@@ -1451,8 +1460,9 @@ type TriageReasonContext struct {
 	IsQuickWin      bool
 	BlockerDepth    int
 	// Now is the reference instant for time-gated readiness (defer_until).
-	// Zero means "use wall-clock time".
-	Now time.Time
+	// Set HasNow when zero itself is the intended instant.
+	Now    time.Time
+	HasNow bool
 }
 
 // TriageReasons contains all generated reasons for an issue
@@ -1466,7 +1476,7 @@ type TriageReasons struct {
 // These are emoji-prefixed, human-readable explanations that tell agents what to DO
 func GenerateTriageReasons(ctx TriageReasonContext) TriageReasons {
 	now := ctx.Now
-	if now.IsZero() {
+	if !ctx.HasNow && now.IsZero() {
 		now = time.Now()
 	}
 	// A future defer_until withholds the bead from claiming (issue #191). It is
@@ -1710,6 +1720,7 @@ func generateTriageReasonsForScoreAt(score TriageScore, triageCtx *TriageContext
 		IsQuickWin:      isQuickWin,
 		BlockerDepth:    triageCtx.BlockerDepth(score.IssueID), // cached
 		Now:             now,
+		HasNow:          true,
 	}
 
 	return GenerateTriageReasons(ctx)

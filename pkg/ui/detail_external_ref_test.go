@@ -113,7 +113,7 @@ func TestIssueDetailSectionOrder(t *testing.T) {
 
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 200})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.historyView.SetReport(&correlation.HistoryReport{
 		Histories: map[string]correlation.BeadHistory{
@@ -181,7 +181,7 @@ func TestIssueDetailSectionOrderOmitsOptionalSections(t *testing.T) {
 		Comments:           []*model.Comment{{Author: "author", Text: "Comment without a description"}},
 	}}, nil, "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 32, Height: 200})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.renderer.width != m.viewport.Width {
 		t.Fatalf("narrow detail renderer width = %d, viewport width = %d", m.renderer.width, m.viewport.Width)
 	}

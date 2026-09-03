@@ -18,7 +18,9 @@ func generateUltimateHTML(title, dataHash, graphDataJSON string, nodeCount, edge
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>%s | bv Graph</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Self-contained by design: no external stylesheets, scripts, or fonts.
+         Inter / JetBrains Mono are used when installed locally; the stacks
+         below fall back to the system UI and monospace faces. -->
     <style>
         :root {
             --bg: #0f0f1a;
@@ -872,6 +874,7 @@ func generateUltimateHTML(title, dataHash, graphDataJSON string, nodeCount, edge
         <div class="context-menu-divider"></div>
         <div class="context-menu-item" id="ctx-path">🛤️ Find path to...</div>
         <div class="context-menu-item" id="ctx-copy">📋 Copy ID</div>
+        <div class="context-menu-item" id="ctx-copy-description">📝 Copy description</div>
     </div>
     <div class="help-overlay" id="help-overlay">
         <div class="help-content">
@@ -1511,6 +1514,44 @@ function showContextMenu(node, event) {
     menu.classList.add('visible');
 }
 function hideContextMenu() { document.getElementById('context-menu').classList.remove('visible'); contextNode = null; }
+async function writeClipboardText(value) {
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(value);
+            return;
+        } catch (_) {
+            // Permission policies can reject the modern API even in a secure
+            // context. Fall through to the synchronous compatibility path.
+        }
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        if (!document.execCommand('copy')) throw new Error('copy command rejected');
+    } finally {
+        textarea.remove();
+    }
+}
+async function copyContextField(value, fieldName) {
+    const text = String(value ?? '');
+    if (!text.trim()) {
+        showToast('No ' + fieldName.toLowerCase() + ' to copy');
+        return;
+    }
+
+    try {
+        await writeClipboardText(text);
+        showToast(fieldName + ' copied');
+    } catch (_) {
+        showToast('Copy failed');
+    }
+}
 document.getElementById('ctx-focus').onclick = () => { if (contextNode) { Graph.centerAt(contextNode.x, contextNode.y, 500); Graph.zoom(3, 500); } hideContextMenu(); };
 document.getElementById('ctx-details').onclick = () => { if (contextNode) showHoverPanel(contextNode); hideContextMenu(); };
 document.getElementById('ctx-deps').onclick = () => { if (contextNode) highlightDependencies(contextNode, 'deps'); hideContextMenu(); };
@@ -1524,7 +1565,16 @@ document.getElementById('ctx-connected').onclick = () => {
     }
     hideContextMenu();
 };
-document.getElementById('ctx-copy').onclick = () => { if (contextNode) { navigator.clipboard.writeText(contextNode.id); showToast('Copied: ' + contextNode.id); } hideContextMenu(); };
+document.getElementById('ctx-copy').onclick = () => {
+    const value = contextNode ? contextNode.id : '';
+    hideContextMenu();
+    void copyContextField(value, 'ID');
+};
+document.getElementById('ctx-copy-description').onclick = () => {
+    const value = contextNode ? contextNode.description : '';
+    hideContextMenu();
+    void copyContextField(value, 'Description');
+};
 document.getElementById('ctx-path').onclick = () => { showToast('Click another node to find path'); pathStartNode = contextNode; hideContextMenu(); };
 
 let pathStartNode = null;

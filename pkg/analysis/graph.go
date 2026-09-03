@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/network"
 	"gonum.org/v1/gonum/graph/simple"
@@ -300,17 +301,22 @@ func (s *GraphStats) PageRankValue(id string) (float64, bool) {
 	return v, ok
 }
 
+// Phase-2 metric maps are built off-lock and published once under mu. They are
+// immutable after publication, so iterator methods can capture a map pointer
+// under RLock and invoke caller-controlled callbacks after releasing the lock.
+
 // PageRankAll iterates over all PageRank scores.
 // The callback receives each (id, score) pair. Return false to stop iteration.
 // Time complexity: O(n) for full iteration
-// Thread-safe: Yes (holds RLock during iteration)
+// Thread-safe: Yes (captures the immutable published map under RLock)
 func (s *GraphStats) PageRankAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.pageRank == nil {
+	values := s.pageRank
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.pageRank {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -333,11 +339,12 @@ func (s *GraphStats) BetweennessValue(id string) (float64, bool) {
 // BetweennessAll iterates over all betweenness scores.
 func (s *GraphStats) BetweennessAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.betweenness == nil {
+	values := s.betweenness
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.betweenness {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -359,11 +366,12 @@ func (s *GraphStats) EigenvectorValue(id string) (float64, bool) {
 // EigenvectorAll iterates over all eigenvector scores.
 func (s *GraphStats) EigenvectorAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.eigenvector == nil {
+	values := s.eigenvector
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.eigenvector {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -385,11 +393,12 @@ func (s *GraphStats) HubValue(id string) (float64, bool) {
 // HubsAll iterates over all hub scores.
 func (s *GraphStats) HubsAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.hubs == nil {
+	values := s.hubs
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.hubs {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -411,11 +420,12 @@ func (s *GraphStats) AuthorityValue(id string) (float64, bool) {
 // AuthoritiesAll iterates over all authority scores.
 func (s *GraphStats) AuthoritiesAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.authorities == nil {
+	values := s.authorities
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.authorities {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -437,11 +447,12 @@ func (s *GraphStats) CriticalPathValue(id string) (float64, bool) {
 // CriticalPathAll iterates over all critical path scores.
 func (s *GraphStats) CriticalPathAll(fn func(id string, score float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.criticalPathScore == nil {
+	values := s.criticalPathScore
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, score := range s.criticalPathScore {
+	for id, score := range values {
 		if !fn(id, score) {
 			return
 		}
@@ -463,11 +474,12 @@ func (s *GraphStats) CoreNumberValue(id string) (int, bool) {
 // CoreNumberAll iterates over all k-core numbers.
 func (s *GraphStats) CoreNumberAll(fn func(id string, core int) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.coreNumber == nil {
+	values := s.coreNumber
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, core := range s.coreNumber {
+	for id, core := range values {
 		if !fn(id, core) {
 			return
 		}
@@ -489,11 +501,12 @@ func (s *GraphStats) SlackValue(id string) (float64, bool) {
 // SlackAll iterates over all slack values.
 func (s *GraphStats) SlackAll(fn func(id string, slack float64) bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.slack == nil {
+	values := s.slack
+	s.mu.RUnlock()
+	if values == nil {
 		return
 	}
-	for id, slack := range s.slack {
+	for id, slack := range values {
 		if !fn(id, slack) {
 			return
 		}
@@ -1200,26 +1213,29 @@ type Analyzer struct {
 	blockerCountsMax int
 	config           *AnalysisConfig // Optional custom config, nil means use size-based defaults
 
-	// now is the reference instant for time-gated readiness (defer_until).
+	// now is the reference instant for time-gated readiness and scoring.
 	// Defaults to wall-clock time at construction; robot entrypoints with a
 	// pinned clock (SOURCE_DATE_EPOCH) override it via SetNow so their output
 	// stays deterministic.
 	now time.Time
+
+	// weights are the composite-score factor weights (priority.go). Unset
+	// means DefaultWeights; SetWeights installs feedback-adjusted values.
+	weights    Weights
+	weightsSet bool
 
 	dataHashOnce sync.Once
 	dataHash     string
 }
 
 // SetNow overrides the reference instant used for time-gated readiness checks
-// (currently defer_until). A zero value is ignored and leaves the clock as-is.
+// and time-sensitive scoring. The zero Go time is valid because
+// SOURCE_DATE_EPOCH=-62135596800 maps to it exactly.
 func (a *Analyzer) SetNow(now time.Time) {
-	if now.IsZero() {
-		return
-	}
 	a.now = now
 }
 
-// Now returns the analyzer's reference instant for time-gated readiness.
+// Now returns the analyzer's reference instant for readiness and scoring.
 func (a *Analyzer) Now() time.Time {
 	return a.now
 }
@@ -1327,30 +1343,42 @@ func (a *Analyzer) graphStructureHash() string {
 }
 
 func NewAnalyzer(issues []model.Issue) *Analyzer {
-	g := newCompactDirectedGraph(len(issues))
-	// Pre-allocate maps for efficiency
-	idToNode := make(map[string]int64, len(issues))
-	nodeToID := make(map[int64]string, len(issues))
+	// Issue IDs are the graph's semantic identity. Assign compact numeric IDs in
+	// sorted issue-ID order so cache-equivalent input permutations cannot change
+	// sampled pivots, traversal order, floating-point reduction, or cycle choice.
+	// Malformed duplicate IDs retain the loader's last-record-wins semantics.
 	issueMap := make(map[string]model.Issue, len(issues))
-	blockerCounts := make([]int, len(issues))
+	for _, issue := range issues {
+		issueMap[issue.ID] = issue
+	}
+	sortedIssueIDs := make([]string, 0, len(issueMap))
+	for id := range issueMap {
+		sortedIssueIDs = append(sortedIssueIDs, id)
+	}
+	sort.Strings(sortedIssueIDs)
+
+	g := newCompactDirectedGraph(len(sortedIssueIDs))
+	idToNode := make(map[string]int64, len(sortedIssueIDs))
+	nodeToID := make(map[int64]string, len(sortedIssueIDs))
+	blockerCounts := make([]int, len(sortedIssueIDs))
 
 	// 1. Add Nodes
-	for idx, issue := range issues {
-		issueMap[issue.ID] = issue
+	for idx, id := range sortedIssueIDs {
 		nodeID := int64(idx)
-		idToNode[issue.ID] = nodeID
-		nodeToID[nodeID] = issue.ID
+		idToNode[id] = nodeID
+		nodeToID[nodeID] = id
 	}
 
 	// 2. Add Edges (Dependency Direction)
 	// We only model *blocking* relationships in the analysis graph. Non-blocking
 	// links such as "related" should not influence centrality metrics or cycle
 	// detection because they do not gate execution order.
-	seenByBlocker := make([]int, len(issues))
+	seenByBlocker := make([]int, len(sortedIssueIDs))
 	epoch := 0
-	for _, issue := range issues {
+	for _, issueID := range sortedIssueIDs {
+		issue := issueMap[issueID]
 		epoch++
-		u, ok := idToNode[issue.ID]
+		u, ok := idToNode[issueID]
 		if !ok {
 			continue
 		}
@@ -1358,6 +1386,7 @@ func NewAnalyzer(issues []model.Issue) *Analyzer {
 			continue
 		}
 
+		blockingTargets := make([]int64, 0, len(issue.Dependencies))
 		for _, dep := range issue.Dependencies {
 			if dep == nil {
 				continue
@@ -1372,6 +1401,10 @@ func NewAnalyzer(issues []model.Issue) *Analyzer {
 			if !exists {
 				continue
 			}
+			blockingTargets = append(blockingTargets, v)
+		}
+		sort.Slice(blockingTargets, func(i, j int) bool { return blockingTargets[i] < blockingTargets[j] })
+		for _, v := range blockingTargets {
 			// Count all blocking dependencies (including duplicates) for impact scoring.
 			if v < 0 || int(v) >= len(blockerCounts) {
 				continue
@@ -1443,6 +1476,7 @@ func (a *Analyzer) AnalyzeAsyncWithConfig(ctx context.Context, config AnalysisCo
 
 			if cached, xfetchRefresh, ok := getRobotDiskCachedStats(robotCacheKey); ok {
 				if !xfetchRefresh || ctx.Err() != nil {
+					metrics.GraphCache.Hit()
 					return cached
 				}
 				// XFetch selected this caller to refresh early. Fall through and
@@ -1505,7 +1539,12 @@ func (a *Analyzer) AnalyzeAsyncWithConfig(ctx context.Context, config AnalysisCo
 	}
 
 	// Phase 1: Fast metrics (degree centrality, topo sort, density)
+	if robotCacheKey != "" {
+		metrics.GraphCache.Miss() // the disk cache had no usable entry
+	}
+	stopPhase1 := metrics.Timer(metrics.AnalysisPhase1)
 	a.computePhase1(stats)
+	stopPhase1()
 
 	if incCacheKey != "" {
 		putIncrementalGraphStatsCache(incCacheKey, stats)
@@ -1715,39 +1754,60 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	betweennessIsApprox := false
 	actualBetweennessSample := 0
 	cyclesTruncated := false
+	// RunToCompletion calls the four normally deadline-raced algorithms directly.
+	// Their inputs and iteration order are deterministic; removing the scheduler
+	// versus timer race makes the resulting values and status deterministic too.
 
 	// PageRank
 	if ctx.Err() == nil && config.ComputePageRank {
 		prStart := time.Now()
-		prDone := make(chan map[int64]float64, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Panic -> implicitly causes timeout in parent
+		if config.RunToCompletion {
+			if pr, ok := runMetricSafely(func() map[int64]float64 {
+				return computePageRank(a.g, 0.85, 1e-6)
+			}); ok {
+				for id, score := range pr {
+					localPageRank[a.nodeToID[id]] = score
 				}
-			}()
-			prDone <- computePageRank(a.g, 0.85, 1e-6)
-		}()
-
-		timer := time.NewTimer(config.PageRankTimeout)
-		select {
-		case pr := <-prDone:
-			timer.Stop()
-			for id, score := range pr {
-				localPageRank[a.nodeToID[id]] = score
-			}
-		case <-timer.C:
-			profile.PageRankTO = true
-			if len(a.issueMap) > 0 {
+			} else {
+				// Match the legacy goroutine path: a recovered worker panic
+				// eventually presents as a timed-out metric with uniform fallback.
+				profile.PageRankTO = true
 				uniform := 1.0 / float64(len(a.issueMap))
 				for id := range a.issueMap {
 					localPageRank[id] = uniform
 				}
 			}
-		case <-ctx.Done():
-			timer.Stop()
-			// Abort immediately
-			return
+		} else {
+			prDone := make(chan map[int64]float64, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic -> implicitly causes timeout in parent
+					}
+				}()
+				prDone <- computePageRank(a.g, 0.85, 1e-6)
+			}()
+
+			timer := time.NewTimer(config.PageRankTimeout)
+			select {
+			case pr := <-prDone:
+				timer.Stop()
+				for id, score := range pr {
+					localPageRank[a.nodeToID[id]] = score
+				}
+			case <-timer.C:
+				profile.PageRankTO = true
+				if len(a.issueMap) > 0 {
+					uniform := 1.0 / float64(len(a.issueMap))
+					for id := range a.issueMap {
+						localPageRank[id] = uniform
+					}
+				}
+			case <-ctx.Done():
+				timer.Stop()
+				// Abort immediately
+				return
+			}
 		}
 		profile.PageRank = time.Since(prStart)
 	}
@@ -1755,31 +1815,23 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	// Betweenness
 	if ctx.Err() == nil && config.ComputeBetweenness {
 		bwStart := time.Now()
-		bwDone := make(chan BetweennessResult, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Panic -> implicitly causes timeout in parent
-				}
-			}()
+		computeBetweenness := func() BetweennessResult {
 			// Choose algorithm based on mode
 			if config.BetweennessMode == BetweennessApproximate && config.BetweennessSampleSize > 0 {
-				bwDone <- ApproxBetweenness(a.g, config.BetweennessSampleSize, 1)
-			} else {
-				// Exact mode or mode not set (default to exact)
-				exact := network.Betweenness(a.g)
-				bwDone <- BetweennessResult{
-					Scores:     exact,
-					Mode:       BetweennessExact,
-					TotalNodes: a.g.Nodes().Len(),
+				if config.RunToCompletion {
+					return approxBetweennessDeterministic(a.g, config.BetweennessSampleSize, 1)
 				}
+				return ApproxBetweenness(a.g, config.BetweennessSampleSize, 1)
 			}
-		}()
+			// Exact mode or mode not set (default to exact)
+			return BetweennessResult{
+				Scores:     network.Betweenness(a.g),
+				Mode:       BetweennessExact,
+				TotalNodes: a.g.Nodes().Len(),
+			}
+		}
 
-		timer := time.NewTimer(config.BetweennessTimeout)
-		select {
-		case result := <-bwDone:
-			timer.Stop()
+		consumeBetweenness := func(result BetweennessResult) {
 			for id, score := range result.Scores {
 				localBetweenness[a.nodeToID[id]] = score
 			}
@@ -1788,11 +1840,36 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 				betweennessIsApprox = true
 				actualBetweennessSample = result.SampleSize
 			}
-		case <-timer.C:
-			profile.BetweennessTO = true
-		case <-ctx.Done():
-			timer.Stop()
-			return
+		}
+
+		if config.RunToCompletion {
+			if result, ok := runMetricSafely(computeBetweenness); ok {
+				consumeBetweenness(result)
+			} else {
+				profile.BetweennessTO = true
+			}
+		} else {
+			bwDone := make(chan BetweennessResult, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic -> implicitly causes timeout in parent
+					}
+				}()
+				bwDone <- computeBetweenness()
+			}()
+
+			timer := time.NewTimer(config.BetweennessTimeout)
+			select {
+			case result := <-bwDone:
+				timer.Stop()
+				consumeBetweenness(result)
+			case <-timer.C:
+				profile.BetweennessTO = true
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
 		}
 		profile.Betweenness = time.Since(bwStart)
 	}
@@ -1809,29 +1886,42 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	// HITS
 	if ctx.Err() == nil && config.ComputeHITS && a.g.Edges().Len() > 0 {
 		hitsStart := time.Now()
-		hitsDone := make(chan map[int64]network.HubAuthority, 1)
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Panic -> implicitly causes timeout in parent
-				}
-			}()
-			hitsDone <- network.HITS(a.g, 1e-3)
-		}()
-
-		timer := time.NewTimer(config.HITSTimeout)
-		select {
-		case hubAuth := <-hitsDone:
-			timer.Stop()
+		consumeHITS := func(hubAuth map[int64]network.HubAuthority) {
 			for id, ha := range hubAuth {
 				localHubs[a.nodeToID[id]] = ha.Hub
 				localAuthorities[a.nodeToID[id]] = ha.Authority
 			}
-		case <-timer.C:
-			profile.HITSTO = true
-		case <-ctx.Done():
-			timer.Stop()
-			return
+		}
+		if config.RunToCompletion {
+			if hubAuth, ok := runMetricSafely(func() map[int64]network.HubAuthority {
+				return network.HITS(a.g, 1e-3)
+			}); ok {
+				consumeHITS(hubAuth)
+			} else {
+				profile.HITSTO = true
+			}
+		} else {
+			hitsDone := make(chan map[int64]network.HubAuthority, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// Panic -> implicitly causes timeout in parent
+					}
+				}()
+				hitsDone <- network.HITS(a.g, 1e-3)
+			}()
+
+			timer := time.NewTimer(config.HITSTimeout)
+			select {
+			case hubAuth := <-hitsDone:
+				timer.Stop()
+				consumeHITS(hubAuth)
+			case <-timer.C:
+				profile.HITSTO = true
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
 		}
 		profile.HITS = time.Since(hitsStart)
 	}
@@ -1850,7 +1940,7 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	if ctx.Err() == nil && config.ComputeCycles {
 		cyclesStart := time.Now()
 		maxCycles := config.MaxCyclesToStore
-		if maxCycles == 0 {
+		if maxCycles <= 0 {
 			maxCycles = 100
 		}
 
@@ -1871,20 +1961,7 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 		}
 
 		if hasCycles {
-			cyclesDone := make(chan [][]graph.Node, 1)
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						// Panic -> implicitly causes timeout in parent
-					}
-				}()
-				cyclesDone <- findCyclesSafe(a.g, maxCycles)
-			}()
-
-			timer := time.NewTimer(config.CyclesTimeout)
-			select {
-			case cycles := <-cyclesDone:
-				timer.Stop()
+			consumeCycles := func(cycles [][]graph.Node) {
 				profile.CycleCount = len(cycles)
 				cyclesToProcess := cycles
 				if len(cyclesToProcess) > maxCycles {
@@ -1899,11 +1976,37 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 					}
 					localCycles = append(localCycles, cycleIDs)
 				}
-			case <-timer.C:
-				profile.CyclesTO = true
-			case <-ctx.Done():
-				timer.Stop()
-				return
+			}
+			if config.RunToCompletion {
+				if cycles, ok := runMetricSafely(func() [][]graph.Node {
+					return findCyclesSafe(a.g, maxCycles)
+				}); ok {
+					consumeCycles(cycles)
+				} else {
+					profile.CyclesTO = true
+				}
+			} else {
+				cyclesDone := make(chan [][]graph.Node, 1)
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							// Panic -> implicitly causes timeout in parent
+						}
+					}()
+					cyclesDone <- findCyclesSafe(a.g, maxCycles)
+				}()
+
+				timer := time.NewTimer(config.CyclesTimeout)
+				select {
+				case cycles := <-cyclesDone:
+					timer.Stop()
+					consumeCycles(cycles)
+				case <-timer.C:
+					profile.CyclesTO = true
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				}
 			}
 		}
 		profile.Cycles = time.Since(cyclesStart)
@@ -1992,6 +2095,19 @@ func (a *Analyzer) computePhase2WithProfile(ctx context.Context, stats *GraphSta
 	stats.mu.Unlock()
 }
 
+// runMetricSafely preserves the panic containment of the ordinary goroutine
+// path when reproducible mode executes a metric synchronously. A panic is
+// reported as an incomplete computation so the caller can apply the same
+// deterministic fallback/status it would use after the worker failed to send.
+func runMetricSafely[T any](compute func() T) (result T, completed bool) {
+	defer func() {
+		if recover() != nil {
+			completed = false
+		}
+	}()
+	return compute(), true
+}
+
 // computePhase1 calculates fast metrics synchronously.
 func (a *Analyzer) computePhase1(stats *GraphStats) {
 	nodes := a.g.Nodes()
@@ -2038,6 +2154,7 @@ func (a *Analyzer) computePhase1(stats *GraphStats) {
 // Respects the config to skip expensive algorithms for large graphs.
 func (a *Analyzer) computePhase2(ctx context.Context, stats *GraphStats, config AnalysisConfig, cacheKey, dataHash, configHash string) {
 	defer close(stats.phase2Done)
+	defer metrics.Timer(metrics.AnalysisPhase2)()
 
 	// Recover from panics to prevent crashing the entire application
 	defer func() {

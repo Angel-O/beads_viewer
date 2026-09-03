@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -71,9 +72,16 @@ func installFailingReloadFakeBD(t *testing.T, root, payload string) {
 func TestModelUpdateHistoryPartialAndFatalState(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
 	m.width, m.height = 120, 40
+	m.historyLoading = true
+	m.historyLoadDataGeneration = m.semanticDataGeneration
+	m.historyLoadRequestGeneration = 1
 
-	updated, _ := m.Update(HistoryLoadedMsg{Error: errors.New("provider failed")})
-	failed := updated.(Model)
+	updated, _ := m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+		Error:             errors.New("provider failed"),
+	})
+	failed := updated.(*Model)
 	if !failed.historyLoadFailed || !failed.statusIsError || failed.historyLoading {
 		t.Fatalf("fatal history load did not set failure state: failed=%v error=%v loading=%v", failed.historyLoadFailed, failed.statusIsError, failed.historyLoading)
 	}
@@ -85,8 +93,15 @@ func TestModelUpdateHistoryPartialAndFatalState(t *testing.T) {
 			Code: correlation.HistoryWarningExternalRepositoryUnavailable, Context: "ctx:repo-a-111", Reason: "not_found", SkippedCorrelations: 1, Message: "Source history is unavailable.",
 		}},
 	}
-	updated, _ = failed.Update(HistoryLoadedMsg{Report: report})
-	partial := updated.(Model)
+	failed.historyLoading = true
+	failed.historyLoadDataGeneration = failed.semanticDataGeneration
+	failed.historyLoadRequestGeneration++
+	updated, _ = failed.Update(HistoryLoadedMsg{
+		DataGeneration:    failed.historyLoadDataGeneration,
+		RequestGeneration: failed.historyLoadRequestGeneration,
+		Report:            report,
+	})
+	partial := updated.(*Model)
 	if partial.historyLoadFailed || partial.statusIsError || partial.historyView.report != report {
 		t.Fatalf("partial history report was not installed normally: failed=%v error=%v installed=%v", partial.historyLoadFailed, partial.statusIsError, partial.historyView.report == report)
 	}
@@ -98,6 +113,9 @@ func TestModelUpdateHistoryRefreshReconcilesExistingView(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.historyReport = report
 	m.historyView.SetReport(report)
+	m.historyLoading = true
+	m.historyLoadDataGeneration = m.semanticDataGeneration
+	m.historyLoadRequestGeneration = 1
 	m.historyView.StartSearchWithMode(searchModeCommit)
 	m.historyView.searchInput.SetValue("auth")
 	m.historyView.applySearchFilter()
@@ -105,8 +123,12 @@ func TestModelUpdateHistoryRefreshReconcilesExistingView(t *testing.T) {
 	m.historyView.ToggleViewMode()
 
 	refreshed := createTestHistoryReport()
-	updated, _ := m.Update(HistoryLoadedMsg{Report: refreshed})
-	m = updated.(Model)
+	updated, _ := m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+		Report:            refreshed,
+	})
+	m = updated.(*Model)
 
 	if m.historyView.SearchQuery() != "auth" || m.historyView.searchMode != searchModeCommit || m.historyView.IsSearchActive() || !m.historyView.IsGitMode() {
 		t.Fatalf("HistoryLoadedMsg replaced stable view state: query=%q mode=%v active=%v git=%v", m.historyView.SearchQuery(), m.historyView.searchMode, m.historyView.IsSearchActive(), m.historyView.IsGitMode())
@@ -125,7 +147,7 @@ func TestModelUpdatePhase2AndFileChanged(t *testing.T) {
 	// Phase2ReadyMsg should rebuild insights/graph without error
 	ins := m.analysis.GenerateInsights(len(issues))
 	updated, _ := m.Update(Phase2ReadyMsg{Stats: m.analysis, Insights: ins})
-	m2 := updated.(Model)
+	m2 := updated.(*Model)
 	if m2.insightsPanel.insights.Stats == nil {
 		t.Fatalf("expected insights to be regenerated")
 	}
@@ -134,7 +156,7 @@ func TestModelUpdatePhase2AndFileChanged(t *testing.T) {
 	}
 
 	// FileChangedMsg with empty beadsPath should simply re-arm watcher (no panic)
-	if updated2, cmd := m2.Update(FileChangedMsg{}); updated2.(Model).statusMsg != m2.statusMsg {
+	if updated2, cmd := m2.Update(FileChangedMsg{}); updated2.(*Model).statusMsg != m2.statusMsg {
 		_ = cmd // command may be nil; just ensure no panic and type matches
 	}
 }
@@ -154,19 +176,19 @@ func TestCommentsAddPromptSubmitsAndRefreshes(t *testing.T) {
 	})
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showCommentPrompt || m.focused != focusCommentInput || cmd != nil {
 		t.Fatalf("comment prompt did not open: shown=%v focus=%v cmd=%v", m.showCommentPrompt, m.focused, cmd != nil)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(body)})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentPrompt || !m.commentSubmitting || cmd == nil {
 		t.Fatalf("comment prompt did not submit: shown=%v submitting=%v cmd=%v", m.showCommentPrompt, m.commentSubmitting, cmd != nil)
 	}
 	updated, refreshCmd := m.Update(cmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if gotID != "A" || gotText != strings.TrimSpace(body) || m.commentSubmitting || refreshCmd == nil {
 		t.Fatalf("comment result = id %q text %q submitting=%v error=%v", gotID, gotText, m.commentSubmitting, m.statusIsError)
 	}
@@ -322,10 +344,10 @@ func TestCommentAddWithoutRegisteredRepositoryPathDoesNotInvokeWBD(t *testing.T)
 	m.issueMap["A"].Labels = []string{"ctx:repo"}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.commentInput.SetValue("body")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if cmd != nil || m.commentSubmitting || !m.statusIsError || !strings.Contains(m.statusMsg, "has no registered path") {
 		t.Fatalf("missing path state: cmd=%v submitting=%v error=%v status=%q", cmd != nil, m.commentSubmitting, m.statusIsError, m.statusMsg)
 	}
@@ -348,7 +370,7 @@ func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 			m.width, m.height = test.width, test.height
 			m.hubRepositoryMode = true
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-			m = updated.(Model)
+			m = updated.(*Model)
 
 			beforeModal := m.renderCommentPrompt()
 			panelWidth, panelHeight := m.commentPanelWidth, m.commentPanelHeight
@@ -403,20 +425,20 @@ func TestCommentEditorFixedGeometryWrapsAndFits(t *testing.T) {
 
 			checkGeometry("empty")
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			checkGeometry("first character")
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			m = updated.(Model)
+			m = updated.(*Model)
 			checkGeometry("newline")
 			comment := "Title\n" + strings.Repeat("0123456789", 6) + "\n" + strings.Repeat("line\n", 30) + strings.Repeat("tail", 30)
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(comment)})
-			m = updated.(Model)
+			m = updated.(*Model)
 			checkGeometry("multiline and wrapped content")
 			if m.commentInput.LineInfo().Height <= 1 || m.commentInput.LineCount() <= m.commentEditorHeight {
 				t.Fatalf("comment was not wrapped/retained in textarea: line height=%d logical lines=%d", m.commentInput.LineInfo().Height, m.commentInput.LineCount())
 			}
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !strings.Contains(ansi.Strip(m.commentInput.View()), "x") {
 				t.Fatal("textarea navigation could not return to earlier content")
 			}
@@ -429,22 +451,22 @@ func TestCommentEditorSemicolonAndEnterStayInEditor(t *testing.T) {
 	m.width, m.height = 80, 30
 	m.hubRepositoryMode = true
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("first")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("second")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.commentInput.Value() != "nfirst;\nsecond" || m.showShortcutsSidebar || !m.showCommentPrompt {
 		t.Fatalf("editor input = %q sidebar=%v modal=%v", m.commentInput.Value(), m.showShortcutsSidebar, m.showCommentPrompt)
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("Ctrl+C did not return quit command")
 	}
@@ -459,14 +481,14 @@ func TestCommentEditorRecomputesWidthAfterResizeAndReopen(t *testing.T) {
 	m.width, m.height = 100, 30
 	m.hubRepositoryMode = true
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	firstWidth := m.commentEditorWidth
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if firstWidth == m.commentEditorWidth || m.commentEditorWidth != commentEditorWidth(28) {
 		t.Fatalf("reopened editor width = %d, first=%d want %d", m.commentEditorWidth, firstWidth, commentEditorWidth(28))
 	}
@@ -482,18 +504,18 @@ func TestCommentEditorResizesWhileOpenAndDeliversSnapshot(t *testing.T) {
 	m.width, m.height = 80, 30
 	m.hubRepositoryMode = true
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 28, Height: 30})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.width != 28 || m.commentEditorWidth != commentEditorWidth(28) || m.commentInput.Value() != "draft" {
 		t.Fatalf("resize changed editor state: terminal=%d editor=%d text=%q", m.width, m.commentEditorWidth, m.commentInput.Value())
 	}
 
 	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "B", Title: "Bravo", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
 	updated, _ = m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.issueMap["B"] == nil || !m.showCommentPrompt || m.commentInput.Value() != "draft" {
 		t.Fatalf("snapshot was not delivered through main update: issueMap=%v modal=%v text=%q", m.issueMap["B"] != nil, m.showCommentPrompt, m.commentInput.Value())
 	}
@@ -511,7 +533,7 @@ func TestCommentEditorSuppressesExistingSidebarWithoutOverflow(t *testing.T) {
 	m.showShortcutsSidebar = true
 	m.applyContentSizing()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	view := m.View()
 	if !m.showShortcutsSidebar || strings.Contains(view, "Shortcuts") {
 		t.Fatalf("sidebar composition was not suppressed: state=%v", m.showShortcutsSidebar)
@@ -522,7 +544,7 @@ func TestCommentEditorSuppressesExistingSidebarWithoutOverflow(t *testing.T) {
 		}
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !strings.Contains(m.View(), "Shortcuts") {
 		t.Fatal("sidebar composition was not restored after cancel")
 	}
@@ -563,16 +585,16 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 		return nil
 	})
 	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updatedModel.(Model)
+	m = updatedModel.(*Model)
 	updatedModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
-	m = updatedModel.(Model)
+	m = updatedModel.(*Model)
 	updatedModel, submitCmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updatedModel.(Model)
+	m = updatedModel.(*Model)
 	if submitCmd == nil {
 		t.Fatal("comment submission returned no command")
 	}
 	updatedModel, refreshCmd := m.Update(submitCmd())
-	m = updatedModel.(Model)
+	m = updatedModel.(*Model)
 	if refreshCmd == nil {
 		t.Fatal("successful Hub comment returned no refresh command")
 	}
@@ -585,7 +607,7 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 		ready = waitForSnapshotReady(t, worker.Messages())
 	}
 	updatedModel, _ = m.Update(ready)
-	m = updatedModel.(Model)
+	m = updatedModel.(*Model)
 	issue := m.issueMap["A"]
 	if issue == nil || len(issue.Comments) != 1 || issue.Comments[0].Text != "looks good" {
 		t.Fatalf("refreshed comments = %#v, want one persisted comment", issue)
@@ -625,7 +647,7 @@ func installTargetedCommentWBD(t *testing.T, showPayload, commentsPayload string
 	return callsPath, binDir
 }
 
-func targetedCommentModel(t *testing.T) Model {
+func targetedCommentModel(t *testing.T) *Model {
 	t.Helper()
 	issues := []model.Issue{
 		{ID: "A", Title: "Top", Status: model.StatusOpen, Priority: 0, IssueType: model.TypeTask},
@@ -666,12 +688,12 @@ func TestTargetedCommentRefreshPreservesNonTopSelectionForAddEditDelete(t *testi
 			offsetBefore := m.viewport.YOffset
 
 			updated, cmd := m.Update(test.message)
-			m = updated.(Model)
+			m = updated.(*Model)
 			if cmd == nil {
 				t.Fatal("successful comment action returned no targeted refresh command")
 			}
 			updated, fallback := m.Update(cmd())
-			m = updated.(Model)
+			m = updated.(*Model)
 			if fallback != nil {
 				t.Fatalf("targeted refresh unexpectedly requested fallback: status=%q", m.statusMsg)
 			}
@@ -697,12 +719,12 @@ func TestTargetedCommentRefreshFailureFallsBackOnce(t *testing.T) {
 	m := targetedCommentModel(t)
 	callsPath, _ := installTargetedCommentWBD(t, `[{"id":"B","comment_count":1}]`, `[{"id":"B","issue_id":"B","id":"c","created_at":"2026-08-28T00:00:00Z"}]`, true)
 	updated, targetCmd := m.Update(commentAddedMsg{issueID: "B"})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if targetCmd == nil {
 		t.Fatal("comment action returned no targeted command")
 	}
 	updated, fallback := m.Update(targetCmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if fallback == nil || !strings.Contains(m.statusMsg, "targeted refresh") || !strings.Contains(m.statusMsg, "full refresh") {
 		t.Fatalf("targeted failure did not request actionable fallback: cmd=%v status=%q", fallback != nil, m.statusMsg)
 	}
@@ -722,9 +744,9 @@ func TestTargetedCommentRefreshDecodeFailureFallsBack(t *testing.T) {
 	m := targetedCommentModel(t)
 	_, _ = installTargetedCommentWBD(t, "not-json", `[]`, false)
 	updated, targetCmd := m.Update(commentMutationMsg{action: "delete", issueID: "B", commentID: "old"})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, fallback := m.Update(targetCmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if fallback == nil || !strings.Contains(m.statusMsg, "show decode failed") || !strings.Contains(m.statusMsg, "full refresh") {
 		t.Fatalf("decode failure did not request fallback: cmd=%v status=%q", fallback != nil, m.statusMsg)
 	}
@@ -735,7 +757,7 @@ func TestTargetedCommentRefreshRoutingFailureFallsBack(t *testing.T) {
 	m.runtimeServices.CatalogPath = filepath.Join(t.TempDir(), "hub.yaml")
 	m.hubRepositoryMode = true
 	updated, fallback := m.Update(commentAddedMsg{issueID: "B"})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if fallback == nil || !strings.Contains(m.statusMsg, "no registered repository path") || !strings.Contains(m.statusMsg, "full refresh") {
 		t.Fatalf("routing failure did not fall back with context: cmd=%v status=%q", fallback != nil, m.statusMsg)
 	}
@@ -759,14 +781,14 @@ func TestCommentsAddTargetsDirectInsightsDetail(t *testing.T) {
 	})
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showCommentPrompt || m.commentIssueID != "B" {
 		t.Fatalf("comment prompt targeted %q, want B", m.commentIssueID)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("comment submission returned no command")
 	}
@@ -782,14 +804,14 @@ func TestCommentsShortcutIgnoredOutsideListAndDetail(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.focused = focusGraph
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentPrompt || cmd != nil {
 		t.Fatalf("comment shortcut acted outside list/detail: shown=%v cmd=%v", m.showCommentPrompt, cmd != nil)
 	}
 }
 
 func TestCommentsShortcutUsesNOnlyInListAndDetail(t *testing.T) {
-	newModel := func() Model {
+	newModel := func() *Model {
 		m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 		m.width, m.height = 120, 40
 		m.hubRepositoryMode = true
@@ -809,16 +831,16 @@ func TestCommentsShortcutUsesNOnlyInListAndDetail(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			m := newModel()
-			test.setup(&m)
+			test.setup(m)
 
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("#")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if m.showCommentPrompt {
 				t.Fatal("# still opens the comment editor")
 			}
 
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-			m = updated.(Model)
+			m = updated.(*Model)
 			if !m.showCommentPrompt || m.focused != focusCommentInput {
 				t.Fatalf("n did not open the comment editor: shown=%v focus=%v", m.showCommentPrompt, m.focused)
 			}
@@ -827,11 +849,36 @@ func TestCommentsShortcutUsesNOnlyInListAndDetail(t *testing.T) {
 
 	m := newModel()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentPrompt || m.list.FilterInput.Value() != "n" {
 		t.Fatalf("active list search did not receive n normally: prompt=%v query=%q", m.showCommentPrompt, m.list.FilterInput.Value())
+	}
+
+	for _, test := range []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{name: "list time-travel", setup: func(m *Model) {
+			m.timeTravelMode = true
+		}},
+		{name: "detail time-travel", setup: func(m *Model) {
+			m.focused = focusDetail
+			m.showDetails = true
+			m.timeTravelMode = true
+			m.insightsDetailID = "A"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := newModel()
+			test.setup(m)
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+			m = updated.(*Model)
+			if m.showCommentPrompt || m.focused == focusCommentInput {
+				t.Fatalf("time-travel n opened comments: shown=%v focus=%v", m.showCommentPrompt, m.focused)
+			}
+		})
 	}
 }
 
@@ -841,16 +888,16 @@ func TestCommentsAddFailureDoesNotRequestRefresh(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.SetCommentRunner(func(string, string) error { return errors.New("permission denied") })
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("looks good")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("comment submission returned no command")
 	}
 	updated, refreshCmd := m.Update(cmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if refreshCmd != nil || m.commentSubmitting || !m.statusIsError || !strings.Contains(m.statusMsg, "permission denied") {
 		t.Fatalf("failed comment state = submitting:%v error:%v status:%q refresh:%v", m.commentSubmitting, m.statusIsError, m.statusMsg, refreshCmd != nil)
 	}
@@ -866,15 +913,15 @@ func TestCommentsAddPromptCancelDoesNotSubmit(t *testing.T) {
 		return nil
 	})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentPrompt || m.focused != focusList || cmd != nil || submitted || m.commentSubmitting {
 		t.Fatalf("cancel mutated comment state: shown=%v focus=%v cmd=%v submitted=%v submitting=%v", m.showCommentPrompt, m.focused, cmd != nil, submitted, m.commentSubmitting)
 	}
 }
 
-func commentActionModel() Model {
+func commentActionModel() *Model {
 	issue := model.Issue{
 		ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask,
 		Comments: []*model.Comment{
@@ -902,7 +949,7 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	})
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showCommentSelection || m.focused != focusCommentSelection || cmd != nil {
 		t.Fatalf("edit selection did not open: shown=%v focus=%v cmd=%v", m.showCommentSelection, m.focused, cmd != nil)
 	}
@@ -911,9 +958,9 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 		t.Fatalf("comment selection exposed IDs or omitted useful context: %q", selection)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showCommentPrompt || m.focused != focusCommentInput || m.commentTargetID != "c2" || m.commentInput.Value() != "second\nwith Markdown" {
 		t.Fatalf("edit target = prompt:%v focus:%v id:%q text:%q", m.showCommentPrompt, m.focused, m.commentTargetID, m.commentInput.Value())
 	}
@@ -926,12 +973,12 @@ func TestCommentEditSelectsCommentPrefillsEditorAndRefreshes(t *testing.T) {
 	expectedText := "  replacement \nline  "
 	m.commentInput.SetValue(expectedText)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if cmd == nil || !m.commentSubmitting || m.focused != focusDetail {
 		t.Fatalf("edit did not submit: cmd=%v submitting=%v focus=%v", cmd != nil, m.commentSubmitting, m.focused)
 	}
 	updated, refreshCmd := m.Update(cmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if gotAction != "edit" || gotIssue != "A" || gotComment != "c2" || gotText != expectedText {
 		t.Fatalf("mutation = %q %q %q %q", gotAction, gotIssue, gotComment, gotText)
 	}
@@ -946,9 +993,9 @@ func TestCommentEditFromListUsesEditFlow(t *testing.T) {
 	m.insightsDetailID = ""
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if !m.showCommentPrompt || m.showCommentDeleteConfirm || m.commentAction != "edit" {
 		t.Fatalf("list edit flow = prompt:%v delete:%v action:%q", m.showCommentPrompt, m.showCommentDeleteConfirm, m.commentAction)
@@ -959,9 +1006,9 @@ func TestCommentActionKeysToggleSelectionClosed(t *testing.T) {
 	for _, key := range []string{"e", "d"} {
 		m := commentActionModel()
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-		m = updated.(Model)
+		m = updated.(*Model)
 		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-		m = updated.(Model)
+		m = updated.(*Model)
 
 		if cmd != nil || m.showCommentSelection || m.commentAction != "" || m.focused != focusDetail {
 			t.Fatalf("action %q did not toggle selection closed: cmd=%v shown=%v action=%q focus=%v", key, cmd != nil, m.showCommentSelection, m.commentAction, m.focused)
@@ -972,12 +1019,12 @@ func TestCommentActionKeysToggleSelectionClosed(t *testing.T) {
 func TestCommentEditKeyRemainsTextInputAfterSelection(t *testing.T) {
 	m := commentActionModel()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	m.commentInput.SetValue("")
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 
 	if !m.showCommentPrompt || m.commentInput.Value() != "e" {
 		t.Fatalf("edit key in textarea = shown:%v text:%q", m.showCommentPrompt, m.commentInput.Value())
@@ -989,7 +1036,7 @@ func TestCommentMutationsIgnoredInTimeTravelMode(t *testing.T) {
 		m := commentActionModel()
 		m.timeTravelMode = true
 		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
-		m = updated.(Model)
+		m = updated.(*Model)
 		if cmd != nil || m.showCommentSelection || m.showCommentPrompt || m.showCommentDeleteConfirm {
 			t.Fatalf("time-travel action %q mutated comment state: cmd=%v selection=%v prompt=%v confirm=%v", action, cmd != nil, m.showCommentSelection, m.showCommentPrompt, m.showCommentDeleteConfirm)
 		}
@@ -1009,9 +1056,9 @@ func TestCommentDeleteRequiresConfirmationAndRefreshes(t *testing.T) {
 	})
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.showCommentDeleteConfirm || m.focused != focusCommentDeleteConfirm || called {
 		t.Fatalf("delete confirmation = shown:%v focus:%v called:%v", m.showCommentDeleteConfirm, m.focused, called)
 	}
@@ -1019,32 +1066,32 @@ func TestCommentDeleteRequiresConfirmationAndRefreshes(t *testing.T) {
 		t.Fatalf("delete confirmation exposed internal comment ID: %q", ansi.Strip(m.renderCommentDeleteConfirm()))
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentDeleteConfirm || cmd != nil || called || m.focused != focusDetail {
 		t.Fatalf("delete toggle mutated state: shown:%v cmd:%v called:%v focus:%v", m.showCommentDeleteConfirm, cmd != nil, called, m.focused)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentDeleteConfirm || cmd != nil || called || m.focused != focusDetail {
 		t.Fatalf("delete cancel mutated state: shown:%v cmd:%v called:%v focus:%v", m.showCommentDeleteConfirm, cmd != nil, called, m.focused)
 	}
 
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if cmd == nil || !m.commentSubmitting || called {
 		t.Fatalf("confirmed delete = cmd:%v submitting:%v called:%v", cmd != nil, m.commentSubmitting, called)
 	}
 	updated, refreshCmd := m.Update(cmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !called || refreshCmd == nil || m.focused != focusDetail || !strings.Contains(m.View(), "Shortcuts") {
 		t.Fatalf("delete result called:%v refresh:%v error:%v focus:%v sidebar:%v", called, refreshCmd != nil, m.statusIsError, m.focused, strings.Contains(m.View(), "Shortcuts"))
 	}
@@ -1058,31 +1105,31 @@ func TestCommentActionCancellationAndFailureDoNotRefresh(t *testing.T) {
 		return errors.New("permission denied")
 	})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentSelection || cmd != nil || called || m.focused != focusDetail {
 		t.Fatalf("selection cancel = shown:%v cmd:%v called:%v focus:%v", m.showCommentSelection, cmd != nil, called, m.focused)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.showCommentPrompt || cmd != nil || called || m.focused != focusDetail {
 		t.Fatalf("editor cancel = shown:%v cmd:%v called:%v focus:%v", m.showCommentPrompt, cmd != nil, called, m.focused)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("replacement")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, refreshCmd := m.Update(cmd())
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !called || refreshCmd != nil || !m.statusIsError || !strings.Contains(m.statusMsg, "permission denied") {
 		t.Fatalf("failed edit = called:%v refresh:%v error:%v status:%q", called, refreshCmd != nil, m.statusIsError, m.statusMsg)
 	}
@@ -1093,7 +1140,7 @@ func TestCommentActionOverlayResizesAndRestoresSidebar(t *testing.T) {
 	m.width, m.height = 28, 18
 	m.applyContentSizing()
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	for _, line := range strings.Split(m.View(), "\n") {
 		if lipgloss.Width(line) > m.width {
 			t.Fatalf("selection overlay overflowed width %d: %d columns", m.width, lipgloss.Width(line))
@@ -1103,12 +1150,12 @@ func TestCommentActionOverlayResizesAndRestoresSidebar(t *testing.T) {
 		t.Fatal("selection overlay exposed shortcuts sidebar")
 	}
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.width != 80 || !m.showCommentSelection {
 		t.Fatalf("resize changed selection state: width=%d shown=%v", m.width, m.showCommentSelection)
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.focused != focusDetail || !strings.Contains(m.View(), "Shortcuts") {
 		t.Fatalf("selection cancel did not restore detail/sidebar: focus=%v sidebar=%v", m.focused, strings.Contains(m.View(), "Shortcuts"))
 	}
@@ -1124,7 +1171,7 @@ func TestCopyIssueToClipboardInvalidItem(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.list.SetItems([]list.Item{badItem{}})
 	m.list.Select(0)
-	m.copyIssueToClipboard()
+	_ = m.copyIssueToClipboard()
 	if !m.statusIsError || m.statusMsg == "" {
 		t.Fatalf("expected error copying invalid item, got %q", m.statusMsg)
 	}
@@ -1262,7 +1309,8 @@ func TestInsightsHeatmapDrillRefreshesWithScoreAndCellChanges(t *testing.T) {
 }
 
 func TestUpdateFileChangedReloadsSelection(t *testing.T) {
-	data := `{"id":"ONE","title":"One","status":"open"}`
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	data := `{"id":"ONE","title":"One","status":"open","issue_type":"task"}`
 	tmp := t.TempDir()
 	beads := filepath.Join(tmp, "beads.jsonl")
 	if err := os.WriteFile(beads, []byte(data), 0644); err != nil {
@@ -1274,9 +1322,443 @@ func TestUpdateFileChangedReloadsSelection(t *testing.T) {
 
 	updated, cmd := m.Update(FileChangedMsg{})
 	_ = cmd
-	m2 := updated.(Model)
+	m2 := updated.(*Model)
 	if m2.statusIsError {
 		t.Fatalf("expected successful reload, got error %q", m2.statusMsg)
+	}
+	if !m2.historyLoading || m2.historyLoadRequestGeneration == 0 ||
+		m2.historyLoadDataGeneration != m2.semanticDataGeneration {
+		t.Fatalf(
+			"sync reload did not own a current history refresh: loading=%v data=%d current=%d request=%d",
+			m2.historyLoading,
+			m2.historyLoadDataGeneration,
+			m2.semanticDataGeneration,
+			m2.historyLoadRequestGeneration,
+		)
+	}
+}
+
+func historyReportWithIssue(id, title string) *correlation.HistoryReport {
+	return &correlation.HistoryReport{
+		Histories: map[string]correlation.BeadHistory{
+			id: {
+				BeadID: id,
+				Title:  title,
+				Commits: []correlation.CorrelatedCommit{
+					{SHA: "abc123", ShortSHA: "abc123", Message: title},
+				},
+			},
+		},
+	}
+}
+
+func TestHistoryLoadRejectsStaleCompletionAfterSnapshotSwap(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "OLD", Title: "Old", Status: model.StatusOpen}}, nil, "")
+	if cmd := m.startHistoryLoad(); cmd == nil {
+		t.Fatal("initial history request was not scheduled")
+	}
+	oldDataGeneration := m.historyLoadDataGeneration
+	oldRequestGeneration := m.historyLoadRequestGeneration
+
+	snapshot := NewSnapshotBuilder([]model.Issue{{ID: "NEW", Title: "New", Status: model.StatusOpen}}).Build()
+	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 1})
+	m = updated.(*Model)
+	if !m.historyLoading {
+		t.Fatal("snapshot swap did not start a current history request")
+	}
+	if m.historyLoadRequestGeneration == oldRequestGeneration {
+		t.Fatal("snapshot swap reused the previous history request generation")
+	}
+
+	staleReport := historyReportWithIssue("OLD", "Old")
+	updated, _ = m.Update(HistoryLoadedMsg{
+		DataGeneration:    oldDataGeneration,
+		RequestGeneration: oldRequestGeneration,
+		Report:            staleReport,
+	})
+	m = updated.(*Model)
+	if m.historyView.report == staleReport {
+		t.Fatal("stale history completion replaced the current history view")
+	}
+	if !m.historyLoading {
+		t.Fatal("stale history completion cleared current request ownership")
+	}
+
+	currentReport := historyReportWithIssue("NEW", "New")
+	updated, _ = m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+		Report:            currentReport,
+	})
+	m = updated.(*Model)
+	if m.historyLoading {
+		t.Fatal("accepted history completion left the request active")
+	}
+	if m.historyView.report != currentReport {
+		t.Fatal("current history completion was not installed")
+	}
+}
+
+func TestHistoryLoadCancelsInjectedBlockingLoader(t *testing.T) {
+	type historyRequest struct {
+		ctx               context.Context
+		dataGeneration    uint64
+		requestGeneration uint64
+	}
+
+	created := make(chan historyRequest, 2)
+	started := make(chan uint64, 2)
+	completed := make(chan tea.Msg, 2)
+	m := NewModel([]model.Issue{{ID: "OLD", Title: "Old", Status: model.StatusOpen}}, nil, "")
+	defer m.cancelHistoryLoad()
+	m.historyLoadCommand = func(
+		ctx context.Context,
+		_ []model.Issue,
+		_ string,
+		dataGeneration, requestGeneration uint64,
+	) tea.Cmd {
+		created <- historyRequest{
+			ctx:               ctx,
+			dataGeneration:    dataGeneration,
+			requestGeneration: requestGeneration,
+		}
+		return func() tea.Msg {
+			started <- requestGeneration
+			<-ctx.Done()
+			return HistoryLoadedMsg{
+				DataGeneration:    dataGeneration,
+				RequestGeneration: requestGeneration,
+				Error:             ctx.Err(),
+			}
+		}
+	}
+
+	firstCmd := m.startHistoryLoad()
+	if firstCmd == nil {
+		t.Fatal("initial history command was not scheduled")
+	}
+	first := <-created
+	go func() { completed <- firstCmd() }()
+	select {
+	case got := <-started:
+		if got != first.requestGeneration {
+			t.Fatalf("started request = %d, want %d", got, first.requestGeneration)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial blocking history command did not start")
+	}
+
+	requestGeneration := m.historyLoadRequestGeneration
+	if cmd := m.startHistoryLoad(); cmd != nil {
+		t.Fatal("same-dataset history request was not coalesced")
+	}
+	if m.historyLoadRequestGeneration != requestGeneration {
+		t.Fatal("coalesced history request consumed a request generation")
+	}
+	select {
+	case <-first.ctx.Done():
+		t.Fatal("same-dataset coalescing cancelled the shared history request")
+	default:
+	}
+	select {
+	case request := <-created:
+		t.Fatalf("coalesced history request created command %d", request.requestGeneration)
+	default:
+	}
+
+	m.beginSemanticDatasetUpdate()
+	secondCmd := m.startHistoryLoad()
+	if secondCmd == nil {
+		t.Fatal("replacement history command was not scheduled")
+	}
+	second := <-created
+	if second.dataGeneration != m.semanticDataGeneration ||
+		second.requestGeneration == first.requestGeneration {
+		t.Fatalf(
+			"replacement ownership = data %d/request %d, current data %d/old request %d",
+			second.dataGeneration,
+			second.requestGeneration,
+			m.semanticDataGeneration,
+			first.requestGeneration,
+		)
+	}
+	select {
+	case <-first.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("replacement did not cancel the superseded history context")
+	}
+	go func() { completed <- secondCmd() }()
+	select {
+	case got := <-started:
+		if got != second.requestGeneration {
+			t.Fatalf("started request = %d, want %d", got, second.requestGeneration)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement blocking history command did not start")
+	}
+
+	var stale tea.Msg
+	select {
+	case stale = <-completed:
+	case <-time.After(time.Second):
+		t.Fatal("superseded history command was not cancelled")
+	}
+	updated, _ := m.Update(stale)
+	m = updated.(*Model)
+	if !m.historyLoading || m.historyLoadRequestGeneration != second.requestGeneration {
+		t.Fatal("cancelled stale completion cleared replacement ownership")
+	}
+
+	m.historyView.SetReport(historyReportWithIssue("OLD", "Old"))
+	m.issues = nil
+	m.beginSemanticDatasetUpdate()
+	if cmd := m.startHistoryLoad(); cmd != nil {
+		t.Fatal("zero-issue dataset scheduled a history command")
+	}
+	if m.historyLoading || m.historyLoadCancel != nil || m.historyView.report != nil {
+		t.Fatal("zero-issue dataset did not cancel and clear history ownership")
+	}
+	select {
+	case <-second.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("zero-issue update did not cancel the replacement history context")
+	}
+	select {
+	case cancelled := <-completed:
+		updated, _ = m.Update(cancelled)
+		m = updated.(*Model)
+		if m.historyView.report != nil || m.historyLoading {
+			t.Fatal("cancelled completion resurrected history after zero-issue update")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("zero-issue update did not cancel replacement history command")
+	}
+}
+
+func TestQuitCommandCancelsHistoryLoad(t *testing.T) {
+	var owned context.Context
+	m := NewModel([]model.Issue{{ID: "A", Status: model.StatusOpen}}, nil, "")
+	m.historyLoadCommand = func(
+		ctx context.Context,
+		_ []model.Issue,
+		_ string,
+		_, _ uint64,
+	) tea.Cmd {
+		owned = ctx
+		return func() tea.Msg { return nil }
+	}
+	if cmd := m.startHistoryLoad(); cmd == nil || owned == nil {
+		t.Fatal("history load did not acquire cancellable ownership")
+	}
+
+	quit := m.quitCommand()
+	select {
+	case <-owned.Done():
+	case <-time.After(time.Second):
+		t.Fatal("quit did not cancel the active history load")
+	}
+	if m.historyLoadCancel != nil {
+		t.Fatal("quit retained a consumed history cancellation function")
+	}
+	quitMsg := quit()
+	if _, ok := quitMsg.(tea.QuitMsg); !ok {
+		t.Fatalf("quit command returned %T, want tea.QuitMsg", quitMsg)
+	}
+}
+
+func TestStopCancelsHistoryLoad(t *testing.T) {
+	var owned context.Context
+	m := NewModel([]model.Issue{{ID: "A", Status: model.StatusOpen}}, nil, "")
+	m.historyLoadCommand = func(
+		ctx context.Context,
+		_ []model.Issue,
+		_ string,
+		_, _ uint64,
+	) tea.Cmd {
+		owned = ctx
+		return func() tea.Msg { return nil }
+	}
+	if cmd := m.startHistoryLoad(); cmd == nil || owned == nil {
+		t.Fatal("history load did not acquire cancellable ownership")
+	}
+
+	m.Stop()
+	select {
+	case <-owned.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Model.Stop did not cancel the active history load")
+	}
+	if m.historyLoadCancel != nil {
+		t.Fatal("Model.Stop retained a consumed history cancellation function")
+	}
+}
+
+func TestEnterHistoryViewSchedulesAsyncRetryWithoutGitWorkOnUpdateLoop(t *testing.T) {
+	created := 0
+	m := NewModel([]model.Issue{{ID: "A", Status: model.StatusOpen}}, nil, "")
+	m.historyLoading = false
+	m.historyLoadFailed = true
+	m.historyLoadCommand = func(
+		_ context.Context,
+		_ []model.Issue,
+		_ string,
+		_, _ uint64,
+	) tea.Cmd {
+		created++
+		return func() tea.Msg { return nil }
+	}
+
+	cmd := m.enterHistoryView()
+	if cmd == nil || created != 1 {
+		t.Fatalf("enterHistoryView command=%v factories=%d, want one asynchronous retry", cmd != nil, created)
+	}
+	if !m.isHistoryView || m.focused != focusHistory || !m.historyLoading {
+		t.Fatalf("history view state visible=%v focus=%v loading=%v", m.isHistoryView, m.focused, m.historyLoading)
+	}
+	m.cancelHistoryLoad()
+}
+
+func TestGlobalHistoryToggleSchedulesRetryAndKeepsTinyTerminalUsable(t *testing.T) {
+	created := 0
+	m := NewModel([]model.Issue{{ID: "A", Status: model.StatusOpen}}, nil, "")
+	m.height = 2
+	m.historyLoading = false
+	m.historyLoadFailed = true
+	m.historyLoadCommand = func(
+		_ context.Context,
+		_ []model.Issue,
+		_ string,
+		_, _ uint64,
+	) tea.Cmd {
+		created++
+		return func() tea.Msg { return nil }
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(*Model)
+	if cmd == nil || created != 1 || !m.isHistoryView || m.focused != focusHistory {
+		t.Fatalf("global h command=%v factories=%d visible=%v focus=%v", cmd != nil, created, m.isHistoryView, m.focused)
+	}
+	if m.historyView.height < 5 {
+		t.Fatalf("tiny-terminal history height=%d, want floor 5", m.historyView.height)
+	}
+	m.cancelHistoryLoad()
+}
+
+func TestHistoryRefreshHidesAndDisablesPreviousDatasetReport(t *testing.T) {
+	const oldTitle = "OLD-DATASET-SENTINEL"
+	m := NewModel([]model.Issue{{ID: "OLD", Title: oldTitle, Status: model.StatusOpen}}, nil, "")
+	oldReport := historyReportWithIssue("OLD", oldTitle)
+	m.historyView.SetReport(oldReport)
+	m.historyReportDataGeneration = m.semanticDataGeneration
+	m.isHistoryView = true
+	m.focused = focusHistory
+	m.historyLoading = false
+	m.historyLoadCommand = func(
+		_ context.Context,
+		_ []model.Issue,
+		_ string,
+		_, _ uint64,
+	) tea.Cmd {
+		return func() tea.Msg { return nil }
+	}
+
+	m.issues = []model.Issue{{ID: "NEW", Title: "New", Status: model.StatusOpen}}
+	m.beginSemanticDatasetUpdate()
+	if cmd := m.startHistoryLoad(); cmd == nil {
+		t.Fatal("new dataset did not start a history load")
+	}
+	if m.historyReportIsCurrent() {
+		t.Fatal("previous dataset report remained current after generation advance")
+	}
+	view := m.View()
+	if strings.Contains(view, oldTitle) || !strings.Contains(view, "Loading history") {
+		t.Fatalf("history refresh view exposed stale report or omitted loading state: %q", view)
+	}
+	selectedBefore := m.historyView.SelectedBeadID()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(*Model)
+	if got := m.historyView.SelectedBeadID(); got != selectedBefore {
+		t.Fatalf("stale history accepted navigation: got %q, want %q", got, selectedBefore)
+	}
+	m.cancelHistoryLoad()
+}
+
+func TestHistoryFailureRetainsHiddenSelectionAndHRetriesInPlace(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "OLD", Status: model.StatusOpen}}, nil, "")
+	oldReport := historyReportWithIssue("OLD", "Old")
+	m.historyView.SetReport(oldReport)
+	m.historyReportDataGeneration = m.semanticDataGeneration
+	m.isHistoryView = true
+	m.focused = focusHistory
+	m.historyLoading = false
+	m.issues = []model.Issue{{ID: "NEW", Status: model.StatusOpen}}
+	m.beginSemanticDatasetUpdate()
+	m.historyLoadCommand = func(
+		_ context.Context,
+		_ []model.Issue,
+		_ string,
+		_, _ uint64,
+	) tea.Cmd {
+		return func() tea.Msg { return nil }
+	}
+	if cmd := m.startHistoryLoad(); cmd == nil {
+		t.Fatal("new dataset did not start a history load")
+	}
+	updated, _ := m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+		Error:             errors.New("temporary git failure"),
+	})
+	m = updated.(*Model)
+	if m.historyView.report != oldReport || m.historyView.SelectedBeadID() != "OLD" {
+		t.Fatal("failed refresh discarded hidden report identity")
+	}
+	if m.historyReportIsCurrent() {
+		t.Fatal("failed refresh exposed the previous generation as current")
+	}
+	updated, retryCmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(*Model)
+	if retryCmd == nil || !m.isHistoryView || !m.historyLoading {
+		t.Fatalf("one-key retry command=%v visible=%v loading=%v", retryCmd != nil, m.isHistoryView, m.historyLoading)
+	}
+	m.cancelHistoryLoad()
+}
+
+func TestHistoryRefreshPreservesActiveSearchSession(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "NEW", Title: "Beta work", Status: model.StatusOpen}}, nil, "")
+	m.historyView = NewHistoryModel(historyReportWithIssue("OLD", "Alpha work"), m.theme)
+	m.isHistoryView = true
+	m.focused = focusHistory
+	focusCmd := m.historyView.StartSearch()
+	m.historyView.searchInput.SetValue("beta")
+	m.historyView.lastSearchQuery = "beta"
+	m.historyView.applySearchFilter()
+	_ = m.beginEmbeddedTextInputSession(embeddedTextInputHistorySearch, focusCmd)
+	session := m.embeddedTextInputSession
+
+	if cmd := m.startHistoryLoad(); cmd == nil {
+		t.Fatal("history refresh was not scheduled")
+	}
+	refreshed := historyReportWithIssue("NEW", "Beta work")
+	updated, _ := m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+		Report:            refreshed,
+	})
+	m = updated.(*Model)
+
+	if got := m.historyView.SearchQuery(); got != "beta" {
+		t.Fatalf("search query = %q, want beta", got)
+	}
+	if !m.historyView.IsSearchActive() || !m.historyView.searchInput.Focused() {
+		t.Fatal("history refresh dropped active search focus")
+	}
+	if !m.embeddedTextInputSessionIsActive(session) {
+		t.Fatal("history refresh invalidated the active embedded-input session")
+	}
+	if len(m.historyView.beadIDs) != 1 || m.historyView.beadIDs[0] != "NEW" {
+		t.Fatalf("refreshed search results = %#v, want [NEW]", m.historyView.beadIDs)
 	}
 }
 
@@ -1291,7 +1773,7 @@ func TestUpdateForcedRefreshRegeneratesBDExport(t *testing.T) {
 		defer m.watcher.Stop()
 	}
 	updated, _ := m.Update(FileChangedMsg{refreshBDExport: true})
-	m2 := updated.(Model)
+	m2 := updated.(*Model)
 	if m2.statusIsError {
 		t.Fatalf("forced reload failed: %s", m2.statusMsg)
 	}
@@ -1317,7 +1799,7 @@ func TestUpdateForcedRefreshReportsBDExportFailure(t *testing.T) {
 	}
 	queuedAt := time.Now()
 	updated, _ := m.Update(FileChangedMsg{refreshBDExport: true})
-	m2 := updated.(Model)
+	m2 := updated.(*Model)
 	if !m2.statusIsError || !strings.Contains(m2.statusMsg, "bd export failed") {
 		t.Fatalf("expected explicit bd export error, got %q", m2.statusMsg)
 	}
@@ -1330,7 +1812,7 @@ func TestUpdateForcedRefreshReportsBDExportFailure(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 	updated, _ = m2.Update(FileChangedMsg{observedAt: queuedAt})
-	m3 := updated.(Model)
+	m3 := updated.(*Model)
 	if !m3.statusIsError || len(m3.issues) != 1 || m3.issues[0].ID != "STALE" {
 		t.Fatalf("queued export event replaced the reload error: status=%q issues=%#v", m3.statusMsg, m3.issues)
 	}
@@ -1407,7 +1889,7 @@ func TestUpdateFileChangedReloadsSQLiteSource(t *testing.T) {
 	}
 
 	updated, _ := m.Update(FileChangedMsg{})
-	m2 := updated.(Model)
+	m2 := updated.(*Model)
 	if m2.statusIsError {
 		t.Fatalf("expected successful sqlite reload, got error %q", m2.statusMsg)
 	}
@@ -1450,6 +1932,63 @@ func TestLoadIssuesForReloadSQLiteHonorsIssueFilter(t *testing.T) {
 	}
 	if len(loaded.Issues) != 1 || loaded.Issues[0].ID != "OPEN-1" {
 		t.Fatalf("unexpected filtered sqlite issues: %#v", loaded.Issues)
+	}
+}
+
+func TestBackgroundWorkerCountsSQLiteRowsInsteadOfBinaryNewlines(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "beads.sqlite3")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			status TEXT NOT NULL
+		);
+		CREATE TABLE binary_noise (payload BLOB);
+		INSERT INTO issues (id, title, status) VALUES
+			('OPEN-1', 'Open issue', 'open'),
+			('CLOSED-1', 'Closed issue', 'closed');
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed sqlite: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO binary_noise(payload) VALUES (?)", strings.Repeat("\n", 20_050)); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed sqlite newline noise: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	if binaryLines, err := countJSONLLines(dbPath); err != nil || binaryLines < 20_000 {
+		t.Fatalf("fixture does not expose binary-newline miscount: lines=%d err=%v", binaryLines, err)
+	}
+	if issueCount, err := countIssuesForReload(dbPath); err != nil || issueCount != 2 {
+		t.Fatalf("SQLite issue count=%d err=%v, want 2", issueCount, err)
+	}
+
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker: %v", err)
+	}
+	defer worker.Stop()
+	snapshot := worker.buildSnapshot(false)
+	if snapshot == nil {
+		t.Fatal("SQLite background snapshot is nil")
+	}
+	defer snapshot.releasePooledIssues()
+	if snapshot.DatasetTier != datasetTierSmall || snapshot.SourceIssueCountHint != 2 {
+		t.Fatalf("SQLite snapshot tier/count=%v/%d, want small/2", snapshot.DatasetTier, snapshot.SourceIssueCountHint)
+	}
+	if snapshot.LoadedOpenOnly || snapshot.TruncatedCount != 0 {
+		t.Fatalf("SQLite snapshot was spuriously truncated: openOnly=%v truncated=%d", snapshot.LoadedOpenOnly, snapshot.TruncatedCount)
+	}
+	if len(snapshot.Issues) != 2 {
+		t.Fatalf("SQLite snapshot loaded %d issues, want both open and closed rows", len(snapshot.Issues))
 	}
 }
 

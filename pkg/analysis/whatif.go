@@ -148,7 +148,7 @@ func (a *Analyzer) generateEnhancedRecommendationsWithThresholds(thresholds Reco
 	}
 
 	var enhanced []EnhancedPriorityRecommendation
-	now := time.Now().UTC()
+	now := a.Now().UTC()
 
 	// Enhance each score with what-if deltas
 	for _, score := range scores {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -71,11 +72,30 @@ func TestBackgroundWorkerUsesResolvedIssuePaths(t *testing.T) {
 }
 
 type testChangeSource struct {
-	changes chan struct{}
+	changes      chan struct{}
+	startEntered chan struct{}
+	allowStart   chan struct{}
+	stopCalled   chan struct{}
+	startOnce    sync.Once
+	stopOnce     sync.Once
+	started      atomic.Bool
+	stopped      atomic.Bool
 }
 
-func (s *testChangeSource) Start() error             { return nil }
-func (s *testChangeSource) Stop()                    {}
+func (s *testChangeSource) Start() error {
+	if s.startEntered != nil {
+		s.startOnce.Do(func() { close(s.startEntered) })
+		<-s.allowStart
+	}
+	s.started.Store(true)
+	return nil
+}
+func (s *testChangeSource) Stop() {
+	s.stopped.Store(true)
+	if s.stopCalled != nil {
+		s.stopOnce.Do(func() { close(s.stopCalled) })
+	}
+}
 func (s *testChangeSource) Changed() <-chan struct{} { return s.changes }
 func (s *testChangeSource) Path() string             { return "test-metadata" }
 
@@ -137,7 +157,7 @@ func TestBackgroundWorkerMetadataChangePathIsObserved(t *testing.T) {
 }
 
 func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testing.T) {
-	m := Model{
+	m := &Model{
 		repositoryScopeController: repositoryScopeController{
 			activeRepos:       map[string]bool{"ctx:a": true, "ctx:removed": true},
 			catalogGeneration: 1,
@@ -151,7 +171,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 			{ID: "ctx:new", Name: "new"},
 		},
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if len(m.activeRepos) != 1 || !m.activeRepos["ctx:a"] || m.activeRepos["ctx:new"] {
 		t.Fatalf("subset after addition/removal = %#v", m.activeRepos)
 	}
@@ -159,7 +179,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 		Generation: 1,
 		Catalog:    repositorypkg.Catalog{{ID: "ctx:stale", Name: "stale"}},
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if len(m.repositoryCatalog) != 2 || m.catalogGeneration != 2 {
 		t.Fatalf("stale catalog was applied: generation=%d catalog=%#v", m.catalogGeneration, m.repositoryCatalog)
 	}
@@ -167,7 +187,7 @@ func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testi
 		Generation: 3,
 		Catalog:    repositorypkg.Catalog{{ID: "ctx:new", Name: "new"}},
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.activeRepos != nil {
 		t.Fatalf("emptied subset = %#v, want all", m.activeRepos)
 	}
@@ -193,7 +213,7 @@ func TestOpenRepositoryPickerTracksLiveCatalogByExactID(t *testing.T) {
 			{ID: "ctx:new", Name: "new", BeadCount: 1},
 		},
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	selected := m.repoPicker.SelectedRepos()
 	if m.repoPicker.currentRepositoryID() != "ctx:b" {
 		t.Fatalf("live refresh cursor = %q, want ctx:b", m.repoPicker.currentRepositoryID())
@@ -259,7 +279,7 @@ func TestBackgroundWorkerBacklogPreservesCurrentSnapshotAndNewestCatalog(t *test
 		t.Fatal(err)
 	}
 	defer worker.Stop()
-	oldSnapshot := &DataSnapshot{DataHash: "old", pooledIssues: []*model.Issue{{ID: "old"}}}
+	oldSnapshot := &DataSnapshot{DataHash: "old", pooledIssues: newPooledIssueLease([]*model.Issue{{ID: "old"}})}
 	currentSnapshot := &DataSnapshot{DataHash: "current"}
 	worker.mu.Lock()
 	worker.snapshot = currentSnapshot
@@ -390,7 +410,7 @@ func TestBackgroundWorkerBacklogDeliversCatalogThroughCurrentSnapshot(t *testing
 			m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:old", Name: "old"}}
 			for _, message := range retained {
 				updated, _ := m.Update(message)
-				m = updated.(Model)
+				m = updated.(*Model)
 			}
 			if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:current" {
 				t.Fatalf("model catalog = %#v, want current snapshot catalog", m.repositoryCatalog)
@@ -442,10 +462,92 @@ func TestBackgroundWorkerBacklogDoesNotDowngradeNewerSnapshotCatalog(t *testing.
 	m := NewModel(nil, nil, "")
 	for _, message := range retained {
 		updated, _ := m.Update(message)
-		m = updated.(Model)
+		m = updated.(*Model)
 	}
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:newer" || m.catalogGeneration != 6 {
 		t.Fatalf("model catalog = %#v generation=%d", m.repositoryCatalog, m.catalogGeneration)
+	}
+}
+
+func TestBackgroundWorkerBacklogPreservesCatalogAcrossNewerSnapshot(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	currentCatalog := repositorypkg.Catalog{{ID: "ctx:current", Name: "current"}}
+	current := &DataSnapshot{
+		DataHash: "current",
+	}
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          current,
+		SnapshotVer:       6,
+		Catalog:           currentCatalog,
+		CatalogGeneration: 6,
+		CatalogAvailable:  true,
+		CatalogChanged:    true,
+		CatalogRecovered:  true,
+	})
+	worker.send(SnapshotErrorMsg{Err: errors.New("source unavailable"), Recoverable: true})
+
+	newer := &DataSnapshot{
+		DataHash: "newer",
+	}
+	worker.send(SnapshotReadyMsg{
+		Snapshot:          newer,
+		SnapshotVer:       7,
+		Catalog:           repositorypkg.Catalog{{ID: "ctx:stale"}},
+		CatalogGeneration: 5,
+		CatalogAvailable:  true,
+	})
+
+	retained := drainWorkerMessages(worker)
+	if len(retained) != 2 {
+		t.Fatalf("retained %d messages, want recovery and snapshot", len(retained))
+	}
+	ready, ok := retained[0].(SnapshotReadyMsg)
+	if !ok || ready.Snapshot != newer {
+		t.Fatalf("retained message[0]=%#v, want newer snapshot", retained[0])
+	}
+	if ready.CatalogGeneration != 6 || !ready.CatalogAvailable || !ready.CatalogRecovered ||
+		len(ready.Catalog) != 1 || ready.Catalog[0].ID != "ctx:current" {
+		t.Fatalf("newer snapshot downgraded catalog delivery: generation=%d available=%v recovered=%v catalog=%#v", ready.CatalogGeneration, ready.CatalogAvailable, ready.CatalogRecovered, ready.Catalog)
+	}
+	if _, ok := retained[1].(SnapshotErrorMsg); !ok {
+		t.Fatalf("retained message[1]=%T, want SnapshotErrorMsg", retained[1])
+	}
+}
+
+func TestBackgroundWorkerBacklogPreservesSourceErrorThroughOrdinaryTraffic(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	snapshot := &DataSnapshot{
+		DataHash: "current",
+	}
+	worker.send(SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 4})
+	sourceErr := errors.New("source unavailable")
+	worker.send(SnapshotErrorMsg{Err: sourceErr, Recoverable: true})
+	worker.send(MetadataChangedMsg{})
+	worker.send(HubSourceRefreshCompleteMsg{})
+
+	retained := drainWorkerMessages(worker)
+	if len(retained) != 2 {
+		t.Fatalf("retained %d messages, want snapshot and source error", len(retained))
+	}
+	if _, ok := retained[0].(SnapshotReadyMsg); !ok {
+		t.Fatalf("retained message[0]=%T, want SnapshotReadyMsg", retained[0])
+	}
+	errorMsg, ok := retained[1].(SnapshotErrorMsg)
+	if !ok || !errors.Is(errorMsg.Err, sourceErr) || !errorMsg.Recoverable {
+		t.Fatalf("retained message[1]=%#v, want recoverable source error", retained[1])
 	}
 }
 
@@ -566,11 +668,11 @@ func TestBackgroundWorkerStopReleasesQueuedSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	queued := &DataSnapshot{pooledIssues: []*model.Issue{{ID: "queued"}}}
+	queued := &DataSnapshot{pooledIssues: newPooledIssueLease([]*model.Issue{{ID: "queued"}})}
 	worker.send(SnapshotReadyMsg{Snapshot: queued, SnapshotVer: 1})
 	worker.Stop()
-	if queued.pooledIssues != nil {
-		t.Fatal("shutdown retained pooled references from a queued snapshot")
+	if queued.hasPooledIssues() {
+		t.Fatal("shutdown retained an active pooled lease from a queued snapshot")
 	}
 }
 
@@ -585,7 +687,7 @@ func TestModelIgnoresOutOfOrderBackgroundSnapshot(t *testing.T) {
 		CatalogGeneration: 2,
 		CatalogChanged:    true,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(SnapshotReadyMsg{
 		Snapshot:          older,
 		SnapshotVer:       1,
@@ -593,7 +695,7 @@ func TestModelIgnoresOutOfOrderBackgroundSnapshot(t *testing.T) {
 		CatalogGeneration: 1,
 		CatalogChanged:    true,
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if len(m.issues) != 1 || m.issues[0].ID != "NEW" || m.lastSnapshotVersion != 2 {
 		t.Fatalf("out-of-order snapshot applied: issues=%#v version=%d", m.issues, m.lastSnapshotVersion)
 	}
@@ -650,7 +752,7 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	m.backgroundWorker.TriggerRefresh()
 	initial := waitForSnapshotReady(t, m.backgroundWorker.Messages())
 	updated, _ := m.Update(initial)
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.watcher != nil {
 		t.Fatal("fallback file watcher remained after the Hub worker produced a snapshot")
 	}
@@ -683,7 +785,7 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 		t.Fatal("Hub transition did not retain a live fallback watcher")
 	}
 	updated, cmd := m.Update(SnapshotErrorMsg{Err: errors.New("start failed"), StartFailure: true})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.backgroundWorker != nil || m.watcher == nil || !m.watcher.IsStarted() || cmd == nil {
 		t.Fatalf("worker start failure did not restore file watching: worker=%v watcher=%v cmd=%v", m.backgroundWorker, m.watcher, cmd)
 	}
@@ -730,7 +832,7 @@ func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
 }
 
 func TestModelWorkspaceCatalogIgnoresHubCatalogMessages(t *testing.T) {
-	m := Model{
+	m := &Model{
 		workspaceMode: true,
 		repositoryScopeController: repositoryScopeController{
 			repositoryCatalog: repositorypkg.Catalog{
@@ -745,12 +847,12 @@ func TestModelWorkspaceCatalogIgnoresHubCatalogMessages(t *testing.T) {
 			{ID: "ctx:api", Name: "api", Kind: repositorypkg.IdentityExact},
 		},
 	})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "api" || m.catalogGeneration != 0 {
 		t.Fatalf("Hub catalog replaced workspace catalog: %#v", m.repositoryCatalog)
 	}
 	updated, _ = m.Update(RepositoryCatalogErrorMsg{Generation: 4, Err: errors.New("Hub config unavailable")})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.statusMsg != "" || m.catalogGeneration != 0 {
 		t.Fatalf("Hub catalog error leaked into workspace mode: status=%q generation=%d", m.statusMsg, m.catalogGeneration)
 	}
@@ -765,7 +867,7 @@ func TestModelWorkspaceCatalogCountsRefreshWithBackgroundSnapshot(t *testing.T) 
 		{ID: "api-2", Title: "Two", Status: model.StatusOpen, IssueType: model.TypeTask},
 	}).Build()
 	updated, _ := m.Update(SnapshotReadyMsg{Snapshot: snapshot})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if got := catalogEntry(m.repositoryCatalog, "api").BeadCount; got != 2 {
 		t.Fatalf("workspace background count = %d, want 2", got)
 	}
@@ -860,11 +962,11 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 	worker.markCatalogDirty()
 	worker.process()
 	loadError := waitForCatalogError(t, worker.Messages())
-	m := Model{}
+	m := &Model{}
 	updated, _ := m.Update(initial)
-	m = updated.(Model)
+	m = updated.(*Model)
 	updated, _ = m.Update(loadError)
-	m = updated.(Model)
+	m = updated.(*Model)
 	if !m.statusIsError {
 		t.Fatal("catalog failure did not set model error state")
 	}
@@ -877,7 +979,7 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 		t.Fatal("identical catalog recovery was not emitted explicitly")
 	}
 	updated, _ = m.Update(recovered)
-	m = updated.(Model)
+	m = updated.(*Model)
 	if m.statusIsError || m.statusMsg != "" {
 		t.Fatalf("identical recovery left stale error: status=%q error=%v", m.statusMsg, m.statusIsError)
 	}
@@ -1120,9 +1222,9 @@ func catalogEntry(catalog repositorypkg.Catalog, id string) repositorypkg.Catalo
 
 func TestBackgroundWorker_NewWithoutPath_EnvDefaults(t *testing.T) {
 	t.Setenv("BV_DEBOUNCE_MS", "123")
-	t.Setenv("BV_CHANNEL_BUFFER", "3")
 	t.Setenv("BV_HEARTBEAT_INTERVAL_S", "9")
 	t.Setenv("BV_WATCHDOG_INTERVAL_S", "11")
+	t.Setenv("BV_CHANNEL_BUFFER", "3")
 
 	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: ""})
 	if err != nil {
@@ -1134,7 +1236,7 @@ func TestBackgroundWorker_NewWithoutPath_EnvDefaults(t *testing.T) {
 		t.Errorf("debounceDelay=%v, want %v", worker.debounceDelay, 123*time.Millisecond)
 	}
 	if cap(worker.msgCh) != 3 {
-		t.Errorf("cap(msgCh)=%d, want %d", cap(worker.msgCh), 3)
+		t.Errorf("cap(msgCh)=%d, want configured mailbox size 3", cap(worker.msgCh))
 	}
 	if worker.heartbeatInterval != 9*time.Second {
 		t.Errorf("heartbeatInterval=%v, want %v", worker.heartbeatInterval, 9*time.Second)
@@ -1215,6 +1317,88 @@ func TestBackgroundWorker_StartStop(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_StopWaitsForProcessingLoopAndRepeatedCalls(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+
+	// Simulate a processing loop that needs a short moment to finish. Stop must
+	// wait for the loop's completion signal instead of returning early.
+	done := make(chan struct{})
+	worker.mu.Lock()
+	worker.started = true
+	worker.done = done
+	worker.loopStarted = true
+	worker.mu.Unlock()
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		close(done)
+	}()
+	stopDone := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			worker.Stop()
+			stopDone <- struct{}{}
+		}()
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("repeated Stop returned before the processing loop completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	for range 2 {
+		select {
+		case <-stopDone:
+		case <-time.After(time.Second):
+			t.Fatal("Stop did not complete after the processing loop finished")
+		}
+	}
+}
+
+func TestBackgroundWorker_StopSerializesWithSourceStartup(t *testing.T) {
+	source := &testChangeSource{
+		changes:      make(chan struct{}),
+		startEntered: make(chan struct{}),
+		allowStart:   make(chan struct{}),
+		stopCalled:   make(chan struct{}),
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{MetadataSources: []ChangeSource{source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- worker.Start() }()
+	<-source.startEntered
+
+	stopDone := make(chan struct{})
+	go func() {
+		worker.Stop()
+		close(stopDone)
+	}()
+	<-source.stopCalled
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while ChangeSource startup was still blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(source.allowStart)
+	if err := <-startDone; err == nil {
+		t.Fatal("Start succeeded after Stop won")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not complete after source startup finished")
+	}
+	if !source.started.Load() || !source.stopped.Load() {
+		t.Fatalf("source lifecycle = started %v, stopped %v; want both true", source.started.Load(), source.stopped.Load())
+	}
+}
+
 func TestBackgroundWorker_StopReturnsSnapshotPooledIssues(t *testing.T) {
 	tmpDir := t.TempDir()
 	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
@@ -1232,7 +1416,7 @@ func TestBackgroundWorker_StopReturnsSnapshotPooledIssues(t *testing.T) {
 	pooled.Labels = append(pooled.Labels, "backend")
 	worker.snapshot = &DataSnapshot{
 		Issues:           []model.Issue{{ID: "test-1", Title: "Test", Status: model.StatusOpen}},
-		pooledIssues:     []*model.Issue{pooled},
+		pooledIssues:     newPooledIssueLease([]*model.Issue{pooled}),
 		CreatedAt:        time.Now(),
 		phase2Ready:      true,
 		LoadWarningCount: 0,
@@ -1259,7 +1443,7 @@ func TestModelStopReturnsSnapshotPooledIssuesWithoutWorker(t *testing.T) {
 	m := Model{
 		snapshot: &DataSnapshot{
 			Issues:       []model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen}},
-			pooledIssues: []*model.Issue{pooled},
+			pooledIssues: newPooledIssueLease([]*model.Issue{pooled}),
 		},
 	}
 
@@ -1271,7 +1455,7 @@ func TestModelStopReturnsSnapshotPooledIssuesWithoutWorker(t *testing.T) {
 	if len(pooled.Comments) != 0 {
 		t.Fatalf("expected pooled issue comments to be cleared on Model.Stop, got %d", len(pooled.Comments))
 	}
-	if m.snapshot == nil || len(m.snapshot.pooledIssues) != 0 {
+	if m.snapshot == nil || m.snapshot.hasPooledIssues() {
 		t.Fatal("expected snapshot pooled refs to be cleared on Model.Stop")
 	}
 }
@@ -1287,7 +1471,7 @@ func TestTargetedCommentRefreshTransfersPoolOwnershipAcrossWorkerReplacement(t *
 	pooled.Comments = append(pooled.Comments, &model.Comment{ID: "old", Text: "old"})
 	source := &DataSnapshot{
 		Issues:       []model.Issue{{ID: "issue-1"}},
-		pooledIssues: []*model.Issue{pooled},
+		pooledIssues: newPooledIssueLease([]*model.Issue{pooled}),
 	}
 	worker.mu.Lock()
 	worker.snapshot = source
@@ -1295,7 +1479,7 @@ func TestTargetedCommentRefreshTransfersPoolOwnershipAcrossWorkerReplacement(t *
 
 	m := Model{backgroundWorker: worker, snapshot: source.WithCommentUpdate("issue-1", nil)}
 	m.snapshot.pooledIssues = m.takeSnapshotPooledIssues(source)
-	if source.pooledIssues != nil || len(m.snapshot.pooledIssues) != 1 {
+	if source.pooledIssues != nil || !m.snapshot.hasPooledIssues() {
 		t.Fatal("targeted refresh did not transfer pool ownership")
 	}
 
@@ -1320,7 +1504,7 @@ func TestTargetedCommentRefreshTransfersPoolOwnershipWithoutWorker(t *testing.T)
 	pooled.ID = "targeted-refresh-no-worker"
 	source := &DataSnapshot{
 		Issues:       []model.Issue{{ID: "issue-1"}},
-		pooledIssues: []*model.Issue{pooled},
+		pooledIssues: newPooledIssueLease([]*model.Issue{pooled}),
 	}
 	m := NewModel(source.Issues, nil, "")
 	m.snapshot = source
@@ -1330,7 +1514,7 @@ func TestTargetedCommentRefreshTransfersPoolOwnershipWithoutWorker(t *testing.T)
 	if err := m.applyTargetedCommentRefresh(targetedCommentRefreshMsg{issueID: "issue-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if source.pooledIssues != nil || len(m.snapshot.pooledIssues) != 1 {
+	if source.pooledIssues != nil || !m.snapshot.hasPooledIssues() {
 		t.Fatal("no-worker targeted refresh did not transfer pool ownership")
 	}
 
@@ -1350,14 +1534,14 @@ func TestTargetedCommentRefreshPoolTransferRacesWorkerStop(t *testing.T) {
 		pooled.ID = "targeted-refresh-race"
 		source := &DataSnapshot{
 			Issues:       []model.Issue{{ID: "issue-1"}},
-			pooledIssues: []*model.Issue{pooled},
+			pooledIssues: newPooledIssueLease([]*model.Issue{pooled}),
 		}
 		worker.mu.Lock()
 		worker.snapshot = source
 		worker.mu.Unlock()
 
 		target := source.WithCommentUpdate("issue-1", nil)
-		transferred := make(chan []*model.Issue, 1)
+		transferred := make(chan *pooledIssueLease, 1)
 		stopped := make(chan struct{})
 		go func() {
 			transferred <- worker.takeSnapshotPooledIssues(source)
@@ -1374,6 +1558,344 @@ func TestTargetedCommentRefreshPoolTransferRacesWorkerStop(t *testing.T) {
 		if pooled.ID != "" || len(pooled.Comments) != 0 {
 			t.Fatalf("attempt %d returned pooled issue incorrectly: id=%q comments=%d", attempt, pooled.ID, len(pooled.Comments))
 		}
+	}
+}
+func TestModelStopReleasesSharedPhase2PoolLeaseOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
+	if err := os.WriteFile(beadsPath, []byte(`{"id":"A","title":"Issue A","status":"open","issue_type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write test issues: %v", err)
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: beadsPath})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+
+	pooled := loader.GetIssue()
+	pooled.ID = "shared-phase2"
+	var releases atomic.Int32
+	phase1 := NewSnapshotBuilder([]model.Issue{{ID: "A", Title: "Issue A", Status: model.StatusOpen, IssueType: model.TypeTask}}).Build()
+	phase1.pooledIssues = &pooledIssueLease{
+		refs: []*model.Issue{pooled},
+		release: func(refs []*model.Issue) {
+			releases.Add(1)
+			loader.ReturnIssuePtrsToPool(refs)
+		},
+	}
+	phase2 := phase1.WithPhase2(phase1.Analysis, phase1.GetInsights(), phase1.Issues, phase1.Analyzer)
+	if phase2.pooledIssues != phase1.pooledIssues {
+		t.Fatal("expected Phase 2 snapshot to share the Phase 1 pool lease")
+	}
+
+	worker.snapshot = phase1
+	m := Model{backgroundWorker: worker, snapshot: phase2}
+	m.Stop()
+
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("pool release count=%d, want exactly 1", got)
+	}
+	if phase1.hasPooledIssues() || phase2.hasPooledIssues() {
+		t.Fatal("expected shared pool lease to be inactive after Stop")
+	}
+}
+
+func TestBackgroundWorkerSendReleasesDroppedSupersededSnapshotLease(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	var staleReleases atomic.Int32
+	stale := &DataSnapshot{
+		pooledIssues: &pooledIssueLease{
+			refs: []*model.Issue{{ID: "pooled-stale"}},
+			release: func([]*model.Issue) {
+				staleReleases.Add(1)
+			},
+		},
+	}
+	var currentReleases atomic.Int32
+	current := &DataSnapshot{
+		pooledIssues: &pooledIssueLease{
+			refs: []*model.Issue{{ID: "pooled-current"}},
+			release: func([]*model.Issue) {
+				currentReleases.Add(1)
+			},
+		},
+	}
+
+	worker.mu.Lock()
+	worker.snapshot = current
+	worker.mu.Unlock()
+	worker.msgCh <- SnapshotReadyMsg{Snapshot: stale, SnapshotVer: 1}
+	worker.send(SnapshotReadyMsg{Snapshot: current, SnapshotVer: 2})
+
+	if got := staleReleases.Load(); got != 1 {
+		t.Fatalf("dropped stale snapshot release count=%d, want 1", got)
+	}
+	if stale.hasPooledIssues() {
+		t.Fatal("dropped stale snapshot retained an active pooled lease")
+	}
+	if got := currentReleases.Load(); got != 0 {
+		t.Fatalf("current snapshot was released while still worker-owned: count=%d", got)
+	}
+	if !current.hasPooledIssues() {
+		t.Fatal("current snapshot lease became inactive while still worker-owned")
+	}
+
+	queued := <-worker.msgCh
+	ready, ok := queued.(SnapshotReadyMsg)
+	if !ok || ready.Snapshot != current || ready.SnapshotVer != 2 {
+		t.Fatalf("queued message=%#v, want current SnapshotReadyMsg version 2", queued)
+	}
+}
+
+func TestBackgroundWorkerSendDoesNotLetPhase2EvictSnapshotReady(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	snapshot := &DataSnapshot{DataHash: "current"}
+	ready := SnapshotReadyMsg{Snapshot: snapshot, SnapshotVer: 7}
+	worker.msgCh <- ready
+	worker.msgCh <- SnapshotErrorMsg{Err: errors.New("recoverable reload error"), Recoverable: true}
+	worker.send(Phase2UpdateMsg{
+		DataHash:    snapshot.DataHash,
+		Snapshot:    snapshot,
+		SnapshotVer: ready.SnapshotVer,
+	})
+
+	queued := drainWorkerMessages(worker)
+	if len(queued) != 2 {
+		t.Fatalf("retained %d messages, want snapshot and error", len(queued))
+	}
+	if got, ok := queued[0].(SnapshotReadyMsg); !ok || got.Snapshot != snapshot || got.SnapshotVer != ready.SnapshotVer {
+		t.Fatalf("queued message[0]=%#v, want authoritative SnapshotReadyMsg", queued[0])
+	}
+}
+
+func TestBackgroundWorkerSendDoesNotLetErrorEvictSnapshotReady(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	generation := worker.Generation()
+	snapshot := &DataSnapshot{DataHash: "current"}
+	ready := SnapshotReadyMsg{
+		Snapshot:         snapshot,
+		SnapshotVer:      7,
+		WorkerGeneration: generation,
+	}
+	worker.msgCh <- ready
+	worker.msgCh <- Phase2UpdateMsg{DataHash: snapshot.DataHash, Snapshot: snapshot, SnapshotVer: ready.SnapshotVer}
+	worker.send(SnapshotErrorMsg{
+		Err:              errors.New("recoverable reload error"),
+		Recoverable:      true,
+		WorkerGeneration: generation,
+	})
+
+	queued := drainWorkerMessages(worker)
+	if len(queued) != 2 {
+		t.Fatalf("retained %d messages, want snapshot and error", len(queued))
+	}
+	got, ok := queued[0].(SnapshotReadyMsg)
+	if !ok || got.Snapshot != snapshot || got.SnapshotVer != ready.SnapshotVer {
+		t.Fatalf("queued message[0]=%#v, want authoritative SnapshotReadyMsg", queued[0])
+	}
+	if got, ok := queued[1].(SnapshotErrorMsg); !ok || got.Err == nil {
+		t.Fatalf("queued message[1]=%#v, want recoverable error", queued[1])
+	}
+}
+
+func TestBackgroundWorkerSendRetainsSnapshotAlongsideTerminalError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	generation := worker.Generation()
+	ready := SnapshotReadyMsg{
+		Snapshot:         &DataSnapshot{DataHash: "last-usable"},
+		SnapshotVer:      7,
+		WorkerGeneration: generation,
+	}
+	worker.msgCh <- ready
+	worker.msgCh <- Phase2UpdateMsg{DataHash: ready.Snapshot.DataHash, Snapshot: ready.Snapshot, SnapshotVer: ready.SnapshotVer}
+	terminal := SnapshotErrorMsg{
+		Err:              errors.New("worker stopped permanently"),
+		Recoverable:      false,
+		WorkerGeneration: generation,
+	}
+	worker.send(terminal)
+
+	queued := drainWorkerMessages(worker)
+	if len(queued) != 2 {
+		t.Fatalf("retained %d messages, want snapshot and terminal error", len(queued))
+	}
+	if got, ok := queued[0].(SnapshotReadyMsg); !ok || got.Snapshot != ready.Snapshot {
+		t.Fatalf("queued message[0]=%#v, want SnapshotReadyMsg", queued[0])
+	}
+	got, ok := queued[1].(SnapshotErrorMsg)
+	if !ok || got.Recoverable || got.Err == nil || got.Err.Error() != terminal.Err.Error() {
+		t.Fatalf("queued message[1]=%#v, want terminal SnapshotErrorMsg", queued[1])
+	}
+}
+
+func TestBackgroundWorkerSendRetainsErrorWhileAddingSnapshot(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{MessageBuffer: 2})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	generation := worker.Generation()
+	worker.msgCh <- SnapshotErrorMsg{
+		Err:              errors.New("older reload error"),
+		Recoverable:      true,
+		WorkerGeneration: generation,
+	}
+	worker.msgCh <- Phase2UpdateMsg{DataHash: "older reload", WorkerGeneration: generation}
+	snapshot := &DataSnapshot{DataHash: "recovered"}
+	worker.send(SnapshotReadyMsg{
+		Snapshot:         snapshot,
+		SnapshotVer:      8,
+		WorkerGeneration: generation,
+	})
+
+	queued := drainWorkerMessages(worker)
+	if len(queued) != 2 {
+		t.Fatalf("retained %d messages, want error and snapshot", len(queued))
+	}
+	if _, ok := queued[0].(SnapshotErrorMsg); !ok {
+		t.Fatalf("queued message[0]=%#v, want recoverable error", queued[0])
+	}
+	got, ok := queued[1].(SnapshotReadyMsg)
+	if !ok || got.Snapshot != snapshot || got.SnapshotVer != 8 {
+		t.Fatalf("queued message[1]=%#v, want SnapshotReadyMsg", queued[1])
+	}
+}
+
+func TestBackgroundWorkerSendDropsStaleGenerationError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	staleGeneration := worker.Generation()
+	mutateWorkerForTest(worker, func() {
+		worker.generation++
+	})
+	worker.send(SnapshotErrorMsg{
+		Err:              errors.New("stale reload error"),
+		Recoverable:      true,
+		WorkerGeneration: staleGeneration,
+	})
+
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("stale worker message was queued: %#v", unexpected)
+	default:
+	}
+}
+
+func TestBackgroundWorkerProcessDiscardsInvalidatedBuildError(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	previous := &WorkerError{Phase: "previous", Cause: errors.New("previous error"), Time: time.Now()}
+	worker.recordError(previous)
+
+	buildStarted := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	processDone := make(chan struct{})
+	staleErr := &WorkerError{Phase: "load", Cause: errors.New("stale load error"), Time: time.Now()}
+	go func() {
+		worker.processWithSnapshotBuilder(func(bool) snapshotBuildResult {
+			close(buildStarted)
+			<-releaseBuild
+			return snapshotBuildResult{err: staleErr}
+		})
+		close(processDone)
+	}()
+
+	<-buildStarted
+	select {
+	case queued := <-worker.msgCh:
+		if _, ok := queued.(WorkerProcessingMsg); !ok {
+			t.Fatalf("initial worker message=%#v, want WorkerProcessingMsg", queued)
+		}
+	default:
+		t.Fatal("initial WorkerProcessingMsg was not published")
+	}
+	mutateWorkerForTest(worker, func() {
+		if worker.state != WorkerProcessing {
+			t.Fatalf("worker state=%v, want processing before invalidation", worker.state)
+		}
+		worker.generation++
+		worker.state = WorkerIdle
+		worker.processingStart = time.Time{}
+	})
+	close(releaseBuild)
+	<-processDone
+
+	if got := worker.LastError(); got != previous {
+		t.Fatalf("stale build changed LastError: got %v, want previous error", got)
+	}
+	if staleErr.Retries != 0 {
+		t.Fatalf("stale build error retry count=%d, want untouched", staleErr.Retries)
+	}
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("stale build published a worker message: %#v", unexpected)
+	default:
+	}
+}
+
+func TestBackgroundWorkerProcessPublishesAcceptedErrorGeneration(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.beadsPath = filepath.Join(t.TempDir(), "missing.jsonl")
+
+	worker.process()
+
+	if worker.LastError() == nil {
+		t.Fatal("accepted build error did not update LastError")
+	}
+	select {
+	case queued := <-worker.msgCh:
+		if _, ok := queued.(WorkerProcessingMsg); !ok {
+			t.Fatalf("initial worker message=%#v, want WorkerProcessingMsg", queued)
+		}
+	default:
+		t.Fatal("initial WorkerProcessingMsg was not published")
+	}
+	select {
+	case queued := <-worker.msgCh:
+		msg, ok := queued.(SnapshotErrorMsg)
+		if !ok {
+			t.Fatalf("queued message=%#v, want SnapshotErrorMsg", queued)
+		}
+		if msg.WorkerGeneration != worker.Generation() {
+			t.Fatalf("error generation=%d, want current generation %d", msg.WorkerGeneration, worker.Generation())
+		}
+		if msg.Err == nil || !msg.Recoverable {
+			t.Fatalf("error message=%#v, want recoverable load error", msg)
+		}
+	default:
+		t.Fatal("accepted build error did not publish SnapshotErrorMsg")
 	}
 }
 
@@ -1410,6 +1932,52 @@ func TestBackgroundWorker_TriggerRefresh(t *testing.T) {
 
 	if len(snapshot.Issues) != 1 {
 		t.Errorf("Expected 1 issue, got %d", len(snapshot.Issues))
+	}
+}
+
+func TestBackgroundWorker_RefreshRequestMsg(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
+	content := `{"id":"test-1","title":"Test","status":"open","priority":1,"issue_type":"task"}` + "\n"
+	if err := os.WriteFile(beadsPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write test file: %v", err)
+	}
+
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: beadsPath})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
+	waitForSnapshotVersion(t, worker, 1)
+	first := worker.GetSnapshot()
+	firstMsg := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(SnapshotReadyMsg)
+		return ok
+	}).(SnapshotReadyMsg)
+	if firstMsg.Snapshot != first {
+		t.Fatal("RefreshRequestMsg snapshot was not delivered through worker message channel")
+	}
+	if firstMsg.WorkerGeneration != worker.Generation() {
+		t.Fatalf("SnapshotReadyMsg generation=%d, want %d", firstMsg.WorkerGeneration, worker.Generation())
+	}
+
+	worker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
+	waitForSnapshotVersion(t, worker, 2)
+	if second := worker.GetSnapshot(); second == first {
+		t.Fatal("forced RefreshRequestMsg was deduplicated")
+	}
+
+	r := &recipe.Recipe{Name: "message-flow"}
+	worker.HandleRefreshRequest(RefreshRequestMsg{Recipe: r})
+	waitForSnapshotVersion(t, worker, 3)
+
+	worker.mu.RLock()
+	gotRecipe := worker.currentRecipe
+	worker.mu.RUnlock()
+	if gotRecipe != r {
+		t.Fatal("RefreshRequestMsg recipe was not applied by worker")
 	}
 }
 
@@ -1695,14 +2263,14 @@ func TestBackgroundWorker_IncrementalListMetrics(t *testing.T) {
 	}
 
 	metrics := worker.Metrics()
-	if metrics.IncrementalListCount == 0 {
-		t.Fatalf("expected IncrementalListCount > 0, got %d", metrics.IncrementalListCount)
+	if metrics.IncrementalListCount != 1 {
+		t.Fatalf("IncrementalListCount=%d, want 1", metrics.IncrementalListCount)
 	}
-	if metrics.FullListCount == 0 {
-		t.Fatalf("expected FullListCount > 0, got %d", metrics.FullListCount)
+	if metrics.FullListCount != 1 {
+		t.Fatalf("FullListCount=%d, want 1", metrics.FullListCount)
 	}
-	if metrics.IncrementalListRatio <= 0 {
-		t.Fatalf("expected IncrementalListRatio > 0, got %f", metrics.IncrementalListRatio)
+	if metrics.IncrementalListRatio != 0.5 {
+		t.Fatalf("IncrementalListRatio=%f, want 0.5", metrics.IncrementalListRatio)
 	}
 }
 
@@ -1844,6 +2412,59 @@ func TestBackgroundWorker_HugeDatasetOpenOnly(t *testing.T) {
 	}
 	if !strings.Contains(snapshot.LargeDatasetWarning, "open-only") {
 		t.Fatalf("expected LargeDatasetWarning to mention open-only, got %q", snapshot.LargeDatasetWarning)
+	}
+
+	// Changes that affect only filtered-out rows and load diagnostics keep the
+	// open-issue graph hash stable, but still require a new snapshot so the
+	// source/truncation/warning metadata does not remain stale.
+	appendFile, err := os.OpenFile(beadsPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("Failed to open huge fixture for append: %v", err)
+	}
+	appendWriter := bufio.NewWriter(appendFile)
+	const addedClosed = 1000
+	for i := 0; i < addedClosed; i++ {
+		line := fmt.Sprintf(`{"id":"closed-extra-%d","title":"Closed extra %d","status":"closed","priority":1,"issue_type":"task"}`+"\n", i, i)
+		if _, err := appendWriter.WriteString(line); err != nil {
+			_ = appendFile.Close()
+			t.Fatalf("Failed to append closed issue: %v", err)
+		}
+	}
+	if _, err := appendWriter.WriteString("not-json\n"); err != nil {
+		_ = appendFile.Close()
+		t.Fatalf("Failed to append malformed line: %v", err)
+	}
+	if err := appendWriter.Flush(); err != nil {
+		_ = appendFile.Close()
+		t.Fatalf("Failed to flush appended metadata-only changes: %v", err)
+	}
+	if err := appendFile.Close(); err != nil {
+		t.Fatalf("Failed to close appended huge fixture: %v", err)
+	}
+
+	result := worker.buildSnapshotResult(false)
+	if result.err != nil {
+		t.Fatalf("metadata-only rebuild failed: %v", result.err)
+	}
+	refreshed := result.snapshot
+	if refreshed == nil {
+		t.Fatal("metadata-only source changes were incorrectly deduplicated")
+	}
+	defer refreshed.releasePooledIssues()
+	if refreshed.DataHash != snapshot.DataHash {
+		t.Fatalf("filtered issue hash changed for closed/malformed-only append: %q -> %q", snapshot.DataHash, refreshed.DataHash)
+	}
+	if refreshed.SourceIssueCountHint != issueCount+addedClosed+1 {
+		t.Fatalf("refreshed SourceIssueCountHint=%d, want %d", refreshed.SourceIssueCountHint, issueCount+addedClosed+1)
+	}
+	if refreshed.TruncatedCount != expectedTruncated+addedClosed+1 {
+		t.Fatalf("refreshed TruncatedCount=%d, want %d", refreshed.TruncatedCount, expectedTruncated+addedClosed+1)
+	}
+	if refreshed.LoadWarningCount != 1 {
+		t.Fatalf("refreshed LoadWarningCount=%d, want 1", refreshed.LoadWarningCount)
+	}
+	if refreshed.LargeDatasetWarning == snapshot.LargeDatasetWarning {
+		t.Fatalf("large-dataset warning stayed stale at %q", refreshed.LargeDatasetWarning)
 	}
 }
 
@@ -2174,24 +2795,32 @@ func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t 
 	m.historyReport = oldReport
 
 	updated, cmd := m.Update(HubSourceRefreshCompleteMsg{})
-	m = updated.(Model)
-	if m.historyGeneration != 5 || !m.historyLoading || cmd == nil {
-		t.Fatalf("external refresh did not schedule one history generation: generation=%d loading=%v cmd=%v", m.historyGeneration, m.historyLoading, cmd)
+	m = updated.(*Model)
+	if m.historyGeneration != 4 || m.historyLoadRequestGeneration != 1 || !m.historyLoading || cmd == nil {
+		t.Fatalf("external refresh did not schedule one history request: report-generation=%d request-generation=%d loading=%v cmd=%v", m.historyGeneration, m.historyLoadRequestGeneration, m.historyLoading, cmd)
 	}
 	if footer := m.renderFooter(); strings.Contains(footer, "⚠") || strings.Contains(footer, "STALE") {
 		t.Fatalf("external-only Hub refresh made unchanged snapshot look stale: %q", footer)
 	}
 
 	staleReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{"fixture-stale": {}}}
-	updated, _ = m.Update(HistoryLoadedMsg{Report: staleReport, Generation: 4})
-	m = updated.(Model)
+	updated, _ = m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration - 1,
+		Report:            staleReport,
+	})
+	m = updated.(*Model)
 	if m.historyReport != oldReport || !m.historyLoading {
 		t.Fatal("stale external history result replaced the active report")
 	}
 
 	currentReport := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{"fixture-current": {}}}
-	updated, _ = m.Update(HistoryLoadedMsg{Report: currentReport, Generation: 5})
-	m = updated.(Model)
+	updated, _ = m.Update(HistoryLoadedMsg{
+		DataGeneration:    m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+		Report:            currentReport,
+	})
+	m = updated.(*Model)
 	if m.historyReport != currentReport || m.historyLoading {
 		t.Fatal("current external history result was not installed")
 	}
@@ -2199,7 +2828,7 @@ func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t 
 	gitModel := NewModel([]model.Issue{issue}, nil, "")
 	gitModel.historyGeneration = 7
 	updated, cmd = gitModel.Update(HubSourceRefreshCompleteMsg{})
-	gitModel = updated.(Model)
+	gitModel = updated.(*Model)
 	if gitModel.historyGeneration != 7 || cmd != nil {
 		t.Fatalf("Hub refresh perturbed Git history: generation=%d cmd=%v", gitModel.historyGeneration, cmd)
 	}
@@ -2276,13 +2905,13 @@ func TestNewModel_HubAndLocalWatcherModes(t *testing.T) {
 }
 
 type startupSnapshotProbe struct {
-	Model
+	*Model
 	ready chan struct{}
 }
 
-func (m startupSnapshotProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *startupSnapshotProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	updated, cmd := m.Model.Update(msg)
-	m.Model = updated.(Model)
+	m.Model = updated.(*Model)
 	if !m.snapshotInitPending && m.snapshot != nil {
 		select {
 		case <-m.ready:
@@ -2317,7 +2946,7 @@ func TestModelInitialHubSnapshotDoesNotRequireInput(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	program := tea.NewProgram(probe, tea.WithInput(nil), tea.WithOutput(&output), tea.WithoutSignalHandler())
+	program := tea.NewProgram(&probe, tea.WithInput(nil), tea.WithOutput(&output), tea.WithoutSignalHandler())
 	done := make(chan error, 1)
 	go func() {
 		_, err := program.Run()
@@ -2362,7 +2991,7 @@ func TestModelEmptyInitialHubSnapshotLeavesLoadingWithoutInput(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	program := tea.NewProgram(probe, tea.WithInput(nil), tea.WithOutput(&output), tea.WithoutSignalHandler())
+	program := tea.NewProgram(&probe, tea.WithInput(nil), tea.WithOutput(&output), tea.WithoutSignalHandler())
 	done := make(chan error, 1)
 	go func() {
 		_, err := program.Run()
@@ -2425,7 +3054,7 @@ func TestModelWorkerPollKeepsAnimationActiveOnlyWhileProcessing(t *testing.T) {
 	m.workerSpinnerIdx = len(workerSpinnerFrames) - 1
 
 	updated, activeCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if activeCmd == nil {
 		t.Fatal("processing worker did not schedule the next animation tick")
 	}
@@ -2435,7 +3064,7 @@ func TestModelWorkerPollKeepsAnimationActiveOnlyWhileProcessing(t *testing.T) {
 
 	worker.state = WorkerIdle
 	updated, idleCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if idleCmd == nil {
 		t.Fatal("idle worker did not schedule the next health check")
 	}
@@ -2450,7 +3079,7 @@ func TestModelProcessingStartPreemptsIdlePoll(t *testing.T) {
 	m.backgroundWorker = worker
 
 	updated, idleCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if idleCmd == nil {
 		t.Fatal("idle worker did not schedule its status poll")
 	}
@@ -2458,7 +3087,7 @@ func TestModelProcessingStartPreemptsIdlePoll(t *testing.T) {
 
 	worker.state = WorkerProcessing
 	updated, activeCmd := m.Update(WorkerProcessingMsg{Worker: worker})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if activeCmd == nil {
 		t.Fatal("processing start did not schedule active feedback")
 	}
@@ -2468,7 +3097,7 @@ func TestModelProcessingStartPreemptsIdlePoll(t *testing.T) {
 
 	m.workerSpinnerIdx = 0
 	updated, staleCmd := m.Update(workerPollTickMsg{generation: idleGeneration})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if staleCmd != nil {
 		t.Fatal("stale idle poll scheduled another polling chain")
 	}
@@ -2477,7 +3106,7 @@ func TestModelProcessingStartPreemptsIdlePoll(t *testing.T) {
 	}
 
 	updated, nextActiveCmd := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
-	m = updated.(Model)
+	m = updated.(*Model)
 	if nextActiveCmd == nil {
 		t.Fatal("current active poll did not continue the animation cadence")
 	}
@@ -2531,7 +3160,7 @@ func BenchmarkModelIdleWorkerRedraw(b *testing.B) {
 
 	for b.Loop() {
 		updated, _ := m.Update(workerPollTickMsg{generation: m.workerPollGeneration})
-		m = updated.(Model)
+		m = updated.(*Model)
 		_ = m.View()
 	}
 }
@@ -2557,7 +3186,7 @@ func TestModelBackgroundSnapshotCaptions(t *testing.T) {
 		t.Fatalf("initial status = %q, want %q", got, "Background mode enabled")
 	}
 	first, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(issues).Build()})
-	m = first.(Model)
+	m = first.(*Model)
 	if got := m.statusMsg; got != "Background mode enabled" {
 		t.Fatalf("first snapshot status = %q, want %q", got, "Background mode enabled")
 	}
@@ -2566,7 +3195,7 @@ func TestModelBackgroundSnapshotCaptions(t *testing.T) {
 	}
 
 	second, _ := m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(issues).Build()})
-	m = second.(Model)
+	m = second.(*Model)
 	if got := m.statusMsg; got != "Reloaded 1 issues" {
 		t.Fatalf("later snapshot status = %q, want %q", got, "Reloaded 1 issues")
 	}
@@ -2832,7 +3461,7 @@ func TestBackgroundWorker_BuildSnapshotDoesNotPublishHashBeforeSwap(t *testing.T
 	if unaccepted == nil {
 		t.Fatal("expected unaccepted changed snapshot")
 	}
-	defer loader.ReturnIssuePtrsToPool(unaccepted.pooledIssues)
+	defer unaccepted.releasePooledIssues()
 
 	if unaccepted.DataHash == "" {
 		t.Fatal("expected unaccepted snapshot DataHash")
@@ -3072,6 +3701,247 @@ func TestBackgroundWorker_StartAfterStop(t *testing.T) {
 	}
 }
 
+func TestStartBackgroundWorkerCmdFailureEndsWaiterChain(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	worker.Stop()
+
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.backgroundWorker = worker
+	m.snapshotInitPending = true
+
+	msg := StartBackgroundWorkerCmd(worker)()
+	startErr, ok := msg.(backgroundWorkerStartErrorMsg)
+	if !ok || startErr.err == nil || startErr.worker != worker {
+		t.Fatalf("start command result=%#v, want worker-scoped start error", msg)
+	}
+	updated, cmd := m.Update(startErr)
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("start failure re-armed the stopped worker waiter")
+	}
+	if m.backgroundWorker != nil || m.snapshotInitPending {
+		t.Fatalf("failed worker remained installed: worker=%p pending=%v", m.backgroundWorker, m.snapshotInitPending)
+	}
+	if !m.statusIsError || !strings.Contains(m.statusMsg, "starting background worker") {
+		t.Fatalf("start failure status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestWaitForBackgroundWorkerMsgDrainsTerminalErrorAfterStop(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	terminal := SnapshotErrorMsg{
+		Err:              errors.New("terminal failure"),
+		Recoverable:      false,
+		WorkerGeneration: worker.Generation(),
+	}
+	worker.send(terminal)
+	worker.Stop()
+
+	msg := WaitForBackgroundWorkerMsgCmd(worker)()
+	envelope, ok := msg.(backgroundWorkerMsg)
+	if !ok || envelope.worker != worker {
+		t.Fatalf("wait result=%#v, want message scoped to stopped worker", msg)
+	}
+	got, ok := envelope.msg.(SnapshotErrorMsg)
+	if !ok || got.Recoverable || got.Err == nil || got.Err.Error() != terminal.Err.Error() {
+		t.Fatalf("wait payload=%#v, want terminal error %#v", envelope.msg, terminal)
+	}
+
+	m := NewModel(nil, nil, "")
+	m.backgroundWorker = worker
+	updated, cmd := m.Update(envelope)
+	m = updated.(*Model)
+	if cmd != nil || m.backgroundWorker != nil {
+		t.Fatalf("terminal error left worker/waiter active: worker=%p cmd=%v", m.backgroundWorker, cmd != nil)
+	}
+	if !m.statusIsError || !strings.Contains(m.statusMsg, "terminal failure") {
+		t.Fatalf("terminal error status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestStaleBackgroundWorkerStartFailureDoesNotMutateReplacement(t *testing.T) {
+	failedWorker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	failedWorker.Stop()
+
+	replacement, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker replacement failed: %v", err)
+	}
+	defer replacement.Stop()
+
+	m := NewModel([]model.Issue{{ID: "issue-1", Title: "Issue", Status: model.StatusOpen}}, nil, "")
+	m.backgroundWorker = replacement
+	m.snapshotInitPending = true
+	m.statusMsg = "replacement starting"
+
+	msg := StartBackgroundWorkerCmd(failedWorker)()
+	startErr, ok := msg.(backgroundWorkerStartErrorMsg)
+	if !ok || startErr.worker != failedWorker {
+		t.Fatalf("start command result=%#v, want failed-worker-scoped error", msg)
+	}
+	updated, cmd := m.Update(startErr)
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("stale start failure unexpectedly scheduled work")
+	}
+	if m.backgroundWorker != replacement || !m.snapshotInitPending {
+		t.Fatalf("stale failure mutated replacement state: worker=%p pending=%v", m.backgroundWorker, m.snapshotInitPending)
+	}
+	if m.statusMsg != "replacement starting" || m.statusIsError {
+		t.Fatalf("stale failure mutated replacement status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestStaleBackgroundWorkerMessageDoesNotMutateReplacement(t *testing.T) {
+	oldWorker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker old failed: %v", err)
+	}
+	defer oldWorker.Stop()
+	replacement, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker replacement failed: %v", err)
+	}
+	defer replacement.Stop()
+
+	m := NewModel(nil, nil, "")
+	m.backgroundWorker = replacement
+	m.snapshotInitPending = true
+	m.statusMsg = "replacement active"
+	stale := backgroundWorkerMsg{
+		worker: oldWorker,
+		msg: SnapshotErrorMsg{
+			Err:              errors.New("old worker failed"),
+			Recoverable:      false,
+			WorkerGeneration: oldWorker.Generation(),
+		},
+	}
+	updated, cmd := m.Update(stale)
+	m = updated.(*Model)
+	if cmd != nil || m.backgroundWorker != replacement || !m.snapshotInitPending {
+		t.Fatalf("stale message mutated replacement: worker=%p pending=%v cmd=%v", m.backgroundWorker, m.snapshotInitPending, cmd != nil)
+	}
+	if m.statusMsg != "replacement active" || m.statusIsError {
+		t.Fatalf("stale message mutated status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestInstallBackgroundWorkerResetsInstanceLocalSequenceFences(t *testing.T) {
+	oldWorker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker old failed: %v", err)
+	}
+	defer oldWorker.Stop()
+	replacement, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker replacement failed: %v", err)
+	}
+	defer replacement.Stop()
+
+	m := NewModel(nil, nil, "")
+	m.installBackgroundWorker(oldWorker)
+	m.lastWorkerGeneration = 41
+	m.lastAppliedSnapshotVer = 73
+	m.installBackgroundWorker(replacement)
+	if m.lastWorkerGeneration != 0 || m.lastAppliedSnapshotVer != 0 {
+		t.Fatalf("replacement inherited old fences generation/version=%d/%d", m.lastWorkerGeneration, m.lastAppliedSnapshotVer)
+	}
+
+	cfg := snapshotBuildConfigDefault()
+	cfg.SkipPhase2 = true
+	snapshot := NewSnapshotBuilder([]model.Issue{{
+		ID: "replacement-1", Title: "Replacement", Status: model.StatusOpen, IssueType: model.TypeTask,
+	}}).WithBuildConfig(cfg).Build()
+	updated, _ := m.Update(backgroundWorkerMsg{
+		worker: replacement,
+		msg: SnapshotReadyMsg{
+			Snapshot:         snapshot,
+			SnapshotVer:      1,
+			WorkerGeneration: replacement.Generation(),
+		},
+	})
+	m = updated.(*Model)
+	if m.snapshot != snapshot || m.lastWorkerGeneration != 1 || m.lastAppliedSnapshotVer != 1 {
+		t.Fatalf("fresh worker snapshot was rejected: snapshot=%p want=%p generation/version=%d/%d", m.snapshot, snapshot, m.lastWorkerGeneration, m.lastAppliedSnapshotVer)
+	}
+}
+
+func TestSyncReloadAfterTerminalWorkerErrorDetachesOldSnapshot(t *testing.T) {
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "issues.jsonl")
+	if err := os.WriteFile(beadsPath, []byte(`{"id":"new-1","title":"New issue","status":"open","issue_type":"task"}`), 0o644); err != nil {
+		t.Fatalf("write replacement issues: %v", err)
+	}
+
+	oldIssues := []model.Issue{{ID: "old-1", Title: "Old issue", Status: model.StatusOpen, IssueType: model.TypeTask}}
+	m := NewModel(oldIssues, nil, beadsPath)
+	if m.watcher != nil {
+		defer m.watcher.Stop()
+	}
+	cfg := snapshotBuildConfigDefault()
+	cfg.SkipPhase2 = true
+	m.snapshot = NewSnapshotBuilder(oldIssues).WithBuildConfig(cfg).Build()
+
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	m.installBackgroundWorker(worker)
+	updated, _ := m.Update(backgroundWorkerMsg{
+		worker: worker,
+		msg: SnapshotErrorMsg{
+			Err:              errors.New("terminal worker failure"),
+			Recoverable:      false,
+			WorkerGeneration: worker.Generation(),
+		},
+	})
+	m = updated.(*Model)
+	if m.backgroundWorker != nil {
+		t.Fatal("terminal error left the worker installed")
+	}
+
+	updated, _ = m.Update(FileChangedMsg{})
+	m = updated.(*Model)
+	if m.statusIsError {
+		t.Fatalf("synchronous fallback reload failed: %s", m.statusMsg)
+	}
+	if m.snapshot != nil {
+		t.Fatal("successful synchronous reload retained the old worker snapshot")
+	}
+	if len(m.issues) != 1 || m.issues[0].ID != "new-1" {
+		t.Fatalf("synchronous fallback issues=%#v, want only new-1", m.issues)
+	}
+
+	m.analysis.WaitForPhase2()
+	updated, _ = m.Update(Phase2ReadyMsg{
+		Stats:    m.analysis,
+		Insights: m.analysis.GenerateInsights(len(m.issues)),
+	})
+	m = updated.(*Model)
+	if m.snapshot != nil {
+		t.Fatal("legacy Phase 2 completion rebuilt a snapshot from stale worker surfaces")
+	}
+	if len(m.list.Items()) != 1 || m.list.Items()[0].(IssueItem).Issue.ID != "new-1" {
+		t.Fatalf("post-Phase-2 list retained stale items: %#v", m.list.Items())
+	}
+	if len(m.graphView.sortedIDs) != 1 || m.graphView.sortedIDs[0] != "new-1" {
+		t.Fatalf("post-Phase-2 graph IDs=%v, want [new-1]", m.graphView.sortedIDs)
+	}
+	if _, ok := m.issueMap["old-1"]; ok {
+		t.Fatal("post-Phase-2 issue map retained old-1")
+	}
+}
+
 func TestBackgroundWorker_ConcurrentTrigger(t *testing.T) {
 	// Test that concurrent TriggerRefresh calls don't cause duplicate processing
 	tmpDir := t.TempDir()
@@ -3123,6 +3993,151 @@ func TestBackgroundWorker_ConcurrentTrigger(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorker_RapidWritesKeepUIResponsive(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsPath := filepath.Join(tmpDir, "beads.jsonl")
+	const (
+		initialIssues = 100
+		rapidWrites   = 50
+	)
+	if err := writeStressIssuesFile(beadsPath, initialIssues, 0, "initial"); err != nil {
+		t.Fatalf("write initial issues: %v", err)
+	}
+
+	issues, err := loader.LoadIssuesFromFile(beadsPath)
+	if err != nil {
+		t.Fatalf("load initial issues: %v", err)
+	}
+	m := NewModel(issues, nil, "")
+
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:     beadsPath,
+		DebounceDelay: 25 * time.Millisecond,
+		IdleGC:        &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	m.backgroundWorker = worker
+	if err := worker.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	worker.TriggerRefresh()
+
+	writerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < rapidWrites; i++ {
+			f, openErr := os.OpenFile(beadsPath, os.O_APPEND|os.O_WRONLY, 0o644)
+			if openErr != nil {
+				writerDone <- openErr
+				return
+			}
+			_, writeErr := fmt.Fprintf(f,
+				`{"id":"rapid-%d","title":"Rapid %d","status":"open","priority":2,"issue_type":"task"}`+"\n",
+				i, i,
+			)
+			closeErr := f.Close()
+			if writeErr != nil {
+				writerDone <- writeErr
+				return
+			}
+			if closeErr != nil {
+				writerDone <- closeErr
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		writerDone <- nil
+	}()
+
+	var (
+		updateTotal    time.Duration
+		maxUpdate      time.Duration
+		renderTotal    time.Duration
+		maxRender      time.Duration
+		sampleCount    int
+		updatesOver50  int
+		snapshotCount  int
+		errorCount     int
+		latestCount    int
+		writerErr      error
+		writerFinished bool
+	)
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(2 * time.Millisecond)
+	defer tick.Stop()
+
+	for !writerFinished || latestCount != initialIssues+rapidWrites {
+		select {
+		case writerErr = <-writerDone:
+			writerFinished = true
+		case msg := <-worker.Messages():
+			switch typed := msg.(type) {
+			case SnapshotReadyMsg:
+				snapshotCount++
+				latestCount = len(typed.Snapshot.Issues)
+			case SnapshotErrorMsg:
+				errorCount++
+			}
+			updated, _ := m.Update(msg)
+			m = updated.(*Model)
+		case <-tick.C:
+			start := time.Now()
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			m = updated.(*Model)
+			updateLatency := time.Since(start)
+			renderStart := time.Now()
+			if view := m.View(); view == "" {
+				t.Fatal("View returned empty output during rapid writes")
+			}
+			renderLatency := time.Since(renderStart)
+			updateTotal += updateLatency
+			renderTotal += renderLatency
+			sampleCount++
+			if updateLatency > maxUpdate {
+				maxUpdate = updateLatency
+			}
+			if renderLatency > maxRender {
+				maxRender = renderLatency
+			}
+			if updateLatency > 50*time.Millisecond {
+				updatesOver50++
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for final snapshot: writer_finished=%v latest_count=%d snapshots=%d errors=%d",
+				writerFinished, latestCount, snapshotCount, errorCount)
+		}
+	}
+
+	if writerErr != nil {
+		t.Fatalf("rapid writer failed: %v", writerErr)
+	}
+	if sampleCount == 0 {
+		t.Fatal("expected UI latency samples")
+	}
+	if snapshotCount >= rapidWrites {
+		t.Fatalf("expected rapid writes to coalesce: snapshots=%d writes=%d", snapshotCount, rapidWrites)
+	}
+	if errorCount != 0 {
+		t.Fatalf("unexpected background worker errors: %d", errorCount)
+	}
+
+	averageUpdate := updateTotal / time.Duration(sampleCount)
+	averageRender := renderTotal / time.Duration(sampleCount)
+	over50Ratio := float64(updatesOver50) / float64(sampleCount)
+	t.Logf("rapid-write UI latency: update_avg=%v update_max=%v update_over50ms=%d/%d (%.2f%%), render_avg=%v render_max=%v, snapshots=%d writes=%d",
+		averageUpdate, maxUpdate, updatesOver50, sampleCount, over50Ratio*100,
+		averageRender, maxRender, snapshotCount, rapidWrites)
+	if averageUpdate >= 50*time.Millisecond {
+		t.Fatalf("average UI update latency=%v, want <50ms", averageUpdate)
+	}
+	if over50Ratio >= 0.05 {
+		t.Fatalf("UI update samples over 50ms=%.2f%%, want <5%%", over50Ratio*100)
+	}
+}
+
 func TestBackgroundWorker_TriggerRefreshCoalescesWhileProcessScheduled(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: ""})
 	if err != nil {
@@ -3151,6 +4166,61 @@ func TestBackgroundWorker_TriggerRefreshCoalescesWhileProcessScheduled(t *testin
 	}
 	if got := worker.Metrics().ProcessingCount; got != 0 {
 		t.Fatalf("ProcessingCount=%d, want 0", got)
+	}
+}
+
+type workerLockProbeWriter struct {
+	worker     *BackgroundWorker
+	observed   atomic.Int64
+	violations atomic.Int64
+}
+
+func (w *workerLockProbeWriter) Write(p []byte) (int, error) {
+	if !strings.Contains(string(p), `"component":"background_worker"`) {
+		return len(p), nil
+	}
+	w.observed.Add(1)
+	if !w.worker.mu.TryRLock() {
+		w.violations.Add(1)
+		return len(p), nil
+	}
+	w.worker.mu.RUnlock()
+	return len(p), nil
+}
+
+func TestBackgroundWorker_LogSinkRunsOutsideStateLock(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: ""})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.logLevel = LogLevelDebug
+
+	probe := &workerLockProbeWriter{worker: worker}
+	originalOutput := log.Writer()
+	log.SetOutput(probe)
+	t.Cleanup(func() { log.SetOutput(originalOutput) })
+
+	mutateWorkerForTest(worker, func() {
+		worker.processScheduled = true
+	})
+	worker.TriggerRefresh()
+	worker.ForceRefresh()
+
+	mutateWorkerForTest(worker, func() {
+		worker.state = WorkerIdle
+		worker.dirty = false
+		worker.processScheduled = true
+	})
+	worker.processWithSnapshotBuilder(func(bool) snapshotBuildResult {
+		return snapshotBuildResult{}
+	})
+
+	if got := probe.observed.Load(); got < 4 {
+		t.Fatalf("observed background-worker log writes = %d, want at least 4", got)
+	}
+	if got := probe.violations.Load(); got != 0 {
+		t.Fatalf("background-worker log sink invoked while state lock held %d times", got)
 	}
 }
 
@@ -3217,7 +4287,6 @@ func TestBackgroundWorker_Phase2UpdateMsgDelivered(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:     beadsPath,
 		DebounceDelay: 10 * time.Millisecond,
-		MessageBuffer: 16,
 	})
 	if err != nil {
 		t.Fatalf("NewBackgroundWorker failed: %v", err)
@@ -3278,6 +4347,84 @@ func TestBackgroundWorker_Phase2UpdateMsgDelivered(t *testing.T) {
 	}
 	if phase2Hash != snapshot.DataHash {
 		t.Fatalf("phase2 hash mismatch: got %s, want %s", phase2Hash, snapshot.DataHash)
+	}
+}
+
+func TestBackgroundWorker_RunPhase2AnalysisSignalsMatchingSnapshot(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "root", Title: "Root", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask},
+		{ID: "child", Title: "Child", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask,
+			Dependencies: []*model.Dependency{{DependsOnID: "root", Type: model.DepBlocks}}},
+	}
+	snapshot := NewSnapshotBuilder(issues).Build()
+	snapshot.Analysis.WaitForPhase2()
+	snapshot.DataHash = "phase2-signal-test"
+	snapshot.phase2Ready = false
+
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.snapshot = snapshot
+
+	const snapshotVersion = 9
+	workerGeneration := worker.Generation()
+	go worker.runPhase2Analysis(snapshot, snapshotVersion, workerGeneration)
+	msg := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(Phase2UpdateMsg)
+		return ok
+	}).(Phase2UpdateMsg)
+	if msg.DataHash != snapshot.DataHash {
+		t.Fatalf("Phase2UpdateMsg hash=%q, want %q", msg.DataHash, snapshot.DataHash)
+	}
+	if msg.Stats != snapshot.Analysis {
+		t.Fatal("Phase2UpdateMsg did not preserve the active GraphStats identity")
+	}
+	if msg.Snapshot != snapshot || msg.SnapshotVer != snapshotVersion {
+		t.Fatalf("Phase2UpdateMsg identity=(%p,%d), want (%p,%d)", msg.Snapshot, msg.SnapshotVer, snapshot, snapshotVersion)
+	}
+	if msg.WorkerGeneration != workerGeneration {
+		t.Fatalf("Phase2UpdateMsg generation=%d, want %d", msg.WorkerGeneration, workerGeneration)
+	}
+
+	m := NewModel(issues, nil, "")
+	m.snapshot = snapshot
+	m.lastAppliedSnapshotVer = snapshotVersion
+	if view := m.View(); view == "" {
+		t.Fatal("UI did not render while Phase 2 snapshot was pending")
+	}
+	newM, _ := m.Update(msg)
+	m = newM.(*Model)
+	if !m.snapshot.phase2Ready {
+		t.Fatal("matching Phase2UpdateMsg did not mark current snapshot ready")
+	}
+}
+
+func TestBackgroundWorker_RunPhase2AnalysisDropsInvalidatedGeneration(t *testing.T) {
+	issues := []model.Issue{{ID: "root", Title: "Root", Status: model.StatusOpen, IssueType: model.TypeTask}}
+	snapshot := NewSnapshotBuilder(issues).Build()
+	snapshot.Analysis.WaitForPhase2()
+	snapshot.DataHash = "stale-phase2-generation"
+	snapshot.phase2Ready = false
+
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+	worker.snapshot = snapshot
+	staleGeneration := worker.Generation()
+	mutateWorkerForTest(worker, func() {
+		worker.generation++
+	})
+
+	worker.runPhase2Analysis(snapshot, 9, staleGeneration)
+
+	select {
+	case unexpected := <-worker.msgCh:
+		t.Fatalf("invalidated Phase 2 generation published a message: %#v", unexpected)
+	default:
 	}
 }
 
@@ -3481,6 +4628,10 @@ func TestBackgroundWorker_PreservesSnapshotOnPermissionErrorAndRecovers(t *testi
 	t.Cleanup(func() {
 		_ = os.Chmod(beadsPath, 0644)
 	})
+	if readable, openErr := os.Open(beadsPath); openErr == nil {
+		_ = readable.Close()
+		t.Skip("permission bits do not make the fixture unreadable for this test user")
+	}
 
 	worker.TriggerRefresh()
 	msgErr := waitForBackgroundWorkerMsg(t, worker, 2*time.Second, func(m tea.Msg) bool {
@@ -3599,12 +4750,22 @@ func TestBackgroundWorker_CheckHealth_TriggersRecoveryOnMissedHeartbeat(t *testi
 	if err := worker.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
+	worker.mu.RLock()
+	loopCancelPublished := worker.loopCancel != nil
+	worker.mu.RUnlock()
+	if !loopCancelPublished {
+		t.Fatal("Start returned before publishing the process-loop cancellation handle")
+	}
 
 	mutateWorkerForTest(worker, func() {
 		worker.lastHeartbeat = time.Now().Add(-time.Second)
 	})
 
+	recoveryStart := time.Now()
 	worker.checkHealth(time.Now())
+	if elapsed := time.Since(recoveryStart); elapsed >= time.Second {
+		t.Fatalf("immediate post-Start recovery took %v; process loop was not cancellable", elapsed)
+	}
 
 	if got := worker.Health().RecoveryCount; got < 1 {
 		t.Fatalf("expected recoveryCount to increment, got %d", got)
@@ -3653,6 +4814,104 @@ func TestBackgroundWorker_MaybeIdleGC_TriggersAfterThreshold(t *testing.T) {
 	worker.maybeIdleGC(now.Add(1 * time.Second))
 	if gcCalls != 1 {
 		t.Fatalf("expected idle GC to be gated by MinInterval, ran %d times", gcCalls)
+	}
+}
+
+func TestModelUpdate_RecordsUserInputForIdleGC(t *testing.T) {
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath: "",
+		IdleGC:    &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	tests := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{name: "key", msg: tea.KeyMsg{Type: tea.KeyDown}},
+		{name: "mouse", msg: tea.MouseMsg{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldActivity := time.Now().Add(-time.Hour)
+			worker.recordActivityAt(oldActivity)
+
+			m := NewModel(nil, nil, "")
+			m.backgroundWorker = worker
+			m.Update(tc.msg)
+
+			got := time.Unix(0, worker.lastActivityUnixNano.Load())
+			if !got.After(oldActivity) {
+				t.Fatalf("user input did not advance activity time: got=%v old=%v", got, oldActivity)
+			}
+		})
+	}
+}
+
+func TestBackgroundWorker_GCPausesUnderRapidSnapshotLoad(t *testing.T) {
+	if os.Getenv("PERF_TEST") != "1" {
+		t.Skip("set PERF_TEST=1 to run timing-sensitive GC pause test")
+	}
+	beadsPath := filepath.Join(t.TempDir(), "issues.jsonl")
+	if err := writeStressIssuesFile(beadsPath, 1000, 0, "gc-pause"); err != nil {
+		t.Fatalf("write stress issues: %v", err)
+	}
+
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath: beadsPath,
+		IdleGC:    &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("NewBackgroundWorker failed: %v", err)
+	}
+	defer worker.Stop()
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	for i := 0; i < 10; i++ {
+		snapshot := worker.buildSnapshot(true)
+		if snapshot == nil {
+			t.Fatalf("buildSnapshot returned nil at iteration %d", i)
+		}
+		if snapshot.Analysis != nil {
+			snapshot.Analysis.WaitForPhase2()
+		}
+		snapshot.releasePooledIssues()
+		snapshot = nil
+		runtime.GC()
+	}
+
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if after.NumGC <= before.NumGC {
+		t.Fatalf("expected GC cycles under rapid snapshot load: before=%d after=%d", before.NumGC, after.NumGC)
+	}
+
+	firstCycle := before.NumGC + 1
+	if after.NumGC-firstCycle+1 > uint32(len(after.PauseNs)) {
+		firstCycle = after.NumGC - uint32(len(after.PauseNs)) + 1
+	}
+	pauses := make([]time.Duration, 0, after.NumGC-firstCycle+1)
+	for cycle := firstCycle; cycle <= after.NumGC; cycle++ {
+		pause := time.Duration(after.PauseNs[(cycle-1)%uint32(len(after.PauseNs))])
+		pauses = append(pauses, pause)
+	}
+	sort.Slice(pauses, func(i, j int) bool { return pauses[i] < pauses[j] })
+	maxPause := pauses[len(pauses)-1]
+	p95Index := (95*len(pauses) + 99) / 100 // nearest-rank percentile
+	p95Pause := pauses[p95Index-1]
+	t.Logf("rapid snapshot GC cycles=%d p95_pause=%v max_pause=%v", after.NumGC-before.NumGC, p95Pause, maxPause)
+	// A single runtime pause includes shared-host scheduler delay and is not a
+	// stable unit-test signal. Bound the sustained tail instead; the maximum is
+	// retained above so isolated profiling still exposes individual outliers.
+	if p95Pause >= 10*time.Millisecond {
+		t.Fatalf("p95 GC pause=%v, want <10ms (max=%v)", p95Pause, maxPause)
 	}
 }
 
@@ -3745,7 +5004,6 @@ func TestStress_SustainedWrites(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:     beadsPath,
 		DebounceDelay: 50 * time.Millisecond,
-		MessageBuffer: 16,
 	})
 	if err != nil {
 		t.Fatalf("NewBackgroundWorker failed: %v", err)
@@ -3862,7 +5120,6 @@ func TestStress_BurstWrites(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:     beadsPath,
 		DebounceDelay: 50 * time.Millisecond,
-		MessageBuffer: 16,
 	})
 	if err != nil {
 		t.Fatalf("NewBackgroundWorker failed: %v", err)
@@ -3968,7 +5225,6 @@ func TestStress_MemoryPressure(t *testing.T) {
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:     beadsPath,
 		DebounceDelay: 50 * time.Millisecond,
-		MessageBuffer: 16,
 	})
 	if err != nil {
 		t.Fatalf("NewBackgroundWorker failed: %v", err)
