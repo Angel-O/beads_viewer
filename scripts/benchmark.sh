@@ -180,7 +180,9 @@ reference_run() {
     echo "baseline commit $ref_commit is not in this clone; falling back to the stored baseline" >&2
     return 0
   fi
-  ref_dir="$(mktemp -d "${TMPDIR:-/tmp}/bv-bench-ref.XXXXXX")"
+  # ref_dir is created by the caller (this function runs in a command
+  # substitution, so a variable set here would never reach the cleanup trap).
+  [ -n "$ref_dir" ] || { echo "internal: ref_dir not set by caller" >&2; return 0; }
   if ! git worktree add -q --detach "$ref_dir/tree" "$ref_commit" 2>/dev/null; then
     echo "could not create a worktree for $ref_commit; falling back to the stored baseline" >&2
     return 0
@@ -223,6 +225,7 @@ compare_benchmarks() {
   local have_current=0
   if [ "${BENCH_REFERENCE:-worktree}" = "worktree" ]; then
     local ref_file
+    ref_dir="$(mktemp -d "${TMPDIR:-/tmp}/bv-bench-ref.XXXXXX")"
     ref_file="$(reference_run)"
     if [ -n "$ref_file" ]; then
       base_file="$ref_file"
