@@ -14,6 +14,11 @@
 #   7 vendor hashes    scripts/verify_vendor.sh (pkg/export vendored assets)
 #   8 benchmarks       scripts/benchmark.sh compare, > 20% regression fails
 #   9 robot smoke      scripts/robot_smoke.sh on this repo and a fixture
+#  10 script tests     tests/scripts/*_test.sh for the gate's own helpers:
+#                      the benchmark comparator always; the installer harness
+#                      when pwsh is available (PWSH=/path or on PATH). The
+#                      isomorphic-verify self-test clones and builds twice and
+#                      stays a manual run (tests/scripts/verify_isomorphic_test.sh).
 #
 # Environment:
 #   RELEASE_GATE_SKIP="7 8"        skip listed stages (each skip is logged as
@@ -123,6 +128,18 @@ benchmarks() {
   BENCH_PCT="${RELEASE_GATE_BENCH_PCT:-20}" scripts/benchmark.sh compare
 }
 
+script_self_tests() {
+  # The gate's own helpers have tests; a comparator that mis-parses a column
+  # or an installer that stops failing closed must not pass silently.
+  tests/scripts/benchmark_compare_test.sh || return 1
+  local pwsh="${PWSH:-pwsh}"
+  if command -v "$pwsh" >/dev/null 2>&1; then
+    PWSH="$pwsh" tests/scripts/install_ps1_test.sh || return 1
+  else
+    echo "install_ps1_test skipped: pwsh not found (set PWSH=/path/to/pwsh to include it)"
+  fi
+}
+
 # Stages that wrap script_stage translate its MISSING_OK sentinel (200) into a skip.
 run_script_stage() {
   local num="$1" name="$2" script="$3"; shift 3
@@ -150,6 +167,11 @@ else
   stage 8 benchmarks benchmarks
 fi
 run_script_stage 9 robot-smoke scripts/robot_smoke.sh
+if [[ "$skip_list" == *" 10 "* ]]; then
+  printf '%-2s %-14s SKIPPED (RELEASE_GATE_SKIP)\n' 10 script-tests | tee -a "$log"; skipped+=("10 script-tests")
+else
+  stage 10 script-tests script_self_tests
+fi
 
 total=$(( $(date +%s) - gate_start ))
 echo "----- release gate finished in ${total}s: ${#failed[@]} failed, ${#skipped[@]} skipped (log: $log)" | tee -a "$log"

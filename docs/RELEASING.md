@@ -18,7 +18,9 @@ asset hashes (`scripts/verify_vendor.sh` against `MANIFEST.json`), benchmark
 comparison (`scripts/benchmark.sh compare` against `benchmarks/baseline.txt`,
 fails above 20% best-of-N sec/op regression on any tracked benchmark), and the
 robot smoke (`scripts/robot_smoke.sh`: every robot command on this repository
-and on a synthetic fixture).
+and on a synthetic fixture), and the gate's own script self-tests
+(`tests/scripts/benchmark_compare_test.sh` always; `install_ps1_test.sh` when
+`pwsh` is on PATH or `PWSH` points at one).
 
 Each stage prints its duration; the full log lands in
 `tests/artifacts/release_gate_<timestamp>.log` (git-ignored). A failed stage
