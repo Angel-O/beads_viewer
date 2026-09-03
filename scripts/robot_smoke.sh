@@ -6,6 +6,8 @@
 # Usage: scripts/robot_smoke.sh [repo-dir]   (default: this repository)
 #        ROBOT_SMOKE_BV=/path/to/bv skips the build.
 #        ROBOT_SMOKE_SYNTHETIC=0 skips the synthetic-fixture pass.
+#        ROBOT_SMOKE_TIMING_JSON=path writes per-command wall-clock ms (target
+#        repository pass only) as JSON, e.g. tests/artifacts/perf/robot_wall.json.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,8 +38,8 @@ commands=(
   "label-flow|--robot-label-flow|1"
   "label-attention|--robot-label-attention|1"
   "graph-json|--robot-graph|1"
-  "graph-dot|--robot-graph --graph-format=dot|0"
-  "graph-mermaid|--robot-graph --graph-format=mermaid|0"
+  "graph-dot|--robot-graph --graph-format=dot|1"
+  "graph-mermaid|--robot-graph --graph-format=mermaid|1"
   "forecast|--robot-forecast all|1"
   "capacity|--robot-capacity|1"
   "sprint-list|--robot-sprint-list|1"
@@ -56,6 +58,7 @@ commands=(
 )
 
 failures=0
+timing_rows=()
 run_suite() {
   local dir="$1" label="$2"
   echo "== robot smoke: $label ($dir)"
@@ -79,6 +82,9 @@ run_suite() {
       verdict="NOT JSON"
     fi
     printf '  %-18s %-52s %6dms %s\n' "$name" "$args" "$ms" "$verdict"
+    if [ "$label" = "target" ]; then
+      timing_rows+=("{\"command\":\"$args\",\"ms\":$ms,\"bytes\":${#out},\"ok\":$([ "$verdict" = ok ] && echo true || echo false)}")
+    fi
     if [ "$verdict" != "ok" ]; then
       failures=$((failures + 1))
       sed 's/^/      stderr: /' "$tmp/stderr" | head -5
@@ -100,6 +106,20 @@ if [ "${ROBOT_SMOKE_SYNTHETIC:-1}" != "0" ]; then
 EOF
   (cd "$fixture" && git init -q && git add -A && git -c user.name=smoke -c user.email=smoke@example.com commit -qm "smoke fixture")
   run_suite "$fixture" "synthetic fixture"
+fi
+
+if [ -n "${ROBOT_SMOKE_TIMING_JSON:-}" ]; then
+  {
+    printf '{\n  "generated_at": "%s",\n  "target": "%s",\n  "go": "%s",\n  "commands": [\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$target" "$(go version | cut -d' ' -f3)"
+    first=1
+    for row in "${timing_rows[@]}"; do
+      if [ "$first" -eq 1 ]; then first=0; else printf ',\n'; fi
+      printf '    %s' "$row"
+    done
+    printf '\n  ]\n}\n'
+  } > "$ROBOT_SMOKE_TIMING_JSON"
+  echo "robot_smoke: wall-clock timings written to $ROBOT_SMOKE_TIMING_JSON"
 fi
 
 echo "robot_smoke: $failures failure(s)"

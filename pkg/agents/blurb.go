@@ -12,10 +12,10 @@ import (
 
 // BlurbVersion is the current version of the agent instructions blurb.
 // Increment this when making breaking changes to the blurb format.
-const BlurbVersion = 4
+const BlurbVersion = 5
 
 // BlurbStartMarker marks the beginning of injected agent instructions.
-const BlurbStartMarker = "<!-- bv-agent-instructions-v4 -->"
+const BlurbStartMarker = "<!-- bv-agent-instructions-v5 -->"
 
 // BlurbEndMarker marks the end of injected agent instructions.
 const BlurbEndMarker = "<!-- end-bv-agent-instructions -->"
@@ -23,8 +23,10 @@ const BlurbEndMarker = "<!-- end-bv-agent-instructions -->"
 const blurbStartPrefix = "<!-- bv-agent-instructions-v"
 
 // AgentBlurb contains the instructions to be appended to AGENTS.md files.
-// This is the v4 blurb that combines bd/br workflow commands with bv robot triage.
-const AgentBlurb = `<!-- bv-agent-instructions-v4 -->
+// This is the v5 blurb: v4 plus the note that --graph-format=dot|mermaid text
+// is the graph field of the JSON envelope. Bump the version whenever the text
+// changes: --agents-add refreshes installed blocks by version, not content.
+const AgentBlurb = `<!-- bv-agent-instructions-v5 -->
 
 ---
 
@@ -77,6 +79,8 @@ Before claiming, verify current state with the selected tracker: ` + "`" + `br s
 | ` + "`" + `--robot-suggest` + "`" + ` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
 | ` + "`" + `--robot-diff --diff-since <ref>` + "`" + ` | Changes since ref: new/closed/modified issues |
 | ` + "`" + `--robot-graph [--graph-format=json\|dot\|mermaid]` + "`" + ` | Dependency graph export |
+
+Every robot command emits one JSON object; with ` + "`" + `--graph-format=dot` + "`" + ` or ` + "`" + `mermaid` + "`" + ` the diagram text is the ` + "`" + `graph` + "`" + ` field (` + "`" + `bv --robot-graph --graph-format=dot | jq -r .graph` + "`" + `), not the whole output.
 
 #### Scoping & Filtering
 

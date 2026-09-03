@@ -21,7 +21,7 @@ Use this branch, rather than `main`, as the base and PR target for current work.
 The last upstream commit integrated into the reference branch is:
 
 ```text
-975b9e38dc9e82fb73b775e73a0d57f1b161092a
+5a4ea45362b62b72d4fea141696434895b5d7e17
 ```
 
 This upstream cutoff is distinct from the newer reference-branch tip used to

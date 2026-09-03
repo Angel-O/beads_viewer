@@ -183,7 +183,7 @@ func TestDetectAgentFileReportsMalformedAndDuplicateBlurbs(t *testing.T) {
 	}{
 		{
 			name:          "unterminated current blurb",
-			content:       "# Header\n\n<!-- bv-agent-instructions-v4 -->\ncontent",
+			content:       "# Header\n\n<!-- bv-agent-instructions-v5 -->\ncontent",
 			wantHasBlurb:  true,
 			wantMalformed: true,
 		},
@@ -194,8 +194,8 @@ func TestDetectAgentFileReportsMalformedAndDuplicateBlurbs(t *testing.T) {
 		},
 		{
 			name: "duplicate current blurbs",
-			content: "<!-- bv-agent-instructions-v4 -->\none\n<!-- end-bv-agent-instructions -->\n" +
-				"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->",
+			content: "<!-- bv-agent-instructions-v5 -->\none\n<!-- end-bv-agent-instructions -->\n" +
+				"<!-- bv-agent-instructions-v5 -->\ntwo\n<!-- end-bv-agent-instructions -->",
 			wantHasBlurb:  true,
 			wantCount:     2,
 			wantDuplicate: true,
@@ -235,7 +235,7 @@ func TestDetectAgentFileReportsMalformedAndDuplicateBlurbs(t *testing.T) {
 
 func TestDetectAgentFileReportsHighestAndFutureBlurbVersion(t *testing.T) {
 	tmpDir := t.TempDir()
-	content := "<!-- bv-agent-instructions-v4 -->\ncurrent\n<!-- end-bv-agent-instructions -->\n" +
+	content := "<!-- bv-agent-instructions-v5 -->\ncurrent\n<!-- end-bv-agent-instructions -->\n" +
 		"<!-- bv-agent-instructions-v7 -->\nfuture\n<!-- end-bv-agent-instructions -->\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestDetectAgentFileCompleteFutureBlockPrecedesLaterMalformedMarker(t *testi
 func TestDetectAgentFileReportsAmbiguousCurrentBlurbAsMalformed(t *testing.T) {
 	tmpDir := t.TempDir()
 	content := LegacyBlurbContent + "\n" +
-		"<!-- bv-agent-instructions-v4 -->\n" +
+		"<!-- bv-agent-instructions-v5 -->\n" +
 		"```bash\ncurrent command\n```\n" +
 		"current\n<!-- end-bv-agent-instructions -->\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(content), 0o644); err != nil {

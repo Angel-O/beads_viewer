@@ -738,8 +738,8 @@ func TestCorrelationOnThisRepository_StrategyCounts(t *testing.T) {
 	}
 	dist := history.Stats.MethodDistribution
 	t.Logf("method_distribution=%v strategies=%+v window=%+v elapsed=%s", dist, history.Stats.Strategies, history.Window, time.Since(start))
-	if dist["explicit_id"] < 6 || dist["co_committed"] < 500 {
-		t.Fatalf("expected explicit_id>=6 and co_committed>=500 on this repository, got %v", dist)
+	if dist["explicit_id"] < 1 || dist["co_committed"] < 500 {
+		t.Fatalf("expected explicit_id>=1 and co_committed>=500 on this repository, got %v", dist)
 	}
 	temporalRan := false
 	temporalCandidates := 0

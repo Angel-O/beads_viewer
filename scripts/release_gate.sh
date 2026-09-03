@@ -14,6 +14,11 @@
 #   7 vendor hashes    scripts/verify_vendor.sh (pkg/export vendored assets)
 #   8 benchmarks       scripts/benchmark.sh compare, > 20% regression fails
 #   9 robot smoke      scripts/robot_smoke.sh on this repo and a fixture
+#  10 script tests     tests/scripts/*_test.sh for the gate's own helpers:
+#                      the benchmark comparator always; the installer harness
+#                      when pwsh is available (PWSH=/path or on PATH). The
+#                      isomorphic-verify self-test clones and builds twice and
+#                      stays a manual run (tests/scripts/verify_isomorphic_test.sh).
 #
 # Environment:
 #   RELEASE_GATE_SKIP="7 8"        skip listed stages (each skip is logged as
@@ -116,17 +121,23 @@ script_stage() {
 }
 
 benchmarks() {
-  local pct="${RELEASE_GATE_BENCH_PCT:-20}"
+  # scripts/benchmark.sh runs the tracked set against the frozen dataset and
+  # compares median sec/op per benchmark with benchmarks/baseline.txt; it
+  # exits non-zero above the threshold or when a tracked benchmark is missing.
   [ -f benchmarks/baseline.txt ] || { echo "no benchmarks/baseline.txt (run scripts/benchmark.sh baseline)"; return 1; }
-  command -v benchstat >/dev/null || { echo "benchstat not installed: go install golang.org/x/perf/cmd/benchstat@latest"; return 1; }
-  go test -run='^$' -bench=. -benchmem -count=3 ./pkg/analysis/... ./pkg/ui/... ./pkg/export/... >benchmarks/current.txt 2>&1 || return 1
-  benchstat benchmarks/baseline.txt benchmarks/current.txt | tee benchmarks/compare.txt
-  # benchstat prints deltas like "+23.45%"; any positive time delta above the
-  # threshold on the sec/op table is a regression.
-  local worst
-  worst=$(awk '/sec\/op/{intime=1} /B\/op|allocs\/op/{intime=0} intime && match($0,/[+-][0-9]+\.[0-9]+%/){v=substr($0,RSTART,RLENGTH); gsub(/[%+]/,"",v); if (v+0>max) max=v+0} END{print max+0}' benchmarks/compare.txt)
-  echo "worst sec/op regression: ${worst}% (threshold ${pct}%)"
-  awk -v w="$worst" -v p="$pct" 'BEGIN{exit !(w<=p)}'
+  BENCH_PCT="${RELEASE_GATE_BENCH_PCT:-20}" scripts/benchmark.sh compare
+}
+
+script_self_tests() {
+  # The gate's own helpers have tests; a comparator that mis-parses a column
+  # or an installer that stops failing closed must not pass silently.
+  tests/scripts/benchmark_compare_test.sh || return 1
+  local pwsh="${PWSH:-pwsh}"
+  if command -v "$pwsh" >/dev/null 2>&1; then
+    PWSH="$pwsh" tests/scripts/install_ps1_test.sh || return 1
+  else
+    echo "install_ps1_test skipped: pwsh not found (set PWSH=/path/to/pwsh to include it)"
+  fi
 }
 
 # Stages that wrap script_stage translate its MISSING_OK sentinel (200) into a skip.
@@ -156,6 +167,11 @@ else
   stage 8 benchmarks benchmarks
 fi
 run_script_stage 9 robot-smoke scripts/robot_smoke.sh
+if [[ "$skip_list" == *" 10 "* ]]; then
+  printf '%-2s %-14s SKIPPED (RELEASE_GATE_SKIP)\n' 10 script-tests | tee -a "$log"; skipped+=("10 script-tests")
+else
+  stage 10 script-tests script_self_tests
+fi
 
 total=$(( $(date +%s) - gate_start ))
 echo "----- release gate finished in ${total}s: ${#failed[@]} failed, ${#skipped[@]} skipped (log: $log)" | tee -a "$log"

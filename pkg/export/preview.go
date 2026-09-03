@@ -459,9 +459,12 @@ func StartPreviewWithConfig(config PreviewConfig) error {
 				liveReloadHub.Stop()
 				liveReloadHub = nil
 			} else {
-				// Add SSE endpoint for live-reload
+				// Add SSE endpoint for live-reload and the script that subscribes
+				// to it (served as a file so the dashboard's CSP, which forbids
+				// inline scripts, still lets it run).
 				mux.HandleFunc("/__preview__/events", liveReloadHub.SSEHandler())
-				// Wrap file server with live-reload script injection
+				mux.HandleFunc(LiveReloadScriptPath, liveReloadScriptHandler)
+				// Wrap file server with live-reload script-tag injection
 				mux.Handle("/", liveReloadMiddleware(noCacheMiddleware(fileServer)))
 			}
 		}

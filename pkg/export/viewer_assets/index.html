@@ -13,21 +13,18 @@
   <meta name="theme-color" content="#0ea5e9" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#1f2937" media="(prefers-color-scheme: dark)">
 
-  <!-- Early theme detection - MUST be first to prevent flash -->
-  <script>
-    (function() {
-      const stored = localStorage.getItem('darkMode');
-      // Default to dark mode when no preference is stored
-      if (stored === 'true' || stored === null) {
-        document.documentElement.classList.add('dark');
-      }
-    })();
-  </script>
+  <!-- Early theme detection, tailwind.config and the COI bootstrap live in
+       head_init.js (loaded below, still inside the head): the CSP forbids
+       inline scripts so an injected script element can never run. -->
 
-  <!-- Security: Content Security Policy - fully self-contained for offline use -->
+  <!-- Security: Content Security Policy - fully self-contained for offline use.
+       script-src has no 'unsafe-inline': every script is a same-origin file.
+       'unsafe-eval' remains because the vendored Alpine build evaluates
+       x-* expressions with Function(); 'wasm-unsafe-eval' covers sql.js and
+       bv_graph_bg.wasm once 'unsafe-eval' can be dropped. -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'self';
-    script-src 'self' 'unsafe-eval' 'unsafe-inline';
+    script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval';
     style-src 'self' 'unsafe-inline';
     font-src 'self';
     img-src 'self' data: blob:;
@@ -45,33 +42,8 @@
 
   <!-- Tailwind CSS (bundled locally for COEP compatibility) -->
   <script src="vendor/tailwindcss.js"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-            mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
-          },
-          colors: {
-            beads: {
-              50: '#f0f9ff',
-              100: '#e0f2fe',
-              200: '#bae6fd',
-              300: '#7dd3fc',
-              400: '#38bdf8',
-              500: '#0ea5e9',
-              600: '#0284c7',
-              700: '#0369a1',
-              800: '#075985',
-              900: '#0c4a6e',
-            }
-          }
-        }
-      }
-    }
-  </script>
+  <!-- Theme default, tailwind.config, and the COI service-worker bootstrap -->
+  <script src="head_init.js"></script>
 
   <!-- Custom styles -->
   <link rel="stylesheet" href="styles.css">
@@ -202,53 +174,8 @@
   </style>
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen">
-  <!-- COOP/COEP check for SharedArrayBuffer (required for sql.js WASM) -->
-  <script>
-    // Cross-origin isolation via service worker for GitHub Pages
-    // Uses controller check (not sessionStorage) to prevent infinite reload loops
-    // iOS Safari doesn't support COI via SW - this safely handles that case
-    (function() {
-      // Already cross-origin isolated - nothing to do
-      if (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) {
-        console.log('[COI] Already cross-origin isolated');
-        return;
-      }
-
-      // Service workers not supported - can't enable COI
-      if (!('serviceWorker' in navigator)) {
-        console.log('[COI] Service workers not supported');
-        return;
-      }
-
-      // KEY CHECK: If a service worker is already controlling this page,
-      // but we're STILL not cross-origin isolated, then this browser
-      // doesn't support COI via service worker (e.g., iOS Safari).
-      // We must NOT reload again - that would cause infinite loop!
-      if (navigator.serviceWorker.controller) {
-        console.log('[COI] SW is controlling but not cross-origin isolated');
-        console.log('[COI] Browser limitation (iOS Safari?). Using degraded mode.');
-        return;
-      }
-
-      // No controller yet - register SW and reload
-      // After reload, SW will be controller, and above check prevents loop
-      console.log('[COI] Registering service worker for cross-origin isolation...');
-      navigator.serviceWorker.register('./coi-serviceworker.js')
-        .then(reg => {
-          console.log('[COI] Service worker registered');
-          // Wait for the SW to be ready and controlling the page
-          return navigator.serviceWorker.ready;
-        })
-        .then(() => {
-          console.log('[COI] Service worker ready, reloading...');
-          // Give SW time to claim clients before reloading
-          setTimeout(() => window.location.reload(), 200);
-        })
-        .catch(err => {
-          console.warn('[COI] Service worker registration failed:', err);
-        });
-    })();
-  </script>
+  <!-- COOP/COEP bootstrap for SharedArrayBuffer (required for sql.js WASM)
+       runs from head_init.js; see the [COI] console messages. -->
 
   <!-- Alpine automatically invokes the init() method returned by beadsApp(). -->
   <div x-data="beadsApp()" x-cloak>
@@ -4122,58 +4049,8 @@
 
   <!-- Mermaid.js for dependency graphs - vendored for offline use -->
   <script src="vendor/mermaid.min.js"></script>
-  <script>
-    // Initialize Mermaid with theme based on dark mode state
-    // Uses Dracula-inspired colors for dark mode, GitHub-inspired for light mode
-    function getMermaidConfig() {
-      const dark = document.documentElement.classList.contains('dark');
-      return {
-        startOnLoad: false,
-        theme: dark ? 'dark' : 'neutral',
-        flowchart: { curve: 'basis', padding: 10 },
-        securityLevel: 'strict',
-        themeVariables: dark ? {
-          // Dracula-inspired dark theme
-          primaryColor: '#bd93f9',      // Purple
-          primaryTextColor: '#f8f8f2',  // Foreground
-          primaryBorderColor: '#ff79c6', // Pink
-          lineColor: '#6272a4',         // Muted (comment)
-          secondaryColor: '#44475a',    // Background secondary
-          tertiaryColor: '#282a36',     // Background
-          background: '#282a36',
-          mainBkg: '#282a36',
-          nodeBorder: '#bd93f9',
-          clusterBkg: '#44475a',
-          clusterBorder: '#6272a4',
-          titleColor: '#f8f8f2',
-          edgeLabelBackground: '#44475a',
-          nodeTextColor: '#f8f8f2'
-        } : {
-          // GitHub-inspired light theme
-          primaryColor: '#8250df',      // Purple
-          primaryTextColor: '#24292f',  // Foreground
-          primaryBorderColor: '#bf3989', // Pink
-          lineColor: '#57606a',         // Muted
-          secondaryColor: '#f6f8fa',    // Background secondary
-          tertiaryColor: '#ffffff',     // Background
-          background: '#ffffff',
-          mainBkg: '#ffffff',
-          nodeBorder: '#8250df',
-          clusterBkg: '#f6f8fa',
-          clusterBorder: '#d0d7de',
-          titleColor: '#24292f',
-          edgeLabelBackground: '#f6f8fa',
-          nodeTextColor: '#24292f'
-        }
-      };
-    }
-    mermaid.initialize(getMermaidConfig());
-
-    // Expose for theme toggle re-initialization
-    window.reinitializeMermaid = function() {
-      mermaid.initialize(getMermaidConfig());
-    };
-  </script>
+  <!-- Mermaid is initialised (theme-aware) at the top of viewer.js, which
+       loads below after the vendored mermaid.min.js. -->
 
   <!-- Force-Graph dependencies (Graph view) - vendored for offline use -->
   <script src="vendor/force-graph.min.js"></script>

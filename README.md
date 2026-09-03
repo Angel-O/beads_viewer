@@ -76,10 +76,10 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f
 
 **Windows (PowerShell):**
 ```powershell
-# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.ps1
-irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.ps1" | iex
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1
+irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1" | iex
 ```
-> **Note:** `install.ps1` currently builds `bv` from source with `go install`, so Windows needs Go 1.25+ ([download](https://go.dev/dl/)); Scoop installs the prebuilt release archive and needs no Go toolchain. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
+> **Note:** `install.ps1` downloads the release zip for Windows, verifies it against the release `checksums.txt` with `Get-FileHash`, and refuses to install anything that does not verify; no Go toolchain is needed. Pass `-Version v0.23.0` to pin a release, `-InstallDir` to choose the folder (default `%LOCALAPPDATA%\Programs\bv`), or `-FromSource` to build with `go install` pinned to that same tag. Scoop installs the same prebuilt archive. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
 
 ---
 
@@ -186,7 +186,7 @@ Configure pre- and post-export hooks in `.bv/hooks.yaml` to run validations, not
 The text below is exactly what `bv --agents-add` (and the TUI's AGENTS.md prompt) installs (`pkg/agents/blurb.go`, `AgentBlurb`); a docs parity test keeps this copy identical to it.
 
 ````markdown
-<!-- bv-agent-instructions-v4 -->
+<!-- bv-agent-instructions-v5 -->
 
 ---
 
@@ -239,6 +239,8 @@ Before claiming, verify current state with the selected tracker: `br show <id> -
 | `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
 | `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues |
 | `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
+
+Every robot command emits one JSON object; with `--graph-format=dot` or `mermaid` the diagram text is the `graph` field (`bv --robot-graph --graph-format=dot | jq -r .graph`), not the whole output.
 
 #### Scoping & Filtering
 
@@ -305,7 +307,7 @@ Tracker commands do not grant permission to commit or push application code. Fol
 
 The blurb uses HTML comment markers for version tracking:
 ```
-<!-- bv-agent-instructions-v4 -->
+<!-- bv-agent-instructions-v5 -->
 ... content ...
 <!-- end-bv-agent-instructions -->
 ```
@@ -739,8 +741,13 @@ Export the dependency graph in multiple formats for visualization, documentation
 
 ```bash
 bv --robot-graph                              # JSON (default)
-bv --robot-graph --graph-format=dot           # Graphviz DOT
-bv --robot-graph --graph-format=mermaid       # Mermaid diagram
+bv --robot-graph --graph-format=dot           # JSON envelope; DOT text in .graph
+bv --robot-graph --graph-format=mermaid       # JSON envelope; Mermaid text in .graph
+
+# Every robot command emits one JSON object (data_hash, generated_at, source_path, ...),
+# so the DOT or Mermaid text is a field to extract, not the whole output:
+bv --robot-graph --graph-format=dot | jq -r .graph > graph.dot
+bv --robot-graph --graph-format=mermaid | jq -r .graph > graph.mmd
 
 # Focused subgraph extraction
 bv --robot-graph --graph-root=bv-123          # Subgraph from specific root
@@ -752,8 +759,8 @@ bv --robot-graph --graph-root=bv-123 --graph-depth=3  # Limited depth
 | Format | Use Case | Rendering |
 |--------|----------|-----------|
 | `json` | Programmatic processing, custom visualization | Parse with jq or code |
-| `dot` | High-quality static images | `dot -Tpng file.dot -o graph.png` |
-| `mermaid` | Embed in Markdown, GitHub rendering | Paste into docs |
+| `dot` | High-quality static images | `bv --robot-graph --graph-format=dot \| jq -r .graph \| dot -Tpng -o graph.png` |
+| `mermaid` | Embed in Markdown, GitHub rendering | `jq -r .graph` the envelope, then paste into docs |
 
 ### Subgraph Extraction
 
@@ -2798,7 +2805,7 @@ The export uses a **hybrid architecture** so the graph can render before the dat
 | `graph_layout.json` | 116 KB for 611 issues / 746 edges | Pre-computed node positions + graph metrics |
 | `beads.sqlite3` | 3.3 MB for 611 issues | Full issue data for detail pane, search, tables |
 
-Sizes are measured, not estimated: `tests/e2e/export_pages_test.go` re-exports this repository on every e2e run and writes the numbers to `tests/artifacts/perf/pages_load.json` (whole bundle 9.7 MB, of which 5.6 MB is the vendored viewer libraries).
+Sizes are measured, not estimated: `tests/e2e/export_pages_test.go` re-exports this repository on every e2e run and checks the bundle against `tests/artifacts/perf/pages_load.json` (whole bundle 9.7 MB, of which 5.6 MB is the vendored viewer libraries); the record is rewritten only when the test runs with `BV_RECORD_PERF=1`, and a bundle that grows by more than a quarter fails the run.
 
 **How it works:**
 1. Browser loads the small `graph_layout.json` first
@@ -3540,7 +3547,7 @@ In complex software projects, tasks are not isolated. They are deeply interconne
 
 `bv` is engineered for speed. We believe that latency is the enemy of flow.
 
-*   **Startup Time:** about 20 ms of analysis (`bv --profile-startup`) and 60-90 ms wall time per robot command for 541 issues on a 2026 x86 server.
+*   **Startup Time:** about 20 ms of graph analysis (`bv --profile-startup`) for this repository's 611 issues. Wall time per robot command on the shared reference VM (AMD EPYC-Milan, Go 1.25) is 40-50 ms for `bv --version`, roughly 180-250 ms for `--robot-next`, `--robot-triage`, and `--robot-insights` with warm caches, and 500-700 ms for a first cold run; the per-command numbers are recorded by `scripts/robot_smoke.sh` in `tests/artifacts/perf/robot_wall.json` (single cold run per command). Engine benchmarks (`BenchmarkRealData_*`: full triage 1.2 ms, graph build 0.7 ms, exact full analysis 43 ms) are in `tests/artifacts/perf/analysis_bench.md`, and dashboard bundle sizes in `tests/artifacts/perf/pages_load.json`. All of these are point measurements on a shared machine. Regressions are caught by release-gate stage 8: `scripts/benchmark.sh compare` runs ten tracked benchmarks against the frozen `tests/testdata/benchmark/medium.jsonl` dataset and fails when any benchmark's best observed `ns/op` is more than 20% above a fresh, interleaved run of the baseline commit on the same machine (`benchmarks/baseline.txt` records that commit, the machine, Go version, and dataset hash, and is the fallback when the commit is not in the clone).
 *   **Rendering:** 60 FPS UI updates using [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 *   **Virtualization:** List views and Markdown renderers are fully windowed. `bv` can handle repositories with **10,000+ issues** without UI lag, consuming minimal RAM.
 *   **Graph Compute:** A two-phase analyzer computes topo/degree/density instantly, then PageRank/Betweenness/HITS/Critical Path/Cycles asynchronously with size-aware timeouts.
@@ -3651,12 +3658,12 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f
 For Windows users using PowerShell:
 
 ```powershell
-# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.ps1
-irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.ps1" | iex
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1
+irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1" | iex
 ```
 
 **Requirements:**
-- Go 1.25+ installed and in your PATH ([download](https://go.dev/dl/))
+- No Go toolchain is required unless using `-FromSource`.
 - For best display, use [Windows Terminal](https://aka.ms/terminal) with a [Nerd Font](https://www.nerdfonts.com/)
 
 ### Build from Source
@@ -3740,7 +3747,7 @@ bv has a comprehensive built-in help system:
 | | `H` | Hybrid search toggle |
 | | `alt+h` | Hybrid search preset |
 | **List Sorting** | `s` | Cycle Sort Mode (Default → Created ↑ → Created ↓ → Priority → Updated) |
-| | `S` | Apply triage sort |
+| | `S` | Sort by triage score (applies the built-in `triage` recipe) |
 | **Views** | `b` | Toggle **Kanban Board** |
 | | `i` | Toggle **Insights Dashboard** |
 | | `g` | Toggle **Graph Visualizer** (from the list; `gg` jumps to the top in Board and Tree) |
