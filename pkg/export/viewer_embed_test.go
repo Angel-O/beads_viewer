@@ -11,6 +11,84 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
+// TestEmbeddedIndex_CSPHasNoInlineScripts guards the dashboard's script
+// policy: script-src carries no 'unsafe-inline', no <script> block is inline,
+// no element has an on*= handler, and every same-origin script or stylesheet
+// the page references is present in the embedded assets (so moving code out
+// of index.html cannot leave a dangling src).
+func TestEmbeddedIndex_CSPHasNoInlineScripts(t *testing.T) {
+	content, err := ViewerAssetsFS.ReadFile("viewer_assets/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(content)
+
+	m := regexp.MustCompile(`(?is)http-equiv="Content-Security-Policy"\s+content="([^"]*)"`).FindStringSubmatch(html)
+	if m == nil {
+		t.Fatal("index.html has no Content-Security-Policy meta tag")
+	}
+	var scriptSrc string
+	for _, directive := range strings.Split(m[1], ";") {
+		fields := strings.Fields(directive)
+		if len(fields) > 0 && fields[0] == "script-src" {
+			scriptSrc = strings.Join(fields[1:], " ")
+		}
+	}
+	if scriptSrc == "" {
+		t.Fatalf("CSP has no script-src directive: %q", m[1])
+	}
+	if strings.Contains(scriptSrc, "'unsafe-inline'") {
+		t.Errorf("script-src must not allow 'unsafe-inline': %q", scriptSrc)
+	}
+	if !strings.Contains(scriptSrc, "'wasm-unsafe-eval'") {
+		t.Errorf("script-src must allow 'wasm-unsafe-eval' (sql.js, bv_graph_bg.wasm): %q", scriptSrc)
+	}
+
+	scriptTags := regexp.MustCompile(`(?is)<script\b[^>]*>`).FindAllString(html, -1)
+	if len(scriptTags) == 0 {
+		t.Fatal("index.html has no script tags at all")
+	}
+	srcAttr := regexp.MustCompile(`(?i)\bsrc\s*=\s*["']([^"']+)["']`)
+	for _, tag := range scriptTags {
+		sm := srcAttr.FindStringSubmatch(tag)
+		if sm == nil {
+			t.Errorf("inline script block is forbidden by the CSP: %s", tag)
+			continue
+		}
+		assertEmbeddedAssetExists(t, sm[1])
+	}
+	if bad := regexp.MustCompile(`(?i)<[a-z][^>]*\son[a-z]+\s*=`).FindString(html); bad != "" {
+		t.Errorf("inline event handler attribute is forbidden by the CSP: %s", bad)
+	}
+
+	hrefAttr := regexp.MustCompile(`(?i)\bhref\s*=\s*["']([^"']+)["']`)
+	for _, tag := range regexp.MustCompile(`(?is)<link\b[^>]*rel=["']stylesheet["'][^>]*>`).FindAllString(html, -1) {
+		if hm := hrefAttr.FindStringSubmatch(tag); hm != nil {
+			assertEmbeddedAssetExists(t, hm[1])
+		}
+	}
+
+	// The bootstrap that used to be inline must be the file the page loads.
+	if !strings.Contains(html, `<script src="head_init.js"></script>`) {
+		t.Error("index.html must load head_init.js (theme default, tailwind.config, COI bootstrap)")
+	}
+}
+
+func assertEmbeddedAssetExists(t *testing.T, ref string) {
+	t.Helper()
+	if strings.Contains(ref, "://") || strings.HasPrefix(ref, "//") {
+		t.Errorf("index.html references a remote asset %q; the bundle must be self-contained", ref)
+		return
+	}
+	name := ref
+	if i := strings.IndexAny(name, "?#"); i >= 0 {
+		name = name[:i]
+	}
+	if _, err := ViewerAssetsFS.ReadFile("viewer_assets/" + name); err != nil {
+		t.Errorf("index.html references %q but it is not an embedded asset: %v", ref, err)
+	}
+}
+
 func TestReplaceTitle_Basic(t *testing.T) {
 	html := `<html><head><title>Beads Viewer</title></head><body><h1 class="text-xl font-semibold">Beads Viewer</h1></body></html>`
 

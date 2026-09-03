@@ -9,6 +9,68 @@
  */
 
 // ============================================================================
+// Mermaid initialisation (moved here from an inline <script> in index.html so
+// the CSP can forbid inline scripts). viewer.js loads after vendor/mermaid.min.js
+// and before Alpine boots, which is the same point the inline block ran.
+// ============================================================================
+
+// Theme-aware Mermaid config: Dracula-inspired colours in dark mode,
+// GitHub-inspired in light mode.
+function getMermaidConfig() {
+  const dark = document.documentElement.classList.contains('dark');
+  return {
+    startOnLoad: false,
+    theme: dark ? 'dark' : 'neutral',
+    flowchart: { curve: 'basis', padding: 10 },
+    securityLevel: 'strict',
+    themeVariables: dark ? {
+      primaryColor: '#bd93f9',      // Purple
+      primaryTextColor: '#f8f8f2',  // Foreground
+      primaryBorderColor: '#ff79c6', // Pink
+      lineColor: '#6272a4',         // Muted (comment)
+      secondaryColor: '#44475a',    // Background secondary
+      tertiaryColor: '#282a36',     // Background
+      background: '#282a36',
+      mainBkg: '#282a36',
+      nodeBorder: '#bd93f9',
+      clusterBkg: '#44475a',
+      clusterBorder: '#6272a4',
+      titleColor: '#f8f8f2',
+      edgeLabelBackground: '#44475a',
+      nodeTextColor: '#f8f8f2'
+    } : {
+      primaryColor: '#8250df',      // Purple
+      primaryTextColor: '#24292f',  // Foreground
+      primaryBorderColor: '#bf3989', // Pink
+      lineColor: '#57606a',         // Muted
+      secondaryColor: '#f6f8fa',    // Background secondary
+      tertiaryColor: '#ffffff',     // Background
+      background: '#ffffff',
+      mainBkg: '#ffffff',
+      nodeBorder: '#8250df',
+      clusterBkg: '#f6f8fa',
+      clusterBorder: '#d0d7de',
+      titleColor: '#24292f',
+      edgeLabelBackground: '#f6f8fa',
+      nodeTextColor: '#24292f'
+    }
+  };
+}
+
+if (typeof mermaid !== 'undefined') {
+  mermaid.initialize(getMermaidConfig());
+} else {
+  console.warn('[bv] mermaid is not loaded; diagram rendering is disabled');
+}
+
+// Exposed for the theme toggle, which re-initialises Mermaid after switching.
+window.reinitializeMermaid = function () {
+  if (typeof mermaid !== 'undefined') {
+    mermaid.initialize(getMermaidConfig());
+  }
+};
+
+// ============================================================================
 // Error Handling and Diagnostics
 // ============================================================================
 

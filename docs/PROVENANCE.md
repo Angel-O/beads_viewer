@@ -46,6 +46,17 @@ anything else.
 with `cd bv-graph-wasm && make build-release`, which runs
 `wasm-pack build --target web --release` and, when installed, `wasm-opt -Os`.
 
+`scripts/build_graph_wasm.sh` is the pinned rebuild without `wasm-pack`: it
+runs `cargo build --release --target wasm32-unknown-unknown` (crate versions
+from `Cargo.lock`), refuses a `wasm-bindgen` CLI whose version differs from
+the `wasm-bindgen` crate in `Cargo.lock` (0.2.121 today), runs `wasm-opt -Os`
+when binaryen is present, and prints the built and vendored SHA-256 side by
+side with every tool version so the outcome can be recorded here and in
+`MANIFEST.json`. Run it once with network for `cargo fetch`, then `--offline`.
+On 2026-09-03 it could not complete on the shared VM: the remote compilation
+hook (`rch`) claims every `cargo build`, its workers lack the wasm target, and
+its config refuses local fallback, so the comparison is still owed.
+
 Reproducibility status (2026-09-02): a local `wasm-pack` rebuild on 2026-09-01
 produced a different hash from the shipped `bv_graph_bg.wasm`
 (`67c14abd…` versus `fb2c84ee…`), and `wasm-pack` is not installed on the

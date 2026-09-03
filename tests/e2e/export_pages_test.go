@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -219,10 +220,45 @@ func TestExportPages_HTMLStructure(t *testing.T) {
 		}
 	}
 
-	// Security headers (CSP)
+	// Security headers (CSP). The exported index must forbid inline scripts:
+	// every script is a same-origin file, so an injected <script> or on*=
+	// handler cannot run even if a rendering bug reintroduces an XSS sink.
 	if !strings.Contains(html, "Content-Security-Policy") {
 		t.Error("missing Content-Security-Policy meta tag")
 	}
+	scriptSrc := cspDirective(t, html, "script-src")
+	if strings.Contains(scriptSrc, "'unsafe-inline'") {
+		t.Errorf("script-src must not allow 'unsafe-inline': %q", scriptSrc)
+	}
+	if !strings.Contains(scriptSrc, "'wasm-unsafe-eval'") {
+		t.Errorf("script-src must allow 'wasm-unsafe-eval' for sql.js and bv_graph_bg.wasm: %q", scriptSrc)
+	}
+	for _, tag := range regexp.MustCompile(`(?is)<script\b[^>]*>`).FindAllString(html, -1) {
+		if !regexp.MustCompile(`(?i)\bsrc\s*=`).MatchString(tag) {
+			t.Errorf("exported index.html still contains an inline script block: %s", tag)
+		}
+	}
+	if m := regexp.MustCompile(`(?i)<[a-z][^>]*\son[a-z]+\s*=`).FindString(html); m != "" {
+		t.Errorf("exported index.html contains an inline event handler attribute: %s", m)
+	}
+}
+
+// cspDirective returns the value of one directive from the exported page's
+// Content-Security-Policy meta tag (the directives are separated by ';').
+func cspDirective(t *testing.T, html, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?is)http-equiv="Content-Security-Policy"\s+content="([^"]*)"`).FindStringSubmatch(html)
+	if m == nil {
+		t.Fatal("cannot locate the Content-Security-Policy meta content")
+	}
+	for _, directive := range strings.Split(m[1], ";") {
+		fields := strings.Fields(directive)
+		if len(fields) > 0 && fields[0] == name {
+			return strings.Join(fields[1:], " ")
+		}
+	}
+	t.Fatalf("CSP has no %s directive: %q", name, m[1])
+	return ""
 }
 
 func TestExportPages_IssueOverviewMetrics(t *testing.T) {
@@ -1950,11 +1986,12 @@ func TestExportPages_HybridWasmHookRunsInBuiltBinary(t *testing.T) {
 }
 
 // TestExportPages_RecordsLoadSizes (I4) exports this repository's dashboard
-// and records what a viewer has to download before first render into
-// tests/artifacts/perf/pages_load.json, so the README's bundle-size claims
-// come from a measurement that is re-taken on every e2e run. Time-to-first-
-// render needs a browser and is only measured when BV_HEADLESS_BROWSER names
-// one; without it the JSON says so instead of inventing a number.
+// and measures what a viewer has to download before first render. With
+// BV_RECORD_PERF=1 it writes tests/artifacts/perf/pages_load.json (the source
+// of the README's bundle-size claims); otherwise it guards that record
+// against a bundle that grew by more than a quarter. Time-to-first-render
+// needs a browser and is only measured when BV_HEADLESS_BROWSER names one;
+// without it the JSON says so instead of inventing a number.
 func TestExportPages_RecordsLoadSizes(t *testing.T) {
 	repo, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -2026,14 +2063,37 @@ func TestExportPages_RecordsLoadSizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	perfDir := filepath.Join(repo, "tests", "artifacts", "perf")
-	if err := os.MkdirAll(perfDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(perfDir, "pages_load.json"), append(data, '\n'), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	t.Logf("pages bundle for %d issues / %d edges: %s", layout.NodeCount, layout.EdgeCount, data)
+	recordPath := filepath.Join(repo, "tests", "artifacts", "perf", "pages_load.json")
+	if os.Getenv("BV_RECORD_PERF") == "1" {
+		// Deliberate re-measurement: rewrite the committed record.
+		if err := os.MkdirAll(filepath.Dir(recordPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(recordPath, append(data, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		// Ordinary runs guard the committed record instead of rewriting it
+		// (a rewrite on every e2e run dirtied the tree after each gate).
+		// A bundle that grew by more than a quarter is a regression to record
+		// on purpose, not silently.
+		committed, err := os.ReadFile(recordPath)
+		if err != nil {
+			t.Fatalf("%s is missing; run this test with BV_RECORD_PERF=1 to record it: %v", recordPath, err)
+		}
+		var prior struct {
+			Bytes struct {
+				BundleTotal int64 `json:"bundle_total"`
+			} `json:"bytes"`
+		}
+		if err := json.Unmarshal(committed, &prior); err != nil {
+			t.Fatalf("decode %s: %v", recordPath, err)
+		}
+		if prior.Bytes.BundleTotal > 0 && total > prior.Bytes.BundleTotal*5/4 {
+			t.Fatalf("bundle_total grew from %d to %d bytes (more than 25%%); re-record with BV_RECORD_PERF=1 if intended", prior.Bytes.BundleTotal, total)
+		}
+	}
 	if layout.NodeCount == 0 || size("beads.sqlite3") == 0 {
 		t.Fatalf("bundle should carry the repository's issues")
 	}

@@ -67,6 +67,9 @@ func (s *GraphStats) GenerateInsightsForCandidates(limit int, predicate Candidat
 	artPts := s.ArticulationPoints()
 	slack := s.Slack()
 	cycles := s.Cycles()
+	if cycles == nil {
+		cycles = make([][]string, 0)
+	}
 	orphans := findOrphans(s.OutDegree)
 
 	// Velocity snapshot (populated later when triage provides it)
@@ -114,10 +117,7 @@ func (s *GraphStats) GenerateInsightsForCandidates(limit int, predicate Candidat
 }
 
 func findOrphans(outDegree map[string]int) []string {
-	if len(outDegree) == 0 {
-		return nil
-	}
-	var ids []string
+	ids := make([]string, 0)
 	for id, deg := range outDegree {
 		if deg == 0 {
 			ids = append(ids, id)
@@ -190,6 +190,9 @@ func limitStrings(s []string, limit int) []string {
 }
 
 func limitStringsForCandidates(s []string, limit int, predicate CandidatePredicate) []string {
+	if s == nil {
+		return []string{}
+	}
 	if predicate != nil {
 		filtered := make([]string, 0, len(s))
 		for _, id := range s {

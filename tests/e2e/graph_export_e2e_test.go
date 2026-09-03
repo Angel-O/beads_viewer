@@ -601,16 +601,20 @@ func TestGraphExport_DataHash(t *testing.T) {
 	}
 }
 
-// TestGraphExport_DeterministicOutput tests output is deterministic
+// TestGraphExport_DeterministicOutput tests the reproducibility contract:
+// with SOURCE_DATE_EPOCH set, two runs on the same data are byte-identical.
+// The payload's generated_at is second-granular wall-clock time otherwise, so
+// two runs that straddle a second boundary differ by design; comparing them
+// without the epoch pinned is what made this test flake under load.
 func TestGraphExport_DeterministicOutput(t *testing.T) {
 	bv := buildBvBinary(t)
 	repoDir := createGraphTestRepo(t)
 
-	// Run twice and compare
 	var outputs []string
 	for i := 0; i < 2; i++ {
 		cmd := exec.Command(bv, "--robot-graph", "--graph-format=dot")
 		cmd.Dir = repoDir
+		cmd.Env = append(os.Environ(), "SOURCE_DATE_EPOCH=1700000000")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("--robot-graph run %d failed: %v\n%s", i+1, err, out)
@@ -618,8 +622,11 @@ func TestGraphExport_DeterministicOutput(t *testing.T) {
 		outputs = append(outputs, string(out))
 	}
 
+	if !strings.Contains(outputs[0], `"generated_at":"2023-11-14T22:13:20Z"`) {
+		t.Errorf("SOURCE_DATE_EPOCH must pin generated_at; got: %.200s", outputs[0])
+	}
 	if outputs[0] != outputs[1] {
-		t.Error("graph export is not deterministic - outputs differ between runs")
+		t.Error("graph export is not deterministic - outputs differ between runs with SOURCE_DATE_EPOCH pinned")
 	}
 }
 

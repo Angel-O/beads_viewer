@@ -132,6 +132,7 @@ func AddScriptCacheBusting(content string) string {
 
 	// List of our JS files that need cache-busting (not vendor files which rarely change)
 	jsFiles := []string{
+		"head_init.js",
 		"viewer.js",
 		"charts.js",
 		"graph.js",
