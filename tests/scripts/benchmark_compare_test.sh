@@ -37,14 +37,27 @@ BenchmarkSnapshotSwap-64            1000     47000 ns/op   100 B/op    2 allocs/
 BenchmarkSnapshotSwap-64            1000     49000 ns/op   100 B/op    2 allocs/op
 EOF
 
-# Regression: SnapshotSwap doubled (one fast outlier must not hide it: medians).
+# Regression: SnapshotSwap doubled in every run. The comparison takes the best
+# observed time per side (contention only inflates samples), so a regression
+# has to show in all samples, and a slow outlier on the current side must NOT
+# by itself turn the comparison red (that is the noise the minimum absorbs).
 cat > "$tmp/slow.txt" <<'EOF'
 BenchmarkRealData_FullTriage-64      100   1000000 ns/op   500 B/op   10 allocs/op
 BenchmarkRealData_FullTriage-64      100   1000000 ns/op   500 B/op   10 allocs/op
 BenchmarkRealData_FullTriage-64      100   1000000 ns/op   500 B/op   10 allocs/op
 BenchmarkSnapshotSwap-64            1000    100000 ns/op   100 B/op    2 allocs/op
-BenchmarkSnapshotSwap-64            1000     40000 ns/op   100 B/op    2 allocs/op
+BenchmarkSnapshotSwap-64            1000     98000 ns/op   100 B/op    2 allocs/op
 BenchmarkSnapshotSwap-64            1000    105000 ns/op   100 B/op    2 allocs/op
+EOF
+
+# Contention: one inflated sample on the current side, the others at par.
+cat > "$tmp/contended.txt" <<'EOF'
+BenchmarkRealData_FullTriage-64      100   1000000 ns/op   500 B/op   10 allocs/op
+BenchmarkRealData_FullTriage-64      100   2600000 ns/op   500 B/op   10 allocs/op
+BenchmarkRealData_FullTriage-64      100   1010000 ns/op   500 B/op   10 allocs/op
+BenchmarkSnapshotSwap-64            1000     50000 ns/op   100 B/op    2 allocs/op
+BenchmarkSnapshotSwap-64            1000    140000 ns/op   100 B/op    2 allocs/op
+BenchmarkSnapshotSwap-64            1000     49500 ns/op   100 B/op    2 allocs/op
 EOF
 
 # Missing: a tracked benchmark disappeared from the current run.
@@ -69,11 +82,12 @@ check() {
 
 check "identical files pass" 0 "$tmp/base.txt"
 check "noise inside 20% passes" 0 "$tmp/noise.txt"
-check "doubled median fails" 1 "$tmp/slow.txt"
+check "doubled in every run fails" 1 "$tmp/slow.txt"
+check "one contended sample passes" 0 "$tmp/contended.txt"
 check "missing benchmark fails" 1 "$tmp/missing.txt"
 
-# The reported worst regression must be the median-based +100%, not the
-# outlier-based value.
+# The reported worst regression must come from the best observed samples
+# (98000 vs 49000 = +100.0%), not from the slowest ones.
 worst="$(BENCH_PCT=20 "$root/scripts/benchmark.sh" compare-files "$tmp/base.txt" "$tmp/slow.txt" 2>&1 | awk '/worst sec\/op regression/{print $4}' || true)"
 case "$worst" in
   100.0%) echo "ok: worst regression reported as $worst" ;;

@@ -10,8 +10,8 @@
 #   scripts/benchmark.sh quick                    # one-shot subset for a fast local sanity check
 #
 # Environment:
-#   BENCH_COUNT=5        -count per benchmark (medians are compared, so odd counts work best)
-#   BENCH_PCT=20         regression threshold in percent on median sec/op
+#   BENCH_COUNT=5        -count per benchmark (the best observed time per side is compared)
+#   BENCH_PCT=20         regression threshold in percent on best-of-N sec/op
 #   BENCH_DATASET=tests/testdata/benchmark/medium.jsonl
 #                        frozen issue file the RealData_* benchmarks read (copied to a temp
 #                        BEADS_DIR as issues.jsonl); the live tracker is never used, so the
@@ -91,7 +91,7 @@ provenance_header() {
 # count: $COUNT
 # tracked: $TRACKED
 # command: go test -run '^\$' -bench '$TRACKED' -benchmem -count=$COUNT ${PACKAGES[*]}
-# compare: scripts/benchmark.sh compare (median sec/op per benchmark, fails above BENCH_PCT=$PCT%)
+# compare: scripts/benchmark.sh compare (best-of-N sec/op per benchmark against an interleaved reference build of this commit, fails above BENCH_PCT=$PCT%)
 EOF
 }
 
@@ -114,18 +114,20 @@ run_benchmarks() {
   echo "Results saved to $CURRENT_FILE"
 }
 
-# compare_files BASE CUR: median ns/op per benchmark (the -N cpu suffix is
-# stripped), delta in percent, worst regression versus BENCH_PCT.
+# compare_files BASE CUR: best observed (minimum) ns/op per benchmark (the -N
+# cpu suffix is stripped), delta in percent, worst regression versus BENCH_PCT.
+# The minimum is the right statistic on a shared host: contention only ever
+# inflates a run, so the smallest sample is the closest to the uncontended
+# time, while a real regression raises every sample and therefore the minimum.
 compare_files() {
   local base="$1" cur="$2"
   [ -f "$base" ] || { echo "no baseline at $base (run scripts/benchmark.sh baseline)"; return 2; }
   [ -f "$cur" ] || { echo "no current results at $cur"; return 2; }
   awk -v pct="$PCT" '
-    function median(arr, n,   i, j, t, sorted) {
-      for (i = 1; i <= n; i++) sorted[i] = arr[i]
-      for (i = 2; i <= n; i++) { t = sorted[i]; for (j = i - 1; j >= 1 && sorted[j] > t; j--) sorted[j + 1] = sorted[j]; sorted[j + 1] = t }
-      if (n % 2) return sorted[(n + 1) / 2]
-      return (sorted[n / 2] + sorted[n / 2 + 1]) / 2
+    function best(arr, n,   i, m) {
+      m = arr[1]
+      for (i = 2; i <= n; i++) if (arr[i] < m) m = arr[i]
+      return m
     }
     function record(file, name, ns,   key) {
       sub(/-[0-9]+$/, "", name)
@@ -139,7 +141,7 @@ compare_files() {
     /^Benchmark/ && $4 == "ns/op" { record(file, $1, $3 + 0) }
     END {
       worst = 0; missing = 0
-      printf "%-42s %14s %14s %9s\n", "benchmark", "base ns/op", "current ns/op", "delta"
+      printf "%-42s %14s %14s %9s\n", "benchmark (best of N)", "base ns/op", "current ns/op", "delta"
       for (i = 1; i <= n; i++) {
         name = order[i]
         kb = 1 SUBSEP name; kc = 2 SUBSEP name
@@ -150,7 +152,7 @@ compare_files() {
         }
         for (j = 1; j <= count[kb]; j++) a[j] = values[kb, j]
         for (j = 1; j <= count[kc]; j++) b[j] = values[kc, j]
-        mb = median(a, count[kb]); mc = median(b, count[kc])
+        mb = best(a, count[kb]); mc = best(b, count[kc])
         delta = (mb > 0) ? (mc - mb) / mb * 100 : 0
         if (delta > worst) worst = delta
         printf "%-42s %14.0f %14.0f %+8.1f%%\n", name, mb, mc, delta
@@ -188,25 +190,38 @@ reference_run() {
   fi
   local ref_file="$BENCHMARK_DIR/reference.txt"
   {
-    echo "# reference run of baseline commit $ref_commit on $(date -u +%Y-%m-%dT%H:%M:%SZ) (same machine as the HEAD run that follows)"
+    echo "# reference run of baseline commit $ref_commit on $(date -u +%Y-%m-%dT%H:%M:%SZ), interleaved per package with the HEAD run"
   } > "$ref_file"
-  echo "Running the tracked benchmarks for baseline commit $ref_commit (reference build)..." >&2
-  run_tracked "$ref_file" "$COMPARE_COUNT" "$ref_dir/tree" >/dev/null
+  : > "$CURRENT_FILE"
+  prepare_dataset
+  # Interleave the two trees per package per round: a run five minutes apart
+  # on a shared host still drifted by 30% either way, while adjacent runs of
+  # the same package stayed within a few percent.
+  echo "Running the tracked benchmarks for baseline commit $ref_commit and HEAD, interleaved ($COMPARE_COUNT rounds)..." >&2
+  local round pkg
+  for round in $(seq 1 "$COMPARE_COUNT"); do
+    for pkg in "${PACKAGES[@]}"; do
+      (cd "$ref_dir/tree" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$ref_file"
+      (cd "$root" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$CURRENT_FILE"
+    done
+  done
   echo "$ref_file"
 }
 
 compare_benchmarks() {
   [ -f "$BASELINE_FILE" ] || { echo "No baseline found at $BASELINE_FILE; run 'scripts/benchmark.sh baseline' first"; return 2; }
   local base_file="$BASELINE_FILE" base_label="stored baseline $BASELINE_FILE"
+  local have_current=0
   if [ "${BENCH_REFERENCE:-worktree}" = "worktree" ]; then
     local ref_file
     ref_file="$(reference_run)"
     if [ -n "$ref_file" ]; then
       base_file="$ref_file"
       base_label="contemporaneous reference build ($(head -1 "$ref_file" | cut -c3-))"
+      have_current=1 # the interleaved reference run also produced the HEAD results
     fi
   fi
-  run_benchmarks
+  [ "$have_current" -eq 1 ] || run_benchmarks
   echo ""
   echo "=== Comparing HEAD against: $base_label ==="
   if [ "${BENCH_USE_BENCHSTAT:-0}" = "1" ] && command -v benchstat >/dev/null 2>&1; then

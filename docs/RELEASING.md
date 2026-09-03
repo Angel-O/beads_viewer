@@ -16,7 +16,7 @@ e2e tests with `-race`, docs parity (`go generate` must not change the
 tree), GitHub Actions pin check (`scripts/check_action_pins.sh`), vendored
 asset hashes (`scripts/verify_vendor.sh` against `MANIFEST.json`), benchmark
 comparison (`scripts/benchmark.sh compare` against `benchmarks/baseline.txt`,
-fails above 20% median sec/op regression on any tracked benchmark), and the
+fails above 20% best-of-N sec/op regression on any tracked benchmark), and the
 robot smoke (`scripts/robot_smoke.sh`: every robot command on this repository
 and on a synthetic fixture).
 
@@ -31,14 +31,17 @@ skips is not the same as a clean pass.
 Stage 8 has no dependency outside the Go toolchain: `scripts/benchmark.sh`
 runs the ten tracked benchmarks (`BenchmarkRealData_*`, `BenchmarkFullAnalysis_*`,
 `BenchmarkSnapshotSwap`, `BenchmarkKeyPressLatency`, `BenchmarkListItemBuild`,
-`BenchmarkParseIssuesPoolComparison`) five times each against the frozen
-dataset `tests/testdata/benchmark/medium.jsonl`, and compares the median
-`ns/op` of each with `benchmarks/baseline.txt`. The baseline carries a
+`BenchmarkParseIssuesPoolComparison`) against the frozen dataset
+`tests/testdata/benchmark/medium.jsonl`, three rounds per package alternating
+between the baseline commit's tree and HEAD, and compares the best observed
+`ns/op` of each side (contention only inflates samples, so the minimum is the
+closest to the uncontended time). The stored `benchmarks/baseline.txt` carries a
 provenance header (date, Go version, CPU, OS, commit, dataset hash) and is
 regenerated only on the reference machine with `scripts/benchmark.sh baseline`.
 `BENCH_PCT` (gate: `RELEASE_GATE_BENCH_PCT`) sets the threshold;
 `tests/scripts/benchmark_compare_test.sh` proves the comparison turns red on a
-doubled median and on a missing benchmark. Because a stored baseline cannot
+benchmark doubled in every sample, stays green on one contended sample, and
+turns red on a missing benchmark. Because a stored baseline cannot
 tell host drift from a code regression on a shared machine (on 2026-09-03 the
 same code read +38% against the stored file and 0% against a fresh build of
 the baseline commit), `compare` first builds and runs the tracked set for the
