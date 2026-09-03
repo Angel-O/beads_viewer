@@ -73,7 +73,9 @@ machine is quiet, not a licence to raise the threshold.
 
 ## What is not covered
 
-- The gate does not run on Windows; `install.ps1` still builds from source
-  with `go install` (tracker item G1).
+- The gate does not run on Windows. `install.ps1` installs the
+  checksum-verified release zip and `tests/scripts/install_ps1_test.sh`
+  proves it fails closed, but that harness has only run under PowerShell 7 on
+  Linux; step 6 below should include one Windows run of the real release.
 - The vendored `bv_graph_bg.wasm` is pinned by hash but not yet rebuilt
   reproducibly from source (`docs/PROVENANCE.md`).

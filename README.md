@@ -76,10 +76,10 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f
 
 **Windows (PowerShell):**
 ```powershell
-# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.ps1
-irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.ps1" | iex
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1
+irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1" | iex
 ```
-> **Note:** `install.ps1` currently builds `bv` from source with `go install`, so Windows needs Go 1.25+ ([download](https://go.dev/dl/)); Scoop installs the prebuilt release archive and needs no Go toolchain. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
+> **Note:** `install.ps1` downloads the release zip for Windows, verifies it against the release `checksums.txt` with `Get-FileHash`, and refuses to install anything that does not verify; no Go toolchain is needed. Pass `-Version v0.23.0` to pin a release, `-InstallDir` to choose the folder (default `%LOCALAPPDATA%\Programs\bv`), or `-FromSource` to build with `go install` pinned to that same tag. Scoop installs the same prebuilt archive. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
 
 ---
 
@@ -3644,8 +3644,8 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f
 For Windows users using PowerShell:
 
 ```powershell
-# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/03f92509bceb9da31540167c223c10f16c279767/install.ps1
-irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f92509bceb9da31540167c223c10f16c279767/install.ps1" | iex
+# Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1
+irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1" | iex
 ```
 
 **Requirements:**
