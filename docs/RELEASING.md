@@ -77,5 +77,11 @@ machine is quiet, not a licence to raise the threshold.
   checksum-verified release zip and `tests/scripts/install_ps1_test.sh`
   proves it fails closed, but that harness has only run under PowerShell 7 on
   Linux; step 6 below should include one Windows run of the real release.
+- The gate has no browser. `scripts/dashboard_browser_smoke.sh` loads the
+  exported dashboard in a headless Chromium (`BV_HEADLESS_BROWSER=/path/to/chrome`)
+  and fails on any Content-Security-Policy refusal or uncaught error while
+  requiring the app's boot markers; run it before a release when a Chromium
+  is at hand, and always after touching `index.html`, `head_init.js`, or
+  the CSP.
 - The vendored `bv_graph_bg.wasm` is pinned by hash but not yet rebuilt
   reproducibly from source (`docs/PROVENANCE.md`).
