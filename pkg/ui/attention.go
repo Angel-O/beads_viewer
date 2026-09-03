@@ -250,7 +250,7 @@ func (m AttentionModel) View() string {
 			attentionReason(s),
 		})
 		if i == m.cursor {
-			line = m.theme.Selected.Render(line)
+			line = m.theme.Selected.MaxWidth(width).Render(line)
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

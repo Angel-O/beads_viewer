@@ -234,6 +234,11 @@ func TestAttentionModel_TruncatesCells(t *testing.T) {
 	if strings.Contains(out, longLabel) {
 		t.Fatalf("label must be truncated to its column:\n%s", out)
 	}
+	m.SetSize(80, 5)
+	selectedRow := strings.Split(m.View(), "\n")[1]
+	if got := lipgloss.Width(selectedRow); got > 80 {
+		t.Fatalf("selected row width=%d, want <= 80: %q", got, selectedRow)
+	}
 }
 
 // Model integration: ] opens the attention view, Enter filters by the
