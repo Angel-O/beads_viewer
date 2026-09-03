@@ -7,8 +7,8 @@ published, or pushed to the Homebrew tap or Scoop bucket unless
 ## The gate
 
 ```bash
-scripts/release_gate.sh                     # everything, ~4 minutes on the reference machine
-RELEASE_GATE_SKIP="8" scripts/release_gate.sh   # skip the benchmark comparison (see below)
+scripts/release_gate.sh                     # everything, ~12 minutes on the reference machine (8 of them stage 8)
+RELEASE_GATE_SKIP="8" scripts/release_gate.sh   # ~4 minutes: skip the benchmark comparison for quick loops (see below)
 ```
 
 Stages, in order: `gofmt`, `go build` + `go vet`, unit tests with `-race`,
