@@ -234,6 +234,8 @@ Before claiming, verify current state with the selected tracker: `br show <id> -
 | `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues |
 | `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
 
+Every robot command emits one JSON object; with `--graph-format=dot` or `mermaid` the diagram text is the `graph` field (`bv --robot-graph --graph-format=dot | jq -r .graph`), not the whole output.
+
 #### Scoping & Filtering
 
 ```bash
