@@ -1,154 +1,153 @@
 # bv benchmark baseline
-# generated_at: 2026-09-02T21:22:07Z
+# generated_at: 2026-09-03T02:02:33Z
 # go: go1.25.5
 # cpu: AMD EPYC-Milan Processor
 # os: Linux 7.0.0-30-generic
-# commit: 38f88cf3
+# commit: 95b9b034
 # dataset: tests/testdata/benchmark/medium.jsonl
 # dataset_sha256: f87a5b80817b5b7e3320911c920235cc8df2ad9cac6a9d564c48e83dcf19f2a3
 # dataset_issues: 1000
 # count: 5
 # tracked: ^Benchmark(RealData_(FullTriage|FullAnalysis|GraphBuild)|FullAnalysis_(Sparse100|Dense100|ManyCycles20)|SnapshotSwap|KeyPressLatency|ListItemBuild|ParseIssuesPoolComparison)$
 # command: go test -run '^$' -bench '^Benchmark(RealData_(FullTriage|FullAnalysis|GraphBuild)|FullAnalysis_(Sparse100|Dense100|ManyCycles20)|SnapshotSwap|KeyPressLatency|ListItemBuild|ParseIssuesPoolComparison)$' -benchmem -count=5 ./pkg/analysis ./pkg/ui ./pkg/loader
-# compare: scripts/benchmark.sh compare (median sec/op per benchmark, fails above BENCH_PCT=20%)
+# compare: scripts/benchmark.sh compare (best-of-N sec/op per benchmark against an interleaved reference build of this commit, fails above BENCH_PCT=20%)
 goos: linux
 goarch: amd64
 pkg: github.com/Dicklesworthstone/beads_viewer/pkg/analysis
 cpu: AMD EPYC-Milan Processor
-BenchmarkFullAnalysis_ManyCycles20-8   	   16118	     73059 ns/op	   38009 B/op	     386 allocs/op
-BenchmarkFullAnalysis_ManyCycles20-8   	   16188	     82904 ns/op	   38011 B/op	     386 allocs/op
-BenchmarkFullAnalysis_ManyCycles20-8   	   10000	    106310 ns/op	   38018 B/op	     386 allocs/op
-BenchmarkFullAnalysis_ManyCycles20-8   	   18382	     81608 ns/op	   38010 B/op	     386 allocs/op
-BenchmarkFullAnalysis_ManyCycles20-8   	   14324	     70178 ns/op	   38008 B/op	     386 allocs/op
-BenchmarkRealData_FullTriage-8         	      32	  35225481 ns/op	10977798 B/op	   91865 allocs/op
+BenchmarkFullAnalysis_ManyCycles20-8   	   18601	     63353 ns/op	   38005 B/op	     386 allocs/op
+BenchmarkFullAnalysis_ManyCycles20-8   	   19279	     60230 ns/op	   38003 B/op	     386 allocs/op
+BenchmarkFullAnalysis_ManyCycles20-8   	   20257	     59463 ns/op	   38004 B/op	     386 allocs/op
+BenchmarkFullAnalysis_ManyCycles20-8   	   21220	     61503 ns/op	   38004 B/op	     386 allocs/op
+BenchmarkFullAnalysis_ManyCycles20-8   	   18967	     69187 ns/op	   38004 B/op	     386 allocs/op
+BenchmarkRealData_FullTriage-8         	      43	  27080682 ns/op	10977608 B/op	   91863 allocs/op
 --- BENCH: BenchmarkRealData_FullTriage-8
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullTriage-8         	      37	  28896682 ns/op	10977537 B/op	   91863 allocs/op
+BenchmarkRealData_FullTriage-8         	      46	  27031959 ns/op	10977156 B/op	   91862 allocs/op
+--- BENCH: BenchmarkRealData_FullTriage-8
+    bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
+    bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
+BenchmarkRealData_FullTriage-8         	      42	  25934495 ns/op	10977017 B/op	   91861 allocs/op
 --- BENCH: BenchmarkRealData_FullTriage-8
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullTriage-8         	      40	  29998558 ns/op	10977442 B/op	   91862 allocs/op
+BenchmarkRealData_FullTriage-8         	      44	  25482263 ns/op	10977379 B/op	   91862 allocs/op
 --- BENCH: BenchmarkRealData_FullTriage-8
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullTriage-8         	      48	  25315777 ns/op	10977292 B/op	   91862 allocs/op
+BenchmarkRealData_FullTriage-8         	      42	  25996735 ns/op	10977488 B/op	   91863 allocs/op
 --- BENCH: BenchmarkRealData_FullTriage-8
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-    bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullTriage-8         	      52	  27007410 ns/op	10977150 B/op	   91862 allocs/op
---- BENCH: BenchmarkRealData_FullTriage-8
-    bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-    bench_realdata_test.go:100: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullAnalysis-8       	       2	 793243880 ns/op	38362744 B/op	  530881 allocs/op
+BenchmarkRealData_FullAnalysis-8       	       2	 762894029 ns/op	38362592 B/op	  530881 allocs/op
 --- BENCH: BenchmarkRealData_FullAnalysis-8
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullAnalysis-8       	       2	 738815642 ns/op	38362848 B/op	  530882 allocs/op
+BenchmarkRealData_FullAnalysis-8       	       2	 756606418 ns/op	38362472 B/op	  530880 allocs/op
 --- BENCH: BenchmarkRealData_FullAnalysis-8
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullAnalysis-8       	       2	 806349178 ns/op	38362720 B/op	  530881 allocs/op
+BenchmarkRealData_FullAnalysis-8       	       2	 711583106 ns/op	38362696 B/op	  530880 allocs/op
 --- BENCH: BenchmarkRealData_FullAnalysis-8
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullAnalysis-8       	       2	 918300940 ns/op	38362480 B/op	  530880 allocs/op
+BenchmarkRealData_FullAnalysis-8       	       2	 733425492 ns/op	38362704 B/op	  530880 allocs/op
 --- BENCH: BenchmarkRealData_FullAnalysis-8
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
-BenchmarkRealData_FullAnalysis-8       	       2	 788969261 ns/op	38362480 B/op	  530880 allocs/op
+BenchmarkRealData_FullAnalysis-8       	       2	 711970522 ns/op	38362480 B/op	  530880 allocs/op
 --- BENCH: BenchmarkRealData_FullAnalysis-8
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:132: Loaded 1000 real issues for benchmark
-BenchmarkRealData_GraphBuild-8         	     188	   6421037 ns/op	 5098355 B/op	   44207 allocs/op
+BenchmarkRealData_GraphBuild-8         	     138	   8663396 ns/op	 5098354 B/op	   44207 allocs/op
 --- BENCH: BenchmarkRealData_GraphBuild-8
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
-BenchmarkRealData_GraphBuild-8         	     180	   6535840 ns/op	 5098355 B/op	   44207 allocs/op
+BenchmarkRealData_GraphBuild-8         	     158	   7463382 ns/op	 5098358 B/op	   44207 allocs/op
 --- BENCH: BenchmarkRealData_GraphBuild-8
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
-BenchmarkRealData_GraphBuild-8         	     190	   6834030 ns/op	 5098356 B/op	   44207 allocs/op
+BenchmarkRealData_GraphBuild-8         	     156	   7874777 ns/op	 5098358 B/op	   44207 allocs/op
 --- BENCH: BenchmarkRealData_GraphBuild-8
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
-BenchmarkRealData_GraphBuild-8         	     186	   6382614 ns/op	 5098359 B/op	   44207 allocs/op
+BenchmarkRealData_GraphBuild-8         	     152	   7685724 ns/op	 5098357 B/op	   44207 allocs/op
 --- BENCH: BenchmarkRealData_GraphBuild-8
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
-BenchmarkRealData_GraphBuild-8         	     169	   6733854 ns/op	 5098359 B/op	   44207 allocs/op
+BenchmarkRealData_GraphBuild-8         	     144	   8132443 ns/op	 5098360 B/op	   44207 allocs/op
 --- BENCH: BenchmarkRealData_GraphBuild-8
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
     bench_realdata_test.go:169: Loaded 1000 real issues for benchmark
-BenchmarkFullAnalysis_Sparse100-8      	    4358	    283053 ns/op	  150640 B/op	    1217 allocs/op
-BenchmarkFullAnalysis_Sparse100-8      	    4646	    279699 ns/op	  150637 B/op	    1217 allocs/op
-BenchmarkFullAnalysis_Sparse100-8      	    4054	    291515 ns/op	  150646 B/op	    1217 allocs/op
-BenchmarkFullAnalysis_Sparse100-8      	    4498	    273826 ns/op	  150645 B/op	    1217 allocs/op
-BenchmarkFullAnalysis_Sparse100-8      	    3781	    268913 ns/op	  150650 B/op	    1217 allocs/op
-BenchmarkFullAnalysis_Dense100-8       	    2917	    429679 ns/op	  216963 B/op	    2099 allocs/op
-BenchmarkFullAnalysis_Dense100-8       	    2642	    448168 ns/op	  216960 B/op	    2099 allocs/op
-BenchmarkFullAnalysis_Dense100-8       	    2892	    430978 ns/op	  216949 B/op	    2099 allocs/op
-BenchmarkFullAnalysis_Dense100-8       	    2841	    429366 ns/op	  216964 B/op	    2099 allocs/op
-BenchmarkFullAnalysis_Dense100-8       	    2748	    441612 ns/op	  216959 B/op	    2099 allocs/op
+BenchmarkFullAnalysis_Sparse100-8      	    3309	    318818 ns/op	  150636 B/op	    1217 allocs/op
+BenchmarkFullAnalysis_Sparse100-8      	    3730	    303580 ns/op	  150645 B/op	    1217 allocs/op
+BenchmarkFullAnalysis_Sparse100-8      	    4075	    332489 ns/op	  150627 B/op	    1217 allocs/op
+BenchmarkFullAnalysis_Sparse100-8      	    3532	    300700 ns/op	  150642 B/op	    1217 allocs/op
+BenchmarkFullAnalysis_Sparse100-8      	    4118	    318912 ns/op	  150627 B/op	    1217 allocs/op
+BenchmarkFullAnalysis_Dense100-8       	    2389	    484696 ns/op	  216936 B/op	    2099 allocs/op
+BenchmarkFullAnalysis_Dense100-8       	    2534	    479601 ns/op	  216939 B/op	    2099 allocs/op
+BenchmarkFullAnalysis_Dense100-8       	    3168	    429318 ns/op	  216972 B/op	    2099 allocs/op
+BenchmarkFullAnalysis_Dense100-8       	    2996	    384120 ns/op	  216968 B/op	    2099 allocs/op
+BenchmarkFullAnalysis_Dense100-8       	    3265	    415198 ns/op	  216970 B/op	    2099 allocs/op
 PASS
-ok  	github.com/Dicklesworthstone/beads_viewer/pkg/analysis	57.492s
+ok  	github.com/Dicklesworthstone/beads_viewer/pkg/analysis	55.375s
 goos: linux
 goarch: amd64
 pkg: github.com/Dicklesworthstone/beads_viewer/pkg/ui
 cpu: AMD EPYC-Milan Processor
-BenchmarkSnapshotSwap/issues=100-8         	   24969	     48283 ns/op	   51312 B/op	     150 allocs/op
-BenchmarkSnapshotSwap/issues=100-8         	   25293	     48223 ns/op	   51312 B/op	     150 allocs/op
-BenchmarkSnapshotSwap/issues=100-8         	   25036	     47654 ns/op	   51313 B/op	     150 allocs/op
-BenchmarkSnapshotSwap/issues=100-8         	   25370	     49588 ns/op	   51312 B/op	     150 allocs/op
-BenchmarkSnapshotSwap/issues=100-8         	   25449	     48662 ns/op	   51313 B/op	     150 allocs/op
-BenchmarkSnapshotSwap/issues=1000-8        	    2024	    608780 ns/op	  916282 B/op	    5945 allocs/op
-BenchmarkSnapshotSwap/issues=1000-8        	    2166	    617548 ns/op	  916311 B/op	    5945 allocs/op
-BenchmarkSnapshotSwap/issues=1000-8        	    1972	    624790 ns/op	  916270 B/op	    5945 allocs/op
-BenchmarkSnapshotSwap/issues=1000-8        	    1838	    607038 ns/op	  916237 B/op	    5945 allocs/op
-BenchmarkSnapshotSwap/issues=1000-8        	    1483	    679736 ns/op	  916112 B/op	    5944 allocs/op
-BenchmarkSnapshotSwap/issues=5000-8        	     100	  11066081 ns/op	14816814 B/op	  128330 allocs/op
-BenchmarkSnapshotSwap/issues=5000-8        	     100	  10134279 ns/op	14816798 B/op	  128330 allocs/op
-BenchmarkSnapshotSwap/issues=5000-8        	     100	  11001708 ns/op	14816810 B/op	  128330 allocs/op
-BenchmarkSnapshotSwap/issues=5000-8        	     100	  10597565 ns/op	14816806 B/op	  128330 allocs/op
-BenchmarkSnapshotSwap/issues=5000-8        	     100	  10621745 ns/op	14816826 B/op	  128330 allocs/op
-BenchmarkKeyPressLatency-8                 	     302	   4001512 ns/op	   6196618 p99-ns/op	  700611 B/op	    8349 allocs/op
-BenchmarkKeyPressLatency-8                 	     268	   4150934 ns/op	   6493879 p99-ns/op	  700436 B/op	    8350 allocs/op
-BenchmarkKeyPressLatency-8                 	     325	   4029105 ns/op	   7853428 p99-ns/op	  698252 B/op	    8349 allocs/op
-BenchmarkKeyPressLatency-8                 	     306	   3761097 ns/op	   6624815 p99-ns/op	  699811 B/op	    8349 allocs/op
-BenchmarkKeyPressLatency-8                 	     310	   3910057 ns/op	   6843279 p99-ns/op	  698346 B/op	    8349 allocs/op
-BenchmarkListItemBuild/full-8              	    3392	    314912 ns/op	  524097 B/op	    1001 allocs/op
-BenchmarkListItemBuild/full-8              	    4044	    323620 ns/op	  524097 B/op	    1001 allocs/op
-BenchmarkListItemBuild/full-8              	    3562	    346432 ns/op	  524097 B/op	    1001 allocs/op
-BenchmarkListItemBuild/full-8              	    3639	    322956 ns/op	  524097 B/op	    1001 allocs/op
-BenchmarkListItemBuild/full-8              	    3762	    324845 ns/op	  524097 B/op	    1001 allocs/op
-BenchmarkListItemBuild/one-of-1000-incremental-8         	    6715	    195365 ns/op	  516104 B/op	       2 allocs/op
-BenchmarkListItemBuild/one-of-1000-incremental-8         	    6789	    176700 ns/op	  516104 B/op	       2 allocs/op
-BenchmarkListItemBuild/one-of-1000-incremental-8         	    5876	    176074 ns/op	  516104 B/op	       2 allocs/op
-BenchmarkListItemBuild/one-of-1000-incremental-8         	    6765	    175335 ns/op	  516104 B/op	       2 allocs/op
-BenchmarkListItemBuild/one-of-1000-incremental-8         	    6260	    185350 ns/op	  516104 B/op	       2 allocs/op
+BenchmarkSnapshotSwap/issues=100-8         	   22314	     52810 ns/op	   51311 B/op	     150 allocs/op
+BenchmarkSnapshotSwap/issues=100-8         	   22633	     54560 ns/op	   51312 B/op	     150 allocs/op
+BenchmarkSnapshotSwap/issues=100-8         	   19180	     54886 ns/op	   51312 B/op	     150 allocs/op
+BenchmarkSnapshotSwap/issues=100-8         	   21416	     59630 ns/op	   51312 B/op	     150 allocs/op
+BenchmarkSnapshotSwap/issues=100-8         	   26246	     44771 ns/op	   51314 B/op	     150 allocs/op
+BenchmarkSnapshotSwap/issues=1000-8        	    2233	    700986 ns/op	  916328 B/op	    5945 allocs/op
+BenchmarkSnapshotSwap/issues=1000-8        	    1930	    685547 ns/op	  916261 B/op	    5945 allocs/op
+BenchmarkSnapshotSwap/issues=1000-8        	    1903	    670036 ns/op	  916255 B/op	    5945 allocs/op
+BenchmarkSnapshotSwap/issues=1000-8        	    2115	    628603 ns/op	  916304 B/op	    5945 allocs/op
+BenchmarkSnapshotSwap/issues=1000-8        	    2098	    725138 ns/op	  916299 B/op	    5945 allocs/op
+BenchmarkSnapshotSwap/issues=5000-8        	     100	  10621687 ns/op	14816821 B/op	  128330 allocs/op
+BenchmarkSnapshotSwap/issues=5000-8        	     100	  10557264 ns/op	14816814 B/op	  128330 allocs/op
+BenchmarkSnapshotSwap/issues=5000-8        	     100	  10181109 ns/op	14816823 B/op	  128330 allocs/op
+BenchmarkSnapshotSwap/issues=5000-8        	     100	  10822966 ns/op	14816805 B/op	  128330 allocs/op
+BenchmarkSnapshotSwap/issues=5000-8        	     100	  10352432 ns/op	14816813 B/op	  128330 allocs/op
+BenchmarkKeyPressLatency-8                 	     273	   3870463 ns/op	   6353059 p99-ns/op	  701326 B/op	    8350 allocs/op
+BenchmarkKeyPressLatency-8                 	     285	   3943712 ns/op	   7347388 p99-ns/op	  699923 B/op	    8350 allocs/op
+BenchmarkKeyPressLatency-8                 	     279	   4001700 ns/op	   8086915 p99-ns/op	  700861 B/op	    8350 allocs/op
+BenchmarkKeyPressLatency-8                 	     314	   4011216 ns/op	   7171436 p99-ns/op	  698711 B/op	    8349 allocs/op
+BenchmarkKeyPressLatency-8                 	     309	   3920990 ns/op	   7751593 p99-ns/op	  702037 B/op	    8349 allocs/op
+BenchmarkListItemBuild/full-8              	    3476	    309903 ns/op	  524096 B/op	    1001 allocs/op
+BenchmarkListItemBuild/full-8              	    3858	    329989 ns/op	  524097 B/op	    1001 allocs/op
+BenchmarkListItemBuild/full-8              	    2325	    434188 ns/op	  524097 B/op	    1001 allocs/op
+BenchmarkListItemBuild/full-8              	    3852	    391206 ns/op	  524097 B/op	    1001 allocs/op
+BenchmarkListItemBuild/full-8              	    3660	    332763 ns/op	  524097 B/op	    1001 allocs/op
+BenchmarkListItemBuild/one-of-1000-incremental-8         	    6393	    169037 ns/op	  516104 B/op	       2 allocs/op
+BenchmarkListItemBuild/one-of-1000-incremental-8         	    6130	    167968 ns/op	  516104 B/op	       2 allocs/op
+BenchmarkListItemBuild/one-of-1000-incremental-8         	    7146	    172298 ns/op	  516104 B/op	       2 allocs/op
+BenchmarkListItemBuild/one-of-1000-incremental-8         	    6835	    175155 ns/op	  516104 B/op	       2 allocs/op
+BenchmarkListItemBuild/one-of-1000-incremental-8         	    6121	    184718 ns/op	  516104 B/op	       2 allocs/op
 PASS
-ok  	github.com/Dicklesworthstone/beads_viewer/pkg/ui	150.277s
+ok  	github.com/Dicklesworthstone/beads_viewer/pkg/ui	158.876s
 goos: linux
 goarch: amd64
 pkg: github.com/Dicklesworthstone/beads_viewer/pkg/loader
 cpu: AMD EPYC-Milan Processor
-BenchmarkParseIssuesPoolComparison/unpooled-8         	     144	   8371887 ns/op	15623550 B/op	   29902 allocs/op
-BenchmarkParseIssuesPoolComparison/unpooled-8         	     127	   8451927 ns/op	15623610 B/op	   29903 allocs/op
-BenchmarkParseIssuesPoolComparison/unpooled-8         	     146	   8670322 ns/op	15623631 B/op	   29903 allocs/op
-BenchmarkParseIssuesPoolComparison/unpooled-8         	     132	   8792950 ns/op	15623657 B/op	   29904 allocs/op
-BenchmarkParseIssuesPoolComparison/unpooled-8         	     138	   8181780 ns/op	15623590 B/op	   29903 allocs/op
-BenchmarkParseIssuesPoolComparison/pooled-8           	     142	   8789333 ns/op	15282623 B/op	   28968 allocs/op
-BenchmarkParseIssuesPoolComparison/pooled-8           	     132	   8685567 ns/op	15283255 B/op	   28973 allocs/op
-BenchmarkParseIssuesPoolComparison/pooled-8           	     138	   8992697 ns/op	15283134 B/op	   28973 allocs/op
-BenchmarkParseIssuesPoolComparison/pooled-8           	     134	   9003884 ns/op	15283169 B/op	   28973 allocs/op
-BenchmarkParseIssuesPoolComparison/pooled-8           	     129	   8875884 ns/op	15283258 B/op	   28973 allocs/op
+BenchmarkParseIssuesPoolComparison/unpooled-8         	     109	  11425241 ns/op	15623527 B/op	   29903 allocs/op
+BenchmarkParseIssuesPoolComparison/unpooled-8         	      99	  11611498 ns/op	15623534 B/op	   29903 allocs/op
+BenchmarkParseIssuesPoolComparison/unpooled-8         	     100	  11066290 ns/op	15623544 B/op	   29903 allocs/op
+BenchmarkParseIssuesPoolComparison/unpooled-8         	      91	  11001506 ns/op	15623605 B/op	   29904 allocs/op
+BenchmarkParseIssuesPoolComparison/unpooled-8         	     100	  11731857 ns/op	15623489 B/op	   29902 allocs/op
+BenchmarkParseIssuesPoolComparison/pooled-8           	     100	  12539740 ns/op	15284496 B/op	   28981 allocs/op
+BenchmarkParseIssuesPoolComparison/pooled-8           	      91	  13210560 ns/op	15285388 B/op	   28988 allocs/op
+BenchmarkParseIssuesPoolComparison/pooled-8           	     111	  10320271 ns/op	15283942 B/op	   28978 allocs/op
+BenchmarkParseIssuesPoolComparison/pooled-8           	     100	  12580307 ns/op	15284564 B/op	   28982 allocs/op
+BenchmarkParseIssuesPoolComparison/pooled-8           	      97	  10671325 ns/op	15284622 B/op	   28982 allocs/op
 PASS
-ok  	github.com/Dicklesworthstone/beads_viewer/pkg/loader	20.516s
+ok  	github.com/Dicklesworthstone/beads_viewer/pkg/loader	15.457s
