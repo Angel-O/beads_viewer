@@ -1791,9 +1791,14 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
 	view := m.View()
-	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "j/k / ↑↓ nav") || !strings.Contains(view, "Home/G:first/last") || !strings.Contains(view, "enter:filter") ||
+	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "enter:filter") ||
 		!strings.Contains(view, "]/F4:close") || !strings.Contains(view, "esc/q:back") {
 		t.Fatalf("expected Attention identity and controls, got %q", view)
+	}
+	for _, stale := range []string{"j/k:move", "j/k / ↑↓ nav", "Home/G:first/last"} {
+		if strings.Contains(view, stale) {
+			t.Fatalf("Attention footer retains removed hint %q: %q", stale, view)
+		}
 	}
 	if strings.Contains(view, "h/l panels") || strings.Contains(view, "tab focus") {
 		t.Fatalf("underlying view hints leaked into Attention: %q", view)
