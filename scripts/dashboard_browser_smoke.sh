@@ -69,6 +69,20 @@ for marker in '\[OPFS\] Cached' '\[Graph\] WASM engine loaded' '\[bv-charts\] Da
     printf '  MISSING %s\n' "$marker"; fail=1
   fi
 done
+# Time from the first console line of the page to the triage-loaded marker,
+# from Chromium's own log timestamps (MMDD/HHMMSS.micro). Informational: it
+# is the closest thing to first-render this harness can measure without a
+# DevTools client, and it is what tests/artifacts/perf/pages_load.json means
+# by first_render_ms when a browser is available.
+awk '
+  function secs(ts,   h, m, s) { h = substr(ts, 6, 2); m = substr(ts, 8, 2); s = substr(ts, 10); return h * 3600 + m * 60 + s }
+  match($0, /[0-9]{4}\/[0-9]{6}\.[0-9]+/) {
+    ts = substr($0, RSTART, RLENGTH)
+    if (first == "" && $0 ~ /CONSOLE/) first = ts
+    if ($0 ~ /\[Viewer\] Triage data loaded/ && first != "") { printf "== time to triage loaded: %.0f ms (page console start to [Viewer] Triage data loaded)\n", (secs(ts) - secs(first)) * 1000; exit }
+  }
+' "$tmp/console.log"
+
 if [ "$fail" -eq 0 ]; then
   echo "dashboard_browser_smoke: PASS (no CSP refusals, no uncaught errors, app booted)"
 else
