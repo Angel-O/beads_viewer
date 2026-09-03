@@ -38,9 +38,15 @@ provenance header (date, Go version, CPU, OS, commit, dataset hash) and is
 regenerated only on the reference machine with `scripts/benchmark.sh baseline`.
 `BENCH_PCT` (gate: `RELEASE_GATE_BENCH_PCT`) sets the threshold;
 `tests/scripts/benchmark_compare_test.sh` proves the comparison turns red on a
-doubled median and on a missing benchmark. Timings on a shared, busy machine
-are noisy: a stage-8 failure on a loaded host is a signal to rerun when the
-machine is quiet, not a licence to raise the threshold.
+doubled median and on a missing benchmark. Because a stored baseline cannot
+tell host drift from a code regression on a shared machine (on 2026-09-03 the
+same code read +38% against the stored file and 0% against a fresh build of
+the baseline commit), `compare` first builds and runs the tracked set for the
+commit named in the baseline header, in a detached worktree, and judges HEAD
+against that contemporaneous run; the stored file is the fallback when that
+commit is not in the clone (`BENCH_REFERENCE=stored` forces it). A stage-8
+failure is therefore a code regression relative to the baseline commit, not
+a busy host, and is never a licence to raise the threshold.
 
 ## Where the gate runs
 

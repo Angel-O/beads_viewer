@@ -77,3 +77,4 @@ tests/artifacts/release_gate_*.log
 # Benchmark run outputs (scripts/benchmark.sh compare rewrites them on every gate run)
 benchmarks/current.txt
 benchmarks/compare.txt
+benchmarks/reference.txt

@@ -18,6 +18,15 @@
 #                        baseline does not drift as beads close
 #   BENCH_USE_BENCHSTAT=1 prefer benchstat when it is installed (the built-in comparison is
 #                        the default so the gate has no dependency outside the Go toolchain)
+#   BENCH_REFERENCE=worktree|stored
+#                        worktree (default): `compare` also builds and runs the tracked set for
+#                        the commit recorded in the baseline header, in a detached worktree,
+#                        right before the HEAD run, and judges the regression against that
+#                        contemporaneous run. A stored baseline alone cannot tell host drift
+#                        from a code regression on a shared machine (2026-09-03: +38% against
+#                        the stored file, 0% against the reference build). stored: compare
+#                        against benchmarks/baseline.txt only (also the automatic fallback
+#                        when the recorded commit is not available in this clone).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,11 +51,19 @@ PACKAGES=(./pkg/analysis ./pkg/ui ./pkg/loader)
 mkdir -p "$BENCHMARK_DIR"
 
 dataset_dir=""
-# An if (not `[ ] &&`) so the trap's status never overrides the script's exit code.
-cleanup() { if [ -n "$dataset_dir" ]; then rm -rf "$dataset_dir"; fi; }
+ref_dir=""
+# Plain ifs (not `[ ] &&`) so the trap's status never overrides the script's exit code.
+cleanup() {
+  if [ -n "$ref_dir" ]; then
+    git worktree remove --force "$ref_dir/tree" >/dev/null 2>&1
+    rm -rf "$ref_dir"
+  fi
+  if [ -n "$dataset_dir" ]; then rm -rf "$dataset_dir"; fi
+}
 trap cleanup EXIT
 
 prepare_dataset() {
+  [ -n "$dataset_dir" ] && return 0
   [ -f "$DATASET" ] || { echo "benchmark: dataset $DATASET not found" >&2; exit 2; }
   dataset_dir="$(mktemp -d "${TMPDIR:-/tmp}/bv-bench-dataset.XXXXXX")"
   mkdir -p "$dataset_dir/.beads"
@@ -79,9 +96,9 @@ EOF
 }
 
 run_tracked() {
-  # run_tracked <output-file> <count>
+  # run_tracked <output-file> <count> [tree-dir]   (tree-dir defaults to this checkout)
   prepare_dataset
-  go test -run '^$' -bench "$TRACKED" -benchmem -count="$2" "${PACKAGES[@]}" 2>&1 | tee -a "$1"
+  (cd "${3:-$root}" && go test -run '^$' -bench "$TRACKED" -benchmem -count="$2" "${PACKAGES[@]}" 2>&1) | tee -a "$1"
 }
 
 save_baseline() {
@@ -146,17 +163,58 @@ compare_files() {
   ' "$base" "$cur"
 }
 
+# reference_run: build and run the tracked set for the commit recorded in the
+# baseline header, in a detached worktree, so HEAD is judged against a run
+# taken on the same machine minutes earlier. Prints the reference file path on
+# success; prints nothing (and says why on stderr) when it cannot.
+reference_run() {
+  local ref_commit
+  ref_commit="$(awk '/^# commit: /{print $3; exit}' "$BASELINE_FILE")"
+  if [ -z "$ref_commit" ]; then
+    echo "baseline header has no '# commit:' line; falling back to the stored baseline" >&2
+    return 0
+  fi
+  if ! git rev-parse --verify --quiet --end-of-options "${ref_commit}^{commit}" >/dev/null; then
+    echo "baseline commit $ref_commit is not in this clone; falling back to the stored baseline" >&2
+    return 0
+  fi
+  ref_dir="$(mktemp -d "${TMPDIR:-/tmp}/bv-bench-ref.XXXXXX")"
+  if ! git worktree add -q --detach "$ref_dir/tree" "$ref_commit" 2>/dev/null; then
+    echo "could not create a worktree for $ref_commit; falling back to the stored baseline" >&2
+    return 0
+  fi
+  if [ -d "$root/vendor" ] && [ ! -d "$ref_dir/tree/vendor" ]; then
+    cp -r "$root/vendor" "$ref_dir/tree/vendor"
+  fi
+  local ref_file="$BENCHMARK_DIR/reference.txt"
+  {
+    echo "# reference run of baseline commit $ref_commit on $(date -u +%Y-%m-%dT%H:%M:%SZ) (same machine as the HEAD run that follows)"
+  } > "$ref_file"
+  echo "Running the tracked benchmarks for baseline commit $ref_commit (reference build)..." >&2
+  run_tracked "$ref_file" "$COMPARE_COUNT" "$ref_dir/tree" >/dev/null
+  echo "$ref_file"
+}
+
 compare_benchmarks() {
   [ -f "$BASELINE_FILE" ] || { echo "No baseline found at $BASELINE_FILE; run 'scripts/benchmark.sh baseline' first"; return 2; }
+  local base_file="$BASELINE_FILE" base_label="stored baseline $BASELINE_FILE"
+  if [ "${BENCH_REFERENCE:-worktree}" = "worktree" ]; then
+    local ref_file
+    ref_file="$(reference_run)"
+    if [ -n "$ref_file" ]; then
+      base_file="$ref_file"
+      base_label="contemporaneous reference build ($(head -1 "$ref_file" | cut -c3-))"
+    fi
+  fi
   run_benchmarks
   echo ""
-  echo "=== Comparing against $BASELINE_FILE ==="
+  echo "=== Comparing HEAD against: $base_label ==="
   if [ "${BENCH_USE_BENCHSTAT:-0}" = "1" ] && command -v benchstat >/dev/null 2>&1; then
-    benchstat "$BASELINE_FILE" "$CURRENT_FILE" | tee "$BENCHMARK_DIR/compare.txt"
+    benchstat "$base_file" "$CURRENT_FILE" | tee "$BENCHMARK_DIR/compare.txt"
   fi
-  compare_files "$BASELINE_FILE" "$CURRENT_FILE" | tee "$BENCHMARK_DIR/compare.txt"
+  compare_files "$base_file" "$CURRENT_FILE" | tee "$BENCHMARK_DIR/compare.txt"
   # tee masks the awk exit code; re-run silently for the verdict.
-  compare_files "$BASELINE_FILE" "$CURRENT_FILE" >/dev/null
+  compare_files "$base_file" "$CURRENT_FILE" >/dev/null
 }
 
 run_quick() {
