@@ -78,3 +78,6 @@ tests/artifacts/release_gate_*.log
 benchmarks/current.txt
 benchmarks/compare.txt
 benchmarks/reference.txt
+
+# Remote compilation helper cache (AGENTS.md says it is ignored; it was not)
+.rch-go/
