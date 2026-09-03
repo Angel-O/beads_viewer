@@ -38,8 +38,8 @@ func TestContainsBlurb(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "has blurb v4",
-			content:  "# My AGENTS.md\n\n<!-- bv-agent-instructions-v4 -->\nSome content\n<!-- end-bv-agent-instructions -->",
+			name:     "has blurb v5 (current)",
+			content:  "# My AGENTS.md\n\n<!-- bv-agent-instructions-v5 -->\nSome content\n<!-- end-bv-agent-instructions -->",
 			expected: true,
 		},
 	}
@@ -82,8 +82,8 @@ func TestGetBlurbVersion(t *testing.T) {
 		},
 		{
 			name:     "version 4",
-			content:  "<!-- bv-agent-instructions-v4 -->",
-			expected: 4,
+			content:  "<!-- bv-agent-instructions-v5 -->",
+			expected: 5,
 		},
 		{
 			name:     "version 10 (multi-digit)",
@@ -553,8 +553,8 @@ func TestUpdateBlurbMalformedMarkersFailClosed(t *testing.T) {
 
 func TestUpdateBlurbFutureVersionFailsClosed(t *testing.T) {
 	content := "# Header\n\n" +
-		"<!-- bv-agent-instructions-v5 -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n\n" +
-		"<!-- bv-agent-instructions-v4 -->\ncurrent instructions\n<!-- end-bv-agent-instructions -->\n"
+		"<!-- bv-agent-instructions-v6 -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n\n" +
+		"<!-- bv-agent-instructions-v5 -->\ncurrent instructions\n<!-- end-bv-agent-instructions -->\n"
 
 	if got := UpdateBlurb(content); got != content {
 		t.Fatalf("UpdateBlurb() downgraded future instructions:\n got: %q\nwant: %q", got, content)
@@ -656,7 +656,7 @@ bv already computes the hard parts for you.
 	content := "# Header\n\n" + legacy + "\nPreserve between.\n\n" +
 		"<!-- bv-agent-instructions-v1 -->\none\n<!-- end-bv-agent-instructions -->\n\n" +
 		"Preserve after first.\n\n" +
-		"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->\n\n# Footer\n"
+		"<!-- bv-agent-instructions-v5 -->\ntwo\n<!-- end-bv-agent-instructions -->\n\n# Footer\n"
 
 	removed, err := removeBlurbsChecked(content)
 	if err != nil {
@@ -702,18 +702,18 @@ func TestNeedsUpdate(t *testing.T) {
 		},
 		{
 			name:     "single complete current version",
-			content:  "<!-- bv-agent-instructions-v4 -->\ncontent\n<!-- end-bv-agent-instructions -->",
+			content:  "<!-- bv-agent-instructions-v5 -->\ncontent\n<!-- end-bv-agent-instructions -->",
 			expected: false, // v4 is current, no update needed
 		},
 		{
 			name:     "unterminated current version",
-			content:  "<!-- bv-agent-instructions-v4 -->\ncontent",
+			content:  "<!-- bv-agent-instructions-v5 -->\ncontent",
 			expected: true,
 		},
 		{
 			name: "duplicate current version",
-			content: "<!-- bv-agent-instructions-v4 -->\none\n<!-- end-bv-agent-instructions -->\n" +
-				"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->",
+			content: "<!-- bv-agent-instructions-v5 -->\none\n<!-- end-bv-agent-instructions -->\n" +
+				"<!-- bv-agent-instructions-v5 -->\ntwo\n<!-- end-bv-agent-instructions -->",
 			expected: true,
 		},
 		{
@@ -1113,7 +1113,7 @@ func TestRemoveLegacyBlurbPreservesUnclosedFenceWhoseBodyStartsWithHeading(t *te
 
 func TestCurrentBlurbHiddenByAmbiguousLegacyFenceFailsClosed(t *testing.T) {
 	content := LegacyBlurbContent + "\n" +
-		"<!-- bv-agent-instructions-v4 -->\n" +
+		"<!-- bv-agent-instructions-v5 -->\n" +
 		"```bash\ncurrent command\n```\n" +
 		"current instructions\n<!-- end-bv-agent-instructions -->\n"
 
@@ -2030,42 +2030,42 @@ func TestListLikeLinesThatDoNotContainFollowingMarkers(t *testing.T) {
 		{
 			name: "empty item followed by blank",
 			content: "-\n\n" +
-				"  <!-- bv-agent-instructions-v4 -->\n" +
+				"  <!-- bv-agent-instructions-v5 -->\n" +
 				"  installed\n" +
 				"  <!-- end-bv-agent-instructions -->\n",
 		},
 		{
 			name: "non-one ordered marker cannot interrupt paragraph",
 			content: "paragraph\n2. documentation\n" +
-				"   <!-- bv-agent-instructions-v4 -->\n" +
+				"   <!-- bv-agent-instructions-v5 -->\n" +
 				"   installed\n" +
 				"   <!-- end-bv-agent-instructions -->\n",
 		},
 		{
 			name: "zero ordered marker cannot interrupt paragraph",
 			content: "paragraph\n0. documentation\n" +
-				"   <!-- bv-agent-instructions-v4 -->\n" +
+				"   <!-- bv-agent-instructions-v5 -->\n" +
 				"   installed\n" +
 				"   <!-- end-bv-agent-instructions -->\n",
 		},
 		{
 			name: "tabbed bullet has four-column content indent",
 			content: "-\ttext\n" +
-				"  <!-- bv-agent-instructions-v4 -->\n" +
+				"  <!-- bv-agent-instructions-v5 -->\n" +
 				"  installed\n" +
 				"  <!-- end-bv-agent-instructions -->\n",
 		},
 		{
 			name: "tabbed ordered marker has four-column content indent",
 			content: "1.\ttext\n" +
-				"   <!-- bv-agent-instructions-v4 -->\n" +
+				"   <!-- bv-agent-instructions-v5 -->\n" +
 				"   installed\n" +
 				"   <!-- end-bv-agent-instructions -->\n",
 		},
 		{
 			name: "mixed space-tab padding reaches four columns",
 			content: "- \ttext\n" +
-				"  <!-- bv-agent-instructions-v4 -->\n" +
+				"  <!-- bv-agent-instructions-v5 -->\n" +
 				"  installed\n" +
 				"  <!-- end-bv-agent-instructions -->\n",
 		},

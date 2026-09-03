@@ -314,9 +314,9 @@ bv already computes the hard parts for you.
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "AGENTS.md")
 		original := "# Header\n\n" +
-			"<!-- bv-agent-instructions-v4 -->\none\n<!-- end-bv-agent-instructions -->\n\n" +
+			"<!-- bv-agent-instructions-v5 -->\none\n<!-- end-bv-agent-instructions -->\n\n" +
 			"Preserve between.\n\n" +
-			"<!-- bv-agent-instructions-v4 -->\ntwo\n<!-- end-bv-agent-instructions -->\n\n# Footer\n"
+			"<!-- bv-agent-instructions-v5 -->\ntwo\n<!-- end-bv-agent-instructions -->\n\n# Footer\n"
 		if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -343,7 +343,7 @@ func TestRemoveBlurbFromFileRejectsMalformedMarkersWithoutWriting(t *testing.T) 
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
 	original := "# Header\n<!-- bv-agent-instructions-v1 -->\nUser instructions\n" +
-		"<!-- bv-agent-instructions-v4 -->\nMore user instructions\n<!-- end-bv-agent-instructions -->\n# Footer"
+		"<!-- bv-agent-instructions-v5 -->\nMore user instructions\n<!-- end-bv-agent-instructions -->\n# Footer"
 	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +453,7 @@ func TestEnsureBlurbRejectsAmbiguousLegacyFenceWithoutWriting(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "AGENTS.md")
 	original := LegacyBlurbContent + "\n" +
-		"<!-- bv-agent-instructions-v4 -->\n" +
+		"<!-- bv-agent-instructions-v5 -->\n" +
 		"```bash\ncurrent command\n```\n" +
 		"current\n<!-- end-bv-agent-instructions -->\n"
 	if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
@@ -670,7 +670,7 @@ func TestVerifyBlurbPresent(t *testing.T) {
 
 	t.Run("malformed current blurb", func(t *testing.T) {
 		filePath := filepath.Join(tmpDir, "malformed-blurb.md")
-		content := "<!-- bv-agent-instructions-v4 -->\nmissing end marker"
+		content := "<!-- bv-agent-instructions-v5 -->\nmissing end marker"
 		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -715,7 +715,7 @@ func TestVerifyBlurbPresent(t *testing.T) {
 
 	t.Run("fenced marker example does not verify", func(t *testing.T) {
 		filePath := filepath.Join(tmpDir, "fenced-example.md")
-		content := "```markdown\n<!-- bv-agent-instructions-v4 -->\nexample\n<!-- end-bv-agent-instructions -->\n```"
+		content := "```markdown\n<!-- bv-agent-instructions-v5 -->\nexample\n<!-- end-bv-agent-instructions -->\n```"
 		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -1076,7 +1076,7 @@ func TestEnsureBlurb(t *testing.T) {
 	t.Run("malformed current blurb - errors without writing", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "AGENTS.md")
-		original := "# My Instructions\n\n<!-- bv-agent-instructions-v4 -->\nunterminated user content"
+		original := "# My Instructions\n\n<!-- bv-agent-instructions-v5 -->\nunterminated user content"
 		if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
 			t.Fatal(err)
 		}
