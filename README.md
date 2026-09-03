@@ -733,8 +733,13 @@ Export the dependency graph in multiple formats for visualization, documentation
 
 ```bash
 bv --robot-graph                              # JSON (default)
-bv --robot-graph --graph-format=dot           # Graphviz DOT
-bv --robot-graph --graph-format=mermaid       # Mermaid diagram
+bv --robot-graph --graph-format=dot           # JSON envelope; DOT text in .graph
+bv --robot-graph --graph-format=mermaid       # JSON envelope; Mermaid text in .graph
+
+# Every robot command emits one JSON object (data_hash, generated_at, source_path, ...),
+# so the DOT or Mermaid text is a field to extract, not the whole output:
+bv --robot-graph --graph-format=dot | jq -r .graph > graph.dot
+bv --robot-graph --graph-format=mermaid | jq -r .graph > graph.mmd
 
 # Focused subgraph extraction
 bv --robot-graph --graph-root=bv-123          # Subgraph from specific root
@@ -746,8 +751,8 @@ bv --robot-graph --graph-root=bv-123 --graph-depth=3  # Limited depth
 | Format | Use Case | Rendering |
 |--------|----------|-----------|
 | `json` | Programmatic processing, custom visualization | Parse with jq or code |
-| `dot` | High-quality static images | `dot -Tpng file.dot -o graph.png` |
-| `mermaid` | Embed in Markdown, GitHub rendering | Paste into docs |
+| `dot` | High-quality static images | `bv --robot-graph --graph-format=dot \| jq -r .graph \| dot -Tpng -o graph.png` |
+| `mermaid` | Embed in Markdown, GitHub rendering | `jq -r .graph` the envelope, then paste into docs |
 
 ### Subgraph Extraction
 
