@@ -481,12 +481,22 @@ Shows all labels with:
 • Usage trends
 
 **Navigation**
-  j/k       Move selection
+  j/k / ↑↓   Move selection
+  Home/G     First / last label
   Enter     Filter List by selected label
   h         View label health
   d         Open label issue drilldown
   [ / F3    Close dashboard
-  Esc       Return to list
+  Esc / q   Return to list
+
+**Switch Views**
+  b         Board
+  g         Graph
+  a         Actionable
+  E         Tree
+  i         Insights
+  f         Flow matrix
+  ]         Attention
 `
 
 const contextHelpAttention = `## Attention View
@@ -499,11 +509,17 @@ Labels are sorted by attention score based on:
 • Downstream block impact
 • Recent closure velocity (lower increases attention)
 
-**Actions**
-  1-9       Filter List by ranked label
-            (filter persists across views)
-  ] / F4    Toggle Attention closed
-  Esc / q   Back to the previous view`
+**Navigation**
+  j/k / ↑↓  Move selection
+  Home/G    First / last label
+  Enter     Filter List by highlighted label
+
+**Switch Views**
+  g         Graph view
+
+**Exit**
+  ] / F4    Close Attention
+  Esc / q   Return to the exact previous view`
 
 const contextHelpAgentPrompt = `## Agent Instructions Prompt
 

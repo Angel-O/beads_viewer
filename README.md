@@ -1751,7 +1751,7 @@ bv --robot-label-flow | jq '.flow.bottleneck_labels'
 
 ## 🎪 Attention View: Label Priority Ranking
 
-Press `]` (or `F4`) to open the **Attention View**—a ranked table of labels by attention score, helping you identify which project areas need focus. It is a focused view with its own cursor: move with `j`/`k`, jump with `g`/`G`, and press `Enter` on a label to drill into that label's issues.
+Press `]` (or `F4`) to open the **Attention View**—a ranked table of labels by attention score, helping you identify which project areas need focus. It is a focused view with its own cursor: move with `j`/`k` or the arrows, jump with `Home`/`G`, and press `Enter` to filter the List by the highlighted label.
 
 ### Attention Score Formula
 
@@ -1798,10 +1798,11 @@ High attention scores indicate labels that are both important and neglected—th
 | Key | Action |
 |-----|--------|
 | `j` / `k` (`↓` / `↑`) | Move the cursor |
-| `g` / `G` | Jump to the first / last label |
-| `Enter` | Drill into the selected label's issues |
-| `1-9` | Filter the list to the label at that rank |
-| `]` / `Esc` / `q` | Exit attention view |
+| `Home` / `G` | Jump to the first / last label |
+| `g` | Open Graph view |
+| `Enter` | Filter the List by the highlighted label |
+| `]` / `F4` | Close Attention |
+| `Esc` / `q` | Return to the exact previous view |
 
 ### Robot Command
 
@@ -3803,7 +3804,9 @@ bv has a comprehensive built-in help system:
 | | `w` | Repository Scope Picker (Hub/workspace mode) |
 | | `P` | Open the Sprint Dashboard (from the list or detail view) |
 | **Insights** | `shift+tab` | Previous Insights panel |
-| **Attention** | `1-9` | Filter by ranked label |
+| **Attention** | `j/k` / `↑↓` | Move selection |
+| | `Home/G` | First / last label |
+| | `Enter` | Filter List by highlighted label |
 | | `esc / q` | Back to previous view |
 | | `] / F4` | Close Attention |
 | **History** | `J` / `K` | Scroll details down / up |

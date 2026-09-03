@@ -1238,10 +1238,10 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusInsights:       {"h", "l", "j", "k", "ctrl+j", "ctrl+k", "tab", "shift+tab", "o", "r", "e", "x", "m", "enter", "] / F4", "f", "i", "?", "F2/;"},
 		focusHistory:        {"/", "v", "tab", "J", "K", "enter", "y", "o", "f/F", "g", "h", "c", "?", "F2/;"},
 		focusActionable:     {"j", "k", "enter", "a", "?", "F2/;"},
-		focusLabelDashboard: {"j", "k", "home", "G", "enter", "h", "d", "[", "esc", "?", "F2/;"},
+		focusLabelDashboard: {"j", "k", "up", "down", "home", "G", "enter", "h", "d", "[", "]", "a", "b", "g", "E", "i", "f", "esc", "?", "F2/;"},
 		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
 		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
-		focusAttention:      {"1-9", "] / F4", "esc / q", "?", "F2/;"},
+		focusAttention:      {"j", "k", "up", "down", "home", "G", "enter", "g", "] / F4", "esc / q", "?", "F2/;"},
 	}
 
 	hasDoc := func(context, key string) bool {
@@ -1318,7 +1318,7 @@ func TestSprintKeyBindingDocsIncludeQuit(t *testing.T) {
 }
 
 func TestLabelDashboardDocsOnlyAdvertiseReachableCommands(t *testing.T) {
-	forbidden := map[string]bool{"a": true, "b": true, "E": true, "i": true, "f": true, "]": true, "!": true}
+	forbidden := map[string]bool{"!": true}
 	for _, doc := range GetKeyBindingDocs() {
 		if strings.Contains(doc.Context, "label-dashboard") && forbidden[doc.Key] {
 			t.Fatalf("Label Dashboard registry advertises unreachable shortcut: %+v", doc)

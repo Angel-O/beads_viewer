@@ -193,12 +193,12 @@ func TestHelpUsesAttentionAndSprintOriginControls(t *testing.T) {
 	updated, _ = attention.Update(keyMsg("?"))
 	attention = updated.(*Model)
 	attentionHelp := ansi.Strip(attention.renderHelpOverlay())
-	for _, want := range []string{"1-9", "Close Attention", "Esc / q"} {
+	for _, want := range []string{"j/k", "Home/G", "Filter List by label", "Close Attention", "Esc / q"} {
 		if !strings.Contains(attentionHelp, want) {
 			t.Errorf("Attention Help missing %q: %q", want, attentionHelp)
 		}
 	}
-	for _, stale := range []string{"Home/G", "Tab", "j/k"} {
+	for _, stale := range []string{"1-9", "drilldown", "Tab"} {
 		if strings.Contains(attentionHelp, stale) {
 			t.Errorf("Attention Help advertises unrelated control %q: %q", stale, attentionHelp)
 		}
@@ -231,7 +231,7 @@ func TestDetailDispatchAllowsDocumentedSharedActions(t *testing.T) {
 	}
 	updated, _ = m.Update(keyMsg("]"))
 	m = updated.(*Model)
-	if !m.showAttentionView || m.focused != focusInsights || m.attentionOrigin != focusDetail {
+	if !m.showAttentionView || m.focused != focusAttention || m.attentionOrigin != focusDetail {
 		t.Fatalf("Detail did not open Attention: shown=%v focus=%v origin=%v", m.showAttentionView, m.focused, m.attentionOrigin)
 	}
 	updated, _ = m.Update(keyMsg("esc"))
@@ -1363,7 +1363,7 @@ func TestAttentionViewToggleCloseFromSplitView(t *testing.T) {
 
 			updated, _ = m.Update(tt.key)
 			m = updated.(*Model)
-			if !m.showAttentionView || m.focused != focusInsights {
+			if !m.showAttentionView || m.focused != focusAttention {
 				t.Fatalf("expected Attention to open with %s, shown=%v focus=%v", tt.name, m.showAttentionView, m.focused)
 			}
 
@@ -1416,13 +1416,13 @@ func TestAttentionViewConsumesInsightsStatusKeys(t *testing.T) {
 	m.statusFilter = "closed"
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
-	if !m.showAttentionView || m.focused != focusInsights {
+	if !m.showAttentionView || m.focused != focusAttention {
 		t.Fatalf("Attention did not open: shown=%v focus=%v", m.showAttentionView, m.focused)
 	}
 	for _, key := range []string{"o", "r", "c"} {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 		m = updated.(*Model)
-		if m.currentFilter != "label:keep" || m.statusFilter != "closed" || !m.showAttentionView || m.focused != focusInsights {
+		if m.currentFilter != "label:keep" || m.statusFilter != "closed" || !m.showAttentionView || m.focused != focusAttention {
 			t.Fatalf("Attention key %q changed shared state: filter=%q status=%q shown=%v focus=%v", key, m.currentFilter, m.statusFilter, m.showAttentionView, m.focused)
 		}
 	}
@@ -1667,7 +1667,7 @@ func TestRecipeShortcutRemainsListSearchInput(t *testing.T) {
 	}
 }
 
-func TestAttentionViewNumericKeyFiltersAndTransitionsToList(t *testing.T) {
+func TestAttentionViewEnterFiltersHighlightedLabelAndTransitionsToList(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "bv-1", Title: "Backend one", Status: model.StatusOpen, Labels: []string{"backend"}},
 		{ID: "bv-2", Title: "Backend two", Status: model.StatusOpen, Labels: []string{"backend"}},
@@ -1679,9 +1679,10 @@ func TestAttentionViewNumericKeyFiltersAndTransitionsToList(t *testing.T) {
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
-	selectedLabel := m.attentionCache.Labels[1].Label
+	m.attentionView.MoveDown()
+	selectedLabel := m.attentionView.SelectedLabel()
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
 	if m.currentFilter != "label:"+selectedLabel {
 		t.Fatalf("filter=%q, want label:%s", m.currentFilter, selectedLabel)
@@ -1708,7 +1709,46 @@ func TestAttentionViewNumericKeyFiltersAndTransitionsToList(t *testing.T) {
 	}
 }
 
-func TestAttentionViewInvalidNumericKeyDoesNothing(t *testing.T) {
+func TestAttentionEnterRendersFilteredListFromDetailOrSprint(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*Model) *Model
+	}{
+		{
+			name: "detail",
+			setup: func(m *Model) *Model {
+				updated, _ := m.Update(keyMsg("enter"))
+				return updated.(*Model)
+			},
+		},
+		{
+			name: "sprint",
+			setup: func(m *Model) *Model {
+				m.focused = focusSprint
+				m.isSprintView = true
+				m.selectedSprint = &model.Sprint{Name: "Sprint"}
+				return m
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel([]model.Issue{{ID: "bv-1", Title: "Filtered issue", Status: model.StatusOpen, Labels: []string{"backend"}}}, nil, "")
+			m = tc.setup(m)
+			updated, _ := m.Update(keyMsg("]"))
+			m = updated.(*Model)
+			updated, _ = m.Update(keyMsg("enter"))
+			m = updated.(*Model)
+			if m.currentFilter != "label:backend" || m.focused != focusList || m.showAttentionView {
+				t.Fatalf("filtered List state: filter=%q focus=%v attention=%v", m.currentFilter, m.focused, m.showAttentionView)
+			}
+			if m.showDetails || m.isSprintView || !strings.Contains(m.View(), "Filtered issue") {
+				t.Fatalf("filtered List was not rendered: details=%v sprint=%v view=%q", m.showDetails, m.isSprintView, m.View())
+			}
+		})
+	}
+}
+
+func TestAttentionViewNumericKeyDoesNothing(t *testing.T) {
 	tests := []struct {
 		name   string
 		issues []model.Issue
@@ -1728,8 +1768,8 @@ func TestAttentionViewInvalidNumericKeyDoesNothing(t *testing.T) {
 
 			updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)})
 			m = updated.(*Model)
-			if !m.showAttentionView || m.focused != focusInsights {
-				t.Fatalf("invalid numeric key closed Attention: shown=%v focus=%v", m.showAttentionView, m.focused)
+			if !m.showAttentionView || m.focused != focusAttention {
+				t.Fatalf("numeric key changed Attention: shown=%v focus=%v", m.showAttentionView, m.focused)
 			}
 			if m.currentFilter != beforeFilter || len(m.list.Items()) != beforeItems {
 				t.Fatalf("invalid numeric key mutated filter state: filter=%q items=%d", m.currentFilter, len(m.list.Items()))
@@ -1751,15 +1791,15 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
 	view := m.View()
-	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "1-9 filter list by ranked label") ||
-		!strings.Contains(view, "]/F4 close") || !strings.Contains(view, "esc/q back") {
+	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "j/k / ↑↓ nav") || !strings.Contains(view, "Home/G:first/last") || !strings.Contains(view, "enter:filter") ||
+		!strings.Contains(view, "]/F4:close") || !strings.Contains(view, "esc/q:back") {
 		t.Fatalf("expected Attention identity and controls, got %q", view)
 	}
 	if strings.Contains(view, "h/l panels") || strings.Contains(view, "tab focus") {
 		t.Fatalf("underlying view hints leaked into Attention: %q", view)
 	}
 	lines := strings.Split(view, "\n")
-	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "]/F4 close") {
+	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "]/F4:close") {
 		t.Fatalf("expected Attention footer on terminal bottom row, lines=%d last=%q", len(lines), lines[len(lines)-1])
 	}
 }

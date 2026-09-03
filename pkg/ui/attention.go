@@ -19,7 +19,7 @@ func ComputeAttentionView(issues []model.Issue, width int) (string, error) {
 }
 
 // RenderAttentionView renders one previously computed result so display and
-// numeric actions always use the same ordering.
+// interactive actions always use the same ordering.
 func RenderAttentionView(result analysis.LabelAttentionResult, width int) string {
 	if len(result.Labels) == 0 {
 		return "No labels available for Attention analysis"
@@ -41,22 +41,17 @@ func RenderAttentionView(result analysis.LabelAttentionResult, width int) string
 		b.WriteString("\n")
 	}
 	row(headers)
-	limit := min(9, len(result.Labels))
-	for i := 0; i < limit; i++ {
+	for i := range result.Labels {
 		s := result.Labels[i]
 		row([]string{fmt.Sprintf("%d", i+1), s.Label, fmt.Sprintf("%.2f", s.AttentionScore), fmt.Sprintf("blocked=%d stale=%d vel=%.1f", s.BlockedCount, s.StaleCount, s.VelocityFactor)})
 	}
 	return b.String()
 }
 
-// attentionRowLimit caps the table at the top ten labels; keys 1-9 jump to a
-// rank directly and the cursor reaches the tenth.
-const attentionRowLimit = 10
-
 // AttentionModel is the navigable label-attention view opened with `]`
 // (bv-117). It mirrors LabelDashboardModel: a cursor over the ranked labels,
-// j/k/g/G navigation, and Enter reporting the selected label so the parent
-// can open the label drilldown.
+// j/k/Home/G navigation, and Enter reporting the selected label so the parent
+// can filter the issue list.
 type AttentionModel struct {
 	labels       []analysis.LabelAttentionScore
 	cursor       int
@@ -75,9 +70,6 @@ func NewAttentionModel(theme Theme) AttentionModel {
 // first, by analysis.ComputeLabelAttentionScores) and clamps the cursor.
 func (m *AttentionModel) SetData(result analysis.LabelAttentionResult) {
 	labels := result.Labels
-	if len(labels) > attentionRowLimit {
-		labels = labels[:attentionRowLimit]
-	}
 	m.labels = append([]analysis.LabelAttentionScore(nil), labels...)
 	if m.cursor >= len(m.labels) {
 		m.cursor = len(m.labels) - 1
@@ -171,15 +163,15 @@ func (m *AttentionModel) MoveToBottom() {
 }
 
 // Update handles navigation keys. It returns the selected label on Enter and
-// whether the key was consumed; exit keys (]/Esc/q) and the 1-9 quick filters
-// are the parent's responsibility.
+// whether the key was consumed; exit and view-switch keys are the parent's
+// responsibility.
 func (m *AttentionModel) Update(msg tea.KeyMsg) (string, bool) {
 	switch msg.String() {
 	case "j", "down":
 		m.MoveDown()
 	case "k", "up":
 		m.MoveUp()
-	case "g", "home":
+	case "home":
 		m.MoveToTop()
 	case "G", "end":
 		m.MoveToBottom()
