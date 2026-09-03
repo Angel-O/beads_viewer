@@ -1791,11 +1791,11 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
 	view := m.View()
-	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "enter:filter") ||
-		!strings.Contains(view, "]/F4:close") || !strings.Contains(view, "esc/q:back") {
+	if !strings.Contains(view, "ATTENTION") || !strings.Contains(view, "enter filter") ||
+		!strings.Contains(view, "]/F4:list") {
 		t.Fatalf("expected Attention identity and controls, got %q", view)
 	}
-	for _, stale := range []string{"j/k:move", "j/k / ↑↓ nav", "Home/G:first/last"} {
+	for _, stale := range []string{"j/k:move", "j/k / ↑↓ nav", "Home/G:first/last", "enter:filter", "g:graph", "] / F4", "]/F4:close", "esc/q:back"} {
 		if strings.Contains(view, stale) {
 			t.Fatalf("Attention footer retains removed hint %q: %q", stale, view)
 		}
@@ -1804,7 +1804,7 @@ func TestAttentionViewSparseContentAnchorsContextualFooter(t *testing.T) {
 		t.Fatalf("underlying view hints leaked into Attention: %q", view)
 	}
 	lines := strings.Split(view, "\n")
-	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "]/F4:close") {
+	if len(lines) != 40 || !strings.Contains(lines[len(lines)-1], "]/F4:list") {
 		t.Fatalf("expected Attention footer on terminal bottom row, lines=%d last=%q", len(lines), lines[len(lines)-1])
 	}
 }

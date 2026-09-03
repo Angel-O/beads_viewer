@@ -9329,11 +9329,6 @@ func (m *Model) renderFooter() string {
 				Padding(0, 1).
 				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • /:search • ?:help", filterInfo))
 		}
-	} else if m.focused == focusAttention {
-		labelHint = lipgloss.NewStyle().
-			Foreground(ColorFooterHint).
-			Padding(0, 1).
-			Render("enter:filter • g:graph • ]/F4:close • esc/q:back")
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 	// STATS SECTION - Issue counts with visual indicators
@@ -9635,7 +9630,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
-		keyHints = append(keyHints, keyStyle.Render("enter")+" filter", keyStyle.Render("g")+":graph", keyStyle.Render("]/F4")+" close", keyStyle.Render("esc/q")+" back")
+		keyHints = append(keyHints, keyStyle.Render("enter")+" filter", keyStyle.Render("]/F4")+":list")
 	} else if m.focused == focusLabelDashboard {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+":list")
 	} else if m.focused == focusInsights {
