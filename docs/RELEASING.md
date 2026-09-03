@@ -32,10 +32,12 @@ Stage 8 has no dependency outside the Go toolchain: `scripts/benchmark.sh`
 runs the ten tracked benchmarks (`BenchmarkRealData_*`, `BenchmarkFullAnalysis_*`,
 `BenchmarkSnapshotSwap`, `BenchmarkKeyPressLatency`, `BenchmarkListItemBuild`,
 `BenchmarkParseIssuesPoolComparison`) against the frozen dataset
-`tests/testdata/benchmark/medium.jsonl`, three rounds per package alternating
-between the baseline commit's tree and HEAD, and compares the best observed
-`ns/op` of each side (contention only inflates samples, so the minimum is the
-closest to the uncontended time). The stored `benchmarks/baseline.txt` carries a
+`tests/testdata/benchmark/medium.jsonl`, four rounds per package alternating
+between the baseline commit's tree and HEAD with the pair order swapped each
+round (always running one tree first biased identical code by 10-20%), and
+compares the best observed `ns/op` of each side (contention only inflates
+samples, so the minimum is the closest to the uncontended time). The stored
+`benchmarks/baseline.txt` carries a
 provenance header (date, Go version, CPU, OS, commit, dataset hash) and is
 regenerated only on the reference machine with `scripts/benchmark.sh baseline`.
 `BENCH_PCT` (gate: `RELEASE_GATE_BENCH_PCT`) sets the threshold;

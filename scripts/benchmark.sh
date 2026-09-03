@@ -196,13 +196,22 @@ reference_run() {
   prepare_dataset
   # Interleave the two trees per package per round: a run five minutes apart
   # on a shared host still drifted by 30% either way, while adjacent runs of
-  # the same package stayed within a few percent.
-  echo "Running the tracked benchmarks for baseline commit $ref_commit and HEAD, interleaved ($COMPARE_COUNT rounds)..." >&2
+  # the same package stayed within a few percent. The pair order alternates
+  # each round (an even number of rounds), because always running the
+  # reference first left a consistent +10-20% on packages that were
+  # byte-identical between the two trees.
+  local rounds=$(( (COMPARE_COUNT + 1) / 2 * 2 ))
+  echo "Running the tracked benchmarks for baseline commit $ref_commit and HEAD, interleaved ($rounds rounds, alternating order)..." >&2
   local round pkg
-  for round in $(seq 1 "$COMPARE_COUNT"); do
+  for round in $(seq 1 "$rounds"); do
     for pkg in "${PACKAGES[@]}"; do
-      (cd "$ref_dir/tree" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$ref_file"
-      (cd "$root" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$CURRENT_FILE"
+      if [ $((round % 2)) -eq 1 ]; then
+        (cd "$ref_dir/tree" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$ref_file"
+        (cd "$root" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$CURRENT_FILE"
+      else
+        (cd "$root" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$CURRENT_FILE"
+        (cd "$ref_dir/tree" && go test -run '^$' -bench "$TRACKED" -benchmem -count=1 "$pkg" 2>&1) >> "$ref_file"
+      fi
     done
   done
   echo "$ref_file"
