@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // createTheme creates a theme for testing
@@ -183,7 +185,14 @@ func TestLabelDashboardModel_HeaderColumnsAlignWithRows(t *testing.T) {
 
 	view := m.View()
 	assertLabelDashboardLinesFit(t, view, m.width)
-	header, row := labelDashboardHeaderAndRow(t, view, "alignment-label")
+	header, row, unselected := labelDashboardRenderedRows(&m)
+	headerWidth := lipgloss.Width(header)
+	if got := lipgloss.Width(row); got != headerWidth+1 || got >= m.width {
+		t.Fatalf("selected row width=%d, want natural header width %d + 1 and less than panel width %d: header=%q selected=%q", got, headerWidth, m.width, header, row)
+	}
+	if got := lipgloss.Width(unselected); got != headerWidth {
+		t.Fatalf("unselected row width=%d, want header width %d: header=%q unselected=%q", got, headerWidth, headerWidth, unselected)
+	}
 	if got := strings.Count(header, labelDashboardColumnDivider); got != 4 {
 		t.Fatalf("header has %d column dividers, want 4: %q", got, header)
 	}
@@ -199,14 +208,59 @@ func TestLabelDashboardModel_HeaderColumnsAlignWithRows(t *testing.T) {
 	} {
 		headerOffset := displayOffset(header, markers[0])
 		rowOffset := displayOffset(row, markers[1])
-		if headerOffset != rowOffset {
-			t.Fatalf("%q starts at %d in header but %q starts at %d in row:\nheader=%q\nrow=%q", markers[0], headerOffset, markers[1], rowOffset, header, row)
+		unselectedOffset := displayOffset(unselected, markers[1])
+		if rowOffset != headerOffset+1 || unselectedOffset != headerOffset {
+			t.Fatalf("%q starts at %d in header, %q at %d in selected row, and %q at %d in unselected row:\nheader=%q\nselected=%q\nunselected=%q", markers[0], headerOffset, markers[1], rowOffset, markers[1], unselectedOffset, header, row, unselected)
 		}
 	}
 
 	healthStart := displayOffset(row, " 50 ")
 	if got := displayOffset(row, "█████"); got != healthStart+4 {
 		t.Fatalf("health bar starts at %d, want score boundary at %d: row=%q", got, healthStart+4, row)
+	}
+}
+
+func TestLabelDashboardModel_SelectedBackgroundSurvivesHealthBar(t *testing.T) {
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.TrueColor)
+	m := NewLabelDashboardModel(DefaultTheme(renderer))
+	m.SetSize(100, 10)
+	m.SetData([]analysis.LabelHealth{{
+		Label:       "ansi-selection",
+		HealthLevel: analysis.HealthLevelWarning,
+		Health:      50,
+		Blocked:     17,
+		Velocity:    analysis.VelocityMetrics{ClosedLast7Days: 23, ClosedLast30Days: 47},
+		Freshness:   analysis.FreshnessMetrics{StaleCount: 59},
+	}})
+
+	header := []string{"Label", "Health", "Blocked", "Velocity 7d/30d", "Stale"}
+	widths := m.computeColumnWidths(header)
+	selected := m.renderRow(m.getRowCells(m.labels[0]), widths, false, true)
+	probe := m.theme.Renderer.NewStyle().Background(m.theme.Selected.GetBackground()).Render("probe")
+	probeAt := strings.Index(probe, "probe")
+	if probeAt <= 0 {
+		t.Fatalf("could not determine selected background sequence: %q", probe)
+	}
+	backgroundPrefix := probe[:probeAt]
+	healthBarEnd := strings.Index(selected, "░░░░░") + len("░░░░░")
+	if healthBarEnd <= len("░░░░░")-1 {
+		t.Fatalf("selected row missing health bar: %q", selected)
+	}
+	for _, marker := range []string{"17", "23/47", "59"} {
+		markerAt := strings.Index(selected, marker)
+		if markerAt <= healthBarEnd || !strings.Contains(selected[healthBarEnd:markerAt], backgroundPrefix) {
+			t.Fatalf("selected background missing before trailing cell %q after health bar: %q", marker, selected)
+		}
+	}
+	blockedAt := strings.Index(selected, "17")
+	dividerAt := strings.Index(selected[blockedAt+len("17"):], labelDashboardColumnDivider) + blockedAt + len("17")
+	velocityAt := strings.Index(selected[dividerAt:], "23/47") + dividerAt
+	if !strings.Contains(selected[blockedAt+len("17"):dividerAt], backgroundPrefix) {
+		t.Fatalf("selected background missing from Blocked padding: %q", selected)
+	}
+	if !strings.Contains(selected[dividerAt:velocityAt], backgroundPrefix) {
+		t.Fatalf("selected background missing across divider before Velocity: %q", selected)
 	}
 }
 
@@ -224,7 +278,14 @@ func TestLabelDashboardModel_HeaderColumnsAlignAtNarrowWidth(t *testing.T) {
 
 	view := m.View()
 	assertLabelDashboardLinesFit(t, view, m.width)
-	header, row := labelDashboardHeaderAndRow(t, view, "very-")
+	header, row, unselected := labelDashboardRenderedRows(&m)
+	headerWidth := lipgloss.Width(header)
+	if got := lipgloss.Width(row); got != headerWidth+1 || got > m.width {
+		t.Fatalf("narrow selected row width=%d, want header width %d + 1 and at most panel width %d: header=%q selected=%q", got, headerWidth, m.width, header, row)
+	}
+	if got := lipgloss.Width(unselected); got != headerWidth {
+		t.Fatalf("narrow unselected row width=%d, want header width %d: header=%q unselected=%q", got, headerWidth, headerWidth, unselected)
+	}
 	if got := strings.Count(header, labelDashboardColumnDivider); got != 4 {
 		t.Fatalf("narrow header has %d column dividers, want 4: %q", got, header)
 	}
@@ -238,27 +299,22 @@ func TestLabelDashboardModel_HeaderColumnsAlignAtNarrowWidth(t *testing.T) {
 		{"Velocity 7d/30d", "123/456"},
 		{"Stale", "78"},
 	} {
-		if got, want := displayOffset(header, markers[0]), displayOffset(row, markers[1]); got != want {
-			t.Fatalf("narrow %q starts at %d, row %q starts at %d:\nheader=%q\nrow=%q", markers[0], got, markers[1], want, header, row)
+		headerOffset := displayOffset(header, markers[0])
+		selectedOffset := displayOffset(row, markers[1])
+		unselectedOffset := displayOffset(unselected, markers[1])
+		if selectedOffset != headerOffset+1 || unselectedOffset != headerOffset {
+			t.Fatalf("narrow %q starts at %d in header, %q at %d in selected row, and %q at %d in unselected row:\nheader=%q\nselected=%q\nunselected=%q", markers[0], headerOffset, markers[1], selectedOffset, markers[1], unselectedOffset, header, row, unselected)
 		}
 	}
 }
 
-func labelDashboardHeaderAndRow(t *testing.T, view, label string) (string, string) {
-	t.Helper()
-	var header, row string
-	for _, line := range strings.Split(ansi.Strip(view), "\n") {
-		if strings.Contains(line, "Velocity 7d/30d") {
-			header = line
-		}
-		if strings.Contains(line, label) {
-			row = line
-		}
-	}
-	if header == "" || row == "" {
-		t.Fatalf("missing label dashboard header or row:\n%s", view)
-	}
-	return header, row
+func labelDashboardRenderedRows(m *LabelDashboardModel) (string, string, string) {
+	headers := []string{"Label", "Health", "Blocked", "Velocity 7d/30d", "Stale"}
+	widths := m.computeColumnWidths(headers)
+	cells := m.getRowCells(m.labels[0])
+	return ansi.Strip(m.renderRow(headers, widths, true, false)),
+		ansi.Strip(m.renderRow(cells, widths, false, true)),
+		ansi.Strip(m.renderRow(cells, widths, false, false))
 }
 
 func assertLabelDashboardLinesFit(t *testing.T, view string, width int) {
