@@ -426,6 +426,64 @@ func TestViewRendering(t *testing.T) {
 	}
 }
 
+// TestBoardCursorRemainsVisibleAcrossColumns covers the shared board viewport
+// behavior for status columns, including Blocked and Closed.
+func TestBoardCursorRemainsVisibleAcrossColumns(t *testing.T) {
+	var issues []model.Issue
+	statuses := []model.Status{model.StatusOpen, model.StatusInProgress, model.StatusBlocked, model.StatusClosed}
+	prefixes := []string{"o", "p", "b", "c"}
+	issues = append(issues, model.Issue{ID: "blocker", Title: "A blocker with a title", Status: model.StatusOpen})
+	for column, status := range statuses {
+		for i := 0; i < 5; i++ {
+			issue := model.Issue{
+				ID:     fmt.Sprintf("%s%d", prefixes[column], i),
+				Status: status,
+				Labels: []string{"automatic", "imported", "kraken"},
+			}
+			if status == model.StatusBlocked {
+				issue.Dependencies = []*model.Dependency{{DependsOnID: "blocker", Type: model.DepBlocks}}
+			}
+			issues = append(issues, issue)
+		}
+	}
+
+	b := ui.NewBoardModel(issues, createTheme())
+	visible := func(view, id string) bool {
+		for line, text := range strings.Split(view, "\n") {
+			if strings.Contains(text, id) {
+				return line < 19
+			}
+		}
+		return false
+	}
+	for i, status := range statuses {
+		if i > 0 {
+			b.MoveRight()
+		}
+		b.MoveDown()
+		selected := b.SelectedIssue()
+		if selected == nil {
+			t.Fatalf("%s column has no selected issue", status)
+		}
+		view := b.View(80, 19)
+		if !visible(view, selected.ID) {
+			t.Fatalf("selected issue %q is not visible in %s column", selected.ID, status)
+		}
+	}
+
+	b = ui.NewBoardModel([]model.Issue{
+		{ID: "first", Title: "first", Priority: 0, Status: model.StatusOpen, Description: strings.Repeat("long description\n", 10)},
+		{ID: "second", Title: "second", Priority: 1, Status: model.StatusOpen},
+	}, createTheme())
+	b.ToggleExpand()
+	b.PageDown(2)
+	selected := b.SelectedIssue()
+	view := b.View(80, 19)
+	if selected == nil || !visible(view, selected.ID) {
+		t.Fatalf("selected issue is not visible after paging past an expanded card")
+	}
+}
+
 // TestBoardRichCardContent verifies the bv-1daf rich card content rendering
 // Tests that cards with dependencies render correctly with blocked-by and blocks indicators
 func TestBoardRichCardContent(t *testing.T) {

@@ -1191,43 +1191,23 @@ func (b BoardModel) View(width, height int) string {
 
 		header := headerStyle.Render(headerText)
 
-		// Calculate visible rows (bv-1daf: 3 content lines)
-		// Card height breakdown:
-		// - 3 content lines (line1: meta, line2: title, line3: deps/labels)
-		// - 2 border lines (RoundedBorder adds top + bottom)
-		// - 1 margin line (MarginBottom(1))
-		// Total: 6 lines per card
-		cardHeight := 6
-		visibleCards := (colHeight - 1) / cardHeight
-		if visibleCards < 1 {
-			visibleCards = 1
-		}
-
 		sel := b.selectedRow[colIdx]
 		if sel >= issueCount && issueCount > 0 {
 			sel = issueCount - 1
 		}
 
-		// Simple scrolling: keep selected card visible
-		start := 0
-		if sel >= visibleCards {
-			start = sel - visibleCards + 1
-		}
-
-		end := start + visibleCards
-		if end > issueCount {
-			end = issueCount
-		}
-
-		// Render cards
+		// Measure cards before choosing the viewport: metadata and repository
+		// badges can wrap, so a fixed card height can hide the next selection.
 		// Card width = baseWidth - 4 to fit inside column padding (2) and
 		// leave room for the card's own border (2). Clamp to minimum of 6.
 		cardWidth := baseWidth - 4
 		if cardWidth < 6 {
 			cardWidth = 6
 		}
-		var cards []string
-		for rowIdx := start; rowIdx < end; rowIdx++ {
+		renderedCards := make([]string, issueCount)
+		cardHeights := make([]int, issueCount)
+		totalCardHeight := 0
+		for rowIdx := range issues {
 			issue := issues[rowIdx]
 			isSelected := isFocused && rowIdx == sel
 
@@ -1238,7 +1218,36 @@ func (b BoardModel) View(width, height int) string {
 			} else {
 				card = b.renderCard(issue, cardWidth, isSelected, colIdx, rowIdx)
 			}
-			cards = append(cards, card)
+			renderedCards[rowIdx] = card
+			cardHeights[rowIdx] = lipgloss.Height(card)
+			totalCardHeight += cardHeights[rowIdx]
+		}
+
+		// Leave room for the scroll indicator and the column border when needed.
+		contentHeight := colHeight - 2
+		showScroll := totalCardHeight > contentHeight
+		if showScroll {
+			contentHeight--
+		}
+		if contentHeight < 1 {
+			contentHeight = 1
+		}
+
+		var cards []string
+		if issueCount > 0 {
+			// Choose a range that contains the selected card using measured heights.
+			start, end := sel, sel+1
+			usedHeight := cardHeights[sel]
+			for start > 0 && usedHeight+cardHeights[start-1] <= contentHeight {
+				start--
+				usedHeight += cardHeights[start]
+			}
+			for end < issueCount && usedHeight+cardHeights[end] <= contentHeight {
+				usedHeight += cardHeights[end]
+				end++
+			}
+
+			cards = renderedCards[start:end]
 		}
 
 		// Empty column placeholder
@@ -1253,7 +1262,7 @@ func (b BoardModel) View(width, height int) string {
 		}
 
 		// Scroll indicator
-		if issueCount > visibleCards {
+		if showScroll {
 			scrollInfo := fmt.Sprintf("↕ %d/%d", sel+1, issueCount)
 			scrollStyle := t.Renderer.NewStyle().
 				Width(cardWidth).
