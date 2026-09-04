@@ -22,6 +22,11 @@ type LabelDashboardModel struct {
 
 const labelDashboardHeaderRows = 2
 
+const (
+	labelDashboardColumnDivider            = " | "
+	labelDashboardSelectionDecorationWidth = 2
+)
+
 func NewLabelDashboardModel(theme Theme) LabelDashboardModel {
 	return LabelDashboardModel{theme: theme}
 }
@@ -190,8 +195,9 @@ func (m LabelDashboardModel) computeColumnWidths(headers []string) []int {
 		}
 	}
 
-	// Ensure total fits width; if not, truncate label column first
-	total := len(headers) - 1 // spaces between columns
+	// Reserve the selected row's border and left padding. Any remaining room
+	// belongs to the final column so earlier cell starts stay fixed.
+	total := labelDashboardSelectionDecorationWidth + lipgloss.Width(labelDashboardColumnDivider)*(len(headers)-1)
 	for _, w := range widths {
 		total += w
 	}
@@ -202,6 +208,10 @@ func (m LabelDashboardModel) computeColumnWidths(headers []string) []int {
 		} else {
 			widths[0] -= excess
 		}
+		total = labelDashboardSelectionDecorationWidth + lipgloss.Width(labelDashboardColumnDivider)*(len(headers)-1)
+		for _, w := range widths {
+			total += w
+		}
 	}
 	return widths
 }
@@ -209,20 +219,30 @@ func (m LabelDashboardModel) computeColumnWidths(headers []string) []int {
 func (m LabelDashboardModel) renderRow(cells []string, widths []int, header bool, selected bool) string {
 	var parts []string
 	for i, cell := range cells {
-		// Use lipgloss to handle width (padding) and max width (truncation)
-		// Note: MaxWidth might wrap, so we ensure no newlines are introduced if possible,
-		// but standard table cells usually single line.
-		style := lipgloss.NewStyle().Width(widths[i]).MaxWidth(widths[i])
+		// Keep each fixed-width cell on one line so narrow tables stay aligned.
+		style := lipgloss.NewStyle().Inline(true).Width(widths[i]).MaxWidth(widths[i])
 		parts = append(parts, style.Render(cell))
 	}
-	row := strings.Join(parts, " ")
 	if header {
-		return m.theme.Header.Render(row)
+		// Header padding would offset every cell from the row columns.
+		return m.theme.Header.Padding(0).Render(" " + strings.Join(parts, labelDashboardColumnDivider))
 	}
 	if selected {
+		background := lipgloss.NewStyle().Background(m.theme.Selected.GetBackground())
+		if m.theme.Renderer != nil {
+			background = m.theme.Renderer.NewStyle().Background(m.theme.Selected.GetBackground())
+		}
+		selectedParts := make([]string, 0, len(parts))
+		for _, part := range parts {
+			content := strings.TrimRight(part, " ")
+			selectedPart := background.Render(content)
+			selectedPart += background.Render(part[len(content):])
+			selectedParts = append(selectedParts, selectedPart)
+		}
+		row := strings.Join(selectedParts, background.Render(labelDashboardColumnDivider))
 		return m.theme.Selected.Render(row)
 	}
-	return m.theme.Base.Render(row)
+	return m.theme.Base.Render(" " + strings.Join(parts, labelDashboardColumnDivider))
 }
 
 func (m LabelDashboardModel) renderLabelCell(lh analysis.LabelHealth) string {
