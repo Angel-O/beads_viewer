@@ -254,7 +254,6 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"g", "Return to List", "Views", "graph"},
 		{"i", "Return to List", "Views", "insights"},
 		{"a", "Return to List", "Views", "actionable"},
-		{"E", "Exit Tree", "Views", "tree"},
 		{"f", "Flow matrix", "Views", "list,board,graph,tree,insights,actionable,label-dashboard"},
 		{"[", "Label dashboard", "Views", "list,board,graph,tree,insights,history,actionable,flow"},
 		{"]", "Attention view", "Views", "list,board,graph,tree,insights,history,actionable,label-dashboard,flow"},
