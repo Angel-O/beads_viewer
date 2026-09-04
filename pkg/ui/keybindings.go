@@ -220,8 +220,8 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 	return []KeyBindingDoc{
 		// Shared Navigation. Keep contexts explicit: overlays and search inputs
 		// consume these keys differently and are not registry view contexts.
-		{"j", "Move down", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
-		{"k", "Move up", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
+		{"j", "Move down", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,attention"},
+		{"k", "Move up", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,attention"},
 		{"up", "Move up", "Navigation", "list,label-dashboard,attention"},
 		{"down", "Move down", "Navigation", "list,label-dashboard,attention"},
 		{"left", "Previous page", "Navigation", "list"},
@@ -250,7 +250,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"?", "Help overlay", "Views", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
 		{"tab", "Switch panes in Split", "Views", "list,detail"},
 		{"p", "Priority hints", "Views", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
-		{"b", "Return to List", "Views", "board,graph,tree,insights,history,actionable,flow"},
+		{"b", "Return to List", "Views", "board"},
 		{"g", "Return to List", "Views", "graph"},
 		{"i", "Return to List", "Views", "insights"},
 		{"a", "Return to List", "Views", "actionable"},
@@ -283,10 +283,9 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		// Actions
 		{"t", "Time travel (custom revision)", "Actions", "list,detail"},
 		{"T", "Time travel (HEAD~5)", "Actions", "list,detail"},
-		{"n", "Next changed issue (time travel)", "Actions", "list"},
 		{"N", "Previous changed issue (time travel)", "Actions", "list"},
 		{"x", "Export to markdown", "Actions", "list,detail"},
-		{"y", "Copy issue ID", "Actions", "list,detail,board"},
+		{"y", "Copy issue ID", "Actions", "list,detail"},
 		{"C", "Copy full issue", "Actions", "list,detail"},
 		{"n", "Add comment", "Actions", "list,detail"},
 		{"e", "Edit comment", "Actions", "list,detail"},
