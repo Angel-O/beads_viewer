@@ -82,11 +82,11 @@ func TestComputeAttentionView_SingleLabelFormatting(t *testing.T) {
 	}
 }
 
-func TestComputeAttentionView_LimitsToNineInteractiveRowsAndIsDeterministic(t *testing.T) {
+func TestComputeAttentionView_RendersAllRowsAndIsDeterministic(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Create 11 distinct labels; with identical issue shape they tie on score and
-	// should sort by label name (then truncated to the nine numeric choices).
+	// should sort by label name without a row cap.
 	var issues []model.Issue
 	for i := 1; i <= 11; i++ {
 		label := "l" + pad2(i)
@@ -97,8 +97,8 @@ func TestComputeAttentionView_LimitsToNineInteractiveRowsAndIsDeterministic(t *t
 		t.Fatalf("ComputeAttentionView error: %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 10 || !strings.Contains(out, "l01") || !strings.Contains(out, "l09") || strings.Contains(out, "l10") || strings.Contains(out, "l11") {
-		t.Fatalf("unexpected compatibility rows:\n%s", out)
+	if len(lines) != 12 || !strings.Contains(out, "l01") || !strings.Contains(out, "l09") || !strings.Contains(out, "l10") || !strings.Contains(out, "l11") {
+		t.Fatalf("unexpected attention rows:\n%s", out)
 	}
 }
 
@@ -148,16 +148,16 @@ func TestAttentionModel_HeaderRespectsWidth(t *testing.T) {
 	}
 }
 
-func TestAttentionModel_LimitsToTop10AndIsDeterministic(t *testing.T) {
+func TestAttentionModel_RendersAllRowsAndIsDeterministic(t *testing.T) {
 	m := NewAttentionModel(DefaultTheme(lipgloss.NewRenderer(nil)))
 	m.SetSize(120, 20)
 	m.SetData(attentionFixture(11))
-	if m.Len() != 10 {
-		t.Fatalf("expected top 10 labels, got %d", m.Len())
+	if m.Len() != 11 {
+		t.Fatalf("expected all 11 labels, got %d", m.Len())
 	}
 	out := m.View()
-	if !strings.Contains(out, "l01") || !strings.Contains(out, "l10") || strings.Contains(out, "l11") {
-		t.Fatalf("expected l01..l10 and not l11:\n%s", out)
+	if !strings.Contains(out, "l01") || !strings.Contains(out, "l10") || !strings.Contains(out, "l11") {
+		t.Fatalf("expected all labels:\n%s", out)
 	}
 	if !strings.Contains(out, "pr=") || !strings.Contains(out, "closed30=") {
 		t.Fatalf("reason column must show the formula components:\n%s", out)
@@ -201,9 +201,12 @@ func TestAttentionModel_NavigationAndEnter(t *testing.T) {
 	if !strings.Contains(m.View(), m.SelectedLabel()) {
 		t.Fatalf("selected label %q not rendered after scroll:\n%s", m.SelectedLabel(), m.View())
 	}
-	key("g")
+	if _, handled := key("g"); handled {
+		t.Fatal("lowercase g must remain available to shared Graph navigation")
+	}
+	key("home")
 	if m.Cursor() != 0 {
-		t.Fatalf("after g cursor = %d, want 0", m.Cursor())
+		t.Fatalf("after home cursor = %d, want 0", m.Cursor())
 	}
 	label, handled := key("enter")
 	if !handled || label != m.LabelAt(0) {
@@ -231,15 +234,24 @@ func TestAttentionModel_TruncatesCells(t *testing.T) {
 	if strings.Contains(out, longLabel) {
 		t.Fatalf("label must be truncated to its column:\n%s", out)
 	}
+	m.SetSize(80, 5)
+	selectedRow := strings.Split(m.View(), "\n")[1]
+	if got := lipgloss.Width(selectedRow); got > 80 {
+		t.Fatalf("selected row width=%d, want <= 80: %q", got, selectedRow)
+	}
 }
 
-// Model integration: ] opens the attention overlay on Insights, Enter opens
-// the label drilldown, 1-9 filter the list by rank, and ]/Esc return to the list.
-func TestModel_AttentionViewFocusDrilldownAndFilter(t *testing.T) {
+// Model integration: ] opens the attention view, Enter filters by the
+// highlighted label, number keys do nothing, and exit restores the origin.
+func TestModel_AttentionViewFocusFilterAndExit(t *testing.T) {
 	now := time.Now().UTC()
 	issues := []model.Issue{
 		{ID: "A", Title: "Alpha", Status: model.StatusOpen, Priority: 1, Labels: []string{"backend"}, CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour)},
 		{ID: "B", Title: "Beta", Status: model.StatusOpen, Priority: 2, Labels: []string{"frontend"}, CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)},
+	}
+	for i := 1; i <= 9; i++ {
+		label := "rank" + pad2(i)
+		issues = append(issues, model.Issue{ID: label, Title: label, Status: model.StatusOpen, Labels: []string{label}, CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: now.Add(-time.Hour)})
 	}
 	m := NewModel(issues, nil, "")
 	m.width, m.height = 120, 30
@@ -259,31 +271,126 @@ func TestModel_AttentionViewFocusDrilldownAndFilter(t *testing.T) {
 	}
 
 	press("]")
-	if m.focused != focusInsights || !m.showAttentionView {
+	if m.focused != focusAttention || !m.showAttentionView {
 		t.Fatalf("] must open the attention overlay, got focus=%v shown=%v", m.focused, m.showAttentionView)
 	}
-	if m.attentionView.Len() != 2 {
-		t.Fatalf("expected 2 ranked labels, got %d", m.attentionView.Len())
+	if m.attentionView.Len() != 11 {
+		t.Fatalf("expected 11 ranked labels, got %d", m.attentionView.Len())
 	}
 	if !strings.Contains(m.View(), "Rank") {
 		t.Fatalf("attention view not rendered:\n%s", m.View())
 	}
 
-	press("j")
+	press("1")
+	if m.focused != focusAttention || m.currentFilter != "all" {
+		t.Fatalf("number key changed attention selection/filter: focus=%v filter=%q", m.focused, m.currentFilter)
+	}
+	initialCursor := m.attentionView.Cursor()
+	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	m = updated.(*Model)
+	if m.attentionView.Cursor() != initialCursor+1 {
+		t.Fatalf("mouse wheel did not move attention cursor: before=%d after=%d", initialCursor, m.attentionView.Cursor())
+	}
+
+	press("G")
+	if m.attentionView.Cursor() != m.attentionView.Len()-1 {
+		t.Fatalf("G did not select the last ranked label: cursor=%d len=%d", m.attentionView.Cursor(), m.attentionView.Len())
+	}
 	selected := m.attentionView.SelectedLabel()
 	press("enter")
-	if !m.showLabelDrilldown || m.labelDrilldownLabel != selected {
-		t.Fatalf("enter must open the drilldown for %q, got show=%v label=%q", selected, m.showLabelDrilldown, m.labelDrilldownLabel)
+	if m.showLabelDrilldown || m.currentFilter != "label:"+selected {
+		t.Fatalf("enter must filter by %q without drilldown, got show=%v filter=%q", selected, m.showLabelDrilldown, m.currentFilter)
 	}
-	m.showLabelDrilldown = false
-
-	press("1")
-	if !strings.HasPrefix(m.currentFilter, "label:") {
-		t.Fatalf("1 must filter by the top label, got filter %q", m.currentFilter)
-	}
-
 	if m.focused != focusList {
-		t.Fatalf("rank filter must return to the list, got %v", m.focused)
+		t.Fatalf("attention filter must return to the list, got %v", m.focused)
+	}
+}
+
+func TestLabelDashboardSharedViewNavigation(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"backend"}}}
+	for _, tc := range []struct {
+		key       string
+		wantFocus focus
+	}{
+		{key: "b", wantFocus: focusBoard},
+		{key: "g", wantFocus: focusGraph},
+		{key: "a", wantFocus: focusActionable},
+		{key: "E", wantFocus: focusTree},
+		{key: "i", wantFocus: focusInsights},
+		{key: "f", wantFocus: focusFlowMatrix},
+		{key: "]", wantFocus: focusAttention},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			updated, _ := m.Update(keyMsg("["))
+			m = updated.(*Model)
+			updated, _ = m.Update(keyMsg(tc.key))
+			m = updated.(*Model)
+			if m.focused != tc.wantFocus {
+				t.Fatalf("dashboard key %q focused %v, want %v", tc.key, m.focused, tc.wantFocus)
+			}
+			if tc.key == "]" && (!m.showAttentionView || m.attentionOrigin != focusLabelDashboard) {
+				t.Fatalf("dashboard did not open Attention with exact origin: shown=%v origin=%v", m.showAttentionView, m.attentionOrigin)
+			}
+		})
+	}
+}
+
+func TestAttentionLowercaseGUsesSharedGraphNavigation(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen}}, nil, "")
+	updated, _ := m.Update(keyMsg("]"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("g"))
+	m = updated.(*Model)
+	if m.showAttentionView || m.focused != focusGraph || !m.isGraphView {
+		t.Fatalf("Attention g did not use shared Graph navigation: shown=%v focus=%v graph=%v", m.showAttentionView, m.focused, m.isGraphView)
+	}
+}
+
+func TestModel_AttentionViewRestoresExactOrigin(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"backend"}}}
+	cases := []struct {
+		name      string
+		open      string
+		wantFocus focus
+	}{
+		{name: "list", wantFocus: focusList},
+		{name: "detail", open: "enter", wantFocus: focusDetail},
+		{name: "board", open: "b", wantFocus: focusBoard},
+		{name: "graph", open: "g", wantFocus: focusGraph},
+		{name: "actionable", open: "a", wantFocus: focusActionable},
+		{name: "tree", open: "E", wantFocus: focusTree},
+		{name: "insights", open: "i", wantFocus: focusInsights},
+		{name: "flow", open: "f", wantFocus: focusFlowMatrix},
+		{name: "labels", open: "[", wantFocus: focusLabelDashboard},
+	}
+	closeKeys := []string{"]", "f4", "esc", "q"}
+	for _, tc := range cases {
+		for _, closeKey := range closeKeys {
+			t.Run(tc.name+"/"+closeKey, func(t *testing.T) {
+				m := NewModel(issues, nil, "")
+				if tc.open != "" {
+					updated, _ := m.Update(keyMsg(tc.open))
+					m = updated.(*Model)
+				}
+				updated, _ := m.Update(keyMsg("]"))
+				m = updated.(*Model)
+				if m.focused != focusAttention || m.CurrentContext() != ContextAttention {
+					t.Fatalf("attention focus=%v context=%v", m.focused, m.CurrentContext())
+				}
+				var close tea.KeyMsg
+				if closeKey == "f4" {
+					close = tea.KeyMsg{Type: tea.KeyF4}
+				} else {
+					close = keyMsg(closeKey)
+				}
+				updated, _ = m.Update(close)
+				m = updated.(*Model)
+				if m.showAttentionView || m.focused != tc.wantFocus {
+					t.Fatalf("close %s restored focus=%v shown=%v, want focus=%v", closeKey, m.focused, m.showAttentionView, tc.wantFocus)
+				}
+			})
+		}
 	}
 }
 

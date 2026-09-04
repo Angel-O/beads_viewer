@@ -2400,6 +2400,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		graphView:                 graphView,
 		tree:                      treeModel,
 		insightsPanel:             insightsPanel,
+		attentionView:             NewAttentionModel(theme),
 		historyView:               NewHistoryModel(nil, theme), // Initialize with empty report for safe search access
 		theme:                     theme,
 		keyRegistry:               keyRegistry,
@@ -5464,36 +5465,50 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.focused = focusList
 					return m, nil
 				}
-				if selectedLabel, cmd := m.labelDashboard.Update(msg); selectedLabel != "" {
-					// Filter list by selected label and jump back to list view
-					m.currentFilter = "label:" + selectedLabel
-					m.applyFilter()
-					m.focused = focusList
-					return m, tea.Batch(cmd, m.pendingSemanticFilterCmd())
+				switch keyStr {
+				case "j", "k", "up", "down", "home", "G", "end", "enter":
+					if selectedLabel, cmd := m.labelDashboard.Update(msg); selectedLabel != "" {
+						// Filter list by selected label and jump back to list view
+						m.currentFilter = "label:" + selectedLabel
+						m.applyFilter()
+						m.focused = focusList
+						return m, tea.Batch(cmd, m.pendingSemanticFilterCmd())
+					}
+					return m, nil
 				}
 				// Open detail modal on 'h'
-				if keyStr == "h" && len(m.labelDashboard.labels) > 0 {
-					idx := m.labelDashboard.cursor
-					if idx >= 0 && idx < len(m.labelDashboard.labels) {
-						lh := m.labelDashboard.labels[idx]
-						m.showLabelHealthDetail = true
-						m.labelHealthDetail = &lh
-						// Precompute cross-label flows for this label
-						m.labelHealthDetailFlow = m.getCrossFlowsForLabel(lh.Label)
-						return m, nil
+				if keyStr == "h" {
+					if len(m.labelDashboard.labels) > 0 {
+						idx := m.labelDashboard.cursor
+						if idx >= 0 && idx < len(m.labelDashboard.labels) {
+							lh := m.labelDashboard.labels[idx]
+							m.showLabelHealthDetail = true
+							m.labelHealthDetail = &lh
+							// Precompute cross-label flows for this label
+							m.labelHealthDetailFlow = m.getCrossFlowsForLabel(lh.Label)
+							return m, nil
+						}
 					}
+					return m, nil
 				}
 				// Open drilldown overlay on 'd'
-				if keyStr == "d" && len(m.labelDashboard.labels) > 0 {
-					idx := m.labelDashboard.cursor
-					if idx >= 0 && idx < len(m.labelDashboard.labels) {
-						lh := m.labelDashboard.labels[idx]
-						m.labelDrilldownLabel = lh.Label
-						m.labelDrilldownIssues = m.filterIssuesByLabel(lh.Label)
-						m.showLabelDrilldown = true
-						return m, nil
+				if keyStr == "d" {
+					if len(m.labelDashboard.labels) > 0 {
+						idx := m.labelDashboard.cursor
+						if idx >= 0 && idx < len(m.labelDashboard.labels) {
+							lh := m.labelDashboard.labels[idx]
+							m.labelDrilldownLabel = lh.Label
+							m.labelDrilldownIssues = m.filterIssuesByLabel(lh.Label)
+							m.showLabelDrilldown = true
+							return m, nil
+						}
 					}
+					return m, nil
 				}
+
+			case focusAttention:
+				// Attention has its own controls; unclaimed keys must not fall
+				// through to List filters or actions.
 				return m, nil
 
 			case focusGraph:
@@ -5831,7 +5846,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isActionableView = false
 				m.isHistoryView = false
 				m.showAttentionView = true
-				m.focused = focusInsights
+				m.focused = focusAttention
 				m.refreshAttentionView()
 				m.statusMsg = ""
 				m.statusIsError = false
@@ -8231,9 +8246,12 @@ func (m *Model) renderHelpOverlay() string {
 	if attentionHelp {
 		origin = focusAttention
 		navSection = []struct{ key, desc string }{
-			{"1-9", "Filter by ranked label"},
+			{"j/k / ↑↓", "Move selection"},
+			{"Home/G", "First / last label"},
+			{"Enter", "Filter List by label"},
+			{"g", "Graph view"},
 			{"] / F4", "Close Attention"},
-			{"Esc / q", "Back / close"},
+			{"Esc / q", "Return to previous view"},
 		}
 	} else if origin == focusSprint {
 		navSection = []struct{ key, desc string }{
@@ -8504,6 +8522,7 @@ func (m *Model) renderHelpOverlay() string {
 			{"Enter", "Filter by label"},
 			{"h", "View label health"},
 			{"d", "Open issue drilldown"},
+			{"b/g/a/E/i/f/]", "Switch views"},
 			{"[/F3", "Close dashboard"},
 			{"Esc / q", "Return to List"},
 		}
@@ -9310,11 +9329,6 @@ func (m *Model) renderFooter() string {
 				Padding(0, 1).
 				Render(fmt.Sprintf("%s1-4:col • o/c/r:filter • /:search • ?:help", filterInfo))
 		}
-	} else if m.focused == focusAttention {
-		labelHint = lipgloss.NewStyle().
-			Foreground(ColorFooterHint).
-			Padding(0, 1).
-			Render("j/k:move • enter:drilldown • 1-9:filter • ]/F4:close • esc/q:back")
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 	// STATS SECTION - Issue counts with visual indicators
@@ -9616,7 +9630,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showLabelPicker {
 		keyHints = append(keyHints, "type to filter", keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showAttentionView {
-		keyHints = append(keyHints, keyStyle.Render("1-9")+" filter list by ranked label", keyStyle.Render("]/F4")+" close", keyStyle.Render("esc/q")+" back")
+		keyHints = append(keyHints, keyStyle.Render("enter")+" filter", keyStyle.Render("]/F4")+":list")
 	} else if m.focused == focusLabelDashboard {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("h")+" detail", keyStyle.Render("d")+" drilldown", keyStyle.Render("⏎")+" filter", keyStyle.Render("[/F3")+":list")
 	} else if m.focused == focusInsights {
@@ -12468,22 +12482,22 @@ func (m *Model) closeAttentionView() {
 }
 
 // handleAttentionKeys handles keys while the attention view has focus:
-// j/k/g/G move, Enter opens the label drilldown for the selected label,
-// 1-9 apply a label filter to the list by rank, and ]/Esc/q close the view.
+// j/k/Home/G move, Enter filters the list by the selected label, and
+// ]/Esc/q close the view.
 // Unhandled keys report handled=false so global bindings still work.
 func (m *Model) handleAttentionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	s := msg.String()
 	switch {
-	case s == "]" || s == "esc" || s == "q":
+	case s == "]" || s == "f4" || s == "esc" || s == "q":
 		m.clearAttentionOverlay()
 		m.statusMsg = ""
 		return m, nil, true
-	case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
-		idx := int(s[0] - '1')
-		label := m.attentionView.LabelAt(idx)
-		if label == "" {
-			return m, nil, true
-		}
+	}
+	label, handled := m.attentionView.Update(msg)
+	if !handled {
+		return m, nil, false
+	}
+	if label != "" {
 		m.currentFilter = "label:" + label
 		m.applyFilter()
 		m.clearAttentionOverlay()
@@ -12492,20 +12506,11 @@ func (m *Model) handleAttentionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.isBoardView = false
 		m.isActionableView = false
 		m.isHistoryView = false
-		m.statusMsg = fmt.Sprintf("Filtered to label %s (attention #%d)", label, idx+1)
+		m.showDetails = false
+		m.isSprintView = false
+		m.statusMsg = fmt.Sprintf("Filtered to label %s (attention)", label)
 		m.statusIsError = false
 		return m, m.pendingSemanticFilterCmd(), true
-	}
-	label, handled := m.attentionView.Update(msg)
-	if !handled {
-		return m, nil, false
-	}
-	if label != "" {
-		m.labelDrilldownLabel = label
-		m.labelDrilldownIssues = m.filterIssuesByLabel(label)
-		m.showLabelDrilldown = true
-		m.statusMsg = fmt.Sprintf("Label %s: %d issues • esc closes", label, len(m.labelDrilldownIssues))
-		m.statusIsError = false
 	}
 	return m, nil, true
 }

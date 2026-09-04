@@ -481,7 +481,7 @@ func TestAttentionView_CloseRestoresInsightsPanel(t *testing.T) {
 	// returns to the originating view, and the Insights cursor is preserved.
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
 	m = updated.(*Model)
-	if m.focused != focusInsights || !m.showAttentionView {
+	if m.focused != focusAttention || !m.showAttentionView {
 		t.Fatalf("Expected Attention overlay on Insights, got focus=%v shown=%v", m.focused, m.showAttentionView)
 	}
 	if !strings.Contains(m.View(), "Rank") {

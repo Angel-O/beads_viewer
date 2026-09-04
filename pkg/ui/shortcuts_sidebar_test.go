@@ -355,7 +355,7 @@ func TestShortcutsSidebarShowsOnlyActiveScrollControl(t *testing.T) {
 	}
 }
 
-func TestShortcutsSidebarAttentionUsesRegistryWithoutFakeNavigation(t *testing.T) {
+func TestShortcutsSidebarAttentionUsesRegistryNavigation(t *testing.T) {
 	registry := NewKeyRegistry()
 	m := Model{keyRegistry: registry}
 	m.registerKeyBindings()
@@ -365,21 +365,9 @@ func TestShortcutsSidebarAttentionUsesRegistryWithoutFakeNavigation(t *testing.T
 	sidebar.SetFocus(focusAttention)
 
 	view := sidebar.View()
-	for _, expected := range []string{"1-9", "Close Attention", "esc / q", "Help overlay", "Shortcuts sidebar"} {
+	for _, expected := range []string{"j", "k", "up", "down", "home", "G", "Filter List by", "Close Attention", "esc / q", "Help overlay", "Shortcuts sidebar"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("Attention registry sidebar missing %q:\n%s", expected, view)
-		}
-	}
-	for _, fake := range []string{"Move down", "Move up"} {
-		if strings.Contains(view, fake) {
-			t.Fatalf("Attention registry sidebar contains fake navigation %q:\n%s", fake, view)
-		}
-	}
-	for _, section := range sidebar.sectionsFromRegistry() {
-		for _, item := range section.items {
-			if item.key == "j" || item.key == "k" {
-				t.Fatalf("Attention registry sidebar contains fake navigation binding: %#v", item)
-			}
 		}
 	}
 }

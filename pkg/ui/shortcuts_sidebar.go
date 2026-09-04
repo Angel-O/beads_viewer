@@ -262,9 +262,12 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 			title:    "Attention",
 			contexts: []string{"attention"},
 			items: []shortcutItem{
-				{"1-9", "Filter by ranked label"},
+				{"j/k / ↑↓", "Move selection"},
+				{"Home/G", "First / last label"},
+				{"Enter", "Filter List by label"},
+				{"g", "Graph view"},
 				{"] / F4", "Close Attention"},
-				{"Esc / q", "Back"},
+				{"Esc / q", "Return to previous view"},
 			},
 		},
 		{
