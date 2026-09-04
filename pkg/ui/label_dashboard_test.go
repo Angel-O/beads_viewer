@@ -2,11 +2,13 @@ package ui
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // createTheme creates a theme for testing
@@ -164,6 +166,107 @@ func TestLabelDashboardModel_ViewMultipleLabels(t *testing.T) {
 	}
 	if !contains(view, "LABEL HEALTH │ 3 labels │ critical 1 │ warning 1") {
 		t.Fatalf("View should contain label health metadata: %q", view)
+	}
+}
+
+func TestLabelDashboardModel_HeaderColumnsAlignWithRows(t *testing.T) {
+	m := NewLabelDashboardModel(createTheme())
+	m.SetSize(100, 10)
+	m.SetData([]analysis.LabelHealth{{
+		Label:       "alignment-label",
+		HealthLevel: analysis.HealthLevelHealthy,
+		Health:      50,
+		Blocked:     12,
+		Velocity:    analysis.VelocityMetrics{ClosedLast7Days: 123, ClosedLast30Days: 456},
+		Freshness:   analysis.FreshnessMetrics{StaleCount: 78},
+	}})
+
+	view := m.View()
+	assertLabelDashboardLinesFit(t, view, m.width)
+	header, row := labelDashboardHeaderAndRow(t, view, "alignment-label")
+	if got := strings.Count(header, labelDashboardColumnDivider); got != 4 {
+		t.Fatalf("header has %d column dividers, want 4: %q", got, header)
+	}
+	if got := strings.Count(row, labelDashboardColumnDivider); got != 4 {
+		t.Fatalf("selected row has %d column dividers, want 4: %q", got, row)
+	}
+	for _, markers := range [][2]string{
+		{"Label", "alignment-label"},
+		{"Health", " 50 "},
+		{"Blocked", "12"},
+		{"Velocity 7d/30d", "123/456"},
+		{"Stale", "78"},
+	} {
+		headerOffset := displayOffset(header, markers[0])
+		rowOffset := displayOffset(row, markers[1])
+		if headerOffset != rowOffset {
+			t.Fatalf("%q starts at %d in header but %q starts at %d in row:\nheader=%q\nrow=%q", markers[0], headerOffset, markers[1], rowOffset, header, row)
+		}
+	}
+
+	healthStart := displayOffset(row, " 50 ")
+	if got := displayOffset(row, "█████"); got != healthStart+4 {
+		t.Fatalf("health bar starts at %d, want score boundary at %d: row=%q", got, healthStart+4, row)
+	}
+}
+
+func TestLabelDashboardModel_HeaderColumnsAlignAtNarrowWidth(t *testing.T) {
+	m := NewLabelDashboardModel(createTheme())
+	m.SetSize(70, 10)
+	m.SetData([]analysis.LabelHealth{{
+		Label:       "very-long-label-name",
+		HealthLevel: analysis.HealthLevelHealthy,
+		Health:      50,
+		Blocked:     12,
+		Velocity:    analysis.VelocityMetrics{ClosedLast7Days: 123, ClosedLast30Days: 456},
+		Freshness:   analysis.FreshnessMetrics{StaleCount: 78},
+	}})
+
+	view := m.View()
+	assertLabelDashboardLinesFit(t, view, m.width)
+	header, row := labelDashboardHeaderAndRow(t, view, "very-")
+	if got := strings.Count(header, labelDashboardColumnDivider); got != 4 {
+		t.Fatalf("narrow header has %d column dividers, want 4: %q", got, header)
+	}
+	if got := strings.Count(row, labelDashboardColumnDivider); got != 4 {
+		t.Fatalf("narrow selected row has %d column dividers, want 4: %q", got, row)
+	}
+	for _, markers := range [][2]string{
+		{"Label", "very-"},
+		{"Health", " 50 "},
+		{"Blocked", "12"},
+		{"Velocity 7d/30d", "123/456"},
+		{"Stale", "78"},
+	} {
+		if got, want := displayOffset(header, markers[0]), displayOffset(row, markers[1]); got != want {
+			t.Fatalf("narrow %q starts at %d, row %q starts at %d:\nheader=%q\nrow=%q", markers[0], got, markers[1], want, header, row)
+		}
+	}
+}
+
+func labelDashboardHeaderAndRow(t *testing.T, view, label string) (string, string) {
+	t.Helper()
+	var header, row string
+	for _, line := range strings.Split(ansi.Strip(view), "\n") {
+		if strings.Contains(line, "Velocity 7d/30d") {
+			header = line
+		}
+		if strings.Contains(line, label) {
+			row = line
+		}
+	}
+	if header == "" || row == "" {
+		t.Fatalf("missing label dashboard header or row:\n%s", view)
+	}
+	return header, row
+}
+
+func assertLabelDashboardLinesFit(t *testing.T, view string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(ansi.Strip(view), "\n") {
+		if lipgloss.Width(line) > width {
+			t.Fatalf("rendered line exceeds width %d: width=%d line=%q", width, lipgloss.Width(line), line)
+		}
 	}
 }
 

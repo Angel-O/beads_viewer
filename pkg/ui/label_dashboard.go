@@ -22,6 +22,11 @@ type LabelDashboardModel struct {
 
 const labelDashboardHeaderRows = 2
 
+const (
+	labelDashboardColumnDivider   = " | "
+	labelDashboardSelectionGutter = 1
+)
+
 func NewLabelDashboardModel(theme Theme) LabelDashboardModel {
 	return LabelDashboardModel{theme: theme}
 }
@@ -190,8 +195,9 @@ func (m LabelDashboardModel) computeColumnWidths(headers []string) []int {
 		}
 	}
 
-	// Ensure total fits width; if not, truncate label column first
-	total := len(headers) - 1 // spaces between columns
+	// Ensure total fits width; if not, truncate label column first. The gutter
+	// reserves the selected row's left border so every row shares cell starts.
+	total := labelDashboardSelectionGutter + lipgloss.Width(labelDashboardColumnDivider)*(len(headers)-1)
 	for _, w := range widths {
 		total += w
 	}
@@ -209,20 +215,19 @@ func (m LabelDashboardModel) computeColumnWidths(headers []string) []int {
 func (m LabelDashboardModel) renderRow(cells []string, widths []int, header bool, selected bool) string {
 	var parts []string
 	for i, cell := range cells {
-		// Use lipgloss to handle width (padding) and max width (truncation)
-		// Note: MaxWidth might wrap, so we ensure no newlines are introduced if possible,
-		// but standard table cells usually single line.
-		style := lipgloss.NewStyle().Width(widths[i]).MaxWidth(widths[i])
+		// Keep each fixed-width cell on one line so narrow tables stay aligned.
+		style := lipgloss.NewStyle().Inline(true).Width(widths[i]).MaxWidth(widths[i])
 		parts = append(parts, style.Render(cell))
 	}
-	row := strings.Join(parts, " ")
+	row := strings.Join(parts, labelDashboardColumnDivider)
 	if header {
-		return m.theme.Header.Render(row)
+		// Header padding would offset every cell from the row columns.
+		return m.theme.Header.Padding(0).Render(" " + row)
 	}
 	if selected {
-		return m.theme.Selected.Render(row)
+		return m.theme.Selected.PaddingLeft(0).Render(row)
 	}
-	return m.theme.Base.Render(row)
+	return m.theme.Base.Render(" " + row)
 }
 
 func (m LabelDashboardModel) renderLabelCell(lh analysis.LabelHealth) string {
