@@ -54,6 +54,7 @@ var sanitizedEnvironment = map[string]bool{
 	"BV_INSIGHTS_MAP_LIMIT":       true,
 	"BV_HUB_CHANGE_SIGNAL":        true,
 	"BV_WBV_HUB_SCOPE":            true,
+	"BV_WBV_HUB_MODE":             true,
 }
 
 type hubScopeRequest struct {
@@ -203,6 +204,7 @@ func (r runner) run(arguments []string) int {
 			}
 		}
 		environment = append(environment, "BEADS_DIR="+paths.Store)
+		environment = append(environment, "BV_WBV_HUB_MODE=1")
 		if robot {
 			scopeJSON, marshalErr := json.Marshal(hubScope)
 			if marshalErr != nil {

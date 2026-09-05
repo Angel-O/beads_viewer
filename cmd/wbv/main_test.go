@@ -131,6 +131,9 @@ func TestAutoLocalAndExplicitHubAreIsolated(t *testing.T) {
 	if hubRecord.Env["BEADS_DIR"] != wantStore {
 		t.Fatalf("BEADS_DIR = %q, want %q", hubRecord.Env["BEADS_DIR"], wantStore)
 	}
+	if hubRecord.Env["BV_WBV_HUB_MODE"] != "1" {
+		t.Fatalf("Hub mode marker = %q, want 1", hubRecord.Env["BV_WBV_HUB_MODE"])
+	}
 }
 
 func TestAutoUsesHubWithoutValidLocalStore(t *testing.T) {

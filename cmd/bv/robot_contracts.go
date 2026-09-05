@@ -20,19 +20,6 @@ type RobotResult interface {
 // before the configured encoder sees it.
 type RobotResultDecorator func(command string, result RobotResult) error
 
-type robotScopeMetadata struct {
-	// CLI scope fields are supplied by RobotEnvelope. Hub fields are added by
-	// the optional Hub decorator; EncodeResult merges both objects so the two
-	// representations never compete for the JSON "scope" key.
-	Label              string   `json:"label,omitempty"`
-	Recipe             string   `json:"recipe,omitempty"`
-	Repo               string   `json:"repo,omitempty"`
-	Unsupported        []string `json:"unsupported,omitempty"`
-	Mode               string   `json:"mode"`
-	Contexts           []string `json:"contexts"`
-	IncludeContextless bool     `json:"include_contextless"`
-}
-
 func mergeRobotScopeJSON(payload, envelope json.RawMessage) (json.RawMessage, error) {
 	var merged map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &merged); err != nil {
@@ -50,18 +37,8 @@ func mergeRobotScopeJSON(payload, envelope json.RawMessage) (json.RawMessage, er
 	return json.Marshal(merged)
 }
 
-type robotBoundaryReference struct {
-	RelationType string          `json:"relation_type"`
-	EndpointID   string          `json:"endpoint_id"`
-	IssueType    model.IssueType `json:"issue_type"`
-	Status       model.Status    `json:"status"`
-	Contexts     []string        `json:"contexts"`
-	InScope      bool            `json:"in_scope"`
-}
-
 type robotPlanItem struct {
 	analysis.PlanItem
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 type robotExecutionTrack struct {
@@ -88,14 +65,12 @@ type robotPlanOutput struct {
 	LabelContext   *analysis.LabelHealth   `json:"label_context,omitempty"`
 	Plan           robotExecutionPlan      `json:"plan"`
 	UsageHints     []string                `json:"usage_hints"`
-	Scope          *robotScopeMetadata     `json:"scope,omitempty"`
 }
 
 func (*robotPlanOutput) robotResult() {}
 
 type robotPriorityRecommendation struct {
 	analysis.EnhancedPriorityRecommendation
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 type robotPriorityFilters struct {
@@ -125,7 +100,6 @@ type robotPriorityOutput struct {
 	Filters           robotPriorityFilters          `json:"filters"`
 	Summary           robotPrioritySummary          `json:"summary"`
 	Usage             []string                      `json:"usage_hints"`
-	Scope             *robotScopeMetadata           `json:"scope,omitempty"`
 }
 
 func (*robotPriorityOutput) robotResult() {}
@@ -157,15 +131,13 @@ type robotInsightsOutput struct {
 	TopWhatIfs       []analysis.WhatIfEntry     `json:"top_what_ifs,omitempty"`
 	AdvancedInsights *analysis.AdvancedInsights `json:"advanced_insights,omitempty"`
 	UsageHints       []string                   `json:"usage_hints"`
-	Scope            *robotScopeMetadata        `json:"scope,omitempty"`
 }
 
 func (*robotInsightsOutput) robotResult() {}
 
 type robotGraphOutput struct {
 	*export.GraphExportResult
-	Scope  *robotScopeMetadata `json:"scope,omitempty"`
-	issues []model.Issue       `json:"-"`
+	issues []model.Issue `json:"-"`
 	stats  *analysis.GraphStats
 	config export.GraphExportConfig
 }
@@ -187,7 +159,6 @@ type robotForecastOutput struct {
 	ForecastCount int                    `json:"forecast_count"`
 	Forecasts     []analysis.ETAEstimate `json:"forecasts"`
 	Summary       *robotForecastSummary  `json:"summary,omitempty"`
-	Scope         *robotScopeMetadata    `json:"scope,omitempty"`
 }
 
 func (*robotForecastOutput) robotResult() {}
@@ -198,7 +169,6 @@ type robotLabelHealthOutput struct {
 	AnalysisConfig analysis.LabelHealthConfig   `json:"analysis_config"`
 	Results        analysis.LabelAnalysisResult `json:"results"`
 	UsageHints     []string                     `json:"usage_hints"`
-	Scope          *robotScopeMetadata          `json:"scope,omitempty"`
 }
 
 func (*robotLabelHealthOutput) robotResult() {}
@@ -210,7 +180,6 @@ type robotLabelFlowOutput struct {
 	Flow        analysis.CrossLabelFlow    `json:"flow"`
 	Config      analysis.LabelHealthConfig `json:"analysis_config"`
 	UsageHints  []string                   `json:"usage_hints"`
-	Scope       *robotScopeMetadata        `json:"scope,omitempty"`
 }
 
 func (*robotLabelFlowOutput) robotResult() {}
@@ -236,7 +205,6 @@ type robotAttentionOutput struct {
 	TotalLabels int                   `json:"total_labels"`
 	Labels      []robotAttentionLabel `json:"labels"`
 	UsageHints  []string              `json:"usage_hints"`
-	Scope       *robotScopeMetadata   `json:"scope,omitempty"`
 }
 
 func (*robotAttentionOutput) robotResult() {}
@@ -244,24 +212,21 @@ func (*robotAttentionOutput) robotResult() {}
 type robotBlockerChainOutput struct {
 	RobotEnvelope
 	Result *analysis.BlockerChainResult `json:"result"`
-	Scope  *robotScopeMetadata          `json:"scope,omitempty"`
 }
 
 func (*robotBlockerChainOutput) robotResult() {}
 
 type robotSprintListOutput struct {
 	RobotEnvelope
-	SprintCount int                 `json:"sprint_count"`
-	Sprints     []model.Sprint      `json:"sprints"`
-	Scope       *robotScopeMetadata `json:"scope,omitempty"`
+	SprintCount int            `json:"sprint_count"`
+	Sprints     []model.Sprint `json:"sprints"`
 }
 
 func (*robotSprintListOutput) robotResult() {}
 
 type robotSprintShowOutput struct {
 	RobotEnvelope
-	Sprint *model.Sprint       `json:"sprint"`
-	Scope  *robotScopeMetadata `json:"scope,omitempty"`
+	Sprint *model.Sprint `json:"sprint"`
 }
 
 func (*robotSprintShowOutput) robotResult() {}
@@ -289,7 +254,6 @@ type robotCapacityOutput struct {
 	ActionableCount   int                       `json:"actionable_count"`
 	Actionable        []string                  `json:"actionable,omitempty"`
 	Bottlenecks       []robotCapacityBottleneck `json:"bottlenecks,omitempty"`
-	Scope             *robotScopeMetadata       `json:"scope,omitempty"`
 }
 
 func (*robotCapacityOutput) robotResult() {}
@@ -303,29 +267,24 @@ type robotTriageOutput struct {
 	Triage      robotTriageResult      `json:"triage"`
 	Feedback    *analysis.FeedbackJSON `json:"feedback,omitempty"`
 	UsageHints  []string               `json:"usage_hints"`
-	Scope       *robotScopeMetadata    `json:"scope,omitempty"`
 }
 
 func (*robotTriageOutput) robotResult() {}
 
 type robotTriageTopPick struct {
 	analysis.TopPick
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 type robotTriageRecommendation struct {
 	analysis.Recommendation
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 type robotTriageQuickWin struct {
 	analysis.QuickWin
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 type robotTriageBlocker struct {
 	analysis.BlockerItem
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
 }
 
 type robotTriageQuickRef struct {

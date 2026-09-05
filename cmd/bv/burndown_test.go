@@ -1,6 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -59,6 +66,121 @@ func TestCalculateBurndownAt_OnTrackWithProgress(t *testing.T) {
 	}
 	if got, want := len(out.IdealLine), out.TotalDays+1; got != want {
 		t.Fatalf("IdealLine=%d; want %d", got, want)
+	}
+}
+
+func TestFilterBurndownScopeChangesUsesBoundedIssues(t *testing.T) {
+	events := []ScopeChangeEvent{
+		{IssueID: "active", Action: "added"},
+		{IssueID: "hidden", Action: "removed"},
+	}
+	got := filterBurndownScopeChanges(events, map[string]model.Issue{"active": {ID: "active"}})
+	if len(got) != 1 || got[0].IssueID != "active" {
+		t.Fatalf("filtered scope changes = %#v, want only active", got)
+	}
+}
+
+func TestNoActiveHubBurndownReturnsEmptyBeforeSprintLookup(t *testing.T) {
+	target := "missing-sprint"
+	registry := newRobotRegistry()
+	registerPhaseTwoRobotHandlers(&registry, phaseTwoRobotHandlerConfig{
+		RobotBurndownFlag: &target,
+	})
+	var output bytes.Buffer
+	handled, err := registry.DispatchFlag("robot-burndown", RobotContext{
+		HubMode:     true,
+		Encoder:     json.NewEncoder(&output),
+		ActiveScope: nil,
+		WorkDir:     "/path/that/does/not/exist",
+	})
+	if err != nil {
+		t.Fatalf("no-active burndown: %v", err)
+	}
+	if !handled {
+		t.Fatal("robot-burndown was not dispatched")
+	}
+	var got BurndownOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("decode empty burndown: %v\n%s", err, output.String())
+	}
+	if got.SprintID != target || got.TotalIssues != 0 || len(got.DailyPoints) != 0 || len(got.IdealLine) != 0 || len(got.ScopeChanges) != 0 || len(got.AtRisk) != 0 {
+		t.Fatalf("empty burndown = %+v", got)
+	}
+}
+
+func TestLocalBurndownKeepsUnfilteredScopeChangesAndIdealLine(t *testing.T) {
+	root := t.TempDir()
+	beadsDir := filepath.Join(root, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", "")
+	t.Setenv("BEADS_DB", "")
+	start := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
+	end := start.Add(96 * time.Hour)
+	old := fmt.Sprintf(`{"id":"sprint-1","name":"Sprint 1","start_date":%q,"end_date":%q,"bead_ids":["active"]}
+`, start.Format(time.RFC3339), end.Format(time.RFC3339))
+	current := fmt.Sprintf(`{"id":"sprint-1","name":"Sprint 1","start_date":%q,"end_date":%q,"bead_ids":["active","hidden"]}
+`, start.Format(time.RFC3339), end.Format(time.RFC3339))
+	writeSprints := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(beadsDir, "sprints.jsonl"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := exec.Command("git", "init", "-q", root).Run(); err != nil {
+		t.Fatal(err)
+	}
+	writeSprints(old)
+	runBurndownGit(t, root, "add", ".beads/sprints.jsonl")
+	runBurndownGit(t, root, "commit", "-qm", "initial sprint")
+	writeSprints(current)
+	runBurndownGit(t, root, "add", ".beads/sprints.jsonl")
+	commit := exec.Command("git", "commit", "-qm", "add sprint member")
+	commit.Dir = root
+	commit.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=Burndown Test", "GIT_AUTHOR_EMAIL=burndown@example.com",
+		"GIT_COMMITTER_NAME=Burndown Test", "GIT_COMMITTER_EMAIL=burndown@example.com",
+		"GIT_AUTHOR_DATE="+start.Add(24*time.Hour).Format(time.RFC3339),
+		"GIT_COMMITTER_DATE="+start.Add(24*time.Hour).Format(time.RFC3339),
+	)
+	if output, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, output)
+	}
+
+	target := "sprint-1"
+	registry := newRobotRegistry()
+	registerPhaseTwoRobotHandlers(&registry, phaseTwoRobotHandlerConfig{RobotBurndownFlag: &target})
+	var output bytes.Buffer
+	handled, err := registry.DispatchFlag("robot-burndown", RobotContext{
+		HubMode: false,
+		WorkDir: root,
+		Issues:  []model.Issue{{ID: "active", Status: model.StatusOpen}},
+		Encoder: json.NewEncoder(&output),
+	})
+	if err != nil || !handled {
+		t.Fatalf("local burndown dispatch: handled=%v err=%v\n%s", handled, err, output.String())
+	}
+	var got BurndownOutput
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("decode local burndown: %v\n%s", err, output.String())
+	}
+	if len(got.ScopeChanges) != 1 || got.ScopeChanges[0].IssueID != "hidden" {
+		t.Fatalf("local scope changes = %#v, want unfiltered hidden event", got.ScopeChanges)
+	}
+	wantIdeal := generateIdealLineScoped(&model.Sprint{ID: target, StartDate: start, EndDate: end}, got.TotalIssues, got.ScopeChanges)
+	if !reflect.DeepEqual(got.IdealLine, wantIdeal) {
+		t.Fatalf("local ideal line was not based on unfiltered scope changes")
+	}
+}
+
+func runBurndownGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Burndown Test", "GIT_AUTHOR_EMAIL=burndown@example.com", "GIT_COMMITTER_NAME=Burndown Test", "GIT_COMMITTER_EMAIL=burndown@example.com")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 }
 

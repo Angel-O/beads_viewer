@@ -2,6 +2,7 @@ package export
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,6 +48,22 @@ func TestGenerateInteractiveGraphHTML_EmptyIssues(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no issues") {
 		t.Errorf("Expected 'no issues' error, got: %v", err)
+	}
+}
+
+func TestGenerateInteractiveGraphHTML_AllowsEmptyBoundedExport(t *testing.T) {
+	path, err := GenerateInteractiveGraphHTML(InteractiveGraphOptions{
+		Path:       filepath.Join(t.TempDir(), "empty.html"),
+		AllowEmpty: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == "" {
+		t.Fatal("empty export returned no path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("empty export file: %v", err)
 	}
 }
 

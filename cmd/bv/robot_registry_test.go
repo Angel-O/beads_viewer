@@ -59,6 +59,55 @@ func TestRobotHistoryTimeoutFromMillisecondsChecked(t *testing.T) {
 	}
 }
 
+func TestNoActiveHubTargetRobotsReturnEmptyPayloads(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(RobotContext) error
+	}{
+		{name: "related", run: func(ctx RobotContext) error {
+			id := "missing"
+			return handleRobotRelated(ctx, phaseThreeRobotHandlerConfig{RobotRelatedFlag: &id})
+		}},
+		{name: "blocker chain", run: func(ctx RobotContext) error {
+			id := "missing"
+			return handleRobotBlockerChain(ctx, phaseThreeRobotHandlerConfig{RobotBlockerChainFlag: &id})
+		}},
+		{name: "impact network", run: func(ctx RobotContext) error {
+			id := "missing"
+			return handleRobotImpactNetwork(ctx, phaseThreeRobotHandlerConfig{RobotImpactNetworkFlag: &id})
+		}},
+		{name: "causality", run: func(ctx RobotContext) error {
+			id := "missing"
+			return handleRobotCausality(ctx, phaseThreeRobotHandlerConfig{RobotCausalityFlag: &id})
+		}},
+		{name: "sprint show", run: func(ctx RobotContext) error {
+			id := "sprint-1"
+			return handleRobotSprintShow(ctx, phaseThreeRobotHandlerConfig{RobotSprintShowFlag: &id})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			ctx := RobotContext{
+				HubMode:     true,
+				DataHash:    "empty",
+				Encoder:     newJSONRobotEncoder(&output),
+				ActiveScope: nil,
+			}
+			if err := test.run(ctx); err != nil {
+				t.Fatalf("empty Hub output: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(output.Bytes(), &payload); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			if len(payload) == 0 {
+				t.Fatal("empty JSON payload")
+			}
+		})
+	}
+}
+
 func TestResolveRobotHistoryTimeoutSaturatesOverflow(t *testing.T) {
 	t.Setenv("BV_ROBOT_HISTORY_TIMEOUT_MS", strconv.FormatInt(maxRobotHistoryTimeoutMillis+1, 10))
 	unset := -1

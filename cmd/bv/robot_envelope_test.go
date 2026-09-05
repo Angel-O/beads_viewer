@@ -100,32 +100,24 @@ func TestRobotRegistry_DispatchFlagSetsCommand(t *testing.T) {
 	}
 }
 
-func TestRobotTypedResultEnvelopeMergesCLIAndHubScope(t *testing.T) {
+func TestRobotTypedResultEnvelopeCarriesActiveHubScope(t *testing.T) {
 	var encoded bytes.Buffer
-	result := &robotPlanOutput{
-		GeneratedAt: "stale",
-		DataHash:    "stale",
-		Scope: &robotScopeMetadata{
-			Mode:               "selected_contexts",
-			Contexts:           []string{"ctx:alpha"},
-			IncludeContextless: false,
-		},
-	}
+	result := &robotPlanOutput{GeneratedAt: "stale", DataHash: "stale"}
 	ctx := RobotContext{
 		DataHash:   "current",
 		SourcePath: "/repo/.beads/issues.jsonl",
 		SourceKind: "jsonl",
 		AsOf:       "HEAD~3",
 		AsOfCommit: "0123456789abcdef",
+		ActiveScope: &RobotActiveScope{
+			ID: "scope-a", Name: "Active scope", CreatedOn: "2026-09-05",
+			State: "active", MemberCount: 2, MemberLimit: 100,
+		},
 		LabelScope: "backend",
 		Recipe:     "actionable",
 		Repo:       "api",
 		Command:    "robot-file-hotspots",
 		Encoder:    newJSONRobotEncoder(&encoded),
-		ResultDecorator: func(_ string, value RobotResult) error {
-			value.(*robotPlanOutput).Scope.Mode = "selected_contexts"
-			return nil
-		},
 	}
 	if err := ctx.EncodeResult("robot-plan", result); err != nil {
 		t.Fatal(err)
@@ -146,7 +138,9 @@ func TestRobotTypedResultEnvelopeMergesCLIAndHubScope(t *testing.T) {
 		t.Fatalf("scope = %#v", payload["scope"])
 	}
 	for key, want := range map[string]any{
-		"label": "backend", "recipe": "actionable", "repo": "api", "mode": "selected_contexts",
+		"label": "backend", "recipe": "actionable", "repo": "api",
+		"id": "scope-a", "name": "Active scope", "created_on": "2026-09-05",
+		"state": "active", "member_count": float64(2), "member_limit": float64(100),
 	} {
 		if scope[key] != want {
 			t.Fatalf("scope[%q] = %#v, want %#v", key, scope[key], want)
@@ -156,7 +150,7 @@ func TestRobotTypedResultEnvelopeMergesCLIAndHubScope(t *testing.T) {
 	if !ok || len(unsupported) != 1 || unsupported[0] != "as_of" {
 		t.Fatalf("scope.unsupported = %#v", scope["unsupported"])
 	}
-	if strings.Contains(encoded.String(), `"scope":null`) {
+	if strings.Contains(encoded.String(), `"scope":null`) || strings.Contains(encoded.String(), `"mode"`) || strings.Contains(encoded.String(), `"contexts"`) {
 		t.Fatalf("scope collision dropped metadata: %s", encoded.String())
 	}
 }
