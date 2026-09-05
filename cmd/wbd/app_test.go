@@ -133,6 +133,12 @@ func fakeCommandKey(arguments []string) string {
 		case "--json":
 			arguments = arguments[1:]
 		default:
+			if arguments[0] == "scope" && len(arguments) > 1 {
+				return "scope:" + arguments[1]
+			}
+			if arguments[0] == "backlog" && len(arguments) > 1 {
+				return "backlog:" + arguments[1]
+			}
 			if arguments[0] == "show" && len(arguments) > 1 {
 				return "show:" + arguments[1]
 			}
@@ -2713,7 +2719,8 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 		"--cursor": "opaque-token", "--sort": "updated_at:desc", "--created-after": "2026-08-27T12:00:00Z",
 		"--updated-after": "2026-08-27T12:00:00Z", "--closed-after": "2026-08-27T12:00:00Z", "--after-created-at": "2026-08-27T12:00:00Z",
 		"--after-updated-at": "2026-08-27T12:00:00Z", "--after-closed-at": "2026-08-27T12:00:00Z",
-		"--reason": "done", "--author": "agent-7", "--file": "notes.txt",
+		"--reason": "done", "--author": "agent-7", "--file": "notes.txt", "--scope": "work",
+		"--source-scope": "old", "--target-scope": "new",
 	}
 	for _, path := range commandOrder {
 		spec := commandSpecs[path]
