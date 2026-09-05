@@ -207,8 +207,17 @@ var commandSpecs = map[string]commandSpec{
 	"scope move":       {path: "scope move", usage: "wbd scope move <issue-id>... [--source-scope <id>] [--target-scope <id>] [--json]", summary: "Move issues between scopes; omitted source or target uses the active scope.", options: []optionSpec{{name: "--source-scope", value: "<id>", description: "Source scope; defaults to the active scope."}, {name: "--target-scope", value: "<id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
 	"backlog":          {path: "backlog", usage: "wbd backlog list [options]", summary: "Read the scoped backlog through bd's JSON surface."},
 	"backlog list": {
-		path: "backlog list", usage: "wbd backlog list [--limit <n>] [--cursor <token>] [--json]", summary: "List unscoped backlog issues, preserving bd pagination cursors unchanged.",
-		options: []optionSpec{{name: "--limit", value: "<1-1000>", description: "Maximum results."}, {name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous page."}, {name: "--json", description: "Emit JSON."}},
+		path: "backlog list", usage: "wbd backlog list [options]", summary: "List backlog issues from registered contexts or without a context.",
+		options: []optionSpec{
+			{name: "--context", value: "<ctx-id>", description: "Select a registered context; repeatable and ORed."},
+			{name: "--contextless", description: "Include issues without a context; combines exactly with --context."},
+			{name: "--status", value: "<status,...>", description: "open|in_progress|blocked|deferred|closed."},
+			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo."},
+			{name: "--sort", value: "<order>", description: "created-desc or priority-asc."},
+			{name: "--limit", value: "<1-1000>", description: "Maximum results."},
+			{name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous page."},
+			{name: "--json", description: "Emit JSON."},
+		},
 	},
 }
 
@@ -267,6 +276,13 @@ type request struct {
 	listAfterUpdated   string
 	listAfterClosed    string
 	listBrief          bool
+	backlogContexts    []string
+	backlogContextless bool
+	backlogStatus      string
+	backlogType        string
+	backlogSort        string
+	backlogLimit       int
+	backlogCursor      string
 	expandDependencies bool
 	migrateDryRun      bool
 	migrateApply       bool
@@ -949,21 +965,50 @@ func parseBacklog(result request, arguments []string) (request, error) {
 			}
 			continue
 		}
+		if argument == "--contextless" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.backlogContextless = true
+			continue
+		}
 		flag, value, consumed, matched, err := optionValueFor("backlog list", argument, arguments)
 		if err != nil {
 			return result, err
 		}
 		if matched {
 			arguments = arguments[consumed:]
-			if err := markSeen(seen, flag); err != nil {
-				return result, err
-			}
-			if flag == "--limit" {
-				if err := validateLimit(value); err != nil {
+			if flag != "--context" {
+				if err := markSeen(seen, flag); err != nil {
 					return result, err
 				}
 			}
-			result.args = append(result.args, flag, value)
+			switch flag {
+			case "--context":
+				result.backlogContexts = append(result.backlogContexts, value)
+			case "--status":
+				if err := validateStatuses(value); err != nil {
+					return result, err
+				}
+				result.backlogStatus = value
+			case "--type":
+				if err := validateType(value); err != nil {
+					return result, err
+				}
+				result.backlogType = value
+			case "--sort":
+				if err := validateBacklogSort(value); err != nil {
+					return result, err
+				}
+				result.backlogSort = value
+			case "--limit":
+				if err := validateLimit(value); err != nil {
+					return result, err
+				}
+				result.backlogLimit, _ = strconv.Atoi(value)
+			case "--cursor":
+				result.backlogCursor = value
+			}
 			continue
 		}
 		if strings.HasPrefix(argument, "-") {
@@ -971,10 +1016,20 @@ func parseBacklog(result request, arguments []string) (request, error) {
 		}
 		return result, fmt.Errorf("backlog list does not accept positional arguments: %s", argument)
 	}
-	if result.json && requestValue(result.args, "--limit", "") == "" {
+	if result.json && result.backlogLimit == 0 {
 		return result, errors.New("JSON backlog pages require a positive --limit")
 	}
+	if result.backlogCursor != "" && result.backlogLimit == 0 {
+		return result, errors.New("--cursor requires --limit so the page is bounded")
+	}
 	return result, nil
+}
+
+func validateBacklogSort(value string) error {
+	if !oneOf(value, "created-desc", "priority-asc") {
+		return fmt.Errorf("invalid backlog sort %q; use created-desc or priority-asc", value)
+	}
+	return nil
 }
 
 func validateListSort(value string) error {
