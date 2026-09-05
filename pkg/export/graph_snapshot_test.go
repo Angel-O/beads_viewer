@@ -84,6 +84,20 @@ func TestSaveGraphSnapshot_EmptyIssues(t *testing.T) {
 	}
 }
 
+func TestSaveGraphSnapshot_AllowsEmptyBoundedExport(t *testing.T) {
+	issues := []model.Issue{}
+	stats := analysis.NewAnalyzer(issues).Analyze()
+	path := filepath.Join(t.TempDir(), "empty.svg")
+	if err := SaveGraphSnapshot(GraphSnapshotOptions{
+		Path: path, Issues: issues, Stats: &stats, AllowEmpty: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
+		t.Fatalf("empty export file = %v, info = %#v", err, info)
+	}
+}
+
 func TestSaveGraphSnapshot_NilStats(t *testing.T) {
 	issues := []model.Issue{{ID: "A", Title: "Root", Status: model.StatusOpen}}
 

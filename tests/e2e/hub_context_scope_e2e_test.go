@@ -296,31 +296,44 @@ func TestRealHubScopedRobotReads(t *testing.T) {
 	shared := fixture.create(t, fixture.repositories[0], "Shared coordination", "--type", "epic", "--context", contexts[0], "--context", contexts[1])
 	contextless := fixture.create(t, fixture.outside, "Neutral capture", "--type", "todo", "--contextless")
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", visible, hidden)
+	scopeID := extractCreatedID(t, fixture.runSuccess(t, fixture.outside, "wbd", "scope", "create", "scope-qa", "Scoped robot QA", "--activate", "--json"))
+	fixture.runSuccess(t, fixture.outside, "wbd", "scope", "add", visible, hidden, shared, contextless, "--scope", scopeID, "--json")
 
 	current := fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--robot-graph")
 	explicit := fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--context", contexts[1], "--context", contexts[0], "--robot-graph")
 	contextlessRead := fixture.robot(t, fixture.outside, "wbv", "--hub", "--contextless", "--robot-graph")
 	allItems := fixture.robot(t, fixture.outside, "wbv", "--hub", "--robot-graph")
 
-	wantHash := current["data_hash"]
-	for name, output := range map[string]map[string]any{"explicit": explicit, "contextless": contextlessRead, "all": allItems} {
-		if output["data_hash"] != wantHash {
-			t.Errorf("%s data hash = %v, want canonical %v", name, output["data_hash"], wantHash)
+	repeats := map[string]map[string]any{
+		"current":     fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--robot-graph"),
+		"explicit":    fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--context", contexts[1], "--context", contexts[0], "--robot-graph"),
+		"contextless": fixture.robot(t, fixture.outside, "wbv", "--hub", "--contextless", "--robot-graph"),
+		"all":         fixture.robot(t, fixture.outside, "wbv", "--hub", "--robot-graph"),
+	}
+	for name, output := range map[string]map[string]any{"current": current, "explicit": explicit, "contextless": contextlessRead, "all": allItems} {
+		if output["data_hash"] != repeats[name]["data_hash"] {
+			t.Errorf("%s data hash changed across repeat requests: %v vs %v", name, output["data_hash"], repeats[name]["data_hash"])
 		}
 	}
 	assertRobotIDs(t, current, []string{shared, visible})
 	assertRobotIDs(t, explicit, []string{hidden, shared, visible})
 	assertRobotIDs(t, contextlessRead, []string{contextless})
 	assertRobotIDs(t, allItems, []string{contextless, hidden, shared, visible})
+	for name, output := range map[string]map[string]any{"current": current, "explicit": explicit, "contextless": contextlessRead, "all": allItems} {
+		scope, ok := output["scope"].(map[string]any)
+		if !ok || scope["id"] != scopeID || scope["member_count"] != float64(4) {
+			t.Fatalf("%s scope = %#v, want active scope %s with four members", name, output["scope"], scopeID)
+		}
+	}
 	if countRobotID(explicit, shared) != 1 {
 		t.Fatalf("multi-context issue %s was not de-duplicated", shared)
 	}
-	if !robotHasBoundary(explicit, visible, hidden, "blocks") && !robotHasBoundary(current, visible, hidden, "blocks") {
-		t.Fatalf("scoped graph lacks hidden blocker evidence for %s -> %s", visible, hidden)
+	if !robotHasEdge(explicit, visible, hidden, "blocks") {
+		t.Fatalf("combined-context graph lacks ordinary edge for %s -> %s", visible, hidden)
 	}
 
-	plan := fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--robot-plan")
-	if containsRobotID(plan, visible) {
+	combinedPlan := fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--context", contexts[1], "--context", contexts[0], "--robot-plan")
+	if containsRobotID(combinedPlan, visible) {
 		t.Fatalf("hidden blocker made %s ready", visible)
 	}
 }
@@ -723,7 +736,7 @@ func collectRobotIDs(value any) []string {
 				seen[id] = true
 			}
 			for key, child := range typed {
-				if key != "boundary_refs" {
+				if key != "boundary_refs" && key != "scope" {
 					walk(child)
 				}
 			}
@@ -756,32 +769,22 @@ func containsRobotID(output map[string]any, id string) bool {
 	return false
 }
 
-func robotHasBoundary(output map[string]any, issueID, endpointID, relationType string) bool {
-	var walk func(any, string) bool
-	walk = func(current any, owner string) bool {
-		switch typed := current.(type) {
-		case map[string]any:
-			if id, ok := typed["id"].(string); ok {
-				owner = id
-			}
-			if owner == issueID && typed["endpoint_id"] == endpointID && typed["relation_type"] == relationType {
-				return true
-			}
-			for _, child := range typed {
-				if walk(child, owner) {
-					return true
-				}
-			}
-		case []any:
-			for _, child := range typed {
-				if walk(child, owner) {
-					return true
-				}
-			}
-		}
+func robotHasEdge(output map[string]any, from, to, relationType string) bool {
+	adjacency, ok := output["adjacency"].(map[string]any)
+	if !ok {
 		return false
 	}
-	return walk(output, "")
+	edges, ok := adjacency["edges"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range edges {
+		edge, ok := raw.(map[string]any)
+		if ok && edge["from"] == from && edge["to"] == to && edge["type"] == relationType {
+			return true
+		}
+	}
+	return false
 }
 
 func containsJSONKey(value any, wanted string) bool {

@@ -2053,15 +2053,15 @@ func main() {
 			AsOf:               *asOf,
 			WorkDir:            compositionWorkDir,
 			RobotMode:          robotMode,
-			WrapperScope:       os.Getenv("BV_WBV_HUB_SCOPE"),
+			HubMode:            os.Getenv("BV_WBV_HUB_MODE") == "1" || strings.TrimSpace(os.Getenv("BV_WBV_HUB_SCOPE")) != "",
 			RefreshEnvironment: os.Getenv("BV_HUB_AUTO_REFRESH"),
+			WrapperScope:       os.Getenv("BV_WBV_HUB_SCOPE"),
 		})
 		// END UPSTREAM INTEGRATION BOUNDARY
 		if err != nil {
 			return err
 		}
 		usesHubConfigStore := composition.UsesHubConfigStore
-		hubRobotScope := composition.HubScope
 
 		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
 		// Priority: --db flag > BEADS_DB env > BEADS_DIR env > auto-discovery.
@@ -2077,10 +2077,6 @@ func main() {
 				return fmt.Errorf("setting external Beads store: %w", err)
 			}
 		}
-		if hubRobotScope != nil && *repoFilter != "" {
-			return fmt.Errorf("--repo cannot be combined with wrapper Hub scope")
-		}
-
 		// Mark robot mode for downstream packages (e.g., parsers) to keep stdout JSON clean.
 		if robotMode && !envRobot {
 			_ = os.Setenv("BV_ROBOT", "1")
@@ -2671,6 +2667,7 @@ func main() {
 		semanticDatasetPath := composition.SemanticDatasetPath
 		var workspaceInfo *workspace.LoadSummary
 		var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
+		var activeScope *RobotActiveScope
 
 		// Workspace auto-discovery (I2): without --workspace, when no .beads
 		// directory is reachable from the working directory (or BEADS_DIR /
@@ -2767,12 +2764,16 @@ func main() {
 			_ = loader.EnsureBVIgnored(projectDir)
 		}
 		loadDuration := time.Since(loadStart)
-		if composition.HubScopeMemberIDs != nil {
-			memberIDs, scopeErr := composition.HubScopeMemberIDs(context.Background())
+		if composition.HubScopeSnapshot != nil {
+			snapshot, scopeErr := composition.HubScopeSnapshot(context.Background())
 			if scopeErr != nil {
 				return fmt.Errorf("loading active Hub scope: %w", scopeErr)
 			}
-			issues = filterHubScopeIssues(issues, memberIDs)
+			activeScope = snapshot.Active
+			issues = filterHubScopeIssues(issues, snapshot.MemberIDs)
+		}
+		if composition.HubRobotFilter != nil {
+			issues = filterHubRobotSelection(issues, *composition.HubRobotFilter)
 		}
 
 		// Apply --repo filter if specified
@@ -2794,7 +2795,7 @@ func main() {
 		// When --label is specified, extract the label's subgraph and use it for all robot analysis.
 		// This includes label health context in the output.
 		var labelScopeContext *analysis.LabelHealth
-		if *labelScope != "" && hubRobotScope == nil {
+		if *labelScope != "" {
 			sg := analysis.ComputeLabelSubgraph(issues, *labelScope)
 			if sg.IssueCount == 0 {
 				if !envRobot {
@@ -2820,15 +2821,6 @@ func main() {
 					}
 				}
 			}
-		} else if *labelScope != "" {
-			cfg := analysis.DefaultLabelHealthConfig()
-			allHealth := analysis.ComputeAllLabelHealth(issues, cfg, robotNow(), nil)
-			for i := range allHealth.Labels {
-				if allHealth.Labels[i].Label == *labelScope {
-					labelScopeContext = &allHealth.Labels[i]
-					break
-				}
-			}
 		}
 
 		// Apply recipe filtering early for robot modes (bv-93)
@@ -2852,19 +2844,10 @@ func main() {
 		robotDispatchContext.DataHashMatchesIssues = dataHashMatchesIssues
 		robotDispatchContext.AsOf = *asOf
 		robotDispatchContext.AsOfCommit = asOfResolved
+		robotDispatchContext.ActiveScope = activeScope
+		robotDispatchContext.HubMode = composition.HubMode
 		robotDispatchContext.LabelScope = *labelScope
 		robotDispatchContext.LabelContext = labelScopeContext
-		// BEGIN UPSTREAM INTEGRATION BOUNDARY: Hub robot-hook adapter wiring
-		if hubRobotScope != nil {
-			projection, projectionErr := newHubScopeProjection(*hubRobotScope, issues, *labelScope)
-			if projectionErr != nil {
-				return fmt.Errorf("preparing Hub scope projection: %w", projectionErr)
-			}
-			robotDispatchContext.CandidatePredicate = projection.candidateFilter()
-			robotDispatchContext.LabelPredicate = hub.AdmitLabel
-			robotDispatchContext.ResultDecorator = projection.decorateRobotResult
-		}
-		// END UPSTREAM INTEGRATION BOUNDARY
 		robotDispatchContext.Recipe = *recipeName
 		robotDispatchContext.Repo = *repoFilter
 		// Name the source every payload was computed from (reality check
@@ -3354,11 +3337,28 @@ func main() {
 				// file write triggered a full site + git-history regeneration,
 				// pinning a CPU under an active author.
 				reload := func() ([]model.Issue, error) {
+					var freshIssues []model.Issue
 					if *workspaceConfig != "" {
-						iss, _, err := workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
-						return iss, err
+						var err error
+						freshIssues, _, err = workspace.LoadAllFromConfig(context.Background(), *workspaceConfig)
+						if err != nil {
+							return nil, err
+						}
+					} else {
+						var err error
+						freshIssues, err = datasource.LoadIssues("")
+						if err != nil {
+							return nil, err
+						}
 					}
-					return datasource.LoadIssues("")
+					if composition.HubScopeSnapshot != nil {
+						snapshot, err := composition.HubScopeSnapshot(context.Background())
+						if err != nil {
+							return nil, err
+						}
+						freshIssues = filterHubScopeIssues(freshIssues, snapshot.MemberIDs)
+					}
+					return freshIssues, nil
 				}
 
 				const (
@@ -3471,7 +3471,7 @@ func main() {
 				exportIssues = filtered
 			}
 
-			if len(exportIssues) == 0 {
+			if len(exportIssues) == 0 && !composition.HubMode {
 				fmt.Fprintf(os.Stderr, "No issues to export (check filters)\n")
 				os.Exit(1)
 			}
@@ -3502,6 +3502,7 @@ func main() {
 					DataHash:    dataHash,
 					Path:        *exportGraph,
 					ProjectName: projectName,
+					AllowEmpty:  composition.HubMode,
 				}
 				// Auto-generate filename if just "html" or "interactive"
 				if *exportGraph == "html" || *exportGraph == "interactive" {
@@ -3518,12 +3519,13 @@ func main() {
 
 			// Static PNG/SVG export (use .html for better interactive graphs)
 			opts := export.GraphSnapshotOptions{
-				Path:     *exportGraph,
-				Title:    *graphTitle,
-				Preset:   *graphPreset,
-				Issues:   exportIssues,
-				Stats:    &stats,
-				DataHash: dataHash,
+				Path:       *exportGraph,
+				Title:      *graphTitle,
+				Preset:     *graphPreset,
+				Issues:     exportIssues,
+				Stats:      &stats,
+				DataHash:   dataHash,
+				AllowEmpty: composition.HubMode,
 			}
 
 			err := export.SaveGraphSnapshot(opts)
@@ -7026,6 +7028,16 @@ type ScopeChangeEvent struct {
 	Action     string    `json:"action"` // "added" or "removed"
 }
 
+func filterBurndownScopeChanges(events []ScopeChangeEvent, issueMap map[string]model.Issue) []ScopeChangeEvent {
+	filtered := make([]ScopeChangeEvent, 0, len(events))
+	for _, event := range events {
+		if _, ok := issueMap[event.IssueID]; ok {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
 type sprintSnapshot struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
@@ -7792,16 +7804,19 @@ type RobotEnvelope struct {
 	SourceKind   string          `json:"source_kind,omitempty"`   // jsonl | sqlite | git | workspace | bd
 	AsOf         string          `json:"as_of,omitempty"`         // --as-of ref, when time-travelling
 	AsOfCommit   string          `json:"as_of_commit,omitempty"`  // Resolved SHA for --as-of
-	Scope        *RobotScope     `json:"scope,omitempty"`         // Active --label/--recipe/--repo scoping and what this command could not honour
+	Scope        *RobotScope     `json:"scope,omitempty"`         // Active Hub snapshot, CLI filters, and unsupported flags
 	LoadStats    *RobotLoadStats `json:"load_stats,omitempty"`    // Present when records were dropped during load (#190)
 }
 
-// RobotScope reports the scoping flags in effect for a robot payload so a
-// consumer can tell a scoped answer from a whole-project one, and lists the
-// flags the command could not honour (for example sprint definitions are read
-// from disk, so --as-of does not apply to them) instead of silently ignoring
-// them.
+// RobotScope reports the active bounded Hub snapshot used for a robot payload,
+// alongside the ordinary CLI filters and any unsupported flags.
 type RobotScope struct {
+	ID          string   `json:"id,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	CreatedOn   string   `json:"created_on,omitempty"`
+	State       string   `json:"state,omitempty"`
+	MemberCount int      `json:"member_count,omitempty"`
+	MemberLimit int      `json:"member_limit,omitempty"`
 	Label       string   `json:"label,omitempty"`
 	Recipe      string   `json:"recipe,omitempty"`
 	Repo        string   `json:"repo,omitempty"`
@@ -8269,7 +8284,7 @@ func robotCommandDocs() map[string]robotCommandDoc {
 			NeedsGit:    true,
 		},
 	}
-	const hubScopeContract = "In wrapper Hub mode, candidate collections are projected after complete-universe analysis; aggregate graph values remain global and output includes scope metadata."
+	const hubScopeContract = "In Hub mode, every robot command analyzes the bounded active-scope snapshot; output includes the active scope identity and member counts. With no active scope, the command returns its normal empty result."
 	for _, name := range []string{
 		"robot-plan", "robot-priority", "robot-insights", "robot-graph",
 		"robot-label-health", "robot-label-flow", "robot-label-attention",
@@ -8786,16 +8801,15 @@ func generateRobotSchemas() RobotSchemas {
 				"recommendation": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"id":            map[string]interface{}{"type": "string"},
-						"title":         map[string]interface{}{"type": "string"},
-						"type":          map[string]interface{}{"type": "string"},
-						"status":        map[string]interface{}{"type": "string"},
-						"priority":      map[string]interface{}{"type": "integer"},
-						"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-						"score":         map[string]interface{}{"type": "number"},
-						"reasons":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-						"unblocks":      map[string]interface{}{"type": "integer"},
-						"boundary_refs": hubBoundaryReferencesSchema(),
+						"id":       map[string]interface{}{"type": "string"},
+						"title":    map[string]interface{}{"type": "string"},
+						"type":     map[string]interface{}{"type": "string"},
+						"status":   map[string]interface{}{"type": "string"},
+						"priority": map[string]interface{}{"type": "integer"},
+						"labels":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+						"score":    map[string]interface{}{"type": "number"},
+						"reasons":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+						"unblocks": map[string]interface{}{"type": "integer"},
 					},
 					"required": []string{"id", "title", "score"},
 				},
@@ -8853,8 +8867,7 @@ func generateRobotSchemas() RobotSchemas {
 										"items": map[string]interface{}{
 											"type": "object",
 											"properties": map[string]interface{}{
-												"id":            map[string]interface{}{"type": "string"},
-												"boundary_refs": hubBoundaryReferencesSchema(),
+												"id": map[string]interface{}{"type": "string"},
 											},
 										},
 									},
@@ -8912,8 +8925,7 @@ func generateRobotSchemas() RobotSchemas {
 					"items": map[string]interface{}{
 						"type": "object",
 						"properties": map[string]interface{}{
-							"issue_id":      map[string]interface{}{"type": "string"},
-							"boundary_refs": hubBoundaryReferencesSchema(),
+							"issue_id": map[string]interface{}{"type": "string"},
 						},
 					},
 				},
@@ -8974,13 +8986,12 @@ func generateRobotSchemas() RobotSchemas {
 							"items": map[string]interface{}{
 								"type": "object",
 								"properties": map[string]interface{}{
-									"id":            map[string]interface{}{"type": "string"},
-									"title":         map[string]interface{}{"type": "string"},
-									"status":        map[string]interface{}{"type": "string"},
-									"priority":      map[string]interface{}{"type": "integer"},
-									"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-									"pagerank":      map[string]interface{}{"type": "number"},
-									"boundary_refs": graphBoundaryReferencesSchema(),
+									"id":       map[string]interface{}{"type": "string"},
+									"title":    map[string]interface{}{"type": "string"},
+									"status":   map[string]interface{}{"type": "string"},
+									"priority": map[string]interface{}{"type": "integer"},
+									"labels":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+									"pagerank": map[string]interface{}{"type": "number"},
 								},
 								"required": []string{"id", "title", "status", "priority"},
 							},
@@ -9337,71 +9348,16 @@ func generateRobotSchemas() RobotSchemas {
 func hubScopeSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type":        "object",
-		"description": "Hub-only candidate projection metadata; omitted from local robot output",
+		"description": "The active Hub scope used for this bounded robot result",
 		"properties": map[string]interface{}{
-			"mode": map[string]interface{}{
-				"type": "string",
-				"enum": []string{"all_items", "contexts", "contextless"},
-			},
-			"contexts": map[string]interface{}{
-				"type":  "array",
-				"items": map[string]interface{}{"type": "string"},
-			},
-			"include_contextless": map[string]interface{}{
-				"type":        "boolean",
-				"description": "For contexts mode, also include items without ctx-prefixed labels",
-			},
+			"id":           map[string]interface{}{"type": "string"},
+			"name":         map[string]interface{}{"type": "string"},
+			"created_on":   map[string]interface{}{"type": "string", "format": "date"},
+			"state":        map[string]interface{}{"type": "string", "const": "active"},
+			"member_count": map[string]interface{}{"type": "integer"},
+			"member_limit": map[string]interface{}{"type": "integer", "const": 100},
 		},
-		"required": []string{"mode", "contexts", "include_contextless"},
-	}
-}
-
-func hubBoundaryReferencesSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"type":        "array",
-		"description": "Focused Hub-only references to relationship endpoints outside the candidate scope",
-		"items": map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"relation_type": map[string]interface{}{"type": "string"},
-				"endpoint_id":   map[string]interface{}{"type": "string"},
-				"issue_type":    map[string]interface{}{"type": "string"},
-				"status":        map[string]interface{}{"type": "string"},
-				"contexts": map[string]interface{}{
-					"type":  "array",
-					"items": map[string]interface{}{"type": "string"},
-				},
-				"in_scope": map[string]interface{}{"type": "boolean", "const": false},
-				"from":     map[string]interface{}{"type": "string"},
-				"to":       map[string]interface{}{"type": "string"},
-			},
-			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope"},
-		},
-	}
-}
-
-func graphBoundaryReferencesSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"type":        "array",
-		"description": "Deterministically ordered focused graph edges from a visible node to a hidden endpoint",
-		"items": map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"relation_type": map[string]interface{}{"type": "string", "description": "Canonical dependency relation type"},
-				"endpoint_id":   map[string]interface{}{"type": "string", "description": "Deterministic identity of the hidden endpoint"},
-				"issue_type":    map[string]interface{}{"type": "string", "description": "Hidden endpoint issue type"},
-				"status":        map[string]interface{}{"type": "string", "description": "Hidden endpoint status"},
-				"contexts": map[string]interface{}{
-					"type":        "array",
-					"description": "Sorted Hub contexts of the hidden endpoint",
-					"items":       map[string]interface{}{"type": "string"},
-				},
-				"in_scope": map[string]interface{}{"type": "boolean", "const": false, "description": "Hidden endpoint is outside candidate scope"},
-				"from":     map[string]interface{}{"type": "string", "description": "Canonical directed edge source"},
-				"to":       map[string]interface{}{"type": "string", "description": "Canonical directed edge target"},
-			},
-			"required": []string{"relation_type", "endpoint_id", "issue_type", "status", "contexts", "in_scope", "from", "to"},
-		},
+		"required": []string{"id", "name", "created_on", "state", "member_count", "member_limit"},
 	}
 }
 
@@ -9409,8 +9365,7 @@ func hubScopedCandidateSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"id":            map[string]interface{}{"type": "string"},
-			"boundary_refs": hubBoundaryReferencesSchema(),
+			"id": map[string]interface{}{"type": "string"},
 		},
 	}
 }

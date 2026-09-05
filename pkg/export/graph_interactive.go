@@ -32,6 +32,7 @@ type InteractiveGraphOptions struct {
 	DataHash    string
 	Path        string // Output path - if empty, auto-generates based on project
 	ProjectName string // Project name for auto-naming
+	AllowEmpty  bool   // Permit a valid empty export for bounded sources
 }
 
 // graphNode represents a node in the interactive graph with full bead data
@@ -115,7 +116,7 @@ func GenerateInteractiveGraphFilename(projectName string) string {
 
 // GenerateInteractiveGraphHTML creates a self-contained HTML file with force-graph visualization
 func GenerateInteractiveGraphHTML(opts InteractiveGraphOptions) (string, error) {
-	if len(opts.Issues) == 0 {
+	if len(opts.Issues) == 0 && !opts.AllowEmpty {
 		return "", fmt.Errorf("no issues to export")
 	}
 
