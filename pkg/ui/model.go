@@ -8568,7 +8568,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"W", "Named scopes (List/Detail)"},
 		{"B", "Global backlog (List/Detail)"},
 		{"n", "New inactive named scope (Scopes)"},
-		{"Enter", "Activate scope (Scopes)"},
+		{"Enter", "Toggle active scope (Scopes)"},
 		{"A", "Add to active scope (L/D/B)"},
 		{"R", "Remove from active scope (L/D)"},
 		{"m", "Move bead to another scope (L/D)"},
@@ -8748,7 +8748,7 @@ func (m *Model) renderHelpOverlay() string {
 	case focusScopePicker:
 		scopeControls := []struct{ key, desc string }{
 			{"j/k", "Move scope selection"},
-			{"Enter", "Activate scope"},
+			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
 			{"B", "Open global backlog"},
 			{"W", "Close scope picker"},
@@ -9877,7 +9877,7 @@ func (m *Model) renderFooter() string {
 	} else if m.showScopeCreatePrompt {
 		keyHints = append(keyHints, keyStyle.Render("enter")+" create", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker {
-		enterHint := "activate"
+		enterHint := "toggle"
 		if m.scopePickerMoveIssue != "" {
 			enterHint = "move"
 		}

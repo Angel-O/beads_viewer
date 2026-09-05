@@ -57,6 +57,28 @@ func TestHubScopeServiceCreatesSluggedInactiveScopeFromName(t *testing.T) {
 	}
 }
 
+func TestHubScopeServiceDeactivatesActiveScope(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	if err := os.WriteFile(wbd, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WBD_SCOPE_CALLS\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+
+	if err := newHubScopeServices(root).Deactivate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := splitLines(string(data)), []string{"scope", "deactivate", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("wbd deactivate args=%#v, want %#v", got, want)
+	}
+}
+
 func splitLines(value string) []string {
 	lines := strings.Split(strings.TrimSpace(value), "\n")
 	return lines
