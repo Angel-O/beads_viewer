@@ -78,6 +78,8 @@ type ScopeMutation struct {
 	Name          string
 	ScopeID       string
 	IssueIDs      []string
+	EpicID        string
+	Label         string
 	SourceScopeID string
 	TargetScopeID string
 }
@@ -95,6 +97,8 @@ type ScopeServices struct {
 	// Mutate applies one semantic scope operation, including batch membership
 	// changes. The legacy mutation fields remain compatibility fallbacks.
 	Mutate func(context.Context, ScopeMutation) error
+	// MutateMatching applies one epic- or label-selected scope operation.
+	MutateMatching func(context.Context, ScopeMutation) error
 	// Create creates a named scope without activating it.
 	Create   func(context.Context, string) error
 	Activate func(context.Context, string) error
@@ -215,6 +219,7 @@ type BacklogModel struct {
 	height        int
 	theme         Theme
 	delegate      IssueDelegate
+	marked        map[string]bool
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
@@ -226,6 +231,7 @@ func (b *BacklogModel) SetSize(width, height int) {
 }
 
 func (b *BacklogModel) SetPage(page BacklogPage, index int) {
+	b.ClearMarks()
 	b.issues = append([]model.Issue(nil), page.Issues...)
 	b.items = make([]IssueItem, len(page.Issues))
 	for i, issue := range page.Issues {
@@ -258,6 +264,7 @@ func (b *BacklogModel) Reset() {
 	b.nextCursor = ""
 	b.hasMore = false
 	b.pageCursors = []string{""}
+	b.ClearMarks()
 }
 
 func (b *BacklogModel) ResetPagination() {
@@ -266,6 +273,33 @@ func (b *BacklogModel) ResetPagination() {
 	b.hasMore = false
 	b.pageCursors = []string{""}
 }
+
+// ToggleMark marks only the current row on the loaded page. Marks never cross
+// page or query boundaries; the owning Model clears them before those changes.
+func (b *BacklogModel) ToggleMark() {
+	issue := b.CurrentIssue()
+	if issue == nil {
+		return
+	}
+	if b.marked == nil {
+		b.marked = make(map[string]bool)
+	}
+	b.marked[issue.ID] = !b.marked[issue.ID]
+}
+
+func (b *BacklogModel) ClearMarks() { b.marked = nil }
+
+func (b BacklogModel) MarkedIDs() []string {
+	ids := make([]string, 0, len(b.marked))
+	for _, item := range b.filteredItems {
+		if b.marked[item.Issue.ID] {
+			ids = append(ids, item.Issue.ID)
+		}
+	}
+	return ids
+}
+
+func (b BacklogModel) MarkCount() int { return len(b.MarkedIDs()) }
 
 func (b BacklogModel) CurrentIssue() *model.Issue {
 	if b.selected < 0 || b.selected >= len(b.filteredItems) {
@@ -421,6 +455,11 @@ func (b BacklogModel) renderBacklogList(delegate IssueDelegate, width, rows int)
 	}
 	start, end := b.visibleRangeFor(rows)
 	items := backlogListItems(b.filteredItems)
+	for i := range items {
+		item := items[i].(IssueItem)
+		item.Marked = b.marked[item.Issue.ID]
+		items[i] = item
+	}
 	l := list.New(items, delegate, width, rows)
 	l.Select(b.selected)
 	lines := make([]string, 0, end-start)
@@ -454,6 +493,9 @@ func (b BacklogModel) renderBacklogPage(width int) string {
 		page += " · p previous"
 	}
 	page += " · / filter · A add"
+	if count := b.MarkCount(); count > 0 {
+		page += fmt.Sprintf(" · %d marked", count)
+	}
 	return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render(ansi.Truncate(page, maxInt(width, 1), "…"))
 }
 
@@ -499,6 +541,7 @@ type ScopePickerModel struct {
 	memberRepositoryFilter string
 	memberTypeFilter       model.IssueType
 	memberReadyIDs         map[string]bool
+	memberMarkedIDs        map[string]bool
 
 	width, height int
 	theme         Theme
@@ -512,6 +555,18 @@ func newScopeNameInput(theme Theme) textinput.Model {
 	input.CharLimit = 100
 	input.Width = 40
 	input.Prompt = "Scope name: "
+	input.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	input.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
+	input.Blur()
+	return input
+}
+
+func newScopeMatchInput(theme Theme) textinput.Model {
+	input := textinput.New()
+	input.Placeholder = "label:team or epic:epic-1"
+	input.CharLimit = 100
+	input.Width = 40
+	input.Prompt = "Match: "
 	input.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
 	input.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
 	input.Blur()
@@ -569,6 +624,7 @@ func (s *ScopePickerModel) BeginMemberLoad(scopeID string) uint64 {
 	s.filteredMembers = nil
 	s.memberReadyIDs = nil
 	s.memberSelected = 0
+	s.ClearMemberMarks()
 	return s.memberGeneration
 }
 
@@ -611,6 +667,7 @@ func (s *ScopePickerModel) SetMemberFilters(repository, status string, issueType
 	s.memberRepositoryFilter = repository
 	s.memberStatusFilter = status
 	s.memberTypeFilter = issueType
+	s.ClearMemberMarks()
 	s.applyMemberFilters()
 }
 
@@ -631,9 +688,35 @@ func (s ScopePickerModel) SelectedMember() *IssueItem {
 	return &selected
 }
 
+func (s *ScopePickerModel) ToggleMemberMark() {
+	member := s.SelectedMember()
+	if member == nil {
+		return
+	}
+	if s.memberMarkedIDs == nil {
+		s.memberMarkedIDs = make(map[string]bool)
+	}
+	s.memberMarkedIDs[member.Issue.ID] = !s.memberMarkedIDs[member.Issue.ID]
+}
+
+func (s *ScopePickerModel) ClearMemberMarks() { s.memberMarkedIDs = nil }
+
+func (s ScopePickerModel) MarkedMemberIDs() []string {
+	ids := make([]string, 0, len(s.memberMarkedIDs))
+	for _, item := range s.filteredMembers {
+		if s.memberMarkedIDs[item.Issue.ID] {
+			ids = append(ids, item.Issue.ID)
+		}
+	}
+	return ids
+}
+
+func (s ScopePickerModel) MemberMarkCount() int { return len(s.MarkedMemberIDs()) }
+
 func (s *ScopePickerModel) CycleMemberRepository() {
 	values := s.memberRepositoryValues()
 	s.memberRepositoryFilter = cycleStringFilter(s.memberRepositoryFilter, values)
+	s.ClearMemberMarks()
 	s.applyMemberFilters()
 }
 
@@ -643,6 +726,7 @@ func (s *ScopePickerModel) ToggleMemberStatus(status string) {
 	} else {
 		s.memberStatusFilter = status
 	}
+	s.ClearMemberMarks()
 	s.applyMemberFilters()
 }
 
@@ -659,6 +743,7 @@ func (s *ScopePickerModel) CycleMemberType() {
 	current := string(s.memberTypeFilter)
 	next := cycleStringFilter(current, values)
 	s.memberTypeFilter = model.IssueType(next)
+	s.ClearMemberMarks()
 	s.applyMemberFilters()
 }
 
@@ -864,6 +949,7 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	showRepositories := false
 	workspaceMode := false
 	for i, item := range s.filteredMembers {
+		item.Marked = s.memberMarkedIDs[item.Issue.ID]
 		items[i] = item
 		showRepositories = showRepositories || item.HubPresentation
 		workspaceMode = workspaceMode || item.RepoPrefix != ""
@@ -921,6 +1007,21 @@ func (m Model) renderScopeCreatePrompt() string {
 		mutedStyle.Render("The new scope stays inactive until you activate it.") + "\n\n" +
 		m.scopeCreateInput.View() + "\n\n" +
 		mutedStyle.Render("Enter create · Esc cancel")
+	return lipgloss.Place(availableWidth, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
+}
+
+func (m Model) renderScopeMatchPrompt() string {
+	availableWidth := m.mainContentWidth()
+	boxStyle := m.theme.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Primary).
+		Padding(1, 3).
+		Align(lipgloss.Center)
+	muted := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
+	content := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true).Render("Scope match") + "\n\n" +
+		muted.Render("Enter label:name or epic:id") + "\n\n" +
+		m.scopeMatchInput.View() + "\n\n" +
+		muted.Render("Enter apply · Esc cancel")
 	return lipgloss.Place(availableWidth, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
@@ -1027,6 +1128,7 @@ func (m *Model) closeScopePicker() {
 	m.scopePickerMoveIssue = ""
 	m.scopePicker.SetMoveTarget("")
 	m.scopePicker.memberFocused = false
+	m.scopePicker.ClearMemberMarks()
 	m.focused = m.scopePickerOrigin
 }
 
@@ -1044,6 +1146,7 @@ func (m *Model) closeBacklog() {
 	m.isBacklogView = false
 	m.backlogLoading = false
 	m.focused = focusList
+	m.backlog.ClearMarks()
 }
 
 func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
@@ -1059,6 +1162,7 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		before := m.scopePicker.SelectedScopeID()
 		m.scopePicker.Move(1)
 		if before != m.scopePicker.SelectedScopeID() {
+			m.scopePicker.ClearMemberMarks()
 			return m, m.loadSelectedScopeDetails()
 		}
 	case "k", "up":
@@ -1069,6 +1173,7 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		before := m.scopePicker.SelectedScopeID()
 		m.scopePicker.Move(-1)
 		if before != m.scopePicker.SelectedScopeID() {
+			m.scopePicker.ClearMemberMarks()
 			return m, m.loadSelectedScopeDetails()
 		}
 	case "tab":
@@ -1085,6 +1190,18 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "I":
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.CycleMemberType()
+		}
+	case "space":
+		if m.scopePicker.MemberFocused() {
+			m.scopePicker.ToggleMemberMark()
+		}
+	case "R":
+		if m.scopePicker.MemberFocused() {
+			return m, m.startScopeMemberRemove()
+		}
+	case "M":
+		if m.scopePicker.MemberFocused() {
+			return m, m.beginScopeMatchMutation("remove")
 		}
 	case "enter":
 		if m.scopePicker.MemberFocused() {
@@ -1200,6 +1317,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			}
 		}
 		if oldFilter != m.backlog.Filter() {
+			m.backlog.ClearMarks()
 			m.backlog.ResetPagination()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
@@ -1216,14 +1334,19 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.backlog.Move(-1)
 	case "/":
 		m.backlog.BeginSearch()
+		m.backlog.ClearMarks()
+	case "space":
+		m.backlog.ToggleMark()
 	case "n", "right":
 		if cursor := m.backlog.NextPageCursor(); cursor != "" {
+			m.backlog.ClearMarks()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
 			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Cursor: cursor, Limit: backlogPageSize}, m.backlog.PageIndex()+1, m.backlogPageGeneration)
 		}
 	case "p", "left":
 		if m.backlog.PageIndex() > 0 {
+			m.backlog.ClearMarks()
 			cursor := m.backlog.PreviousPageCursor()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
@@ -1231,6 +1354,8 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		}
 	case "A":
 		return m, m.startScopeMutation("add")
+	case "M":
+		return m, m.beginScopeMatchMutation("add")
 	}
 	return m, nil
 }
@@ -1239,6 +1364,11 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 	if m.activeScope == nil {
 		m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
 		return nil
+	}
+	if m.isBacklogView && action == "add" {
+		if ids := m.backlog.MarkedIDs(); len(ids) > 0 {
+			return m.startScopeMembershipMutation(action, ids, m.activeScope.ID)
+		}
 	}
 	issueID := ""
 	if m.isBacklogView {
@@ -1286,6 +1416,136 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 		return m.openScopePicker(issueID)
 	}
 	return nil
+}
+
+func (m *Model) startScopeMemberRemove() tea.Cmd {
+	scopeID := m.scopePicker.SelectedScopeID()
+	if scopeID == "" {
+		m.statusMsg, m.statusIsError = "No scope selected", true
+		return nil
+	}
+	ids := m.scopePicker.MarkedMemberIDs()
+	if len(ids) == 0 {
+		if member := m.scopePicker.SelectedMember(); member != nil {
+			ids = []string{member.Issue.ID}
+		}
+	}
+	if len(ids) == 0 {
+		m.statusMsg, m.statusIsError = "No member selected", true
+		return nil
+	}
+	return m.startScopeMembershipMutation("remove", ids, scopeID)
+}
+
+func (m *Model) startScopeMembershipMutation(action string, ids []string, scopeID string) tea.Cmd {
+	service := m.runtimeServices.Scopes
+	if service.Mutate == nil {
+		if len(ids) > 1 {
+			m.statusMsg, m.statusIsError = "Batch scope mutation is unavailable", true
+			return nil
+		}
+		if action == "add" && service.Add == nil || action == "remove" && service.Remove == nil {
+			m.statusMsg, m.statusIsError = "Scope "+action+" is unavailable", true
+			return nil
+		}
+	}
+	mutation := ScopeMutation{ScopeID: scopeID, IssueIDs: append([]string(nil), ids...)}
+	if action == "add" {
+		mutation.Kind = ScopeMutationAdd
+	} else {
+		mutation.Kind = ScopeMutationRemove
+	}
+	return runScopeMutationCmd(mutation, false, func(ctx context.Context) error {
+		if service.Mutate != nil {
+			return service.Mutate(ctx, mutation)
+		}
+		if action == "add" {
+			return service.Add(ctx, ids[0], scopeID)
+		}
+		return service.Remove(ctx, ids[0], scopeID)
+	})
+}
+
+func (m *Model) beginScopeMatchMutation(action string) tea.Cmd {
+	scopeID := ""
+	if action == "remove" {
+		scopeID = m.scopePicker.SelectedScopeID()
+		if scopeID == "" {
+			m.statusMsg, m.statusIsError = "No scope selected", true
+			return nil
+		}
+	} else if m.activeScope == nil {
+		m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
+		return nil
+	} else {
+		scopeID = m.activeScope.ID
+	}
+	if m.runtimeServices.Scopes.MutateMatching == nil {
+		m.statusMsg, m.statusIsError = "Semantic scope mutation is unavailable", true
+		return nil
+	}
+	m.scopeMatchAction = action
+	m.scopeMatchScopeID = scopeID
+	m.scopeMatchOrigin = m.focused
+	m.scopeMatchInput.SetValue("")
+	m.showScopeMatchPrompt = true
+	m.focused = focusScopeCreateInput
+	return m.scopeMatchInput.Focus()
+}
+
+func parseScopeMatch(value string) (string, string, error) {
+	prefix, target, ok := strings.Cut(strings.TrimSpace(value), ":")
+	target = strings.TrimSpace(target)
+	if !ok || target == "" {
+		return "", "", fmt.Errorf("enter label:name or epic:id")
+	}
+	switch strings.ToLower(strings.TrimSpace(prefix)) {
+	case "label":
+		if strings.HasPrefix(target, "ctx:") || strings.Contains(target, ",") {
+			return "", "", fmt.Errorf("enter one ordinary label")
+		}
+		return "", target, nil
+	case "epic":
+		return target, "", nil
+	default:
+		return "", "", fmt.Errorf("match must start with label: or epic:")
+	}
+}
+
+func (m *Model) handleScopeMatchKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.scopeMatchInput.Blur()
+		m.showScopeMatchPrompt = false
+		m.focused = m.scopeMatchOrigin
+		return m, nil
+	case "enter":
+		epic, label, err := parseScopeMatch(m.scopeMatchInput.Value())
+		if err != nil {
+			m.statusMsg, m.statusIsError = err.Error(), true
+			return m, nil
+		}
+		m.scopeMatchInput.Blur()
+		m.showScopeMatchPrompt = false
+		m.focused = m.scopeMatchOrigin
+		mutation := ScopeMutation{Kind: ScopeMutationAdd, ScopeID: m.scopeMatchScopeID, EpicID: epic, Label: label}
+		if m.scopeMatchAction == "remove" {
+			mutation.Kind = ScopeMutationRemove
+		}
+		service := m.runtimeServices.Scopes
+		return m, runScopeMutationCmd(mutation, false, func(ctx context.Context) error {
+			return service.MutateMatching(ctx, mutation)
+		})
+	default:
+		var cmd tea.Cmd
+		m.scopeMatchInput, cmd = m.scopeMatchInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m *Model) clearScopeActionMarks() {
+	m.backlog.ClearMarks()
+	m.scopePicker.ClearMemberMarks()
 }
 
 // selectedVisibleScopeIssue accepts only the bead currently represented by a
@@ -1338,7 +1598,11 @@ func (m *Model) scopeMoveTargetTitle(issueID string) string {
 func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	cmds := []tea.Cmd{loadScopeSnapshotCmd(m.runtimeServices.Scopes)}
 	if mutation.Kind == ScopeMutationRemove && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
-		cmds = append(cmds, loadScopeDetailsCmd(m.runtimeServices.Scopes, mutation.ScopeID))
+		if m.showScopePicker && m.scopePicker.SelectedScopeID() == mutation.ScopeID {
+			cmds = append(cmds, m.loadSelectedScopeDetails())
+		} else {
+			cmds = append(cmds, loadScopeDetailsCmd(m.runtimeServices.Scopes, mutation.ScopeID))
+		}
 	}
 	if m.backgroundWorker != nil {
 		m.backgroundWorker.ForceSourceRefresh()
