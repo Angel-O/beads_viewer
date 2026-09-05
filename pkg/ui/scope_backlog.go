@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,8 +120,10 @@ type backlogPageMsg struct {
 }
 
 type scopeDetailsMsg struct {
-	details ScopeDetails
-	err     error
+	details    ScopeDetails
+	scopeID    string
+	generation uint64
+	err        error
 }
 
 type scopeMutationMsg struct {
@@ -140,13 +143,17 @@ func loadScopeSnapshotCmd(service ScopeServices) tea.Cmd {
 	}
 }
 
-func loadScopeDetailsCmd(service ScopeServices, scopeID string) tea.Cmd {
+func loadScopeDetailsCmd(service ScopeServices, scopeID string, generations ...uint64) tea.Cmd {
+	var generation uint64
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
 	return func() tea.Msg {
 		if service.LoadDetails == nil {
-			return scopeDetailsMsg{}
+			return scopeDetailsMsg{scopeID: scopeID, generation: generation}
 		}
 		details, err := service.LoadDetails(context.Background(), scopeID)
-		return scopeDetailsMsg{details: details, err: err}
+		return scopeDetailsMsg{details: details, scopeID: scopeID, generation: generation, err: err}
 	}
 }
 
@@ -471,12 +478,28 @@ func (b BacklogModel) visibleRangeFor(rows int) (int, int) {
 	return start, min(start+rows, len(b.filteredItems))
 }
 
-// ScopePickerModel is intentionally a plain list: named scopes are a small
-// control-plane collection, not another issue graph or repository filter.
+// ScopePickerModel owns the small named-scope catalog and one bounded member
+// projection. Member filters only change presentation; details are still
+// loaded exactly once per selected scope and are never paginated or cached.
 type ScopePickerModel struct {
-	scopes        []ScopeInfo
-	selected      int
-	moveTarget    string
+	scopes     []ScopeInfo
+	selected   int
+	moveTarget string
+
+	members          []IssueItem
+	filteredMembers  []IssueItem
+	memberSelected   int
+	memberScopeID    string
+	memberGeneration uint64
+	memberLoading    bool
+	memberError      string
+	memberFocused    bool
+
+	memberStatusFilter     string
+	memberRepositoryFilter string
+	memberTypeFilter       model.IssueType
+	memberReadyIDs         map[string]bool
+
 	width, height int
 	theme         Theme
 }
@@ -497,9 +520,27 @@ func newScopeNameInput(theme Theme) textinput.Model {
 
 func (s *ScopePickerModel) SetSize(width, height int) { s.width, s.height = width, height }
 func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
+	selectedID := ""
+	if selected := s.Selected(); selected != nil {
+		selectedID = selected.ID
+	}
 	s.scopes = append([]ScopeInfo(nil), scopes...)
+	s.selected = -1
+	selectedFound := false
+	if selectedID != "" {
+		for i := range s.scopes {
+			if s.scopes[i].ID == selectedID {
+				s.selected = i
+				selectedFound = true
+				break
+			}
+		}
+	}
+	if s.selected < 0 {
+		s.selected = 0
+	}
 	for i := range s.scopes {
-		if s.scopes[i].Active {
+		if !selectedFound && s.scopes[i].Active {
 			s.selected = i
 			break
 		}
@@ -507,6 +548,224 @@ func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 	if s.selected >= len(s.scopes) {
 		s.selected = maxInt(0, len(s.scopes)-1)
 	}
+}
+
+// SelectedScopeID returns the catalog identity whose members should be shown.
+func (s ScopePickerModel) SelectedScopeID() string {
+	if selected := s.Selected(); selected != nil {
+		return selected.ID
+	}
+	return ""
+}
+
+// BeginMemberLoad marks a new exact-scope request. The generation makes a
+// late response harmless when the catalog cursor has already moved elsewhere.
+func (s *ScopePickerModel) BeginMemberLoad(scopeID string) uint64 {
+	s.memberGeneration++
+	s.memberScopeID = scopeID
+	s.memberLoading = true
+	s.memberError = ""
+	s.members = nil
+	s.filteredMembers = nil
+	s.memberReadyIDs = nil
+	s.memberSelected = 0
+	return s.memberGeneration
+}
+
+func (s ScopePickerModel) acceptsMemberDetails(scopeID string, generation uint64) bool {
+	return generation > 0 && generation == s.memberGeneration && scopeID == s.memberScopeID
+}
+
+func (s *ScopePickerModel) SetMemberError(scopeID string, generation uint64, err error) bool {
+	if !s.acceptsMemberDetails(scopeID, generation) {
+		return false
+	}
+	s.memberLoading = false
+	if err != nil {
+		s.memberError = err.Error()
+	}
+	return true
+}
+
+// SetMemberReadyIDs supplies the already-known ready projection without
+// expanding the picker into an issue graph or detail view.
+func (s *ScopePickerModel) SetMemberReadyIDs(ids map[string]bool) {
+	s.memberReadyIDs = make(map[string]bool, len(ids))
+	for id, ready := range ids {
+		if ready {
+			s.memberReadyIDs[id] = true
+		}
+	}
+}
+
+// SetMembers replaces the bounded member projection and reapplies only the
+// display narrowing owned by this picker.
+func (s *ScopePickerModel) SetMembers(items []IssueItem) {
+	s.members = append([]IssueItem(nil), items...)
+	s.memberLoading = false
+	s.memberError = ""
+	s.applyMemberFilters()
+}
+
+func (s *ScopePickerModel) SetMemberFilters(repository, status string, issueType model.IssueType) {
+	s.memberRepositoryFilter = repository
+	s.memberStatusFilter = status
+	s.memberTypeFilter = issueType
+	s.applyMemberFilters()
+}
+
+func (s ScopePickerModel) MemberFocused() bool { return s.memberFocused }
+
+func (s *ScopePickerModel) MoveMember(delta int) {
+	if len(s.filteredMembers) == 0 {
+		return
+	}
+	s.memberSelected = (s.memberSelected + delta + len(s.filteredMembers)) % len(s.filteredMembers)
+}
+
+func (s ScopePickerModel) SelectedMember() *IssueItem {
+	if s.memberSelected < 0 || s.memberSelected >= len(s.filteredMembers) {
+		return nil
+	}
+	selected := s.filteredMembers[s.memberSelected]
+	return &selected
+}
+
+func (s *ScopePickerModel) CycleMemberRepository() {
+	values := s.memberRepositoryValues()
+	s.memberRepositoryFilter = cycleStringFilter(s.memberRepositoryFilter, values)
+	s.applyMemberFilters()
+}
+
+func (s *ScopePickerModel) ToggleMemberStatus(status string) {
+	if s.memberStatusFilter == status {
+		s.memberStatusFilter = ""
+	} else {
+		s.memberStatusFilter = status
+	}
+	s.applyMemberFilters()
+}
+
+func (s *ScopePickerModel) CycleMemberType() {
+	values := make([]string, 0)
+	seen := make(map[model.IssueType]bool)
+	for _, item := range s.members {
+		if item.Issue.IssueType != "" && !seen[item.Issue.IssueType] {
+			seen[item.Issue.IssueType] = true
+			values = append(values, string(item.Issue.IssueType))
+		}
+	}
+	sort.Strings(values)
+	current := string(s.memberTypeFilter)
+	next := cycleStringFilter(current, values)
+	s.memberTypeFilter = model.IssueType(next)
+	s.applyMemberFilters()
+}
+
+func (s ScopePickerModel) memberRepositoryValues() []string {
+	seen := make(map[string]bool)
+	for _, item := range s.members {
+		if value := memberRepositoryValue(item); value != "" {
+			seen[value] = true
+		}
+	}
+	values := make([]string, 0, len(seen))
+	for value := range seen {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func cycleStringFilter(current string, values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	if current == "" {
+		return values[0]
+	}
+	for i, value := range values {
+		if value == current {
+			if i+1 < len(values) {
+				return values[i+1]
+			}
+			return ""
+		}
+	}
+	return values[0]
+}
+
+func memberRepositoryValue(item IssueItem) string {
+	if item.RepositoryName != "" {
+		return item.RepositoryName
+	}
+	if item.RepositoryID != "" {
+		return item.RepositoryID
+	}
+	if item.RepoPrefix != "" {
+		return item.RepoPrefix
+	}
+	return item.Issue.SourceRepo
+}
+
+func (s *ScopePickerModel) applyMemberFilters() {
+	s.filteredMembers = s.filteredMembers[:0]
+	for _, item := range s.members {
+		if s.memberRepositoryFilter != "" && memberRepositoryValue(item) != s.memberRepositoryFilter {
+			continue
+		}
+		if s.memberTypeFilter != "" && item.Issue.IssueType != s.memberTypeFilter {
+			continue
+		}
+		switch s.memberStatusFilter {
+		case "open":
+			if isClosedLikeStatus(item.Issue.Status) {
+				continue
+			}
+		case "closed":
+			if !isClosedLikeStatus(item.Issue.Status) {
+				continue
+			}
+		case "ready":
+			ready := s.memberReadyIDs[item.Issue.ID]
+			if s.memberReadyIDs == nil {
+				ready = isIssueReadyAt(item.Issue, nil, time.Now())
+			}
+			if !ready {
+				continue
+			}
+		}
+		s.filteredMembers = append(s.filteredMembers, item)
+	}
+	if s.memberSelected >= len(s.filteredMembers) {
+		s.memberSelected = maxInt(0, len(s.filteredMembers)-1)
+	}
+}
+
+func (s *ScopePickerModel) SetDetails(details ScopeDetails) {
+	s.SetMembers(scopeDetailItems(details))
+}
+
+func scopeDetailItems(details ScopeDetails) []IssueItem {
+	issues := details.Issues
+	if len(details.MemberIDs) == 0 {
+		items := make([]IssueItem, len(issues))
+		for i, issue := range issues {
+			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+		}
+		return items
+	}
+	byID := make(map[string]model.Issue, len(issues))
+	for _, issue := range issues {
+		byID[issue.ID] = issue
+	}
+	items := make([]IssueItem, 0, len(details.MemberIDs))
+	for _, id := range details.MemberIDs {
+		if issue, ok := byID[id]; ok {
+			items = append(items, IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)})
+		}
+	}
+	return items
 }
 
 // SetMoveTarget changes the picker from scope activation to moving one named
@@ -526,33 +785,114 @@ func (s ScopePickerModel) Selected() *ScopeInfo {
 	return &selected
 }
 func (s ScopePickerModel) View() string {
+	width, height := s.width, s.height
+	if width <= 0 {
+		width = 80
+	}
+	if height <= 0 {
+		height = 20
+	}
 	heading := "Scopes"
 	if s.moveTarget != "" {
 		heading = "Move: " + s.moveTarget
 	}
+	contentWidth := maxInt(width-4, 1)
+	contentHeight := maxInt(height-4, 3)
+	catalogRows := maxInt(3, contentHeight/2)
+	memberRows := contentHeight - catalogRows - 2
+	if memberRows < 2 {
+		memberRows = 2
+		catalogRows = maxInt(1, contentHeight-memberRows-2)
+	}
+
+	catalog := s.renderCatalog(heading, contentWidth, catalogRows)
+	members := s.renderMembers(contentWidth, memberRows)
+	view := catalog + "\n\n" + members
+	return lipgloss.NewStyle().
+		Width(maxInt(width, 1)).
+		Height(maxInt(height-2, 1)).
+		Padding(1, 2).
+		Render(view)
+}
+
+func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string {
 	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(heading)
 	lines := []string{title, ""}
 	if len(s.scopes) == 0 {
 		lines = append(lines, "No scopes available.")
 	} else {
-		for i, scope := range s.scopes {
+		start := 0
+		visible := maxInt(rows-2, 1)
+		if s.selected >= visible {
+			start = s.selected - visible + 1
+		}
+		end := min(len(s.scopes), start+visible)
+		for i := start; i < end; i++ {
 			prefix := "  "
 			if i == s.selected {
 				prefix = "> "
 			}
 			active := ""
-			if scope.Active {
+			if s.scopes[i].Active {
 				active = "  (active)"
 			}
-			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, scope.Name, scope.CreatedAt.Format("2006-01-02"), scope.MemberCount, active))
+			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, s.scopes[i].Name, s.scopes[i].CreatedAt.Format("2006-01-02"), s.scopes[i].MemberCount, active))
 		}
 	}
-	// Keep padding inside the assigned viewport before the sidebar is joined.
-	return lipgloss.NewStyle().
-		Width(maxInt(s.width, 1)).
-		Height(maxInt(s.height-2, 1)).
-		Padding(1, 2).
-		Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
+}
+
+func (s ScopePickerModel) renderMembers(width, rows int) string {
+	selected := s.Selected()
+	name := "none"
+	if selected != nil {
+		name = selected.Name
+	}
+	header := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render("Members · " + name)
+	if s.memberLoading {
+		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render("Loading members…")
+	}
+	if s.memberError != "" {
+		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Blocked).Render("Members unavailable: "+s.memberError)
+	}
+	filter := fmt.Sprintf("repository:%s · status:%s · type:%s", memberFilterLabel(s.memberRepositoryFilter), memberFilterLabel(s.memberStatusFilter), memberFilterLabel(string(s.memberTypeFilter)))
+	filterLine := s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(filter)
+	if len(s.filteredMembers) == 0 {
+		return header + "\n" + filterLine + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render("No members match.")
+	}
+	items := make([]list.Item, len(s.filteredMembers))
+	showRepositories := false
+	workspaceMode := false
+	for i, item := range s.filteredMembers {
+		items[i] = item
+		showRepositories = showRepositories || item.HubPresentation
+		workspaceMode = workspaceMode || item.RepoPrefix != ""
+	}
+	delegate := IssueDelegate{Theme: s.theme, ShowRepositories: showRepositories, WorkspaceMode: workspaceMode, useFullWidth: true, layoutItems: items}
+	delegate.RepositoryNameWidth = 12
+	delegate.columns = delegate.issueListColumnsFor(items, width)
+	l := list.New(items, delegate, width, maxInt(rows-2, 1))
+	l.Select(s.memberSelected)
+	lines := []string{header, filterLine}
+	visible := maxInt(rows-2, 1)
+	start := 0
+	if s.memberSelected >= visible {
+		start = s.memberSelected - visible + 1
+	}
+	end := min(len(items), start+visible)
+	for i := start; i < end; i++ {
+		var row bytes.Buffer
+		delegate.Render(&row, l, i, items[i])
+		lines = append(lines, row.String())
+	}
+	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
+}
+
+func memberFilterLabel(value string) string {
+	if value == "" {
+		return "all"
+	}
+	return value
 }
 
 func (m Model) renderScopeCreatePrompt() string {
@@ -621,18 +961,72 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	m.scopePickerOrigin = m.focused
 	m.scopePickerMoveIssue = moveIssue
 	m.scopePicker.SetMoveTarget(m.scopeMoveTargetTitle(moveIssue))
+	m.scopePicker.memberFocused = false
 	m.focused = focusScopePicker
 	m.scopePicker.SetScopes(m.scopeCatalog)
+	if moveIssue == "" {
+		status := m.activeStatusFilter()
+		issueType := model.IssueType("")
+		if len(m.activeIssueTypes) == 1 {
+			for value := range m.activeIssueTypes {
+				issueType = value
+			}
+		}
+		m.scopePicker.SetMemberFilters("", status, issueType)
+	}
+	var cmds []tea.Cmd
 	if m.runtimeServices.Scopes.Load != nil {
-		return loadScopeSnapshotCmd(m.runtimeServices.Scopes)
+		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+	}
+	if details := m.loadSelectedScopeDetails(); details != nil {
+		cmds = append(cmds, details)
+	}
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	if len(cmds) > 1 {
+		return tea.Batch(cmds...)
 	}
 	return nil
+}
+
+func (m *Model) loadSelectedScopeDetails() tea.Cmd {
+	if m.runtimeServices.Scopes.LoadDetails == nil {
+		return nil
+	}
+	scopeID := m.scopePicker.SelectedScopeID()
+	if scopeID == "" {
+		return nil
+	}
+	generation := m.scopePicker.BeginMemberLoad(scopeID)
+	return loadScopeDetailsCmd(m.runtimeServices.Scopes, scopeID, generation)
+}
+
+func (m *Model) applyScopePickerDetails(details ScopeDetails) {
+	if len(details.Issues) == 0 && len(details.MemberIDs) > 0 {
+		details.Issues = make([]model.Issue, 0, len(details.MemberIDs))
+		for _, id := range details.MemberIDs {
+			if issue := m.issueMap[id]; issue != nil {
+				details.Issues = append(details.Issues, *issue)
+			}
+		}
+		details.MemberIDs = nil
+	}
+	items := scopeDetailItems(details)
+	ready := make(map[string]bool)
+	for i := range items {
+		m.decorateIssueItem(&items[i])
+		ready[items[i].Issue.ID] = isIssueReadyAt(items[i].Issue, m.issueMap, time.Now())
+	}
+	m.scopePicker.SetMemberReadyIDs(ready)
+	m.scopePicker.SetMembers(items)
 }
 
 func (m *Model) closeScopePicker() {
 	m.showScopePicker = false
 	m.scopePickerMoveIssue = ""
 	m.scopePicker.SetMoveTarget("")
+	m.scopePicker.memberFocused = false
 	m.focused = m.scopePickerOrigin
 }
 
@@ -658,10 +1052,44 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.closeScopePicker()
 		return m, nil
 	case "j", "down":
+		if m.scopePicker.MemberFocused() {
+			m.scopePicker.MoveMember(1)
+			break
+		}
+		before := m.scopePicker.SelectedScopeID()
 		m.scopePicker.Move(1)
+		if before != m.scopePicker.SelectedScopeID() {
+			return m, m.loadSelectedScopeDetails()
+		}
 	case "k", "up":
+		if m.scopePicker.MemberFocused() {
+			m.scopePicker.MoveMember(-1)
+			break
+		}
+		before := m.scopePicker.SelectedScopeID()
 		m.scopePicker.Move(-1)
+		if before != m.scopePicker.SelectedScopeID() {
+			return m, m.loadSelectedScopeDetails()
+		}
+	case "tab":
+		m.scopePicker.memberFocused = !m.scopePicker.memberFocused
+	case "w":
+		if m.scopePicker.MemberFocused() {
+			m.scopePicker.CycleMemberRepository()
+		}
+	case "o", "c", "r":
+		if m.scopePicker.MemberFocused() {
+			status := map[string]string{"o": "open", "c": "closed", "r": "ready"}[msg.String()]
+			m.scopePicker.ToggleMemberStatus(status)
+		}
+	case "I":
+		if m.scopePicker.MemberFocused() {
+			m.scopePicker.CycleMemberType()
+		}
 	case "enter":
+		if m.scopePicker.MemberFocused() {
+			return m, nil
+		}
 		selected := m.scopePicker.Selected()
 		if selected == nil {
 			if m.scopePickerMoveIssue != "" {

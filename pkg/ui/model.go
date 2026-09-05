@@ -3017,6 +3017,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			break
 		}
+		previousSelected := m.scopePicker.SelectedScopeID()
 		m.backlogScopeLoaded = true
 		m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
 		m.scopePicker.SetScopes(m.scopeCatalog)
@@ -3029,11 +3030,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.scopePicker.SetScopes(m.scopeCatalog)
 		}
+		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+			cmds = append(cmds, m.loadSelectedScopeDetails())
+		}
 
 	case scopeDetailsMsg:
-		if msg.err == nil {
-			details := msg.details
-			m.scopeDetails = &details
+		if msg.generation > 0 && !m.scopePicker.acceptsMemberDetails(msg.scopeID, msg.generation) {
+			break
+		}
+		if msg.err != nil {
+			if msg.generation > 0 {
+				m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+			}
+			break
+		}
+		details := msg.details
+		m.scopeDetails = &details
+		if msg.generation > 0 {
+			m.applyScopePickerDetails(details)
 		}
 
 	case backlogPageMsg:
@@ -4707,7 +4721,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
 		}
-		if m.showScopePicker && !m.showRepoPicker && !isScopeBacklogGlobalKey(msg.String()) {
+		if m.showScopePicker && !m.showRepoPicker &&
+			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused()) {
 			return m.handleScopePickerKey(msg)
 		}
 		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || !isScopeBacklogGlobalKey(msg.String())) {
@@ -9917,7 +9932,7 @@ func (m *Model) renderFooter() string {
 		if m.scopePickerMoveIssue != "" {
 			enterHint = "move"
 		}
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("tab")+" catalog/members", keyStyle.Render("j/k")+" nav", keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {
