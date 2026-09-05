@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -309,6 +310,106 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 				t.Fatalf("scope help retained move action:\n%s", help)
 			}
 		})
+	}
+}
+
+func TestGenericHelpShowsScopesWorkflowWithAccurateContexts(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.focused = 240, 40, focusList
+	updated, _ := m.Update(keyMsg("?"))
+	m = updated.(*Model)
+	if !m.showHelp || m.focused != focusHelp {
+		t.Fatalf("? did not open generic help: help=%t focus=%s", m.showHelp, m.focused)
+	}
+	help := ansi.Strip(m.renderHelpOverlay())
+	for _, want := range []string{
+		"Scopes",
+		"Named scopes (List/Detail)",
+		"Global backlog (List/Detail)",
+		"New inactive named scope (Scopes)",
+		"Activate scope (Scopes)",
+		"Add to active scope (L/D/B)",
+		"Remove from active scope (L/D)",
+		"Move bead to another scope (L/D)",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("generic help missing %q:\n%s", want, help)
+		}
+	}
+	if strings.Contains(help, "nAdd comment") {
+		t.Fatal("generic Scopes card misstates List n as scope creation")
+	}
+}
+
+func TestGenericScopesHelpFitsRepresentativeWidths(t *testing.T) {
+	for _, width := range []int{60, 80} {
+		t.Run(fmt.Sprintf("width-%d", width), func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.width, m.height, m.focused = width, 40, focusList
+			updated, _ := m.Update(keyMsg("?"))
+			m = updated.(*Model)
+			view := ansi.Strip(m.View())
+			for _, want := range []string{"Scopes", "W         Named scopes", "B         Global backlog", "n         New inactive"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("clipped generic help missing %q:\n%s", want, view)
+				}
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("help line width %d exceeds terminal width %d: %q", got, width, line)
+				}
+			}
+		})
+	}
+}
+
+func TestGenericScopesHelpBalancesWideColumns(t *testing.T) {
+	const width = 200
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.focused = width, 60, focusList
+	updated, _ := m.Update(keyMsg("?"))
+	m = updated.(*Model)
+	view := ansi.Strip(m.View())
+
+	for _, entry := range []struct{ key, desc string }{
+		{"W", "Named scopes (List/Detail)"},
+		{"B", "Global backlog (List/Detail)"},
+		{"n", "New inactive named scope (Scopes)"},
+		{"Enter", "Activate scope (Scopes)"},
+		{"A", "Add to active scope (L/D/B)"},
+		{"R", "Remove from active scope (L/D)"},
+		{"m", "Move bead to another scope (L/D)"},
+		{"s", "Cycle sort (Hub)"},
+		{"x", "Export .md"},
+		{"C", "Copy issue (List/Detail/Split)"},
+	} {
+		if !strings.Contains(view, fmt.Sprintf("%-10s%s", entry.key, entry.desc)) {
+			t.Fatalf("wide generic help wrapped or lost Scopes entry %q: \n%s", entry.key, view)
+		}
+	}
+
+	headings := []string{"◉ Scopes", "📊 Graph View", "🩺 Status", "📜 History", "🧭 Navigation", "💡 Insights", "⚡ List / Detail", "👁 Views", "🌐 Global", "🔍 List Filters & Sort"}
+	columnCounts := make(map[int]int)
+	for _, heading := range headings {
+		found := false
+		for _, line := range strings.Split(view, "\n") {
+			if index := strings.Index(line, heading); index >= 0 {
+				columnCounts[lipgloss.Width(line[:index])/(width/3)]++
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("wide generic help missing panel heading %q", heading)
+		}
+	}
+	counts := make([]int, 0, len(columnCounts))
+	for _, count := range columnCounts {
+		counts = append(counts, count)
+	}
+	sort.Ints(counts)
+	if fmt.Sprint(counts) != "[3 3 4]" {
+		t.Fatalf("generic help columns are unbalanced: counts=%v", counts)
 	}
 }
 
