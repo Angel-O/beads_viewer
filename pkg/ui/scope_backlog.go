@@ -300,6 +300,7 @@ func (b BacklogModel) visibleRange() (int, int) {
 type ScopePickerModel struct {
 	scopes        []ScopeInfo
 	selected      int
+	moveTarget    string
 	width, height int
 	theme         Theme
 }
@@ -318,6 +319,10 @@ func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 		s.selected = maxInt(0, len(s.scopes)-1)
 	}
 }
+
+// SetMoveTarget changes the picker from scope activation to moving one named
+// bead. An empty title restores the activation-only picker.
+func (s *ScopePickerModel) SetMoveTarget(title string) { s.moveTarget = title }
 func (s *ScopePickerModel) Move(delta int) {
 	if len(s.scopes) == 0 {
 		return
@@ -332,7 +337,11 @@ func (s ScopePickerModel) Selected() *ScopeInfo {
 	return &selected
 }
 func (s ScopePickerModel) View() string {
-	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render("Scopes")
+	heading := "Scopes"
+	if s.moveTarget != "" {
+		heading = "Move: " + s.moveTarget
+	}
+	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(heading)
 	lines := []string{title}
 	if len(s.scopes) == 0 {
 		lines = append(lines, "", "No scopes available.")
@@ -349,7 +358,11 @@ func (s ScopePickerModel) View() string {
 			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, scope.Name, scope.CreatedAt.Format("2006-01-02"), scope.MemberCount, active))
 		}
 	}
-	lines = append(lines, "", "enter activate · m move selected bead · esc back")
+	hint := "enter activate · esc back"
+	if s.moveTarget != "" {
+		hint = "enter move bead · esc back"
+	}
+	lines = append(lines, "", hint)
 	return lipgloss.NewStyle().Width(s.width).Height(s.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
 }
 
@@ -376,6 +389,7 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	m.showScopePicker = true
 	m.scopePickerOrigin = m.focused
 	m.scopePickerMoveIssue = moveIssue
+	m.scopePicker.SetMoveTarget(m.scopeMoveTargetTitle(moveIssue))
 	m.focused = focusScopePicker
 	m.scopePicker.SetScopes(m.scopeCatalog)
 	if m.runtimeServices.Scopes.Load != nil {
@@ -387,6 +401,7 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 func (m *Model) closeScopePicker() {
 	m.showScopePicker = false
 	m.scopePickerMoveIssue = ""
+	m.scopePicker.SetMoveTarget("")
 	m.focused = m.scopePickerOrigin
 }
 
@@ -415,15 +430,21 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.scopePicker.Move(1)
 	case "k", "up":
 		m.scopePicker.Move(-1)
-	case "m":
-		return m, m.startScopeMutation("move")
 	case "enter":
 		selected := m.scopePicker.Selected()
 		if selected == nil {
+			if m.scopePickerMoveIssue != "" {
+				m.statusMsg, m.statusIsError = "No destination scope selected", true
+			}
 			return m, nil
 		}
 		if m.scopePickerMoveIssue != "" {
-			if m.activeScope == nil || m.runtimeServices.Scopes.Move == nil {
+			if m.activeScope == nil {
+				m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
+				return m, nil
+			}
+			if m.runtimeServices.Scopes.Move == nil {
+				m.statusMsg, m.statusIsError = "Scope move is unavailable", true
 				return m, nil
 			}
 			issueID, target, source := m.scopePickerMoveIssue, selected.ID, m.activeScope.ID
@@ -502,6 +523,10 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 		if issue := m.backlog.CurrentIssue(); issue != nil {
 			issueID = issue.ID
 		}
+	} else if action == "move" {
+		if issue, ok := m.selectedVisibleScopeIssue(); ok {
+			issueID = issue.ID
+		}
 	} else {
 		issueID = m.selectedListIssueID(m.list.FilterState() != list.Unfiltered, m.list.FilterInput.Value())
 	}
@@ -524,13 +549,56 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 		}
 		return runScopeMutationCmd(action, false, func(ctx context.Context) error { return service.Remove(ctx, issueID, m.activeScope.ID) })
 	case "move":
-		if m.showScopePicker {
-			m.scopePickerMoveIssue = issueID
-			return nil
-		}
 		return m.openScopePicker(issueID)
 	}
 	return nil
+}
+
+// selectedVisibleScopeIssue accepts only the bead currently represented by a
+// visible List row (or the bead currently shown in Detail). It intentionally
+// does not use selectedListIssueID: that helper can retain a pending async
+// filter selection after the row has disappeared.
+func (m *Model) selectedVisibleScopeIssue() (model.Issue, bool) {
+	if m.focused == focusDetail && m.insightsDetailID != "" {
+		issue := m.issueMap[m.insightsDetailID]
+		if issue == nil || !m.issueMatchesRepositoryScope(*issue) {
+			return model.Issue{}, false
+		}
+		return *issue, true
+	}
+	if m.focused != focusList && m.focused != focusDetail {
+		return model.Issue{}, false
+	}
+	selected, ok := m.list.SelectedItem().(IssueItem)
+	if !ok || selected.Issue.ID == "" {
+		return model.Issue{}, false
+	}
+	visible := false
+	for _, raw := range m.list.VisibleItems() {
+		if item, ok := raw.(IssueItem); ok && item.Issue.ID == selected.Issue.ID {
+			visible = true
+			break
+		}
+	}
+	if !visible || !m.issueMatchesRepositoryScope(selected.Issue) {
+		return model.Issue{}, false
+	}
+	if issue := m.issueMap[selected.Issue.ID]; issue != nil {
+		return *issue, true
+	}
+	return selected.Issue, true
+}
+
+func (m *Model) scopeMoveTargetTitle(issueID string) string {
+	if issue := m.issueMap[issueID]; issue != nil && issue.Title != "" {
+		return issue.Title
+	}
+	for _, issue := range m.issues {
+		if issue.ID == issueID && issue.Title != "" {
+			return issue.Title
+		}
+	}
+	return issueID
 }
 
 func (m *Model) refreshAfterScopeMutation() tea.Cmd {

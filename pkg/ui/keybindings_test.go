@@ -146,7 +146,7 @@ func TestNewModelRegistersDocumentedBindings(t *testing.T) {
 		{focus: focusList, key: "W"},
 		{focus: focusList, key: "A"},
 		{focus: focusList, key: "R"},
-		{focus: focusList, key: "M"},
+		{focus: focusList, key: "m"},
 		{focus: focusScopePicker, key: "enter"},
 		{focus: focusBacklog, key: "p"},
 		{focus: focusList, key: "w"},
@@ -1265,8 +1265,8 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusBacklog:        "backlog",
 	}
 	required := map[focus][]string{
-		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5", "up", "down", "left", "right"},
-		focusDetail:         {"j", "a", "b", "g", "h", "i", "E", "?", "F2/;", "tab", "n", "U", "x", "y", "C", "t", "T", "O", "Ctrl+R/F5"},
+		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "m", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5", "up", "down", "left", "right"},
+		focusDetail:         {"j", "a", "b", "g", "h", "i", "E", "?", "F2/;", "tab", "n", "U", "x", "y", "C", "t", "T", "O", "m", "Ctrl+R/F5"},
 		focusBoard:          {"h", "l", "j", "k", "G", "gg", "tab", "enter", "o", "c", "r", "/", "n/N", "1-4", "H/L", "0/$", "y", "s", "e", "d", "b", "?", "F2/;"},
 		focusGraph:          {"hjkl", "pgup/pgdown", "/", "n/N", "enter", "esc", "g", "b", "?", "F2/;"},
 		focusTree:           {"h", "l", "enter", "space", "/", "n", "N", "v", "+", "-", "G", "E", "o", "c", "r", "pgup", "pgdown", "?", "F2/;"},
@@ -1277,7 +1277,7 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
 		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
 		focusAttention:      {"j", "k", "up", "down", "home", "G", "enter", "g", "] / F4", "esc / q", "?", "F2/;"},
-		focusScopePicker:    {"j", "k", "enter", "m", "esc", "q", "B", "W", "ctrl+c", "`", "F2/;", "?"},
+		focusScopePicker:    {"j", "k", "enter", "esc", "q", "B", "W", "ctrl+c", "`", "F2/;", "?"},
 		focusBacklog:        {"j", "k", "n", "p", "esc", "q", "B", "W", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5"},
 	}
 
