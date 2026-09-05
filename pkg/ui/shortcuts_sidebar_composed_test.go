@@ -126,6 +126,9 @@ func TestScopesShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
 					m.closeScopePicker()
 					body = m.renderNoActiveScope(m.mainContentWidth())
 				}
+				if got := maxLineWidth(body); got != m.mainContentWidth() {
+					t.Fatalf("Scopes body width = %d, want reserved width %d", got, m.mainContentWidth())
+				}
 				m.shortcutsSidebar.SetFocus(m.focused)
 				m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 				composed := lipgloss.JoinHorizontal(lipgloss.Top, body, m.shortcutsSidebar.View())
@@ -143,6 +146,50 @@ func TestScopesShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRepoPickerShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
+	maxLineWidth := func(view string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(view, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	for _, width := range []int{80, 160} {
+		t.Run(fmt.Sprintf("%d", width), func(t *testing.T) {
+			m := sizedModel(t, mouseTestIssues(2), width, 30)
+			m.hubRepositoryMode = true
+			m.repositoryCatalog = testRepositoryCatalog()
+
+			updated, _ := m.Update(keyMsg(";"))
+			m = updated.(*Model)
+			updated, _ = m.Update(keyMsg("w"))
+			m = updated.(*Model)
+			if !m.showRepoPicker || !m.showShortcutsSidebar {
+				t.Fatalf("sidebar plus Context picker state: picker=%t sidebar=%t", m.showRepoPicker, m.showShortcutsSidebar)
+			}
+
+			_ = m.View()
+			m.shortcutsSidebar.SetFocus(m.focused)
+			m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
+			picker := m.repoPicker.View()
+			sidebar := m.shortcutsSidebar.View()
+			composed := lipgloss.JoinHorizontal(lipgloss.Top, picker, sidebar)
+			if got := maxLineWidth(composed); got > m.width {
+				t.Fatalf("Context/sidebar pre-clamp width = %d, want <= %d", got, m.width)
+			}
+			if !strings.Contains(ansi.Strip(picker), "Context") || !strings.Contains(ansi.Strip(picker), "alpha") {
+				t.Fatalf("Context picker was clipped or corrupted:\n%s", ansi.Strip(picker))
+			}
+			if !strings.Contains(ansi.Strip(sidebar), "Shortcuts") {
+				t.Fatal("shortcuts sidebar was clipped or corrupted")
+			}
+		})
 	}
 }
 

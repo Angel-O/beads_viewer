@@ -6081,7 +6081,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.repoPicker.SetActiveRepos(m.activeRepos)
 				}
 				m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
-				m.repoPicker.SetSize(m.width, m.height-1)
+				m.repoPicker.SetSize(m.mainContentWidth(), m.height-1)
 				m.showRepoPicker = true
 				m.focused = focusRepoPicker
 				return m, nil
@@ -7984,6 +7984,8 @@ func (m *Model) View() string {
 	} else if m.showRecipePicker {
 		body = m.recipePicker.View()
 	} else if m.showRepoPicker {
+		// Keep the picker inside the body column when the shortcuts sidebar is open.
+		m.repoPicker.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.repoPicker.View()
 	} else if m.showScopeCreatePrompt {
 		body = m.renderScopeCreatePrompt()
@@ -11001,7 +11003,7 @@ func (m *Model) applyContentSizing() {
 		m.historyView.SetSize(contentWidth, bodyHeight)
 	}
 	if m.showRepoPicker {
-		m.repoPicker.SetSize(m.width, bodyHeight)
+		m.repoPicker.SetSize(m.mainContentWidth(), bodyHeight)
 	}
 	if m.showTypePicker {
 		m.typePicker.SetSize(m.width, bodyHeight)
