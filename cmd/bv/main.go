@@ -2767,6 +2767,13 @@ func main() {
 			_ = loader.EnsureBVIgnored(projectDir)
 		}
 		loadDuration := time.Since(loadStart)
+		if composition.HubScopeMemberIDs != nil {
+			memberIDs, scopeErr := composition.HubScopeMemberIDs(context.Background())
+			if scopeErr != nil {
+				return fmt.Errorf("loading active Hub scope: %w", scopeErr)
+			}
+			issues = filterHubScopeIssues(issues, memberIDs)
+		}
 
 		// Apply --repo filter if specified
 		if *repoFilter != "" {
@@ -4960,6 +4967,8 @@ func main() {
 				DefaultRepositoryID:    composition.DefaultCurrentContext,
 				ExternalHistory:        composition.HistoryProvider.External(),
 				HubAutoRefresh:         composition.HubAutoRefresh,
+				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+				HubChangeSignal:        composition.HubChangeSignal,
 				RefreshResolved:        true,
 			})
 			m.SetRepositoryCatalogIssues(issues)
@@ -4976,6 +4985,8 @@ func main() {
 				DefaultRepositoryID:    composition.DefaultCurrentContext,
 				ExternalHistory:        composition.HistoryProvider.External(),
 				HubAutoRefresh:         composition.HubAutoRefresh,
+				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+				HubChangeSignal:        composition.HubChangeSignal,
 				RefreshResolved:        true,
 			})
 			defer m.Stop()
@@ -5096,6 +5107,8 @@ func main() {
 			DefaultRepositoryID:    composition.DefaultCurrentContext,
 			ExternalHistory:        composition.HistoryProvider.External(),
 			HubAutoRefresh:         composition.HubAutoRefresh,
+			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+			HubChangeSignal:        composition.HubChangeSignal,
 			RefreshResolved:        true,
 		})
 		m.SetRepositoryCatalogIssues(catalogIssues)
@@ -5112,6 +5125,8 @@ func main() {
 			DefaultRepositoryID:    composition.DefaultCurrentContext,
 			ExternalHistory:        composition.HistoryProvider.External(),
 			HubAutoRefresh:         composition.HubAutoRefresh,
+			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+			HubChangeSignal:        composition.HubChangeSignal,
 			RefreshResolved:        true,
 		})
 		m.SetDefaultRepositoryScope(composition.DefaultCurrentContext)
