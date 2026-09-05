@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
@@ -44,6 +45,14 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 			}
 			return ui.ScopeSnapshot{Scopes: scopes}, nil
 		},
+		Create: func(ctx context.Context, name string) error {
+			id := scopeIDFromName(name)
+			if id == "" {
+				return fmt.Errorf("scope name must contain a letter or number")
+			}
+			_, err := runWBDScopeCommand(ctx, workDir, "create", id, name)
+			return err
+		},
 		Activate: func(ctx context.Context, id string) error {
 			_, err := runWBDScopeCommand(ctx, workDir, "activate", id)
 			return err
@@ -72,6 +81,23 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 			return decodeBacklogPage(data)
 		},
 	}
+}
+
+// scopeIDFromName supplies the backend ID for the UI's name-only creation
+// prompt. IDs are stable slugs; activation remains a separate user action.
+func scopeIDFromName(name string) string {
+	var builder strings.Builder
+	dashed := false
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			builder.WriteRune(r)
+			dashed = false
+		} else if builder.Len() > 0 && !dashed {
+			builder.WriteByte('-')
+			dashed = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
 func runWBDBacklogCommand(ctx context.Context, workDir string, args ...string) ([]byte, error) {

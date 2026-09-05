@@ -276,6 +276,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"W", "Named scopes", "Views", "list,detail"},
 		{"W", "Open/close named scopes", "Views", "scope,backlog"},
 		{"enter", "Activate scope", "Views", "scope"},
+		{"n", "Create inactive named scope", "Views", "scope"},
 		{"B", "Return to list", "Views", "backlog"},
 		{"j", "Move down", "Navigation", "scope,backlog"},
 		{"k", "Move up", "Navigation", "scope,backlog"},

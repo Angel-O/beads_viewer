@@ -51,6 +51,79 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	}
 }
 
+func TestFirstScopeCreationStartsFromNamedScopesWithoutIssueSelection(t *testing.T) {
+	var createdName string
+	activations := 0
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load:     func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+		Create:   func(_ context.Context, name string) error { createdName = name; return nil },
+		Activate: func(context.Context, string) error { activations++; return nil },
+	}})
+
+	updated, cmd := m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("W did not open the named-scopes view")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(*Model)
+	if !m.showScopeCreatePrompt || m.focused != focusScopeCreateInput || m.statusMsg == "No issue selected" {
+		t.Fatalf("n did not open name prompt: prompt=%t focus=%s status=%q", m.showScopeCreatePrompt, m.focused, m.statusMsg)
+	}
+	for _, r := range "First scope" {
+		updated, _ = m.Update(keyMsg(string(r)))
+		m = updated.(*Model)
+	}
+	updated, cmd = m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil || m.showScopeCreatePrompt || !m.showScopePicker || m.activeScope != nil {
+		t.Fatalf("scope creation state: cmd=%t prompt=%t picker=%t active=%#v", cmd != nil, m.showScopeCreatePrompt, m.showScopePicker, m.activeScope)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if createdName != "First scope" || activations != 0 {
+		t.Fatalf("created name=%q activations=%d, want name-only inactive creation", createdName, activations)
+	}
+}
+
+func TestScopeCreationValidationCancelAndFailureKeepPickerUsable(t *testing.T) {
+	creates := 0
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Create: func(context.Context, string) error { creates++; return errors.New("backend unavailable") },
+	}})
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+
+	updated, _ := m.Update(keyMsg("n"))
+	m = updated.(*Model)
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd != nil || !m.showScopeCreatePrompt || !m.statusIsError || m.statusMsg != "Scope name cannot be empty" {
+		t.Fatalf("empty name: cmd=%t prompt=%t error=%t status=%q", cmd != nil, m.showScopeCreatePrompt, m.statusIsError, m.statusMsg)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showScopeCreatePrompt || !m.showScopePicker || m.focused != focusScopePicker {
+		t.Fatalf("cancel changed picker state: prompt=%t picker=%t focus=%s", m.showScopeCreatePrompt, m.showScopePicker, m.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(*Model)
+	m.scopeCreateInput.SetValue("Retry scope")
+	updated, cmd = m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("valid name did not start creation")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if creates != 1 || !m.showScopePicker || m.statusMsg != "Scope create failed: backend unavailable" || !m.statusIsError {
+		t.Fatalf("backend failure: creates=%d picker=%t status=%q error=%t", creates, m.showScopePicker, m.statusMsg, m.statusIsError)
+	}
+}
+
 func TestScopePickerWTogglesToItsPriorView(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
@@ -154,7 +227,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Activate scope", "B", "global backlog"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Activate scope", "n", "Create inactive named scope", "B", "global backlog"}},
 		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
