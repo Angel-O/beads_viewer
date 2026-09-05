@@ -715,7 +715,9 @@ func StartBackgroundWorkerCmd(w *BackgroundWorker) tea.Cmd {
 				err:    fmt.Errorf("starting background worker: %w", err),
 			}
 		}
-		w.HandleRefreshRequest(RefreshRequestMsg{})
+		if !w.skipInitialRefresh {
+			w.HandleRefreshRequest(RefreshRequestMsg{})
+		}
 		return nil
 	}
 }
@@ -2323,6 +2325,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			HubChangeSignal:     hubChangeSignal,
 			CatalogLoader:       runtimeServices.CatalogLoader,
 			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
+			SkipInitialRefresh:  runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil,
 		})
 		if err != nil {
 			backgroundModeErr = err
@@ -2410,7 +2413,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		semanticPath:              beadsPath,
 		repositoryScopeController: newRepositoryScopeController(),
 		watcher:                   fileWatcher,
-		snapshotInitPending:       backgroundWorker != nil && len(issues) == 0,
+		snapshotInitPending:       backgroundWorker != nil && len(issues) == 0 && !(runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil),
 		backgroundWorker:          backgroundWorker,
 		instanceLock:              instLock,
 		list:                      l,
@@ -2500,6 +2503,15 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		// Tutorial integration (bv-8y31)
 		tutorialModel: NewTutorialModel(theme),
 	}
+	if initial := runtimeServices.InitialScope; initial != nil {
+		m.backlogScopeLoaded = true
+		m.scopeCatalog = append([]ScopeInfo(nil), initial.Scopes...)
+		m.scopePicker.SetScopes(m.scopeCatalog)
+		if initial.Active != nil {
+			active := *initial.Active
+			m.activeScope = &active
+		}
+	}
 
 	m.installBackgroundWorker(backgroundWorker)
 	m.registerKeyBindings()
@@ -2547,6 +2559,7 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			CatalogPath:         services.CatalogPath,
 			CatalogLoader:       services.CatalogLoader,
 			HubScopeMemberIDs:   services.HubScopeMemberIDs,
+			SkipInitialRefresh:  services.InitialScope != nil && services.InitialScope.Active == nil,
 			HubChangeSignal:     services.HubChangeSignal,
 		})
 		if err != nil {
@@ -7911,7 +7924,9 @@ func (m Model) renderLoadingScreen() string {
 		"",
 		titleStyle.Render("Loading beads..."),
 	}
-	if m.beadsPath != "" {
+	if m.runtimeServices.Scopes.Load != nil {
+		lines = append(lines, "", subStyle.Render("Hub semantic store"))
+	} else if m.beadsPath != "" {
 		lines = append(lines, "", subStyle.Render(m.beadsPath))
 	}
 

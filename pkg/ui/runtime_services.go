@@ -51,5 +51,8 @@ type RuntimeServices struct {
 	// HubScopeMemberIDs bounds every Hub snapshot to the active named scope.
 	// A nil loader preserves ordinary local loading semantics.
 	HubScopeMemberIDs func(context.Context) ([]string, error)
-	HubChangeSignal   string
+	// InitialScope is the scope state resolved before Hub issue loading. A
+	// non-nil snapshot with no Active scope keeps startup on the no-scope view.
+	InitialScope    *ScopeSnapshot
+	HubChangeSignal string
 }
