@@ -39,10 +39,60 @@ type BacklogPage struct {
 	NextCursor string
 }
 
+// BacklogQuery is the complete request for one bounded backlog page. Filter
+// is a user-facing query; Cursor is opaque and must not be decoded or edited.
+type BacklogQuery struct {
+	Filter string
+	Cursor string
+	Limit  int
+}
+
+// ScopeDetails is the bounded result for one selected named scope. The
+// contract deliberately has no pagination or cache policy; callers that only
+// need the scope projection can use Info.
+type ScopeDetails struct {
+	Info      ScopeInfo
+	Issues    []model.Issue
+	MemberIDs []string
+}
+
+// ScopeMutationKind names the semantic operation requested by the Viewer.
+// Keeping this typed prevents command names from leaking into Model seams.
+type ScopeMutationKind string
+
+const (
+	ScopeMutationCreate     ScopeMutationKind = "create"
+	ScopeMutationActivate   ScopeMutationKind = "activate"
+	ScopeMutationDeactivate ScopeMutationKind = "deactivate"
+	ScopeMutationAdd        ScopeMutationKind = "add"
+	ScopeMutationRemove     ScopeMutationKind = "remove"
+	ScopeMutationMove       ScopeMutationKind = "move"
+)
+
+// ScopeMutation is the semantic scope change accepted by the Viewer service.
+// IssueIDs may contain more than one ID for add/remove/move.
+type ScopeMutation struct {
+	Kind          ScopeMutationKind
+	Name          string
+	ScopeID       string
+	IssueIDs      []string
+	SourceScopeID string
+	TargetScopeID string
+}
+
 // ScopeServices is the narrow CLI composition seam for scope-first UI work.
 // A zero value keeps standalone/local Viewer callers unchanged.
 type ScopeServices struct {
 	Load func(context.Context) (ScopeSnapshot, error)
+	// QueryBacklog loads one filtered page. The legacy LoadBacklog field remains
+	// as a zero-cost compatibility fallback for local callers.
+	QueryBacklog func(context.Context, BacklogQuery) (BacklogPage, error)
+	// LoadDetails loads one selected scope without taking ownership of member
+	// pagination, caching, or streaming.
+	LoadDetails func(context.Context, string) (ScopeDetails, error)
+	// Mutate applies one semantic scope operation, including batch membership
+	// changes. The legacy mutation fields remain compatibility fallbacks.
+	Mutate func(context.Context, ScopeMutation) error
 	// Create creates a named scope without activating it.
 	Create   func(context.Context, string) error
 	Activate func(context.Context, string) error
@@ -67,8 +117,14 @@ type backlogPageMsg struct {
 	err        error
 }
 
+type scopeDetailsMsg struct {
+	details ScopeDetails
+	err     error
+}
+
 type scopeMutationMsg struct {
-	action       string
+	mutation     ScopeMutation
+	action       string // compatibility with older local message producers
 	restoreFocus bool
 	err          error
 }
@@ -83,22 +139,38 @@ func loadScopeSnapshotCmd(service ScopeServices) tea.Cmd {
 	}
 }
 
-func loadBacklogPageCmd(service ScopeServices, cursor string, index int, generation uint64) tea.Cmd {
+func loadScopeDetailsCmd(service ScopeServices, scopeID string) tea.Cmd {
 	return func() tea.Msg {
-		if service.LoadBacklog == nil {
-			return backlogPageMsg{cursor: cursor, index: index, generation: generation}
+		if service.LoadDetails == nil {
+			return scopeDetailsMsg{}
 		}
-		page, err := service.LoadBacklog(context.Background(), cursor, backlogPageSize)
-		return backlogPageMsg{page: page, cursor: cursor, index: index, generation: generation, err: err}
+		details, err := service.LoadDetails(context.Background(), scopeID)
+		return scopeDetailsMsg{details: details, err: err}
 	}
 }
 
-func runScopeMutationCmd(action string, restoreFocus bool, run func(context.Context) error) tea.Cmd {
+func loadBacklogPageCmd(service ScopeServices, query BacklogQuery, index int, generation uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service.QueryBacklog == nil && service.LoadBacklog == nil {
+			return backlogPageMsg{cursor: query.Cursor, index: index, generation: generation}
+		}
+		var page BacklogPage
+		var err error
+		if service.QueryBacklog != nil {
+			page, err = service.QueryBacklog(context.Background(), query)
+		} else {
+			page, err = service.LoadBacklog(context.Background(), query.Cursor, query.Limit)
+		}
+		return backlogPageMsg{page: page, cursor: query.Cursor, index: index, generation: generation, err: err}
+	}
+}
+
+func runScopeMutationCmd(mutation ScopeMutation, restoreFocus bool, run func(context.Context) error) tea.Cmd {
 	return func() tea.Msg {
 		if run == nil {
-			return scopeMutationMsg{action: action, restoreFocus: restoreFocus}
+			return scopeMutationMsg{mutation: mutation, action: string(mutation.Kind), restoreFocus: restoreFocus}
 		}
-		return scopeMutationMsg{action: action, restoreFocus: restoreFocus, err: run(context.Background())}
+		return scopeMutationMsg{mutation: mutation, action: string(mutation.Kind), restoreFocus: restoreFocus, err: run(context.Background())}
 	}
 }
 
@@ -199,6 +271,15 @@ func (b *BacklogModel) PreviousPageCursor() string {
 		return ""
 	}
 	b.pageIndex--
+	return b.pageCursors[b.pageIndex]
+}
+
+// CurrentPageCursor returns the opaque cursor used to load the current page.
+// It is intentionally not interpreted by the page model.
+func (b BacklogModel) CurrentPageCursor() string {
+	if b.pageIndex < 0 || b.pageIndex >= len(b.pageCursors) {
+		return ""
+	}
 	return b.pageCursors[b.pageIndex]
 }
 
@@ -472,7 +553,7 @@ func (m *Model) openBacklog() tea.Cmd {
 	m.backlog.Reset()
 	m.backlogLoading = true
 	m.backlogPageGeneration++
-	return loadBacklogPageCmd(m.runtimeServices.Scopes, "", 0, m.backlogPageGeneration)
+	return loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Limit: backlogPageSize}, 0, m.backlogPageGeneration)
 }
 
 func (m *Model) closeBacklog() {
@@ -503,34 +584,46 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 				m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
 				return m, nil
 			}
-			if m.runtimeServices.Scopes.Move == nil {
+			if m.runtimeServices.Scopes.Mutate == nil && m.runtimeServices.Scopes.Move == nil {
 				m.statusMsg, m.statusIsError = "Scope move is unavailable", true
 				return m, nil
 			}
 			issueID, target, source := m.scopePickerMoveIssue, selected.ID, m.activeScope.ID
-			return m, runScopeMutationCmd("move", true, func(ctx context.Context) error {
+			mutation := ScopeMutation{Kind: ScopeMutationMove, IssueIDs: []string{issueID}, SourceScopeID: source, TargetScopeID: target}
+			return m, runScopeMutationCmd(mutation, true, func(ctx context.Context) error {
+				if m.runtimeServices.Scopes.Mutate != nil {
+					return m.runtimeServices.Scopes.Mutate(ctx, mutation)
+				}
 				return m.runtimeServices.Scopes.Move(ctx, issueID, source, target)
 			})
 		}
 		if selected.Active {
-			if m.runtimeServices.Scopes.Deactivate == nil {
+			if m.runtimeServices.Scopes.Mutate == nil && m.runtimeServices.Scopes.Deactivate == nil {
 				return m, nil
 			}
-			return m, runScopeMutationCmd("deactivate", true, func(ctx context.Context) error {
+			mutation := ScopeMutation{Kind: ScopeMutationDeactivate}
+			return m, runScopeMutationCmd(mutation, true, func(ctx context.Context) error {
+				if m.runtimeServices.Scopes.Mutate != nil {
+					return m.runtimeServices.Scopes.Mutate(ctx, mutation)
+				}
 				return m.runtimeServices.Scopes.Deactivate(ctx)
 			})
 		}
-		if m.runtimeServices.Scopes.Activate == nil {
+		if m.runtimeServices.Scopes.Mutate == nil && m.runtimeServices.Scopes.Activate == nil {
 			return m, nil
 		}
-		return m, runScopeMutationCmd("activate", true, func(ctx context.Context) error {
+		mutation := ScopeMutation{Kind: ScopeMutationActivate, ScopeID: selected.ID}
+		return m, runScopeMutationCmd(mutation, true, func(ctx context.Context) error {
+			if m.runtimeServices.Scopes.Mutate != nil {
+				return m.runtimeServices.Scopes.Mutate(ctx, mutation)
+			}
 			return m.runtimeServices.Scopes.Activate(ctx, selected.ID)
 		})
 	case "n":
 		if m.scopePickerMoveIssue != "" {
 			return m, nil
 		}
-		if m.runtimeServices.Scopes.Create == nil {
+		if m.runtimeServices.Scopes.Mutate == nil && m.runtimeServices.Scopes.Create == nil {
 			m.statusMsg, m.statusIsError = "Scope creation is unavailable", true
 			return m, nil
 		}
@@ -559,7 +652,11 @@ func (m *Model) handleScopeCreateKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.scopeCreateInput.Blur()
 		m.showScopeCreatePrompt = false
 		m.focused = focusScopePicker
-		return m, runScopeMutationCmd("create", false, func(ctx context.Context) error {
+		mutation := ScopeMutation{Kind: ScopeMutationCreate, Name: name}
+		return m, runScopeMutationCmd(mutation, false, func(ctx context.Context) error {
+			if m.runtimeServices.Scopes.Mutate != nil {
+				return m.runtimeServices.Scopes.Mutate(ctx, mutation)
+			}
 			return m.runtimeServices.Scopes.Create(ctx, name)
 		})
 	default:
@@ -588,7 +685,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			m.backlog.ResetPagination()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
-			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, "", 0, m.backlogPageGeneration)
+			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Limit: backlogPageSize}, 0, m.backlogPageGeneration)
 		}
 		return m, nil
 	}
@@ -605,14 +702,14 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if cursor := m.backlog.NextPageCursor(); cursor != "" {
 			m.backlogLoading = true
 			m.backlogPageGeneration++
-			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, cursor, m.backlog.PageIndex()+1, m.backlogPageGeneration)
+			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Cursor: cursor, Limit: backlogPageSize}, m.backlog.PageIndex()+1, m.backlogPageGeneration)
 		}
 	case "p", "left":
 		if m.backlog.PageIndex() > 0 {
 			cursor := m.backlog.PreviousPageCursor()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
-			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, cursor, m.backlog.PageIndex(), m.backlogPageGeneration)
+			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Cursor: cursor, Limit: backlogPageSize}, m.backlog.PageIndex(), m.backlogPageGeneration)
 		}
 	case "A":
 		return m, m.startScopeMutation("add")
@@ -644,17 +741,29 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 	service := m.runtimeServices.Scopes
 	switch action {
 	case "add":
-		if service.Add == nil {
+		if service.Mutate == nil && service.Add == nil {
 			m.statusMsg, m.statusIsError = "Scope add is unavailable", true
 			return nil
 		}
-		return runScopeMutationCmd(action, false, func(ctx context.Context) error { return service.Add(ctx, issueID, m.activeScope.ID) })
+		mutation := ScopeMutation{Kind: ScopeMutationAdd, ScopeID: m.activeScope.ID, IssueIDs: []string{issueID}}
+		return runScopeMutationCmd(mutation, false, func(ctx context.Context) error {
+			if service.Mutate != nil {
+				return service.Mutate(ctx, mutation)
+			}
+			return service.Add(ctx, issueID, m.activeScope.ID)
+		})
 	case "remove":
-		if service.Remove == nil {
+		if service.Mutate == nil && service.Remove == nil {
 			m.statusMsg, m.statusIsError = "Scope remove is unavailable", true
 			return nil
 		}
-		return runScopeMutationCmd(action, false, func(ctx context.Context) error { return service.Remove(ctx, issueID, m.activeScope.ID) })
+		mutation := ScopeMutation{Kind: ScopeMutationRemove, ScopeID: m.activeScope.ID, IssueIDs: []string{issueID}}
+		return runScopeMutationCmd(mutation, false, func(ctx context.Context) error {
+			if service.Mutate != nil {
+				return service.Mutate(ctx, mutation)
+			}
+			return service.Remove(ctx, issueID, m.activeScope.ID)
+		})
 	case "move":
 		return m.openScopePicker(issueID)
 	}
@@ -708,8 +817,11 @@ func (m *Model) scopeMoveTargetTitle(issueID string) string {
 	return issueID
 }
 
-func (m *Model) refreshAfterScopeMutation() tea.Cmd {
+func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	cmds := []tea.Cmd{loadScopeSnapshotCmd(m.runtimeServices.Scopes)}
+	if mutation.Kind == ScopeMutationRemove && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
+		cmds = append(cmds, loadScopeDetailsCmd(m.runtimeServices.Scopes, mutation.ScopeID))
+	}
 	if m.backgroundWorker != nil {
 		m.backgroundWorker.ForceSourceRefresh()
 		cmds = append(cmds, WaitForBackgroundWorkerMsgCmd(m.backgroundWorker))
@@ -719,7 +831,11 @@ func (m *Model) refreshAfterScopeMutation() tea.Cmd {
 	if m.isBacklogView {
 		m.backlogLoading = true
 		m.backlogPageGeneration++
-		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes, "", 0, m.backlogPageGeneration))
+		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{
+			Filter: m.backlog.Filter(),
+			Cursor: m.backlog.CurrentPageCursor(),
+			Limit:  backlogPageSize,
+		}, m.backlog.PageIndex(), m.backlogPageGeneration))
 	}
 	return tea.Batch(cmds...)
 }

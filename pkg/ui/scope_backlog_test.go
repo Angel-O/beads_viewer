@@ -728,6 +728,116 @@ func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	}
 }
 
+func TestTypedBacklogQueryCarriesBoundedRequest(t *testing.T) {
+	want := BacklogQuery{Filter: "alpha", Cursor: "opaque/token", Limit: backlogPageSize}
+	var got BacklogQuery
+	cmd := loadBacklogPageCmd(ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			got = query
+			return BacklogPage{}, nil
+		},
+	}, want, 2, 7)
+
+	raw := cmd()
+	msg, ok := raw.(backlogPageMsg)
+	if !ok {
+		t.Fatalf("typed backlog command returned %T", raw)
+	}
+	if got != want || msg.cursor != want.Cursor || msg.index != 2 || msg.generation != 7 {
+		t.Fatalf("query=%#v message=%#v, want query=%#v and matching paging metadata", got, msg, want)
+	}
+}
+
+func TestTypedScopeMutationCarriesBatchAndMoveFields(t *testing.T) {
+	want := ScopeMutation{
+		Kind:          ScopeMutationMove,
+		IssueIDs:      []string{"b-1", "b-2"},
+		SourceScopeID: "today",
+		TargetScopeID: "later",
+	}
+	msg, ok := runScopeMutationCmd(want, true, nil)().(scopeMutationMsg)
+	if !ok {
+		t.Fatalf("typed mutation command returned unexpected message")
+	}
+	if msg.mutation.Kind != want.Kind || strings.Join(msg.mutation.IssueIDs, ",") != "b-1,b-2" ||
+		msg.mutation.SourceScopeID != want.SourceScopeID || msg.mutation.TargetScopeID != want.TargetScopeID ||
+		!msg.restoreFocus || msg.action != string(want.Kind) {
+		t.Fatalf("mutation message=%#v, want typed mutation=%#v", msg, want)
+	}
+}
+
+func TestBacklogAddRefreshPreservesCurrentPageRequest(t *testing.T) {
+	var got BacklogQuery
+	var gotPage backlogPageMsg
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			got = query
+			return BacklogPage{}, nil
+		},
+	}})
+	m.isBacklogView = true
+	m.backlog.Reset()
+	m.backlog.AddFilter("alpha")
+	m.backlog.SetPage(BacklogPage{HasMore: true, NextCursor: "cursor-1"}, 0)
+	m.backlog.NextPageCursor()
+	m.backlog.SetPage(BacklogPage{}, 1)
+	if got := m.backlog.CurrentPageCursor(); got != "cursor-1" {
+		t.Fatalf("current backlog cursor=%q, want cursor-1", got)
+	}
+	m.backlogPageGeneration = 4
+
+	cmd := m.refreshAfterScopeMutation(ScopeMutation{Kind: ScopeMutationAdd})
+	for _, child := range cmd().(tea.BatchMsg) {
+		if page, ok := child().(backlogPageMsg); ok {
+			gotPage = page
+			break
+		}
+	}
+	if want := (BacklogQuery{Filter: "alpha", Cursor: "cursor-1", Limit: backlogPageSize}); got != want {
+		t.Fatalf("backlog add refresh query=%#v, want %#v", got, want)
+	}
+	if gotPage.index != 1 || gotPage.generation != 5 || m.backlog.PageIndex() != 1 || m.backlogPageGeneration != 5 {
+		t.Fatalf("backlog state page=%d generation=%d message=%#v, want page=1 generation=5", m.backlog.PageIndex(), m.backlogPageGeneration, gotPage)
+	}
+}
+
+func TestScopeRemoveRefreshLoadsDetailsAndPreservesThemOnFailure(t *testing.T) {
+	old := ScopeDetails{Info: ScopeInfo{ID: "today"}, MemberIDs: []string{"b-1"}}
+	newDetails := ScopeDetails{Info: ScopeInfo{ID: "today"}, MemberIDs: []string{"b-2"}}
+	var loaded string
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		LoadDetails: func(_ context.Context, scopeID string) (ScopeDetails, error) {
+			loaded = scopeID
+			return newDetails, nil
+		},
+	}})
+	m.scopeDetails = &old
+	cmds := m.refreshAfterScopeMutation(ScopeMutation{Kind: ScopeMutationRemove, ScopeID: "today"})().(tea.BatchMsg)
+	for _, child := range cmds {
+		if details, ok := child().(scopeDetailsMsg); ok {
+			updated, _ := m.Update(details)
+			m = updated.(*Model)
+		}
+	}
+	if loaded != "today" || m.scopeDetails == nil || strings.Join(m.scopeDetails.MemberIDs, ",") != "b-2" {
+		t.Fatalf("loaded scope=%q details=%#v, want today with b-2", loaded, m.scopeDetails)
+	}
+
+	m.runtimeServices.Scopes.LoadDetails = func(context.Context, string) (ScopeDetails, error) {
+		return ScopeDetails{}, errors.New("details unavailable")
+	}
+	cmds = m.refreshAfterScopeMutation(ScopeMutation{Kind: ScopeMutationRemove, ScopeID: "today"})().(tea.BatchMsg)
+	for _, child := range cmds {
+		if details, ok := child().(scopeDetailsMsg); ok {
+			updated, _ := m.Update(details)
+			m = updated.(*Model)
+		}
+	}
+	if m.scopeDetails == nil || strings.Join(m.scopeDetails.MemberIDs, ",") != "b-2" {
+		t.Fatalf("failed details load replaced existing details: %#v", m.scopeDetails)
+	}
+}
+
 func TestBacklogCursorHistoryTruncatesAfterBacktracking(t *testing.T) {
 	b := NewBacklogModel(testTheme())
 	b.SetPage(BacklogPage{HasMore: true, NextCursor: "cursor-1"}, 0)

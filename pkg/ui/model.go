@@ -1220,6 +1220,9 @@ type Model struct {
 	scopePickerMoveIssue  string
 	scopeCatalog          []ScopeInfo
 	activeScope           *ScopeInfo
+	// scopeDetails retains the last successful selected-scope detail load;
+	// failed reloads must not replace it with an empty result.
+	scopeDetails          *ScopeDetails
 	backlog               BacklogModel
 	backlogLoading        bool
 	backlogPageGeneration uint64
@@ -3027,6 +3030,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scopePicker.SetScopes(m.scopeCatalog)
 		}
 
+	case scopeDetailsMsg:
+		if msg.err == nil {
+			details := msg.details
+			m.scopeDetails = &details
+		}
+
 	case backlogPageMsg:
 		if msg.generation != m.backlogPageGeneration {
 			break
@@ -3050,7 +3059,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
 		m.statusIsError = false
-		cmds = append(cmds, m.refreshAfterScopeMutation())
+		mutation := msg.mutation
+		if mutation.Kind == "" {
+			mutation.Kind = ScopeMutationKind(msg.action)
+		}
+		cmds = append(cmds, m.refreshAfterScopeMutation(mutation))
 
 	case commentAddedMsg:
 		m.commentSubmitting = false
