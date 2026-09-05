@@ -29,7 +29,8 @@ var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "claim", "unclaim", "dep", "dep add", "dep remove",
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
-	"migrate",
+	"scope", "scope create", "scope list", "scope show", "scope active", "scope activate", "scope deactivate", "scope add", "scope remove", "scope move",
+	"backlog", "backlog list", "migrate",
 }
 
 var commandSpecs = map[string]commandSpec{
@@ -191,6 +192,24 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--json", description: "Required; emit JSON."},
 		},
 	},
+	"scope": {path: "scope", usage: "wbd scope <create|list|show|active|activate|deactivate|add|remove|move> [options]", summary: "Manage named backlog scopes through bd."},
+	"scope create": {
+		path: "scope create", usage: "wbd scope create <id> <name> [--activate] [--json]", summary: "Create a named backlog scope.",
+		options: []optionSpec{{name: "--activate", description: "Activate the scope in the same backend call."}, {name: "--json", description: "Emit JSON."}},
+	},
+	"scope list":       {path: "scope list", usage: "wbd scope list [--json]", summary: "List named backlog scopes.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
+	"scope show":       {path: "scope show", usage: "wbd scope show <id> [--json]", summary: "Show one backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
+	"scope active":     {path: "scope active", usage: "wbd scope active [--json]", summary: "Show the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
+	"scope activate":   {path: "scope activate", usage: "wbd scope activate <id> [--json]", summary: "Activate a backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
+	"scope deactivate": {path: "scope deactivate", usage: "wbd scope deactivate [--json]", summary: "Deactivate the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
+	"scope add":        {path: "scope add", usage: "wbd scope add <issue-id>... [--scope <scope-id>] [--json]", summary: "Add issues to a scope; omitted scope uses the active scope.", options: []optionSpec{{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
+	"scope remove":     {path: "scope remove", usage: "wbd scope remove <issue-id>... [--scope <scope-id>] [--json]", summary: "Remove issues from a scope; omitted scope uses the active scope.", options: []optionSpec{{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
+	"scope move":       {path: "scope move", usage: "wbd scope move <issue-id>... [--source-scope <id>] [--target-scope <id>] [--json]", summary: "Move issues between scopes; omitted source or target uses the active scope.", options: []optionSpec{{name: "--source-scope", value: "<id>", description: "Source scope; defaults to the active scope."}, {name: "--target-scope", value: "<id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
+	"backlog":          {path: "backlog", usage: "wbd backlog list [options]", summary: "Read the scoped backlog through bd's JSON surface."},
+	"backlog list": {
+		path: "backlog list", usage: "wbd backlog list [--limit <n>] [--cursor <token>] [--json]", summary: "List unscoped backlog issues, preserving bd pagination cursors unchanged.",
+		options: []optionSpec{{name: "--limit", value: "<1-1000>", description: "Maximum results."}, {name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous page."}, {name: "--json", description: "Emit JSON."}},
+	},
 }
 
 func init() {
@@ -251,6 +270,7 @@ type request struct {
 	expandDependencies bool
 	migrateDryRun      bool
 	migrateApply       bool
+	scopeSubcommand    string
 }
 
 func commandName(arguments []string) (string, error) {
@@ -315,6 +335,10 @@ func parse(arguments []string) (request, error) {
 		return result, errors.New(usageFor("compatibility"))
 	case "list":
 		return parseList(result, arguments)
+	case "scope":
+		return parseScope(result, arguments)
+	case "backlog":
+		return parseBacklog(result, arguments)
 	case "show":
 		return parseShow(result, arguments)
 	case "update":
@@ -833,6 +857,122 @@ func parseList(result request, arguments []string) (request, error) {
 	}
 	if result.listCursor != "" && !result.listLimitSet {
 		return result, errors.New("--cursor requires --limit so the page is bounded")
+	}
+	return result, nil
+}
+
+func parseScope(result request, arguments []string) (request, error) {
+	if len(arguments) == 0 || !oneOf(arguments[0], "create", "list", "show", "active", "activate", "deactivate", "add", "remove", "move") {
+		return result, errors.New(usageFor("scope"))
+	}
+	result.scopeSubcommand = arguments[0]
+	arguments = arguments[1:]
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if argument == "--activate" {
+			if result.scopeSubcommand != "create" {
+				return result, fmt.Errorf("unsupported option for scope %s: %s", result.scopeSubcommand, argument)
+			}
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.args = append(result.args, argument)
+			continue
+		}
+		flag, value, consumed, matched, err := optionValueFor("scope "+result.scopeSubcommand, argument, arguments)
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if err := markSeen(seen, flag); err != nil {
+				return result, err
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for scope %s: %s", result.scopeSubcommand, argument)
+		}
+		if err := safeValue("scope", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+
+	wantPositionals := 0
+	switch result.scopeSubcommand {
+	case "create":
+		wantPositionals = 2
+	case "show", "activate":
+		wantPositionals = 1
+	case "deactivate":
+		wantPositionals = 0
+	case "add", "remove":
+		if len(result.positionals) == 0 {
+			return result, errors.New(usageFor("scope " + result.scopeSubcommand))
+		}
+		wantPositionals = len(result.positionals)
+	case "move":
+		if len(result.positionals) == 0 {
+			return result, errors.New(usageFor("scope move"))
+		}
+		wantPositionals = len(result.positionals)
+	}
+	if len(result.positionals) != wantPositionals {
+		return result, errors.New(usageFor("scope " + result.scopeSubcommand))
+	}
+	return result, nil
+}
+
+func parseBacklog(result request, arguments []string) (request, error) {
+	if len(arguments) == 0 || arguments[0] != "list" {
+		return result, errors.New(usageFor("backlog"))
+	}
+	result.scopeSubcommand = "list"
+	arguments = arguments[1:]
+	seen := make(map[string]bool)
+	for len(arguments) > 0 {
+		argument := arguments[0]
+		arguments = arguments[1:]
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		flag, value, consumed, matched, err := optionValueFor("backlog list", argument, arguments)
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			if err := markSeen(seen, flag); err != nil {
+				return result, err
+			}
+			if flag == "--limit" {
+				if err := validateLimit(value); err != nil {
+					return result, err
+				}
+			}
+			result.args = append(result.args, flag, value)
+			continue
+		}
+		if strings.HasPrefix(argument, "-") {
+			return result, fmt.Errorf("unsupported option for backlog list: %s", argument)
+		}
+		return result, fmt.Errorf("backlog list does not accept positional arguments: %s", argument)
+	}
+	if result.json && requestValue(result.args, "--limit", "") == "" {
+		return result, errors.New("JSON backlog pages require a positive --limit")
 	}
 	return result, nil
 }

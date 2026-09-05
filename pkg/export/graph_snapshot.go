@@ -20,20 +20,21 @@ import (
 
 // GraphSnapshotOptions controls graph snapshot export behaviour.
 type GraphSnapshotOptions struct {
-	Path     string               // Output path; format inferred from extension when Format empty
-	Format   string               // "svg" or "png" (case-insensitive). If empty, inferred from Path.
-	Title    string               // Optional title rendered in summary block
-	Preset   string               // Layout preset: "compact" (default) or "roomy"
-	Issues   []model.Issue        // Issues to render (already filtered by recipe/workspace)
-	Stats    *analysis.GraphStats // Graph analysis used for layout/summary
-	DataHash string               // Hash of input issues for provenance
+	Path       string               // Output path; format inferred from extension when Format empty
+	Format     string               // "svg" or "png" (case-insensitive). If empty, inferred from Path.
+	Title      string               // Optional title rendered in summary block
+	Preset     string               // Layout preset: "compact" (default) or "roomy"
+	Issues     []model.Issue        // Issues to render (already filtered by recipe/workspace)
+	Stats      *analysis.GraphStats // Graph analysis used for layout/summary
+	DataHash   string               // Hash of input issues for provenance
+	AllowEmpty bool                 // Permit a valid empty export for bounded sources
 }
 
 // SaveGraphSnapshot renders a static graph snapshot (SVG or PNG) with a minimal
 // summary block. It intentionally keeps the visual language concise so AI agents
 // can parse it without reading auxiliary docs.
 func SaveGraphSnapshot(opts GraphSnapshotOptions) error {
-	if len(opts.Issues) == 0 {
+	if len(opts.Issues) == 0 && !opts.AllowEmpty {
 		return fmt.Errorf("no issues to export")
 	}
 	if opts.Stats == nil {

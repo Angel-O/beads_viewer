@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
@@ -30,6 +31,7 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 	if err := os.WriteFile(issuePath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeFakeWBD(t, `{"id":"scope-a"}`, filepath.Join(root, "wbd-calls"))
 
 	tests := []struct {
 		name, mode, config, wantMode string
@@ -69,6 +71,24 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDecodeHubRobotFilterPreservesContextSelection(t *testing.T) {
+	root := t.TempDir()
+	config := filepath.Join(root, "hub.yaml")
+	if err := os.WriteFile(config, []byte("version: 1\nstore: "+filepath.Join(root, "store")+"\nledger: "+filepath.Join(root, "ledger.jsonl")+"\nrepositories:\n  ctx:alpha:\n    path: "+root+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := decodeHubRobotFilter(`{"mode":"contexts","contexts":["ctx:alpha"],"include_contextless":true}`, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection == nil || selection.Mode != "contexts" || len(selection.Contexts) != 1 || !selection.IncludeContextless {
+		t.Fatalf("decoded wbv selection = %#v", selection)
+	}
+	if _, err := decodeHubRobotFilter(`{"mode":"contexts","contexts":["ctx:alpha"],"extra":true}`, config); err == nil {
+		t.Fatal("unknown wbv selection field was accepted")
 	}
 }
 
@@ -120,5 +140,95 @@ func TestComposeViewerServicesRejectsHubStoreWorkspaceAndAsOf(t *testing.T) {
 				t.Fatal("expected configured Hub store restriction")
 			}
 		})
+	}
+}
+
+func TestComposeViewerServicesProvidesBoundedHubScopeSeam(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	store := filepath.Join(root, ".local", "share", "beads", "hub", ".beads")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(root, "hub.yaml")
+	if err := os.WriteFile(config, []byte("version: 1\nstore: "+store+"\nledger: "+filepath.Join(root, "ledger.jsonl")+"\nrepositories: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeWBD(t, `{"id":"scope-a"}`, filepath.Join(root, "wbd-calls"))
+	got, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:   "external",
+		HubConfigPath: config,
+		WorkDir:       root,
+		HubMode:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HubScopeSnapshot == nil || got.HubScopeMemberIDs == nil || got.HubChangeSignal == "" {
+		t.Fatalf("Hub scope composition = snapshot %v, members %v, signal %q", got.HubScopeSnapshot != nil, got.HubScopeMemberIDs != nil, got.HubChangeSignal)
+	}
+
+	local, err := composeViewerServices(viewerCompositionInput{HistoryMode: "git", WorkDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.HubScopeSnapshot != nil || local.HubScopeMemberIDs != nil || local.HubChangeSignal != "" {
+		t.Fatalf("local composition acquired Hub scope loading: %#v", local)
+	}
+}
+
+func TestComposeExternalHistoryDoesNotNeedHubScopeLoader(t *testing.T) {
+	root := t.TempDir()
+	config := writeCompositionHubConfig(t, root)
+	t.Setenv("PATH", filepath.Join(root, "missing-bin"))
+	got, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:   "external",
+		HubConfigPath: config,
+		WorkDir:       root,
+		RobotMode:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HubScopeSnapshot != nil || got.HubScopeMemberIDs != nil {
+		t.Fatalf("non-Hub external composition acquired scope loading: %#v", got)
+	}
+}
+
+func TestComposeViewerServicesRejectsWBDStoreMismatch(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	config := writeCompositionHubConfig(t, root)
+	_, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:   "external",
+		HubConfigPath: config,
+		WorkDir:       root,
+		HubMode:       true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match wbd default Hub store") {
+		t.Fatalf("store mismatch error = %v", err)
+	}
+}
+
+func TestComposeViewerServicesReportsMissingWBD(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	store := filepath.Join(root, ".local", "share", "beads", "hub", ".beads")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(root, "hub.yaml")
+	if err := os.WriteFile(config, []byte("version: 1\nstore: "+store+"\nledger: "+filepath.Join(root, "ledger.jsonl")+"\nrepositories: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(root, "missing-bin"))
+	_, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:   "external",
+		HubConfigPath: config,
+		WorkDir:       root,
+		HubMode:       true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires wbd") {
+		t.Fatalf("missing wbd error = %v", err)
 	}
 }

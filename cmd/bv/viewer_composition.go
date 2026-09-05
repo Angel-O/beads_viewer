@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -12,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 )
 
 // viewerCompositionInput contains policy decisions already parsed by the CLI.
@@ -25,8 +30,9 @@ type viewerCompositionInput struct {
 	AsOf               string
 	WorkDir            string
 	RobotMode          bool
-	WrapperScope       string
+	HubMode            bool
 	RefreshEnvironment string
+	WrapperScope       string
 }
 
 // viewerComposition is the one resolved set of services shared by robot and
@@ -34,11 +40,11 @@ type viewerCompositionInput struct {
 type viewerComposition struct {
 	HubConfigPath          string
 	UsesHubConfigStore     bool
+	HubMode                bool
 	SelectedIssuePath      string
 	SelectedIssueSource    datasource.DataSource
 	HistoryProvider        *correlation.Provider
 	CatalogLoader          func(string, []model.Issue) (repository.Catalog, error)
-	HubScope               *hub.HubScope
 	SemanticDatasetPath    string
 	SemanticStorePath      string
 	IssueChangePath        string
@@ -48,6 +54,15 @@ type viewerComposition struct {
 	WorkspacePath          string
 	AsOf                   string
 	HubAutoRefresh         bool
+	HubChangeSignal        string
+	// HubScopeSnapshot is the bounded active-scope loader shared by robot and
+	// export paths. HubScopeMemberIDs adapts the same seam for TUI refreshes.
+	HubScopeSnapshot  hubScopeSnapshotLoader
+	HubScopeMemberIDs hubScopeMemberLoader
+	// HubRobotFilter preserves wbv's context/contextless selection inside the
+	// already bounded active-scope issue slice.
+	HubRobotFilter *hub.HubScope
+	ScopeServices  ui.ScopeServices
 }
 
 func composeViewerServices(input viewerCompositionInput) (viewerComposition, error) {
@@ -109,9 +124,38 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	} else if input.WorkspacePath != "" {
 		semanticDataset = input.WorkspacePath
 	}
-	scope, err := parseHubRobotScope(input.WrapperScope, configPath, usesHubStore, input.RobotMode)
-	if err != nil {
-		return viewerComposition{}, err
+	var hubScopeMemberIDs hubScopeMemberLoader
+	var hubScopeSnapshot hubScopeSnapshotLoader
+	var scopeServices ui.ScopeServices
+	if input.HubMode && !input.RobotMode {
+		defaultPaths, pathErr := hub.DefaultPaths()
+		if pathErr != nil {
+			return viewerComposition{}, fmt.Errorf("resolving wbd default Hub store: %w", pathErr)
+		}
+		if filepath.Clean(semanticStore) != filepath.Clean(defaultPaths.Store) {
+			return viewerComposition{}, fmt.Errorf("configured Viewer Hub store %q does not match wbd default Hub store %q; active scope loading is unavailable", semanticStore, defaultPaths.Store)
+		}
+		scopeServices = newHubScopeServices(workDir)
+	}
+	if input.HubMode {
+		hubScopeSnapshot, err = hubScopeSnapshotLoaderForStore(true, workDir)
+		if err != nil {
+			return viewerComposition{}, err
+		}
+		hubScopeMemberIDs = func(ctx context.Context) ([]string, error) {
+			snapshot, loadErr := hubScopeSnapshot(ctx)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			return snapshot.MemberIDs, nil
+		}
+	}
+	var hubRobotFilter *hub.HubScope
+	if input.HubMode && input.RobotMode {
+		hubRobotFilter, err = decodeHubRobotFilter(input.WrapperScope, configPath)
+		if err != nil {
+			return viewerComposition{}, err
+		}
 	}
 
 	defaultCurrentContext := ""
@@ -122,11 +166,11 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	return viewerComposition{
 		HubConfigPath:          configPath,
 		UsesHubConfigStore:     usesHubStore,
+		HubMode:                input.HubMode,
 		SelectedIssuePath:      selectedIssuePath,
 		SelectedIssueSource:    selectedSource,
 		HistoryProvider:        provider,
 		CatalogLoader:          hub.LoadRepositoryCatalog,
-		HubScope:               scope,
 		SemanticDatasetPath:    semanticDataset,
 		SemanticStorePath:      semanticStore,
 		IssueChangePath:        selectedIssuePath,
@@ -136,7 +180,63 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		WorkspacePath:          input.WorkspacePath,
 		AsOf:                   input.AsOf,
 		HubAutoRefresh:         compositionHubAutoRefreshEnabled(input.RefreshEnvironment),
+		HubChangeSignal:        hubChangeSignalPath(semanticStore),
+		HubScopeSnapshot:       hubScopeSnapshot,
+		HubScopeMemberIDs:      hubScopeMemberIDs,
+		HubRobotFilter:         hubRobotFilter,
+		ScopeServices:          scopeServices,
 	}, nil
+}
+
+func decodeHubRobotFilter(raw, configPath string) (*hub.HubScope, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var selection hub.HubScope
+	if err := decoder.Decode(&selection); err != nil {
+		return nil, fmt.Errorf("decoding wbv Hub selection: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decoding wbv Hub selection: multiple JSON values")
+		}
+		return nil, fmt.Errorf("decoding wbv Hub selection: %w", err)
+	}
+	if err := selection.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid wbv Hub selection: %w", err)
+	}
+	if selection.Mode == hub.HubScopeSelectedContexts {
+		config, err := hub.Resolve(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("loading registered Hub contexts: %w", err)
+		}
+		for _, contextID := range selection.Contexts {
+			if _, registered := config.Repositories[contextID]; !registered {
+				return nil, fmt.Errorf("Hub context is not registered: %s", contextID)
+			}
+		}
+	}
+	return &selection, nil
+}
+
+func hubScopeSnapshotLoaderForStore(usesHubStore bool, workDir string) (hubScopeSnapshotLoader, error) {
+	if !usesHubStore {
+		return nil, nil
+	}
+	if _, err := exec.LookPath("wbd"); err != nil {
+		return nil, fmt.Errorf("active Hub scope loading requires wbd: %w", err)
+	}
+	return newHubScopeSnapshotLoader(workDir), nil
+}
+
+func hubChangeSignalPath(store string) string {
+	if strings.TrimSpace(store) == "" {
+		return ""
+	}
+	return hub.ChangeSignalPath(hub.Paths{Store: store})
 }
 
 func compositionHubAutoRefreshEnabled(value string) bool {

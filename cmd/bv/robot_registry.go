@@ -49,6 +49,8 @@ type RobotContext struct {
 	Encoder               robotEncoder
 	AsOf                  string
 	AsOfCommit            string
+	ActiveScope           *RobotActiveScope
+	HubMode               bool
 	LabelScope            string
 	LabelContext          *analysis.LabelHealth
 	Stdout                io.Writer
@@ -83,6 +85,10 @@ type RobotContext struct {
 
 func (ctx RobotContext) labelPredicate() analysis.LabelPredicate {
 	return ctx.LabelPredicate
+}
+
+func (ctx RobotContext) noActiveHubScope() bool {
+	return ctx.HubMode && ctx.ActiveScope == nil
 }
 
 type RobotRegistry struct {
@@ -240,12 +246,20 @@ func (ctx RobotContext) EnvelopeWithHash(dataHash string) RobotEnvelope {
 	env.AsOf = ctx.AsOf
 	env.AsOfCommit = ctx.AsOfCommit
 	unsupported := unsupportedScopeFor(ctx.Command, ctx)
-	if ctx.LabelScope != "" || ctx.Recipe != "" || ctx.Repo != "" || len(unsupported) > 0 {
+	if ctx.ActiveScope != nil || ctx.LabelScope != "" || ctx.Recipe != "" || ctx.Repo != "" || len(unsupported) > 0 {
 		env.Scope = &RobotScope{
 			Label:       ctx.LabelScope,
 			Recipe:      ctx.Recipe,
 			Repo:        ctx.Repo,
 			Unsupported: unsupported,
+		}
+		if ctx.ActiveScope != nil {
+			env.Scope.ID = ctx.ActiveScope.ID
+			env.Scope.Name = ctx.ActiveScope.Name
+			env.Scope.CreatedOn = ctx.ActiveScope.CreatedOn
+			env.Scope.State = ctx.ActiveScope.State
+			env.Scope.MemberCount = ctx.ActiveScope.MemberCount
+			env.Scope.MemberLimit = ctx.ActiveScope.MemberLimit
 		}
 	}
 	return env
@@ -1262,6 +1276,10 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		FlagPtr:     cfg.RobotSprintListFlag,
 		Description: "Output all sprints as JSON",
 		Handler: func(ctx RobotContext) error {
+			if ctx.noActiveHubScope() {
+				output := robotSprintListOutput{RobotEnvelope: ctx.Envelope(), Sprints: []model.Sprint{}}
+				return ctx.EncodeResult("robot-sprint-list", &output)
+			}
 			workDir, err := ctx.WorkDirOrDefault()
 			if err != nil {
 				return fmt.Errorf("getting current directory: %w", err)
@@ -1270,9 +1288,10 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			if err != nil {
 				return fmt.Errorf("loading sprints: %w", err)
 			}
+			boundHubSprintMembership(sprints, ctx)
 
 			output := robotSprintListOutput{
-				RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+				RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 				SprintCount:   len(sprints),
 				Sprints:       sprints,
 			}
@@ -1289,6 +1308,20 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		FlagPtr:     cfg.RobotBurndownFlag,
 		Description: "Output sprint burndown as JSON",
 		Handler: func(ctx RobotContext) error {
+			if ctx.noActiveHubScope() {
+				output := BurndownOutput{
+					RobotEnvelope: ctx.Envelope(),
+					SprintID:      valueOrEmpty(cfg.RobotBurndownFlag),
+					DailyPoints:   []model.BurndownPoint{},
+					IdealLine:     []model.BurndownPoint{},
+					ScopeChanges:  []ScopeChangeEvent{},
+					AtRisk:        []analysis.AtRiskItem{},
+				}
+				if err := ctx.EncoderOrDefault().Encode(output); err != nil {
+					return fmt.Errorf("encoding burndown: %w", err)
+				}
+				return nil
+			}
 			workDir, err := ctx.WorkDirOrDefault()
 			if err != nil {
 				return fmt.Errorf("getting current directory: %w", err)
@@ -1336,9 +1369,14 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 				issueMap[issue.ID] = issue
 			}
 			if scopeChanges, err := computeSprintScopeChanges(workDir, targetSprint, issueMap, now); err == nil && len(scopeChanges) > 0 {
-				burndown.ScopeChanges = scopeChanges
-				// Re-linearize the ideal trajectory at each scope change.
-				burndown.IdealLine = generateIdealLineScoped(targetSprint, burndown.TotalIssues, scopeChanges)
+				if ctx.HubMode {
+					scopeChanges = filterBurndownScopeChanges(scopeChanges, issueMap)
+				}
+				if len(scopeChanges) > 0 {
+					burndown.ScopeChanges = scopeChanges
+					// Re-linearize the ideal trajectory at each scope change.
+					burndown.IdealLine = generateIdealLineScoped(targetSprint, burndown.TotalIssues, scopeChanges)
+				}
 			}
 
 			if err := ctx.EncoderOrDefault().Encode(burndown); err != nil {
@@ -1354,6 +1392,13 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 		FlagPtr:     cfg.RobotForecastFlag,
 		Description: "Output ETA forecasts as JSON",
 		Handler: func(ctx RobotContext) error {
+			if ctx.noActiveHubScope() {
+				output := robotForecastOutput{RobotEnvelope: ctx.Envelope(), Forecasts: []analysis.ETAEstimate{}}
+				if err := ctx.EncodeResult("robot-forecast", &output); err != nil {
+					return fmt.Errorf("encoding forecast: %w", err)
+				}
+				return nil
+			}
 			workDir, err := ctx.WorkDirOrDefault()
 			if err != nil {
 				return fmt.Errorf("getting current directory: %w", err)
@@ -1476,7 +1521,7 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			output := robotForecastOutput{
-				RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+				RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 				Agents:        agents,
 				ForecastCount: len(forecasts),
 				Forecasts:     forecasts,
@@ -2139,14 +2184,13 @@ func handleRobotTriage(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 // briefTriageRecommendation carries only the fields agents use for work
 // selection (#183): identity, claim state, and the dependency edges.
 type briefTriageRecommendation struct {
-	ID           string                   `json:"id"`
-	Title        string                   `json:"title"`
-	Status       string                   `json:"status"`
-	Assignee     string                   `json:"assignee,omitempty"`
-	Score        float64                  `json:"score"`
-	Unblocks     []string                 `json:"unblocks,omitempty"`
-	BlockedBy    []string                 `json:"blocked_by,omitempty"`
-	BoundaryRefs []robotBoundaryReference `json:"boundary_refs,omitempty"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Assignee  string   `json:"assignee,omitempty"`
+	Score     float64  `json:"score"`
+	Unblocks  []string `json:"unblocks,omitempty"`
+	BlockedBy []string `json:"blocked_by,omitempty"`
 }
 
 // briefTriageOutput is the compact --robot-triage --brief payload (#183).
@@ -2167,7 +2211,6 @@ type briefTriageOutput struct {
 	Recommendations []briefTriageRecommendation  `json:"recommendations"`
 	QuickWins       []robotTriageQuickWin        `json:"quick_wins,omitempty"`
 	BlockersToClear []robotTriageBlocker         `json:"blockers_to_clear,omitempty"`
-	Scope           *robotScopeMetadata          `json:"scope,omitempty"`
 }
 
 func (*briefTriageOutput) robotResult() {}
@@ -3092,6 +3135,18 @@ func handleRobotImpact(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error
 }
 
 func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if ctx.noActiveHubScope() {
+		result := &correlation.RelatedWorkResult{
+			TargetBeadID:      valueOrEmpty(cfg.RobotRelatedFlag),
+			FileOverlap:       []correlation.RelatedWorkBead{},
+			CommitOverlap:     []correlation.RelatedWorkBead{},
+			DependencyCluster: []correlation.RelatedWorkBead{},
+			Concurrent:        []correlation.RelatedWorkBead{},
+		}
+		return ctx.EncodePayload(ctx.Envelope(), struct {
+			*correlation.RelatedWorkResult
+		}{RelatedWorkResult: result})
+	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -3161,6 +3216,17 @@ func handleRobotRelated(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) erro
 }
 
 func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if ctx.noActiveHubScope() {
+		output := robotBlockerChainOutput{
+			RobotEnvelope: ctx.Envelope(),
+			Result: &analysis.BlockerChainResult{
+				TargetID:     valueOrEmpty(cfg.RobotBlockerChainFlag),
+				RootBlockers: []analysis.BlockerChainEntry{},
+				Chain:        []analysis.BlockerChainEntry{},
+			},
+		}
+		return ctx.EncodeResult("robot-blocker-chain", &output)
+	}
 	if ctx.CandidatePredicate != nil && !ctx.CandidatePredicate(*cfg.RobotBlockerChainFlag) {
 		fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in scope: %s\n", *cfg.RobotBlockerChainFlag)
 		return newReportedRobotHandlerExit(1)
@@ -3174,7 +3240,7 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 	}
 
 	output := robotBlockerChainOutput{
-		RobotEnvelope: NewRobotEnvelope(ctx.DataHash),
+		RobotEnvelope: ctx.Envelope(),
 		Result:        result,
 	}
 	if err := ctx.EncodeResult("robot-blocker-chain", &output); err != nil {
@@ -3184,6 +3250,34 @@ func handleRobotBlockerChain(ctx RobotContext, cfg phaseThreeRobotHandlerConfig)
 }
 
 func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if ctx.noActiveHubScope() {
+		beadID := valueOrEmpty(cfg.RobotImpactNetworkFlag)
+		if beadID == "all" {
+			beadID = ""
+		}
+		depth := 1
+		if cfg.NetworkDepth != nil {
+			depth = *cfg.NetworkDepth
+			if depth < 1 {
+				depth = 1
+			} else if depth > 3 {
+				depth = 3
+			}
+		}
+		result := &correlation.ImpactNetworkResult{
+			DataHash: ctx.DataHash,
+			BeadID:   beadID,
+			Depth:    depth,
+			Network: &correlation.ImpactNetwork{
+				Nodes:    map[string]*correlation.NetworkNode{},
+				Edges:    []correlation.NetworkEdge{},
+				Clusters: []correlation.BeadCluster{},
+			},
+		}
+		return ctx.EncodePayload(ctx.Envelope(), struct {
+			*correlation.ImpactNetworkResult
+		}{ImpactNetworkResult: result})
+	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -3243,6 +3337,23 @@ func handleRobotImpactNetwork(ctx RobotContext, cfg phaseThreeRobotHandlerConfig
 }
 
 func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if ctx.noActiveHubScope() {
+		result := &correlation.CausalityResult{
+			DataHash: ctx.DataHash,
+			Chain: &correlation.CausalChain{
+				BeadID: valueOrEmpty(cfg.RobotCausalityFlag),
+				Events: []correlation.CausalEvent{},
+			},
+			Insights: &correlation.CausalInsights{
+				BlockedPeriods:  []correlation.BlockedPeriod{},
+				CriticalPath:    []int{},
+				Recommendations: []string{},
+			},
+		}
+		return ctx.EncodePayload(ctx.Envelope(), struct {
+			*correlation.CausalityResult
+		}{CausalityResult: result})
+	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -3293,6 +3404,13 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 }
 
 func handleRobotSprintShow(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {
+	if ctx.noActiveHubScope() {
+		output := robotSprintShowOutput{
+			RobotEnvelope: ctx.Envelope(),
+			Sprint:        &model.Sprint{ID: valueOrEmpty(cfg.RobotSprintShowFlag)},
+		}
+		return ctx.EncodeResult("robot-sprint-show", &output)
+	}
 	workDir, err := ctx.WorkDirOrDefault()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
@@ -3301,6 +3419,7 @@ func handleRobotSprintShow(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) e
 	if err != nil {
 		return fmt.Errorf("loading sprints: %w", err)
 	}
+	boundHubSprintMembership(sprints, ctx)
 
 	var found *model.Sprint
 	for i := range sprints {
@@ -3315,13 +3434,39 @@ func handleRobotSprintShow(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) e
 	}
 
 	output := robotSprintShowOutput{
-		RobotEnvelope: NewRobotEnvelope(analysis.ComputeDataHash(ctx.Issues)),
+		RobotEnvelope: ctx.EnvelopeWithHash(analysis.ComputeDataHash(ctx.Issues)),
 		Sprint:        found,
 	}
 	if err := ctx.EncodeResult("robot-sprint-show", &output); err != nil {
 		return fmt.Errorf("encoding sprint: %w", err)
 	}
 	return nil
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func boundHubSprintMembership(sprints []model.Sprint, ctx RobotContext) {
+	if !ctx.HubMode {
+		return
+	}
+	allowed := make(map[string]struct{}, len(ctx.Issues))
+	for _, issue := range ctx.Issues {
+		allowed[issue.ID] = struct{}{}
+	}
+	for i := range sprints {
+		bounded := sprints[i].BeadIDs[:0]
+		for _, beadID := range sprints[i].BeadIDs {
+			if _, ok := allowed[beadID]; ok {
+				bounded = append(bounded, beadID)
+			}
+		}
+		sprints[i].BeadIDs = bounded
+	}
 }
 
 func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) error {

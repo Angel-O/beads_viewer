@@ -3853,6 +3853,7 @@ bv has a comprehensive built-in help system:
 | `BV_FORCE_POLL` | Alias for `BV_FORCE_POLLING`. | (auto) |
 | `BV_DEBOUNCE_MS` | Debounce window (milliseconds) for live reload events in background mode. | `200` |
 | `BV_HUB_AUTO_REFRESH` | Automatically refresh interactive `wbv` Hub sessions after successful `wbd` mutations (`1`/`0`). | `1` |
+| `BV_WBV_HUB_MODE` | Internal marker that `wbv` passes to `bv` when running in Hub mode; not intended for direct configuration. | (unset) |
 | `BV_CHANNEL_BUFFER` | Background worker message buffer size (worker → UI). | `8` |
 | `BV_HEARTBEAT_INTERVAL_S` | Background worker heartbeat interval (seconds). | `5` |
 | `BV_WATCHDOG_INTERVAL_S` | Background worker watchdog interval (seconds). | `10` |

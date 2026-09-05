@@ -355,6 +355,34 @@ func TestShortcutsSidebarShowsOnlyActiveScrollControl(t *testing.T) {
 	}
 }
 
+func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+
+	sidebar.SetFocus(focusScopePicker)
+	scopeView := sidebar.View()
+	for _, expected := range []string{"enter", "Activate scope"} {
+		if !strings.Contains(scopeView, expected) {
+			t.Fatalf("scope sidebar missing %q:\n%s", expected, scopeView)
+		}
+	}
+	if strings.Contains(scopeView, "Move selected") {
+		t.Fatalf("scope sidebar retained move action:\n%s", scopeView)
+	}
+
+	sidebar.SetFocus(focusBacklog)
+	backlogView := sidebar.View()
+	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "A", "Add to scope"} {
+		if !strings.Contains(backlogView, expected) {
+			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
+		}
+	}
+}
+
 func TestShortcutsSidebarAttentionUsesRegistryNavigation(t *testing.T) {
 	registry := NewKeyRegistry()
 	m := Model{keyRegistry: registry}

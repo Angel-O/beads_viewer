@@ -175,6 +175,10 @@ func (a *app) run(arguments []string) int {
 		return a.compatibility()
 	case "list":
 		return a.list(request)
+	case "scope":
+		return a.scope(request)
+	case "backlog":
+		return a.backlog(request)
 	case "show":
 		if !request.json {
 			if request.expandDependencies {
@@ -504,7 +508,7 @@ func helpTarget(arguments []string) (string, bool, error) {
 		return "", true, errors.New(supportedCommands())
 	}
 	path := filtered[0]
-	if (path == "dep" || path == "comments") && len(filtered) > 1 {
+	if (path == "dep" || path == "comments" || path == "scope" || path == "backlog") && len(filtered) > 1 {
 		candidate := path + " " + filtered[1]
 		if _, ok := specFor(candidate); !ok {
 			return "", true, errors.New(usageFor(path))

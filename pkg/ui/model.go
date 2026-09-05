@@ -97,6 +97,8 @@ const (
 	focusCassModal   // Cass session preview modal (bv-5bqh)
 	focusUpdateModal // Self-update modal (bv-182)
 	focusCommentInput
+	focusScopePicker
+	focusBacklog
 	focusCommentSelection
 	focusCommentDeleteConfirm
 )
@@ -1096,6 +1098,7 @@ type Model struct {
 	isGraphView              bool
 	isActionableView         bool
 	isHistoryView            bool
+	isBacklogView            bool
 	showDetails              bool
 	insightsDetailID         string // Direct detail binding for Insights items absent from the filtered List.
 	showHelp                 bool
@@ -1203,9 +1206,19 @@ type Model struct {
 	activeIssueTypes map[model.IssueType]bool
 
 	// Repository scope picker (Hub or workspace mode)
-	showRepoPicker   bool
-	repoPicker       RepoPickerModel
-	repoPickerOrigin focus
+	showRepoPicker        bool
+	repoPicker            RepoPickerModel
+	repoPickerOrigin      focus
+	showScopePicker       bool
+	scopePicker           ScopePickerModel
+	scopePickerOrigin     focus
+	scopePickerMoveIssue  string
+	scopeCatalog          []ScopeInfo
+	activeScope           *ScopeInfo
+	backlog               BacklogModel
+	backlogLoading        bool
+	backlogPageGeneration uint64
+	backlogScopeLoaded    bool
 
 	// Time-travel mode
 	timeTravelMode   bool
@@ -2287,6 +2300,12 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 	hubChangeSignal := strings.TrimSpace(os.Getenv("BV_HUB_CHANGE_SIGNAL"))
+	if runtimeServices.HubChangeSignal != "" {
+		hubChangeSignal = runtimeServices.HubChangeSignal
+	}
+	if runtimeServices.RefreshResolved && !runtimeServices.HubAutoRefresh {
+		hubChangeSignal = ""
+	}
 	if !hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
 		hubChangeSignal = ""
 	}
@@ -2300,6 +2319,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			DebounceDelay:       200 * time.Millisecond,
 			HubChangeSignal:     hubChangeSignal,
 			CatalogLoader:       runtimeServices.CatalogLoader,
+			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
 		})
 		if err != nil {
 			backgroundModeErr = err
@@ -2522,6 +2542,8 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			DebounceDelay:       200 * time.Millisecond,
 			CatalogPath:         services.CatalogPath,
 			CatalogLoader:       services.CatalogLoader,
+			HubScopeMemberIDs:   services.HubScopeMemberIDs,
+			HubChangeSignal:     services.HubChangeSignal,
 		})
 		if err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
@@ -2754,6 +2776,9 @@ func (m *Model) Init() tea.Cmd {
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
+	if m.runtimeServices.Scopes.Load != nil {
+		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+	}
 	// Start loading history in background.
 	if historyCmd := m.startHistoryLoad(); historyCmd != nil {
 		cmds = append(cmds, historyCmd)
@@ -2958,6 +2983,50 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateTag = msg.TagName
 		m.updateURL = msg.URL
 		m.refreshVisibleUpdateNotice()
+
+	case scopeSnapshotMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+			m.statusIsError = true
+			break
+		}
+		m.backlogScopeLoaded = true
+		m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
+		m.scopePicker.SetScopes(m.scopeCatalog)
+		m.activeScope = nil
+		if msg.snapshot.Active != nil {
+			active := *msg.snapshot.Active
+			m.activeScope = &active
+			for i := range m.scopeCatalog {
+				m.scopeCatalog[i].Active = m.scopeCatalog[i].ID == active.ID
+			}
+			m.scopePicker.SetScopes(m.scopeCatalog)
+		}
+
+	case backlogPageMsg:
+		if msg.generation != m.backlogPageGeneration {
+			break
+		}
+		m.backlogLoading = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)
+			m.statusIsError = true
+			break
+		}
+		m.backlog.SetPage(msg.page, msg.index)
+
+	case scopeMutationMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Scope %s failed: %v", msg.action, msg.err)
+			m.statusIsError = true
+			break
+		}
+		if msg.restoreFocus {
+			m.closeScopePicker()
+		}
+		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
+		m.statusIsError = false
+		cmds = append(cmds, m.refreshAfterScopeMutation())
 
 	case commentAddedMsg:
 		m.commentSubmitting = false
@@ -4184,6 +4253,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+		if m.runtimeServices.HubScopeMemberIDs != nil {
+			memberIDs, scopeErr := m.runtimeServices.HubScopeMemberIDs(context.Background())
+			if scopeErr != nil {
+				loader.ReturnIssuePtrsToPool(loadedIssues.PoolRefs)
+				m.statusMsg = fmt.Sprintf("Reload error: loading active Hub scope: %v", scopeErr)
+				m.statusIsError = true
+				if m.watcher != nil {
+					cmds = append(cmds, WatchFileCmd(m.watcher))
+				}
+				return m, tea.Batch(cmds...)
+			}
+			loadedIssues.Issues = filterIssuesByIDs(loadedIssues.Issues, memberIDs)
+		}
 		// A synchronous reload after background mode stops must not retain the
 		// previous worker snapshot. Its later Phase 2 completion would otherwise
 		// clone stale list/tree/board surfaces through DataSnapshot.WithPhase2
@@ -4565,6 +4647,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.handleCommentDeleteConfirmKeys(msg)
 		}
+		// Overlays own input before the underlying scope/backlog view. This keeps
+		// help/tutorial navigation and dismissal from mutating the covered view.
+		if m.showHelp && msg.String() != "`" {
+			if msg.String() == "ctrl+c" {
+				return m, m.quitCommand()
+			}
+			return m.handleHelpKeys(msg), nil
+		}
+		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
+			return m.handleTutorialOverlayKey(msg)
+		}
+		if m.showScopePicker && !m.showRepoPicker && !isScopeBacklogGlobalKey(msg.String()) {
+			return m.handleScopePickerKey(msg)
+		}
+		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || !isScopeBacklogGlobalKey(msg.String())) {
+			return m.handleBacklogKey(msg)
+		}
 		// Clear status message on any keypress
 		m.statusMsg = ""
 		m.statusIsError = false
@@ -4868,6 +4967,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Keep the tutorial toggle ahead of help/tutorial ownership so backtick
+		// retains its existing behavior from List and Help.
+		if msg.String() == "`" && m.list.FilterState() != list.Filtering {
+			m.showTutorial = !m.showTutorial
+			if m.showTutorial {
+				m.focusBeforeHelp = m.focused
+				m.showHelp = false // Close help if open
+				m.tutorialModel.SetSize(m.width, m.height)
+				m.tutorialModel.markCurrentPageViewed() // the resumed page counts as viewed
+				m.focused = focusTutorial
+			} else {
+				m.focused = focusList
+			}
+			return m, nil
+		}
+
 		// Handle help overlay toggle (? or F1)
 		if (msg.String() == "?" || msg.String() == "f1") && m.list.FilterState() != list.Filtering {
 			m.showHelp = !m.showHelp
@@ -4877,21 +4992,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.helpScroll = 0 // Reset scroll position when opening help
 			} else {
 				m.focused = m.restoreFocusFromHelp()
-			}
-			return m, nil
-		}
-
-		// Handle tutorial toggle (backtick `) - bv-8y31
-		if msg.String() == "`" && m.list.FilterState() != list.Filtering {
-			m.showTutorial = !m.showTutorial
-			if m.showTutorial {
-				m.focusBeforeHelp = focusList
-				m.showHelp = false // Close help if open
-				m.tutorialModel.SetSize(m.width, m.height)
-				m.tutorialModel.markCurrentPageViewed() // the resumed page counts as viewed
-				m.focused = focusTutorial
-			} else {
-				m.focused = focusList
 			}
 			return m, nil
 		}
@@ -5081,31 +5181,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, pendingCmd)
 			}
 			return m, tea.Batch(cmds...)
-		}
-
-		// If help is showing, handle navigation keys for scrolling
-		if m.focused == focusHelp {
-			m = m.handleHelpKeys(msg)
-			return m, nil
-		}
-
-		// If tutorial is showing, route input to tutorial model (bv-8y31)
-		if m.focused == focusTutorial && m.showTutorial {
-			var tutorialCmd tea.Cmd
-			m.tutorialModel, tutorialCmd = m.tutorialModel.Update(msg)
-			// Check if tutorial wants to close
-			if m.tutorialModel.ShouldClose() {
-				m.showTutorial = false
-				m.focused = m.restoreFocusFromHelp()
-				// Persist progress and keep the instance so reopening resumes
-				// on the same page (bv-8y31). Save is a no-op under
-				// BV_NO_SAVED_CONFIG.
-				if err := m.tutorialModel.SaveProgress(); err != nil {
-					debug.Log("tutorial: saving progress failed: %v", err)
-				}
-				m.tutorialModel.ResetClose()
-			}
-			return m, tutorialCmd
 		}
 
 		// Handle time-travel input first (before global keys intercept letters)
@@ -5621,6 +5696,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case focusDetail:
 				switch keyStr {
+				case "m":
+					return m, m.startScopeMutation("move")
 				case "e":
 					m.beginCommentAction("edit")
 					return m, nil
@@ -5649,7 +5726,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m, cmd = m.handleListKeys(msg)
 					return m, cmd
-				case "a", "b", "g", "h", "i", "E", "]", "f4":
+				case "a", "b", "g", "h", "i", "E", "B", "W", "A", "R", "]", "f4":
 					// Shared view transitions remain available from Detail.
 				default:
 					// Detail must not fall through to List-only commands.
@@ -5672,6 +5749,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// other views when the key isn't claimed by their handler
 			// (enabling cross-view switching, e.g. 'g' from board -> graph).
 			// ═══════════════════════════════════════════════════════════════
+			if m.showScopePicker || m.isBacklogView {
+				switch keyStr {
+				case "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
+					if m.showScopePicker {
+						m.closeScopePicker()
+					}
+					if m.isBacklogView {
+						m.closeBacklog()
+					}
+				}
+			}
 			if m.showAttentionView {
 				switch keyStr {
 				case "P", "b", "g", "a", "E", "i", "h", "[", "f":
@@ -5688,11 +5776,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 
+			case "B":
+				if m.showScopePicker {
+					m.closeScopePicker()
+				}
+				if m.isBacklogView {
+					m.closeBacklog()
+					return m, nil
+				}
+				if m.runtimeServices.Scopes.LoadBacklog == nil {
+					m.statusMsg, m.statusIsError = "Global backlog requires Hub mode", true
+					return m, nil
+				}
+				return m, m.openBacklog()
+
+			case "W":
+				if m.showScopePicker {
+					m.closeScopePicker()
+					return m, nil
+				}
+				if m.runtimeServices.Scopes.Load == nil {
+					m.statusMsg, m.statusIsError = "Named scopes require Hub mode", true
+					return m, nil
+				}
+				return m, m.openScopePicker("")
+
+			case "A":
+				return m, m.startScopeMutation("add")
+
+			case "R":
+				return m, m.startScopeMutation("remove")
+
+			case "m":
+				return m, m.startScopeMutation("move")
+
 			case "b":
 				m.isBoardView = !m.isBoardView
 				m.isGraphView = false
 				m.isActionableView = false
 				m.isHistoryView = false
+				m.isBacklogView = false
 				if m.isBoardView {
 					m.focused = focusBoard
 					m.refreshBoardAndGraphForCurrentFilter()
@@ -7031,6 +7154,10 @@ func (m *Model) resetRecipePicker() {
 
 func (m *Model) applyRepositoryPickerSelection() *Model {
 	selected := m.repoPicker.SelectedRepos()
+	focusAfterApply := focusList
+	if m.repoPickerOrigin == focusScopePicker {
+		focusAfterApply = focusScopePicker
+	}
 	if m.hubRepositoryMode {
 		includeContextless := m.repoPicker.ContextlessSelected()
 		switch {
@@ -7046,7 +7173,7 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 		m.statusIsError = false
 		m.setHubRepositoryScope(selected, includeContextless)
 		m.showRepoPicker = false
-		m.focused = focusList
+		m.focused = focusAfterApply
 		return m
 	}
 	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
@@ -7057,7 +7184,7 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 	m.statusIsError = false
 	m.SetRepositoryScope(selected)
 	m.showRepoPicker = false
-	m.focused = focusList
+	m.focused = focusAfterApply
 	return m
 }
 
@@ -7680,6 +7807,8 @@ func (m Model) restoreFocusFromHelp() focus {
 		return m.focusBeforeHelp
 	case focusTimeTravelInput, focusLabelPicker:
 		return m.focusBeforeHelp
+	case focusScopePicker, focusBacklog:
+		return m.focusBeforeHelp
 	default:
 		return focusList
 	}
@@ -7740,6 +7869,23 @@ func (m *Model) handleHelpKeys(msg tea.KeyMsg) *Model {
 	return m
 }
 
+func (m *Model) handleTutorialOverlayKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, m.quitCommand()
+	}
+	var cmd tea.Cmd
+	m.tutorialModel, cmd = m.tutorialModel.Update(msg)
+	if m.tutorialModel.ShouldClose() {
+		m.showTutorial = false
+		m.focused = m.restoreFocusFromHelp()
+		if err := m.tutorialModel.SaveProgress(); err != nil {
+			debug.Log("tutorial: saving progress failed: %v", err)
+		}
+		m.tutorialModel.ResetClose()
+	}
+	return m, cmd
+}
+
 func (m Model) renderLoadingScreen() string {
 	frame := workerSpinnerFrames[0]
 	if m.backgroundWorker != nil && m.backgroundWorker.State() == WorkerProcessing {
@@ -7798,20 +7944,27 @@ func (m *Model) View() string {
 		body = m.renderCommentPrompt()
 	} else if m.showTimeTravelPrompt {
 		body = m.renderTimeTravelPrompt()
+	} else if m.showHelp {
+		body = m.renderHelpOverlay()
+	} else if m.showTutorial {
+		m.tutorialModel.SetSize(m.width, m.height-1)
+		body = lipgloss.Place(m.width, m.height-1, lipgloss.Left, lipgloss.Top, m.tutorialModel.View())
 	} else if m.showRecipePicker {
 		body = m.recipePicker.View()
 	} else if m.showRepoPicker {
 		body = m.repoPicker.View()
+	} else if m.showScopePicker {
+		m.scopePicker.SetSize(m.mainContentWidth(), m.height-1)
+		body = m.scopePicker.View()
 	} else if m.showTypePicker {
 		body = m.typePicker.View()
 	} else if m.showLabelPicker {
 		body = m.labelPicker.View()
-	} else if m.showHelp {
-		body = m.renderHelpOverlay()
-	} else if m.showTutorial {
-		// Interactive tutorial (bv-8y31) - full screen overlay
-		m.tutorialModel.SetSize(m.width, m.height-1)
-		body = lipgloss.Place(m.width, m.height-1, lipgloss.Left, lipgloss.Top, m.tutorialModel.View())
+	} else if m.isBacklogView {
+		m.backlog.SetSize(m.mainContentWidth(), m.height-1)
+		body = m.backlog.View()
+	} else if m.backlogScopeLoaded && m.activeScope == nil && m.runtimeServices.Scopes.Load != nil {
+		body = m.renderNoActiveScope()
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
 	} else if m.showAttentionView || m.focused == focusAttention {
@@ -8296,7 +8449,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"F2/;", "Shortcuts sidebar"},
 		{"!", "Alerts panel"},
 		{"'", "Recipes (List)"},
-		{"w", "Repo picker (Hub)"},
+		{"w", "Context picker (Hub)"},
 		{"I", "Issue types (List)"},
 		{"q", "Back / Quit"},
 		{"Ctrl+c", "Force quit"},
@@ -8533,6 +8686,31 @@ func (m *Model) renderHelpOverlay() string {
 	case focusFlowMatrix:
 		specializedPanels = []string{
 			renderPanel("Dependency Flow", "🔀", 0, navSection),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
+	case focusScopePicker:
+		scopeControls := []struct{ key, desc string }{
+			{"j/k", "Move scope selection"},
+			{"Enter", "Activate scope"},
+			{"B", "Open global backlog"},
+			{"W", "Close scope picker"},
+			{"Esc / q", "Return to previous view"},
+		}
+		specializedPanels = []string{
+			renderPanel("Scopes", "◉", 0, scopeControls),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
+	case focusBacklog:
+		backlogControls := []struct{ key, desc string }{
+			{"j/k", "Move selection"},
+			{"n/p", "Next / previous page"},
+			{"/", "Filter backlog"},
+			{"A", "Add selected bead to scope"},
+			{"W", "Open named scopes"},
+			{"B / Esc / q", "Return to List"},
+		}
+		specializedPanels = []string{
+			renderPanel("Backlog", "▤", 0, backlogControls),
 			renderPanel("Global", "🌐", 2, specializedGlobal),
 		}
 	}
@@ -9299,8 +9477,9 @@ func (m *Model) renderFooter() string {
 
 	labelHint := ""
 
-	// Board-specific hints (bv-yg39, bv-naov)
-	if m.isBoardView {
+	// Board-specific hints (bv-yg39, bv-naov). Scope picker input owns the
+	// footer while open, even when it was entered from Board.
+	if m.isBoardView && !m.showScopePicker {
 		if m.board.IsSearchMode() {
 			// Search mode active - show search hints
 			matchInfo := ""
@@ -9625,6 +9804,14 @@ func (m *Model) renderFooter() string {
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("c")+":current only", keyStyle.Render("a")+" all/none", keyStyle.Render("/")+" search", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" back")
 		}
+	} else if m.showScopePicker {
+		enterHint := "activate"
+		if m.scopePickerMoveIssue != "" {
+			enterHint = "move"
+		}
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("esc")+" back")
+	} else if m.isBacklogView {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
@@ -9723,10 +9910,14 @@ func (m *Model) renderFooter() string {
 	// ─────────────────────────────────────────────────────────────────────────
 	// COUNT BADGE - Total issues displayed
 	// ─────────────────────────────────────────────────────────────────────────
+	count := len(m.list.Items())
+	if m.isBacklogView {
+		count = len(m.backlog.filtered)
+	}
 	countBadge := lipgloss.NewStyle().
 		Foreground(ColorFooterDim).
 		Padding(0, 1).
-		Render(fmt.Sprintf("%d issues", len(m.list.Items())))
+		Render(fmt.Sprintf("%d issues", count))
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// ASSEMBLE FOOTER with proper spacing
@@ -9762,6 +9953,10 @@ func (m *Model) renderFooter() string {
 	if repoScopeSection != "" {
 		leftWidth += lipgloss.Width(repoScopeSection) + 1
 	}
+	scopeSection := m.renderScopeBadge()
+	if scopeSection != "" {
+		leftWidth += lipgloss.Width(scopeSection) + 1
+	}
 	if cassSection != "" {
 		leftWidth += lipgloss.Width(cassSection) + 1
 	}
@@ -9780,6 +9975,9 @@ func (m *Model) renderFooter() string {
 	var parts []string
 	if repoScopeSection != "" {
 		parts = append(parts, repoScopeSection)
+	}
+	if scopeSection != "" {
+		parts = append(parts, scopeSection)
 	}
 	parts = append(parts, filterBadge)
 	if searchBadge != "" {
@@ -11465,6 +11663,10 @@ func (f focus) String() string {
 		return "update_modal"
 	case focusCommentInput:
 		return "comment_input"
+	case focusScopePicker:
+		return "scope_picker"
+	case focusBacklog:
+		return "backlog"
 	case focusCommentSelection:
 		return "comment_selection"
 	case focusCommentDeleteConfirm:

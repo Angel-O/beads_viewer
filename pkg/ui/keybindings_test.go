@@ -142,6 +142,13 @@ func TestNewModelRegistersDocumentedBindings(t *testing.T) {
 		{focus: focusList, key: "E"},
 		{focus: focusList, key: "f"},
 		{focus: focusList, key: "!"},
+		{focus: focusList, key: "B"},
+		{focus: focusList, key: "W"},
+		{focus: focusList, key: "A"},
+		{focus: focusList, key: "R"},
+		{focus: focusList, key: "m"},
+		{focus: focusScopePicker, key: "enter"},
+		{focus: focusBacklog, key: "p"},
 		{focus: focusList, key: "w"},
 		{focus: focusList, key: "s"},
 		{focus: focusList, key: "S"},
@@ -1144,6 +1151,32 @@ func TestKeyDispatch_DirectTutorialEntryClearsStaleHelpFocus(t *testing.T) {
 	}
 }
 
+func TestKeyDispatch_BacktickKeepsListAndHelpTutorialToggle(t *testing.T) {
+	m := sizedModel(t, mouseTestIssues(2), 120, 30)
+
+	updated, _ := m.Update(keyMsg("`"))
+	m = updated.(*Model)
+	if !m.showTutorial || m.focused != focusTutorial {
+		t.Fatalf("List backtick did not open Tutorial: tutorial=%t focus=%v", m.showTutorial, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("`"))
+	m = updated.(*Model)
+	if m.showTutorial || m.focused != focusList {
+		t.Fatalf("Tutorial backtick did not close to List: tutorial=%t focus=%v", m.showTutorial, m.focused)
+	}
+
+	updated, _ = m.Update(keyMsg("?"))
+	m = updated.(*Model)
+	if !m.showHelp || m.focused != focusHelp {
+		t.Fatalf("Help did not open: help=%t focus=%v", m.showHelp, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("`"))
+	m = updated.(*Model)
+	if !m.showTutorial || m.showHelp || m.focused != focusTutorial {
+		t.Fatalf("Help backtick did not open Tutorial: tutorial=%t help=%t focus=%v", m.showTutorial, m.showHelp, m.focused)
+	}
+}
+
 func TestKeyBindingDocsCoverTreeSearchAndExactEntryExit(t *testing.T) {
 	docs := GetKeyBindingDocs()
 	wants := map[string]bool{
@@ -1228,10 +1261,12 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusFlowMatrix:     "flow",
 		focusSprint:         "sprint",
 		focusAttention:      "attention",
+		focusScopePicker:    "scope",
+		focusBacklog:        "backlog",
 	}
 	required := map[focus][]string{
-		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5", "up", "down", "left", "right"},
-		focusDetail:         {"j", "a", "b", "g", "h", "i", "E", "?", "F2/;", "tab", "n", "U", "x", "y", "C", "t", "T", "O", "Ctrl+R/F5"},
+		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "m", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5", "up", "down", "left", "right"},
+		focusDetail:         {"j", "a", "b", "g", "h", "i", "E", "?", "F2/;", "tab", "n", "U", "x", "y", "C", "t", "T", "O", "m", "Ctrl+R/F5"},
 		focusBoard:          {"h", "l", "j", "k", "G", "gg", "tab", "enter", "o", "c", "r", "/", "n/N", "1-4", "H/L", "0/$", "y", "s", "e", "d", "b", "?", "F2/;"},
 		focusGraph:          {"hjkl", "pgup/pgdown", "/", "n/N", "enter", "esc", "g", "b", "?", "F2/;"},
 		focusTree:           {"h", "l", "enter", "space", "/", "n", "N", "v", "+", "-", "G", "E", "o", "c", "r", "pgup", "pgdown", "?", "F2/;"},
@@ -1242,6 +1277,8 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
 		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
 		focusAttention:      {"j", "k", "up", "down", "home", "G", "enter", "g", "] / F4", "esc / q", "?", "F2/;"},
+		focusScopePicker:    {"j", "k", "enter", "esc", "q", "B", "W", "ctrl+c", "`", "F2/;", "?"},
+		focusBacklog:        {"j", "k", "n", "p", "esc", "q", "B", "W", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5"},
 	}
 
 	hasDoc := func(context, key string) bool {
@@ -1267,6 +1304,14 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScopeKeyBindingDocsDoNotInheritBoardColumnJump(t *testing.T) {
+	for _, doc := range GetKeyBindingDocs() {
+		if doc.Key == "1-4" && strings.Contains(doc.Context, "scope") {
+			t.Fatalf("scope key docs retain Board-only column jump: %+v", doc)
+		}
 	}
 }
 
