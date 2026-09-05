@@ -8492,7 +8492,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"r", "Ready (unblocked)"},
 		{"l", "Filter by label"},
 		{"I", "Exact issue-type picker"},
-		{"s", "Cycle sort (multi-context Hub data)"},
+		{"s", "Cycle sort (Hub)"},
 		{"S", "Triage sort"},
 	}
 	if origin == focusTree {
@@ -8538,10 +8538,21 @@ func (m *Model) renderHelpOverlay() string {
 		{"Ctrl+R/F5", "Force refresh"},
 		{"t", "Time-travel"},
 		{"T", "Quick time-travel"},
-		{"x", "Export markdown (List/Detail/Split)"},
+		{"x", "Export .md"},
 		{"y", "Copy issue ID (List/Detail/Board)"},
-		{"C", "Copy full issue (List/Detail/Split)"},
+		{"C", "Copy issue (List/Detail/Split)"},
 		{"O", "Open in editor"},
+	}
+	// Scope entry points are shown in generic help so the workflow is
+	// discoverable before the user opens either scope-specific view.
+	scopesSection := []struct{ key, desc string }{
+		{"W", "Named scopes (List/Detail)"},
+		{"B", "Global backlog (List/Detail)"},
+		{"n", "New inactive named scope (Scopes)"},
+		{"Enter", "Activate scope (Scopes)"},
+		{"A", "Add to active scope (L/D/B)"},
+		{"R", "Remove from active scope (L/D)"},
+		{"m", "Move bead to another scope (L/D)"},
 	}
 	// Specialized views get only their own controls and genuinely reachable
 	// global controls instead of inheriting unrelated List sections.
@@ -8754,15 +8765,16 @@ func (m *Model) renderHelpOverlay() string {
 	// Build panels. Tree has its own navigation and must not inherit List/History
 	// controls such as Home, Tab, or unrelated Enter actions.
 	panels := []string{
+		renderPanel("Scopes", "◉", 0, scopesSection),
+		renderPanel("Graph View", "📊", 4, graphSection),
+		renderPanel("Status", "🩺", 2, statusSection),
+		renderPanel("History", "📜", 0, historySection),
 		renderPanel("Navigation", "🧭", 0, navSection),
+		renderPanel("Insights", "💡", 5, insightsSection),
+		renderPanel("List / Detail", "⚡", 1, actionsSection),
 		renderPanel("Views", "👁", 1, viewsSection),
 		renderPanel("Global", "🌐", 2, globalSection),
 		renderPanel("List Filters & Sort", "🔍", 3, filterSection),
-		renderPanel("Graph View", "📊", 4, graphSection),
-		renderPanel("Insights", "💡", 5, insightsSection),
-		renderPanel("Status", "🩺", 2, statusSection),
-		renderPanel("History", "📜", 0, historySection),
-		renderPanel("List / Detail", "⚡", 1, actionsSection),
 	}
 	if len(specializedPanels) > 0 {
 		panels = specializedPanels
@@ -8783,20 +8795,23 @@ func (m *Model) renderHelpOverlay() string {
 
 	// Arrange panels into columns
 	var columns []string
-	panelsPerCol := (len(panels) + numCols - 1) / numCols
+	panelsPerCol := len(panels) / numCols
+	extraPanels := len(panels) % numCols
+	start := 0
 
 	for col := 0; col < numCols; col++ {
-		start := col * panelsPerCol
-		end := start + panelsPerCol
-		if end > len(panels) {
-			end = len(panels)
+		count := panelsPerCol
+		if col < extraPanels {
+			count++
 		}
+		end := start + count
 		if start >= len(panels) {
 			break
 		}
 
 		colPanels := panels[start:end]
 		columns = append(columns, lipgloss.JoinVertical(lipgloss.Left, colPanels...))
+		start = end
 	}
 
 	// Join columns horizontally
@@ -8813,8 +8828,16 @@ func (m *Model) renderHelpOverlay() string {
 		Italic(true)
 
 	title := titleStyle.Render("⌨️  Keyboard Shortcuts")
-	subtitle := subtitleStyle.Render("Space: Tutorial │ Esc/?/q: close │ other keys: dismiss")
-	titleBar := lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", subtitle)
+	subtitleText := "Space: Tutorial │ Esc/?/q: close │ other keys: dismiss"
+	titleBar := ""
+	if m.width >= 100 {
+		titleBar = lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", subtitleStyle.Render(subtitleText))
+	} else {
+		// Keep the complete dismissal hint without letting the title row force
+		// the overlay wider than a narrow terminal.
+		subtitle := subtitleStyle.Width(max(m.width-6, 1)).Render(subtitleText)
+		titleBar = lipgloss.JoinVertical(lipgloss.Center, title, subtitle)
+	}
 
 	// Combine title and body
 	content := lipgloss.JoinVertical(lipgloss.Center, titleBar, "", body)
