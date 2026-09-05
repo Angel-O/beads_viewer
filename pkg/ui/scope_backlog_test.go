@@ -188,6 +188,71 @@ func TestScopeRenderersStayWithinAssignedViewport(t *testing.T) {
 	}
 }
 
+func TestScopePickerLoadsSelectedMembersAndRejectsStaleResponses(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		LoadDetails: func(_ context.Context, scopeID string) (ScopeDetails, error) {
+			return ScopeDetails{Info: ScopeInfo{ID: scopeID}, Issues: []model.Issue{{ID: scopeID + "-member", Title: scopeID, Status: model.StatusOpen}}}, nil
+		},
+	}})
+	m.focused = focusList
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "One"}, {ID: "s2", Name: "Two"}}
+	first := m.openScopePicker("")
+	if first == nil {
+		t.Fatal("initial selected scope did not start a details load")
+	}
+	updated, second := m.handleScopePickerKey(keyMsg("down"))
+	m = updated
+	if second == nil || m.scopePicker.SelectedScopeID() != "s2" {
+		t.Fatalf("selection movement: cmd=%t scope=%q", second != nil, m.scopePicker.SelectedScopeID())
+	}
+	var next tea.Model
+	next, _ = m.Update(second())
+	m = next.(*Model)
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "s2-member" {
+		t.Fatalf("current details selected member = %#v, want s2-member", selected)
+	}
+	next, _ = m.Update(first())
+	m = next.(*Model)
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "s2-member" {
+		t.Fatalf("stale details replaced current member = %#v", selected)
+	}
+}
+
+func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(100, 24)
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "api-1", Title: "API", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryName: "api"},
+		{Issue: model.Issue{ID: "web-1", Title: "Web", Status: model.StatusClosed, IssueType: model.TypeBug}, RepositoryName: "web"},
+	})
+	picker.memberFocused = true
+	picker.MoveMember(1)
+	if selected := picker.SelectedMember(); selected == nil || selected.Issue.ID != "web-1" {
+		t.Fatalf("member selection = %#v, want web-1", selected)
+	}
+	picker.ToggleMemberStatus("closed")
+	if len(picker.filteredMembers) != 1 || picker.filteredMembers[0].Issue.ID != "web-1" {
+		t.Fatalf("closed member filter = %#v", picker.filteredMembers)
+	}
+	picker.ToggleMemberStatus("closed")
+	picker.CycleMemberRepository()
+	if len(picker.filteredMembers) != 1 || picker.filteredMembers[0].Issue.ID != "api-1" {
+		t.Fatalf("repository member filter = %#v", picker.filteredMembers)
+	}
+	picker.memberRepositoryFilter = ""
+	picker.CycleMemberType()
+	if len(picker.filteredMembers) != 1 || picker.filteredMembers[0].Issue.ID != "web-1" {
+		t.Fatalf("type member filter = %#v", picker.filteredMembers)
+	}
+	view := ansi.Strip(picker.View())
+	for _, want := range []string{"Scopes", "Members · Today", "repository:all", "type:bug", "web-1"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("member picker missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{
 		InitialScope: &ScopeSnapshot{},
