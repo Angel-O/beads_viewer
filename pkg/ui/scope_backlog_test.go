@@ -260,11 +260,15 @@ func TestScopePickerFooterIsIndependentOfEntryView(t *testing.T) {
 		m.isBoardView = origin == focusBoard
 		m.openScopePicker("")
 
+		pickerFooter := ansi.Strip(m.scopePicker.View())
+		if !strings.Contains(pickerFooter, "n new inactive scope") {
+			t.Fatalf("scope chooser footer lost inactive-create hint: %q", pickerFooter)
+		}
 		footer := ansi.Strip(m.renderFooter())
 		if strings.Contains(footer, "1-4:col") {
 			t.Fatalf("scope footer inherited Board column hint from %s: %q", origin, footer)
 		}
-		if !strings.Contains(footer, "enter activate") || strings.Contains(footer, "m move") {
+		if !strings.Contains(footer, "enter activate") || !strings.Contains(footer, "n new inactive") || strings.Contains(footer, "m move") {
 			t.Fatalf("scope footer lost scope controls from %s: %q", origin, footer)
 		}
 		if want == "" {

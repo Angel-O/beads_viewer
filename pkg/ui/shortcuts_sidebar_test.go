@@ -365,11 +365,20 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusScopePicker)
 	scopeView := sidebar.View()
-	for _, expected := range []string{"enter", "Activate scope"} {
+	for _, expected := range []string{"enter", "Activate scope", "n", "Create inactive named"} {
 		if !strings.Contains(scopeView, expected) {
 			t.Fatalf("scope sidebar missing %q:\n%s", expected, scopeView)
 		}
 	}
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			if item.key == "n" && item.desc == "Create inactive named scope" {
+				goto foundScopeCreate
+			}
+		}
+	}
+	t.Fatal("scope sidebar changed the inactive named-scope meaning")
+foundScopeCreate:
 	if strings.Contains(scopeView, "Move selected") {
 		t.Fatalf("scope sidebar retained move action:\n%s", scopeView)
 	}

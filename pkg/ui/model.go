@@ -9839,7 +9839,7 @@ func (m *Model) renderFooter() string {
 		if m.scopePickerMoveIssue != "" {
 			enterHint = "move"
 		}
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new inactive", keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {

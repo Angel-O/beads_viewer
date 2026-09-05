@@ -148,6 +148,7 @@ func TestNewModelRegistersDocumentedBindings(t *testing.T) {
 		{focus: focusList, key: "R"},
 		{focus: focusList, key: "m"},
 		{focus: focusScopePicker, key: "enter"},
+		{focus: focusScopePicker, key: "n"},
 		{focus: focusBacklog, key: "p"},
 		{focus: focusList, key: "w"},
 		{focus: focusList, key: "s"},
@@ -162,6 +163,22 @@ func TestNewModelRegistersDocumentedBindings(t *testing.T) {
 		if !m.keyRegistry.HasBinding(tc.focus, tc.key) {
 			t.Errorf("expected documented binding focus=%v key=%q to be registered", tc.focus, tc.key)
 		}
+	}
+}
+
+func TestScopeCreateKeyBindingHasOnlyScopeContextAndInactiveMeaning(t *testing.T) {
+	found := false
+	for _, doc := range GetKeyBindingDocs() {
+		if doc.Key != "n" || doc.Desc != "Create inactive named scope" {
+			continue
+		}
+		found = true
+		if doc.Context != "scope" {
+			t.Fatalf("scope-create binding context = %q, want scope only", doc.Context)
+		}
+	}
+	if !found {
+		t.Fatal("missing inactive named-scope create binding")
 	}
 }
 

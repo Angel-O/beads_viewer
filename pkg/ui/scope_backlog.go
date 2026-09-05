@@ -374,7 +374,7 @@ func (s ScopePickerModel) View() string {
 			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, scope.Name, scope.CreatedAt.Format("2006-01-02"), scope.MemberCount, active))
 		}
 	}
-	hint := "enter activate · n new scope · esc back"
+	hint := "enter activate · n new inactive scope · esc back"
 	if s.moveTarget != "" {
 		hint = "enter move bead · esc back"
 	}
