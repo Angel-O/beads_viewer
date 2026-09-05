@@ -3053,7 +3053,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		details := msg.details
 		m.scopeDetails = &details
-		if msg.generation > 0 {
+		// Generation-less typed responses must populate the member browser too.
+		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
 			m.applyScopePickerDetails(details)
 		}
 

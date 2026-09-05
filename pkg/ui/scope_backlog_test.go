@@ -253,6 +253,32 @@ func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 	}
 }
 
+func TestGenerationlessScopeDetailsPopulateMemberBrowser(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{})
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+
+	updated, _ := m.Update(scopeDetailsMsg{scopeID: "s1", details: ScopeDetails{
+		Info:   ScopeInfo{ID: "s1", Name: "Today"},
+		Issues: []model.Issue{{ID: "b-1", Title: "Member", Status: model.StatusOpen}},
+	}})
+	m = updated.(*Model)
+	if member := m.scopePicker.SelectedMember(); member == nil || member.Issue.ID != "b-1" {
+		t.Fatalf("generationless details did not populate selected member: %#v", member)
+	}
+	view := ansi.Strip(m.scopePicker.View())
+	if !strings.Contains(view, "Members · Today") || !strings.Contains(view, "b-1") {
+		t.Fatalf("member browser omitted supplied details:\n%s", view)
+	}
+	updated, _ = m.Update(keyMsg("tab"))
+	m = updated.(*Model)
+	footer := ansi.Strip(m.renderFooter())
+	if !m.scopePicker.MemberFocused() || !strings.Contains(footer, "space mark") || !strings.Contains(footer, "R re") {
+		t.Fatalf("member browser did not expose usable focus controls: focused=%t footer=%q", m.scopePicker.MemberFocused(), footer)
+	}
+}
+
 func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{
 		InitialScope: &ScopeSnapshot{},
@@ -944,14 +970,14 @@ func TestBacklogRenderKeepsSelectedRowVisibleWithinHeight(t *testing.T) {
 	}
 }
 
-func TestBacklogRenderReusesIssueColumnsAndResponsivePreview(t *testing.T) {
+func TestBacklogRenderUsesBoundedColumnsAndFullPreview(t *testing.T) {
 	b := NewBacklogModel(testTheme())
 	b.SetSize(120, 12)
 	created := time.Now().Add(-2 * time.Hour)
 	b.SetPage(BacklogPage{Issues: []model.Issue{{
 		ID:          "backlog-1",
 		Title:       "Readable backlog title",
-		Description: "First line of a deliberately long description that must be safely truncated.",
+		Description: "First line of a deliberately long description that must remain fully visible.",
 		Status:      model.StatusOpen,
 		IssueType:   model.TypeFeature,
 		Priority:    1,
@@ -971,18 +997,89 @@ func TestBacklogRenderReusesIssueColumnsAndResponsivePreview(t *testing.T) {
 	})
 
 	view := ansi.Strip(b.View())
-	for _, want := range []string{"TY", "AGE", "PR", "[api]", "OPEN", "backlog-1", "Readable backlog title", "DESCRIPTION", "First line"} {
+	for _, want := range []string{"Global backlog", "ID", "TYPE", "PR", "STAT", "CREATED_AT", "OPEN", "backlog-1", "Readable backlog title", "DESCRIPTION", "First line", "remain fully visible."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("backlog view missing %q:\n%s", want, view)
 		}
 	}
-	if !strings.Contains(view, "…") {
-		t.Fatalf("description preview was not truncated:\n%s", view)
+	if strings.Contains(view, "AGE") || strings.Contains(view, "CMT") || strings.Contains(view, "GRAPH") || strings.Contains(view, "[api]") {
+		t.Fatalf("backlog view inherited ordinary List metadata:\n%s", view)
+	}
+	columns := backlogTableColumnsFor(b.filteredItems, 120)
+	row := ansi.Strip(b.renderBacklogList(columns, 120, 1))
+	if strings.Contains(row, "Readable backlog title") {
+		t.Fatalf("backlog row includes title:\n%s", row)
+	}
+	header := renderBacklogTableHeader(columns)
+	if strings.Index(header, "ID") > strings.Index(header, "CREATED_AT") {
+		t.Fatalf("backlog header places ID after created_at: %q", header)
+	}
+	if !strings.Contains(row, formatBacklogCreatedAt(created)) {
+		t.Fatalf("backlog row did not preserve exact created_at:\n%s", row)
+	}
+	if strings.Contains(view, "…") {
+		t.Fatalf("backlog preview truncated full description:\n%s", view)
 	}
 	for _, line := range strings.Split(view, "\n") {
 		if lipgloss.Width(line) > 120 {
 			t.Fatalf("backlog line width = %d, want <= 120: %q", lipgloss.Width(line), line)
 		}
+	}
+}
+
+func TestBacklogMovesPreviewBelowWhenExactTableDoesNotFit(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(80, 12)
+	created := time.Date(2026, 9, 5, 12, 34, 56, 0, time.UTC)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "backlog-1234567890", Title: "Readable title", Description: "Description", Status: model.StatusOpen,
+		IssueType: model.TypeFeature, Priority: 1, CreatedAt: created,
+	}}}, 0)
+
+	lines := strings.Split(ansi.Strip(b.View()), "\n")
+	timestampLine, titleLine := -1, -1
+	for index, line := range lines {
+		if strings.Contains(line, formatBacklogCreatedAt(created)) {
+			timestampLine = index
+		}
+		if strings.Contains(line, "TITLE  Readable title") {
+			titleLine = index
+		}
+	}
+	if timestampLine < 0 || titleLine <= timestampLine {
+		t.Fatalf("preview was not moved below the complete table: timestamp=%d title=%d:\n%s", timestampLine, titleLine, strings.Join(lines, "\n"))
+	}
+}
+
+func TestBacklogPreviewIsBoundedAndScrollable(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(80, 8)
+	description := "first line " + strings.Repeat("middle ", 100) + "FINALTAIL"
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "backlog-1234567890", Title: "Readable title", Description: description, Status: model.StatusOpen,
+		IssueType: model.TypeTask, CreatedAt: time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC),
+	}}}, 0)
+
+	full := ansi.Strip(b.renderBacklogPreview(76))
+	if !strings.Contains(full, "Readable title") || !strings.Contains(full, "FINALTAIL") {
+		t.Fatalf("complete preview content was lost: %q", full)
+	}
+	view := ansi.Strip(b.View())
+	if !strings.Contains(view, "CREATED_AT") || strings.Count(view, "\n")+1 > 8 {
+		t.Fatalf("preview pushed the backlog outside its allocation:\n%s", view)
+	}
+	b.ScrollPreview(10000)
+	scrolled := ansi.Strip(b.View())
+	if !strings.Contains(scrolled, "FINALTAIL") || strings.Count(scrolled, "\n")+1 > 8 {
+		t.Fatalf("preview did not scroll within its allocation:\n%s", scrolled)
+	}
+
+	m := NewModel(nil, nil, "")
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "backlog-1", Description: description}}}, 0)
+	updated, _ := m.Update(keyMsg("pgdown"))
+	if updated.(*Model).backlog.previewOffset == 0 {
+		t.Fatal("page-down did not scroll the backlog preview")
 	}
 }
 
@@ -1013,6 +1110,9 @@ func TestBacklogMarksSubmitOneBatchAndPreserveMarksOnFailure(t *testing.T) {
 	}
 	if m.backlog.MarkCount() != 2 {
 		t.Fatalf("failed mutation cleared marks: %d", m.backlog.MarkCount())
+	}
+	if !strings.Contains(ansi.Strip(m.backlog.View()), "✓") {
+		t.Fatal("selected marked backlog row was not visibly marked")
 	}
 }
 
