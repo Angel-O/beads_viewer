@@ -2715,7 +2715,7 @@ func TestCommandSpecificationDrivesValueOptionParsing(t *testing.T) {
 	values := map[string]string{
 		"--prefix": "item", "--description": "details", "--type": "task", "--priority": "2",
 		"--labels": "team", "--context": "ctx:test", "--from-todo": "todo-1",
-		"--title": "title", "--status": "open", "--label": "team", "--limit": "20", "--add-label": "team",
+		"--title": "title", "--status": "open", "--label": "team", "--id": "bead-1", "--epic": "epic-1", "--limit": "20", "--add-label": "team",
 		"--cursor": "opaque-token", "--sort": "updated_at:desc", "--created-after": "2026-08-27T12:00:00Z",
 		"--updated-after": "2026-08-27T12:00:00Z", "--closed-after": "2026-08-27T12:00:00Z", "--after-created-at": "2026-08-27T12:00:00Z",
 		"--after-updated-at": "2026-08-27T12:00:00Z", "--after-closed-at": "2026-08-27T12:00:00Z",

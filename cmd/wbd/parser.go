@@ -202,8 +202,8 @@ var commandSpecs = map[string]commandSpec{
 	"scope active":     {path: "scope active", usage: "wbd scope active [--json]", summary: "Show the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
 	"scope activate":   {path: "scope activate", usage: "wbd scope activate <id> [--json]", summary: "Activate a backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
 	"scope deactivate": {path: "scope deactivate", usage: "wbd scope deactivate [--json]", summary: "Deactivate the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
-	"scope add":        {path: "scope add", usage: "wbd scope add <issue-id>... [--scope <scope-id>] [--json]", summary: "Add issues to a scope; omitted scope uses the active scope.", options: []optionSpec{{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
-	"scope remove":     {path: "scope remove", usage: "wbd scope remove <issue-id>... [--scope <scope-id>] [--json]", summary: "Remove issues from a scope; omitted scope uses the active scope.", options: []optionSpec{{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
+	"scope add":        {path: "scope add", usage: "wbd scope add <issue-id>|--epic <id>|--label <label> [filters] [--scope <scope-id>] [--json]", summary: "Add one semantic target to a scope; omitted scope uses the active scope.", options: scopeMutationOptions()},
+	"scope remove":     {path: "scope remove", usage: "wbd scope remove <issue-id>|--epic <id>|--label <label> [filters] [--scope <scope-id>] [--json]", summary: "Remove one semantic target from a scope; omitted scope uses the active scope.", options: scopeMutationOptions()},
 	"scope move":       {path: "scope move", usage: "wbd scope move <issue-id>... [--source-scope <id>] [--target-scope <id>] [--json]", summary: "Move issues between scopes; omitted source or target uses the active scope.", options: []optionSpec{{name: "--source-scope", value: "<id>", description: "Source scope; defaults to the active scope."}, {name: "--target-scope", value: "<id>", description: "Target scope; defaults to the active scope."}, {name: "--json", description: "Emit JSON."}}},
 	"backlog":          {path: "backlog", usage: "wbd backlog list [options]", summary: "Read the scoped backlog through bd's JSON surface."},
 	"backlog list": {
@@ -219,6 +219,18 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--json", description: "Emit JSON."},
 		},
 	},
+}
+
+func scopeMutationOptions() []optionSpec {
+	return []optionSpec{
+		{name: "--id", value: "<issue-id>", description: "Explicit issue ID target; also accepted as the sole positional target."},
+		{name: "--epic", value: "<epic-id>", description: "Select exact recursive descendants of one epic."},
+		{name: "--label", value: "<label>", description: "Select one exact ordinary label."},
+		{name: "--status", value: "<status,...>", description: "Candidate statuses."},
+		{name: "--type", value: "<type>", description: "Candidate issue type."},
+		{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."},
+		{name: "--json", description: "Emit JSON."},
+	}
 }
 
 func init() {
@@ -287,6 +299,11 @@ type request struct {
 	migrateDryRun      bool
 	migrateApply       bool
 	scopeSubcommand    string
+	scopeID            string
+	scopeEpic          string
+	scopeLabel         string
+	scopeStatus        string
+	scopeType          string
 }
 
 func commandName(arguments []string) (string, error) {
@@ -903,6 +920,54 @@ func parseScope(result request, arguments []string) (request, error) {
 			result.args = append(result.args, argument)
 			continue
 		}
+		if result.scopeSubcommand == "add" || result.scopeSubcommand == "remove" {
+			flag, value, consumed, matched, err := optionValueFor("scope "+result.scopeSubcommand, argument, arguments)
+			if err != nil {
+				return result, err
+			}
+			if matched {
+				arguments = arguments[consumed:]
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+				switch flag {
+				case "--id":
+					if err := safeID("scope", value); err != nil {
+						return result, err
+					}
+					result.scopeID = value
+				case "--epic":
+					if err := safeID("scope", value); err != nil {
+						return result, err
+					}
+					result.scopeEpic = value
+				case "--label":
+					if err := validateLabels(value, false); err != nil {
+						return result, err
+					}
+					if strings.Contains(value, ",") {
+						return result, errors.New("scope mutation labels must contain exactly one ordinary label")
+					}
+					if strings.HasPrefix(value, "ctx:") {
+						return result, errors.New("scope mutation labels must be ordinary labels")
+					}
+					result.scopeLabel = value
+				case "--status":
+					if err := validateStatuses(value); err != nil {
+						return result, err
+					}
+					result.scopeStatus = value
+				case "--type":
+					if err := validateType(value); err != nil {
+						return result, err
+					}
+					result.scopeType = value
+				case "--scope":
+					result.args = append(result.args, flag, value)
+				}
+				continue
+			}
+		}
 		flag, value, consumed, matched, err := optionValueFor("scope "+result.scopeSubcommand, argument, arguments)
 		if err != nil {
 			return result, err
@@ -921,6 +986,11 @@ func parseScope(result request, arguments []string) (request, error) {
 		if err := safeValue("scope", argument); err != nil {
 			return result, err
 		}
+		if result.scopeSubcommand == "add" || result.scopeSubcommand == "remove" {
+			if err := safeID("scope", argument); err != nil {
+				return result, err
+			}
+		}
 		result.positionals = append(result.positionals, argument)
 	}
 
@@ -933,8 +1003,18 @@ func parseScope(result request, arguments []string) (request, error) {
 	case "deactivate":
 		wantPositionals = 0
 	case "add", "remove":
-		if len(result.positionals) == 0 {
-			return result, errors.New(usageFor("scope " + result.scopeSubcommand))
+		selectors := 0
+		if len(result.positionals) > 0 || result.scopeID != "" {
+			selectors++
+		}
+		if result.scopeEpic != "" {
+			selectors++
+		}
+		if result.scopeLabel != "" {
+			selectors++
+		}
+		if selectors != 1 || result.scopeID != "" && len(result.positionals) > 0 {
+			return result, errors.New("scope mutation requires exactly one target")
 		}
 		wantPositionals = len(result.positionals)
 	case "move":

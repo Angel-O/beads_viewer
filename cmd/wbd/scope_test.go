@@ -19,7 +19,7 @@ func TestScopeParserExposesPublicSubcommands(t *testing.T) {
 		{"scope", "activate", "work"},
 		{"scope", "deactivate", "--json"},
 		{"scope", "add", "bead-1", "--scope", "work"},
-		{"scope", "remove", "bead-1", "bead-2", "--scope", "work"},
+		{"scope", "remove", "--label", "work", "--scope", "work"},
 		{"scope", "move", "bead-1", "--source-scope", "old", "--target-scope", "new"},
 		{"backlog", "list", "--limit", "10", "--cursor", "opaque:/+= token", "--json"},
 	} {
@@ -31,36 +31,61 @@ func TestScopeParserExposesPublicSubcommands(t *testing.T) {
 
 func TestScopeOmittedTargetsResolveActiveScope(t *testing.T) {
 	tests := []struct {
-		name     string
-		args     []string
-		mutation []string
+		name string
+		args []string
 	}{
-		{name: "add", args: []string{"scope", "add", "bead-1", "bead-2", "--json"}, mutation: []string{"--db", "STORE", "--json", "scope", "add", "active", "bead-1", "bead-2"}},
-		{name: "remove", args: []string{"scope", "remove", "bead-1", "bead-2", "--json"}, mutation: []string{"--db", "STORE", "--json", "scope", "remove", "active", "bead-1", "bead-2"}},
-		{name: "move", args: []string{"scope", "move", "bead-1", "bead-2", "--json"}, mutation: []string{"--db", "STORE", "--json", "scope", "move", "active", "active", "bead-1", "bead-2"}},
+		{name: "add", args: []string{"scope", "add", "bead-1", "--json"}},
+		{name: "remove", args: []string{"scope", "remove", "bead-1", "--json"}},
+		{name: "move", args: []string{"scope", "move", "bead-1", "bead-2", "--json"}},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			test := newAppTest(t, false)
+			test := newAppTest(t, testCase.name != "move")
 			setResponses(t, map[string]string{
-				"scope:active":           `{"id":"active"}`,
-				"scope:" + testCase.name: `{}`,
+				"scope:active": `{"id":"active"}`,
+				"scope:move":   `{}`,
+				"scope:show":   `{"issues":[{"id":"bead-1"}]}`,
+				"list":         `[{"id":"bead-1"}]`,
 			})
 			code, _, stderr := test.run(testCase.args...)
 			if code != 0 || stderr != "" {
 				t.Fatalf("code=%d stderr=%q", code, stderr)
 			}
 			calls := test.calls()
-			if len(calls) != 2 {
-				t.Fatalf("calls=%#v", calls)
-			}
-			if !reflect.DeepEqual(calls[0].Args, []string{"--db", test.store, "--json", "scope", "active"}) {
-				t.Fatalf("active call=%#v", calls[0].Args)
-			}
-			want := append([]string(nil), testCase.mutation...)
-			want[1] = test.store
-			if !reflect.DeepEqual(calls[1].Args, want) {
-				t.Fatalf("mutation=%#v want=%#v", calls[1].Args, want)
+			if testCase.name == "move" {
+				if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, []string{"--db", test.store, "--json", "scope", "active"}) ||
+					!reflect.DeepEqual(calls[1].Args, []string{"--db", test.store, "--json", "scope", "move", "active", "active", "bead-1", "bead-2"}) {
+					t.Fatalf("calls=%#v", calls)
+				}
+			} else {
+				want := [][]string{{"--db", test.store, "--json", "scope", "active"}, {"--db", test.store, "--json", "list"}}
+				if testCase.name == "remove" {
+					want = append(want, []string{"--db", test.store, "--json", "scope", "show", "active"})
+				}
+				want = append(want, []string{"--db", test.store, "--json", "scope", testCase.name, "active", "bead-1"})
+				if len(calls) != len(want) {
+					t.Fatalf("calls=%#v", calls)
+				}
+				for index, expected := range want {
+					if index == 1 && testCase.name == "remove" {
+						continue
+					}
+					if index == 1 && testCase.name == "add" {
+						if !reflect.DeepEqual(calls[index].Args[:4], []string{"--db", test.store, "--json", "list"}) {
+							t.Fatalf("list call=%#v", calls[index].Args)
+						}
+						continue
+					}
+					if index == 2 && testCase.name == "remove" {
+						if !reflect.DeepEqual(calls[index].Args[:4], []string{"--db", test.store, "--json", "list"}) {
+							t.Fatalf("list call=%#v", calls[index].Args)
+						}
+						continue
+					}
+					if !reflect.DeepEqual(calls[index].Args, expected) {
+						t.Fatalf("call[%d]=%#v want %#v", index, calls[index].Args, expected)
+					}
+				}
 			}
 			assertViewerSignal(t, test)
 		})
@@ -81,31 +106,84 @@ func TestScopeExplicitMoveDoesNotReadOrSignalTwice(t *testing.T) {
 	assertViewerSignal(t, test)
 }
 
-func TestScopeExplicitIDsUseBackendPositionalContract(t *testing.T) {
-	for _, testCase := range []struct {
-		name string
-		args []string
-		want []string
-	}{
-		{name: "add", args: []string{"scope", "add", "bead-1", "bead-2", "--scope", "scope-a", "--json"}, want: []string{"--db", "STORE", "--json", "scope", "add", "scope-a", "bead-1", "bead-2"}},
-		{name: "remove", args: []string{"scope", "remove", "bead-1", "bead-2", "--scope", "scope-a", "--json"}, want: []string{"--db", "STORE", "--json", "scope", "remove", "scope-a", "bead-1", "bead-2"}},
-		{name: "move", args: []string{"scope", "move", "bead-1", "bead-2", "--source-scope", "scope-a", "--target-scope", "scope-b", "--json"}, want: []string{"--db", "STORE", "--json", "scope", "move", "scope-a", "scope-b", "bead-1", "bead-2"}},
+func TestScopeExplicitIDResolvesBeforeOneMutation(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{"list": `[{"id":"bead-1"},{"id":"bead-2"}]`, "scope:add": `{"added":2}`})
+	code, stdout, stderr := test.run("scope", "add", "bead-1", "bead-2", "--scope", "scope-a", "--json")
+	if code != 0 || stdout != `{"added":2}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	context := contextForTest(t, test.repository)
+	wantList := []string{"--db", test.store, "--json", "list", "--unscoped", "--limit", "0", "--label", context, "--id", "bead-1,bead-2"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "scope-a", "bead-1", "bead-2"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+	assertViewerSignal(t, test)
+}
+
+func TestScopeSemanticParserRequiresExactlyOneTarget(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"scope", "add", "one", "--label", "team"},
+		{"scope", "remove", "--epic", "epic-1", "--label", "team"},
+		{"scope", "add", "--label", "ctx:repo"},
 	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			test := newAppTest(t, false)
-			setResponses(t, map[string]string{"scope:" + testCase.name: `{}`})
-			code, _, stderr := test.run(testCase.args...)
-			if code != 0 || stderr != "" {
-				t.Fatalf("code=%d stderr=%q", code, stderr)
-			}
-			want := append([]string(nil), testCase.want...)
-			want[1] = test.store
-			calls := test.calls()
-			if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
-				t.Fatalf("calls=%#v want=%#v", calls, want)
-			}
-			assertViewerSignal(t, test)
-		})
+		if _, err := parse(arguments); err == nil {
+			t.Errorf("parse(%v) unexpectedly succeeded", arguments)
+		}
+	}
+	if _, err := parse([]string{"scope", "add", "one", "two"}); err != nil {
+		t.Fatalf("explicit ID collection rejected: %v", err)
+	}
+}
+
+func TestScopeAddLabelUsesCurrentRepositoryFiltersAndOneMultiIDMutation(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{"list": `[{"id":"b"},{"id":"a"}]`, "scope:add": `{"added":2}`})
+	code, stdout, stderr := test.run("scope", "add", "--label", "team", "--status", "open,blocked", "--type", "task", "--scope", "work", "--json")
+	if code != 0 || stdout != `{"added":2}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	context := contextForTest(t, test.repository)
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--unscoped", "--limit", "0", "--label", context, "--label", "team", "--status", "open,blocked", "--type", "task"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "work", "a", "b"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeAddEpicUsesExplicitParentChildRelationships(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{"list": `[{"id":"child-1","parent":"epic-1"},{"id":"grandchild-1","parent":"child-1"},{"id":"dotted-1"}]`, "scope:add": `{}`})
+	code, _, stderr := test.run("scope", "add", "--epic", "epic-1", "--scope", "work", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	context := contextForTest(t, test.repository)
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--unscoped", "--limit", "0", "--label", context}
+	wantRelationships := []string{"--db", test.store, "--json", "list", "--all", "--include-all-types", "--limit", "0", "--label", context}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "work", "child-1", "grandchild-1"}
+	if len(calls) != 3 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantRelationships) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeRemoveResolvesOnlySelectedScopeMembers(t *testing.T) {
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{"scope:show": `{"issues":[{"id":"b"},{"id":"a"},{"id":"outside"}]}`, "list": `[{"id":"b"},{"id":"a"}]`, "scope:remove": `{"removed":2}`})
+	code, stdout, stderr := test.run("scope", "remove", "--label", "team", "--status", "open", "--type", "task", "--scope", "work", "--json")
+	if code != 0 || stdout != `{"removed":2}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	context := contextForTest(t, test.repository)
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--id", "a,b,outside", "--limit", "0", "--label", context, "--label", "team", "--status", "open", "--type", "task"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "remove", "work", "a", "b"}
+	if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "scope:show" || !reflect.DeepEqual(calls[1].Args, wantList) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
 	}
 }
 
@@ -200,14 +278,14 @@ func TestScopeReadsAndCreatePreserveStableBackendOutput(t *testing.T) {
 }
 
 func TestFailedScopeMutationDoesNotSignal(t *testing.T) {
-	test := newAppTest(t, false)
-	setResponses(t, map[string]string{"scope:active": `{"id":"active"}`})
+	test := newAppTest(t, true)
+	setResponses(t, map[string]string{"scope:active": `{"id":"active"}`, "list": `[{"id":"bead-1"}]`})
 	setExitCodes(t, map[string]int{"scope:add": 9})
-	code, _, stderr := test.run("--json", "scope", "add", "bead-1")
-	if code != 9 || stderr != "" {
-		t.Fatalf("code=%d stderr=%q", code, stderr)
+	code, stdout, stderr := test.run("--json", "scope", "add", "bead-1")
+	if code != 9 || stdout != "" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if calls := test.calls(); len(calls) != 2 {
+	if calls := test.calls(); len(calls) != 3 {
 		t.Fatalf("calls=%#v", calls)
 	}
 	assertNoViewerSignal(t, test)
