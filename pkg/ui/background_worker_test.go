@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -68,6 +69,85 @@ func TestBackgroundWorkerUsesResolvedIssuePaths(t *testing.T) {
 	defer worker.Stop()
 	if worker.beadsPath != selected || worker.issueChangePath != issueChange || len(worker.metadataChangePaths) != 1 || worker.metadataChangePaths[0] != metadata || len(worker.metadataSources) != 1 {
 		t.Fatalf("worker paths = %#v/%#v/%#v", worker.beadsPath, worker.issueChangePath, worker.metadataChangePaths)
+	}
+}
+
+func TestBackgroundWorkerReloadsBoundedHubScopeSnapshot(t *testing.T) {
+	issuesPath := filepath.Join(t.TempDir(), "issues.jsonl")
+	content := ""
+	for _, id := range []string{"A", "B"} {
+		content += fmt.Sprintf(`{"id":%q,"title":%q,"status":"open","priority":1,"issue_type":"task"}`+"\n", id, id)
+	}
+	if err := os.WriteFile(issuesPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	memberIDs := []string{"A"}
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:         issuesPath,
+		HubScopeMemberIDs: func(context.Context) ([]string, error) { return memberIDs, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	worker.process()
+	first := waitForSnapshotReady(t, worker.Messages())
+	if len(first.Snapshot.Issues) != 1 || first.Snapshot.Issues[0].ID != "A" {
+		t.Fatalf("initial bounded snapshot = %#v", first.Snapshot.Issues)
+	}
+
+	memberIDs = []string{"B"}
+	worker.mu.Lock()
+	worker.forceNext = true
+	worker.mu.Unlock()
+	worker.process()
+	second := waitForSnapshotReady(t, worker.Messages())
+	if len(second.Snapshot.Issues) != 1 || second.Snapshot.Issues[0].ID != "B" {
+		t.Fatalf("reloaded bounded snapshot = %#v", second.Snapshot.Issues)
+	}
+	if second.SnapshotVer <= first.SnapshotVer {
+		t.Fatalf("snapshot generation did not advance: first=%d second=%d", first.SnapshotVer, second.SnapshotVer)
+	}
+
+	memberIDs = nil
+	worker.mu.Lock()
+	worker.forceNext = true
+	worker.mu.Unlock()
+	third := func() SnapshotReadyMsg {
+		worker.process()
+		return waitForSnapshotReady(t, worker.Messages())
+	}()
+	if len(third.Snapshot.Issues) != 0 {
+		t.Fatalf("absent active scope snapshot = %#v, want empty", third.Snapshot.Issues)
+	}
+}
+
+func TestManualReloadKeepsActiveHubScopeWhenAutoRefreshDisabled(t *testing.T) {
+	issuesPath := filepath.Join(t.TempDir(), "issues.jsonl")
+	content := ""
+	for _, id := range []string{"A", "B"} {
+		content += fmt.Sprintf(`{"id":%q,"title":%q,"status":"open","priority":1,"issue_type":"task"}`+"\n", id, id)
+	}
+	if err := os.WriteFile(issuesPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	memberIDs := []string{"B"}
+	m := NewModel([]model.Issue{{ID: "A", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath, RuntimeServices{
+		IssueChangePath:   issuesPath,
+		HubAutoRefresh:    false,
+		RefreshResolved:   true,
+		HubScopeMemberIDs: func(context.Context) ([]string, error) { return memberIDs, nil },
+	})
+	defer m.Stop()
+	if m.backgroundWorker != nil {
+		t.Fatal("automatic refresh disabled but background worker was installed")
+	}
+
+	updated, _ := m.Update(FileChangedMsg{})
+	m = updated.(*Model)
+	if len(m.issues) != 1 || m.issues[0].ID != "B" {
+		t.Fatalf("manual reload issues = %#v, want only active-scope member B", m.issues)
 	}
 }
 

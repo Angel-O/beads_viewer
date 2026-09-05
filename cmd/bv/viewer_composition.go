@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -48,6 +49,10 @@ type viewerComposition struct {
 	WorkspacePath          string
 	AsOf                   string
 	HubAutoRefresh         bool
+	HubChangeSignal        string
+	// HubScopeMemberIDs is populated for interactive Hub Viewer composition;
+	// robot wrappers retain their existing explicit scope projection contract.
+	HubScopeMemberIDs hubScopeMemberLoader
 }
 
 func composeViewerServices(input viewerCompositionInput) (viewerComposition, error) {
@@ -113,6 +118,20 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	if err != nil {
 		return viewerComposition{}, err
 	}
+	var hubScopeMemberIDs hubScopeMemberLoader
+	if usesHubStore && !input.RobotMode {
+		defaultPaths, pathErr := hub.DefaultPaths()
+		if pathErr != nil {
+			return viewerComposition{}, fmt.Errorf("resolving wbd default Hub store: %w", pathErr)
+		}
+		if filepath.Clean(semanticStore) != filepath.Clean(defaultPaths.Store) {
+			return viewerComposition{}, fmt.Errorf("configured Viewer Hub store %q does not match wbd default Hub store %q; active scope loading is unavailable", semanticStore, defaultPaths.Store)
+		}
+		hubScopeMemberIDs, err = hubScopeMemberLoaderForStore(true, workDir)
+		if err != nil {
+			return viewerComposition{}, err
+		}
+	}
 
 	defaultCurrentContext := ""
 	if mode != "off" {
@@ -136,7 +155,26 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		WorkspacePath:          input.WorkspacePath,
 		AsOf:                   input.AsOf,
 		HubAutoRefresh:         compositionHubAutoRefreshEnabled(input.RefreshEnvironment),
+		HubChangeSignal:        hubChangeSignalPath(semanticStore),
+		HubScopeMemberIDs:      hubScopeMemberIDs,
 	}, nil
+}
+
+func hubScopeMemberLoaderForStore(usesHubStore bool, workDir string) (hubScopeMemberLoader, error) {
+	if !usesHubStore {
+		return nil, nil
+	}
+	if _, err := exec.LookPath("wbd"); err != nil {
+		return nil, fmt.Errorf("active Hub scope loading requires wbd: %w", err)
+	}
+	return newHubScopeMemberLoader(workDir), nil
+}
+
+func hubChangeSignalPath(store string) string {
+	if strings.TrimSpace(store) == "" {
+		return ""
+	}
+	return hub.ChangeSignalPath(hub.Paths{Store: store})
 }
 
 func compositionHubAutoRefreshEnabled(value string) bool {

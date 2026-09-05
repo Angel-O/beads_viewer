@@ -2287,6 +2287,12 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 	hubChangeSignal := strings.TrimSpace(os.Getenv("BV_HUB_CHANGE_SIGNAL"))
+	if runtimeServices.HubChangeSignal != "" {
+		hubChangeSignal = runtimeServices.HubChangeSignal
+	}
+	if runtimeServices.RefreshResolved && !runtimeServices.HubAutoRefresh {
+		hubChangeSignal = ""
+	}
 	if !hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
 		hubChangeSignal = ""
 	}
@@ -2300,6 +2306,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			DebounceDelay:       200 * time.Millisecond,
 			HubChangeSignal:     hubChangeSignal,
 			CatalogLoader:       runtimeServices.CatalogLoader,
+			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
 		})
 		if err != nil {
 			backgroundModeErr = err
@@ -2522,6 +2529,8 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			DebounceDelay:       200 * time.Millisecond,
 			CatalogPath:         services.CatalogPath,
 			CatalogLoader:       services.CatalogLoader,
+			HubScopeMemberIDs:   services.HubScopeMemberIDs,
+			HubChangeSignal:     services.HubChangeSignal,
 		})
 		if err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
@@ -4183,6 +4192,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, WatchFileCmd(m.watcher))
 			}
 			return m, tea.Batch(cmds...)
+		}
+		if m.runtimeServices.HubScopeMemberIDs != nil {
+			memberIDs, scopeErr := m.runtimeServices.HubScopeMemberIDs(context.Background())
+			if scopeErr != nil {
+				loader.ReturnIssuePtrsToPool(loadedIssues.PoolRefs)
+				m.statusMsg = fmt.Sprintf("Reload error: loading active Hub scope: %v", scopeErr)
+				m.statusIsError = true
+				if m.watcher != nil {
+					cmds = append(cmds, WatchFileCmd(m.watcher))
+				}
+				return m, tea.Batch(cmds...)
+			}
+			loadedIssues.Issues = filterIssuesByIDs(loadedIssues.Issues, memberIDs)
 		}
 		// A synchronous reload after background mode stops must not retain the
 		// previous worker snapshot. Its later Phase 2 completion would otherwise

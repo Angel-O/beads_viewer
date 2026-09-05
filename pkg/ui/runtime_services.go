@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -43,4 +45,8 @@ type RuntimeServices struct {
 	ExternalHistory        bool
 	HubAutoRefresh         bool
 	RefreshResolved        bool
+	// HubScopeMemberIDs bounds every Hub snapshot to the active named scope.
+	// A nil loader preserves ordinary local loading semantics.
+	HubScopeMemberIDs func(context.Context) ([]string, error)
+	HubChangeSignal   string
 }

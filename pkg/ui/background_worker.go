@@ -212,6 +212,7 @@ type BackgroundWorker struct {
 	catalogGeneration   uint64
 	catalog             repositorypkg.Catalog
 	catalogLoader       func(string, []model.Issue) (repositorypkg.Catalog, error)
+	hubScopeMemberIDs   func(context.Context) ([]string, error)
 	catalogFailed       bool
 	currentRecipe       *recipe.Recipe
 	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
@@ -303,6 +304,7 @@ type WorkerConfig struct {
 	MaxRecoveries     int           // default: 3
 	HubChangeSignal   string        // application-owned Hub generation file
 	CatalogPath       string        // Resolved repository catalog source
+	HubScopeMemberIDs func(context.Context) ([]string, error)
 	SourceRetryBase   time.Duration // default: 1s
 	SourceRetryMax    time.Duration // default: 30s
 }
@@ -405,6 +407,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		metricsEnabled:      metricsEnabled,
 		tracePath:           tracePath,
 		catalogLoader:       cfg.CatalogLoader,
+		hubScopeMemberIDs:   cfg.HubScopeMemberIDs,
 		generation:          1, // Generation zero is reserved for non-worker messages.
 		state:               WorkerIdle,
 		msgCh:               make(chan tea.Msg, cfg.MessageBuffer),
@@ -1962,7 +1965,7 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool, refresh ...bool) 
 	}
 
 	// Huge tier: default to open-only unless the recipe explicitly includes closed/tombstone.
-	loadOpenOnly := tier == datasetTierHuge && !recipeIncludesClosedStatuses(currentRecipe)
+	loadOpenOnly := w.hubScopeMemberIDs == nil && tier == datasetTierHuge && !recipeIncludesClosedStatuses(currentRecipe)
 
 	// Load issues from file with panic recovery
 	var issues []model.Issue
@@ -1999,6 +2002,26 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool, refresh ...bool) 
 
 	if loadErr != nil {
 		return snapshotBuildResult{err: loadErr}
+	}
+	if w.hubScopeMemberIDs != nil {
+		var memberIDs []string
+		scopeErr := w.safeCompute("load", func() error {
+			var err error
+			memberIDs, err = w.hubScopeMemberIDs(w.ctx)
+			if err != nil {
+				return fmt.Errorf("loading active Hub scope: %w", err)
+			}
+			issues = filterIssuesByIDs(issues, memberIDs)
+			return nil
+		})
+		if scopeErr != nil {
+			loader.ReturnIssuePtrsToPool(pooledRefs)
+			return snapshotBuildResult{err: scopeErr}
+		}
+		// The snapshot tier and reload metadata describe the bounded dataset,
+		// not the unbounded source read used to obtain it.
+		sourceLineCount = len(issues)
+		tier = datasetTierForIssueCount(sourceLineCount)
 	}
 
 	loadDuration := time.Since(start)
@@ -2131,6 +2154,20 @@ func (w *BackgroundWorker) buildSnapshotResult(forceNext bool, refresh ...bool) 
 	}
 
 	return snapshotBuildResult{snapshot: snapshot, clearError: true}
+}
+
+func filterIssuesByIDs(issues []model.Issue, memberIDs []string) []model.Issue {
+	allowed := make(map[string]struct{}, len(memberIDs))
+	for _, id := range memberIDs {
+		allowed[id] = struct{}{}
+	}
+	filtered := make([]model.Issue, 0, len(allowed))
+	for _, issue := range issues {
+		if _, ok := allowed[issue.ID]; ok {
+			filtered = append(filtered, issue)
+		}
+	}
+	return filtered
 }
 
 func cfgString(w *watcher.Watcher) string {
