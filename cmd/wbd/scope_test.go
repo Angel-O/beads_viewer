@@ -110,12 +110,12 @@ func TestScopeExplicitIDResolvesBeforeOneMutation(t *testing.T) {
 	test := newAppTest(t, true)
 	setResponses(t, map[string]string{"list": `[{"id":"bead-1"},{"id":"bead-2"}]`, "scope:add": `{"added":2}`})
 	code, stdout, stderr := test.run("scope", "add", "bead-1", "bead-2", "--scope", "scope-a", "--json")
-	if code != 0 || stdout != `{"added":2}`+"\n" || stderr != "" {
+	if code != 0 || stdout != `{"operation":"add","matched":2,"changed":2}`+"\n" || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	calls := test.calls()
 	context := contextForTest(t, test.repository)
-	wantList := []string{"--db", test.store, "--json", "list", "--unscoped", "--limit", "0", "--label", context, "--id", "bead-1,bead-2"}
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--label", context, "--id", "bead-1,bead-2"}
 	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "scope-a", "bead-1", "bead-2"}
 	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
 		t.Fatalf("calls=%#v", calls)
@@ -142,15 +142,26 @@ func TestScopeAddLabelUsesCurrentRepositoryFiltersAndOneMultiIDMutation(t *testi
 	test := newAppTest(t, true)
 	setResponses(t, map[string]string{"list": `[{"id":"b"},{"id":"a"}]`, "scope:add": `{"added":2}`})
 	code, stdout, stderr := test.run("scope", "add", "--label", "team", "--status", "open,blocked", "--type", "task", "--scope", "work", "--json")
-	if code != 0 || stdout != `{"added":2}`+"\n" || stderr != "" {
+	if code != 0 || stdout != `{"operation":"add","matched":2,"changed":2}`+"\n" || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	context := contextForTest(t, test.repository)
 	calls := test.calls()
-	wantList := []string{"--db", test.store, "--json", "list", "--unscoped", "--limit", "0", "--label", context, "--label", "team", "--status", "open,blocked", "--type", "task"}
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--label", context, "--label", "team", "--status", "open,blocked", "--type", "task"}
 	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "work", "a", "b"}
 	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
 		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeSemanticParserSupportsBacklogContextSelection(t *testing.T) {
+	request, err := parse([]string{"scope", "add", "--label", "team", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--status", "open,blocked", "--type", "task", "--scope", "work", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(request.scopeContexts, []string{"ctx:a", "ctx:b"}) || !request.scopeContextless ||
+		request.scopeStatus != "open,blocked" || request.scopeType != "task" {
+		t.Fatalf("parsed scope request = %#v", request)
 	}
 }
 
@@ -163,10 +174,27 @@ func TestScopeAddEpicUsesExplicitParentChildRelationships(t *testing.T) {
 	}
 	context := contextForTest(t, test.repository)
 	calls := test.calls()
-	wantList := []string{"--db", test.store, "--json", "list", "--unscoped", "--limit", "0", "--label", context}
-	wantRelationships := []string{"--db", test.store, "--json", "list", "--all", "--include-all-types", "--limit", "0", "--label", context}
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--label", context}
+	wantRelationships := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--limit", "0"}
 	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "work", "child-1", "grandchild-1"}
 	if len(calls) != 3 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantRelationships) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeAddEpicIntersectsSelectedCandidatesWithGlobalDescendants(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:selected": "/selected", "ctx:other": "/other"})
+	setResponses(t, map[string]string{"list": `[{"id":"child-1","parent":"ancestor-1","labels":["ctx:selected"]},{"id":"ancestor-1","labels":["ctx:other"]},{"id":"unrelated","labels":["ctx:selected"]}]`, "scope:add": `{}`})
+	code, stdout, stderr := test.run("scope", "add", "--epic", "ancestor-1", "--context", "ctx:selected", "--status", "open", "--type", "task", "--scope", "work", "--json")
+	if code != 0 || stdout != `{"operation":"add","matched":1,"changed":1}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	wantCandidates := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--label-any", "ctx:selected", "--status", "open", "--type", "task"}
+	wantParents := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--limit", "0"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "work", "child-1"}
+	if len(calls) != 3 || !reflect.DeepEqual(calls[0].Args, wantCandidates) || !reflect.DeepEqual(calls[1].Args, wantParents) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
 		t.Fatalf("calls=%#v", calls)
 	}
 }
@@ -175,14 +203,45 @@ func TestScopeRemoveResolvesOnlySelectedScopeMembers(t *testing.T) {
 	test := newAppTest(t, true)
 	setResponses(t, map[string]string{"scope:show": `{"issues":[{"id":"b"},{"id":"a"},{"id":"outside"}]}`, "list": `[{"id":"b"},{"id":"a"}]`, "scope:remove": `{"removed":2}`})
 	code, stdout, stderr := test.run("scope", "remove", "--label", "team", "--status", "open", "--type", "task", "--scope", "work", "--json")
-	if code != 0 || stdout != `{"removed":2}`+"\n" || stderr != "" {
+	if code != 0 || stdout != `{"operation":"remove","matched":2,"changed":2}`+"\n" || stderr != "" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	context := contextForTest(t, test.repository)
 	calls := test.calls()
-	wantList := []string{"--db", test.store, "--json", "list", "--id", "a,b,outside", "--limit", "0", "--label", context, "--label", "team", "--status", "open", "--type", "task"}
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--id", "a,b,outside", "--limit", "0", "--label", context, "--label", "team", "--status", "open", "--type", "task"}
 	wantMutation := []string{"--db", test.store, "--json", "scope", "remove", "work", "a", "b"}
 	if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "scope:show" || !reflect.DeepEqual(calls[1].Args, wantList) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeSemanticMutationUsesSelectedContextsAndContextless(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:a": "/a", "ctx:b": "/b"})
+	setResponses(t, map[string]string{"list": `[{"id":"b"},{"id":"a"}]`, "scope:add": `{}`})
+	code, stdout, stderr := test.run("scope", "add", "--label", "team", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--status", "open,blocked", "--type", "task", "--scope", "work", "--json")
+	if code != 0 || stdout != `{"operation":"add","matched":2,"changed":2}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--label-any", "ctx:a,ctx:b", "--or-no-label-prefix", "ctx:", "--label", "team", "--status", "open,blocked", "--type", "task"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "work", "a", "b"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeRemoveSemanticMutationSupportsContextlessSelection(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"scope:show": `{"issues":[{"id":"b"},{"id":"a"}]}`, "list": `[{"id":"b"},{"id":"a"}]`, "scope:remove": `{}`})
+	code, stdout, stderr := test.run("scope", "remove", "--label", "team", "--contextless", "--status", "open", "--type", "todo", "--scope", "work", "--json")
+	if code != 0 || stdout != `{"operation":"remove","matched":2,"changed":2}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--id", "a,b", "--limit", "0", "--or-no-label-prefix", "ctx:", "--label", "team", "--status", "open", "--type", "todo"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "remove", "work", "a", "b"}
+	if len(calls) != 3 || !reflect.DeepEqual(calls[1].Args, wantList) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
 		t.Fatalf("calls=%#v", calls)
 	}
 }

@@ -226,6 +226,8 @@ func scopeMutationOptions() []optionSpec {
 		{name: "--id", value: "<issue-id>", description: "Explicit issue ID target; also accepted as the sole positional target."},
 		{name: "--epic", value: "<epic-id>", description: "Select exact recursive descendants of one epic."},
 		{name: "--label", value: "<label>", description: "Select one exact ordinary label."},
+		{name: "--context", value: "<ctx-id>", description: "Select a registered repository context; repeatable and ORed."},
+		{name: "--contextless", description: "Include issues without a repository context; combines with --context."},
 		{name: "--status", value: "<status,...>", description: "Candidate statuses."},
 		{name: "--type", value: "<type>", description: "Candidate issue type."},
 		{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."},
@@ -302,6 +304,8 @@ type request struct {
 	scopeID            string
 	scopeEpic          string
 	scopeLabel         string
+	scopeContexts      []string
+	scopeContextless   bool
 	scopeStatus        string
 	scopeType          string
 }
@@ -920,6 +924,13 @@ func parseScope(result request, arguments []string) (request, error) {
 			result.args = append(result.args, argument)
 			continue
 		}
+		if (result.scopeSubcommand == "add" || result.scopeSubcommand == "remove") && argument == "--contextless" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.scopeContextless = true
+			continue
+		}
 		if result.scopeSubcommand == "add" || result.scopeSubcommand == "remove" {
 			flag, value, consumed, matched, err := optionValueFor("scope "+result.scopeSubcommand, argument, arguments)
 			if err != nil {
@@ -927,10 +938,14 @@ func parseScope(result request, arguments []string) (request, error) {
 			}
 			if matched {
 				arguments = arguments[consumed:]
-				if err := markSeen(seen, flag); err != nil {
-					return result, err
+				if flag != "--context" {
+					if err := markSeen(seen, flag); err != nil {
+						return result, err
+					}
 				}
 				switch flag {
+				case "--context":
+					result.scopeContexts = append(result.scopeContexts, value)
 				case "--id":
 					if err := safeID("scope", value); err != nil {
 						return result, err
