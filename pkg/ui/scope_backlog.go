@@ -44,8 +44,8 @@ type BacklogPage struct {
 type ScopeServices struct {
 	Load func(context.Context) (ScopeSnapshot, error)
 	// Create creates a named scope without activating it.
-	Create      func(context.Context, string) error
-	Activate    func(context.Context, string) error
+	Create   func(context.Context, string) error
+	Activate func(context.Context, string) error
 	// Deactivate clears the active named scope.
 	Deactivate  func(context.Context) error
 	Add         func(context.Context, string, string) error
@@ -378,7 +378,7 @@ func (s ScopePickerModel) View() string {
 	}
 	// Keep padding inside the assigned viewport before the sidebar is joined.
 	return lipgloss.NewStyle().
-		Width(maxInt(s.width-4, 1)).
+		Width(maxInt(s.width, 1)).
 		Height(maxInt(s.height-2, 1)).
 		Padding(1, 2).
 		Render(strings.Join(lines, "\n"))

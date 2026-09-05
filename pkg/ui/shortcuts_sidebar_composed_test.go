@@ -126,6 +126,9 @@ func TestScopesShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
 					m.closeScopePicker()
 					body = m.renderNoActiveScope(m.mainContentWidth())
 				}
+				if got := maxLineWidth(body); got != m.mainContentWidth() {
+					t.Fatalf("Scopes body width = %d, want reserved width %d", got, m.mainContentWidth())
+				}
 				m.shortcutsSidebar.SetFocus(m.focused)
 				m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 				composed := lipgloss.JoinHorizontal(lipgloss.Top, body, m.shortcutsSidebar.View())
