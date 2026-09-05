@@ -64,9 +64,21 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	}
 }
 
+func TestActiveScopeBadgeIsCompact(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+	}})
+	m.activeScope = &ScopeInfo{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 7, Active: true}
+
+	badge := strings.TrimSpace(ansi.Strip(m.renderScopeBadge()))
+	if badge != "Today · 7/100" {
+		t.Fatalf("active scope badge = %q, want %q", badge, "Today · 7/100")
+	}
+}
+
 func TestScopePickerEnterTogglesActiveScopeAndPreservesInactiveActivation(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name   string
 		active bool
 	}{
 		{name: "active deactivates", active: true},
