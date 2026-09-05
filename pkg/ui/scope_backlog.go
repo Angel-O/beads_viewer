@@ -99,11 +99,13 @@ func runScopeMutationCmd(action string, restoreFocus bool, run func(context.Cont
 
 const backlogPageSize = 50
 
-// isScopeBacklogGlobalKey leaves global controls on the main Update path.
-// Search input is intentionally excluded so printable keys remain query text.
+// isScopeBacklogGlobalKey leaves global controls and view jumps on the main
+// Update path. Search input is intentionally excluded so printable keys remain
+// query text.
 func isScopeBacklogGlobalKey(key string) bool {
 	switch key {
-	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5":
+	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5",
+		"W", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
 		return true
 	default:
 		return false
@@ -382,6 +384,12 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	return nil
 }
 
+func (m *Model) closeScopePicker() {
+	m.showScopePicker = false
+	m.scopePickerMoveIssue = ""
+	m.focused = m.scopePickerOrigin
+}
+
 func (m *Model) openBacklog() tea.Cmd {
 	m.isBacklogView = true
 	m.isBoardView, m.isGraphView, m.isActionableView, m.isHistoryView = false, false, false, false
@@ -401,9 +409,7 @@ func (m *Model) closeBacklog() {
 func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
-		m.showScopePicker = false
-		m.scopePickerMoveIssue = ""
-		m.focused = m.scopePickerOrigin
+		m.closeScopePicker()
 		return m, nil
 	case "j", "down":
 		m.scopePicker.Move(1)
