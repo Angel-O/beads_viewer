@@ -17,6 +17,21 @@ import (
 // newHubScopeServices adapts the stable wbd JSON forwarding surface to the
 // Viewer. The UI never shells out directly and never infers membership.
 func newHubScopeServices(workDir string) ui.ScopeServices {
+	loadBacklog := func(ctx context.Context, query ui.BacklogQuery) (ui.BacklogPage, error) {
+		args := make([]string, 0, 5)
+		if strings.TrimSpace(query.Filter) != "" {
+			args = append(args, "--filter", query.Filter)
+		}
+		args = append(args, "--limit", strconv.Itoa(query.Limit))
+		if query.Cursor != "" {
+			args = append(args, "--cursor", query.Cursor)
+		}
+		data, err := runWBDBacklogCommand(ctx, workDir, args...)
+		if err != nil {
+			return ui.BacklogPage{}, err
+		}
+		return decodeBacklogPage(data)
+	}
 	return ui.ScopeServices{
 		Load: func(ctx context.Context) (ui.ScopeSnapshot, error) {
 			listData, err := runWBDScopeCommand(ctx, workDir, "list")
@@ -73,18 +88,79 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 			_, err := runWBDScopeCommand(ctx, workDir, "move", issueID, "--source-scope", sourceID, "--target-scope", targetID)
 			return err
 		},
-		LoadBacklog: func(ctx context.Context, cursor string, limit int) (ui.BacklogPage, error) {
-			args := []string{"--limit", strconv.Itoa(limit)}
-			if cursor != "" {
-				args = append(args, "--cursor", cursor)
-			}
-			data, err := runWBDBacklogCommand(ctx, workDir, args...)
+		QueryBacklog: loadBacklog,
+		LoadDetails: func(ctx context.Context, scopeID string) (ui.ScopeDetails, error) {
+			data, err := runWBDScopeCommand(ctx, workDir, "show", scopeID)
 			if err != nil {
-				return ui.BacklogPage{}, err
+				return ui.ScopeDetails{}, err
 			}
-			return decodeBacklogPage(data)
+			return decodeScopeDetails(data, scopeID)
+		},
+		Mutate: func(ctx context.Context, mutation ui.ScopeMutation) error {
+			return runHubScopeMutation(ctx, workDir, mutation, false)
+		},
+		MutateMatching: func(ctx context.Context, mutation ui.ScopeMutation) error {
+			return runHubScopeMutation(ctx, workDir, mutation, true)
+		},
+		LoadBacklog: func(ctx context.Context, cursor string, limit int) (ui.BacklogPage, error) {
+			return loadBacklog(ctx, ui.BacklogQuery{Cursor: cursor, Limit: limit})
 		},
 	}
+}
+
+// runHubScopeMutation translates the typed UI operation to one wbd scope call.
+func runHubScopeMutation(ctx context.Context, workDir string, mutation ui.ScopeMutation, matching bool) error {
+	var args []string
+	switch mutation.Kind {
+	case ui.ScopeMutationCreate:
+		id := scopeIDFromName(mutation.Name)
+		if id == "" {
+			return fmt.Errorf("scope name must contain a letter or number")
+		}
+		args = []string{"create", id, mutation.Name}
+	case ui.ScopeMutationActivate:
+		args = []string{"activate", mutation.ScopeID}
+	case ui.ScopeMutationDeactivate:
+		args = []string{"deactivate"}
+	case ui.ScopeMutationAdd, ui.ScopeMutationRemove:
+		action := string(mutation.Kind)
+		args = []string{action}
+		if matching {
+			switch {
+			case mutation.EpicID != "" && mutation.Label != "":
+				return fmt.Errorf("scope mutation accepts one semantic target")
+			case mutation.EpicID != "":
+				args = append(args, "--epic", mutation.EpicID)
+			case mutation.Label != "":
+				args = append(args, "--label", mutation.Label)
+			default:
+				return fmt.Errorf("scope mutation requires an epic or label target")
+			}
+		} else {
+			if len(mutation.IssueIDs) == 0 {
+				return fmt.Errorf("scope mutation requires an issue ID")
+			}
+			args = append(args, mutation.IssueIDs...)
+		}
+		if mutation.ScopeID != "" {
+			args = append(args, "--scope", mutation.ScopeID)
+		}
+	case ui.ScopeMutationMove:
+		if len(mutation.IssueIDs) == 0 {
+			return fmt.Errorf("scope move requires an issue ID")
+		}
+		args = append([]string{"move"}, mutation.IssueIDs...)
+		if mutation.SourceScopeID != "" {
+			args = append(args, "--source-scope", mutation.SourceScopeID)
+		}
+		if mutation.TargetScopeID != "" {
+			args = append(args, "--target-scope", mutation.TargetScopeID)
+		}
+	default:
+		return fmt.Errorf("unsupported scope mutation %q", mutation.Kind)
+	}
+	_, err := runWBDScopeCommand(ctx, workDir, args[0], args[1:]...)
+	return err
 }
 
 // scopeIDFromName supplies the backend ID for the UI's name-only creation
@@ -184,4 +260,55 @@ func decodeBacklogPage(data []byte) (ui.BacklogPage, error) {
 		return ui.BacklogPage{}, fmt.Errorf("decoding wbd backlog: %w", err)
 	}
 	return ui.BacklogPage{Issues: envelope.Issues, HasMore: envelope.Pagination.HasMore, NextCursor: envelope.Pagination.NextCursor}, nil
+}
+
+// decodeScopeDetails keeps scope membership and any full issue projection from wbd together.
+func decodeScopeDetails(data []byte, scopeID string) (ui.ScopeDetails, error) {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return ui.ScopeDetails{}, fmt.Errorf("decoding wbd scope show: %w", err)
+	}
+	object := scopeObject(value)
+	if object == nil {
+		return ui.ScopeDetails{}, fmt.Errorf("decoding wbd scope show: expected an object")
+	}
+	info := ui.ScopeInfo{
+		ID:          firstString(object, "id", "scope_id"),
+		Name:        firstString(object, "name", "scope_name"),
+		MemberCount: firstInt(object, "member_count", "count"),
+	}
+	if info.ID == "" {
+		info.ID = scopeID
+	}
+	if created := firstString(object, "created_at", "created_on"); created != "" {
+		info.CreatedAt, _ = time.Parse(time.RFC3339, created)
+	}
+	info.Active = strings.EqualFold(firstString(object, "state"), "active")
+	memberIDs, err := decodeScopeMemberIDs(data)
+	if err != nil {
+		return ui.ScopeDetails{}, err
+	}
+	issues := decodeScopeDetailIssues(object)
+	if info.MemberCount == 0 {
+		info.MemberCount = len(memberIDs)
+	}
+	return ui.ScopeDetails{Info: info, Issues: issues, MemberIDs: memberIDs}, nil
+}
+
+func decodeScopeDetailIssues(object map[string]any) []model.Issue {
+	for _, key := range []string{"issues", "beads", "items", "members"} {
+		value, ok := object[key]
+		if !ok {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			continue
+		}
+		var issues []model.Issue
+		if json.Unmarshal(encoded, &issues) == nil {
+			return issues
+		}
+	}
+	return nil
 }

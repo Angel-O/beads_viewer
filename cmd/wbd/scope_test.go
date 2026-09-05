@@ -370,11 +370,11 @@ func TestBacklogListForwardsOpaqueCursorAndOutput(t *testing.T) {
 }
 
 func TestBacklogParserSupportsRepeatableContextAndBoundedFilters(t *testing.T) {
-	request, err := parse([]string{"backlog", "list", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--status", "open,blocked", "--type", "task", "--sort", "priority-asc", "--limit", "2", "--cursor", "opaque:/+= token", "--json"})
+	request, err := parse([]string{"backlog", "list", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--filter", "opaque title", "--status", "open,blocked", "--type", "task", "--sort", "priority-asc", "--limit", "2", "--cursor", "opaque:/+= token", "--json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(request.backlogContexts, []string{"ctx:a", "ctx:b"}) || !request.backlogContextless ||
+	if !reflect.DeepEqual(request.backlogContexts, []string{"ctx:a", "ctx:b"}) || !request.backlogContextless || request.backlogFilter != "opaque title" ||
 		request.backlogStatus != "open,blocked" || request.backlogType != "task" || request.backlogSort != "priority-asc" ||
 		request.backlogLimit != 2 || request.backlogCursor != "opaque:/+= token" {
 		t.Fatalf("parsed backlog request = %#v", request)
@@ -398,11 +398,11 @@ func TestBacklogListValidatesContextsBeforeBackendAndTranslatesFilters(t *testin
 		test := newAppTest(t, false)
 		writeHubConfig(t, test, map[string]string{"ctx:a": "/a", "ctx:b": "/b"})
 		setResponses(t, map[string]string{"list": `{"issues":[],"pagination":{"limit":2,"has_more":false}}`})
-		code, stdout, stderr := test.run("backlog", "list", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--status", "open,blocked", "--type", "task", "--sort", "priority-asc", "--limit", "2", "--cursor", "opaque:/+= token", "--json")
+		code, stdout, stderr := test.run("backlog", "list", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--filter", "opaque title", "--status", "open,blocked", "--type", "task", "--sort", "priority-asc", "--limit", "2", "--cursor", "opaque:/+= token", "--json")
 		if code != 0 || stdout != `{"issues":[],"pagination":{"limit":2,"has_more":false}}`+"\n" || stderr != "" {
 			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
-		want := []string{"--db", test.store, "--json", "list", "--unscoped", "--label-any", "ctx:a,ctx:b", "--or-no-label-prefix", "ctx:", "--status", "open,blocked", "--type", "task", "--sort", "priority", "--paginate", "--limit", "2", "--cursor", "opaque:/+= token"}
+		want := []string{"--db", test.store, "--json", "list", "--unscoped", "--label-any", "ctx:a,ctx:b", "--or-no-label-prefix", "ctx:", "--filter", "opaque title", "--status", "open,blocked", "--type", "task", "--sort", "priority", "--paginate", "--limit", "2", "--cursor", "opaque:/+= token"}
 		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
 			t.Fatalf("calls=%#v want=%#v", calls, want)
 		}
@@ -420,6 +420,32 @@ func TestBacklogListValidatesContextsBeforeBackendAndTranslatesFilters(t *testin
 			t.Fatalf("calls=%#v want=%#v", calls, want)
 		}
 	})
+}
+
+func TestBacklogListForwardsFilterBeforePagination(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `{"issues":[],"pagination":{"limit":2,"has_more":false}}`})
+	code, _, stderr := test.run("backlog", "list", "--filter", " bv-123 ", "--limit", "2", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "list", "--unscoped", "--filter", "bv-123", "--sort", "updated", "--paginate", "--limit", "2"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestBacklogListWhitespaceFilterIsBlank(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{"list": `{"issues":[],"pagination":{"limit":2,"has_more":false}}`})
+	code, _, stderr := test.run("backlog", "list", "--filter", "   ", "--limit", "2", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "list", "--unscoped", "--sort", "updated", "--paginate", "--limit", "2"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
 }
 
 func TestBacklogJSONRequiresPositiveLimit(t *testing.T) {

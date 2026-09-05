@@ -211,6 +211,7 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{
 			{name: "--context", value: "<ctx-id>", description: "Select a registered context; repeatable and ORed."},
 			{name: "--contextless", description: "Include issues without a context; combines exactly with --context."},
+			{name: "--filter", value: "<text>", description: "Filter issue IDs or titles before pagination."},
 			{name: "--status", value: "<status,...>", description: "open|in_progress|blocked|deferred|closed."},
 			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo."},
 			{name: "--sort", value: "<order>", description: "created-desc or priority-asc."},
@@ -292,6 +293,7 @@ type request struct {
 	listBrief          bool
 	backlogContexts    []string
 	backlogContextless bool
+	backlogFilter      string
 	backlogStatus      string
 	backlogType        string
 	backlogSort        string
@@ -1081,6 +1083,8 @@ func parseBacklog(result request, arguments []string) (request, error) {
 			switch flag {
 			case "--context":
 				result.backlogContexts = append(result.backlogContexts, value)
+			case "--filter":
+				result.backlogFilter = value
 			case "--status":
 				if err := validateStatuses(value); err != nil {
 					return result, err

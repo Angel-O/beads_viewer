@@ -389,6 +389,9 @@ func (a *app) backlog(request request) int {
 	if request.backlogContextless {
 		args = append(args, "--or-no-label-prefix", backlogContextLabelPrefix)
 	}
+	if filter := strings.TrimSpace(request.backlogFilter); filter != "" {
+		args = append(args, "--filter", filter)
+	}
 	if request.backlogStatus != "" {
 		args = append(args, "--status", request.backlogStatus)
 	}
