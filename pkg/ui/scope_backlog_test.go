@@ -879,6 +879,48 @@ func TestBacklogRenderKeepsSelectedRowVisibleWithinHeight(t *testing.T) {
 	}
 }
 
+func TestBacklogRenderReusesIssueColumnsAndResponsivePreview(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	created := time.Now().Add(-2 * time.Hour)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID:          "backlog-1",
+		Title:       "Readable backlog title",
+		Description: "First line of a deliberately long description that must be safely truncated.",
+		Status:      model.StatusOpen,
+		IssueType:   model.TypeFeature,
+		Priority:    1,
+		CreatedAt:   created,
+	}}}, 0)
+	b.setPresentation([]IssueItem{{
+		Issue:           b.issues[0],
+		RepositoryID:    "ctx:api",
+		RepositoryName:  "api",
+		HubPresentation: true,
+	}})
+	b.setDelegate(IssueDelegate{
+		Theme:               testTheme(),
+		ShowRepositories:    true,
+		RepositoryNameWidth: 3,
+		useFullWidth:        true,
+	})
+
+	view := ansi.Strip(b.View())
+	for _, want := range []string{"TY", "AGE", "PR", "[api]", "OPEN", "backlog-1", "Readable backlog title", "DESCRIPTION", "First line"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("backlog view missing %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "…") {
+		t.Fatalf("description preview was not truncated:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 120 {
+			t.Fatalf("backlog line width = %d, want <= 120: %q", lipgloss.Width(line), line)
+		}
+	}
+}
+
 func TestScopeBacklogPreserveGlobalKeysAndSearchOwnership(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		LoadBacklog: func(context.Context, string, int) (BacklogPage, error) { return BacklogPage{}, nil },

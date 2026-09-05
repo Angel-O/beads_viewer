@@ -3047,6 +3047,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.backlog.SetPage(msg.page, msg.index)
+		items := make([]IssueItem, len(msg.page.Issues))
+		for i, issue := range msg.page.Issues {
+			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+			m.decorateIssueItem(&items[i])
+		}
+		m.backlog.setPresentation(items)
 
 	case scopeMutationMsg:
 		if msg.err != nil {
@@ -8011,6 +8017,7 @@ func (m *Model) View() string {
 		body = m.labelPicker.View()
 	} else if m.isBacklogView {
 		m.backlog.SetSize(m.mainContentWidth(), m.height-1)
+		m.backlog.setDelegate(m.backlogIssueDelegate())
 		body = m.backlog.View()
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
@@ -8101,6 +8108,20 @@ func (m Model) renderTreeBody() string {
 	width := m.mainContentWidth()
 	tree := m.theme.Renderer.NewStyle().MaxWidth(width).Render(m.tree.View())
 	return lipgloss.Place(width, m.height-1, lipgloss.Left, lipgloss.Top, tree)
+}
+
+func (m Model) backlogIssueDelegate() IssueDelegate {
+	delegate := IssueDelegate{
+		Theme:            m.theme,
+		WorkspaceMode:    m.workspaceMode,
+		ShowRepositories: m.hubRepositoryPresentation(),
+		useFullWidth:     true,
+		layoutItems:      backlogListItems(m.backlog.items),
+	}
+	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidthsFor(
+		delegate, m.backlog.issues, m.backlog.width,
+	)
+	return delegate
 }
 
 func (m Model) renderQuitConfirm() string {
