@@ -443,7 +443,7 @@ func (m Model) renderScopeBadge() string {
 	}
 	label := "scope none"
 	if m.activeScope != nil {
-		label = fmt.Sprintf("scope %s · %s · %d/100", m.activeScope.Name, m.activeScope.CreatedAt.Format("2006-01-02"), m.activeScope.MemberCount)
+		label = fmt.Sprintf("%s · %d/100", m.activeScope.Name, m.activeScope.MemberCount)
 	}
 	return lipgloss.NewStyle().Background(ColorBgHighlight).Foreground(ColorInfo).Padding(0, 1).Render(label)
 }

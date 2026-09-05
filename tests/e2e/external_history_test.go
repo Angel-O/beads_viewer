@@ -511,7 +511,7 @@ func TestExternalHistoryReturnsPartialReportsForUnavailableRepositories(t *testi
 	})
 }
 
-func TestExternalHistorySelectedQueryStillValidatesEntireLedger(t *testing.T) {
+func TestExternalHistorySelectedQuerySkipsUnknownLedgerReference(t *testing.T) {
 	bv := buildBvBinary(t)
 	fixture := createExternalHistoryFixture(t)
 	file, err := os.OpenFile(fixture.ledgerPath, os.O_APPEND|os.O_WRONLY, 0)
@@ -527,8 +527,13 @@ func TestExternalHistorySelectedQueryStillValidatesEntireLedger(t *testing.T) {
 		t.Fatal(closeErr)
 	}
 	out, err := fixture.command(t, bv, "--bead-history", "work-2", "--history-mode", "external", "--hub-config", fixture.configPath)
-	if err == nil || !strings.Contains(string(out), "references unknown bead") {
-		t.Fatalf("selected query ignored invalid unrelated ledger record: err=%v output=%s", err, out)
+	if err != nil {
+		t.Fatalf("selected query failed on stale unrelated ledger record: %v\n%s", err, out)
+	}
+	payload := decodeExternalHistoryPayload(t, out)
+	commits := payload.Histories["work-2"].Commits
+	if len(commits) != 1 || commits[0].Repository != "ctx:repo-a-111" {
+		t.Fatalf("selected query lost valid ledger correlation: %#v", commits)
 	}
 }
 

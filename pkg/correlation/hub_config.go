@@ -445,6 +445,7 @@ func loadHubConfig(path string, beads []BeadInfo) (*validatedHubConfig, error) {
 		beadsByID[bead.ID] = bead
 	}
 	seen := make(map[string]struct{}, len(result.correlations))
+	validCorrelations := make([]ExternalHistoryCorrelation, 0, len(result.correlations))
 	for i, correlation := range result.correlations {
 		correlation.BeadID = strings.TrimSpace(correlation.BeadID)
 		correlation.Context = strings.TrimSpace(correlation.Context)
@@ -454,7 +455,9 @@ func loadHubConfig(path string, beads []BeadInfo) (*validatedHubConfig, error) {
 		}
 		bead, exists := beadsByID[correlation.BeadID]
 		if !exists {
-			return nil, fmt.Errorf("correlation ledger %q record %d references unknown bead %q", result.ledger, i+1, correlation.BeadID)
+			// A private ledger can outlive the issue set for a newly created scope.
+			// Ignore stale references at the read boundary without rewriting the ledger.
+			continue
 		}
 		if _, exists := result.repositories[correlation.Context]; !exists {
 			return nil, fmt.Errorf("correlation ledger %q record %d references undefined context %q", result.ledger, i+1, correlation.Context)
@@ -470,8 +473,9 @@ func loadHubConfig(path string, beads []BeadInfo) (*validatedHubConfig, error) {
 			return nil, fmt.Errorf("correlation ledger %q repeats correlation for bead %q, context %q, commit %q", result.ledger, correlation.BeadID, correlation.Context, correlation.Commit)
 		}
 		seen[identity] = struct{}{}
-		result.correlations[i] = correlation
+		validCorrelations = append(validCorrelations, correlation)
 	}
+	result.correlations = validCorrelations
 
 	return result, nil
 }

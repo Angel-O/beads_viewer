@@ -1,7 +1,9 @@
 package correlation
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -254,6 +256,73 @@ func TestLoadHubConfigAllowsEmptyRepositoryMap(t *testing.T) {
 	}
 	if len(hub.repositories) != 0 || len(hub.correlations) != 0 {
 		t.Fatalf("expected empty external history, got repositories=%v correlations=%v", hub.repositories, hub.correlations)
+	}
+}
+
+func TestHistoryLoadSkipsUnknownLedgerRecordsAndRetainsValidCorrelations(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repository, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "file.go"), []byte("package fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.name", "History Test"},
+		{"config", "user.email", "history@example.invalid"},
+		{"add", "file.go"},
+		{"commit", "--quiet", "-m", "valid correlation"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repository}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	validSHAOutput, err := exec.Command("git", "-C", repository, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse: %v\n%s", err, validSHAOutput)
+	}
+	validSHA := strings.TrimSpace(string(validSHAOutput))
+
+	ledgerPath := filepath.Join(root, "correlations.jsonl")
+	ledger := fmt.Sprintf("%s\n%s\n",
+		`{"bead_id":"stale-issue","context":"ctx:source","commit":"`+strings.Repeat("0", 40)+`"}`,
+		`{"bead_id":"known-issue","context":"ctx:source","commit":"`+validSHA+`"}`)
+	if err := os.WriteFile(ledgerPath, []byte(ledger), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "hub.yaml")
+	config := fmt.Sprintf("version: 1\nstore: %s\nledger: %s\nrepositories:\n  ctx:source:\n    path: %s\n", filepath.Join(root, "store"), ledgerPath, repository)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bd := `#!/bin/sh
+printf '%s\n' '{"schema_version":1,"issues":[{"issue_id":"known-issue","snapshots":[]}]}'
+`
+	if err := os.WriteFile(filepath.Join(bin, "bd"), []byte(bd), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	correlator := NewCorrelator(repository).WithContext(context.Background())
+	correlator.hubConfigPath = configPath
+	report, err := correlator.GenerateReport([]BeadInfo{{ID: "known-issue", Labels: []string{"ctx:source"}}}, CorrelatorOptions{})
+	if err != nil {
+		t.Fatalf("GenerateReport: %v", err)
+	}
+	commits := report.Histories["known-issue"].Commits
+	if len(commits) != 1 || commits[0].SHA != validSHA {
+		t.Fatalf("valid ledger correlation = %#v, want commit %q", commits, validSHA)
+	}
+	if data, err := os.ReadFile(ledgerPath); err != nil || string(data) != ledger {
+		t.Fatalf("history load changed the ledger: data=%q err=%v", data, err)
 	}
 }
 
