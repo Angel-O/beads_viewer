@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -192,22 +193,25 @@ func isScopeBacklogGlobalKey(key string) bool {
 // BacklogModel renders the global, unscoped backlog independently of the
 // ordinary graph snapshot. It deliberately owns only one page and cursors.
 type BacklogModel struct {
-	issues      []model.Issue
-	filtered    []model.Issue
-	selected    int
-	filter      string
-	searching   bool
-	hasMore     bool
-	nextCursor  string
-	pageIndex   int
-	pageCursors []string
-	width       int
-	height      int
-	theme       Theme
+	issues        []model.Issue
+	items         []IssueItem
+	filtered      []model.Issue
+	filteredItems []IssueItem
+	selected      int
+	filter        string
+	searching     bool
+	hasMore       bool
+	nextCursor    string
+	pageIndex     int
+	pageCursors   []string
+	width         int
+	height        int
+	theme         Theme
+	delegate      IssueDelegate
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
-	return BacklogModel{theme: theme, pageCursors: []string{""}}
+	return BacklogModel{theme: theme, pageCursors: []string{""}, delegate: IssueDelegate{Theme: theme, useFullWidth: true}}
 }
 
 func (b *BacklogModel) SetSize(width, height int) {
@@ -216,6 +220,10 @@ func (b *BacklogModel) SetSize(width, height int) {
 
 func (b *BacklogModel) SetPage(page BacklogPage, index int) {
 	b.issues = append([]model.Issue(nil), page.Issues...)
+	b.items = make([]IssueItem, len(page.Issues))
+	for i, issue := range page.Issues {
+		b.items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+	}
 	b.applyFilter()
 	b.hasMore, b.nextCursor, b.pageIndex = page.HasMore, page.NextCursor, index
 	if b.selected >= len(b.filtered) {
@@ -223,9 +231,21 @@ func (b *BacklogModel) SetPage(page BacklogPage, index int) {
 	}
 }
 
+// setPresentation replaces only backlog display decoration; the page and its
+// opaque cursor remain owned by BacklogModel.
+func (b *BacklogModel) setPresentation(items []IssueItem) {
+	b.items = append([]IssueItem(nil), items...)
+	b.applyFilter()
+}
+
+// setDelegate keeps backlog rows on the existing IssueDelegate layout path.
+func (b *BacklogModel) setDelegate(delegate IssueDelegate) { b.delegate = delegate }
+
 func (b *BacklogModel) Reset() {
 	b.issues = nil
+	b.items = nil
 	b.filtered = nil
+	b.filteredItems = nil
 	b.selected = 0
 	b.pageIndex = 0
 	b.nextCursor = ""
@@ -241,10 +261,10 @@ func (b *BacklogModel) ResetPagination() {
 }
 
 func (b BacklogModel) CurrentIssue() *model.Issue {
-	if b.selected < 0 || b.selected >= len(b.filtered) {
+	if b.selected < 0 || b.selected >= len(b.filteredItems) {
 		return nil
 	}
-	issue := b.filtered[b.selected]
+	issue := b.filteredItems[b.selected].Issue
 	return &issue
 }
 
@@ -305,21 +325,25 @@ func (b *BacklogModel) Move(delta int) {
 }
 
 func (b *BacklogModel) applyFilter() {
-	b.filtered = b.filteredIssues()
-	if b.selected >= len(b.filtered) {
-		b.selected = maxInt(0, len(b.filtered)-1)
+	b.filteredItems = b.filteredIssueItems()
+	b.filtered = make([]model.Issue, len(b.filteredItems))
+	for i, item := range b.filteredItems {
+		b.filtered[i] = item.Issue
+	}
+	if b.selected >= len(b.filteredItems) {
+		b.selected = maxInt(0, len(b.filteredItems)-1)
 	}
 }
 
-func (b BacklogModel) filteredIssues() []model.Issue {
+func (b BacklogModel) filteredIssueItems() []IssueItem {
 	if strings.TrimSpace(b.filter) == "" {
-		return append([]model.Issue(nil), b.issues...)
+		return append([]IssueItem(nil), b.items...)
 	}
 	term := strings.ToLower(b.filter)
-	result := make([]model.Issue, 0, len(b.issues))
-	for _, issue := range b.issues {
-		if strings.Contains(strings.ToLower(issue.ID), term) || strings.Contains(strings.ToLower(issue.Title), term) {
-			result = append(result, issue)
+	result := make([]IssueItem, 0, len(b.items))
+	for _, item := range b.items {
+		if strings.Contains(strings.ToLower(item.Issue.ID), term) || strings.Contains(strings.ToLower(item.Issue.Title), term) {
+			result = append(result, item)
 		}
 	}
 	return result
@@ -327,31 +351,94 @@ func (b BacklogModel) filteredIssues() []model.Issue {
 
 func (b BacklogModel) View() string {
 	if b.searching {
-		return b.render("Backlog search: " + b.filter + "_")
+		return b.renderBacklog("Backlog search: " + b.filter + "_")
 	}
-	return b.render("Global backlog")
+	return b.renderBacklog("Global backlog")
 }
 
-func (b BacklogModel) render(title string) string {
-	t := b.theme
-	style := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
-	muted := t.Renderer.NewStyle().Foreground(t.Subtext)
+func (b BacklogModel) renderBacklog(title string) string {
 	contentWidth := maxInt(b.width-4, 1)
-	lines := []string{style.Render(title)}
-	if len(b.filtered) == 0 {
-		lines = append(lines, "", muted.Render("No unscoped beads."))
+	wide := contentWidth >= 100 && b.CurrentIssue() != nil
+	listWidth := contentWidth
+	if wide {
+		listWidth = maxInt(contentWidth*2/3, 1)
+	}
+	delegate := b.delegate
+	delegate.useFullWidth = true
+	delegate.layoutItems = backlogListItems(b.items)
+	delegate.columns = delegate.issueListColumnsFor(delegate.layoutItems, listWidth)
+
+	lines := []string{b.renderBacklogHeader(title, delegate.columns)}
+	availableHeight := maxInt(b.height-2, 1)
+	listRows := availableHeight - 4 // header, page hint, preview, and padding
+	if !wide && b.CurrentIssue() == nil {
+		listRows++
+	}
+	if listRows < 1 {
+		listRows = 1
+	}
+	listView := b.renderBacklogList(delegate, listWidth, listRows)
+	page := b.renderBacklogPage(contentWidth)
+	if wide {
+		previewWidth := maxInt(contentWidth-listWidth-2, 1)
+		preview := b.renderBacklogPreview(previewWidth)
+		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", preview))
 	} else {
-		start, end := b.visibleRange()
-		for index := start; index < end; index++ {
-			issue := b.filtered[index]
-			prefix := "  "
-			if index == b.selected {
-				prefix = "> "
-			}
-			line := fmt.Sprintf("%s%-18s %-8s %s", prefix, issue.ID, issue.Status, issue.Title)
-			lines = append(lines, ansi.Truncate(line, contentWidth, "…"))
+		lines = append(lines, listView)
+		if b.CurrentIssue() != nil {
+			lines = append(lines, b.renderBacklogPreview(contentWidth))
 		}
 	}
+	lines = append(lines, page)
+	return lipgloss.NewStyle().Width(b.width).Height(b.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
+}
+
+func backlogListItems(items []IssueItem) []list.Item {
+	result := make([]list.Item, len(items))
+	for i := range items {
+		result[i] = items[i]
+	}
+	return result
+}
+
+func (b BacklogModel) renderBacklogHeader(title string, columns *issueListColumns) string {
+	return b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Render(title) + "\n" +
+		b.theme.Renderer.NewStyle().Background(b.theme.Primary).
+			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).Bold(true).Inline(true).
+			Render(renderIssueListHeader(columns))
+}
+
+func (b BacklogModel) renderBacklogList(delegate IssueDelegate, width, rows int) string {
+	if len(b.filteredItems) == 0 {
+		return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render("No unscoped beads.")
+	}
+	start, end := b.visibleRangeFor(rows)
+	items := backlogListItems(b.filteredItems)
+	l := list.New(items, delegate, width, rows)
+	l.Select(b.selected)
+	lines := make([]string, 0, end-start)
+	for index := start; index < end; index++ {
+		var row bytes.Buffer
+		delegate.Render(&row, l, index, items[index])
+		lines = append(lines, row.String())
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (b BacklogModel) renderBacklogPreview(width int) string {
+	issue := b.CurrentIssue()
+	if issue == nil {
+		return ""
+	}
+	description := strings.Join(strings.Fields(issue.Description), " ")
+	if description == "" {
+		description = "(no description)"
+	}
+	return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render(
+		ansi.Truncate("DESCRIPTION  "+description, maxInt(width, 1), "…"))
+}
+
+func (b BacklogModel) renderBacklogPage(width int) string {
 	page := fmt.Sprintf("page %d", b.pageIndex+1)
 	if b.HasMore() {
 		page += " · n next"
@@ -359,26 +446,29 @@ func (b BacklogModel) render(title string) string {
 	if b.pageIndex > 0 {
 		page += " · p previous"
 	}
-	lines = append(lines, "", muted.Render(ansi.Truncate(page+" · / filter · A add", contentWidth, "…")))
-	return lipgloss.NewStyle().Width(b.width).Height(b.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
+	page += " · / filter · A add"
+	return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render(ansi.Truncate(page, maxInt(width, 1), "…"))
 }
 
 // visibleRange keeps the selected backlog row on screen while reserving the
 // title and the page/filter hint. This is intentionally local to backlog
 // rendering; ordinary list pagination has different layout ownership.
 func (b BacklogModel) visibleRange() (int, int) {
-	rows := b.height - 5 // padding, title, spacer, and page hint
+	return b.visibleRangeFor(b.height - 5)
+}
+
+func (b BacklogModel) visibleRangeFor(rows int) (int, int) {
 	if rows < 1 {
 		rows = 1
 	}
-	if rows >= len(b.filtered) {
-		return 0, len(b.filtered)
+	if rows >= len(b.filteredItems) {
+		return 0, len(b.filteredItems)
 	}
 	start := b.selected - rows + 1
 	if start < 0 {
 		start = 0
 	}
-	return start, start + rows
+	return start, min(start+rows, len(b.filteredItems))
 }
 
 // ScopePickerModel is intentionally a plain list: named scopes are a small

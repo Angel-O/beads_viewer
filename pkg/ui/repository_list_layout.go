@@ -14,7 +14,20 @@ const repositoryListNameWidthCap = 16
 // repositoryListColumnWidths reserves the Hub repository column from the
 // catalog, not from whichever scope or filtered rows happen to be visible.
 func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
-	if !m.hubRepositoryPresentation() || m.list.Width() <= 45 {
+	issues := m.issues
+	if len(issues) == 0 {
+		issues = make([]model.Issue, 0, len(m.listItemsBuffer))
+		for _, item := range m.listItemsBuffer {
+			if issueItem, ok := item.(IssueItem); ok {
+				issues = append(issues, issueItem.Issue)
+			}
+		}
+	}
+	return m.repositoryListColumnWidthsFor(delegate, issues, m.list.Width())
+}
+
+func (m *Model) repositoryListColumnWidthsFor(delegate IssueDelegate, issues []model.Issue, listWidth int) (int, int) {
+	if !m.hubRepositoryPresentation() || listWidth <= 45 {
 		return 0, 0
 	}
 
@@ -38,12 +51,18 @@ func (m *Model) repositoryListColumnWidths(delegate IssueDelegate) (int, int) {
 		return 0, 0
 	}
 
-	extraWidth := m.repositoryListExtraWidth()
+	knownContexts := make(map[string]struct{}, len(m.repositoryCatalog))
+	for _, repository := range m.repositoryCatalog {
+		if repository.Kind == repositorypkg.IdentityExact {
+			knownContexts[repository.ID] = struct{}{}
+		}
+	}
+	extraWidth := repositoryListExtraWidthFor(knownContexts, issues)
 
 	// Variable row metadata must not steal width from an active repository
 	// label. Only the fixed minimum row determines when a narrow terminal
 	// requires truncation.
-	rowWidth := delegate.rowWidthFor(m.list.Width())
+	rowWidth := delegate.rowWidthFor(listWidth)
 	minimum := IssueItem{Issue: model.Issue{IssueType: model.TypeTask, Status: model.StatusOpen}}
 	minimumReserve := delegate.rowWidthWithoutRepository(minimum, rowWidth)
 	availableNameWidth := rowWidth - minimumReserve - extraWidth - 3
@@ -70,6 +89,10 @@ func (m Model) repositoryListExtraWidth() int {
 			}
 		}
 	}
+	return repositoryListExtraWidthFor(knownContexts, issues)
+}
+
+func repositoryListExtraWidthFor(knownContexts map[string]struct{}, issues []model.Issue) int {
 	maxExtra := 0
 	for _, issue := range issues {
 		seen := make(map[string]struct{})
