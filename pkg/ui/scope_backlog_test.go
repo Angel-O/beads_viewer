@@ -544,8 +544,8 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog"}},
-		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog", "space", "Mark current", "M", "epic or label"}},
+		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope", "space", "Mark current", "M", "epic or label"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewModel(nil, nil, "")
@@ -983,6 +983,110 @@ func TestBacklogRenderReusesIssueColumnsAndResponsivePreview(t *testing.T) {
 		if lipgloss.Width(line) > 120 {
 			t.Fatalf("backlog line width = %d, want <= 120: %q", lipgloss.Width(line), line)
 		}
+	}
+}
+
+func TestBacklogMarksSubmitOneBatchAndPreserveMarksOnFailure(t *testing.T) {
+	var got ScopeMutation
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Mutate: func(_ context.Context, mutation ScopeMutation) error {
+			got = mutation
+			return errors.New("capacity")
+		},
+	}})
+	m.activeScope = &ScopeInfo{ID: "today", Active: true}
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}, {ID: "b-2"}}}, 0)
+	for _, key := range []string{"space", "j", "space", "A"} {
+		updated, cmd := m.Update(keyMsg(key))
+		m = updated.(*Model)
+		if key == "A" {
+			if cmd == nil {
+				t.Fatal("marked add did not start")
+			}
+			updated, _ = m.Update(cmd())
+			m = updated.(*Model)
+		}
+	}
+	if got.Kind != ScopeMutationAdd || got.ScopeID != "today" || strings.Join(got.IssueIDs, ",") != "b-1,b-2" {
+		t.Fatalf("batch mutation=%#v, want add today [b-1 b-2]", got)
+	}
+	if m.backlog.MarkCount() != 2 {
+		t.Fatalf("failed mutation cleared marks: %d", m.backlog.MarkCount())
+	}
+}
+
+func TestScopeMemberMarksSubmitOneBatchRemoveAndClearOnFilter(t *testing.T) {
+	var got ScopeMutation
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Mutate: func(_ context.Context, mutation ScopeMutation) error { got = mutation; return nil },
+	}})
+	m.activeScope = &ScopeInfo{ID: "today", Active: true}
+	m.showScopePicker, m.focused = true, focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+	m.scopePicker.memberFocused = true
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "b-1"}}, {Issue: model.Issue{ID: "b-2"}}})
+	for _, key := range []string{"space", "j", "space", "R"} {
+		updated, cmd := m.Update(keyMsg(key))
+		m = updated.(*Model)
+		if key == "R" {
+			if cmd == nil {
+				t.Fatal("marked remove did not start")
+			}
+			updated, _ = m.Update(cmd())
+			m = updated.(*Model)
+		}
+	}
+	if got.Kind != ScopeMutationRemove || got.ScopeID != "today" || strings.Join(got.IssueIDs, ",") != "b-1,b-2" {
+		t.Fatalf("batch mutation=%#v, want remove today [b-1 b-2]", got)
+	}
+	if m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatal("successful member mutation retained marks")
+	}
+	m.scopePicker.memberFocused = true
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "b-1"}}})
+	m.scopePicker.ToggleMemberMark()
+	m.scopePicker.ToggleMemberStatus("open")
+	if m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatal("member filter retained marks")
+	}
+}
+
+func TestScopeMatchPromptRoutesEpicOrLabelAndCancelPreservesMarks(t *testing.T) {
+	var got ScopeMutation
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		MutateMatching: func(_ context.Context, mutation ScopeMutation) error { got = mutation; return nil },
+	}})
+	m.activeScope = &ScopeInfo{ID: "today", Active: true}
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
+	m.backlog.ToggleMark()
+	updated, cmd := m.Update(keyMsg("M"))
+	m = updated.(*Model)
+	if !m.showScopeMatchPrompt || m.backlog.MarkCount() != 1 {
+		t.Fatalf("match prompt state: cmd=%t prompt=%t marks=%d", cmd != nil, m.showScopeMatchPrompt, m.backlog.MarkCount())
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showScopeMatchPrompt || m.backlog.MarkCount() != 1 {
+		t.Fatal("cancel changed the marked backlog state")
+	}
+	updated, _ = m.Update(keyMsg("M"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("label:team"))
+	m = updated.(*Model)
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("semantic match did not start")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if got.Kind != ScopeMutationAdd || got.ScopeID != "today" || got.Label != "team" || got.EpicID != "" {
+		t.Fatalf("semantic mutation=%#v", got)
+	}
+	if m.backlog.MarkCount() != 0 {
+		t.Fatal("successful semantic mutation retained marks")
 	}
 }
 

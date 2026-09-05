@@ -1216,6 +1216,11 @@ type Model struct {
 	showScopeCreatePrompt bool
 	scopePicker           ScopePickerModel
 	scopeCreateInput      textinput.Model
+	showScopeMatchPrompt  bool
+	scopeMatchInput       textinput.Model
+	scopeMatchAction      string
+	scopeMatchOrigin      focus
+	scopeMatchScopeID     string
 	scopePickerOrigin     focus
 	scopePickerMoveIssue  string
 	scopeCatalog          []ScopeInfo
@@ -2478,6 +2483,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		labelDrilldownCache: make(map[string][]model.Issue),
 		timeTravelInput:     ti,
 		scopeCreateInput:    newScopeNameInput(theme),
+		scopeMatchInput:     newScopeMatchInput(theme),
 		commentInput: func() textarea.Model {
 			input := textarea.New()
 			input.Placeholder = "Write a Markdown comment..."
@@ -3031,6 +3037,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scopePicker.SetScopes(m.scopeCatalog)
 		}
 		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+			m.scopePicker.ClearMemberMarks()
 			cmds = append(cmds, m.loadSelectedScopeDetails())
 		}
 
@@ -3077,6 +3084,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.restoreFocus {
 			m.closeScopePicker()
 		}
+		m.clearScopeActionMarks()
 		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
 		m.statusIsError = false
 		mutation := msg.mutation
@@ -4691,6 +4699,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quitCommand()
 			}
 			return m.handleScopeCreateKey(msg)
+		}
+		if m.focused == focusScopeCreateInput && m.showScopeMatchPrompt {
+			if msg.String() == "ctrl+c" {
+				return m, m.quitCommand()
+			}
+			return m.handleScopeMatchKey(msg)
 		}
 		if m.focused == focusCommentInput && m.showCommentPrompt {
 			if msg.String() == "ctrl+c" {
@@ -8023,6 +8037,8 @@ func (m *Model) View() string {
 		body = m.repoPicker.View()
 	} else if m.showScopeCreatePrompt {
 		body = m.renderScopeCreatePrompt()
+	} else if m.showScopeMatchPrompt {
+		body = m.renderScopeMatchPrompt()
 	} else if m.showScopePicker {
 		m.scopePicker.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.scopePicker.View()
@@ -8799,6 +8815,9 @@ func (m *Model) renderHelpOverlay() string {
 	case focusScopePicker:
 		scopeControls := []struct{ key, desc string }{
 			{"j/k", "Move scope selection"},
+			{"space", "Mark current member"},
+			{"R", "Remove marked/current member"},
+			{"M", "Remove by epic or label"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
 			{"B", "Open global backlog"},
@@ -8812,9 +8831,11 @@ func (m *Model) renderHelpOverlay() string {
 	case focusBacklog:
 		backlogControls := []struct{ key, desc string }{
 			{"j/k", "Move selection"},
+			{"space", "Mark current bead"},
 			{"n/p", "Next / previous page"},
 			{"/", "Filter backlog"},
 			{"A", "Add selected bead to scope"},
+			{"M", "Add by epic or label"},
 			{"W", "Open named scopes"},
 			{"B / Esc / q", "Return to List"},
 		}
@@ -9932,9 +9953,21 @@ func (m *Model) renderFooter() string {
 		if m.scopePickerMoveIssue != "" {
 			enterHint = "move"
 		}
-		keyHints = append(keyHints, keyStyle.Render("tab")+" catalog/members", keyStyle.Render("j/k")+" nav", keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("tab")+" catalog/members", keyStyle.Render("j/k")+" nav", keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
+		if m.scopePicker.MemberFocused() {
+			removeHint := "R remove current"
+			if m.scopePicker.MemberMarkCount() > 0 {
+				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
+			}
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match")
+		}
+		keyHints = append(keyHints, keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
+		addHint := "add current"
+		if m.backlog.MarkCount() > 0 {
+			addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
+		}
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" match", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
