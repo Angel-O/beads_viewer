@@ -7192,13 +7192,13 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 		includeContextless := m.repoPicker.ContextlessSelected()
 		switch {
 		case len(selected) == 0 && includeContextless:
-			m.statusMsg = "Repository scope: no-context"
+			m.statusMsg = "Context: no-context"
 		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeContextless:
-			m.statusMsg = "Repository scope: all"
+			m.statusMsg = "Context: all"
 		case includeContextless:
-			m.statusMsg = fmt.Sprintf("Repository scope: %s, no-context", strings.Join(m.repositoryScopeNames(selected), ", "))
+			m.statusMsg = fmt.Sprintf("Context: %s, no-context", strings.Join(m.repositoryScopeNames(selected), ", "))
 		default:
-			m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
 		}
 		m.statusIsError = false
 		m.setHubRepositoryScope(selected, includeContextless)
@@ -7207,9 +7207,9 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 		return m
 	}
 	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
-		m.statusMsg = "Repository scope: all"
+		m.statusMsg = "Context: all"
 	} else {
-		m.statusMsg = fmt.Sprintf("Repository scope: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+		m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
 	}
 	m.statusIsError = false
 	m.SetRepositoryScope(selected)
@@ -7997,8 +7997,6 @@ func (m *Model) View() string {
 	} else if m.isBacklogView {
 		m.backlog.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.backlog.View()
-	} else if m.backlogScopeLoaded && m.activeScope == nil && m.runtimeServices.Scopes.Load != nil {
-		body = m.renderNoActiveScope()
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
 	} else if m.showAttentionView || m.focused == focusAttention {
@@ -8043,6 +8041,9 @@ func (m *Model) View() string {
 		// Mobile view
 		if m.showDetails {
 			body = m.viewport.View()
+			if m.backlogScopeLoaded && m.activeScope == nil && m.runtimeServices.Scopes.Load != nil {
+				body = replacePaddedEmptyState(body, "No issues selected", m.renderNoActiveScope(m.viewport.Width), m.viewport.Width, m.viewport.Height)
+			}
 		} else {
 			body = m.renderListWithHeader()
 		}
@@ -8174,7 +8175,10 @@ func (m Model) renderListWithHeader() string {
 	)
 
 	// List view - just render it normally since bubbles handles scrolling
-	listView := m.list.View()
+	listRows := m.list.View()
+	if m.backlogScopeLoaded && m.activeScope == nil && m.runtimeServices.Scopes.Load != nil {
+		listRows = replacePaddedEmptyState(listRows, "No items.", m.renderNoActiveScope(bodyWidth), m.list.Width(), m.list.Height())
+	}
 
 	// Page indicator line
 	pageLine := pageStyle.Render(pageInfo)
@@ -8188,7 +8192,7 @@ func (m Model) renderListWithHeader() string {
 
 	// Build content with explicit height constraint
 	// Header (1) + List + PageLine (1) must fit in bodyHeight
-	content := lipgloss.JoinVertical(lipgloss.Left, headerLine, listView, pageLine)
+	content := lipgloss.JoinVertical(lipgloss.Left, headerLine, listRows, pageLine)
 
 	// Force the body height without re-wrapping the already cell-positioned list
 	// header and rows. The list and page line are sized to the reserved body
@@ -8244,7 +8248,11 @@ func (m Model) renderSplitView() string {
 	pageLine := pageStyle.Render(pageInfo)
 
 	// Combine header + list + page indicator
-	listContent := lipgloss.JoinVertical(lipgloss.Left, header, m.list.View(), pageLine)
+	listRows := m.list.View()
+	if m.backlogScopeLoaded && m.activeScope == nil && m.runtimeServices.Scopes.Load != nil {
+		listRows = replacePaddedEmptyState(listRows, "No items.", m.renderNoActiveScope(listInnerWidth), m.list.Width(), m.list.Height())
+	}
+	listContent := lipgloss.JoinVertical(lipgloss.Left, header, listRows, pageLine)
 
 	// Use the list content width directly; the panel style adds only its border.
 	// Use MaxHeight to ensure content doesn't overflow
@@ -8255,11 +8263,15 @@ func (m Model) renderSplitView() string {
 		Render(listContent)
 
 	// Keep the detail panel's existing two-cell wrapper slack.
+	detailContent := m.viewport.View()
+	if m.backlogScopeLoaded && m.activeScope == nil && m.runtimeServices.Scopes.Load != nil {
+		detailContent = replacePaddedEmptyState(detailContent, "No issues selected", m.renderNoActiveScope(m.viewport.Width), m.viewport.Width, m.viewport.Height)
+	}
 	detailView := detailStyle.
 		Width(m.viewport.Width + 2).
 		Height(panelHeight).
 		MaxHeight(panelHeight).
-		Render(m.viewport.View())
+		Render(detailContent)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, listView, detailView)
 }

@@ -416,16 +416,25 @@ func (m Model) renderScopeCreatePrompt() string {
 	return lipgloss.Place(availableWidth, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
-func (m Model) renderNoActiveScope() string {
+// renderNoActiveScope is the compact guidance shown inside the List or Detail
+// content, rather than a full-screen state that hides the current view.
+func (m Model) renderNoActiveScope(width int) string {
 	style := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
-	title := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true).Render("No active scope")
-	return lipgloss.NewStyle().
-		Width(maxInt(m.mainContentWidth()-6, 1)).
-		Height(maxInt(m.height-5, 1)).
-		Padding(2, 3).
-		Render(
-			title + "\n\n" + style.Render("Press W to choose a named scope, or B to view the global backlog."),
-		)
+	return style.Width(maxInt(width, 1)).Render("No active scope — press W to choose or create a scope, or B for the global backlog.")
+}
+
+// replacePaddedEmptyState replaces a component's empty line before restoring
+// its assigned dimensions, so a wrapped hint cannot consume adjacent content.
+func replacePaddedEmptyState(view, empty, replacement string, width, height int) string {
+	lines := strings.Split(view, "\n")
+	for index, line := range lines {
+		if strings.TrimSpace(ansi.Strip(line)) == empty {
+			lines[index] = replacement
+			style := lipgloss.NewStyle().Width(maxInt(width, 1)).Height(maxInt(height, 1))
+			return style.MaxHeight(maxInt(height, 1)).Render(strings.Join(lines, "\n"))
+		}
+	}
+	return view
 }
 
 func (m Model) renderScopeBadge() string {
