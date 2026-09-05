@@ -98,6 +98,7 @@ const (
 	focusUpdateModal // Self-update modal (bv-182)
 	focusCommentInput
 	focusScopePicker
+	focusScopeCreateInput
 	focusBacklog
 	focusCommentSelection
 	focusCommentDeleteConfirm
@@ -1210,7 +1211,9 @@ type Model struct {
 	repoPicker            RepoPickerModel
 	repoPickerOrigin      focus
 	showScopePicker       bool
+	showScopeCreatePrompt bool
 	scopePicker           ScopePickerModel
+	scopeCreateInput      textinput.Model
 	scopePickerOrigin     focus
 	scopePickerMoveIssue  string
 	scopeCatalog          []ScopeInfo
@@ -2461,6 +2464,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		typePicker:          typePicker,
 		labelDrilldownCache: make(map[string][]model.Issue),
 		timeTravelInput:     ti,
+		scopeCreateInput:    newScopeNameInput(theme),
 		commentInput: func() textarea.Model {
 			input := textarea.New()
 			input.Placeholder = "Write a Markdown comment..."
@@ -4629,6 +4633,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		if m.focused == focusScopeCreateInput && m.showScopeCreatePrompt {
+			if msg.String() == "ctrl+c" {
+				return m, m.quitCommand()
+			}
+			return m.handleScopeCreateKey(msg)
+		}
 		if m.focused == focusCommentInput && m.showCommentPrompt {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -7953,6 +7963,8 @@ func (m *Model) View() string {
 		body = m.recipePicker.View()
 	} else if m.showRepoPicker {
 		body = m.repoPicker.View()
+	} else if m.showScopeCreatePrompt {
+		body = m.renderScopeCreatePrompt()
 	} else if m.showScopePicker {
 		m.scopePicker.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.scopePicker.View()
@@ -8692,6 +8704,7 @@ func (m *Model) renderHelpOverlay() string {
 		scopeControls := []struct{ key, desc string }{
 			{"j/k", "Move scope selection"},
 			{"Enter", "Activate scope"},
+			{"n", "Create inactive named scope"},
 			{"B", "Open global backlog"},
 			{"W", "Close scope picker"},
 			{"Esc / q", "Return to previous view"},
@@ -9804,12 +9817,14 @@ func (m *Model) renderFooter() string {
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("c")+":current only", keyStyle.Render("a")+" all/none", keyStyle.Render("/")+" search", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" back")
 		}
+	} else if m.showScopeCreatePrompt {
+		keyHints = append(keyHints, keyStyle.Render("enter")+" create", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker {
 		enterHint := "activate"
 		if m.scopePickerMoveIssue != "" {
 			enterHint = "move"
 		}
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("esc")+" back")
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {
@@ -11665,6 +11680,8 @@ func (f focus) String() string {
 		return "comment_input"
 	case focusScopePicker:
 		return "scope_picker"
+	case focusScopeCreateInput:
+		return "scope_create_input"
 	case focusBacklog:
 		return "backlog"
 	case focusCommentSelection:

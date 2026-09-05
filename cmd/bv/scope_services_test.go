@@ -1,6 +1,11 @@
 package main
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,4 +31,33 @@ func TestDecodeBacklogPagePreservesOpaqueCursor(t *testing.T) {
 	if len(page.Issues) != 1 || page.Issues[0].ID != "b1" || page.NextCursor != "opaque/value==" || !page.HasMore {
 		t.Fatalf("decoded page = %#v", page)
 	}
+}
+
+func TestHubScopeServiceCreatesSluggedInactiveScopeFromName(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WBD_SCOPE_CALLS\"\n"
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+
+	service := newHubScopeServices(root)
+	if err := service.Create(context.Background(), "First Release"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := splitLines(string(data)), []string{"scope", "create", "first-release", "First Release", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("wbd create args=%#v, want %#v", got, want)
+	}
+}
+
+func splitLines(value string) []string {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	return lines
 }

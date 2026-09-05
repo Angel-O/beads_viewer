@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -41,7 +42,9 @@ type BacklogPage struct {
 // ScopeServices is the narrow CLI composition seam for scope-first UI work.
 // A zero value keeps standalone/local Viewer callers unchanged.
 type ScopeServices struct {
-	Load        func(context.Context) (ScopeSnapshot, error)
+	Load func(context.Context) (ScopeSnapshot, error)
+	// Create creates a named scope without activating it.
+	Create      func(context.Context, string) error
 	Activate    func(context.Context, string) error
 	Add         func(context.Context, string, string) error
 	Remove      func(context.Context, string, string) error
@@ -306,7 +309,20 @@ type ScopePickerModel struct {
 }
 
 func NewScopePickerModel(theme Theme) ScopePickerModel { return ScopePickerModel{theme: theme} }
-func (s *ScopePickerModel) SetSize(width, height int)  { s.width, s.height = width, height }
+
+func newScopeNameInput(theme Theme) textinput.Model {
+	input := textinput.New()
+	input.Placeholder = "e.g. Today, Release prep"
+	input.CharLimit = 100
+	input.Width = 40
+	input.Prompt = "Scope name: "
+	input.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	input.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
+	input.Blur()
+	return input
+}
+
+func (s *ScopePickerModel) SetSize(width, height int) { s.width, s.height = width, height }
 func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 	s.scopes = append([]ScopeInfo(nil), scopes...)
 	for i := range s.scopes {
@@ -358,12 +374,41 @@ func (s ScopePickerModel) View() string {
 			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, scope.Name, scope.CreatedAt.Format("2006-01-02"), scope.MemberCount, active))
 		}
 	}
-	hint := "enter activate · esc back"
+	hint := "enter activate · n new scope · esc back"
 	if s.moveTarget != "" {
 		hint = "enter move bead · esc back"
 	}
 	lines = append(lines, "", hint)
 	return lipgloss.NewStyle().Width(s.width).Height(s.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderScopeCreatePrompt() string {
+	availableWidth := m.mainContentWidth()
+	contentWidth := availableWidth - 8
+	if contentWidth < 24 {
+		contentWidth = 24
+	}
+	inputWidth := contentWidth - lipgloss.Width(m.scopeCreateInput.Prompt) - 1
+	if inputWidth < 1 {
+		inputWidth = 1
+	}
+	if m.scopeCreateInput.Width > inputWidth {
+		m.scopeCreateInput.Width = inputWidth
+	}
+
+	t := m.theme
+	boxStyle := t.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Padding(1, 3).
+		Align(lipgloss.Center)
+	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
+	mutedStyle := t.Renderer.NewStyle().Foreground(t.Subtext)
+	content := titleStyle.Render("Create named scope") + "\n\n" +
+		mutedStyle.Render("The new scope stays inactive until you activate it.") + "\n\n" +
+		m.scopeCreateInput.View() + "\n\n" +
+		mutedStyle.Render("Enter create · Esc cancel")
+	return lipgloss.Place(availableWidth, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
 func (m Model) renderNoActiveScope() string {
@@ -458,8 +503,47 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		return m, runScopeMutationCmd("activate", true, func(ctx context.Context) error {
 			return m.runtimeServices.Scopes.Activate(ctx, selected.ID)
 		})
+	case "n":
+		if m.scopePickerMoveIssue != "" {
+			return m, nil
+		}
+		if m.runtimeServices.Scopes.Create == nil {
+			m.statusMsg, m.statusIsError = "Scope creation is unavailable", true
+			return m, nil
+		}
+		m.scopeCreateInput.SetValue("")
+		focusCmd := m.scopeCreateInput.Focus()
+		m.showScopeCreatePrompt = true
+		m.focused = focusScopeCreateInput
+		return m, focusCmd
 	}
 	return m, nil
+}
+
+func (m *Model) handleScopeCreateKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.scopeCreateInput.Blur()
+		m.showScopeCreatePrompt = false
+		m.focused = focusScopePicker
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.scopeCreateInput.Value())
+		if name == "" {
+			m.statusMsg, m.statusIsError = "Scope name cannot be empty", true
+			return m, nil
+		}
+		m.scopeCreateInput.Blur()
+		m.showScopeCreatePrompt = false
+		m.focused = focusScopePicker
+		return m, runScopeMutationCmd("create", false, func(ctx context.Context) error {
+			return m.runtimeServices.Scopes.Create(ctx, name)
+		})
+	default:
+		var cmd tea.Cmd
+		m.scopeCreateInput, cmd = m.scopeCreateInput.Update(msg)
+		return m, cmd
+	}
 }
 
 func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
