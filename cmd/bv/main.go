@@ -4968,6 +4968,7 @@ func main() {
 				ExternalHistory:        composition.HistoryProvider.External(),
 				HubAutoRefresh:         composition.HubAutoRefresh,
 				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+				Scopes:                 composition.ScopeServices,
 				HubChangeSignal:        composition.HubChangeSignal,
 				RefreshResolved:        true,
 			})
@@ -4986,6 +4987,7 @@ func main() {
 				ExternalHistory:        composition.HistoryProvider.External(),
 				HubAutoRefresh:         composition.HubAutoRefresh,
 				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+				Scopes:                 composition.ScopeServices,
 				HubChangeSignal:        composition.HubChangeSignal,
 				RefreshResolved:        true,
 			})
@@ -5108,6 +5110,7 @@ func main() {
 			ExternalHistory:        composition.HistoryProvider.External(),
 			HubAutoRefresh:         composition.HubAutoRefresh,
 			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+			Scopes:                 composition.ScopeServices,
 			HubChangeSignal:        composition.HubChangeSignal,
 			RefreshResolved:        true,
 		})
@@ -5126,6 +5129,7 @@ func main() {
 			ExternalHistory:        composition.HistoryProvider.External(),
 			HubAutoRefresh:         composition.HubAutoRefresh,
 			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+			Scopes:                 composition.ScopeServices,
 			HubChangeSignal:        composition.HubChangeSignal,
 			RefreshResolved:        true,
 		})

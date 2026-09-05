@@ -487,6 +487,10 @@ func ContextFromFocus(f focus) string {
 		return "flow"
 	case focusSprint:
 		return "sprint"
+	case focusScopePicker:
+		return "scope"
+	case focusBacklog:
+		return "backlog"
 	default:
 		return "list"
 	}
