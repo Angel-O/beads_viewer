@@ -46,6 +46,8 @@ type ScopeServices struct {
 	// Create creates a named scope without activating it.
 	Create      func(context.Context, string) error
 	Activate    func(context.Context, string) error
+	// Deactivate clears the active named scope.
+	Deactivate  func(context.Context) error
 	Add         func(context.Context, string, string) error
 	Remove      func(context.Context, string, string) error
 	Move        func(context.Context, string, string, string) error
@@ -358,9 +360,9 @@ func (s ScopePickerModel) View() string {
 		heading = "Move: " + s.moveTarget
 	}
 	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(heading)
-	lines := []string{title}
+	lines := []string{title, ""}
 	if len(s.scopes) == 0 {
-		lines = append(lines, "", "No scopes available.")
+		lines = append(lines, "No scopes available.")
 	} else {
 		for i, scope := range s.scopes {
 			prefix := "  "
@@ -374,11 +376,6 @@ func (s ScopePickerModel) View() string {
 			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, scope.Name, scope.CreatedAt.Format("2006-01-02"), scope.MemberCount, active))
 		}
 	}
-	hint := "enter activate · n new scope · esc back"
-	if s.moveTarget != "" {
-		hint = "enter move bead · esc back"
-	}
-	lines = append(lines, "", hint)
 	// Keep padding inside the assigned viewport before the sidebar is joined.
 	return lipgloss.NewStyle().
 		Width(maxInt(s.width-4, 1)).
@@ -513,6 +510,14 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			issueID, target, source := m.scopePickerMoveIssue, selected.ID, m.activeScope.ID
 			return m, runScopeMutationCmd("move", true, func(ctx context.Context) error {
 				return m.runtimeServices.Scopes.Move(ctx, issueID, source, target)
+			})
+		}
+		if selected.Active {
+			if m.runtimeServices.Scopes.Deactivate == nil {
+				return m, nil
+			}
+			return m, runScopeMutationCmd("deactivate", true, func(ctx context.Context) error {
+				return m.runtimeServices.Scopes.Deactivate(ctx)
 			})
 		}
 		if m.runtimeServices.Scopes.Activate == nil {

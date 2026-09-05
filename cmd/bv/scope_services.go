@@ -57,6 +57,10 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 			_, err := runWBDScopeCommand(ctx, workDir, "activate", id)
 			return err
 		},
+		Deactivate: func(ctx context.Context) error {
+			_, err := runWBDScopeCommand(ctx, workDir, "deactivate")
+			return err
+		},
 		Add: func(ctx context.Context, issueID, scopeID string) error {
 			_, err := runWBDScopeCommand(ctx, workDir, "add", issueID, "--scope", scopeID)
 			return err

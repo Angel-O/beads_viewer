@@ -76,6 +76,82 @@ func TestActiveScopeBadgeIsCompact(t *testing.T) {
 	}
 }
 
+func TestScopePickerEnterTogglesActiveScopeAndPreservesInactiveActivation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		active bool
+	}{
+		{name: "active deactivates", active: true},
+		{name: "inactive activates", active: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			activations, deactivations := 0, 0
+			activatedID := ""
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				Activate:   func(_ context.Context, id string) error { activations++; activatedID = id; return nil },
+				Deactivate: func(context.Context) error { deactivations++; return nil },
+			}})
+			m.showScopePicker = true
+			m.scopePickerOrigin = focusList
+			m.focused = focusScopePicker
+			m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today", Active: true}, {ID: "s2", Name: "Later"}})
+			active := ScopeInfo{ID: "s1", Name: "Today", Active: true}
+			m.activeScope = &active
+			if !tc.active {
+				m.scopePicker.Move(1)
+			}
+
+			updated, cmd := m.Update(keyMsg("enter"))
+			m = updated.(*Model)
+			if cmd == nil {
+				t.Fatal("enter did not start scope mutation")
+			}
+			updated, _ = m.Update(cmd())
+			m = updated.(*Model)
+			if m.showScopePicker || m.focused != focusList {
+				t.Fatalf("scope picker state: shown=%t focus=%s", m.showScopePicker, m.focused)
+			}
+			if tc.active {
+				if deactivations != 1 || activations != 0 {
+					t.Fatalf("active Enter calls: activate=%d deactivate=%d", activations, deactivations)
+				}
+				updated, _ = m.Update(scopeSnapshotMsg{snapshot: ScopeSnapshot{Scopes: []ScopeInfo{{ID: "s1", Name: "Today"}}}})
+				m = updated.(*Model)
+				if m.activeScope != nil {
+					t.Fatalf("active scope = %#v, want nil after deactivation", m.activeScope)
+				}
+			} else if activations != 1 || deactivations != 0 || activatedID != "s2" {
+				t.Fatalf("inactive Enter calls: activate=%d deactivate=%d id=%q", activations, deactivations, activatedID)
+			}
+		})
+	}
+}
+
+func TestScopePickerViewOmitsLocalHintsAndSpacesHeader(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(80, 20)
+	picker.SetScopes([]ScopeInfo{{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2}})
+	view := ansi.Strip(picker.View())
+	lines := strings.Split(view, "\n")
+	header, entry := -1, -1
+	for index, line := range lines {
+		switch strings.TrimSpace(line) {
+		case "Scopes":
+			header = index
+		case "> Today · 2026-01-02/2":
+			entry = index
+		}
+	}
+	if header < 0 || entry < 0 || entry != header+2 || strings.TrimSpace(lines[header+1]) != "" {
+		t.Fatalf("scope header spacing missing:\n%s", view)
+	}
+	for _, hint := range []string{"enter activate", "n new scope", "esc back", "enter move bead"} {
+		if strings.Contains(view, hint) {
+			t.Fatalf("scope picker retained local hint %q:\n%s", hint, view)
+		}
+	}
+}
+
 func TestScopeRenderersStayWithinAssignedViewport(t *testing.T) {
 	maxLineWidth := func(view string) int {
 		maxWidth := 0
@@ -377,7 +453,7 @@ func TestScopePickerFooterIsIndependentOfEntryView(t *testing.T) {
 		if strings.Contains(footer, "1-4:col") {
 			t.Fatalf("scope footer inherited Board column hint from %s: %q", origin, footer)
 		}
-		if !strings.Contains(footer, "enter activate") || strings.Contains(footer, "m move") {
+		if !strings.Contains(footer, "enter toggle") || strings.Contains(footer, "m move") {
 			t.Fatalf("scope footer lost scope controls from %s: %q", origin, footer)
 		}
 		if want == "" {
@@ -403,7 +479,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Activate scope", "n", "Create inactive named scope", "B", "global backlog"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog"}},
 		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -439,7 +515,7 @@ func TestGenericHelpShowsScopesWorkflowWithAccurateContexts(t *testing.T) {
 		"Named scopes (List/Detail)",
 		"Global backlog (List/Detail)",
 		"New inactive named scope (Scopes)",
-		"Activate scope (Scopes)",
+		"Toggle active scope (Scopes)",
 		"Add to active scope (L/D/B)",
 		"Remove from active scope (L/D)",
 		"Move bead to another scope (L/D)",
@@ -487,7 +563,7 @@ func TestGenericScopesHelpBalancesWideColumns(t *testing.T) {
 		{"W", "Named scopes (List/Detail)"},
 		{"B", "Global backlog (List/Detail)"},
 		{"n", "New inactive named scope (Scopes)"},
-		{"Enter", "Activate scope (Scopes)"},
+		{"Enter", "Toggle active scope (Scopes)"},
 		{"A", "Add to active scope (L/D/B)"},
 		{"R", "Remove from active scope (L/D)"},
 		{"m", "Move bead to another scope (L/D)"},
@@ -833,7 +909,7 @@ func TestMoveFromListOpensTargetedPickerAndMovesExactVisibleBead(t *testing.T) {
 	if !m.showScopePicker || m.focused != focusScopePicker || !strings.Contains(m.scopePicker.View(), "Move: Visible bead") {
 		t.Fatalf("move picker state: shown=%t focus=%s view=%q", m.showScopePicker, m.focused, m.scopePicker.View())
 	}
-	if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "enter move") || strings.Contains(footer, "enter activate") {
+	if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "enter move") || strings.Contains(footer, "enter toggle") {
 		t.Fatalf("move footer = %q", footer)
 	}
 	updated, _ = m.Update(keyMsg("j"))
