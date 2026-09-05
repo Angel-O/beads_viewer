@@ -5696,6 +5696,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case focusDetail:
 				switch keyStr {
+				case "m":
+					return m, m.startScopeMutation("move")
 				case "e":
 					m.beginCommentAction("edit")
 					return m, nil
@@ -5724,7 +5726,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m, cmd = m.handleListKeys(msg)
 					return m, cmd
-				case "a", "b", "g", "h", "i", "E", "B", "W", "A", "R", "M", "]", "f4":
+				case "a", "b", "g", "h", "i", "E", "B", "W", "A", "R", "]", "f4":
 					// Shared view transitions remain available from Detail.
 				default:
 					// Detail must not fall through to List-only commands.
@@ -5805,7 +5807,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "R":
 				return m, m.startScopeMutation("remove")
 
-			case "M":
+			case "m":
 				return m, m.startScopeMutation("move")
 
 			case "b":
@@ -8690,7 +8692,6 @@ func (m *Model) renderHelpOverlay() string {
 		scopeControls := []struct{ key, desc string }{
 			{"j/k", "Move scope selection"},
 			{"Enter", "Activate scope"},
-			{"m", "Move selected bead"},
 			{"B", "Open global backlog"},
 			{"W", "Close scope picker"},
 			{"Esc / q", "Return to previous view"},
@@ -9804,7 +9805,11 @@ func (m *Model) renderFooter() string {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("c")+":current only", keyStyle.Render("a")+" all/none", keyStyle.Render("/")+" search", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" back")
 		}
 	} else if m.showScopePicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" activate", keyStyle.Render("m")+" move", keyStyle.Render("esc")+" back")
+		enterHint := "activate"
+		if m.scopePickerMoveIssue != "" {
+			enterHint = "move"
+		}
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {

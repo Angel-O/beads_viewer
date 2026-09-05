@@ -128,7 +128,7 @@ func TestScopePickerFooterIsIndependentOfEntryView(t *testing.T) {
 		if strings.Contains(footer, "1-4:col") {
 			t.Fatalf("scope footer inherited Board column hint from %s: %q", origin, footer)
 		}
-		if !strings.Contains(footer, "enter activate") || !strings.Contains(footer, "m move") {
+		if !strings.Contains(footer, "enter activate") || strings.Contains(footer, "m move") {
 			t.Fatalf("scope footer lost scope controls from %s: %q", origin, footer)
 		}
 		if want == "" {
@@ -154,7 +154,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Activate scope", "m", "Move selected bead", "B", "global backlog"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Activate scope", "B", "global backlog"}},
 		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,6 +168,9 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 			}
 			if strings.Contains(help, "1-4") {
 				t.Fatalf("%s help retained obsolete column shortcut:\n%s", tc.name, help)
+			}
+			if tc.focus == focusScopePicker && strings.Contains(help, "Move selected bead") {
+				t.Fatalf("scope help retained move action:\n%s", help)
 			}
 		})
 	}
@@ -443,7 +446,7 @@ func TestScopePickerMutationRestoresItsOrigin(t *testing.T) {
 	}
 }
 
-func TestScopePickerMoveKeepsOriginAndTargetSelection(t *testing.T) {
+func TestScopePickerMDoesNotMoveOrChangeTargetSelection(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "b-1", Title: "Bead", Status: model.StatusOpen}}, nil, "", RuntimeServices{})
 	m.focused = focusDetail
 	active := ScopeInfo{ID: "s1", Name: "One", Active: true}
@@ -456,11 +459,98 @@ func TestScopePickerMoveKeepsOriginAndTargetSelection(t *testing.T) {
 	target := m.scopePicker.Selected().ID
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 	m = updated.(*Model)
-	if cmd != nil || m.scopePickerMoveIssue != "b-1" || m.scopePickerOrigin != focusDetail {
+	if cmd != nil || m.scopePickerMoveIssue != "" || m.scopePickerOrigin != focusDetail {
 		t.Fatalf("move cmd=%t issue=%q origin=%s", cmd != nil, m.scopePickerMoveIssue, m.scopePickerOrigin)
 	}
 	if selected := m.scopePicker.Selected(); selected == nil || selected.ID != target {
 		t.Fatalf("move changed target selection to %#v, want %q", selected, target)
+	}
+}
+
+func TestMoveFromListOpensTargetedPickerAndMovesExactVisibleBead(t *testing.T) {
+	var moved struct{ issue, source, target string }
+	m := NewModel([]model.Issue{{ID: "b-1", Title: "Visible bead", Status: model.StatusOpen}}, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Move: func(_ context.Context, issue, source, target string) error {
+			moved = struct{ issue, source, target string }{issue, source, target}
+			return nil
+		},
+	}})
+	active := ScopeInfo{ID: "s1", Name: "Today", Active: true}
+	m.activeScope = &active
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "Today", Active: true}, {ID: "s2", Name: "Later"}}
+
+	updated, _ := m.Update(keyMsg("m"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.focused != focusScopePicker || !strings.Contains(m.scopePicker.View(), "Move: Visible bead") {
+		t.Fatalf("move picker state: shown=%t focus=%s view=%q", m.showScopePicker, m.focused, m.scopePicker.View())
+	}
+	if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "enter move") || strings.Contains(footer, "enter activate") {
+		t.Fatalf("move footer = %q", footer)
+	}
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("destination selection did not start move")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if moved.issue != "b-1" || moved.source != "s1" || moved.target != "s2" {
+		t.Fatalf("move target = %+v, want b-1/s1/s2", moved)
+	}
+}
+
+func TestMoveFromDetailUsesCurrentVisibleBead(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "b-1", Title: "Detail bead", Status: model.StatusOpen}}, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Move: func(context.Context, string, string, string) error { return nil },
+	}})
+	active := ScopeInfo{ID: "s1", Name: "Today", Active: true}
+	m.activeScope = &active
+	m.scopeCatalog = []ScopeInfo{{ID: "s2", Name: "Later"}}
+	m.focused = focusDetail
+	m.showDetails = true
+
+	updated, _ := m.Update(keyMsg("m"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.scopePickerMoveIssue != "b-1" || !strings.Contains(m.scopePicker.View(), "Move: Detail bead") {
+		t.Fatalf("detail move state: shown=%t issue=%q view=%q", m.showScopePicker, m.scopePickerMoveIssue, m.scopePicker.View())
+	}
+}
+
+func TestMoveRejectsStaleRetainedSelection(t *testing.T) {
+	moves := 0
+	m := NewModel([]model.Issue{{ID: "stale", Title: "Hidden bead", Status: model.StatusOpen}}, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Move: func(context.Context, string, string, string) error { moves++; return nil },
+	}})
+	active := ScopeInfo{ID: "s1", Name: "Today", Active: true}
+	m.activeScope = &active
+	m.list.SetItems(nil)
+	m.pendingFilterTerm = "hidden"
+	m.pendingSelectedID = "stale"
+
+	updated, cmd := m.Update(keyMsg("m"))
+	m = updated.(*Model)
+	if cmd != nil || m.showScopePicker || !m.statusIsError || m.statusMsg != "No bead selected" || moves != 0 {
+		t.Fatalf("stale selection acted: cmd=%t picker=%t error=%t status=%q moves=%d", cmd != nil, m.showScopePicker, m.statusIsError, m.statusMsg, moves)
+	}
+}
+
+func TestMoveDestinationRequiresCurrentScopeSelection(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "b-1", Title: "Bead", Status: model.StatusOpen}}, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Move: func(context.Context, string, string, string) error { return nil },
+	}})
+	active := ScopeInfo{ID: "s1", Name: "Today", Active: true}
+	m.activeScope = &active
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+	m.scopePickerMoveIssue = "b-1"
+	m.scopePicker.SetMoveTarget("Bead")
+
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd != nil || !m.statusIsError || m.statusMsg != "No destination scope selected" {
+		t.Fatalf("invalid destination acted: cmd=%t error=%t status=%q", cmd != nil, m.statusIsError, m.statusMsg)
 	}
 }
 

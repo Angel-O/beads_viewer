@@ -365,10 +365,13 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusScopePicker)
 	scopeView := sidebar.View()
-	for _, expected := range []string{"enter", "Activate scope", "m", "Move selected"} {
+	for _, expected := range []string{"enter", "Activate scope"} {
 		if !strings.Contains(scopeView, expected) {
 			t.Fatalf("scope sidebar missing %q:\n%s", expected, scopeView)
 		}
+	}
+	if strings.Contains(scopeView, "Move selected") {
+		t.Fatalf("scope sidebar retained move action:\n%s", scopeView)
 	}
 
 	sidebar.SetFocus(focusBacklog)
