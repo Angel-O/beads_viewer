@@ -3,11 +3,13 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -48,6 +50,40 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	updated, _ = m.Update(cmd())
 	if activations != 1 {
 		t.Fatalf("activations=%d, want 1", activations)
+	}
+}
+
+func TestScopeRenderersStayWithinAssignedViewport(t *testing.T) {
+	maxLineWidth := func(view string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(view, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	for _, width := range []int{80, 160} {
+		t.Run("width-"+fmt.Sprint(width), func(t *testing.T) {
+			picker := NewScopePickerModel(testTheme())
+			picker.SetSize(width-36, 23)
+			picker.SetScopes([]ScopeInfo{{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2, Active: true}})
+			if got := maxLineWidth(picker.View()); got > width-36 {
+				t.Fatalf("scope picker width = %d, want <= %d", got, width-36)
+			}
+
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+			}})
+			m.width, m.height, m.showShortcutsSidebar = width, 24, true
+			if got, want := maxLineWidth(m.renderNoActiveScope()), m.mainContentWidth(); got > want {
+				t.Fatalf("no-active scope width = %d, want <= %d", got, want)
+			}
+			if !containsText(m.renderNoActiveScope(), "Press W to choose a named scope") {
+				t.Fatal("no-active scope guidance was not rendered")
+			}
+		})
 	}
 }
 

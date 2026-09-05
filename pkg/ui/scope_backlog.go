@@ -379,7 +379,12 @@ func (s ScopePickerModel) View() string {
 		hint = "enter move bead · esc back"
 	}
 	lines = append(lines, "", hint)
-	return lipgloss.NewStyle().Width(s.width).Height(s.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
+	// Keep padding inside the assigned viewport before the sidebar is joined.
+	return lipgloss.NewStyle().
+		Width(maxInt(s.width-4, 1)).
+		Height(maxInt(s.height-2, 1)).
+		Padding(1, 2).
+		Render(strings.Join(lines, "\n"))
 }
 
 func (m Model) renderScopeCreatePrompt() string {
@@ -414,9 +419,13 @@ func (m Model) renderScopeCreatePrompt() string {
 func (m Model) renderNoActiveScope() string {
 	style := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
 	title := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true).Render("No active scope")
-	return lipgloss.NewStyle().Width(m.width).Height(m.height-1).Padding(2, 3).Render(
-		title + "\n\n" + style.Render("Press W to choose a named scope, or B to view the global backlog."),
-	)
+	return lipgloss.NewStyle().
+		Width(maxInt(m.mainContentWidth()-6, 1)).
+		Height(maxInt(m.height-5, 1)).
+		Padding(2, 3).
+		Render(
+			title + "\n\n" + style.Render("Press W to choose a named scope, or B to view the global backlog."),
+		)
 }
 
 func (m Model) renderScopeBadge() string {

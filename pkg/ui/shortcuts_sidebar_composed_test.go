@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -84,6 +85,64 @@ func TestShortcutsSidebarComposedWidthFitsTerminal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScopesShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
+	maxLineWidth := func(view string) int {
+		maxWidth := 0
+		for _, line := range strings.Split(view, "\n") {
+			if width := lipgloss.Width(line); width > maxWidth {
+				maxWidth = width
+			}
+		}
+		return maxWidth
+	}
+
+	for _, width := range []int{80, 160} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%dx-active-%t", width, active), func(t *testing.T) {
+				m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+					Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+				}})
+				m.width, m.height = width, 30
+				if active {
+					m.scopeCatalog = []ScopeInfo{{ID: "today", Name: "Today", Active: true}}
+				}
+
+				updated, _ := m.Update(keyMsg("W"))
+				m = updated.(*Model)
+				updated, _ = m.Update(keyMsg(";"))
+				m = updated.(*Model)
+				if !m.showScopePicker || !m.showShortcutsSidebar {
+					t.Fatalf("W plus ; did not open Scopes with sidebar: picker=%t sidebar=%t", m.showScopePicker, m.showShortcutsSidebar)
+				}
+
+				var body string
+				if active {
+					m.scopePicker.SetSize(m.mainContentWidth(), m.height-1)
+					body = m.scopePicker.View()
+				} else {
+					m.closeScopePicker()
+					body = m.renderNoActiveScope()
+				}
+				m.shortcutsSidebar.SetFocus(m.focused)
+				m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
+				composed := lipgloss.JoinHorizontal(lipgloss.Top, body, m.shortcutsSidebar.View())
+				if got := maxLineWidth(composed); got > m.width {
+					t.Fatalf("Scopes/sidebar pre-clamp width = %d, want <= %d", got, m.width)
+				}
+				if !strings.Contains(ansi.Strip(composed), "Shortcuts") {
+					t.Fatal("Scopes composition lost the shortcuts sidebar")
+				}
+				if active && !strings.Contains(ansi.Strip(composed), "Today") {
+					t.Fatal("active scope chooser lost its selection")
+				}
+				if !active && !strings.Contains(ansi.Strip(composed), "No active scope") {
+					t.Fatal("no-active scope guidance was not visible")
+				}
+			})
+		}
 	}
 }
 
