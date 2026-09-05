@@ -1706,8 +1706,12 @@ func (m *Model) selectVisibleListItemByID(id string) bool {
 func (m *Model) installSnapshotListItems(snapshot *DataSnapshot) tea.Cmd {
 	m.listDataGeneration++
 	items := snapshot.listModelItems
-	m.listItemsBuffer = append([]list.Item(nil), items...)
-	cmd := m.list.SetItems(m.listItemsBuffer)
+	// Keep the last non-empty layout catalog so an empty active scope can retain
+	// the normal header geometry while the List displays its No items message.
+	if len(items) > 0 || len(m.listItemsBuffer) == 0 {
+		m.listItemsBuffer = append([]list.Item(nil), items...)
+	}
+	cmd := m.list.SetItems(items)
 	m.listOrderHash = snapshot.listOrderHash
 	return cmd
 }
@@ -1803,6 +1807,9 @@ func (m Model) issueListDelegate() IssueDelegate {
 
 func (m *Model) issueListLayoutItems() []list.Item {
 	if len(m.issues) == 0 {
+		if len(m.listItemsBuffer) > 0 {
+			return m.listItemsBuffer
+		}
 		return m.list.Items()
 	}
 

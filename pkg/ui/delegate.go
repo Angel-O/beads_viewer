@@ -122,8 +122,10 @@ func (d IssueDelegate) issueListColumnsFor(items []list.Item, listWidth int) *is
 			columns.showLabels = true
 		}
 	}
-	columns.priorityWidth = max(columns.priorityWidth, 1)
-	columns.statusWidth = max(columns.statusWidth, 1)
+	// Keep the fixed badge cells shaped even when the active scope has no rows.
+	// Otherwise the empty header collapses PR/STAT/ID into adjacent labels.
+	columns.priorityWidth = max(columns.priorityWidth, lipgloss.Width(RenderPriorityBadge(0)))
+	columns.statusWidth = max(columns.statusWidth, lipgloss.Width(RenderStatusBadge("open")))
 	columns.showHints = d.ShowPriorityHints && d.PriorityHints != nil
 	columns.showTriage = d.triageSlotWidth > 0
 	columns.showRepo = d.ShowRepositories && d.RepositoryNameWidth > 0 && rowWidth > 45

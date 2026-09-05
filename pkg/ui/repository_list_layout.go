@@ -61,8 +61,17 @@ func (m Model) repositoryListExtraWidth() int {
 		}
 	}
 
+	issues := m.issues
+	if len(issues) == 0 {
+		issues = make([]model.Issue, 0, len(m.listItemsBuffer))
+		for _, item := range m.listItemsBuffer {
+			if issueItem, ok := item.(IssueItem); ok {
+				issues = append(issues, issueItem.Issue)
+			}
+		}
+	}
 	maxExtra := 0
-	for _, issue := range m.issues {
+	for _, issue := range issues {
 		seen := make(map[string]struct{})
 		for _, label := range issue.Labels {
 			if _, known := knownContexts[label]; !known {
