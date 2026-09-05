@@ -181,6 +181,52 @@ func TestHubListHeaderShowsRepositoryWithoutWorkspaceMode(t *testing.T) {
 	}
 }
 
+func TestEmptyActiveScopeKeepsListHeaderSpacing(t *testing.T) {
+	issue := model.Issue{
+		ID:        "scope-header-1",
+		Title:     "Scoped header",
+		Status:    model.StatusOpen,
+		IssueType: model.TypeFeature,
+		Priority:  1,
+		Labels:    []string{"ctx:alpha", "ctx:beta"},
+	}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.runtimeServices.CatalogPath = "hub.yaml"
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:beta", Name: "beta", Kind: repositorypkg.IdentityExact},
+	}
+	m.refreshRepositoryPresentation()
+	m.list.SetSize(100, 10)
+	m.updateListDelegate()
+
+	normalView := m.renderListWithHeader()
+	normalHeader, normalRow := listHeaderAndRow(t, normalView, issue.ID)
+	if !strings.Contains(normalRow, "+1") {
+		t.Fatalf("multi-context normal row omitted repository extra badge: %q", normalRow)
+	}
+	m.activeScope = &ScopeInfo{ID: "empty", Name: "Empty", Active: true}
+	m.issues = nil
+	m.installSnapshotListItems(&DataSnapshot{})
+	m.updateListDelegate()
+	emptyView := m.renderListWithHeader()
+	emptyHeader := ""
+	for _, line := range strings.Split(emptyView, "\n") {
+		if strings.Contains(line, "TY") && strings.Contains(line, "PR") {
+			emptyHeader = line
+			break
+		}
+	}
+	if emptyHeader == "" || !strings.Contains(emptyView, "No items") {
+		t.Fatalf("empty active scope view missing header or No items: %q", emptyView)
+	}
+	for _, marker := range []string{"CTX", "TY", "PR", "STAT", "TITLE"} {
+		if got, want := displayOffset(emptyHeader, marker), displayOffset(normalHeader, marker); got != want {
+			t.Errorf("empty active scope %s offset = %d, want normal offset %d\nempty=%q\nnormal=%q", marker, got, want, emptyHeader, normalHeader)
+		}
+	}
+}
+
 func TestListHeaderRemainsOneLineAndHidesUnavailableColumns(t *testing.T) {
 	issue := model.Issue{ID: "narrow-1", Title: "Narrow", Status: model.StatusOpen, IssueType: model.TypeTask}
 	m := NewModel([]model.Issue{issue}, nil, "")
