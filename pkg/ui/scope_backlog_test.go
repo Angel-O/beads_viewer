@@ -30,8 +30,18 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 		Scopes: []ScopeInfo{{ID: "s1", Name: "Today", MemberCount: 2}},
 	}})
 	m = updated.(*Model)
-	if got := m.View(); !containsText(got, "No active scope") {
-		t.Fatalf("View() = %q, want no-active state", got)
+	view := m.View()
+	if !containsText(view, "No active scope — press W to choose or create a scope, or B for the global backlog.") {
+		t.Fatalf("View() = %q, want compact no-active guidance", view)
+	}
+	if containsText(view, "No items") || !containsText(view, "TY") {
+		t.Fatalf("View() = %q, want the underlying List context", view)
+	}
+	if strings.Count(ansi.Strip(view), "No active scope") != 1 || strings.Contains(ansi.Strip(m.renderFooter()), "press W to choose") {
+		t.Fatalf("View() = %q, rendered guidance outside the List content", view)
+	}
+	if containsText(view, "Press W to choose a named scope") {
+		t.Fatalf("View() = %q, retained the masking overlay guidance", view)
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("W")})
 	m = updated.(*Model)
@@ -78,13 +88,103 @@ func TestScopeRenderersStayWithinAssignedViewport(t *testing.T) {
 				Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
 			}})
 			m.width, m.height, m.showShortcutsSidebar = width, 24, true
-			if got, want := maxLineWidth(m.renderNoActiveScope()), m.mainContentWidth(); got > want {
+			if got, want := maxLineWidth(m.renderNoActiveScope(m.mainContentWidth())), m.mainContentWidth(); got > want {
 				t.Fatalf("no-active scope width = %d, want <= %d", got, want)
 			}
-			if !containsText(m.renderNoActiveScope(), "Press W to choose a named scope") {
+			guidance := m.renderNoActiveScope(m.mainContentWidth())
+			guidance = strings.Join(strings.Fields(guidance), " ")
+			if !containsText(guidance, "No active scope") || !containsText(guidance, "global backlog") {
 				t.Fatal("no-active scope guidance was not rendered")
 			}
 		})
+	}
+}
+
+func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{
+		InitialScope: &ScopeSnapshot{},
+		Scopes: ScopeServices{Load: func(context.Context) (ScopeSnapshot, error) {
+			return ScopeSnapshot{}, nil
+		}},
+	})
+	m.showDetails = true
+	m.updateViewportContent()
+
+	view := ansi.Strip(m.View())
+	for _, want := range []string{"No active scope", "press W to choose or create a scope", "B for the global backlog"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("detail view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "No issues selected") || strings.Contains(ansi.Strip(m.renderFooter()), "press W to choose") {
+		t.Fatalf("detail view left the old empty string or bottom guidance:\n%s", view)
+	}
+	if strings.Contains(view, "Press W to choose a named scope") {
+		t.Fatalf("detail view retained the masking overlay guidance:\n%s", view)
+	}
+
+	m.showDetails = false
+	m.isSplitView = true
+	m.applyContentSizing()
+	view = ansi.Strip(m.View())
+	for _, want := range []string{"TY", "No active scope", "global backlog"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("split view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "No items") || strings.Contains(view, "No issues selected") {
+		t.Fatalf("split view retained an old empty string:\n%s", view)
+	}
+	if strings.Count(view, "No active scope") != 2 || strings.Contains(ansi.Strip(m.renderFooter()), "press W to choose") {
+		t.Fatalf("split view did not keep one message per panel:\n%s", view)
+	}
+
+	normal := NewModel(nil, nil, "")
+	normal.updateViewportContent()
+	normalView := ansi.Strip(normal.View())
+	if !strings.Contains(normalView, "No items") || strings.Contains(normalView, "No active scope") {
+		t.Fatalf("normal List empty state changed: %s", normalView)
+	}
+	normal.showDetails = true
+	normal.updateViewportContent()
+	normalView = ansi.Strip(normal.View())
+	if !strings.Contains(normalView, "No issues selected") || strings.Contains(normalView, "No active scope") {
+		t.Fatalf("normal Detail empty state changed: %s", normalView)
+	}
+}
+
+func TestNoActiveScopeKeepsWrappedListAndDetailPanelsBounded(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{
+		InitialScope: &ScopeSnapshot{},
+		Scopes:       ScopeServices{Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil }},
+	})
+	m.width, m.height = 80, 12
+	m.applyContentSizing()
+
+	listView := ansi.Strip(m.renderListWithHeader())
+	if !strings.Contains(listView, "No active scope") || strings.Contains(listView, "No items") || !strings.Contains(listView, "Page 1 of 1") {
+		t.Fatalf("wrapped List empty state lost content:\n%s", listView)
+	}
+	for _, line := range strings.Split(listView, "\n") {
+		if width := lipgloss.Width(line); width > m.mainContentWidth() {
+			t.Fatalf("wrapped List line width = %d, want <= %d: %q", width, m.mainContentWidth(), line)
+		}
+	}
+
+	m.isSplitView = true
+	m.height = 16
+	m.applyContentSizing()
+	splitView := ansi.Strip(m.renderSplitView())
+	if strings.Contains(splitView, "No items") || strings.Contains(splitView, "No issues selected") || !strings.Contains(splitView, "Page 1/1") {
+		t.Fatalf("split empty state lost panel content:\n%s", splitView)
+	}
+	if strings.Count(splitView, "No active scope") != 2 {
+		t.Fatalf("split view did not render one guidance message per panel:\n%s", splitView)
+	}
+	for _, line := range strings.Split(splitView, "\n") {
+		if width := lipgloss.Width(line); width > m.mainContentWidth() {
+			t.Fatalf("Detail panel overflowed assigned terminal width: %d > %d: %q", width, m.mainContentWidth(), line)
+		}
 	}
 }
 

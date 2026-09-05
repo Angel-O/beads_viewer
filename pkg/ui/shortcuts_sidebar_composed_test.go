@@ -124,7 +124,7 @@ func TestScopesShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
 					body = m.scopePicker.View()
 				} else {
 					m.closeScopePicker()
-					body = m.renderNoActiveScope()
+					body = m.renderNoActiveScope(m.mainContentWidth())
 				}
 				m.shortcutsSidebar.SetFocus(m.focused)
 				m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)

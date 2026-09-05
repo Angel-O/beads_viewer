@@ -1318,7 +1318,7 @@ func TestHubNoContextPickerStatusAndScopeBadges(t *testing.T) {
 	}
 
 	m = m.applyRepositoryPickerSelection()
-	if m.statusMsg != "Repository scope: no-context" {
+	if m.statusMsg != "Context: no-context" {
 		t.Fatalf("pure scope status = %q", m.statusMsg)
 	}
 	if badge := m.renderRepositoryScopeBadge(80); !strings.Contains(badge, "no-context") || strings.Contains(badge, "Contextless") {
@@ -1330,7 +1330,7 @@ func TestHubNoContextPickerStatusAndScopeBadges(t *testing.T) {
 	m.repoPicker.MoveDown()
 	m.repoPicker.ToggleSelected()
 	m = m.applyRepositoryPickerSelection()
-	if m.statusMsg != "Repository scope: ctx:alpha, no-context" {
+	if m.statusMsg != "Context: ctx:alpha, no-context" {
 		t.Fatalf("mixed scope status = %q", m.statusMsg)
 	}
 	if badge := m.renderRepositoryScopeBadge(80); !strings.Contains(badge, "no-context") || strings.Contains(badge, "CONTEXTLESS") || strings.Contains(badge, "Contextless") {
