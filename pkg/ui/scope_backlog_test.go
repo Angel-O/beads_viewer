@@ -50,6 +50,122 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	}
 }
 
+func TestScopePickerWTogglesToItsPriorView(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+	}})
+	m.focused = focusDetail
+
+	updated, _ := m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.focused != focusScopePicker {
+		t.Fatalf("W did not open picker: shown=%t focus=%s", m.showScopePicker, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if m.showScopePicker || m.focused != focusDetail || m.scopePickerMoveIssue != "" {
+		t.Fatalf("second W left stale picker state: shown=%t focus=%s move=%q", m.showScopePicker, m.focused, m.scopePickerMoveIssue)
+	}
+
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.openScopePicker("")
+	updated, _ = m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if m.showScopePicker || !m.isBacklogView || m.focused != focusBacklog {
+		t.Fatalf("W did not restore backlog origin: shown=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+	}
+}
+
+func TestScopePickerBUsesGlobalBacklogJump(t *testing.T) {
+	loads := 0
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		LoadBacklog: func(context.Context, string, int) (BacklogPage, error) {
+			loads++
+			return BacklogPage{}, nil
+		},
+	}})
+	m.showScopePicker = true
+	m.scopePickerOrigin = focusList
+	m.focused = focusScopePicker
+
+	updated, cmd := m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if m.showScopePicker || !m.isBacklogView || m.focused != focusBacklog || cmd == nil {
+		t.Fatalf("B did not use the global backlog jump: picker=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if loads != 1 {
+		t.Fatalf("backlog loads=%d, want 1", loads)
+	}
+
+	updated, _ = m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if m.isBacklogView || m.focused != focusList {
+		t.Fatalf("backlog-local B did not close the backlog: backlog=%t focus=%s", m.isBacklogView, m.focused)
+	}
+
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.backlog.BeginSearch()
+	updated, _ = m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if !m.backlog.Searching() || m.backlog.Filter() != "B" || !m.isBacklogView || m.focused != focusBacklog {
+		t.Fatalf("backlog search lost B ownership: searching=%t filter=%q backlog=%t focus=%s", m.backlog.Searching(), m.backlog.Filter(), m.isBacklogView, m.focused)
+	}
+}
+
+func TestScopeBacklogViewJumpsCloseOverlayAndNavigate(t *testing.T) {
+	issues := []model.Issue{{ID: "b-1", Title: "Bead", Status: model.StatusOpen}}
+	keys := []struct {
+		key   string
+		focus focus
+	}{
+		{key: "b", focus: focusBoard},
+		{key: "E", focus: focusTree},
+		{key: "g", focus: focusGraph},
+		{key: "[", focus: focusLabelDashboard},
+		{key: "]", focus: focusAttention},
+	}
+	for _, tc := range keys {
+		for _, origin := range []focus{focusScopePicker, focusBacklog} {
+			t.Run(tc.key+"/"+origin.String(), func(t *testing.T) {
+				m := NewModel(issues, nil, "")
+				m.width, m.height, m.ready = 120, 30, true
+				if origin == focusScopePicker {
+					m.showScopePicker = true
+					m.scopePickerOrigin = focusList
+				} else {
+					m.isBacklogView = true
+				}
+				m.focused = origin
+
+				updated, _ := m.Update(keyMsg(tc.key))
+				m = updated.(*Model)
+				if m.showScopePicker || m.isBacklogView || m.focused != tc.focus {
+					t.Fatalf("key %q from %s left overlay/view state: picker=%t backlog=%t focus=%s", tc.key, origin, m.showScopePicker, m.isBacklogView, m.focused)
+				}
+			})
+		}
+	}
+}
+
+func TestBacklogSearchKeepsViewJumpKeysAsQueryText(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		LoadBacklog: func(context.Context, string, int) (BacklogPage, error) { return BacklogPage{}, nil },
+	}})
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.backlog.BeginSearch()
+
+	updated, _ := m.Update(keyMsg("b"))
+	m = updated.(*Model)
+	if !m.backlog.Searching() || m.backlog.Filter() != "b" || !m.isBacklogView || m.focused != focusBacklog {
+		t.Fatalf("active backlog search lost key ownership: searching=%t filter=%q backlog=%t focus=%s", m.backlog.Searching(), m.backlog.Filter(), m.isBacklogView, m.focused)
+	}
+}
+
 func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	var cursors []string
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{

@@ -3022,9 +3022,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if msg.restoreFocus {
-			m.showScopePicker = false
-			m.scopePickerMoveIssue = ""
-			m.focused = m.scopePickerOrigin
+			m.closeScopePicker()
 		}
 		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
 		m.statusIsError = false
@@ -5749,6 +5747,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// other views when the key isn't claimed by their handler
 			// (enabling cross-view switching, e.g. 'g' from board -> graph).
 			// ═══════════════════════════════════════════════════════════════
+			if m.showScopePicker || m.isBacklogView {
+				switch keyStr {
+				case "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
+					if m.showScopePicker {
+						m.closeScopePicker()
+					}
+					if m.isBacklogView {
+						m.closeBacklog()
+					}
+				}
+			}
 			if m.showAttentionView {
 				switch keyStr {
 				case "P", "b", "g", "a", "E", "i", "h", "[", "f":
@@ -5766,6 +5775,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "B":
+				if m.showScopePicker {
+					m.closeScopePicker()
+				}
 				if m.isBacklogView {
 					m.closeBacklog()
 					return m, nil
@@ -5777,6 +5789,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.openBacklog()
 
 			case "W":
+				if m.showScopePicker {
+					m.closeScopePicker()
+					return m, nil
+				}
 				if m.runtimeServices.Scopes.Load == nil {
 					m.statusMsg, m.statusIsError = "Named scopes require Hub mode", true
 					return m, nil
