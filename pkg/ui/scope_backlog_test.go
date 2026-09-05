@@ -51,6 +51,33 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	}
 }
 
+func TestHubNoActiveInitialRenderSkipsLoadingProjectionPath(t *testing.T) {
+	m := NewModel(nil, nil, "/hub/.beads/issues.jsonl", RuntimeServices{
+		RepositoryPresentation: true,
+		InitialScope:           &ScopeSnapshot{},
+		Scopes: ScopeServices{
+			Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+		},
+	})
+	defer m.Stop()
+
+	view := m.View()
+	if !containsText(view, "No active scope") || containsText(view, "Loading beads") || containsText(view, "issues.jsonl") {
+		t.Fatalf("initial Hub no-scope view = %q", view)
+	}
+}
+
+func TestHubActiveEmptyInitialScopeIsNotNoActive(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{
+		InitialScope: &ScopeSnapshot{Active: &ScopeInfo{ID: "empty", Name: "Empty", Active: true}},
+		Scopes:       ScopeServices{Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil }},
+	})
+	defer m.Stop()
+	if containsText(m.View(), "No active scope") {
+		t.Fatal("active empty scope rendered as no active scope")
+	}
+}
+
 func TestFirstScopeCreationStartsFromNamedScopesWithoutIssueSelection(t *testing.T) {
 	var createdName string
 	activations := 0

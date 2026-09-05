@@ -2668,6 +2668,20 @@ func main() {
 		var workspaceInfo *workspace.LoadSummary
 		var asOfResolved string // Resolved commit SHA when using --as-of (for robot output metadata)
 		var activeScope *RobotActiveScope
+		var initialScope *ui.ScopeSnapshot
+		hubStartupLoaded := false
+		if composition.HubScopeSnapshot != nil {
+			snapshot, loadedIssues, scopeErr := loadHubStartupIssues(context.Background(), composition.HubScopeSnapshot, func() ([]model.Issue, error) {
+				return datasource.LoadIssues("")
+			})
+			if scopeErr != nil {
+				return fmt.Errorf("loading active Hub scope: %w", scopeErr)
+			}
+			activeScope = snapshot.Active
+			initialScope = uiScopeSnapshot(snapshot)
+			issues = loadedIssues
+			hubStartupLoaded = true
+		}
 
 		// Workspace auto-discovery (I2): without --workspace, when no .beads
 		// directory is reachable from the working directory (or BEADS_DIR /
@@ -2744,11 +2758,13 @@ func main() {
 		} else {
 			// Load from single repo (original behavior)
 			var err error
-			issues, err = datasource.LoadIssues("")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error loading beads: %v\n", err)
-				fmt.Fprintln(os.Stderr, "Make sure you are in a project initialized with 'br init'.")
-				os.Exit(1)
+			if !hubStartupLoaded {
+				issues, err = datasource.LoadIssues("")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error loading beads: %v\n", err)
+					fmt.Fprintln(os.Stderr, "Make sure you are in a project initialized with 'br init'.")
+					os.Exit(1)
+				}
 			}
 			// Get the selected source file for live reload.
 			beadsDir, _ := loader.GetBeadsDir("")
@@ -2764,14 +2780,6 @@ func main() {
 			_ = loader.EnsureBVIgnored(projectDir)
 		}
 		loadDuration := time.Since(loadStart)
-		if composition.HubScopeSnapshot != nil {
-			snapshot, scopeErr := composition.HubScopeSnapshot(context.Background())
-			if scopeErr != nil {
-				return fmt.Errorf("loading active Hub scope: %w", scopeErr)
-			}
-			activeScope = snapshot.Active
-			issues = filterHubScopeIssues(issues, snapshot.MemberIDs)
-		}
 		if composition.HubRobotFilter != nil {
 			issues = filterHubRobotSelection(issues, *composition.HubRobotFilter)
 		}
@@ -4970,6 +4978,7 @@ func main() {
 				ExternalHistory:        composition.HistoryProvider.External(),
 				HubAutoRefresh:         composition.HubAutoRefresh,
 				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+				InitialScope:           initialScope,
 				Scopes:                 composition.ScopeServices,
 				HubChangeSignal:        composition.HubChangeSignal,
 				RefreshResolved:        true,
@@ -4989,6 +4998,7 @@ func main() {
 				ExternalHistory:        composition.HistoryProvider.External(),
 				HubAutoRefresh:         composition.HubAutoRefresh,
 				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+				InitialScope:           initialScope,
 				Scopes:                 composition.ScopeServices,
 				HubChangeSignal:        composition.HubChangeSignal,
 				RefreshResolved:        true,
@@ -5112,6 +5122,7 @@ func main() {
 			ExternalHistory:        composition.HistoryProvider.External(),
 			HubAutoRefresh:         composition.HubAutoRefresh,
 			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+			InitialScope:           initialScope,
 			Scopes:                 composition.ScopeServices,
 			HubChangeSignal:        composition.HubChangeSignal,
 			RefreshResolved:        true,
@@ -5131,6 +5142,7 @@ func main() {
 			ExternalHistory:        composition.HistoryProvider.External(),
 			HubAutoRefresh:         composition.HubAutoRefresh,
 			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
+			InitialScope:           initialScope,
 			Scopes:                 composition.ScopeServices,
 			HubChangeSignal:        composition.HubChangeSignal,
 			RefreshResolved:        true,
@@ -5186,6 +5198,24 @@ func main() {
 
 func shouldExitEmptyInteractive(issueCount int, hubMode bool) bool {
 	return issueCount == 0 && !hubMode
+}
+
+func uiScopeSnapshot(snapshot hubScopeSnapshot) *ui.ScopeSnapshot {
+	result := &ui.ScopeSnapshot{}
+	if snapshot.Active == nil {
+		return result
+	}
+	active := snapshot.Active
+	createdAt, _ := time.Parse(time.RFC3339, active.CreatedOn)
+	result.Active = &ui.ScopeInfo{
+		ID:          active.ID,
+		Name:        active.Name,
+		CreatedAt:   createdAt,
+		MemberCount: active.MemberCount,
+		Active:      true,
+	}
+	result.Scopes = []ui.ScopeInfo{*result.Active}
+	return result
 }
 
 func currentHubRepositoryContext(cwd string, hubMode bool) string {

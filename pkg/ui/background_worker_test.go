@@ -72,6 +72,42 @@ func TestBackgroundWorkerUsesResolvedIssuePaths(t *testing.T) {
 	}
 }
 
+func TestBackgroundWorkerDefersHubStartupLoadUntilSourceChange(t *testing.T) {
+	issuesPath := filepath.Join(t.TempDir(), "issues.jsonl")
+	if err := os.WriteFile(issuesPath, []byte(`{"id":"A","title":"Active","status":"open","issue_type":"task"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	issueSource := &testChangeSource{changes: make(chan struct{}, 1)}
+	hubSource := &testChangeSource{changes: make(chan struct{}, 1)}
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		BeadsPath:          issuesPath,
+		IssueChangePath:    issuesPath,
+		IssueSource:        issueSource,
+		SourceChangeSource: hubSource,
+		SkipInitialRefresh: true,
+		HubScopeMemberIDs:  func(context.Context) ([]string, error) { return []string{"A"}, nil },
+		IdleGC:             &IdleGCConfig{Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if msg := StartBackgroundWorkerCmd(worker)(); msg != nil {
+		t.Fatalf("start message = %#v, want nil", msg)
+	}
+	select {
+	case msg := <-worker.Messages():
+		t.Fatalf("startup loaded before Hub change: %#v", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	hubSource.changes <- struct{}{}
+	ready := waitForSnapshotReady(t, worker.Messages())
+	if len(ready.Snapshot.Issues) != 1 || ready.Snapshot.Issues[0].ID != "A" {
+		t.Fatalf("post-activation snapshot = %#v", ready.Snapshot.Issues)
+	}
+}
+
 func TestBackgroundWorkerReloadsBoundedHubScopeSnapshot(t *testing.T) {
 	issuesPath := filepath.Join(t.TempDir(), "issues.jsonl")
 	content := ""

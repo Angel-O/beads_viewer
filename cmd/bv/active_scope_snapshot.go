@@ -35,6 +35,24 @@ type hubScopeSnapshot struct {
 
 type hubScopeSnapshotLoader func(context.Context) (hubScopeSnapshot, error)
 
+// loadHubStartupIssues resolves the active scope before touching the bounded
+// Hub issue projection. An absent active scope is a valid empty startup state,
+// not a request to load the whole Hub.
+func loadHubStartupIssues(ctx context.Context, loadScope hubScopeSnapshotLoader, loadIssues func() ([]model.Issue, error)) (hubScopeSnapshot, []model.Issue, error) {
+	snapshot, err := loadScope(ctx)
+	if err != nil {
+		return hubScopeSnapshot{}, nil, err
+	}
+	if snapshot.Active == nil {
+		return snapshot, nil, nil
+	}
+	issues, err := loadIssues()
+	if err != nil {
+		return hubScopeSnapshot{}, nil, err
+	}
+	return snapshot, filterHubScopeIssues(issues, snapshot.MemberIDs), nil
+}
+
 func newHubScopeMemberLoader(workDir string) hubScopeMemberLoader {
 	load := newHubScopeSnapshotLoader(workDir)
 	return func(ctx context.Context) ([]string, error) {

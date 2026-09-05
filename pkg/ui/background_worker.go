@@ -213,6 +213,7 @@ type BackgroundWorker struct {
 	catalog             repositorypkg.Catalog
 	catalogLoader       func(string, []model.Issue) (repositorypkg.Catalog, error)
 	hubScopeMemberIDs   func(context.Context) ([]string, error)
+	skipInitialRefresh  bool
 	catalogFailed       bool
 	currentRecipe       *recipe.Recipe
 	currentRecipeID     string // Recipe identifier for snapshot rebuild keys
@@ -297,16 +298,17 @@ type WorkerConfig struct {
 	IdleGC *IdleGCConfig
 
 	// Watchdog configuration (bv-03h1). Zero values use defaults.
-	HeartbeatInterval time.Duration // default: 5s
-	WatchdogInterval  time.Duration // default: 10s
-	HeartbeatTimeout  time.Duration // default: 30s
-	ProcessingTimeout time.Duration // default: 30s
-	MaxRecoveries     int           // default: 3
-	HubChangeSignal   string        // application-owned Hub generation file
-	CatalogPath       string        // Resolved repository catalog source
-	HubScopeMemberIDs func(context.Context) ([]string, error)
-	SourceRetryBase   time.Duration // default: 1s
-	SourceRetryMax    time.Duration // default: 30s
+	HeartbeatInterval  time.Duration // default: 5s
+	WatchdogInterval   time.Duration // default: 10s
+	HeartbeatTimeout   time.Duration // default: 30s
+	ProcessingTimeout  time.Duration // default: 30s
+	MaxRecoveries      int           // default: 3
+	HubChangeSignal    string        // application-owned Hub generation file
+	CatalogPath        string        // Resolved repository catalog source
+	HubScopeMemberIDs  func(context.Context) ([]string, error)
+	SkipInitialRefresh bool          // observe changes without loading until Hub scope activation
+	SourceRetryBase    time.Duration // default: 1s
+	SourceRetryMax     time.Duration // default: 30s
 }
 
 // NewBackgroundWorker creates a new background worker.
@@ -408,6 +410,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		tracePath:           tracePath,
 		catalogLoader:       cfg.CatalogLoader,
 		hubScopeMemberIDs:   cfg.HubScopeMemberIDs,
+		skipInitialRefresh:  cfg.SkipInitialRefresh,
 		generation:          1, // Generation zero is reserved for non-worker messages.
 		state:               WorkerIdle,
 		msgCh:               make(chan tea.Msg, cfg.MessageBuffer),

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,65 @@ func TestHubScopeMemberLoaderTreatsAbsentActiveScopeAsEmpty(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("absent active scope members = %#v, want nil", got)
+	}
+}
+
+func TestHubStartupResolvesScopeBeforeIssueLoad(t *testing.T) {
+	var calls []string
+	snapshot, issues, err := loadHubStartupIssues(context.Background(), func(context.Context) (hubScopeSnapshot, error) {
+		calls = append(calls, "scope")
+		return hubScopeSnapshot{}, nil
+	}, func() ([]model.Issue, error) {
+		calls = append(calls, "issues")
+		return nil, fmt.Errorf("poisoned projection read")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Active != nil || issues != nil {
+		t.Fatalf("no-active startup = %#v/%#v, want empty state", snapshot.Active, issues)
+	}
+	if !reflect.DeepEqual(calls, []string{"scope"}) {
+		t.Fatalf("startup calls = %#v, want scope only", calls)
+	}
+}
+
+func TestHubStartupLoadsAndBoundsActiveScope(t *testing.T) {
+	var calls []string
+	snapshot, issues, err := loadHubStartupIssues(context.Background(), func(context.Context) (hubScopeSnapshot, error) {
+		calls = append(calls, "scope")
+		return hubScopeSnapshot{Active: &RobotActiveScope{ID: "scope-a"}, MemberIDs: []string{"A"}}, nil
+	}, func() ([]model.Issue, error) {
+		calls = append(calls, "issues")
+		return []model.Issue{{ID: "A"}, {ID: "B"}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"scope", "issues"}) {
+		t.Fatalf("startup calls = %#v, want scope then issues", calls)
+	}
+	if snapshot.Active == nil {
+		t.Fatal("active startup lost active scope")
+	}
+	if got := snapshotIssueIDs(issues); !reflect.DeepEqual(got, []string{"A"}) {
+		t.Fatalf("active startup issues = %#v, want [A]", got)
+	}
+}
+
+func TestHubStartupLoadsActiveEmptyScope(t *testing.T) {
+	loaded := false
+	snapshot, issues, err := loadHubStartupIssues(context.Background(), func(context.Context) (hubScopeSnapshot, error) {
+		return hubScopeSnapshot{Active: &RobotActiveScope{ID: "empty"}}, nil
+	}, func() ([]model.Issue, error) {
+		loaded = true
+		return []model.Issue{{ID: "outside"}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded || snapshot.Active == nil || issues == nil || len(issues) != 0 {
+		t.Fatalf("active empty startup = loaded %t, active %#v, issues %#v", loaded, snapshot.Active, issues)
 	}
 }
 
