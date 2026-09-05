@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 )
 
 // viewerCompositionInput contains policy decisions already parsed by the CLI.
@@ -53,6 +54,7 @@ type viewerComposition struct {
 	// HubScopeMemberIDs is populated for interactive Hub Viewer composition;
 	// robot wrappers retain their existing explicit scope projection contract.
 	HubScopeMemberIDs hubScopeMemberLoader
+	ScopeServices     ui.ScopeServices
 }
 
 func composeViewerServices(input viewerCompositionInput) (viewerComposition, error) {
@@ -119,6 +121,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		return viewerComposition{}, err
 	}
 	var hubScopeMemberIDs hubScopeMemberLoader
+	var scopeServices ui.ScopeServices
 	if usesHubStore && !input.RobotMode {
 		defaultPaths, pathErr := hub.DefaultPaths()
 		if pathErr != nil {
@@ -131,6 +134,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		if err != nil {
 			return viewerComposition{}, err
 		}
+		scopeServices = newHubScopeServices(workDir)
 	}
 
 	defaultCurrentContext := ""
@@ -157,6 +161,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		HubAutoRefresh:         compositionHubAutoRefreshEnabled(input.RefreshEnvironment),
 		HubChangeSignal:        hubChangeSignalPath(semanticStore),
 		HubScopeMemberIDs:      hubScopeMemberIDs,
+		ScopeServices:          scopeServices,
 	}, nil
 }
 

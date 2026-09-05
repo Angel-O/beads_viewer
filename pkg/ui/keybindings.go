@@ -181,6 +181,10 @@ func focusesForBindingDoc(doc KeyBindingDoc) []focus {
 			addFocus(focusSprint)
 		case "attention":
 			addFocus(focusAttention)
+		case "scope":
+			addFocus(focusScopePicker)
+		case "backlog":
+			addFocus(focusBacklog)
 		}
 	}
 
@@ -201,6 +205,8 @@ func allDocumentedFocuses() []focus {
 		focusFlowMatrix,
 		focusSprint,
 		focusAttention,
+		focusScopePicker,
+		focusBacklog,
 	}
 }
 
@@ -234,11 +240,11 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"ctrl+u", "Page up", "Navigation", "list,detail,board,graph,tree"},
 		{"pgup", "Page up", "Navigation", "tree"},
 		{"pgdown", "Page down", "Navigation", "tree"},
-		{"esc", "Back/close", "Navigation", "list,detail,board,insights,history,actionable,label-dashboard,flow,sprint"},
-		{"q", "Back/quit", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
-		{"ctrl+c", "Force quit", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
-		{"`", "Full tutorial", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
-		{"F2/;", "Shortcuts sidebar", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
+		{"esc", "Back/close", "Navigation", "list,detail,board,insights,history,actionable,label-dashboard,flow,sprint,scope,backlog"},
+		{"q", "Back/quit", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,backlog"},
+		{"ctrl+c", "Force quit", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
+		{"`", "Full tutorial", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
+		{"F2/;", "Shortcuts sidebar", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
 
 		// View Switching
 		{"a", "Actionable view", "Views", "list,detail"},
@@ -247,7 +253,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"h", "History view", "Views", "list,detail"},
 		{"i", "Insights panel", "Views", "list,detail"},
 		{"E", "Enter Tree (uppercase)", "Views", "list,detail"},
-		{"?", "Help overlay", "Views", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention"},
+		{"?", "Help overlay", "Views", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
 		{"tab", "Switch panes in Split", "Views", "list,detail"},
 		{"p", "Priority hints", "Views", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
 		{"b", "Return to List", "Views", "board"},
@@ -266,6 +272,15 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"E", "Enter Tree (uppercase)", "Views", "board,graph,insights,history,actionable,flow,label-dashboard"},
 		{"h", "History view", "Views", "actionable,flow"},
 		{"P", "Sprint dashboard", "Views", "list,detail"},
+		{"B", "Global backlog", "Views", "list,detail"},
+		{"W", "Named scopes", "Views", "list,detail"},
+		{"enter", "Activate scope", "Views", "scope"},
+		{"B", "Return to list", "Views", "backlog"},
+		{"j", "Move down", "Navigation", "scope,backlog"},
+		{"k", "Move up", "Navigation", "scope,backlog"},
+		{"m", "Move selected", "Actions", "scope"},
+		{"n", "Next backlog page", "Navigation", "backlog"},
+		{"p", "Previous backlog page", "Navigation", "backlog"},
 		{"[", "Label dashboard", "Views", "detail"},
 		{"]", "Attention view", "Views", "detail"},
 		// Filters
@@ -275,7 +290,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"l", "Label picker", "Filters", "list"},
 		{"I", "Exact issue-type picker", "Filters", "list"},
 		{"w", "Repository scope picker", "Filters", "list"},
-		{"/", "Search/filter", "Filters", "list"},
+		{"/", "Search/filter", "Filters", "list,backlog"},
 		{"ctrl+s", "Semantic search toggle", "Filters", "list"},
 		{"H", "Hybrid search toggle", "Filters", "list"},
 		{"alt+h", "Hybrid preset", "Filters", "list"},
@@ -296,8 +311,11 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"V", "Cass sessions", "Actions", "list"},
 		{"s", "Cycle sort mode", "Actions", "list"},
 		{"S", "Apply triage sort", "Actions", "list"},
+		{"A", "Add to scope", "Actions", "list,detail,backlog"},
+		{"R", "Remove from scope", "Actions", "list,detail"},
+		{"M", "Move to scope", "Actions", "list,detail"},
 		{"!", "Alerts panel", "Actions", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
-		{"Ctrl+R/F5", "Force refresh", "Actions", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint"},
+		{"Ctrl+R/F5", "Force refresh", "Actions", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,backlog"},
 		{"<", "Shrink list pane", "Actions", "list,detail"},
 		{">", "Expand list pane", "Actions", "list,detail"},
 
