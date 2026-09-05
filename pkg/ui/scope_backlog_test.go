@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -74,6 +75,101 @@ func TestScopePickerWTogglesToItsPriorView(t *testing.T) {
 	m = updated.(*Model)
 	if m.showScopePicker || !m.isBacklogView || m.focused != focusBacklog {
 		t.Fatalf("W did not restore backlog origin: shown=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+	}
+}
+
+func TestScopePickerLowercaseWOpensContextPickerAndReturns(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = testRepositoryCatalog()
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+
+	updated, _ := m.Update(keyMsg("w"))
+	m = updated.(*Model)
+	if !m.showRepoPicker || m.focused != focusRepoPicker || m.repoPickerOrigin != focusScopePicker || !m.showScopePicker {
+		t.Fatalf("scope lowercase w did not open Context picker: repo=%t focus=%s origin=%s scope=%t", m.showRepoPicker, m.focused, m.repoPickerOrigin, m.showScopePicker)
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showRepoPicker || m.focused != focusScopePicker || !m.showScopePicker {
+		t.Fatalf("Context picker did not return to scope view: repo=%t focus=%s scope=%t", m.showRepoPicker, m.focused, m.showScopePicker)
+	}
+}
+
+func TestContextPickerApplyFromScopeRestoresScopeFocus(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = testRepositoryCatalog()
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+
+	updated, _ := m.Update(keyMsg("w"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+
+	if m.showRepoPicker || !m.showScopePicker || m.focused != focusScopePicker {
+		t.Fatalf("Context apply left incorrect scope state: repo=%t scope=%t focus=%s", m.showRepoPicker, m.showScopePicker, m.focused)
+	}
+}
+
+func TestScopePickerFooterIsIndependentOfEntryView(t *testing.T) {
+	var want string
+	for _, origin := range []focus{focusBoard, focusList, focusDetail} {
+		m := NewModel(nil, nil, "")
+		m.width, m.height = 240, 40
+		m.focused = origin
+		m.isBoardView = origin == focusBoard
+		m.openScopePicker("")
+
+		footer := ansi.Strip(m.renderFooter())
+		if strings.Contains(footer, "1-4:col") {
+			t.Fatalf("scope footer inherited Board column hint from %s: %q", origin, footer)
+		}
+		if !strings.Contains(footer, "enter activate") || !strings.Contains(footer, "m move") {
+			t.Fatalf("scope footer lost scope controls from %s: %q", origin, footer)
+		}
+		if want == "" {
+			want = footer
+		} else if footer != want {
+			t.Fatalf("scope footer changed with entry origin %s:\nwant %q\n got %q", origin, want, footer)
+		}
+	}
+
+	board := NewModel([]model.Issue{{ID: "b-1", Title: "Bead", Status: model.StatusOpen}}, nil, "")
+	board.width, board.height, board.isBoardView = 240, 40, true
+	boardFooter := ansi.Strip(board.renderFooter())
+	for _, hint := range []string{"o/c/r:filter", "/:search"} {
+		if !strings.Contains(boardFooter, hint) {
+			t.Fatalf("ordinary Board footer lost supported hint %q: %q", hint, boardFooter)
+		}
+	}
+}
+
+func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		focus focus
+		wants []string
+	}{
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Activate scope", "m", "Move selected bead", "B", "global backlog"}},
+		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.width, m.height, m.focused = 240, 40, tc.focus
+			help := ansi.Strip(m.renderHelpOverlay())
+			for _, want := range tc.wants {
+				if !strings.Contains(help, want) {
+					t.Errorf("%s help missing %q:\n%s", tc.name, want, help)
+				}
+			}
+			if strings.Contains(help, "1-4") {
+				t.Fatalf("%s help retained obsolete column shortcut:\n%s", tc.name, help)
+			}
+		})
 	}
 }
 
@@ -377,7 +473,7 @@ func TestScopeAndBacklogOverlaysOwnInputBeforeUnderlyingViews(t *testing.T) {
 	m.showHelp = true
 	m.focused = focusHelp
 	m.focusBeforeHelp = focusBacklog
-	if !strings.Contains(m.View(), "Navigation") {
+	if !strings.Contains(m.View(), "Backlog") {
 		t.Fatal("help overlay did not render over the backlog")
 	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})

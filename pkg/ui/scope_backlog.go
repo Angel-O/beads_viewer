@@ -105,7 +105,7 @@ const backlogPageSize = 50
 func isScopeBacklogGlobalKey(key string) bool {
 	switch key {
 	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5",
-		"W", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
+		"w", "W", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
 		return true
 	default:
 		return false

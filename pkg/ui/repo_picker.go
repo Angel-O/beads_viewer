@@ -406,7 +406,7 @@ func (m *RepoPickerModel) View() string {
 	titleStyle := t.Renderer.NewStyle().
 		Foreground(t.Primary).
 		Bold(true)
-	lines = append(lines, titleStyle.Render(truncateRunesHelper("Repository Scope", contentWidth, "...")))
+	lines = append(lines, titleStyle.Render(truncateRunesHelper("Context", contentWidth, "...")))
 	if spacious {
 		lines = append(lines, "")
 	}

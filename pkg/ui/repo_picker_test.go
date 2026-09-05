@@ -49,7 +49,7 @@ func TestRepoPickerViewContainsRepos(t *testing.T) {
 	m.SetSize(60, 20)
 
 	out := m.View()
-	if !strings.Contains(out, "Repository Scope") {
+	if !strings.Contains(out, "Context") || strings.Contains(out, "Repository Scope") {
 		t.Fatalf("expected title in view, got:\n%s", out)
 	}
 	for _, want := range []string{"alpha", "ctx:alpha-123", "12"} {
@@ -208,6 +208,47 @@ func TestRepoPickerStatusFooterContainsCompleteGuidance(t *testing.T) {
 		if !strings.Contains(footer, want) {
 			t.Errorf("repository search footer missing %q: %q", want, footer)
 		}
+	}
+}
+
+func TestRepoPickerFooterPrecedesCoveredScopeAndBacklog(t *testing.T) {
+	for _, covered := range []struct {
+		name    string
+		scope   bool
+		backlog bool
+	}{
+		{name: "scope", scope: true},
+		{name: "backlog", backlog: true},
+	} {
+		t.Run(covered.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.width, m.height = 120, 30
+			m.repoPicker = NewRepoPickerModel(testRepositoryCatalog(), m.theme)
+			m.showRepoPicker = true
+			m.showScopePicker = covered.scope
+			m.isBacklogView = covered.backlog
+			m.focused = focusRepoPicker
+
+			footer := ansi.Strip(m.renderFooter())
+			if !strings.Contains(footer, "space toggle") || strings.Contains(footer, "m move") || strings.Contains(footer, "n/p page") {
+				t.Fatalf("Context footer leaked covered-view controls: %q", footer)
+			}
+
+			m.repoPicker.BeginSearch()
+			footer = ansi.Strip(m.renderFooter())
+			if !strings.Contains(footer, "type search") || strings.Contains(footer, "m move") || strings.Contains(footer, "n/p page") {
+				t.Fatalf("Context search footer leaked covered-view controls: %q", footer)
+			}
+		})
+	}
+}
+
+func TestQuestionMarkHelpCallsContextPicker(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 160, 40
+	help := ansi.Strip(m.renderHelpOverlay())
+	if !strings.Contains(help, "Context picker (Hub)") || strings.Contains(help, "Repo picker (Hub)") {
+		t.Fatalf("question-mark help has incorrect Context picker label:\n%s", help)
 	}
 }
 

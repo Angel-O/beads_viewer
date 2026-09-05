@@ -1277,8 +1277,8 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
 		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
 		focusAttention:      {"j", "k", "up", "down", "home", "G", "enter", "g", "] / F4", "esc / q", "?", "F2/;"},
-		focusScopePicker:    {"j", "k", "enter", "m", "esc", "q", "ctrl+c", "`", "F2/;", "?"},
-		focusBacklog:        {"j", "k", "n", "p", "esc", "q", "B", "A", "?", "`", "F2/;", "Ctrl+R/F5"},
+		focusScopePicker:    {"j", "k", "enter", "m", "esc", "q", "B", "W", "ctrl+c", "`", "F2/;", "?"},
+		focusBacklog:        {"j", "k", "n", "p", "esc", "q", "B", "W", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5"},
 	}
 
 	hasDoc := func(context, key string) bool {
@@ -1304,6 +1304,14 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScopeKeyBindingDocsDoNotInheritBoardColumnJump(t *testing.T) {
+	for _, doc := range GetKeyBindingDocs() {
+		if doc.Key == "1-4" && strings.Contains(doc.Context, "scope") {
+			t.Fatalf("scope key docs retain Board-only column jump: %+v", doc)
+		}
 	}
 }
 
