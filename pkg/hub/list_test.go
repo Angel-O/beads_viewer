@@ -125,7 +125,7 @@ func TestDecodeListResponseRejectsMalformedEnvelopes(t *testing.T) {
 }
 
 func TestBackendListSort(t *testing.T) {
-	for input, want := range map[string]string{"created_at:desc": "created", "updated_at:desc": "updated", "closed_at:desc": "closed"} {
+	for input, want := range map[string]string{"created_at:desc": "created", "updated_at:desc": "updated", "closed_at:desc": "closed", "created-desc": "created", "priority-asc": "priority"} {
 		if got := BackendListSort(input); got != want {
 			t.Errorf("BackendListSort(%q) = %q, want %q", input, got, want)
 		}

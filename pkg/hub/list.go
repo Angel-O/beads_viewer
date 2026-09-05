@@ -68,6 +68,12 @@ type listIssueFields struct {
 
 // BackendListSort maps wbd's public sort spelling to bd's list contract.
 func BackendListSort(value string) string {
+	switch value {
+	case "created-desc":
+		return "created"
+	case "priority-asc":
+		return "priority"
+	}
 	return strings.TrimSuffix(value, "_at:desc")
 }
 

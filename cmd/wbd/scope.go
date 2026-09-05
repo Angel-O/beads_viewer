@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 )
 
-// Scope and backlog JSON are deliberately the stabilized bd JSON contracts:
-// wbd forwards successful JSON bytes rather than decoding and re-encoding an
-// evolving backend schema. Human output is likewise bd's stable text output.
+const backlogContextLabelPrefix = "ctx:"
+
+// Scope JSON is deliberately bd's stabilized contract: wbd forwards successful
+// JSON bytes rather than decoding and re-encoding an evolving backend schema.
+// Backlog pages use the shared stable issue projection and cursor validation.
 
 func (a *app) scope(request request) int {
 	args := appendJSON(nil, request.json)
@@ -76,15 +81,77 @@ func (a *app) scope(request request) int {
 }
 
 func (a *app) backlog(request request) int {
+	if len(request.backlogContexts) > 0 {
+		config, err := hub.Resolve(a.paths.Config)
+		if err != nil {
+			return a.fail(err)
+		}
+		if err := hub.ValidateRegisteredContexts(request.backlogContexts, config.Repositories); err != nil {
+			return a.fail(err)
+		}
+	}
+
 	args := appendJSON(nil, request.json)
 	args = append(args, "list", "--unscoped")
-	if request.json {
-		// JSON backlog output is the bounded, stable page contract used by wbd
-		// list. The cursor remains opaque and is forwarded byte-for-byte.
-		args = append(args, "--paginate", "--sort", hub.BackendListSort("updated_at:desc"))
+	if len(request.backlogContexts) > 0 {
+		args = append(args, "--label-any", strings.Join(request.backlogContexts, ","))
 	}
-	args = append(args, request.args...)
-	return a.runBD(a.dir, args...)
+	if request.backlogContextless {
+		args = append(args, "--or-no-label-prefix", backlogContextLabelPrefix)
+	}
+	if request.backlogStatus != "" {
+		args = append(args, "--status", request.backlogStatus)
+	}
+	if request.backlogType != "" {
+		args = append(args, "--type", request.backlogType)
+	}
+	if request.backlogSort != "" {
+		args = append(args, "--sort", hub.BackendListSort(request.backlogSort))
+	} else if request.json {
+		args = append(args, "--sort", hub.BackendListSort(backlogSort(request.backlogSort)))
+	}
+	if request.json {
+		// Filters are delegated so bd applies them before keyset pagination. The
+		// cursor is opaque and is forwarded byte-for-byte.
+		args = append(args, "--paginate")
+	}
+	if request.backlogLimit > 0 {
+		args = append(args, "--limit", strconv.Itoa(request.backlogLimit))
+	}
+	if request.backlogCursor != "" {
+		args = append(args, "--cursor", request.backlogCursor)
+	}
+	if !request.json {
+		return a.runBD(a.dir, args...)
+	}
+
+	data, childStderr, err := a.runBDCaptureWithStderr(a.dir, args...)
+	if err != nil {
+		return a.fail(fmt.Errorf("listing backlog issues: %w", err))
+	}
+	response, err := hub.DecodeListResponse(data, true, request.backlogLimit, false)
+	if err != nil {
+		if len(childStderr) > 0 {
+			_, _ = a.stderr.Write(childStderr)
+		}
+		return a.fail(fmt.Errorf("decoding bd backlog response: %w", err))
+	}
+	if _, err := a.stdout.Write(response); err != nil {
+		return a.fail(fmt.Errorf("writing backlog response: %w", err))
+	}
+	if len(childStderr) > 0 {
+		if _, err := a.stderr.Write(childStderr); err != nil {
+			return a.fail(fmt.Errorf("writing backlog diagnostics: %w", err))
+		}
+	}
+	return 0
+}
+
+func backlogSort(value string) string {
+	if value == "" {
+		return "updated_at:desc"
+	}
+	return value
 }
 
 func (a *app) scopeOption(arguments []string, flag string) (string, error) {
