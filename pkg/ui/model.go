@@ -4658,10 +4658,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
 		}
-		if m.showScopePicker && !isScopeBacklogGlobalKey(msg.String()) {
+		if m.showScopePicker && !m.showRepoPicker && !isScopeBacklogGlobalKey(msg.String()) {
 			return m.handleScopePickerKey(msg)
 		}
-		if m.isBacklogView && msg.String() != "ctrl+c" && (m.backlog.Searching() || !isScopeBacklogGlobalKey(msg.String())) {
+		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || !isScopeBacklogGlobalKey(msg.String())) {
 			return m.handleBacklogKey(msg)
 		}
 		// Clear status message on any keypress
@@ -7152,6 +7152,10 @@ func (m *Model) resetRecipePicker() {
 
 func (m *Model) applyRepositoryPickerSelection() *Model {
 	selected := m.repoPicker.SelectedRepos()
+	focusAfterApply := focusList
+	if m.repoPickerOrigin == focusScopePicker {
+		focusAfterApply = focusScopePicker
+	}
 	if m.hubRepositoryMode {
 		includeContextless := m.repoPicker.ContextlessSelected()
 		switch {
@@ -7167,7 +7171,7 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 		m.statusIsError = false
 		m.setHubRepositoryScope(selected, includeContextless)
 		m.showRepoPicker = false
-		m.focused = focusList
+		m.focused = focusAfterApply
 		return m
 	}
 	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
@@ -7178,7 +7182,7 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 	m.statusIsError = false
 	m.SetRepositoryScope(selected)
 	m.showRepoPicker = false
-	m.focused = focusList
+	m.focused = focusAfterApply
 	return m
 }
 
@@ -8443,7 +8447,7 @@ func (m *Model) renderHelpOverlay() string {
 		{"F2/;", "Shortcuts sidebar"},
 		{"!", "Alerts panel"},
 		{"'", "Recipes (List)"},
-		{"w", "Repo picker (Hub)"},
+		{"w", "Context picker (Hub)"},
 		{"I", "Issue types (List)"},
 		{"q", "Back / Quit"},
 		{"Ctrl+c", "Force quit"},
@@ -8680,6 +8684,32 @@ func (m *Model) renderHelpOverlay() string {
 	case focusFlowMatrix:
 		specializedPanels = []string{
 			renderPanel("Dependency Flow", "🔀", 0, navSection),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
+	case focusScopePicker:
+		scopeControls := []struct{ key, desc string }{
+			{"j/k", "Move scope selection"},
+			{"Enter", "Activate scope"},
+			{"m", "Move selected bead"},
+			{"B", "Open global backlog"},
+			{"W", "Close scope picker"},
+			{"Esc / q", "Return to previous view"},
+		}
+		specializedPanels = []string{
+			renderPanel("Scopes", "◉", 0, scopeControls),
+			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
+	case focusBacklog:
+		backlogControls := []struct{ key, desc string }{
+			{"j/k", "Move selection"},
+			{"n/p", "Next / previous page"},
+			{"/", "Filter backlog"},
+			{"A", "Add selected bead to scope"},
+			{"W", "Open named scopes"},
+			{"B / Esc / q", "Return to List"},
+		}
+		specializedPanels = []string{
+			renderPanel("Backlog", "▤", 0, backlogControls),
 			renderPanel("Global", "🌐", 2, specializedGlobal),
 		}
 	}
@@ -9446,8 +9476,9 @@ func (m *Model) renderFooter() string {
 
 	labelHint := ""
 
-	// Board-specific hints (bv-yg39, bv-naov)
-	if m.isBoardView {
+	// Board-specific hints (bv-yg39, bv-naov). Scope picker input owns the
+	// footer while open, even when it was entered from Board.
+	if m.isBoardView && !m.showScopePicker {
 		if m.board.IsSearchMode() {
 			// Search mode active - show search hints
 			matchInfo := ""
@@ -9766,16 +9797,16 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" scroll", keyStyle.Render("space")+" tutorial", keyStyle.Render("?/esc/q")+" close")
 	} else if m.showRecipePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" cancel")
-	} else if m.showScopePicker {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" activate", keyStyle.Render("m")+" move", keyStyle.Render("esc")+" back")
-	} else if m.isBacklogView {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showRepoPicker {
 		if m.repoPicker.IsSearching() {
 			keyHints = append(keyHints, keyStyle.Render("type")+" search", keyStyle.Render("up/down")+" nav", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" clear")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("c")+":current only", keyStyle.Render("a")+" all/none", keyStyle.Render("/")+" search", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" back")
 		}
+	} else if m.showScopePicker {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" activate", keyStyle.Render("m")+" move", keyStyle.Render("esc")+" back")
+	} else if m.isBacklogView {
+		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
