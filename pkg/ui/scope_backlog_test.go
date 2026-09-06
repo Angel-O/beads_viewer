@@ -2030,14 +2030,46 @@ func TestBacklogPageIndicatorHasOneSeparatorAndStaysBounded(t *testing.T) {
 	}
 }
 
-func TestFormatBacklogCreatedAtUsesLocalSeptemberAndZeroIsNA(t *testing.T) {
+func TestFormatBacklogCreatedAtUsesThreeLetterMonthsAndAlignedWidth(t *testing.T) {
 	originalLocal := time.Local
 	time.Local = time.FixedZone("test-local", -8*60*60)
 	defer func() { time.Local = originalLocal }()
 
-	created := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
-	if got := formatBacklogCreatedAt(created); got != "Sat 26 Sept - 16:00" {
-		t.Fatalf("local created date=%q, want Sat 26 Sept - 16:00", got)
+	cases := []struct {
+		name    string
+		created time.Time
+		want    string
+	}{
+		{name: "September", created: time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC), want: "Sat 26 Sep - 16:00"},
+		{name: "May", created: time.Date(2026, 5, 27, 0, 0, 0, 0, time.UTC), want: "Tue 26 May - 16:00"},
+	}
+
+	issues := make([]model.Issue, 0, len(cases))
+	for _, tc := range cases {
+		if got := formatBacklogCreatedAt(tc.created); got != tc.want {
+			t.Errorf("%s local created date=%q, want %q", tc.name, got, tc.want)
+		}
+		issues = append(issues, model.Issue{ID: tc.name, CreatedAt: tc.created})
+	}
+	if got, want := lipgloss.Width(formatBacklogCreatedAt(cases[0].created)), lipgloss.Width(formatBacklogCreatedAt(cases[1].created)); got != want {
+		t.Fatalf("September display width=%d, May display width=%d; want equal widths", got, want)
+	}
+
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: issues}, 0)
+	columns := backlogTableColumnsFor(b.filteredItems, 80)
+	dateStart := -1
+	for i, tc := range cases {
+		row := ansi.Strip(b.renderBacklogRow(b.filteredItems[i], false, columns, 80))
+		got := displayOffset(row, tc.want)
+		if got < 0 {
+			t.Fatalf("%s date missing from row: %q", tc.name, row)
+		}
+		if dateStart < 0 {
+			dateStart = got
+		} else if got != dateStart {
+			t.Fatalf("%s date starts at %d, want aligned start %d: %q", tc.name, got, dateStart, row)
+		}
 	}
 	if got := formatBacklogCreatedAt(time.Time{}); got != "n/a" {
 		t.Fatalf("zero created date=%q, want n/a", got)

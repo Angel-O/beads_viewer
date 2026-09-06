@@ -729,7 +729,7 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 		return "n/a"
 	}
 	// Backlog dates are human-facing local time, not backend/RFC3339 timestamps.
-	return strings.Replace(createdAt.In(time.Local).Format("Mon 02 Jan - 15:04"), " Sep ", " Sept ", 1)
+	return createdAt.In(time.Local).Format("Mon 02 Jan - 15:04")
 }
 
 func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
