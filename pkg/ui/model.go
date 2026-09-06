@@ -2484,6 +2484,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		timeTravelInput:     ti,
 		scopeCreateInput:    newScopeNameInput(theme),
 		scopeMatchInput:     newScopeMatchInput(theme),
+		backlog:             NewBacklogModel(theme),
 		commentInput: func() textarea.Model {
 			input := textarea.New()
 			input.Placeholder = "Write a Markdown comment..."
@@ -4740,7 +4741,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused()) {
 			return m.handleScopePickerKey(msg)
 		}
-		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || !isScopeBacklogGlobalKey(msg.String())) {
+		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
 			return m.handleBacklogKey(msg)
 		}
 		// Clear status message on any keypress
@@ -8114,6 +8115,7 @@ func (m *Model) View() string {
 		m.shortcutsSidebar.SetFocus(sidebarFocus)
 		m.shortcutsSidebar.SetScopePickerState(m.scopePicker.MemberFocused(), m.scopePickerMoveIssue != "")
 		m.shortcutsSidebar.SetBacklogSearch(m.backlog.Searching())
+		m.shortcutsSidebar.SetBacklogLabelEditing(m.backlog.LabelEditing())
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 		sidebar := m.shortcutsSidebar.View()
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, sidebar)
@@ -8858,7 +8860,9 @@ func (m *Model) renderHelpOverlay() string {
 			{"PgUp/Dn", "Scroll preview (Ctrl+b/f)"},
 			{"space", "Mark current bead"},
 			{"n/p", "Next / previous page"},
-			{"/", "Filter backlog"},
+			{"/", "ID/title search"},
+			{"l", "Edit exact label filter"},
+			{"s", "Cycle status: all/open/in_progress/blocked/deferred/closed"},
 			{"A", "Add selected bead to scope (or all marked)"},
 			{"M", "Add by epic or label (semantic)"},
 			{"W", "Open named scopes"},

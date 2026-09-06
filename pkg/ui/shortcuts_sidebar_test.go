@@ -376,7 +376,7 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusBacklog)
 	backlogView := sidebar.View()
-	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "space", "Mark current row/member", "A", "Add to scope", "M", "Add/remove by epic or"} {
+	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "l", "Edit exact label filter", "s", "Cycle exact status", "space", "Mark current row/member", "A", "Add to scope", "M", "Add/remove by epic or"} {
 		if !strings.Contains(backlogView, expected) {
 			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
 		}
@@ -478,6 +478,36 @@ func TestShortcutsSidebarTracksBacklogSearchStateFromModel(t *testing.T) {
 	for _, unavailable := range []string{"j/k", "space", "n", "p", "A", "M"} {
 		if keys[unavailable] {
 			t.Fatalf("backlog search sidebar advertises backlog control %q: %#v", unavailable, sections)
+		}
+	}
+}
+
+func TestShortcutsSidebarTracksBacklogLabelInputStateFromModel(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 80, 30
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.showShortcutsSidebar = true
+	m.backlog.BeginLabelEdit()
+	_ = m.View()
+	if !m.shortcutsSidebar.backlogLabel {
+		t.Fatal("Model.View did not pass backlog label input state to the sidebar")
+	}
+	sections := m.shortcutsSidebar.sectionsFromRegistry()
+	keys := make(map[string]bool)
+	for _, section := range sections {
+		for _, item := range section.items {
+			keys[item.key] = true
+		}
+	}
+	for _, expected := range []string{"type", "backspace", "enter/esc", "ctrl+j/k"} {
+		if !keys[expected] {
+			t.Fatalf("backlog label sidebar missing %q: %#v", expected, sections)
+		}
+	}
+	for _, unavailable := range []string{"j/k", "space", "n", "p", "A", "M"} {
+		if keys[unavailable] {
+			t.Fatalf("backlog label sidebar advertises backlog control %q: %#v", unavailable, sections)
 		}
 	}
 }

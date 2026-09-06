@@ -105,7 +105,7 @@ printf '%s' '{}'
 	t.Setenv("WBD_SCOPE_CALLS", calls)
 	service := newHubScopeServices(root)
 
-	page, err := service.QueryBacklog(context.Background(), ui.BacklogQuery{Filter: " alpha ", Cursor: "opaque/value==", Limit: 7})
+	page, err := service.QueryBacklog(context.Background(), ui.BacklogQuery{Filter: " alpha ", Label: "team", Status: "blocked", Cursor: "opaque/value==", Limit: 7})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ printf '%s' '{}'
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := splitLines(string(data)), []string{"backlog", "list", "--filter", " alpha ", "--limit", "7", "--cursor", "opaque/value==", "--json"}; !reflect.DeepEqual(got, want) {
+	if got, want := splitLines(string(data)), []string{"backlog", "list", "--label", "team", "--filter", " alpha ", "--status", "blocked", "--limit", "7", "--cursor", "opaque/value==", "--json"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("wbd backlog args=%#v, want %#v", got, want)
 	}
 	if _, err := service.QueryBacklog(context.Background(), ui.BacklogQuery{Filter: " \t", Limit: 7}); err != nil {

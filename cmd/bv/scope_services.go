@@ -18,9 +18,15 @@ import (
 // Viewer. The UI never shells out directly and never infers membership.
 func newHubScopeServices(workDir string) ui.ScopeServices {
 	loadBacklog := func(ctx context.Context, query ui.BacklogQuery) (ui.BacklogPage, error) {
-		args := make([]string, 0, 5)
+		args := make([]string, 0, 9)
+		if strings.TrimSpace(query.Label) != "" {
+			args = append(args, "--label", query.Label)
+		}
 		if strings.TrimSpace(query.Filter) != "" {
 			args = append(args, "--filter", query.Filter)
+		}
+		if status := strings.TrimSpace(query.Status); status != "" && status != "all" {
+			args = append(args, "--status", status)
 		}
 		args = append(args, "--limit", strconv.Itoa(query.Limit))
 		if query.Cursor != "" {
