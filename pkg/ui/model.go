@@ -2813,7 +2813,12 @@ func (m *Model) Init() tea.Cmd {
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
-	if m.runtimeServices.Scopes.Load != nil {
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		cmds = append(cmds, m.startScopeCatalogPage("", 0))
+		if m.runtimeServices.Scopes.Load != nil {
+			cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+		}
+	} else if m.runtimeServices.Scopes.Load != nil {
 		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
 	}
 	// Start loading history in background.
@@ -3029,6 +3034,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		previousSelected := m.scopePicker.SelectedScopeID()
 		m.backlogScopeLoaded = true
+		if m.runtimeServices.Scopes.QueryCatalog != nil {
+			m.activeScope = nil
+			if msg.snapshot.Active != nil {
+				active := *msg.snapshot.Active
+				m.activeScope = &active
+			}
+			for i := range m.scopeCatalog {
+				m.scopeCatalog[i].Active = m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID
+			}
+			m.scopePicker.SetScopes(m.scopeCatalog)
+			break
+		}
 		m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
 		m.scopePicker.SetScopes(m.scopeCatalog)
 		m.activeScope = nil
@@ -3041,6 +3058,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scopePicker.SetScopes(m.scopeCatalog)
 		}
 		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+			m.scopePicker.ClearMemberMarks()
+			cmds = append(cmds, m.loadSelectedScopeDetails())
+		}
+
+	case scopeCatalogPageMsg:
+		if !m.scopePicker.acceptsCatalogPage(msg.generation) {
+			break
+		}
+		if msg.err != nil {
+			m.scopePicker.SetCatalogError(msg.generation, msg.err)
+			m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+			m.statusIsError = true
+			break
+		}
+		m.backlogScopeLoaded = true
+		previousSelected := m.scopePicker.SelectedScopeID()
+		page := msg.page
+		page.Scopes = append([]ScopeInfo(nil), msg.page.Scopes...)
+		activeID := ""
+		if m.activeScope != nil {
+			activeID = m.activeScope.ID
+		}
+		for i := range page.Scopes {
+			page.Scopes[i].Active = activeID != "" && page.Scopes[i].ID == activeID
+		}
+		m.scopeCatalog = append([]ScopeInfo(nil), page.Scopes...)
+		m.scopePicker.SetCatalogPage(page, msg.index, msg.generation)
+		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+			// Catalog paging changes the selected page; member pages belong to the
+			// selected scope and must never survive that boundary.
 			m.scopePicker.ClearMemberMarks()
 			cmds = append(cmds, m.loadSelectedScopeDetails())
 		}
@@ -3061,6 +3108,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
 			m.applyScopePickerDetails(details)
 		}
+
+	case scopeMembersPageMsg:
+		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.generation) {
+			break
+		}
+		if msg.err != nil {
+			m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+			break
+		}
+		if msg.page.Scope.ID == "" {
+			msg.page.Scope.ID = msg.scopeID
+		}
+		items := make([]IssueItem, len(msg.page.Members))
+		ready := make(map[string]bool, len(items))
+		for i, issue := range msg.page.Members {
+			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+			m.decorateIssueItem(&items[i])
+			ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
+		}
+		m.scopePicker.SetMemberReadyIDs(ready)
+		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation)
 
 	case backlogPageMsg:
 		if msg.generation != m.backlogPageGeneration {
@@ -4741,7 +4809,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleTutorialOverlayKey(msg)
 		}
 		if m.showScopePicker && !m.showRepoPicker &&
-			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused()) {
+			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused() || isScopePickerPagingKey(msg.String()) && m.scopePicker.OwnsPagingKey(msg.String())) {
 			return m.handleScopePickerKey(msg)
 		}
 		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
@@ -8881,6 +8949,7 @@ func (m *Model) renderHelpOverlay() string {
 		scopeControls := []struct{ key, desc string }{
 			{"Tab", "Switch to members"},
 			{"j/k", "Move scope selection"},
+			{"←/→", "Previous / next scope page"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
 			{"B", "Open global backlog"},
@@ -8891,6 +8960,7 @@ func (m *Model) renderHelpOverlay() string {
 			scopeControls = []struct{ key, desc string }{
 				{"Tab", "Switch to scope catalog"},
 				{"j/k", "Move member selection"},
+				{"n/p", "Next / previous member page"},
 				{"o/c/r", "Filter members by status"},
 				{"I", "Cycle member type filter"},
 				{"w", "Cycle member repository filter"},
@@ -8904,6 +8974,7 @@ func (m *Model) renderHelpOverlay() string {
 		} else if m.scopePicker.moveTarget != "" {
 			scopeControls = []struct{ key, desc string }{
 				{"j/k", "Move destination scope"},
+				{"←/→", "Previous / next scope page"},
 				{"Enter", "Move selected bead"},
 				{"B", "Open global backlog"},
 				{"W", "Close scope picker"},
@@ -10041,7 +10112,11 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker {
 		if m.scopePicker.MemberFocused() {
-			keyHints = append(keyHints, keyStyle.Render("tab")+" catalog", keyStyle.Render("j/k")+" members", keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
+			keyHints = append(keyHints, keyStyle.Render("tab")+" catalog", keyStyle.Render("j/k")+" members")
+			if m.runtimeServices.Scopes.QueryMembers != nil {
+				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
+			}
+			keyHints = append(keyHints, keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
 			removeHint := "R remove current"
 			if m.scopePicker.MemberMarkCount() > 0 {
 				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
@@ -10050,7 +10125,11 @@ func (m *Model) renderFooter() string {
 		} else if m.scopePickerMoveIssue != "" {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
 		} else {
-			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes", keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes")
+			if m.runtimeServices.Scopes.QueryCatalog != nil {
+				keyHints = append(keyHints, keyStyle.Render("←/→")+" page")
+			}
+			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
 		}
 	} else if m.isBacklogView {
 		if m.backlog.Searching() {
