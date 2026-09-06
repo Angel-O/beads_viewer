@@ -695,16 +695,59 @@ type backlogTableColumns struct {
 	typeWidth     int
 	priorityWidth int
 	statusWidth   int
+	contextWidth  int
 	createdWidth  int
 }
 
 // Fixed cells keep later backlog columns stable when pages contain different
 // ID or type lengths; values are truncated before padding to those cells.
 const (
-	backlogIDWidth     = 18
-	backlogTypeWidth   = 10
-	backlogStatusWidth = 11
+	backlogIDWidth      = 18
+	backlogTypeWidth    = 10
+	backlogStatusWidth  = 11
+	backlogContextWidth = 8 // Keep the added column from displacing the preview.
 )
+
+// backlogContextName returns the existing friendly context decoration without
+// adding another presentation format.
+func backlogContextName(item IssueItem) string {
+	context := item.RepositoryName
+	if context == "" && item.HubPresentation {
+		context = item.RepositoryID
+	}
+	return context
+}
+
+// backlogContextValue appends the existing additional-context count.
+func backlogContextValue(item IssueItem) string {
+	context := backlogContextName(item)
+	if context == "" {
+		return ""
+	}
+	if item.RepositoryExtra > 0 {
+		context += fmt.Sprintf(" +%d", item.RepositoryExtra)
+	}
+	return context
+}
+
+func backlogContextCell(item IssueItem, width int) string {
+	name := backlogContextName(item)
+	if name == "" {
+		return ""
+	}
+	suffix := ""
+	if item.RepositoryExtra > 0 {
+		suffix = fmt.Sprintf(" +%d", item.RepositoryExtra)
+	}
+	if suffix == "" {
+		return truncateRunesHelper(name, width, "…")
+	}
+	suffixWidth := lipgloss.Width(suffix)
+	if suffixWidth >= width {
+		return truncateRunesHelper(fmt.Sprintf("+%d", item.RepositoryExtra), width, "")
+	}
+	return truncateRunesHelper(name, width-suffixWidth, "…") + suffix
+}
 
 // backlogTableColumnsFor keeps the bounded backlog projection independent of
 // the ordinary List metadata layout.
@@ -715,12 +758,17 @@ func backlogTableColumnsFor(items []IssueItem, width int) backlogTableColumns {
 		typeWidth:     backlogTypeWidth,
 		priorityWidth: len("PR"),
 		statusWidth:   backlogStatusWidth,
+		contextWidth:  backlogContextWidth,
 		createdWidth:  len("CREATED_AT"),
 	}
 	for _, item := range items {
 		columns.priorityWidth = maxInt(columns.priorityWidth, lipgloss.Width(fmt.Sprintf("P%d", item.Issue.Priority)))
+		columns.contextWidth = maxInt(columns.contextWidth, lipgloss.Width(backlogContextValue(item)))
 		columns.createdWidth = maxInt(columns.createdWidth, lipgloss.Width(formatBacklogCreatedAt(item.Issue.CreatedAt)))
 	}
+	columns.contextWidth = min(columns.contextWidth, backlogContextWidth)
+	fixedWidth := lipgloss.Width(backlogMarkPrefix) + columns.idWidth + columns.typeWidth + columns.priorityWidth + columns.statusWidth + columns.createdWidth + 4
+	columns.contextWidth = min(columns.contextWidth, maxInt(columns.width-fixedWidth-1, 1))
 	return columns
 }
 
@@ -751,6 +799,7 @@ func renderBacklogTableHeader(columns backlogTableColumns) string {
 		padRight("TYPE", columns.typeWidth),
 		padRight("PR", columns.priorityWidth),
 		padRight("STATUS", columns.statusWidth),
+		padRight(truncateRunesHelper("CONTEXT", columns.contextWidth, "…"), columns.contextWidth),
 		padRight("CREATED_AT", columns.createdWidth),
 	}, " ")
 }
@@ -778,11 +827,13 @@ func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns ba
 	id := truncateRunesHelper(item.Issue.ID, columns.idWidth, "…")
 	issueType := truncateRunesHelper(string(item.Issue.IssueType), columns.typeWidth, "…")
 	status := truncateRunesHelper(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth, "…")
+	context := backlogContextCell(item, columns.contextWidth)
 	row := strings.Join([]string{
 		padRight(id, columns.idWidth),
 		padRight(issueType, columns.typeWidth),
 		padRight(fmt.Sprintf("P%d", item.Issue.Priority), columns.priorityWidth),
 		padRight(status, columns.statusWidth),
+		padRight(context, columns.contextWidth),
 		padRight(formatBacklogCreatedAt(item.Issue.CreatedAt), columns.createdWidth),
 	}, " ")
 	cursor, mark := "  ", "  "
@@ -800,21 +851,36 @@ func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns ba
 }
 
 func (b BacklogModel) renderBacklogPreview(width int, heights ...int) string {
-	issue := b.CurrentIssue()
-	if issue == nil {
+	if b.selected < 0 || b.selected >= len(b.filteredItems) {
 		return ""
 	}
+	item := b.filteredItems[b.selected]
+	issue := &item.Issue
 	title := issue.Title
 	if title == "" {
 		title = "(untitled)"
+	}
+	context := backlogContextValue(item)
+	if context == "" {
+		context = "(none)"
+	}
+	labels := strings.Join(scopeMemberLabels(item), ", ")
+	if labels == "" {
+		labels = "(none)"
 	}
 	description := strings.TrimSpace(issue.Description)
 	if description == "" {
 		description = "(no description)"
 	}
 	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Width(maxInt(width, 1))
+	valueStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Base.GetForeground()).Width(maxInt(width, 1))
 	descriptionStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Width(maxInt(width, 1))
-	content := titleStyle.Render("TITLE  "+title) + "\n\n" + descriptionStyle.Render("DESCRIPTION  "+description)
+	content := strings.Join([]string{
+		titleStyle.Render("TITLE"), valueStyle.Render(title),
+		"", titleStyle.Render("CONTEXT"), valueStyle.Render(context),
+		"", titleStyle.Render("LABELS"), valueStyle.Render(labels),
+		"", titleStyle.Render("DESCRIPTION"), descriptionStyle.Render(description),
+	}, "\n")
 	if len(heights) == 0 || heights[0] <= 0 {
 		return content
 	}

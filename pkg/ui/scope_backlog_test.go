@@ -2024,9 +2024,15 @@ func TestBacklogRenderUsesBoundedColumnsAndFullPreview(t *testing.T) {
 	})
 
 	view := ansi.Strip(b.View())
-	for _, want := range []string{"Global backlog", "ID", "TYPE", "PR", "STAT", "CREATED_AT", "OPEN", "backlog-1", "Readable backlog title", "DESCRIPTION", "First line", "remain fully visible."} {
+	for _, want := range []string{"Global backlog", "ID", "TYPE", "PR", "STAT", "CONTEXT", "CREATED_AT", "OPEN", "backlog-1", "Readable backlog title"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("backlog view missing %q:\n%s", want, view)
+		}
+	}
+	fullPreview := ansi.Strip(b.renderBacklogPreview(120))
+	for _, want := range []string{"DESCRIPTION", "First line", "remain fully visible."} {
+		if !strings.Contains(fullPreview, want) {
+			t.Fatalf("full backlog preview missing %q:\n%s", want, fullPreview)
 		}
 	}
 	if strings.Contains(view, "AGE") || strings.Contains(view, "CMT") || strings.Contains(view, "GRAPH") || strings.Contains(view, "[api]") {
@@ -2079,8 +2085,101 @@ func TestBacklogPreviewSeparatesTitleAndDescription(t *testing.T) {
 
 	preview := ansi.Strip(b.renderBacklogPreview(80))
 	lines := strings.Split(preview, "\n")
-	if len(lines) < 3 || strings.TrimSpace(lines[0]) != "TITLE  Readable title" || lines[1] != "" || strings.TrimSpace(lines[2]) != "DESCRIPTION  Description" {
-		t.Fatalf("backlog preview omitted blank title/description separator: %q", preview)
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	want := []string{"TITLE", "Readable title", "", "CONTEXT", "(none)", "", "LABELS", "(none)", "", "DESCRIPTION", "Description"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("backlog preview did not stack labels and values:\n%q", preview)
+	}
+}
+
+func TestBacklogContextColumnUsesFriendlyNameAndExtraCount(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "backlog-1"}}}, 0)
+	b.setPresentation([]IssueItem{{
+		Issue:           b.issues[0],
+		RepositoryName:  "api",
+		RepositoryExtra: 2,
+		HubPresentation: true,
+	}})
+
+	columns := backlogTableColumnsFor(b.filteredItems, 120)
+	header := ansi.Strip(renderBacklogTableHeader(columns))
+	row := ansi.Strip(b.renderBacklogRow(b.filteredItems[0], false, columns, columns.width))
+	if !strings.Contains(header, "CONTEXT") || !strings.Contains(row, "api +2") {
+		t.Fatalf("backlog context column omitted friendly multi-context value:\nheader=%q\nrow=%q", header, row)
+	}
+	if strings.Contains(row, "ctx:api") || strings.Contains(row, "[") {
+		t.Fatalf("backlog context column used special context formatting: %q", row)
+	}
+}
+
+func TestBacklogNarrowContextCellPreservesExtraCount(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "backlog-1", CreatedAt: time.Date(2026, 9, 5, 12, 34, 56, 0, time.UTC)}}}, 0)
+	b.setPresentation([]IssueItem{{
+		Issue:           b.issues[0],
+		RepositoryName:  "frontend",
+		RepositoryExtra: 2,
+		HubPresentation: true,
+	}})
+
+	columns := backlogTableColumnsFor(b.filteredItems, 70)
+	cell := backlogContextCell(b.filteredItems[0], columns.contextWidth)
+	if cell != "+2" || lipgloss.Width(cell) > columns.contextWidth {
+		t.Fatalf("narrow context cell=%q width=%d, want count-only +2", cell, columns.contextWidth)
+	}
+	header := ansi.Strip(renderBacklogTableHeader(columns))
+	row := ansi.Strip(b.renderBacklogRow(b.filteredItems[0], false, columns, columns.width))
+	if got, want := displayOffset(header, "CREATED_AT"), displayOffset(row, formatBacklogCreatedAt(b.issues[0].CreatedAt)); got != want {
+		t.Fatalf("created_at column shifted at narrow width: header=%d row=%d\nheader=%q\nrow=%q", got, want, header, row)
+	}
+}
+
+func TestBacklogPreviewShowsContextAndLabels(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "backlog-1", Labels: []string{"ctx:api", "backend", "urgent"},
+	}}}, 0)
+	b.setPresentation([]IssueItem{
+		{Issue: b.issues[0], RepositoryName: "api", RepositoryExtra: 1, HubPresentation: true, PresentationLabels: []string{"backend", "urgent"}},
+	})
+
+	preview := ansi.Strip(b.renderBacklogPreview(80))
+	for _, want := range []string{"CONTEXT", "api +1", "LABELS", "backend, urgent"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("backlog preview missing %q:\n%s", want, preview)
+		}
+	}
+	if strings.Contains(preview, "ctx:api") {
+		t.Fatalf("context label leaked into ordinary labels preview:\n%s", preview)
+	}
+}
+
+func TestBacklogPreviewStacksEveryLabelAboveItsValue(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{Title: "Title", Description: "Description"}}}, 0)
+
+	lines := strings.Split(ansi.Strip(b.renderBacklogPreview(80)), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	for _, label := range []string{"TITLE", "CONTEXT", "LABELS", "DESCRIPTION"} {
+		for i, line := range lines {
+			if line != label {
+				continue
+			}
+			if i+1 >= len(lines) || lines[i+1] == "" {
+				t.Fatalf("preview label %q was not followed by a value: %q", label, lines)
+			}
+			if strings.Contains(line, "  ") {
+				t.Fatalf("preview label %q remained inline: %q", label, line)
+			}
+			goto found
+		}
+		t.Fatalf("preview omitted label %q: %q", label, lines)
+	found:
 	}
 }
 
@@ -2108,7 +2207,7 @@ func TestBacklogSplitUsesNaturalTableWidthAndAlignedHeader(t *testing.T) {
 		if strings.Contains(line, "ID") && strings.Contains(line, "CREATED_AT") {
 			tableHeader = line
 		}
-		if strings.Contains(line, "TITLE  Readable title") {
+		if strings.Contains(line, "TITLE") {
 			previewTitle = line
 		}
 	}
@@ -2319,7 +2418,7 @@ func TestBacklogMovesPreviewBelowWhenExactTableDoesNotFit(t *testing.T) {
 		if strings.Contains(line, formatBacklogCreatedAt(created)) {
 			timestampLine = index
 		}
-		if strings.Contains(line, "TITLE  Readable title") {
+		if strings.Contains(line, "TITLE") {
 			titleLine = index
 		}
 	}
