@@ -36,7 +36,7 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	}})
 	m = updated.(*Model)
 	view := m.View()
-	if !containsText(view, "No active scope — press W to choose or create a scope, or B for the global backlog.") {
+	if !containsText(view, "No active scope — press W to choose or create a scope, or B for Global issues.") {
 		t.Fatalf("View() = %q, want compact no-active guidance", view)
 	}
 	if containsText(view, "No items") || !containsText(view, "TY") {
@@ -156,6 +156,291 @@ func TestScopePickerViewOmitsLocalHintsAndSpacesHeader(t *testing.T) {
 		if strings.Contains(view, hint) {
 			t.Fatalf("scope picker retained local hint %q:\n%s", hint, view)
 		}
+	}
+}
+
+func TestScopeScreenUsesNarrowSelectorAndBottomGlobalIssues(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+	}})
+	m.width, m.height, m.showScopePicker, m.ready = 240, 30, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today", Active: true}})
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1", Title: "Member", Status: model.StatusOpen}}})
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "global-1", Title: "Global issue", Status: model.StatusOpen}}}, 0)
+
+	top := ansi.Strip(m.scopePicker.renderTopSplit(120, 14, true))
+	if lipgloss.Width(top) != 120 || lipgloss.Height(top) != 14 {
+		t.Fatalf("top split dimensions = %dx%d, want 120x14", lipgloss.Width(top), lipgloss.Height(top))
+	}
+	line := strings.Split(top, "\n")[1]
+	if strings.Index(line, "Members")-strings.Index(line, "Scopes") < 20 {
+		t.Fatalf("Scope selector was not significantly narrower than members: %q", line)
+	}
+
+	screen := ansi.Strip(m.renderScopeScreen())
+	if !strings.Contains(screen, "Members · Today") || !strings.Contains(screen, "Global issues") || !strings.Contains(screen, "global-1") {
+		t.Fatalf("Scope screen lost one of its panels:\n%s", screen)
+	}
+	if lipgloss.Height(screen) != m.height-1 || lipgloss.Width(screen) != m.width {
+		t.Fatalf("Scope screen dimensions = %dx%d, want %dx%d", lipgloss.Width(screen), lipgloss.Height(screen), m.width, m.height-1)
+	}
+	if m.backlog.width != m.width-2 || m.backlog.height != (m.height-1-(m.height-1)/2)-2 {
+		t.Fatalf("lower backlog viewport=%dx%d, want frame content %dx%d", m.backlog.width, m.backlog.height, m.width-2, (m.height-1-(m.height-1)/2)-2)
+	}
+	lines := strings.Split(screen, "\n")
+	rightEdge := func(line string) int { return lipgloss.Width(strings.TrimRight(line, " ")) }
+	if got, want := rightEdge(lines[0]), rightEdge(lines[(m.height-1)/2]); got != want {
+		t.Fatalf("top/lower right edges=%d/%d, want aligned", got, want)
+	}
+}
+
+func TestScopeTopSplitHighlightsOnlyTheFocusedPane(t *testing.T) {
+	sentinel := "x"
+	catalog, members := scopeTopSplitStyles(true, false)
+	if catalog.Render(sentinel) != FocusedPanelStyle.Render(sentinel) || members.Render(sentinel) != PanelStyle.Render(sentinel) {
+		t.Fatal("catalog focus did not highlight only the catalog")
+	}
+	catalog, members = scopeTopSplitStyles(true, true)
+	if catalog.Render(sentinel) != PanelStyle.Render(sentinel) || members.Render(sentinel) != FocusedPanelStyle.Render(sentinel) {
+		t.Fatal("member focus did not highlight only the members")
+	}
+	for _, memberFocused := range []bool{false, true} {
+		catalog, members = scopeTopSplitStyles(false, memberFocused)
+		if catalog.Render(sentinel) != PanelStyle.Render(sentinel) || members.Render(sentinel) != PanelStyle.Render(sentinel) {
+			t.Fatal("Global issues focus retained a top-pane highlight")
+		}
+	}
+}
+
+func TestScopeTopSplitUsesDisplayedMemberRowsForPagingAndMoveHeading(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 120, 29, true, true
+	m.focused = focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	m.scopePicker.SetMoveTarget("Visible issue")
+	items := make([]IssueItem, 15)
+	for i := range items {
+		items[i].Issue.ID = fmt.Sprintf("member-%02d", i)
+		items[i].Issue.Title = fmt.Sprintf("Member %02d", i)
+	}
+	m.scopePicker.SetMembers(items)
+
+	view := ansi.Strip(m.renderScopeScreen())
+	if !strings.Contains(view, "Move: Visible issue") {
+		t.Fatalf("top split lost move heading:\n%s", view)
+	}
+	if got, want := m.scopePicker.memberViewportRows(), 7; got != want {
+		t.Fatalf("displayed member rows=%d, want %d", got, want)
+	}
+	updated, _ := m.Update(keyMsg("tab"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("right"))
+	m = updated.(*Model)
+	if got := m.scopePicker.memberViewportStart; got != 7 {
+		t.Fatalf("right moved member viewport by %d rows, want 7", got)
+	}
+	if !strings.Contains(ansi.Strip(m.renderScopeScreen()), "screen 2/3") {
+		t.Fatalf("member indicator disagrees after right:\n%s", ansi.Strip(m.renderScopeScreen()))
+	}
+	updated, _ = m.Update(keyMsg("left"))
+	m = updated.(*Model)
+	if m.scopePicker.memberViewportStart != 0 || !strings.Contains(ansi.Strip(m.renderScopeScreen()), "screen 1/3") {
+		t.Fatalf("left did not return to first displayed member screen: start=%d", m.scopePicker.memberViewportStart)
+	}
+}
+
+func TestScopeScreenRetainsGlobalPreviewAndFilters(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 140, 40, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	m.backlog.SetLabel("team")
+	m.backlog.AddFilter("global")
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "global-1", Title: "Global issue", Status: model.StatusOpen,
+		Description: "Global description", Labels: []string{"team"},
+	}}}, 0)
+
+	view := ansi.Strip(m.renderScopeScreen())
+	for _, want := range []string{"Global issues", "search: global", "label: team", "CONTEXT", "LABELS", "DESCRIPTION"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("Global issues panel lost %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestScopeScreenDispatchesGlobalControlsAfterTopPanes(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 240, 30, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{
+		{ID: "global-1", Title: "First"}, {ID: "global-2", Title: "Second"},
+	}}, 0)
+	m.focused = focusScopePicker
+
+	updated, _ := m.Update(keyMsg("tab"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("tab"))
+	m = updated.(*Model)
+	if m.focused != focusGlobalIssues {
+		t.Fatalf("tab did not move from members to Global issues: %s", m.focused)
+	}
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if issue := m.backlog.CurrentIssue(); issue == nil || issue.ID != "global-2" {
+		t.Fatalf("Global issues j navigation selected %#v", issue)
+	}
+	updated, _ = m.Update(keyMsg("/"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("global"))
+	m = updated.(*Model)
+	if !m.backlog.Searching() || m.backlog.Filter() != "global" {
+		t.Fatalf("Global issues search did not own input: searching=%t filter=%q", m.backlog.Searching(), m.backlog.Filter())
+	}
+}
+
+func TestGlobalIssuesBReturnsToList(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.showScopePicker = true
+	m.scopePickerOrigin = focusBoard
+	m.focused = focusGlobalIssues
+	m.isBoardView = true
+	m.isGraphView = true
+	m.isActionableView = true
+	m.isHistoryView = true
+	m.isSprintView = true
+	m.showDetails = true
+
+	updated, cmd := m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if cmd != nil || m.showScopePicker || m.focused != focusList || m.isBoardView || m.isGraphView || m.isActionableView || m.isHistoryView || m.isSprintView || m.showDetails {
+		t.Fatalf("Global issues B state: cmd=%t scope=%t focus=%s board=%t graph=%t actionable=%t history=%t sprint=%t details=%t", cmd != nil, m.showScopePicker, m.focused, m.isBoardView, m.isGraphView, m.isActionableView, m.isHistoryView, m.isSprintView, m.showDetails)
+	}
+}
+
+func TestScopeLowerPanelFrameFollowsGlobalFocus(t *testing.T) {
+	sentinel := "x"
+	if scopeLowerPanelStyle(true).Render(sentinel) != FocusedPanelStyle.Render(sentinel) {
+		t.Fatal("Global issues focus did not use the focused panel frame")
+	}
+	if scopeLowerPanelStyle(false).Render(sentinel) != PanelStyle.Render(sentinel) {
+		t.Fatal("unfocused Global issues panel did not use the normal panel frame")
+	}
+}
+
+func TestScopeGlobalIssuesUsesCompleteSelectedMembership(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 160, 32, true, true
+	m.focused = focusGlobalIssues
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today", MemberCount: 2}})
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-first", Title: "Member first"}}})
+	updated, _ := m.Update(loadScopeMembershipCmd(ScopeServices{
+		LoadDetails: func(context.Context, string) (ScopeDetails, error) {
+			return ScopeDetails{Info: ScopeInfo{ID: "today", MemberCount: 2}, MemberIDs: []string{"member-first", "member-beyond-first-page"}}, nil
+		},
+	}, "today")())
+	m = updated.(*Model)
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{
+		{ID: "member-first", Title: "Member first"},
+		{ID: "member-beyond-first-page", Title: "Member beyond first page"},
+		{ID: "outside", Title: "Outside issue"},
+	}}, 0)
+	m.backlog.AddFilter(" ")
+	m.backlog.Move(2)
+	m.backlog.ScrollPreview(1)
+
+	view := ansi.Strip(m.renderScopeScreen())
+	if !strings.Contains(view, "Out-of-scope issues") || !strings.Contains(view, "outside") || len(m.backlog.filtered) != 1 || m.backlog.filtered[0].ID != "outside" {
+		t.Fatalf("selected-scope complement was not applied:\n%s", view)
+	}
+	if issue := m.backlog.CurrentIssue(); issue == nil || issue.ID != "outside" || m.backlog.previewOffset != 1 {
+		t.Fatalf("selection/preview changed while applying complement: issue=%#v preview=%d", issue, m.backlog.previewOffset)
+	}
+}
+
+func TestScopeGlobalIssuesFallsBackToAllIssuesWithoutSelectedScope(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 160, 32, true, true
+	m.focused = focusGlobalIssues
+	m.scopePicker.SetScopes(nil)
+	m.scopeMembershipIDs = map[string][]string{"other": {"member"}}
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "member", Title: "Member"}, {ID: "outside", Title: "Outside"}}}, 0)
+
+	view := ansi.Strip(m.renderScopeScreen())
+	if !strings.Contains(view, "Global issues") || !strings.Contains(view, "member") || !strings.Contains(view, "outside") || strings.Contains(view, "Out-of-scope issues") {
+		t.Fatalf("no-scope lower panel was not the all-issues fallback:\n%s", view)
+	}
+}
+
+func TestScopeAddRefreshesCompleteSelectedMembership(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) {
+			return ScopeSnapshot{Scopes: []ScopeInfo{{ID: "today", Name: "Today"}}}, nil
+		},
+		LoadDetails: func(context.Context, string) (ScopeDetails, error) {
+			return ScopeDetails{Info: ScopeInfo{ID: "today", MemberCount: 2}, MemberIDs: []string{"member-old", "member-new"}}, nil
+		},
+	}})
+	m.showScopePicker = true
+	m.focused = focusGlobalIssues
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+	m.scopeMembershipIDs = map[string][]string{"today": {"member-old"}}
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{
+		{ID: "member-new", Title: "New member"},
+		{ID: "outside", Title: "Outside issue"},
+	}}, 0)
+
+	cmds := m.refreshAfterScopeMutation(ScopeMutation{Kind: ScopeMutationAdd, ScopeID: "today"})().(tea.BatchMsg)
+	for _, child := range cmds {
+		if details, ok := child().(scopeDetailsMsg); ok {
+			updated, _ := m.Update(details)
+			m = updated.(*Model)
+		}
+	}
+	if got := strings.Join(m.scopeMembershipIDs["today"], ","); got != "member-new,member-old" {
+		t.Fatalf("refreshed complete membership=%q, want member-new,member-old", got)
+	}
+	view := ansi.Strip(m.renderScopeScreen())
+	if !strings.Contains(view, "Out-of-scope issues") || len(m.backlog.filtered) != 1 || m.backlog.filtered[0].ID != "outside" {
+		t.Fatalf("added member remained in Out-of-scope issues:\n%s", view)
+	}
+}
+
+func TestSelectedScopeChangesHelpAndSidebarToOutOfScopeWording(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 160, 32, true, true
+	m.focused = focusGlobalIssues
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+	m.scopeMembershipIDs = map[string][]string{"today": {"member"}}
+	m.showShortcutsSidebar = true
+
+	help := strings.ToLower(ansi.Strip(m.renderHelpOverlay()))
+	if !strings.Contains(help, "out-of-scope issues") || strings.Contains(help, "global issues") {
+		t.Fatalf("selected-scope help wording = %q", help)
+	}
+	view := strings.ToLower(ansi.Strip(m.View()))
+	if !strings.Contains(view, "out-of-scope") || strings.Contains(view, "global issues") {
+		t.Fatalf("selected-scope sidebar/view wording = %q", view)
+	}
+}
+
+func TestScopeScreenReplacesBacklogNavigationDocumentation(t *testing.T) {
+	for _, doc := range GetKeyBindingDocs() {
+		if strings.Contains(strings.ToLower(doc.Context), "backlog") || strings.Contains(strings.ToLower(doc.Desc), "global backlog") {
+			t.Fatalf("stale Backlog navigation documentation: %+v", doc)
+		}
+	}
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 240, 30, true, true
+	for _, focus := range []focus{focusScopePicker, focusGlobalIssues} {
+		m.focused = focus
+		help := strings.ToLower(ansi.Strip(m.renderHelpOverlay()))
+		if strings.Contains(help, "backlog") {
+			t.Fatalf("focus %s retained Backlog help text: %s", focus, help)
+		}
+	}
+	footer := strings.ToLower(ansi.Strip(m.renderFooter()))
+	if strings.Contains(footer, "backlog") {
+		t.Fatalf("Scope footer navigation = %q", footer)
 	}
 }
 
@@ -348,7 +633,7 @@ func TestBacklogPageIndicatorUsesTheTableWidth(t *testing.T) {
 	t.Fatalf("backlog view omitted page indicator:\n%s", view)
 }
 
-func TestScopePickerFromBacklogReturnsToListAndReopensBacklog(t *testing.T) {
+func TestScopeScreenFromGlobalIssuesReturnsToListAndReopensGlobalIssues(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Load:        func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
 		LoadBacklog: func(context.Context, string, int) (BacklogPage, error) { return BacklogPage{}, nil },
@@ -367,8 +652,8 @@ func TestScopePickerFromBacklogReturnsToListAndReopensBacklog(t *testing.T) {
 	}
 	updated, cmd := m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if !m.isBacklogView || m.focused != focusBacklog || cmd == nil {
-		t.Fatalf("B transition: backlog=%t focus=%s cmd=%t", m.isBacklogView, m.focused, cmd != nil)
+	if !m.showScopePicker || m.isBacklogView || m.focused != focusGlobalIssues || cmd == nil {
+		t.Fatalf("B transition: scope=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
 	}
 }
 
@@ -600,7 +885,7 @@ func TestScopeRenderersStayWithinAssignedViewport(t *testing.T) {
 			}
 			guidance := m.renderNoActiveScope(m.mainContentWidth())
 			guidance = strings.Join(strings.Fields(guidance), " ")
-			if !containsText(guidance, "No active scope") || !containsText(guidance, "global backlog") {
+			if !containsText(guidance, "No active scope") || !containsText(guidance, "Global issues") {
 				t.Fatal("no-active scope guidance was not rendered")
 			}
 		})
@@ -1065,7 +1350,7 @@ func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
 	m.updateViewportContent()
 
 	view := ansi.Strip(m.View())
-	for _, want := range []string{"No active scope", "press W to choose or create a scope", "B for the global backlog"} {
+	for _, want := range []string{"No active scope", "press W to choose or create a scope", "B for Global issues"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail view missing %q:\n%s", want, view)
 		}
@@ -1081,7 +1366,7 @@ func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
 	m.isSplitView = true
 	m.applyContentSizing()
 	view = ansi.Strip(m.View())
-	for _, want := range []string{"TY", "No active scope", "global backlog"} {
+	for _, want := range []string{"TY", "No active scope", "Global issues"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("split view missing %q:\n%s", want, view)
 		}
@@ -1345,8 +1630,8 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog"}},
-		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "ID/title search", "l", "Filter by exact label", "s", "Cycle status", "A", "Add selected bead to scope", "space", "Mark current", "M", "Add matching exact label/epic issues to active scope"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members / Global issues", "Enter", "Toggle active scope", "n", "Create inactive named scope"}},
+		{name: "global issues", focus: focusBacklog, wants: []string{"Global issues", "n/p", "Next / previous page", "/", "ID/title search", "l", "Filter by exact label", "s", "Cycle status", "A", "Add selected bead to scope", "space", "Mark current", "M", "Add matching exact label/epic issues to active scope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewModel(nil, nil, "")
@@ -1374,7 +1659,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	m.focused = focusScopePicker
 	m.scopePicker.memberFocused = true
 	help := ansi.Strip(m.renderHelpOverlay())
-	for _, want := range []string{"Switch to scope catalog", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member repository filter", "Mark current member", "Remove marked/current members", "Remove members by epic or label"} {
+	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member repository filter", "Mark current member", "Remove marked/current members", "Remove members by epic or label"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("scope member help missing %q:\n%s", want, help)
 		}
@@ -1386,10 +1671,13 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"tab catalog", "j/k members", "o/c/r status", "I type", "w repository", "space mark", "R remove current", "M epic/label", "B backlog", "W close"} {
+	for _, want := range []string{"j/k members", "o/c/r status", "I type", "w repository", "space mark", "R remove current", "M epic/label", "tab global issues", "W close"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
+	}
+	if strings.Contains(footer, "tab catalog") {
+		t.Fatalf("scope member footer retained stale catalog destination: %q", footer)
 	}
 	if strings.Contains(footer, "enter toggle") || strings.Contains(footer, "n new") {
 		t.Fatalf("scope member footer advertises catalog-only control: %q", footer)
@@ -1397,7 +1685,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 
 	m.scopePicker.SetMoveTarget("Visible bead")
 	help = ansi.Strip(m.renderHelpOverlay())
-	for _, want := range []string{"Switch to scope catalog", "Move member selection", "Filter members by status"} {
+	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("moving scope member help missing %q:\n%s", want, help)
 		}
@@ -1408,13 +1696,26 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 		}
 	}
 	footer = ansi.Strip(m.renderFooter())
-	for _, want := range []string{"tab catalog", "j/k members", "o/c/r status"} {
+	for _, want := range []string{"tab global issues", "j/k members", "o/c/r status"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("moving scope member footer missing %q: %q", want, footer)
 		}
 	}
 	if strings.Contains(footer, "enter move") || strings.Contains(footer, "destination") {
 		t.Fatalf("moving scope member footer advertises destination control: %q", footer)
+	}
+}
+
+func TestScopeMoveDestinationFooterUsesMembersTab(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 240, 40
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+	m.scopePicker.SetMoveTarget("Visible bead")
+
+	footer := ansi.Strip(m.renderFooter())
+	if !strings.Contains(footer, "tab members") || strings.Contains(footer, "tab global issues") {
+		t.Fatalf("move destination footer has wrong Tab destination: %q", footer)
 	}
 }
 
@@ -1492,10 +1793,10 @@ func TestGenericHelpShowsScopesWorkflowWithAccurateContexts(t *testing.T) {
 	for _, want := range []string{
 		"Scopes",
 		"Named scopes (List/Detail)",
-		"Global backlog (List/Detail)",
+		"Global issues (List/Detail; in Scope)",
 		"New inactive named scope (Scopes)",
 		"Toggle active scope (Scopes)",
-		"Add to active scope (L/D/B)",
+		"Add to active scope (L/D/Global)",
 		"Remove from active scope (L/D)",
 		"Move bead to another scope (L/D)",
 	} {
@@ -1516,7 +1817,7 @@ func TestGenericScopesHelpFitsRepresentativeWidths(t *testing.T) {
 			updated, _ := m.Update(keyMsg("?"))
 			m = updated.(*Model)
 			view := ansi.Strip(m.View())
-			for _, want := range []string{"Scopes", "W         Named scopes", "B         Global backlog", "n         New inactive"} {
+			for _, want := range []string{"Scopes", "W         Named scopes", "B         Global issues", "n         New inactive"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("clipped generic help missing %q:\n%s", want, view)
 				}
@@ -1540,10 +1841,10 @@ func TestGenericScopesHelpBalancesWideColumns(t *testing.T) {
 
 	for _, entry := range []struct{ key, desc string }{
 		{"W", "Named scopes (List/Detail)"},
-		{"B", "Global backlog (List/Detail)"},
+		{"B", "Global issues (List/Detail; in Scope)"},
 		{"n", "New inactive named scope (Scopes)"},
 		{"Enter", "Toggle active scope (Scopes)"},
-		{"A", "Add to active scope (L/D/B)"},
+		{"A", "Add to active scope (L/D/Global)"},
 		{"R", "Remove from active scope (L/D)"},
 		{"m", "Move bead to another scope (L/D)"},
 		{"s", "Cycle sort (Hub)"},
@@ -1580,7 +1881,7 @@ func TestGenericScopesHelpBalancesWideColumns(t *testing.T) {
 	}
 }
 
-func TestScopePickerBUsesGlobalBacklogJump(t *testing.T) {
+func TestGlobalIssuesEntryPointUsesScopeScreen(t *testing.T) {
 	loads := 0
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		LoadBacklog: func(context.Context, string, int) (BacklogPage, error) {
@@ -1594,8 +1895,8 @@ func TestScopePickerBUsesGlobalBacklogJump(t *testing.T) {
 
 	updated, cmd := m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if m.showScopePicker || !m.isBacklogView || m.focused != focusBacklog || cmd == nil {
-		t.Fatalf("B did not use the global backlog jump: picker=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
+	if !m.showScopePicker || m.isBacklogView || m.focused != focusGlobalIssues || cmd == nil {
+		t.Fatalf("B did not open Global issues in Scope: picker=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
 	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
@@ -1603,10 +1904,10 @@ func TestScopePickerBUsesGlobalBacklogJump(t *testing.T) {
 		t.Fatalf("backlog loads=%d, want 1", loads)
 	}
 
-	updated, _ = m.Update(keyMsg("B"))
+	updated, _ = m.Update(keyMsg("W"))
 	m = updated.(*Model)
-	if m.isBacklogView || m.focused != focusList {
-		t.Fatalf("backlog-local B did not close the backlog: backlog=%t focus=%s", m.isBacklogView, m.focused)
+	if m.showScopePicker || m.isBacklogView || m.focused != focusList {
+		t.Fatalf("Scope W did not close Global issues: picker=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
 	}
 
 	m.isBacklogView = true
@@ -1732,8 +2033,8 @@ func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	m = updated.(*Model)
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
-	if !m.isBacklogView || len(cursors) != 1 || cursors[0] != "" {
-		t.Fatalf("backlog open state=%t cursors=%v", m.isBacklogView, cursors)
+	if !m.showScopePicker || m.focused != focusGlobalIssues || len(cursors) != 1 || cursors[0] != "" {
+		t.Fatalf("Global issues open state: scope=%t focus=%s cursors=%v", m.showScopePicker, m.focused, cursors)
 	}
 	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(*Model)
@@ -1843,7 +2144,7 @@ func TestBacklogViewShowsActiveSearchLabelAndStatus(t *testing.T) {
 	b.CycleStatus()
 
 	view := ansi.Strip(b.View())
-	for _, want := range []string{"Global backlog", "search: needle_", "label: team", "status: open"} {
+	for _, want := range []string{"Global issues", "search: needle_", "label: team", "status: open"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("backlog view missing active filter %q:\n%s", want, view)
 		}
@@ -2028,7 +2329,7 @@ func TestBacklogRenderUsesBoundedColumnsAndFullPreview(t *testing.T) {
 	})
 
 	view := ansi.Strip(b.View())
-	for _, want := range []string{"Global backlog", "ID", "TYPE", "PR", "STAT", "CONTEXT", "CREATED_AT", "OPEN", "backlog-1", "Readable backlog title"} {
+	for _, want := range []string{"Global issues", "ID", "TYPE", "PR", "STAT", "CONTEXT", "CREATED_AT", "OPEN", "backlog-1", "Readable backlog title"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("backlog view missing %q:\n%s", want, view)
 		}
@@ -2856,7 +3157,7 @@ func TestScopeAndBacklogOverlaysOwnInputBeforeUnderlyingViews(t *testing.T) {
 	m.showHelp = true
 	m.focused = focusHelp
 	m.focusBeforeHelp = focusBacklog
-	if !strings.Contains(m.View(), "Backlog") {
+	if !strings.Contains(m.View(), "Global issues") {
 		t.Fatal("help overlay did not render over the backlog")
 	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})

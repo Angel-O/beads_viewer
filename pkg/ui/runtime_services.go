@@ -32,7 +32,7 @@ type ChangeSource interface {
 // Model keeps no history-mode or Hub-selection policy; standalone callers may
 // leave this zero-valued and receive local Git defaults.
 type RuntimeServices struct {
-	// Scopes supplies the explicit named-scope control plane and global backlog.
+	// Scopes supplies the explicit named-scope control plane and Global issues.
 	// It is nil for local/standalone Viewer construction.
 	Scopes                 ScopeServices
 	HistoryProvider        *correlation.Provider

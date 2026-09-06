@@ -148,7 +148,7 @@ func TestNewModelRegistersDocumentedBindings(t *testing.T) {
 		{focus: focusList, key: "R"},
 		{focus: focusList, key: "m"},
 		{focus: focusScopePicker, key: "enter"},
-		{focus: focusBacklog, key: "p"},
+		{focus: focusGlobalIssues, key: "n/p"},
 		{focus: focusList, key: "w"},
 		{focus: focusList, key: "s"},
 		{focus: focusList, key: "S"},
@@ -1262,7 +1262,7 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusSprint:         "sprint",
 		focusAttention:      "attention",
 		focusScopePicker:    "scope",
-		focusBacklog:        "backlog",
+		focusGlobalIssues:   "global-issues",
 	}
 	required := map[focus][]string{
 		focusList:           {"j", "enter", "a", "b", "g", "h", "i", "E", "f", "[", "]", "?", "F2/;", "tab", "/", "o", "c", "r", "I", "l", "n", "U", "V", "s", "S", "x", "y", "C", "t", "T", "O", "'", "w", "m", "!", "ctrl+s", "H", "alt+h", "Ctrl+R/F5", "up", "down", "left", "right"},
@@ -1277,8 +1277,8 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
 		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
 		focusAttention:      {"j", "k", "up", "down", "home", "G", "enter", "g", "] / F4", "esc / q", "?", "F2/;"},
-		focusScopePicker:    {"j", "k", "enter", "esc", "q", "B", "W", "ctrl+c", "`", "F2/;", "?"},
-		focusBacklog:        {"j", "k", "n", "p", "esc", "q", "B", "W", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5"},
+		focusScopePicker:    {"j", "k", "enter", "esc", "q", "W", "ctrl+c", "`", "F2/;", "?"},
+		focusGlobalIssues:   {"j/k", "n/p", "esc", "q", "W", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5"},
 	}
 
 	hasDoc := func(context, key string) bool {

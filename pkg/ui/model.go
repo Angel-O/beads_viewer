@@ -99,6 +99,7 @@ const (
 	focusCommentInput
 	focusScopePicker
 	focusScopeCreateInput
+	focusGlobalIssues
 	focusBacklog
 	focusCommentSelection
 	focusCommentDeleteConfirm
@@ -1228,6 +1229,7 @@ type Model struct {
 	// scopeDetails retains the last successful selected-scope detail load;
 	// failed reloads must not replace it with an empty result.
 	scopeDetails          *ScopeDetails
+	scopeMembershipIDs    map[string][]string
 	backlog               BacklogModel
 	backlogLoading        bool
 	backlogPageGeneration uint64
@@ -3104,9 +3106,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		details := msg.details
 		m.scopeDetails = &details
+		if ids, ok := completeScopeMemberIDs(details); ok {
+			if m.scopeMembershipIDs == nil {
+				m.scopeMembershipIDs = make(map[string][]string)
+			}
+			m.scopeMembershipIDs[msg.scopeID] = ids
+		}
 		// Generation-less typed responses must populate the member browser too.
 		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
 			m.applyScopePickerDetails(details)
+		}
+
+	case scopeMembershipMsg:
+		if msg.err == nil {
+			if m.scopeMembershipIDs == nil {
+				m.scopeMembershipIDs = make(map[string][]string)
+			}
+			m.scopeMembershipIDs[msg.scopeID] = append([]string(nil), msg.ids...)
 		}
 
 	case scopeMembersPageMsg:
@@ -4808,6 +4824,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
 		}
+		if m.showScopePicker && m.focused == focusGlobalIssues && !m.showRepoPicker && msg.String() != "ctrl+c" &&
+			(m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
+			return m.handleBacklogKey(msg)
+		}
 		if m.showScopePicker && !m.showRepoPicker &&
 			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused() || isScopePickerPagingKey(msg.String()) && m.scopePicker.OwnsPagingKey(msg.String())) {
 			return m.handleScopePickerKey(msg)
@@ -5567,6 +5587,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "tab":
+				if m.focused == focusGlobalIssues && m.showScopePicker {
+					m.focused = focusScopePicker
+					m.scopePicker.memberFocused = false
+					return m, nil
+				}
 				if m.isSplitView && !m.isBoardView && (m.focused == focusList || m.focused == focusDetail) {
 					if m.focused == focusList {
 						m.focused = focusDetail
@@ -5931,18 +5956,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "B":
-				if m.showScopePicker {
+				if m.showScopePicker && m.focused == focusGlobalIssues {
 					m.closeScopePicker()
+					m.focused = focusList
+					m.isBoardView = false
+					m.isGraphView = false
+					m.isActionableView = false
+					m.isHistoryView = false
+					m.isSprintView = false
+					m.showDetails = false
+					return m, nil
 				}
 				if m.isBacklogView {
 					m.closeBacklog()
 					return m, nil
 				}
 				if m.runtimeServices.Scopes.LoadBacklog == nil && m.runtimeServices.Scopes.QueryBacklog == nil {
-					m.statusMsg, m.statusIsError = "Global backlog requires Hub mode", true
+					m.statusMsg, m.statusIsError = "Global issues requires Hub mode", true
 					return m, nil
 				}
-				return m, m.openBacklog()
+				return m, m.openGlobalIssues()
 
 			case "W":
 				if m.showScopePicker {
@@ -6199,7 +6232,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repoPickerOrigin = m.focused
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-				if m.isBacklogView {
+				if m.isBacklogView || m.focused == focusGlobalIssues {
 					m.repoPicker.SetHubScope(m.backlogHubScope())
 				} else if m.hubRepositoryMode {
 					m.repoPicker.SetHubScope(m.hubScope)
@@ -7310,7 +7343,7 @@ func (m *Model) resetRecipePicker() {
 
 func (m *Model) applyRepositoryPickerSelection() *Model {
 	selected := m.repoPicker.SelectedRepos()
-	if m.repoPickerOrigin == focusBacklog {
+	if m.repoPickerOrigin == focusBacklog || m.repoPickerOrigin == focusGlobalIssues {
 		return m.applyBacklogPickerSelection(selected)
 	}
 	focusAfterApply := focusList
@@ -7391,7 +7424,11 @@ func (m *Model) applyBacklogPickerSelection(selected map[string]bool) *Model {
 	m.backlog.SetContextFilter(contexts, includeContextless, names)
 	m.backlog.resetCursor()
 	m.showRepoPicker = false
-	m.focused = focusBacklog
+	if m.repoPickerOrigin == focusGlobalIssues {
+		m.focused = focusGlobalIssues
+	} else {
+		m.focused = focusBacklog
+	}
 	m.backlogReloadCmd = m.reloadBacklogFromFirstPage()
 	return m
 }
@@ -8015,7 +8052,7 @@ func (m Model) restoreFocusFromHelp() focus {
 		return m.focusBeforeHelp
 	case focusTimeTravelInput, focusLabelPicker:
 		return m.focusBeforeHelp
-	case focusScopePicker, focusBacklog:
+	case focusScopePicker, focusGlobalIssues, focusBacklog:
 		return m.focusBeforeHelp
 	default:
 		return focusList
@@ -8170,8 +8207,7 @@ func (m *Model) View() string {
 	} else if m.showScopeMatchPrompt {
 		body = m.renderScopeMatchPrompt()
 	} else if m.showScopePicker {
-		m.scopePicker.SetSize(m.mainContentWidth(), m.height-1)
-		body = m.scopePicker.View()
+		body = m.renderScopeScreen()
 	} else if m.showTypePicker {
 		body = m.typePicker.View()
 	} else if m.showLabelPicker {
@@ -8244,6 +8280,7 @@ func (m *Model) View() string {
 		m.shortcutsSidebar.SetScopePickerState(m.scopePicker.MemberFocused(), m.scopePickerMoveIssue != "")
 		m.shortcutsSidebar.SetBacklogSearch(m.backlog.Searching())
 		m.shortcutsSidebar.SetBacklogLabelEditing(m.backlog.LabelEditing())
+		m.shortcutsSidebar.SetGlobalIssuesTitle(m.globalIssuesTitle())
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 		sidebar := m.shortcutsSidebar.View()
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, sidebar)
@@ -8764,12 +8801,13 @@ func (m *Model) renderHelpOverlay() string {
 	}
 	// Scope entry points are shown in generic help so the workflow is
 	// discoverable before the user opens either scope-specific view.
+	globalIssuesTitle := m.globalIssuesTitle()
 	scopesSection := []struct{ key, desc string }{
 		{"W", "Named scopes (List/Detail)"},
-		{"B", "Global backlog (List/Detail)"},
+		{"B", globalIssuesTitle + " (List/Detail; in Scope)"},
 		{"n", "New inactive named scope (Scopes)"},
 		{"Enter", "Toggle active scope (Scopes)"},
-		{"A", "Add to active scope (L/D/B)"},
+		{"A", "Add to active scope (L/D/Global)"},
 		{"R", "Remove from active scope (L/D)"},
 		{"m", "Move bead to another scope (L/D)"},
 	}
@@ -8947,18 +8985,17 @@ func (m *Model) renderHelpOverlay() string {
 		}
 	case focusScopePicker:
 		scopeControls := []struct{ key, desc string }{
-			{"Tab", "Switch to members"},
+			{"Tab", "Switch to members / " + m.globalIssuesTitle()},
 			{"j/k", "Move scope selection"},
 			{"←/→", "Previous / next scope page"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
-			{"B", "Open global backlog"},
 			{"W", "Close scope picker"},
 			{"Esc / q", "Return to previous view"},
 		}
 		if m.scopePicker.MemberFocused() {
 			scopeControls = []struct{ key, desc string }{
-				{"Tab", "Switch to scope catalog"},
+				{"Tab", "Switch to " + m.globalIssuesTitle()},
 				{"j/k", "Move member selection"},
 				{"n/p", "Next / previous member page"},
 				{"o/c/r", "Filter members by status"},
@@ -8967,7 +9004,6 @@ func (m *Model) renderHelpOverlay() string {
 				{"space", "Mark current member"},
 				{"R", "Remove marked/current members"},
 				{"M", "Remove members by epic or label"},
-				{"B", "Open global backlog"},
 				{"W", "Close scope picker"},
 				{"Esc / q", "Return to previous view"},
 			}
@@ -8976,7 +9012,6 @@ func (m *Model) renderHelpOverlay() string {
 				{"j/k", "Move destination scope"},
 				{"←/→", "Previous / next scope page"},
 				{"Enter", "Move selected bead"},
-				{"B", "Open global backlog"},
 				{"W", "Close scope picker"},
 				{"Esc / q", "Return to previous view"},
 			}
@@ -8984,6 +9019,24 @@ func (m *Model) renderHelpOverlay() string {
 		specializedPanels = []string{
 			renderPanel("Scopes", "◉", 0, scopeControls),
 			renderPanel("Global", "🌐", 2, specializedGlobal),
+		}
+	case focusGlobalIssues:
+		globalIssuesControls := []struct{ key, desc string }{
+			{"j/k", "Move selection"},
+			{"PgUp/Dn", "Scroll preview (Ctrl+b/f)"},
+			{"space", "Mark current issue"},
+			{"n/p", "Next / previous page"},
+			{"/", "ID/title search"},
+			{"l", "Filter by exact label"},
+			{"s", "Cycle status"},
+			{"A", "Add selected issue to scope (or all marked)"},
+			{"M", "Add matching exact label/epic issues to active scope"},
+			{"W", "Close Scope screen"},
+			{"Esc / q", "Return to previous view"},
+		}
+		specializedPanels = []string{
+			renderPanel(globalIssuesTitle, "▤", 0, globalIssuesControls),
+			renderPanel("Scope screen", "◉", 2, specializedGlobal),
 		}
 	case focusBacklog:
 		backlogControls := []struct{ key, desc string }{
@@ -9000,7 +9053,7 @@ func (m *Model) renderHelpOverlay() string {
 			{"B / Esc / q", "Return to List"},
 		}
 		specializedPanels = []string{
-			renderPanel("Backlog", "▤", 0, backlogControls),
+			renderPanel(globalIssuesTitle, "▤", 0, backlogControls),
 			renderPanel("Global", "🌐", 2, specializedGlobal),
 		}
 	}
@@ -10110,9 +10163,9 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("enter")+" create", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopeMatchPrompt {
 		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel")
-	} else if m.showScopePicker {
+	} else if m.showScopePicker && m.focused != focusGlobalIssues {
 		if m.scopePicker.MemberFocused() {
-			keyHints = append(keyHints, keyStyle.Render("tab")+" catalog", keyStyle.Render("j/k")+" members")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" members")
 			if m.runtimeServices.Scopes.QueryMembers != nil {
 				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
 			}
@@ -10121,15 +10174,25 @@ func (m *Model) renderFooter() string {
 			if m.scopePicker.MemberMarkCount() > 0 {
 				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" epic/label", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" epic/label", keyStyle.Render("tab")+" "+strings.ToLower(m.globalIssuesTitle()), keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
 		} else if m.scopePickerMoveIssue != "" {
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes")
 			if m.runtimeServices.Scopes.QueryCatalog != nil {
 				keyHints = append(keyHints, keyStyle.Render("←/→")+" page")
 			}
-			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+		}
+	} else if m.focused == focusGlobalIssues {
+		if m.backlog.Searching() {
+			keyHints = append(keyHints, keyStyle.Render("type")+" filter", keyStyle.Render("backspace")+" delete", keyStyle.Render("enter/esc")+" done")
+		} else {
+			addHint := "add current"
+			if m.backlog.MarkCount() > 0 {
+				addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
+			}
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" add scope", keyStyle.Render("tab")+" scopes", keyStyle.Render("W")+" close")
 		}
 	} else if m.isBacklogView {
 		if m.backlog.Searching() {
@@ -10240,7 +10303,7 @@ func (m *Model) renderFooter() string {
 	// COUNT BADGE - Total issues displayed
 	// ─────────────────────────────────────────────────────────────────────────
 	count := len(m.list.Items())
-	if m.isBacklogView {
+	if m.isBacklogView || m.focused == focusGlobalIssues {
 		count = len(m.backlog.filtered)
 	}
 	countBadge := lipgloss.NewStyle().
@@ -11994,6 +12057,8 @@ func (f focus) String() string {
 		return "comment_input"
 	case focusScopePicker:
 		return "scope_picker"
+	case focusGlobalIssues:
+		return "global_issues"
 	case focusScopeCreateInput:
 		return "scope_create_input"
 	case focusBacklog:

@@ -198,6 +198,12 @@ type scopeDetailsMsg struct {
 	err        error
 }
 
+type scopeMembershipMsg struct {
+	scopeID string
+	ids     []string
+	err     error
+}
+
 type scopeMutationMsg struct {
 	mutation     ScopeMutation
 	action       string // compatibility with older local message producers
@@ -246,6 +252,23 @@ func loadScopeDetailsCmd(service ScopeServices, scopeID string, generations ...u
 		}
 		details, err := service.LoadDetails(context.Background(), scopeID)
 		return scopeDetailsMsg{details: details, scopeID: scopeID, generation: generation, err: err}
+	}
+}
+
+func loadScopeMembershipCmd(service ScopeServices, scopeID string) tea.Cmd {
+	return func() tea.Msg {
+		if service.LoadDetails == nil {
+			return scopeMembershipMsg{scopeID: scopeID, err: fmt.Errorf("complete scope membership is unavailable")}
+		}
+		details, err := service.LoadDetails(context.Background(), scopeID)
+		if err != nil {
+			return scopeMembershipMsg{scopeID: scopeID, err: err}
+		}
+		ids, complete := completeScopeMemberIDs(details)
+		if !complete {
+			return scopeMembershipMsg{scopeID: scopeID, err: fmt.Errorf("complete scope membership is unavailable")}
+		}
+		return scopeMembershipMsg{scopeID: scopeID, ids: ids}
 	}
 }
 
@@ -334,6 +357,8 @@ type BacklogModel struct {
 	theme              Theme
 	delegate           IssueDelegate
 	marked             map[string]bool
+	title              string
+	excludedIDs        map[string]struct{}
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
@@ -343,6 +368,7 @@ func NewBacklogModel(theme Theme) BacklogModel {
 		pageCursors: []string{""},
 		delegate:    IssueDelegate{Theme: theme, useFullWidth: true},
 		labelInput:  newBacklogLabelInput(theme),
+		title:       "Global issues",
 	}
 }
 
@@ -400,6 +426,52 @@ func (b *BacklogModel) Reset() {
 	b.labelEditing = false
 	b.labelInput.Blur()
 	b.ClearMarks()
+	b.title = "Global issues"
+	b.excludedIDs = nil
+}
+
+func (b *BacklogModel) SetTitle(title string) {
+	if title == "" {
+		title = "Global issues"
+	}
+	b.title = title
+}
+
+func (b *BacklogModel) SetExcludedIDs(ids []string) {
+	excluded := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			excluded[id] = struct{}{}
+		}
+	}
+	if len(excluded) == len(b.excludedIDs) {
+		equal := true
+		for id := range excluded {
+			if _, ok := b.excludedIDs[id]; !ok {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			return
+		}
+	}
+	selectedID := ""
+	if issue := b.CurrentIssue(); issue != nil {
+		selectedID = issue.ID
+	}
+	previewOffset := b.previewOffset
+	b.excludedIDs = excluded
+	b.applyFilter()
+	if selectedID != "" {
+		for i, item := range b.filteredItems {
+			if item.Issue.ID == selectedID {
+				b.selected = i
+				break
+			}
+		}
+	}
+	b.previewOffset = previewOffset
 }
 
 func (b *BacklogModel) ResetPagination() {
@@ -602,12 +674,16 @@ func (b *BacklogModel) applyFilter() {
 }
 
 func (b BacklogModel) filteredIssueItems() []IssueItem {
-	if strings.TrimSpace(b.filter) == "" {
-		return append([]IssueItem(nil), b.items...)
-	}
 	term := strings.ToLower(b.filter)
 	result := make([]IssueItem, 0, len(b.items))
 	for _, item := range b.items {
+		if _, excluded := b.excludedIDs[item.Issue.ID]; excluded {
+			continue
+		}
+		if term == "" {
+			result = append(result, item)
+			continue
+		}
 		if strings.Contains(strings.ToLower(item.Issue.ID), term) || strings.Contains(strings.ToLower(item.Issue.Title), term) {
 			result = append(result, item)
 		}
@@ -628,7 +704,10 @@ func (b BacklogModel) View() string {
 		filters = append(filters, "label: "+b.label)
 	}
 	filters = append(filters, "status: "+b.Status())
-	title := "Global backlog"
+	title := b.title
+	if title == "" {
+		title = "Global issues"
+	}
 	if contexts := b.contextFilterLabel(); contexts != "" {
 		title += " · contexts: " + contexts
 	}
@@ -951,21 +1030,22 @@ type ScopePickerModel struct {
 	catalogLoading     bool
 	catalogError       string
 
-	members                []IssueItem
-	filteredMembers        []IssueItem
-	memberSelected         int
-	memberScopeID          string
-	memberGeneration       uint64
-	memberLoading          bool
-	memberError            string
-	memberFocused          bool
-	memberHasMore          bool
-	memberNextCursor       string
-	memberPageIndex        int
-	memberPageCursors      []string
-	memberViewportStart    int
-	memberViewportPrevious bool
-	memberServerFiltering  bool
+	members                    []IssueItem
+	filteredMembers            []IssueItem
+	memberSelected             int
+	memberScopeID              string
+	memberGeneration           uint64
+	memberLoading              bool
+	memberError                string
+	memberFocused              bool
+	memberHasMore              bool
+	memberNextCursor           string
+	memberPageIndex            int
+	memberPageCursors          []string
+	memberViewportStart        int
+	memberViewportPrevious     bool
+	memberViewportRowsOverride int
+	memberServerFiltering      bool
 
 	memberStatusFilter     string
 	memberRepositoryFilter string
@@ -1013,6 +1093,7 @@ func (s *ScopePickerModel) SetSize(width, height int) {
 		s.memberSelected = 0
 		s.memberViewportPrevious = false
 	}
+	s.memberViewportRowsOverride = 0
 	s.width, s.height = width, height
 }
 func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
@@ -1317,6 +1398,9 @@ func (s ScopePickerModel) memberPanelRows() int {
 }
 
 func (s ScopePickerModel) memberViewportRows() int {
+	if s.memberViewportRowsOverride > 0 {
+		return s.memberViewportRowsOverride
+	}
 	return maxInt(s.memberPanelRows()-3, 1)
 }
 
@@ -1630,6 +1714,29 @@ func scopeDetailItems(details ScopeDetails) []IssueItem {
 	return items
 }
 
+func completeScopeMemberIDs(details ScopeDetails) ([]string, bool) {
+	ids := make(map[string]struct{}, len(details.MemberIDs)+len(details.Issues))
+	for _, id := range details.MemberIDs {
+		if id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	for _, issue := range details.Issues {
+		if issue.ID != "" {
+			ids[issue.ID] = struct{}{}
+		}
+	}
+	if len(ids) == 0 && details.Info.MemberCount > 0 {
+		return nil, false
+	}
+	result := make([]string, 0, len(ids))
+	for id := range ids {
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	return result, true
+}
+
 // SetMoveTarget changes the picker from scope activation to moving one named
 // bead. An empty title restores the activation-only picker.
 func (s *ScopePickerModel) SetMoveTarget(title string) { s.moveTarget = title }
@@ -1689,6 +1796,58 @@ func (s ScopePickerModel) View() string {
 		Height(maxInt(height, 1)).
 		Padding(1, 2).
 		Render(view)
+}
+
+// renderTopSplit renders the Scope screen's upper half: the catalog stays
+// narrow while the selected scope's members get the remaining width.
+func (s *ScopePickerModel) renderTopSplit(width, height int, scopeFocused bool) string {
+	width, height = maxInt(width, 1), maxInt(height, 1)
+	if width < 20 || height < 7 {
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, truncateRunesHelper("Scopes", width, "…"))
+	}
+	bound := func(view string, width, height int) string {
+		lines := strings.Split(view, "\n")
+		if len(lines) > height {
+			lines = lines[:height]
+		}
+		for i := range lines {
+			lines[i] = ansi.Truncate(lines[i], width, "")
+			lines[i] += strings.Repeat(" ", maxInt(width-lipgloss.Width(lines[i]), 0))
+		}
+		for len(lines) < height {
+			lines = append(lines, strings.Repeat(" ", width))
+		}
+		return strings.Join(lines, "\n")
+	}
+	contentWidth := maxInt(width-4, 2)
+	selectorWidth := maxInt(contentWidth/4, 20)
+	selectorWidth = min(selectorWidth, maxInt(contentWidth/3, 1))
+	membersWidth := maxInt(contentWidth-selectorWidth-2, 1)
+	panelHeight := maxInt(height, 1)
+	catalogStyle, memberStyle := scopeTopSplitStyles(scopeFocused, s.memberFocused)
+	memberRows := maxInt(panelHeight-4, 1)
+	s.memberViewportRowsOverride = maxInt(memberRows-3, 1)
+	panel := func(style lipgloss.Style, content string, panelWidth int) string {
+		return bound(style.Padding(0, 1).Width(maxInt(panelWidth-2, 1)).Height(maxInt(panelHeight-2, 1)).Render(content), panelWidth, panelHeight)
+	}
+	heading := "Scopes"
+	if s.moveTarget != "" {
+		heading = "Move: " + s.moveTarget
+	}
+	catalog := panel(catalogStyle, s.renderCatalog(heading, maxInt(selectorWidth-4, 1), maxInt(panelHeight-4, 1)), selectorWidth)
+	members := panel(memberStyle, s.renderMembers(maxInt(membersWidth-4, 1), memberRows), membersWidth)
+	return bound(lipgloss.JoinHorizontal(lipgloss.Top, catalog, "  ", members), width, height)
+}
+
+func scopeTopSplitStyles(scopeFocused, memberFocused bool) (lipgloss.Style, lipgloss.Style) {
+	catalogStyle, memberStyle := PanelStyle, PanelStyle
+	if scopeFocused {
+		catalogStyle = FocusedPanelStyle
+		if memberFocused {
+			catalogStyle, memberStyle = PanelStyle, FocusedPanelStyle
+		}
+	}
+	return catalogStyle, memberStyle
 }
 
 func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string {
@@ -2074,7 +2233,57 @@ func (m Model) renderScopeMatchPrompt() string {
 // content, rather than a full-screen state that hides the current view.
 func (m Model) renderNoActiveScope(width int) string {
 	style := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
-	return style.Width(maxInt(width, 1)).Render("No active scope — press W to choose or create a scope, or B for the global backlog.")
+	return style.Width(maxInt(width, 1)).Render("No active scope — press W to choose or create a scope, or B for Global issues.")
+}
+
+// renderScopeScreen keeps scope selection, members, and Global issues in one
+// bounded screen. The existing picker and backlog renderers retain ownership
+// of their controls and pagination; this method only assigns their viewports.
+func (m *Model) renderScopeScreen() string {
+	width := m.mainContentWidth()
+	bodyHeight := maxInt(m.height-1, 1)
+	topHeight := maxInt(bodyHeight/2, 1)
+	bottomHeight := maxInt(bodyHeight-topHeight, 1)
+	// The top split keeps four columns of outer breathing room in its bounded
+	// renderer; allocate those columns outside the body width so its panels end
+	// at the same right edge as the framed lower panel.
+	topWidth := width + 4
+	m.scopePicker.SetSize(topWidth, topHeight)
+	top := m.scopePicker.renderTopSplit(topWidth, topHeight, m.focused != focusGlobalIssues)
+	lowerTitle := m.globalIssuesTitle()
+	var excluded []string
+	if scopeID := m.scopePicker.SelectedScopeID(); scopeID != "" {
+		if ids, ok := m.scopeMembershipIDs[scopeID]; ok {
+			excluded = ids
+		}
+	}
+	m.backlog.SetExcludedIDs(excluded)
+	m.backlog.SetTitle(lowerTitle)
+	frameWidth := maxInt(width-2, 1)
+	frameHeight := maxInt(bottomHeight-2, 1)
+	m.backlog.SetSize(frameWidth, frameHeight)
+	m.backlog.setDelegate(m.backlogIssueDelegate())
+	bottom := m.backlog.View()
+	lowerStyle := scopeLowerPanelStyle(m.focused == focusGlobalIssues)
+	bottom = lowerStyle.Padding(0, 1).Width(frameWidth).Height(frameHeight).Render(bottom)
+	return lipgloss.NewStyle().Width(width).Height(bodyHeight).MaxHeight(bodyHeight).
+		Render(lipgloss.JoinVertical(lipgloss.Left, top, bottom))
+}
+
+func (m Model) globalIssuesTitle() string {
+	if scopeID := m.scopePicker.SelectedScopeID(); scopeID != "" {
+		if _, ok := m.scopeMembershipIDs[scopeID]; ok {
+			return "Out-of-scope issues"
+		}
+	}
+	return "Global issues"
+}
+
+func scopeLowerPanelStyle(focused bool) lipgloss.Style {
+	if focused {
+		return FocusedPanelStyle
+	}
+	return PanelStyle
 }
 
 // replacePaddedEmptyState replaces a component's empty line before restoring
@@ -2184,6 +2393,12 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	if details := m.loadSelectedScopeDetails(); details != nil {
 		cmds = append(cmds, details)
 	}
+	if m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil {
+		m.backlog.Reset()
+		m.backlogLoading = true
+		m.backlogPageGeneration++
+		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration))
+	}
 	if len(cmds) == 1 {
 		return cmds[0]
 	}
@@ -2195,7 +2410,12 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 
 func (m *Model) loadSelectedScopeDetails() tea.Cmd {
 	if m.runtimeServices.Scopes.QueryMembers != nil {
-		return m.startScopeMembersPage("", 0)
+		members := m.startScopeMembersPage("", 0)
+		scopeID := m.scopePicker.SelectedScopeID()
+		if scopeID == "" || m.runtimeServices.Scopes.LoadDetails == nil {
+			return members
+		}
+		return tea.Batch(members, loadScopeMembershipCmd(m.runtimeServices.Scopes, scopeID))
 	}
 	if m.runtimeServices.Scopes.LoadDetails == nil {
 		return nil
@@ -2237,14 +2457,19 @@ func (m *Model) closeScopePicker() {
 	m.focused = m.scopePickerOrigin
 }
 
-func (m *Model) openBacklog() tea.Cmd {
-	m.isBacklogView = true
-	m.isBoardView, m.isGraphView, m.isActionableView, m.isHistoryView = false, false, false, false
-	m.focused = focusBacklog
-	m.backlog.Reset()
-	m.backlogLoading = true
-	m.backlogPageGeneration++
-	return loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration)
+// openGlobalIssues enters the Scope screen with its lower panel focused. In
+// scope-capable Hub mode this is the replacement for the old standalone view.
+func (m *Model) openGlobalIssues() tea.Cmd {
+	if m.showScopePicker {
+		m.focused = focusGlobalIssues
+		if m.runtimeServices.Scopes.QueryBacklog == nil && m.runtimeServices.Scopes.LoadBacklog == nil {
+			return nil
+		}
+		return m.reloadBacklogFromFirstPage()
+	}
+	cmd := m.openScopePicker("")
+	m.focused = focusGlobalIssues
+	return cmd
 }
 
 func (m *Model) backlogQuery(cursor string) BacklogQuery {
@@ -2306,7 +2531,12 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			return m, m.loadSelectedScopeDetails()
 		}
 	case "tab":
-		m.scopePicker.memberFocused = !m.scopePicker.memberFocused
+		if m.scopePicker.memberFocused {
+			m.scopePicker.memberFocused = false
+			m.focused = focusGlobalIssues
+		} else {
+			m.scopePicker.memberFocused = true
+		}
 	case "right", "]":
 		if m.scopePicker.MemberFocused() {
 			if m.scopePicker.MoveMemberScreen(1) {
@@ -2474,6 +2704,7 @@ func (m *Model) handleScopeCreateKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 }
 
 func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	global := m.focused == focusGlobalIssues
 	// Local backlog navigation dismisses only reload feedback so the backlog
 	// controls can reappear; action results and errors remain visible.
 	if !m.statusIsError && isBacklogReloadNotice(m.statusMsg) {
@@ -2531,8 +2762,21 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
-	case "esc", "q", "B":
-		m.closeBacklog()
+	case "tab":
+		if global {
+			m.focused = focusScopePicker
+			m.scopePicker.memberFocused = false
+		}
+	case "esc", "q":
+		if global {
+			m.closeScopePicker()
+		} else {
+			m.closeBacklog()
+		}
+	case "B":
+		if !global {
+			m.closeBacklog()
+		}
 	case "j", "down":
 		m.backlog.Move(1)
 	case "k", "up":
@@ -2582,13 +2826,13 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 		m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
 		return nil
 	}
-	if m.isBacklogView && action == "add" {
+	if (m.isBacklogView || m.focused == focusGlobalIssues) && action == "add" {
 		if ids := m.backlog.MarkedIDs(); len(ids) > 0 {
 			return m.startScopeMembershipMutation(action, ids, m.activeScope.ID)
 		}
 	}
 	issueID := ""
-	if m.isBacklogView {
+	if m.isBacklogView || m.focused == focusGlobalIssues {
 		if issue := m.backlog.CurrentIssue(); issue != nil {
 			issueID = issue.ID
 		}
@@ -2817,7 +3061,7 @@ func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	if m.runtimeServices.Scopes.QueryCatalog != nil && m.runtimeServices.Scopes.Load != nil {
 		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
 	}
-	if mutation.Kind == ScopeMutationRemove && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
+	if (mutation.Kind == ScopeMutationAdd || mutation.Kind == ScopeMutationRemove) && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
 		if m.showScopePicker && m.scopePicker.SelectedScopeID() == mutation.ScopeID {
 			cmds = append(cmds, m.loadSelectedScopeDetails())
 		} else {
@@ -2830,7 +3074,7 @@ func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	} else if m.beadsPath != "" {
 		cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
 	}
-	if m.isBacklogView {
+	if m.isBacklogView || m.focused == focusGlobalIssues {
 		m.backlogLoading = true
 		m.backlogPageGeneration++
 		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes,
