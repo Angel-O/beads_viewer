@@ -207,6 +207,174 @@ printf '%s' '{"issues":[],"pagination":{}}'
 	}
 }
 
+func TestHubScopeServicesQueryCatalogAndMembersBuildPagedCommands(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$WBD_SCOPE_CALLS"
+if [ "$2" = "list" ]; then
+  printf '%s' '{"items":[{"id":"scope-a","name":"Today","member_count":2,"new_scope_field":"allowed"}],"limit":2,"returned_count":1,"total_matching":3,"has_more":true,"next_cursor":"catalog-next"}'
+else
+  printf '%s' '{"scope":{"id":"scope-a","name":"Today","member_count":99,"created_on":"2026-09-05T00:00:00Z","new_scope_field":"allowed"},"members":[{"id":"b1","title":"Member","status":"open","issue_type":"task","new_member_field":"allowed"}],"member_count":2,"completed_count":1,"limit":3,"returned_count":1,"total_matching":1,"has_more":false}'
+fi
+`
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+	service := newHubScopeServices(root)
+
+	catalog, err := service.QueryCatalog(context.Background(), ui.ScopeCatalogQuery{Limit: 2, Cursor: "catalog-cursor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Scopes) != 1 || catalog.Scopes[0].ID != "scope-a" || !catalog.HasMore || catalog.NextCursor != "catalog-next" {
+		t.Fatalf("catalog page = %#v", catalog)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := splitLines(string(data)), []string{"scope", "list", "--paginate", "--limit", "2", "--cursor", "catalog-cursor", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("catalog wbd args=%#v, want %#v", got, want)
+	}
+
+	members, err := service.QueryMembers(context.Background(), ui.ScopeMembersQuery{
+		ScopeID: "scope-a", Limit: 3, Cursor: "member-cursor", Status: "completed", Type: "task", Contexts: []string{"ctx:a", "ctx:b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if members.Scope.ID != "scope-a" || members.Scope.Name != "Today" || members.Scope.MemberCount != 2 || !members.Scope.CreatedAt.Equal(time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)) || len(members.Members) != 1 || members.Members[0].ID != "b1" || members.HasMore || members.NextCursor != "" {
+		t.Fatalf("members page = %#v", members)
+	}
+	data, err = os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := splitLines(string(data)), []string{
+		"scope", "show", "scope-a", "--paginate", "--limit", "3", "--cursor", "member-cursor",
+		"--status", "completed", "--type", "task", "--context", "ctx:a", "--context", "ctx:b", "--json",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("members wbd args=%#v, want %#v", got, want)
+	}
+}
+
+func TestDecodePagedScopeEnvelopesRejectsMalformedMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		data   string
+		decode func([]byte) error
+	}{
+		{name: "catalog unknown envelope field", data: `{"items":[],"limit":2,"returned_count":0,"total_matching":0,"has_more":false,"extra":true}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "catalog unknown metadata field", data: `{"items":[],"limit":2,"returned_count":0,"total_matching":0,"has_more":false,"metadata":true}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "catalog missing metadata field", data: `{"items":[],"limit":2,"returned_count":0,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "catalog limit mismatch", data: `{"items":[],"limit":3,"returned_count":0,"total_matching":0,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "catalog missing next cursor", data: `{"items":[],"limit":2,"returned_count":0,"total_matching":1,"has_more":true}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "catalog terminal cursor", data: `{"items":[],"limit":2,"returned_count":0,"total_matching":0,"has_more":false,"next_cursor":"stale"}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "catalog returned count mismatch", data: `{"items":[],"limit":2,"returned_count":1,"total_matching":1,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeCatalogPage(data, 2)
+			return err
+		}},
+		{name: "members unknown envelope field", data: `{"scope":{},"members":[],"member_count":0,"completed_count":0,"limit":2,"returned_count":0,"total_matching":0,"has_more":false,"extra":true}`, decode: func(data []byte) error {
+			_, err := decodeScopeMembersPage(data, 2, "scope-a")
+			return err
+		}},
+		{name: "members malformed array", data: `{"scope":{},"members":{},"member_count":0,"completed_count":0,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeMembersPage(data, 2, "scope-a")
+			return err
+		}},
+		{name: "members missing field", data: `{"scope":{},"member_count":0,"completed_count":0,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeMembersPage(data, 2, "scope-a")
+			return err
+		}},
+		{name: "members returned count mismatch", data: `{"scope":{},"members":[],"member_count":0,"completed_count":0,"limit":2,"returned_count":1,"total_matching":1,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeMembersPage(data, 2, "scope-a")
+			return err
+		}},
+		{name: "members missing required counts", data: `{"scope":{},"members":[],"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeMembersPage(data, 2, "scope-a")
+			return err
+		}},
+		{name: "members completed count exceeds total", data: `{"scope":{},"members":null,"member_count":1,"completed_count":2,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`, decode: func(data []byte) error {
+			_, err := decodeScopeMembersPage(data, 2, "scope-a")
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.decode([]byte(test.data)); err == nil {
+				t.Fatal("malformed envelope unexpectedly decoded")
+			}
+		})
+	}
+}
+
+func TestDecodeScopeMembersPageAcceptsNullMembersAndUsesTopLevelCount(t *testing.T) {
+	page, err := decodeScopeMembersPage([]byte(`{"scope":{"id":"scope-a","name":"Today","member_count":99},"members":null,"member_count":0,"completed_count":0,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`), 2, "scope-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Scope.ID != "scope-a" || page.Scope.Name != "Today" || page.Scope.MemberCount != 0 || page.Members == nil || len(page.Members) != 0 {
+		t.Fatalf("decoded empty members page = %#v", page)
+	}
+}
+
+func TestHubScopeServicesKeepLegacyCompleteLoadersUnpaginated(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	script := `#!/bin/sh
+printf '%s\n' "$@" >> "$WBD_SCOPE_CALLS"
+case "$2" in
+list) printf '%s' '{"scopes":[{"id":"scope-a","name":"Today"}]}' ;;
+active) printf '%s' '{"id":"scope-a"}' ;;
+show) printf '%s' '{"id":"scope-a","members":[{"id":"b1","title":"Member"}]}' ;;
+esac
+`
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+	service := newHubScopeServices(root)
+	if _, err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.LoadDetails(context.Background(), "scope-a"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := splitLines(string(data)), []string{
+		"scope", "list", "--json", "scope", "active", "--json", "scope", "show", "scope-a", "--json",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy wbd args=%#v, want %#v", got, want)
+	}
+}
+
 func splitLines(value string) []string {
 	lines := strings.Split(strings.TrimSpace(value), "\n")
 	return lines

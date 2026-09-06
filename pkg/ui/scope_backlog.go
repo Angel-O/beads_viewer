@@ -32,6 +32,46 @@ type ScopeSnapshot struct {
 	Active *ScopeInfo
 }
 
+// ScopeCatalogQuery requests one bounded named-scope catalog page. Cursor is
+// opaque and must only be sent back to the service that produced it.
+type ScopeCatalogQuery struct {
+	Cursor string
+	Limit  int
+}
+
+// ScopeCatalogPage is one bounded named-scope catalog page.
+type ScopeCatalogPage struct {
+	Scopes     []ScopeInfo
+	HasMore    bool
+	NextCursor string
+}
+
+// ScopeMembersQuery requests one bounded page of members for a named scope.
+// Cursor is opaque; Contexts are forwarded as repeated backend filters.
+type ScopeMembersQuery struct {
+	ScopeID  string
+	Cursor   string
+	Limit    int
+	Status   string
+	Type     string
+	Contexts []string
+}
+
+// ScopeMembersPage is one bounded page of full member issue projections.
+type ScopeMembersPage struct {
+	Scope      ScopeInfo
+	Members    []model.Issue
+	HasMore    bool
+	NextCursor string
+}
+
+// Request/response aliases keep the seam readable to callers that prefer
+// protocol terminology over the existing Query/Page naming.
+type ScopeCatalogRequest = ScopeCatalogQuery
+type ScopeCatalogResponse = ScopeCatalogPage
+type ScopeMembersRequest = ScopeMembersQuery
+type ScopeMembersResponse = ScopeMembersPage
+
 // BacklogPage is one bounded page of unscoped beads. NextCursor is opaque and
 // must only be sent back to the service that produced it.
 type BacklogPage struct {
@@ -93,6 +133,11 @@ type ScopeMutation struct {
 // A zero value keeps standalone/local Viewer callers unchanged.
 type ScopeServices struct {
 	Load func(context.Context) (ScopeSnapshot, error)
+	// QueryCatalog and QueryMembers are additive paginated seams. The complete
+	// Load and LoadDetails fields remain the compatibility path for current UI
+	// callers.
+	QueryCatalog func(context.Context, ScopeCatalogQuery) (ScopeCatalogPage, error)
+	QueryMembers func(context.Context, ScopeMembersQuery) (ScopeMembersPage, error)
 	// QueryBacklog loads one filtered page. The legacy LoadBacklog field remains
 	// as a zero-cost compatibility fallback for local callers.
 	QueryBacklog func(context.Context, BacklogQuery) (BacklogPage, error)
