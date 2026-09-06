@@ -2103,7 +2103,7 @@ func TestBacklogContextColumnUsesFriendlyNameAndExtraCount(t *testing.T) {
 	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "backlog-1"}}}, 0)
 	b.setPresentation([]IssueItem{{
 		Issue:           b.issues[0],
-		RepositoryName:  "api",
+		RepositoryName:  "beads_viewer",
 		RepositoryExtra: 2,
 		HubPresentation: true,
 	}})
@@ -2111,8 +2111,14 @@ func TestBacklogContextColumnUsesFriendlyNameAndExtraCount(t *testing.T) {
 	columns := backlogTableColumnsFor(b.filteredItems, 120)
 	header := ansi.Strip(renderBacklogTableHeader(columns))
 	row := ansi.Strip(b.renderBacklogRow(b.filteredItems[0], false, columns, columns.width))
-	if !strings.Contains(header, "CONTEXT") || !strings.Contains(row, "api +2") {
+	if columns.contextWidth < lipgloss.Width("beads_viewer +2") {
+		t.Fatalf("context column width=%d, want room for normal name and count", columns.contextWidth)
+	}
+	if !strings.Contains(header, "CONTEXT") || !strings.Contains(row, "beads_viewer +2") {
 		t.Fatalf("backlog context column omitted friendly multi-context value:\nheader=%q\nrow=%q", header, row)
+	}
+	if strings.Index(header, "CONTEXT") > strings.Index(header, "ID") {
+		t.Fatalf("backlog header placed context after ID: %q", header)
 	}
 	if strings.Contains(row, "ctx:api") || strings.Contains(row, "[") {
 		t.Fatalf("backlog context column used special context formatting: %q", row)
@@ -2131,8 +2137,8 @@ func TestBacklogNarrowContextCellPreservesExtraCount(t *testing.T) {
 
 	columns := backlogTableColumnsFor(b.filteredItems, 70)
 	cell := backlogContextCell(b.filteredItems[0], columns.contextWidth)
-	if cell != "+2" || lipgloss.Width(cell) > columns.contextWidth {
-		t.Fatalf("narrow context cell=%q width=%d, want count-only +2", cell, columns.contextWidth)
+	if !strings.Contains(cell, "+2") || lipgloss.Width(cell) > columns.contextWidth {
+		t.Fatalf("narrow context cell=%q width=%d, want preserved +2 notation", cell, columns.contextWidth)
 	}
 	header := ansi.Strip(renderBacklogTableHeader(columns))
 	row := ansi.Strip(b.renderBacklogRow(b.filteredItems[0], false, columns, columns.width))
@@ -2147,17 +2153,39 @@ func TestBacklogPreviewShowsContextAndLabels(t *testing.T) {
 		ID: "backlog-1", Labels: []string{"ctx:api", "backend", "urgent"},
 	}}}, 0)
 	b.setPresentation([]IssueItem{
-		{Issue: b.issues[0], RepositoryName: "api", RepositoryExtra: 1, HubPresentation: true, PresentationLabels: []string{"backend", "urgent"}},
+		{Issue: b.issues[0], RepositoryName: "api", RepositoryExtra: 2, RepositoryNames: []string{"api", "frontend", "beads_viewer"}, HubPresentation: true, PresentationLabels: []string{"backend", "urgent"}},
 	})
 
 	preview := ansi.Strip(b.renderBacklogPreview(80))
-	for _, want := range []string{"CONTEXT", "api +1", "LABELS", "backend, urgent"} {
+	for _, want := range []string{"CONTEXT", "api", "frontend", "beads_viewer", "LABELS", "backend, urgent"} {
 		if !strings.Contains(preview, want) {
 			t.Fatalf("backlog preview missing %q:\n%s", want, preview)
 		}
 	}
-	if strings.Contains(preview, "ctx:api") {
+	if strings.Contains(preview, "+2") || strings.Contains(preview, "ctx:api") {
 		t.Fatalf("context label leaked into ordinary labels preview:\n%s", preview)
+	}
+	lines := strings.Split(preview, "\n")
+	contextAt, labelsAt := -1, -1
+	for i, line := range lines {
+		switch strings.TrimSpace(line) {
+		case "CONTEXT":
+			contextAt = i
+		case "LABELS":
+			labelsAt = i
+		}
+	}
+	if contextAt < 0 || labelsAt <= contextAt {
+		t.Fatalf("preview omitted context section:\n%s", preview)
+	}
+	var gotContexts []string
+	for _, line := range lines[contextAt+1 : labelsAt] {
+		if value := strings.TrimSpace(line); value != "" {
+			gotContexts = append(gotContexts, value)
+		}
+	}
+	if !reflect.DeepEqual(gotContexts, []string{"api", "frontend", "beads_viewer"}) {
+		t.Fatalf("preview context list=%v, want every full context name", gotContexts)
 	}
 }
 
@@ -2229,8 +2257,10 @@ func TestBacklogSplitUsesNaturalTableWidthAndAlignedHeader(t *testing.T) {
 	if got := lipgloss.Width(previewTitle[:strings.Index(previewTitle, "TITLE")]); got != naturalWidth+4 {
 		t.Fatalf("preview starts at cell %d, want natural list width plus padding/gap %d:\n%s", got, naturalWidth+4, view)
 	}
-	if strings.Index(directTableHeader, "ID") != 4 || strings.Index(tableHeader, "ID") != 6 {
-		t.Fatalf("table header ID offsets: direct=%d rendered=%d, want independent cursor and mark cells: %q", strings.Index(directTableHeader, "ID"), strings.Index(tableHeader, "ID"), tableHeader)
+	if strings.Index(directTableHeader, "CONTEXT") != 4 || strings.Index(tableHeader, "CONTEXT") != 6 ||
+		strings.Index(directTableHeader, "CONTEXT") > strings.Index(directTableHeader, "ID") ||
+		strings.Index(tableHeader, "CONTEXT") > strings.Index(tableHeader, "ID") {
+		t.Fatalf("table header context order/offsets: direct=%d/%d rendered=%d/%d, want independent cursor and mark cells: %q", strings.Index(directTableHeader, "CONTEXT"), strings.Index(directTableHeader, "ID"), strings.Index(tableHeader, "CONTEXT"), strings.Index(tableHeader, "ID"), tableHeader)
 	}
 }
 
