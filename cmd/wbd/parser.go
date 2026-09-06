@@ -211,6 +211,7 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{
 			{name: "--context", value: "<ctx-id>", description: "Select a registered context; repeatable and ORed."},
 			{name: "--contextless", description: "Include issues without a context; combines exactly with --context."},
+			{name: "--label", value: "<label>", description: "Select one exact ordinary label."},
 			{name: "--filter", value: "<text>", description: "Filter issue IDs or titles before pagination."},
 			{name: "--status", value: "<status,...>", description: "open|in_progress|blocked|deferred|closed."},
 			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo."},
@@ -293,6 +294,7 @@ type request struct {
 	listBrief          bool
 	backlogContexts    []string
 	backlogContextless bool
+	backlogLabel       string
 	backlogFilter      string
 	backlogStatus      string
 	backlogType        string
@@ -1083,6 +1085,11 @@ func parseBacklog(result request, arguments []string) (request, error) {
 			switch flag {
 			case "--context":
 				result.backlogContexts = append(result.backlogContexts, value)
+			case "--label":
+				if err := validateBacklogLabel(value); err != nil {
+					return result, err
+				}
+				result.backlogLabel = value
 			case "--filter":
 				result.backlogFilter = value
 			case "--status":
@@ -1127,6 +1134,23 @@ func parseBacklog(result request, arguments []string) (request, error) {
 func validateBacklogSort(value string) error {
 	if !oneOf(value, "created-desc", "priority-asc") {
 		return fmt.Errorf("invalid backlog sort %q; use created-desc or priority-asc", value)
+	}
+	return nil
+}
+
+func validateBacklogLabel(value string) error {
+	if err := validateLabels(value, false); err != nil {
+		return err
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return errors.New("backlog label must contain non-whitespace characters")
+	}
+	if strings.Contains(value, ",") {
+		return errors.New("backlog label must contain exactly one ordinary label")
+	}
+	if strings.HasPrefix(trimmed, "ctx:") {
+		return errors.New("backlog labels must be ordinary labels")
 	}
 	return nil
 }

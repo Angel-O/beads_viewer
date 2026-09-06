@@ -370,14 +370,42 @@ func TestBacklogListForwardsOpaqueCursorAndOutput(t *testing.T) {
 }
 
 func TestBacklogParserSupportsRepeatableContextAndBoundedFilters(t *testing.T) {
-	request, err := parse([]string{"backlog", "list", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--filter", "opaque title", "--status", "open,blocked", "--type", "task", "--sort", "priority-asc", "--limit", "2", "--cursor", "opaque:/+= token", "--json"})
+	request, err := parse([]string{"backlog", "list", "--context", "ctx:a", "--context", "ctx:b", "--contextless", "--label", "priority", "--filter", "opaque title", "--status", "open,blocked", "--type", "task", "--sort", "priority-asc", "--limit", "2", "--cursor", "opaque:/+= token", "--json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(request.backlogContexts, []string{"ctx:a", "ctx:b"}) || !request.backlogContextless || request.backlogFilter != "opaque title" ||
+	if !reflect.DeepEqual(request.backlogContexts, []string{"ctx:a", "ctx:b"}) || !request.backlogContextless || request.backlogLabel != "priority" || request.backlogFilter != "opaque title" ||
 		request.backlogStatus != "open,blocked" || request.backlogType != "task" || request.backlogSort != "priority-asc" ||
 		request.backlogLimit != 2 || request.backlogCursor != "opaque:/+= token" {
 		t.Fatalf("parsed backlog request = %#v", request)
+	}
+}
+
+func TestBacklogParserRejectsDuplicateAndReservedLabels(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"backlog", "list", "--label", "one", "--label", "two"},
+		{"backlog", "list", "--label", "one,two"},
+		{"backlog", "list", "--label", "ctx:repository"},
+		{"backlog", "list", "--label", " ctx:repository"},
+		{"backlog", "list", "--label", "   "},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Errorf("parse(%v) unexpectedly succeeded", arguments)
+		}
+	}
+}
+
+func TestBacklogListForwardsExactLabelWithExistingFilters(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:a": "/a"})
+	setResponses(t, map[string]string{"list": `{"issues":[],"pagination":{"limit":1,"has_more":false}}`})
+	code, _, stderr := test.run("backlog", "list", "--context", "ctx:a", "--contextless", "--label", " priority:high ", "--filter", "title", "--status", "open", "--type", "task", "--sort", "created-desc", "--limit", "1", "--cursor", "opaque", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "list", "--unscoped", "--label-any", "ctx:a", "--or-no-label-prefix", "ctx:", "--label", " priority:high ", "--filter", "title", "--status", "open", "--type", "task", "--sort", "created", "--paginate", "--limit", "1", "--cursor", "opaque"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
 	}
 }
 
