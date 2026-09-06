@@ -201,6 +201,10 @@ func isScopeBacklogGlobalKey(key string) bool {
 	}
 }
 
+func isBacklogReloadNotice(status string) bool {
+	return status == "Refreshing…" || strings.HasPrefix(status, "Reloaded ")
+}
+
 // BacklogModel renders the global, unscoped backlog independently of the
 // ordinary graph snapshot. It deliberately owns only one page and cursors.
 type BacklogModel struct {
@@ -1406,6 +1410,11 @@ func (m *Model) handleScopeCreateKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 }
 
 func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	// Local backlog navigation dismisses only reload feedback so the backlog
+	// controls can reappear; action results and errors remain visible.
+	if !m.statusIsError && isBacklogReloadNotice(m.statusMsg) {
+		m.statusMsg = ""
+	}
 	if m.backlog.Searching() {
 		oldFilter := m.backlog.Filter()
 		switch msg.String() {

@@ -909,6 +909,54 @@ func TestBacklogSearchKeepsViewJumpKeysAsQueryText(t *testing.T) {
 	}
 }
 
+func TestBacklogLocalNavigationDismissesReloadStatusButPreservesErrors(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
+
+	m.statusMsg = "Reloaded 1 issues"
+	m.statusIsError = false
+	updated, _ := m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "" || m.statusIsError {
+		t.Fatalf("local navigation retained reload status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+
+	m.statusMsg = "Backlog load failed: unavailable"
+	m.statusIsError = true
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "Backlog load failed: unavailable" || !m.statusIsError {
+		t.Fatalf("local navigation changed action error=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+
+	m.statusMsg = "Scope add succeeded"
+	m.statusIsError = false
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "Scope add succeeded" || m.statusIsError {
+		t.Fatalf("local navigation changed successful action=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestBacklogFooterOmitsSnapshotStatsButOrdinaryFooterShowsThem(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width = 240
+	m.countOpen, m.countReady, m.countBlocked, m.countClosed = 1, 2, 3, 4
+	wantStats := "○1 ◉2 ◈3 ●4"
+
+	ordinary := ansi.Strip(m.renderFooter())
+	if !strings.Contains(ordinary, wantStats) {
+		t.Fatalf("ordinary footer missing snapshot stats %q: %q", wantStats, ordinary)
+	}
+
+	m.isBacklogView = true
+	backlog := ansi.Strip(m.renderFooter())
+	if strings.Contains(backlog, wantStats) {
+		t.Fatalf("backlog footer retained snapshot stats %q: %q", wantStats, backlog)
+	}
+}
+
 func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	var cursors []string
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{

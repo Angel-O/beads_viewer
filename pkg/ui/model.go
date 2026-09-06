@@ -9688,7 +9688,7 @@ func (m *Model) renderFooter() string {
 			Padding(0, 1)
 		statsSection = timeTravelStyle.Render(fmt.Sprintf("⏱ %s: +%d ✅%d ~%d",
 			m.timeTravelSince, d.IssuesAdded, d.IssuesClosed, d.IssuesModified))
-	} else {
+	} else if !m.isBacklogView {
 		// Polished stats with mini indicators
 		statsStyle := lipgloss.NewStyle().
 			Background(ColorBgHighlight).
