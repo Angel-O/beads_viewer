@@ -91,10 +91,12 @@ func (c *Correlator) feedbackFingerprint() string {
 
 // CorrelatorOptions controls how the history report is generated
 type CorrelatorOptions struct {
-	BeadID string     // Filter to single bead ID (empty = all)
-	Since  *time.Time // Only events after this time
-	Until  *time.Time // Only events before this time
-	Limit  int        // Max commits to process (0 = no limit)
+	Revision        string     // Resolved commit to walk from (empty = HEAD)
+	BeadID          string     // Filter to single bead ID (empty = all)
+	Since           *time.Time // Only events after this time
+	Until           *time.Time // Only events before this time
+	Limit           int        // Max commits to process (0 = no limit)
+	CausalityBeadID string     // Capture full committed dependency authority for this target only
 }
 
 // historyArtifactFormatVersion is the schema version of historyArtifact. The
@@ -103,8 +105,9 @@ type CorrelatorOptions struct {
 // artifact shape lazily rebuilds instead of reading fields that were never
 // written. History: v1 = events + co-commit commits only; v2 = adds
 // per-method explicit-ID commits, temporal candidates, the walked window and
-// per-strategy timings.
-const historyArtifactFormatVersion = 2
+// per-strategy timings; v3 = owned before/after transitions and optional full
+// historical constraint evidence for one causal-analysis target.
+const historyArtifactFormatVersion = 3
 
 // historyArtifact holds the purely history-derived (HEAD + options only)
 // intermediate products of report generation: the extracted lifecycle events
@@ -124,6 +127,7 @@ type historyArtifact struct {
 	Temporal      []temporalCandidate `json:"temporal"` // temporal_author (scored at assembly)
 	WalkedCommits int                 `json:"walked_commits"`
 	Strategies    []StrategyRun       `json:"strategies"`
+	CausalHistory *CausalHistory      `json:"causal_history,omitempty"`
 }
 
 // CorrelatedCommit.BeadID carries the json:"-" tag (it is internal linking state,
@@ -143,6 +147,7 @@ type historyArtifactWire struct {
 	Temporal        []temporalCandidate `json:"temporal,omitempty"`
 	WalkedCommits   int                 `json:"walked_commits"`
 	Strategies      []StrategyRun       `json:"strategies,omitempty"`
+	CausalHistory   *CausalHistory      `json:"causal_history,omitempty"`
 }
 
 func commitBeadIDs(commits []CorrelatedCommit) []string {
@@ -174,6 +179,7 @@ func (a historyArtifact) MarshalJSON() ([]byte, error) {
 		Temporal:        a.Temporal,
 		WalkedCommits:   a.WalkedCommits,
 		Strategies:      a.Strategies,
+		CausalHistory:   a.CausalHistory,
 	})
 }
 
@@ -197,6 +203,7 @@ func (a *historyArtifact) UnmarshalJSON(b []byte) error {
 	a.Temporal = w.Temporal
 	a.WalkedCommits = w.WalkedCommits
 	a.Strategies = w.Strategies
+	a.CausalHistory = w.CausalHistory
 	return nil
 }
 
@@ -209,12 +216,20 @@ func (a *historyArtifact) UnmarshalJSON(b []byte) error {
 // error (issue #166).
 func (c *Correlator) extractHistoryArtifact(opts CorrelatorOptions) (*historyArtifact, error) {
 	extractOpts := ExtractOptions{
-		Since:  opts.Since,
-		Until:  opts.Until,
-		Limit:  opts.Limit,
-		BeadID: opts.BeadID,
+		Revision: opts.Revision,
+		Since:    opts.Since,
+		Until:    opts.Until,
+		Limit:    opts.Limit,
+		BeadID:   opts.BeadID,
 	}
 	art := &historyArtifact{FormatVersion: historyArtifactFormatVersion}
+	if opts.CausalityBeadID != "" {
+		var err error
+		art.CausalHistory, err = c.extractor.extractCausalHistory(opts.CausalityBeadID, extractOpts)
+		if err != nil {
+			return nil, fmt.Errorf("extracting causal history: %w", err)
+		}
+	}
 
 	// Strategy 1: co_committed — lifecycle events from the beads file history
 	// plus the code files changed in the same commits.
@@ -439,6 +454,9 @@ func (c *Correlator) assembleReport(beads []BeadInfo, opts CorrelatorOptions, ar
 
 	// Get latest commit SHA for incremental updates
 	latestCommitSHA := c.findLatestCommitSHA(events, commits)
+	if opts.Revision != "" {
+		latestCommitSHA = opts.Revision
+	}
 
 	return &HistoryReport{
 		GeneratedAt:     time.Now().UTC(),
@@ -446,14 +464,16 @@ func (c *Correlator) assembleReport(beads []BeadInfo, opts CorrelatorOptions, ar
 		GitRange:        gitRange,
 		LatestCommitSHA: latestCommitSHA,
 		Window: &HistoryWindow{
-			Limit:   opts.Limit,
-			Since:   opts.Since,
-			Until:   opts.Until,
-			Commits: art.WalkedCommits,
+			Revision: opts.Revision,
+			Limit:    opts.Limit,
+			Since:    opts.Since,
+			Until:    opts.Until,
+			Commits:  art.WalkedCommits,
 		},
-		Stats:       stats,
-		Histories:   histories,
-		CommitIndex: commitIndex,
+		Stats:         stats,
+		Histories:     histories,
+		CommitIndex:   commitIndex,
+		CausalHistory: art.CausalHistory,
 	}
 }
 
@@ -821,6 +841,9 @@ func (c *Correlator) calculateStats(histories map[string]BeadHistory, commits []
 // describeGitRange creates a human-readable description of the git range
 func (c *Correlator) describeGitRange(opts CorrelatorOptions) string {
 	parts := []string{}
+	if opts.Revision != "" {
+		parts = append(parts, "at "+opts.Revision)
+	}
 
 	if opts.Since != nil {
 		parts = append(parts, fmt.Sprintf("since %s", opts.Since.Format("2006-01-02")))

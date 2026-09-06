@@ -208,7 +208,7 @@ func orphanActivityWindowEnd(history BeadHistory, now time.Time) time.Time {
 func (od *OrphanDetector) DetectOrphans(opts ExtractOptions) (*OrphanReport, error) {
 	source := "options"
 	if od.window != nil {
-		opts = ExtractOptions{Limit: od.window.Limit, Since: od.window.Since, Until: od.window.Until}
+		opts = ExtractOptions{Revision: od.window.Revision, Limit: od.window.Limit, Since: od.window.Since, Until: od.window.Until}
 		source = "history_index"
 	}
 
@@ -584,11 +584,14 @@ func (od *OrphanDetector) getCommitFiles(sha string) ([]string, error) {
 
 // formatGitRange formats the extraction options as a human-readable string.
 func formatGitRange(opts ExtractOptions) string {
-	if opts.Since == nil && opts.Until == nil && opts.Limit == 0 {
+	if opts.Revision == "" && opts.Since == nil && opts.Until == nil && opts.Limit == 0 {
 		return "all history"
 	}
 
 	parts := []string{}
+	if opts.Revision != "" {
+		parts = append(parts, "at "+opts.Revision)
+	}
 	if opts.Since != nil {
 		parts = append(parts, fmt.Sprintf("since %s", opts.Since.Format("2006-01-02")))
 	}

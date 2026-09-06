@@ -60,10 +60,11 @@ func SetDiskCacheEnabled(on bool) { diskCacheForced.Store(on) }
 // hit/miss.
 
 const (
-	// correlationDiskCacheVersion: 3 = reports carry per-commit methods, the
+	// correlationDiskCacheVersion: 4 adds historical constraint observations;
+	// 3 = reports carry per-commit methods, the
 	// walked window, strategy timings and feedback_applied (v2 reports lack
 	// them and must not be served as-is).
-	correlationDiskCacheVersion      = 3
+	correlationDiskCacheVersion      = 4
 	correlationDiskCacheFileName     = "correlation_report_cache.json"
 	correlationDiskCacheDirName      = "bv"
 	correlationDiskCacheMaxEntries   = 6

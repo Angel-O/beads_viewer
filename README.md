@@ -82,7 +82,15 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f
 # Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1
 irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1" | iex
 ```
-> **Note:** `install.ps1` downloads the release zip for Windows, verifies it against the release `checksums.txt` with `Get-FileHash`, and refuses to install anything that does not verify; no Go toolchain is needed. Pass `-Version v0.23.0` to pin a release, `-InstallDir` to choose the folder (default `%LOCALAPPDATA%\Programs\bv`), or `-FromSource` to build with `go install` pinned to that same tag. Scoop installs the archive selected by its manifest. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
+> **Note:** The pinned installer above downloads the Windows release zip, verifies it against the release `checksums.txt` with `Get-FileHash`, and refuses anything that does not verify; no Go toolchain is needed. Pass `-Version v0.23.0` to pin a release or `-InstallDir` to choose the folder (default `%LOCALAPPDATA%\Programs\bv`). Scoop installs the archive selected by its manifest. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
+
+For a source build, use `install.ps1` from this checkout (requires Git and Go 1.25+):
+
+```powershell
+.\install.ps1 -FromSource -Version v0.23.0
+```
+
+This source path builds a verified checkout of the requested tag with that tag's vendored dependencies, checks the executable's version and Git revision before installation, and retains diagnostics on failure. The older pinned installer above uses `go install` for its source option. Selecting an older release tag does not include later, unreleased fixes from this checkout.
 
 ---
 
@@ -128,6 +136,8 @@ bv --robot-help
 - stderr = diagnostics
 - exit 0 = success
 
+TOON uses an external `toon_rust` encoder. Discovery honors `TOON_TRU_BIN` or `TOON_BIN`, then looks for `tru` or `toon` on PATH and the library's known fallback paths; candidates are validated as `toon_rust`. If none is available, `bv` warns on stderr and emits JSON. A successful fallback is not evidence that TOON encoding ran. Keep the format set to JSON when copying the jq examples below.
+
 ## 💡 TL;DR
 
 `bv` is a high-performance **Terminal User Interface (TUI)** for browsing and managing tasks in projects that use the **Beads** issue tracking system. 
@@ -155,7 +165,7 @@ Browse your issue backlog in the terminal using standard Vim keys (`j`/`k`). Sta
 Don't just read the title. `bv` gives you the full picture:
 *   **Comments & History:** Scroll through the full conversation history of any task.
 *   **Metadata:** Instantly see Assignees, Labels, Priority badges, and creation dates.
-*   **Search:** Powerful fuzzy search (`/`) finds issues by ID, title, or content instantly.
+*   **Search:** Fuzzy list filtering (`/`) matches titles, IDs and displayed metadata. CLI keyword search (`--search`) also indexes descriptions and can combine text scores with graph metrics.
 *   **Dependency Details:** The detail pane shows dependencies up to three edges from the selected issue. Each issue's dependencies appear once along a shortest path; other occurrences say `(reference: shown elsewhere)`. Every relationship within that limit retains its type and target metadata. Cycle-closing edges carry a separate `(cycle)` marker.
 
 ### 🎯 Focused Workflows
@@ -373,7 +383,7 @@ graph TD
 | 1 | **PageRank** | Recursive dependency importance | Foundational blockers |
 | 2 | **Betweenness** | Shortest-path traffic | Bottlenecks & bridges |
 | 3 | **HITS** | Hub/Authority duality | Epics vs. utilities |
-| 4 | **Critical Path** | Longest dependency chain | Keystones with zero slack |
+| 4 | **Critical Path** | Longest dependent chain in task counts | Prerequisites supporting long chains |
 | 5 | **Eigenvector** | Influence via neighbors | Strategic dependencies |
 | 6 | **Degree** | Direct connection counts | Immediate blockers/blocked |
 | 7 | **Density** | Edge-to-node ratio | Project coupling health |
@@ -410,12 +420,13 @@ $$C_B(v) = \sum_{s \neq v \neq t} \frac{\sigma_{st}(v)}{\sigma_{st}}$$
 *   **High Authority Score:** These are your **Utilities**. They provide value to many consumers.
 
 ### 4. Critical Path (Longest Path in DAG)
-**The Math:** In a DAG, the longest path represents the minimum time required to complete the project (assuming infinite parallelism). `bv` computes this recursively:
-$$Impact(u) = 1 + \max(\{Impact(v) \mid u \to v\})$$
+**The Math:** In a DAG, `bv` measures unweighted chain depth in tasks. Edges point from a dependent to its prerequisite, so the score is:
+$$Impact(u) = 1 + \max(\{Impact(v) \mid v \to u\} \cup \{0\})$$
+The implementation evaluates this in topological order. This node-count metric does not use task durations or establish a minimum project completion time.
 
 **The Intuition:** If you hold the graph by its "leaf" nodes (tasks with no dependencies) and let it dangle, the tasks at the very top that support the longest chains are carrying the most weight.
 
-**Pragmatic Meaning:** **Keystones.** A Keystone task is one where *any* delay translates 1:1 into a delay for the final project delivery. These tasks have zero "slack."
+**Pragmatic Meaning:** **Keystones.** High scores identify prerequisites supporting long dependent chains. Inspect the separate `Slack` metric for structural scheduling flexibility; neither metric proves that a delay translates one-for-one into delivery time. Cyclic graphs can leave critical-path metrics unavailable, as reported by `.status.Critical`.
 
 ### 5. Eigenvector Centrality (Influential Neighbors)
 **The Math:** Eigenvector centrality measures a node's influence by considering not just its connections, but the importance of those connections. A node with few but highly influential neighbors can score higher than a node with many unimportant neighbors.
@@ -455,7 +466,7 @@ Where $|E|$ is the edge count and $|V|$ is the node count. For a directed graph,
 *   **High Density (> 0.15):** Warning. Overly coupled project. Consider breaking into smaller modules.
 
 ### 8. Cycle Detection (Circular Dependencies)
-**The Math:** A cycle in a directed graph is a path v₁ → v₂ → ⋯ → vₖ → v₁ where the start and end nodes are identical. `bv` uses Tarjan's algorithm variant via `topo.DirectedCyclesIn` to enumerate all elementary cycles.
+**The Math:** A cycle in a directed graph is a path v₁ → v₂ → ⋯ → vₖ → v₁ where the start and end nodes are identical. `bv` uses Tarjan's strongly connected components algorithm and extracts one representative cycle from each cyclic component. It analyzes blocking edges among non-closed, non-tombstoned issues, applies a storage cap, and reports truncation in `.status.Cycles.reason`. It does not enumerate every elementary cycle; breaking one reported cycle can leave others in the same component.
 
 **The Intuition:** If A depends on B, and B depends on A, neither can ever be completed. This is a logical impossibility that must be resolved.
 
@@ -506,7 +517,7 @@ sequenceDiagram
 
 ### The "Cognitive Offloading" Strategy
 The primary design goal of the Robot Protocol is **Cognitive Offloading**.
-Large Language Models (LLMs) are probabilistic engines; they are excellent at semantic reasoning (coding, writing) but notoriously unreliable at algorithmic graph traversal (finding cycles, computing shortest paths). The two-phase analyzer returns degree/topo/density immediately and completes PageRank/Betweenness/HITS/Eigenvector/Critical Path/Cycles asynchronously with size-aware timeouts and hashed caching, so repeat robot calls stay fast when the graph hasn’t changed.
+Large Language Models (LLMs) are probabilistic engines; they are excellent at semantic reasoning (coding, writing) but notoriously unreliable at algorithmic graph traversal (finding cycles, computing shortest paths). The two-phase analyzer returns degree/topo/density first and computes the remaining metrics asynchronously with size-aware timeouts. Graph-stat caches are keyed by issue data and analysis configuration; readiness and ranking also depend on the selected scope and reference clock. Check each metric's status before interpreting its values.
 
 If you feed an Agent raw Beads JSONL data, you are forcing the Agent to:
 1.  Parse thousands of lines of JSON.
@@ -539,54 +550,52 @@ Agents typically use `bv` in three phases:
 3.  **Execution Planning:**
     Instead of guessing the order of operations, the agent uses `bv`'s topological sort to generate a strictly linearized plan.
 
-**JSON Output Schema (`--robot-insights`):**
-The output is designed to be strictly typed and easily parseable by tools like `jq` or standard JSON libraries.
+**JSON Output Excerpt (`--robot-insights`):**
+Field names are case-sensitive. This excerpt uses illustrative values and omits the source envelope and other metrics; `bv --robot-schema` describes the complete contract.
 ```json
 {
-  "bottlenecks": [
-    { "id": "CORE-123", "value": 0.45 }
+  "Bottlenecks": [
+    { "ID": "CORE-123", "Value": 0.45 }
   ],
-  "keystones": [
-    { "id": "API-001", "value": 12.0 }
+  "Keystones": [
+    { "ID": "API-001", "Value": 12.0 }
   ],
-  "influencers": [
-    { "id": "AUTH-007", "value": 0.82 }
+  "Influencers": [
+    { "ID": "AUTH-007", "Value": 0.82 }
   ],
-  "hubs": [
-    { "id": "EPIC-100", "value": 0.67 }
+  "Hubs": [
+    { "ID": "EPIC-100", "Value": 0.67 }
   ],
-  "authorities": [
-    { "id": "UTIL-050", "value": 0.91 }
+  "Authorities": [
+    { "ID": "UTIL-050", "Value": 0.91 }
   ],
-  "cycles": [
+  "Cycles": [
     ["TASK-A", "TASK-B", "TASK-A"]
   ],
-  "clusterDensity": 0.045,
-  "stats": {
-    "pageRank": { "CORE-123": 0.15, "...": "..." },
-    "betweenness": { "CORE-123": 0.45, "...": "..." },
-    "eigenvector": { "AUTH-007": 0.82, "...": "..." },
-    "hubs": { "EPIC-100": 0.67, "...": "..." },
-    "authorities": { "UTIL-050": 0.91, "...": "..." },
-    "inDegree": { "CORE-123": 5, "...": "..." },
-    "outDegree": { "CORE-123": 2, "...": "..." },
-    "criticalPathScore": { "API-001": 12.0, "...": "..." },
-    "density": 0.045,
-    "topologicalOrder": ["CORE-123", "API-001", "..."]
+  "ClusterDensity": 0.045,
+  "full_stats": {
+    "pagerank": { "CORE-123": 0.15 },
+    "betweenness": { "CORE-123": 0.45 },
+    "eigenvector": { "AUTH-007": 0.82 },
+    "critical_path_score": { "API-001": 12.0 }
+  },
+  "status": {
+    "PageRank": { "state": "computed" },
+    "Cycles": { "state": "computed" }
   }
 }
 ```
 
 | Field | Metric | What It Contains |
 |-------|--------|------------------|
-| `bottlenecks` | Betweenness | Top nodes bridging graph clusters |
-| `keystones` | Critical Path | Top nodes on longest dependency chains |
-| `influencers` | Eigenvector | Top nodes connected to important neighbors |
-| `hubs` | HITS Hub | Top dependency aggregators (Epics) |
-| `authorities` | HITS Authority | Top prerequisite providers (Utilities) |
-| `cycles` | Cycle Detection | All circular dependency paths |
-| `clusterDensity` | Density | Overall graph interconnectedness |
-| `stats` | All Metrics | Full raw data for custom analysis |
+| `Bottlenecks` | Betweenness | Top nodes bridging graph clusters (`ID`/`Value` records) |
+| `Keystones` | Critical Path | Top nodes on longest dependency chains |
+| `Influencers` | Eigenvector | Top nodes connected to important neighbors |
+| `Hubs` | HITS Hub | Top dependency aggregators (Epics) |
+| `Authorities` | HITS Authority | Top prerequisite providers (Utilities) |
+| `Cycles` | Cycle Detection | Stored representative cycles; inspect `status.Cycles` for skips, timeouts and truncation |
+| `ClusterDensity` | Density | Overall graph interconnectedness |
+| `full_stats` | Metric maps | Per-issue values, capped by `BV_INSIGHTS_MAP_LIMIT` (default 200) |
 
 ---
 
@@ -670,25 +679,21 @@ This visual encoding is applied to badges in the Insights Dashboard, allowing yo
 
 ## 🔍 Search Architecture
 
-In a project with thousands of issues, you cannot afford to wait for a backend query. `bv` implements a **composite, in-memory fuzzy search** that feels instantaneous.
+The TUI's `/` filter performs local fuzzy matching over a composite string for each list item. This differs from `--search`, which uses hashed keyword vectors over ID, title, description and labels, with optional graph-based ranking.
 
 ### The "Flattened Vector" Index
-Instead of searching fields individually (which requires complex UI controls), `bv` flattens every issue into a single searchable "vector" at load time.
-The `FilterValue()` method constructs a composite string containing:
-*   **Core Identity:** ID (`"CORE-123"`) and Title (`"Fix login race condition"`)
-*   **Metadata:** Status (`"open"`), Type (`"bug"`), Priority
-*   **Context:** Assignee (`"@steve"`) and Labels (`"frontend, v1.0"`)
+`IssueItem.FilterValue()` constructs a string in this order: title, ID, status, issue type, assignee (if set), labels, and repository prefix (if set). Description text and priority are not included in this default list filter.
 
 ### Fuzzy Subsequence Matching
 When you press `/`, the search engine performs a **fuzzy subsequence match** against this composite vector.
-*   **Example:** Typing `"log fix"` successfully matches `"Fix login race condition"`.
-*   **Example:** Typing `"steve bug"` finds bugs assigned to Steve.
-*   **Example:** Typing `"open v1.0"` filters for open items in the v1.0 release.
+*   **Example:** `"fix log"` matches `"Fix login race condition"` in that order.
+*   **Example:** `"bug steve"` can match issue type `bug` followed by assignee `steve`.
+*   **Example:** `"open v1.0"` can match status followed by a label. This is subsequence matching, not a typed status/label query; use the dedicated filters for exact field selection.
 
 ### Performance Characteristics
-*   **Zero Allocation:** The search index is built once during the initial load (`loader.LoadIssues`).
-*   **Client-Side Filtering:** Filtering happens entirely within the render loop. There is no database latency, no network round-trip, and no "loading" spinner.
-*   **Stable Sort:** Search results maintain the topological and priority sorting of the main list, ensuring that even filtered views reflect the project's true priorities.
+*   **Local work:** The list's filter command builds target strings and fuzzy-match results in memory; it makes no database or network request.
+*   **Allocations:** `FilterValue()` builds strings during filtering, and the matcher allocates its result data. This path is not allocation-free.
+*   **Ranking:** The default filter sorts by fuzzy-match score. Stable ties retain input order; unequal scores can change the original priority or recipe order.
 
 ---
 
@@ -700,9 +705,9 @@ A common question is: *"How do you render complex diagrams in a text-only termin
 
 ### 1. The Native Graph Visualizer (`g`)
 For the interactive TUI, we built a specialized **ASCII/Unicode Graph Engine** (`pkg/ui/graph.go`) that replicates the core value of a Mermaid flowchart without requiring graphical protocol support (like Sixel).
-*   **Topological Layering:** Nodes are automatically sorted by their dependency depth.
-*   **Orthogonal Routing:** Connections use box-drawing characters (`│`, `─`, `╭`, `╯`) to draw clean, right-angled paths that avoid crossing through node text.
-*   **Adaptive Canvas:** The virtual canvas expands infinitely, but the viewport (`pkg/ui/viewport.go`) clips rendering to exactly what fits on your screen, panning smoothly with `h`/`j`/`k`/`l`.
+*   **Selected-node neighborhood:** Boxes show the selected issue, its blockers, and its dependents. The node list sorts by project critical-path depth when available, then by ID. A `◆` marks nodes on one deterministic longest dependency chain within the displayed scope; cyclic displayed graphs have no computed critical chain. The metrics panel retains the project analysis values.
+*   **Expandable dependency paths:** Press `Space` to reveal upstream and downstream edges beyond the immediate neighborhood. Paths retain their prerequisite-to-dependent direction, stop at filtered-out records, and handle cycles without recursive loops. Press `Space` again to collapse; expansion is remembered per selected node.
+*   **Scrollable canvas:** `H`/`L` pan horizontally and `J`/`K` scroll vertically through graph content and metrics. The viewport clips terminal cells without splitting Unicode graphemes or ANSI styles. Lowercase `h`/`j`/`k`/`l` select nodes; `Enter` opens details. The footer shows the current scroll position.
 
 ### 2. The Export Engine (`--export-md`)
 For external reporting, `bv` includes a robust **Mermaid Generator** (`pkg/export/markdown.go`).
@@ -767,22 +772,31 @@ For large projects, extract focused views around specific issues:
 - **`--graph-root=ID`**: Start from a specific issue and include all its dependencies and dependents
 - **`--graph-depth=N`**: Limit traversal to N levels (0 = unlimited)
 
-### JSON Schema
+### JSON Output Excerpt
+
+Top-level `nodes` and `edges` are counts. Node and edge records live under `adjacency`; other envelope fields are omitted here. Edges run from the issue to its referenced dependency and retain the recorded dependency type. Empty output can omit `adjacency`.
 
 ```json
 {
-  "nodes": [
-    { "id": "bv-123", "title": "Fix auth", "status": "open", "priority": 1 }
-  ],
-  "edges": [
-    { "from": "bv-124", "to": "bv-123", "type": "blocks" }
-  ],
-  "metadata": {
-    "data_hash": "abc123",
-    "node_count": 45,
-    "edge_count": 62
+  "format": "json",
+  "data_hash": "abc123",
+  "nodes": 2,
+  "edges": 1,
+  "adjacency": {
+    "nodes": [
+      { "id": "bv-123", "title": "Fix auth", "status": "open", "priority": 1 },
+      { "id": "bv-124", "title": "Test auth", "status": "open", "priority": 2 }
+    ],
+    "edges": [
+      { "from": "bv-124", "to": "bv-123", "type": "blocks" }
+    ]
   }
 }
+```
+
+```bash
+bv --robot-graph | jq '{nodes, edges, ids: [.adjacency.nodes[]?.id]}'
+bv --robot-graph | jq '.adjacency.edges[]? | {from, to, type}'
 ```
 
 ---
@@ -1309,7 +1323,7 @@ graph TD
 5. **Compute Summary:** Identify the single highest-impact issue (most downstream unblocks; ties broken by highest priority, then lowest ID).
 
 ### Benefits for AI Agents
-- **Deterministic:** Same input always produces same plan (no LLM hallucination).
+- **Deterministic:** The same source, candidate scope, readiness policy and reference clock produce the same dependency plan. A deferral can expire between calls.
 - **Parallelism-Aware:** Tracks separate dependency components. They do not detect overlapping file edits or reserve work; coordinate claims and file access separately.
 - **Impact-Ranked:** The `highest_impact` field tells agents exactly where to start.
 
@@ -1636,10 +1650,10 @@ The tree construction uses a **parent-child only** filter with intelligent root 
 
 | Aspect | Tree View (`E`) | Graph View (`g`) |
 |--------|-----------------|------------------|
-| **Relationships** | Parent-child only | All dependency types |
-| **Layout** | Indented hierarchy | Force-directed / DAG |
+| **Relationships** | Parent-child only | Blocking dependencies |
+| **Layout** | Indented hierarchy | Selected-node boxes and expandable dependency paths |
 | **Focus** | Work breakdown structure | Dependency flow |
-| **Navigation** | Vim-style (j/k/h/l) | Viewport panning |
+| **Navigation** | Vim-style (j/k/h/l) | hjkl selection, H/L panning, J/K scrolling, Space expansion |
 | **Best For** | "What's inside this epic?" | "What blocks this task?" |
 
 Both views complement each other: use Tree View to understand structure, Graph View to understand flow.
@@ -1682,17 +1696,15 @@ Traditional priority lists show tasks in a single ordered queue. But in complex 
 
 ### What Makes an Item "Actionable"
 
-An issue appears in the Actionable Plan when:
-1. **Status is open or in_progress** (not closed)
-2. **No open blockers** exist (all blocking dependencies are closed)
+An issue appears in the Actionable Plan when it is in the selected candidate scope, its status is `open` or `in_progress`, its deferral has elapsed, and its dependency gates are satisfied. Direct blockers and inherited parent gates are checked against the full loaded source. Closed or tombstoned predecessors satisfy a gate; a missing dependency record does not. Parked statuses such as `blocked`, `deferred` and `draft` are not ready merely because they have no edges.
 
-This ensures every item in the view can be started immediately without waiting on anything else.
+Planning readiness includes ongoing or assigned work. A new claim additionally requires an open, unassigned, non-epic issue without open children or configured not-ready labels. `--robot-next` also requires complete source authority and a usable live tracker route before emitting a claim. These checks describe the snapshot; they do not reserve work or guarantee a later tracker mutation succeeds.
 
 ### Unblock Analysis
 
 Each item shows an **unblocks count**—the number of other issues that would become actionable if this item were completed. High unblock counts indicate **force multipliers**: completing them unlocks a cascade of downstream work.
 
-The **Highest Impact** summary at the bottom identifies the single item that, when completed, unblocks the most additional work. This is your optimal "next thing to pick up."
+The **Highest Impact** summary identifies the plan item that unlocks the most additional ready work, with priority and ID tie-breaks. Use `--robot-next` and its typed action route when choosing a new claim.
 
 ### Navigation
 
@@ -2373,64 +2385,56 @@ bv --robot-orphans
 
 ### Causal Chain Analysis
 
-The `--robot-causality` command reveals **why a bead took as long as it did** by reconstructing its timeline of events:
+`bv --robot-causality <id>` reconstructs committed status and dependency changes, including changes to blockers outside the displayed issue scope. It measures observed waiting intervals and links changes that affect readiness. Events retain Git first-parent order, author timestamps and committer timestamps; chronological proximity alone does not establish a cause.
+
+Add `--as-of <ref>` to use the source file and history available at that Git revision, with ongoing waits measured through its timestamp. Later descendants stay excluded even if their dates were backdated. `--history-limit` and `--history-since` restrict the retained window; a window that omits creation cannot establish the full lifecycle duration.
 
 | Event Type | Description |
 |------------|-------------|
-| `created` | Bead was opened |
-| `claimed` | Work started (status → in_progress) |
-| `commit` | Code commit linked to bead |
-| `blocked` | Bead became blocked by another bead |
-| `unblocked` | Blocking dependency was resolved |
-| `closed` | Bead was completed |
-| `reopened` | Bead was reopened after closure |
+| `created` | Bead first appeared in the retained source |
+| `claimed` | Status changed to in_progress |
+| `blocked` / `unblocked` | Explicit blocked status or dependency constraints changed |
+| `closed` / `reopened` | A committed lifecycle transition |
+| `changed` / `deleted` | Other target changes or removal from the source; removal is not completion |
+| `constraint_change` | A relevant dependency record or unresolved gate changed |
+| `observation` | An ongoing wait measured through the reference instant |
 
-**Insights provided:**
-- **Blocked percentage**: How much time was spent waiting on dependencies
-- **Critical path**: The chain of events determining minimum completion time
-- **Longest gap**: Identifies stalled periods needing investigation
-- **Recommendations**: Actionable suggestions (e.g., "Consider breaking into smaller beads")
+Correlated code commits appear separately in `chain.related_commits`. The `chain.links` array records the evidence for dependency transitions and observed waits; an unrelated preceding commit does not become a causal link.
 
-**Causality Output Schema:**
+**Measurements:**
+
+- `explicit_blocked_duration` measures recorded blocked status; `dependency_wait_duration` measures unsatisfied dependency gates. Their union is `blocked_duration`, so overlapping blockers count once.
+- `active_duration` is nonblocked elapsed time. It does not measure execution effort, and `estimated_without` remains `null` because Git history does not establish a minimum completion time.
+- `critical_path` follows evidence-supported links and weights observed waiting. It is not a project schedule. Gap statistics describe retained transitions when their clocks are consistent.
+- `coverage`, `limitations` and the duration-known fields expose missing records, truncated history and contradictory clocks. Unknown measurements serialize as `null`, distinct from a measured zero. An open wait extends through the reference instant, bounded by any requested history cutoff.
+
+**Example excerpt:** a ten-hour lifecycle with a dependency wait from 02:00 to 08:00. Duration fields use integer **nanoseconds**, not duration strings. Use `bv --robot-schema --schema-command robot-causality` for the complete schema.
+
 ```json
 {
-  "generated_at": "2025-01-15T14:32:00Z",
-  "data_hash": "abc123...",
   "chain": {
-    "bead_id": "bv-123",
-    "title": "Implement auth caching",
+    "bead_id": "A",
     "status": "closed",
-    "events": [
-      {"id": 1, "type": "created", "timestamp": "2025-01-10T10:00:00Z"},
-      {"id": 2, "type": "claimed", "timestamp": "2025-01-10T11:00:00Z", "caused_by_id": 1},
-      {"id": 3, "type": "blocked", "timestamp": "2025-01-11T09:00:00Z", "blocker_id": "bv-456"},
-      {"id": 4, "type": "unblocked", "timestamp": "2025-01-12T16:00:00Z"},
-      {"id": 5, "type": "commit", "timestamp": "2025-01-13T10:00:00Z", "commit_sha": "abc1234"},
-      {"id": 6, "type": "closed", "timestamp": "2025-01-13T17:00:00Z"}
-    ],
-    "edge_count": 5,
-    "total_time": "79h0m0s",
+    "total_time": 36000000000000,
+    "duration_known": true,
     "is_complete": true
   },
   "insights": {
-    "total_duration": "79h0m0s",
-    "blocked_duration": "31h0m0s",
-    "active_duration": "48h0m0s",
-    "blocked_percentage": 39.2,
-    "blocked_periods": [
-      {"start_time": "2025-01-11T09:00:00Z", "end_time": "2025-01-12T16:00:00Z", "blocker_id": "bv-456"}
-    ],
-    "commit_count": 1,
-    "critical_path_desc": "created → claimed → blocked → unblocked → commit → closed",
-    "summary": "Bead took 79h total; 39% blocked by bv-456",
-    "recommendations": ["Consider unblocking bv-456 earlier to reduce wait time"]
+    "coverage": "complete",
+    "total_duration": 36000000000000,
+    "blocked_duration": 21600000000000,
+    "active_duration": 14400000000000,
+    "blocked_percentage": 60,
+    "explicit_blocked_duration": 0,
+    "dependency_wait_duration": 21600000000000,
+    "estimated_without": null
   }
 }
 ```
 
 ### Correlation Feedback System
 
-Train the correlation engine by confirming or rejecting its suggestions:
+Record decisions about specific commit/issue pairs:
 
 ```bash
 # Explain why a correlation exists
@@ -2458,7 +2462,7 @@ bv --robot-correlation-stats
 }
 ```
 
-This feedback loop improves correlation accuracy over time—confirmed correlations strengthen pattern recognition, while rejections help eliminate false positives.
+Stored feedback applies to the identified commit/issue pair: confirmation pins confidence to 1.0, rejection removes that pair from the report and derived index, and ignore leaves it unchanged. These decisions do not train patterns for unrelated pairs or establish calibrated accuracy.
 
 **Impact Network Output Schema:**
 ```json
@@ -2493,7 +2497,7 @@ This feedback loop improves correlation accuracy over time—confirmed correlati
 
 ## 🤖 Cass Integration: AI Session Correlation (Optional)
 
-`bv` optionally integrates with [**cass**](https://github.com/Dicklesworthstone/coding_agent_session_search) (Coding Agent Session Search)—a tool that captures and indexes coding sessions from AI assistants like Claude. When cass is installed, `bv` automatically enhances its correlation capabilities with session-based insights.
+`bv` optionally integrates with [**cass**](https://github.com/Dicklesworthstone/coding_agent_session_search) (Coding Agent Session Search), which indexes coding sessions from AI assistants. The TUI can look up and preview sessions for a selected bead. Availability and session matches do not establish live agent activity or add a fourth Git-history correlation strategy.
 
 ### How It Works
 
@@ -3502,12 +3506,12 @@ In `--robot-search` JSON, hybrid results include `mode`, `preset`, `weights`, pl
 
 ```bash
 #!/bin/bash
-# agent-workflow.sh - Autonomous task selection
+# agent-workflow.sh - Read-only task and action inspection
 
 # 1. Get the execution plan
 PLAN=$(bv --robot-plan)
 
-# 2. Extract highest-impact actionable task
+# 2. Inspect the plan's highest-impact item (it may already be assigned/in progress)
 TASK=$(echo "$PLAN" | jq -r '.plan.summary.highest_impact')
 
 # 3. Get full insights for context
@@ -3518,7 +3522,15 @@ BASELINE=$(bv --diff-since HEAD~1 --robot-diff)
 
 echo "Working on: $TASK"
 echo "Unblocks: $(echo "$PLAN" | jq '.plan.summary.unblocks_count') tasks"
+
+# 5. Inspect a new-claim candidate and its actual origin-bound route
+NEXT=$(bv --robot-next)
+printf '%s\n' "$NEXT" | jq '{actionable, id, diagnostic_top_pick, actions}'
+# No-action responses intentionally fail this check; do not invent a tracker command
+printf '%s\n' "$NEXT" | jq -e '.actionable == true and .source_authority.claim_safe == true and (.actions.claim.argv | type == "array")'
 ```
+
+Each typed action contains `argv` and `working_directory`. Inspect `.actions.show` against current tracker state before considering `.actions.claim`. Execute arrays directly in that directory, rather than splitting `.shell` text or replacing the local ID with a namespaced display ID. For example, a Python caller uses `subprocess.run(action["argv"], cwd=action["working_directory"], check=True)`. The snippet above only inspects actions; it does not claim or close work.
 
 ### Output Examples
 
@@ -3874,7 +3886,7 @@ The analysis engine uses a **compact adjacency-list graph** (`compactDirectedGra
 - Uses `[]int64` adjacency lists instead of `map[int64]set`
 - Eliminates map grow/rehash overhead entirely
 
-**Real-data benchmarks:** Run `go test -bench=BenchmarkRealData ./pkg/analysis/...` to validate performance against your project's actual `.beads/issues.jsonl` data.
+**Tracked dataset benchmarks:** `go test -bench=BenchmarkRealData ./pkg/analysis/...` uses the committed 1,000-issue synthetic `tests/testdata/benchmark/medium.jsonl` through the production loader. The historical benchmark name does not mean it measures the caller's current project data.
 
 ---
 
@@ -4045,8 +4057,10 @@ bv has a comprehensive built-in help system:
 | **graph** | `hjkl` | Navigate graph |
 |  | `H` | Scroll left |
 |  | `L` | Scroll right |
-|  | `PgUp` | Scroll up |
-|  | `PgDn` | Scroll down |
+|  | `J/K` | Scroll graph vertically |
+|  | `space` | Expand/collapse dependency paths |
+|  | `PgUp` | Previous 10 nodes |
+|  | `PgDn` | Next 10 nodes |
 | **board** | `h` | Previous column |
 |  | `l` | Next column |
 |  | `H` | First column |
@@ -4263,16 +4277,16 @@ Copyright (c) 2026 Jeffrey Emanuel
    ↓ cache (hash-keyed)
    ↓ outputs: TUI | robot JSON | exports/hooks
 ```
-- Hash and config travel with every robot payload so downstream consumers can verify consistency.
+- Issue-backed responses carry source and scope identity. Metric-bearing commands also carry analysis configuration/status; graph and metadata commands have their own schemas.
 
 ## 📐 Graph Analysis Algorithms (plain English)
 - PageRank: “blocking authority” — foundational tasks with many (or important) dependents.
 - Betweenness: “bridges” — nodes on many shortest paths; bottlenecks between clusters.
 - HITS: hubs (aggregators) vs authorities (prerequisites).
-- Critical-path depth: longest downstream chain length; zero slack keystones.
+- Critical-path depth: longest dependent chain in task counts; a structural score, not elapsed delivery time.
 - Eigenvector: influence via influential neighbors.
 - Density, degree, topo sort: structural backbone.
-- Cycles: detected via Tarjan SCC + `DirectedCyclesIn`; capped with timeouts and stored count.
+- Cycles: Tarjan SCC plus one representative cycle per cyclic component; capped with timeouts and stored count. Breaking a representative can leave other cycles in that component.
 - Each appears in robot insights with its status flag and, when ready, per-issue scores.
 
 ## ⚡ Phase 1 vs Phase 2
@@ -4294,8 +4308,8 @@ Copyright (c) 2026 Jeffrey Emanuel
   ```
 
 ## 🧮 Execution Plan Logic
-- Actionable set: open/in-progress issues with no open blocking dependencies.
-- Unblocks: for each actionable, list of issues that would become actionable if it closed (no other open blockers).
+- Actionable set: selected open/in-progress issues whose deferral has elapsed and whose direct/inherited dependency gates are satisfied in the full source. Missing blockers withhold readiness; closed/tombstoned predecessors satisfy gates.
+- Unblocks: selected issues that become ready if that item completes, using the same status, clock and dependency rules. This is distinct from eligibility for a new claim.
 - Tracks: undirected connected components group actionable items into parallelizable streams; items inside a track are ordered by priority, then ID.
 - Summary: highest-impact item = most unblocks, then highest priority (lowest number), then lowest ID for determinism (`pkg/analysis/plan.go`).
 
@@ -4311,7 +4325,7 @@ Copyright (c) 2026 Jeffrey Emanuel
 ## 🛡️ Performance Guardrails
 - Two-phase analysis with size-aware configs (approx betweenness on large sparse graphs, cycle caps, HITS skipped on dense XL graphs).
 - Per-metric timeouts from 2 s (small graphs) down to 200 ms (XL graphs); results marked with status.
-- Disk cache (24 h max age, invalidated when `.beads` changes) keeps repeated robot calls fast on unchanged data; hash mismatch triggers recompute. Bypass with `--no-cache` or `BV_NO_CACHE=1`.
+- Graph-stat disk entries use data/configuration keys and a 24 h maximum age; invalid, missing or expired entries recompute. Cached metrics do not freeze clock-dependent readiness or ranking. Bypass with `--no-cache` or `BV_NO_CACHE=1`.
 - Bench quick check: `./scripts/benchmark.sh quick` or diagnostics via `bv --profile-startup`.
 
 ## 🧷 Robustness & Self-Healing
@@ -4327,14 +4341,14 @@ Copyright (c) 2026 Jeffrey Emanuel
   bv --robot-priority | jq '.recommendations[0]'
   bv --check-drift --robot-drift --diff-since HEAD~5 > drift.json
   ```
-- Use `data_hash` to ensure all artifacts come from the same analysis run; fail CI if hashes diverge.
+- Compare `data_hash`, `authority_hash`, `scope_hash`, effective analysis configuration, reference clock and metric status. Equal data hashes alone do not mean two responses came from the same run or scope.
 - Exit codes: drift check (0 ok, 1 critical, 2 warning).
 
 ## 🩺 Troubleshooting Matrix (robot mode)
 - Empty metric maps → Phase 2 still running or timed out; check status flags.
 - Large payloads → use jq to slice top items; re-run after filtering via recipes.
-- Missing cycles → likely skipped/timeout; see `status.cycles`.
-- Inconsistent outputs between commands → compare `data_hash`; rerun if different.
+- Missing cycles → inspect `.status.Cycles`; skipped/timed-out analysis does not establish acyclicity.
+- Inconsistent outputs between commands → compare source/scope identity, reference clock, configuration and status before interpreting a difference.
 
 ## 🔒 Security & Privacy Notes
 - Local-first: all analysis happens on your repo's JSONL; no network required for robots.
@@ -4413,6 +4427,9 @@ Issue-backed robot responses also include `source_authority`: per-source loaded,
 When authority is `partial` or `unknown`, readiness is labeled `provisional`. Exploratory recommendations, counts, and graphs remain available, but claim commands and proven actionable picks are withheld. Check `source_authority.claim_safe` before claiming work. Local Pages exports and agent briefs carry the same diagnostics; watch exports refresh them even when the visible issue data stays unchanged.
 
 **Schemas in 5 seconds (jq-friendly)**
+- `bv --robot-triage` → `.triage.quick_ref`, `.triage.recommendations[]`, `.triage.quick_wins`; recommendations can include work that is not claimable.
+- `bv --robot-next` → `.id` and `.actions` when actionable; otherwise `.actionable: false`, diagnostics and, when available, `.diagnostic_top_pick`.
+- `bv --robot-graph` → numeric `.nodes`/`.edges` plus `.adjacency.nodes[]`/`.adjacency.edges[]` in JSON mode; `.graph` contains DOT/Mermaid text in those modes.
 - `bv --robot-insights` → `.status`, `.analysis_config`, metric maps (capped by `BV_INSIGHTS_MAP_LIMIT`), `Bottlenecks`, `Keystones` (critical-path scores), `Cycles`, plus advanced signals: `Cores` (k-core), `Articulation` (cut vertices), `Slack` (longest-path slack).
 - `bv --robot-plan` → `.plan.tracks[].items[] | {id,unblocks}` for downstream unlocks; `.plan.summary.highest_impact`.
 - `bv --robot-priority` → `.recommendations[] | {issue_id,current_priority,suggested_priority,confidence,reasoning}`.

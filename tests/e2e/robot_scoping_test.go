@@ -927,6 +927,7 @@ func TestRobotScoping_AsOfHonouredOrDeclaredUnsupported(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 	old := `{"id":"hist-old","title":"Old","status":"open","issue_type":"task","priority":1,"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z"}`
+	changed := `{"id":"hist-old","title":"Changed after cutoff","status":"closed","issue_type":"task","priority":1,"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-04T00:00:00Z"}`
 	newer := `{"id":"hist-new","title":"New","status":"open","issue_type":"task","priority":1,"created_at":"2026-08-03T00:00:00Z","updated_at":"2026-08-04T00:00:00Z"}`
 	issuesPath := filepath.Join(beadsDir, "issues.jsonl")
 	if err := os.WriteFile(issuesPath, []byte(old+"\n"), 0o644); err != nil {
@@ -936,11 +937,12 @@ func TestRobotScoping_AsOfHonouredOrDeclaredUnsupported(t *testing.T) {
 	git("add", ".beads/issues.jsonl")
 	git("commit", "-q", "-m", "old")
 	oldSHA := git("rev-parse", "HEAD")
-	if err := os.WriteFile(issuesPath, []byte(old+"\n"+newer+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(issuesPath, []byte(changed+"\n"+newer+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git("add", ".beads/issues.jsonl")
 	git("commit", "-q", "-m", "new")
+	newSHA := git("rev-parse", "HEAD")
 
 	commands := loadCapabilities(t, bv)
 	honoured, declared := 0, 0
@@ -959,7 +961,7 @@ func TestRobotScoping_AsOfHonouredOrDeclaredUnsupported(t *testing.T) {
 			// Commands needing sprint files or git correlation data may fail on
 			// this bare fixture; that is fine as long as they did not silently
 			// answer from HEAD. Nothing more to assert without a payload.
-			if !c.NeedsSprint && !c.NeedsGit {
+			if c.Name == "robot-causality" || (!c.NeedsSprint && !c.NeedsGit) {
 				t.Errorf("%s --as-of: exit %v\n%s%s", c.Name, r.exit, r.stdout, r.stderr)
 			}
 			continue
@@ -972,7 +974,7 @@ func TestRobotScoping_AsOfHonouredOrDeclaredUnsupported(t *testing.T) {
 		_ = json.Unmarshal(r.payload["as_of"], &asOf)
 		_ = json.Unmarshal(r.payload["as_of_commit"], &asOfCommit)
 		_ = json.Unmarshal(r.payload["source_kind"], &sourceKind)
-		if asOf != oldSHA || !shaRE.MatchString(asOfCommit) || sourceKind != "git" {
+		if asOf != oldSHA || asOfCommit != oldSHA || !shaRE.MatchString(asOfCommit) || sourceKind != "git" {
 			t.Errorf("%s --as-of: envelope as_of=%q as_of_commit=%q source_kind=%q", c.Name, asOf, asOfCommit, sourceKind)
 		}
 		scope, _ := scopeOf(t, r)
@@ -984,17 +986,47 @@ func TestRobotScoping_AsOfHonouredOrDeclaredUnsupported(t *testing.T) {
 			}
 		}
 		switch {
-		case c.NeedsGit || c.NeedsSprint:
+		case (c.NeedsGit && c.Name != "robot-causality") || c.NeedsSprint:
 			if !declaresAsOf {
 				t.Errorf("%s reads live history/sprint files and must declare as_of unsupported, got scope %v", c.Name, scope)
 			}
 			declared++
 		default:
 			if declaresAsOf {
-				t.Errorf("%s analyses ctx.Issues and must not declare as_of unsupported", c.Name)
+				t.Errorf("%s honours the historical source and must not declare as_of unsupported", c.Name)
 			}
 			if strings.Contains(r.stdout, `"hist-new"`) {
 				t.Errorf("%s --as-of %s answered from HEAD (mentions hist-new):\n%s", c.Name, oldSHA[:7], truncate(r.stdout, 800))
+			}
+			if c.Name == "robot-causality" {
+				var chain struct {
+					Title  string `json:"title"`
+					Status string `json:"status"`
+					Events []struct {
+						CommitSHA string `json:"commit_sha"`
+					} `json:"events"`
+				}
+				if err := json.Unmarshal(r.payload["chain"], &chain); err != nil {
+					t.Fatalf("historical causality chain: %v", err)
+				}
+				if chain.Title != "Old" || chain.Status != "open" || len(chain.Events) == 0 {
+					t.Errorf("historical causality must preserve the old issue and its events: %+v", chain)
+				}
+				recorded := 0
+				for _, event := range chain.Events {
+					if event.CommitSHA == oldSHA {
+						recorded++
+					}
+					if event.CommitSHA != "" && event.CommitSHA != oldSHA {
+						t.Errorf("historical causality includes event from %s, want only %s", event.CommitSHA, oldSHA)
+					}
+				}
+				if recorded == 0 {
+					t.Error("historical causality has no event from the selected commit")
+				}
+				if strings.Contains(r.stdout, newSHA) || strings.Contains(r.stdout, "Changed after cutoff") {
+					t.Errorf("historical causality leaks the later commit: %s", truncate(r.stdout, 1200))
+				}
 			}
 			honoured++
 		}

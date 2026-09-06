@@ -275,8 +275,10 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"hjkl", "Navigate graph", "Graph", "graph"},
 		{"H", "Scroll left", "Graph", "graph"},
 		{"L", "Scroll right", "Graph", "graph"},
-		{"PgUp", "Scroll up", "Graph", "graph"},
-		{"PgDn", "Scroll down", "Graph", "graph"},
+		{"J/K", "Scroll graph vertically", "Graph", "graph"},
+		{"space", "Expand/collapse dependency paths", "Graph", "graph"},
+		{"PgUp", "Previous 10 nodes", "Graph", "graph"},
+		{"PgDn", "Next 10 nodes", "Graph", "graph"},
 
 		// Board View
 		{"h", "Previous column", "Board", "board"},

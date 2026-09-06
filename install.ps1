@@ -10,14 +10,16 @@
     aborts the install: nothing unverified is ever written to the install
     directory. Go is not required.
 
-    -FromSource keeps the old path (go install) but pins it to the resolved
-    tag instead of @latest, so a build from source is still reproducible.
+    -FromSource resolves the release tag to a Git commit and builds a clean
+    checkout with its vendored dependencies. Git and Go are required. The
+    source and build diagnostics are retained if installation fails.
 .PARAMETER Version
     Release tag to install, e.g. v0.23.0. Default: the latest GitHub release.
 .PARAMETER InstallDir
     Where bv.exe is placed. Default: %LOCALAPPDATA%\Programs\bv.
 .PARAMETER FromSource
-    Build with `go install ...@<tag>` instead of downloading a release archive.
+    Build the verified tagged checkout with -mod=vendor instead of downloading
+    a release archive. This includes the checkout's local dependency repairs.
 .PARAMETER NoPathUpdate
     Do not add the install directory to the user PATH.
 .EXAMPLE
@@ -25,9 +27,9 @@
     irm https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/<commit>/install.ps1 -OutFile install.ps1
     .\install.ps1 -Version v0.23.0
 .NOTES
-    BV_INSTALL_API_URL and BV_INSTALL_DOWNLOAD_URL override the GitHub API and
-    download bases; they exist so tests/scripts/install_ps1_test.sh can run the
-    script against a local fake release. Leave them unset for real installs.
+    BV_INSTALL_API_URL, BV_INSTALL_DOWNLOAD_URL and BV_INSTALL_SOURCE_URL
+    override the GitHub API, download and Git source locations for isolated
+    installer tests. Leave them unset for official installs.
 #>
 
 [CmdletBinding()]
@@ -49,6 +51,7 @@ $MIN_GO_VERSION = "1.25"
 
 $apiBase = if ($env:BV_INSTALL_API_URL) { $env:BV_INSTALL_API_URL.TrimEnd('/') } else { "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME" }
 $downloadBase = if ($env:BV_INSTALL_DOWNLOAD_URL) { $env:BV_INSTALL_DOWNLOAD_URL.TrimEnd('/') } else { "https://github.com/$REPO_OWNER/$REPO_NAME/releases/download" }
+$sourceUrl = if ($env:BV_INSTALL_SOURCE_URL) { $env:BV_INSTALL_SOURCE_URL } else { "https://github.com/$REPO_OWNER/$REPO_NAME.git" }
 
 function Write-Info { param([string]$Message) Write-Host "==> " -ForegroundColor Blue -NoNewline; Write-Host $Message }
 function Write-Success { param([string]$Message) Write-Host "==> " -ForegroundColor Green -NoNewline; Write-Host $Message }
@@ -217,8 +220,15 @@ function Install-FromRelease {
 function Get-GoVersion {
     $goCmd = Get-Command go -ErrorAction SilentlyContinue
     if (-not $goCmd) { return $null }
-    $output = & go version 2>$null
-    if ($output -match 'go(\d+\.\d+(?:\.\d+)?)') { return $Matches[1] }
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & go version 2>&1
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousPreference }
+    $versionText = $output -join "`n"
+    Write-Info $versionText
+    if ($code -eq 0 -and $versionText -match 'go(\d+\.\d+(?:\.\d+)?)') { return $Matches[1] }
     return $null
 }
 
@@ -241,31 +251,106 @@ function Install-FromSource {
     $goVersion = Get-GoVersion
     if (-not $goVersion) { Fail "Go is not installed or not in PATH (needed only for -FromSource). Install Go $MIN_GO_VERSION+ from https://go.dev/dl/" }
     if (-not (Test-GoVersion $goVersion $MIN_GO_VERSION)) { Fail "Go $MIN_GO_VERSION or later is required for -FromSource. Found: go$goVersion" }
-    Write-Info "Building $BIN_NAME $Tag from source with Go $goVersion (pinned, not @latest)"
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Fail "Git is required for -FromSource to verify the tagged checkout" }
+    if ($Tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') { Fail "Source version '$Tag' is not a release tag" }
+    Write-Info "Building $BIN_NAME $Tag from its vendored source with Go $goVersion"
     $work = Join-Path ([System.IO.Path]::GetTempPath()) ("bv-build-" + [System.IO.Path]::GetRandomFileName())
     New-Item -ItemType Directory -Path $work | Out-Null
-    $previousCGO = $env:CGO_ENABLED
-    $previousGOBIN = $env:GOBIN
+    Write-Info "Preparing source build at $work"
+    $source = Join-Path $work 'source'
+    $installed = $false
+    $savedEnv = @{}
+    foreach ($key in @('CGO_ENABLED', 'GOFLAGS', 'GOWORK', 'GOOS', 'GOARCH')) {
+        $savedEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+    }
     $prev = $ErrorActionPreference
     try {
+        # Resolve before fetching, then verify the fetched commit. A moved tag
+        # cannot silently substitute different source between these operations.
+        $ref = "refs/tags/$Tag"
+        $remote = @(Invoke-SourceGit $work 'resolve' @('ls-remote', '--exit-code', $sourceUrl, $ref, "$ref^{}"))
+        $commit = $null
+        foreach ($name in @("$ref^{}", $ref)) {
+            $matchesForRef = @($remote | Where-Object { $_ -match ('^([0-9a-f]{40})\s+' + [regex]::Escape($name) + '$') })
+            if ($matchesForRef.Count -gt 1) { Fail "Source tag $Tag resolved ambiguously" }
+            if ($matchesForRef.Count -eq 1) { $commit = ($matchesForRef[0] -split '\s+')[0]; break }
+        }
+        if (-not $commit) { Fail "Source tag $Tag has no verified Git object" }
+        $null = Invoke-SourceGit $work 'init' @('-c', 'init.defaultBranch=main', 'init', $source)
+        $null = Invoke-SourceGit $work 'fetch' @('-C', $source, 'fetch', '--depth=1', '--no-tags', $sourceUrl, "${ref}:${ref}")
+        $null = Invoke-SourceGit $work 'checkout' @('-C', $source, 'checkout', '--detach', $ref)
+        $head = @(Invoke-SourceGit $work 'revision' @('-C', $source, 'rev-parse', 'HEAD'))
+        if ($head.Count -ne 1 -or $head[0] -cne $commit) { Fail "Fetched source differs from resolved tag $Tag ($commit); existing installation was not changed" }
+        $status = @(Invoke-SourceGit $work 'status-before' @('-C', $source, 'status', '--porcelain=v1', '--untracked-files=all'))
+        if ($status.Count) { Fail 'Source checkout is not clean; existing installation was not changed' }
+        $vendorManifest = Join-Path $source 'vendor/modules.txt'
+        $moduleFile = Join-Path $source 'go.mod'
+        if (-not (Test-Path -LiteralPath $vendorManifest -PathType Leaf) -or -not (Test-Path -LiteralPath $moduleFile -PathType Leaf)) {
+            Fail 'Tagged source must contain go.mod and vendor/modules.txt; existing installation was not changed'
+        }
+        if (-not (Select-String -LiteralPath $moduleFile -Pattern ('^module\s+' + [regex]::Escape($MODULE) + '\s*$') -CaseSensitive -Quiet)) {
+            Fail 'Tagged source has an unexpected module identity; existing installation was not changed'
+        }
+        Write-Info "Source commit=$commit; vendor/modules.txt SHA256=$((Get-FileHash -LiteralPath $vendorManifest -Algorithm SHA256).Hash.ToLowerInvariant())"
         $env:CGO_ENABLED = "0"
-        $env:GOBIN = $work
-        $ErrorActionPreference = 'Continue'
-        & go install "$MODULE/cmd/$BIN_NAME@$Tag" 2>&1 | ForEach-Object { Write-Host $_ }
-        $ErrorActionPreference = $prev
-        if ($LASTEXITCODE -ne 0) { Fail "go install exited with code $LASTEXITCODE" }
+        $env:GOFLAGS = ''
+        $env:GOWORK = 'off'
+        $env:GOOS = ''
+        $env:GOARCH = ''
         $binary = Join-Path $work "$BIN_NAME.exe"
+        Push-Location $source
+        try {
+            [IO.File]::WriteAllText((Join-Path $work 'build.log'), '')
+            $ErrorActionPreference = 'Continue'
+            & go build '-mod=vendor' '-buildvcs=true' '-ldflags' "-X $MODULE/pkg/version.version=$Tag" '-o' $binary "./cmd/$BIN_NAME" 2>&1 |
+                Tee-Object -FilePath (Join-Path $work 'build.log') | ForEach-Object { Write-Host $_ }
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = $prev
+            if ($code -ne 0) { Fail "Source build exited with code $code; existing installation was not changed" }
+        } finally { Pop-Location }
+        if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { Fail 'Source build produced no executable; existing installation was not changed' }
+        $status = @(Invoke-SourceGit $work 'status-after' @('-C', $source, 'status', '--porcelain=v1', '--untracked-files=all'))
+        if ($status.Count) { Fail 'Source changed during the build; existing installation was not changed' }
         Assert-BinaryVersion $binary $Tag
+        $ErrorActionPreference = 'Continue'
+        $buildInfo = @(& go version -m $binary 2>&1)
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prev
+        $buildInfo | Tee-Object -FilePath (Join-Path $work 'build-info.log') | ForEach-Object { Write-Host $_ }
+        if ($code -ne 0 -or -not ($buildInfo -cmatch ('^\s*path\s+' + [regex]::Escape("$MODULE/cmd/$BIN_NAME") + '$')) -or
+            -not ($buildInfo -match ('^\s*build\s+vcs.revision=' + $commit + '$')) -or
+            -not ($buildInfo -match '^\s*build\s+vcs.modified=false$')) {
+            Fail 'Built executable does not identify the clean resolved source; existing installation was not changed'
+        }
+        Write-Info "Built executable SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant())"
         New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
         $destination = Join-Path $TargetDir "$BIN_NAME.exe"
         Copy-Item -LiteralPath $binary -Destination $destination -Force
+        $installed = $true
         return $destination
     } finally {
         $ErrorActionPreference = $prev
-        $env:CGO_ENABLED = $previousCGO
-        $env:GOBIN = $previousGOBIN
-        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        foreach ($key in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($key, $savedEnv[$key], 'Process') }
+        if ($installed) {
+            Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Info "Failed source build and diagnostics retained at $work"
+        }
     }
+}
+
+function Invoke-SourceGit {
+    param([string]$Work, [string]$Step, [string[]]$Arguments)
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& git '-c' 'core.autocrlf=false' @Arguments 2>&1)
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previousPreference }
+    [IO.File]::WriteAllText((Join-Path $Work "$Step.log"), '')
+    $output | Tee-Object -FilePath (Join-Path $Work "$Step.log") | ForEach-Object { Write-Host $_ }
+    if ($code -ne 0) { Fail "Git $Step failed with code $code; existing installation was not changed" }
+    return @($output | ForEach-Object { $_.ToString() })
 }
 
 function Add-ToPathIfNeeded {

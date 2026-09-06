@@ -20,6 +20,8 @@ const (
 	EventReopened EventType = "reopened"
 	// EventModified indicates other significant changes (title, priority, deps)
 	EventModified EventType = "modified"
+	// EventDeleted records removal from the history source, not completion.
+	EventDeleted EventType = "deleted"
 )
 
 // String returns the string representation of EventType
@@ -30,7 +32,7 @@ func (e EventType) String() string {
 // IsValid returns true if the event type is a recognized value
 func (e EventType) IsValid() bool {
 	switch e {
-	case EventCreated, EventClaimed, EventClosed, EventReopened, EventModified:
+	case EventCreated, EventClaimed, EventClosed, EventReopened, EventModified, EventDeleted:
 		return true
 	}
 	return false
@@ -38,13 +40,30 @@ func (e EventType) IsValid() bool {
 
 // BeadEvent represents a single lifecycle event for a bead, extracted from git history
 type BeadEvent struct {
-	BeadID      string    `json:"bead_id"`
-	EventType   EventType `json:"event_type"`
-	Timestamp   time.Time `json:"timestamp"`
-	CommitSHA   string    `json:"commit_sha"`
-	CommitMsg   string    `json:"commit_message"`
-	Author      string    `json:"author"`
-	AuthorEmail string    `json:"author_email"`
+	BeadID             string                `json:"bead_id"`
+	EventType          EventType             `json:"event_type"`
+	Timestamp          time.Time             `json:"timestamp"`
+	CommitSHA          string                `json:"commit_sha"`
+	CommitMsg          string                `json:"commit_message"`
+	Author             string                `json:"author"`
+	AuthorEmail        string                `json:"author_email"`
+	Before             *HistoricalIssueState `json:"before,omitempty"`
+	After              *HistoricalIssueState `json:"after,omitempty"`
+	TransitionObserved bool                  `json:"transition_observed"` // Retained record transitions parsed successfully; full-source authority is separate
+}
+
+// HistoricalIssueState retains the decision evidence in a committed record.
+// Dependencies are values owned by the extraction, independent of live issues.
+type HistoricalIssueState struct {
+	ID           string                 `json:"id"`
+	Status       string                 `json:"status"`
+	Title        string                 `json:"title"`
+	Dependencies []HistoricalDependency `json:"dependencies,omitempty"`
+}
+
+type HistoricalDependency struct {
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
 }
 
 // CorrelationMethod describes how a commit was linked to a bead
@@ -185,10 +204,11 @@ type FeedbackApplied struct {
 // (bounded by Since/Until); Commits is how many commits that walk yielded.
 // The orphan detector aligns its own window to this one.
 type HistoryWindow struct {
-	Limit   int        `json:"limit"`
-	Since   *time.Time `json:"since,omitempty"`
-	Until   *time.Time `json:"until,omitempty"`
-	Commits int        `json:"commits"`
+	Revision string     `json:"revision,omitempty"`
+	Limit    int        `json:"limit"`
+	Since    *time.Time `json:"since,omitempty"`
+	Until    *time.Time `json:"until,omitempty"`
+	Commits  int        `json:"commits"`
 }
 
 // HistoryReport is the top-level output structure for --robot-history
@@ -201,6 +221,7 @@ type HistoryReport struct {
 	Stats           HistoryStats           `json:"stats"`                       // Aggregate statistics
 	Histories       map[string]BeadHistory `json:"histories"`                   // BeadID -> BeadHistory
 	CommitIndex     CommitIndex            `json:"commit_index"`                // SHA -> []BeadID for reverse lookup
+	CausalHistory   *CausalHistory         `json:"causal_history,omitempty"`    // Full historical authority, only for an explicitly requested target
 }
 
 // FilterOptions controls which beads to include in the history report

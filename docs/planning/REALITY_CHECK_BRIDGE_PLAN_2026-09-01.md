@@ -1,8 +1,80 @@
 # Bridge Plan: beads_viewer (bv)
 
-## Current reality check — 2026-09-06
+## Implementation continuation — 2026-09-06
 
-This is the rescore after the implementation and independent verification campaign.
+The follow-up implements the highest-return gaps identified below. The September 6
+assessment is preserved as the starting baseline; its empty-handler and missing
+historical-evidence descriptions refer to the source before these changes.
+
+- [x] Restore graph panning, vertical scrolling, expansion/collapse, scoped dependency
+  paths and deterministic visible critical-chain highlighting in the existing view.
+  Preserve node selection, metrics and issue-detail navigation. Independent Model
+  and actual PTY checks pass, including Unicode, cycles, empty/tiny bounds, resize,
+  hidden neighbors and reload. The old handlers fail the new visible-output tests.
+  `bv-173` and `bv-7bob` are closed after independent acceptance.
+- [x] Retain historical status and dependency evidence through both extractors and
+  caches. The real CLI recovers the known six-hour wait within a ten-hour lifecycle;
+  independent fixtures also verify overlapping explicit/dependency waits, missing
+  authority, ongoing tails, true zero and contradictory author/committer clocks.
+  Unknown measurements are null; chronological neighbors are not automatically
+  causal links, and nonblocked time is not measured work effort.
+- [x] Finish causal CLI cutoff wiring: history-limit and history-since now reach
+  the producer, and every history walk and cache key uses the resolved revision.
+  Independent controls exclude backdated descendants, preserve unknown truncated
+  intervals, and verify cold/warm identity. Historical queries use the selected
+  legacy source even after a preferred filename appears or the live `.beads`
+  directory disappears. `bv-j74w` and `bv-apal.11` are closed after independent
+  positive acceptance; the original failures remain in their evidence records.
+- [x] Replace the Windows source install's version-suffixed module installation
+  with a verified tag-bound vendor build. A fresh native Windows replay builds and
+  executes the actual source binary; all five source fetch/build/version failures
+  preserve the existing installation. This verifies the checkout script against an
+  isolated tag at `bc63d252`, not a newly published release or older pinned script.
+- [x] Correct the README and root SKILL JSON paths, field casing, graph shape,
+  duration units, critical-depth recurrence, graph keys and unsupported claims.
+  Eight final CLI calls independently verify copied expressions against nonempty
+  fixtures; six old expressions fail as expected. Final generated-doc parity passes.
+- [x] Build all packages, run vet and check first-party formatting on the final
+  integrated runtime with exact Go 1.25.5 and the current dependency cohort.
+  The non-E2E race suite passes all 28 packages: 6,439 passed test nodes and
+  45 existing skips. Whole-tree formatting still lists 49 unchanged vendor files;
+  these are not called clean. UBS findings were reviewed, with no suppressions;
+  its nonzero result is retained.
+- [x] Run the complete E2E race suite. Its historical-scoping test still assumed
+  every Git command must refuse `--as-of`; independent review confirmed the stronger
+  replacement requires actual historical success and rejects future evidence.
+  The complete rerun has 700 passed test nodes and 10 existing skips. Only the
+  installed tracker's stale-claim test and its parent fail. This is an unresolved
+  S5 defect, so the full suite and final release gate are not green.
+- [x] Finish the remaining TOON discovery/test-oracle corrections using the actual
+  Rust encoder in isolated worker storage. Four real encoding/decoding/schema/stats
+  tests pass, including the two previously hidden obsolete oracles. Four discovery
+  positives and two explicit JSON fallbacks pass; the seven-command size check
+  retains its original threshold. Graph is about 7% smaller and triage about 13%
+  larger on this snapshot. Corrected callback-locking guidance matches the passing
+  eight-metric callback test. These are bounded results, not universal size claims.
+- [ ] Bind all final source/test/doc files, finish their affected checks, update
+  the remaining acceptance items and commit the implementation on `main`.
+- [ ] Complete original P1 responsiveness evidence and then the final source and
+  dependency cohort. The existing f4f run remains active on its original host and
+  unchanged deadlines; all 288 UI and 72 timed CLI records have completed, with
+  all 36 exact-output records now exist, with the final verifier and original
+  negative controls still pending. It does not certify this new implementation.
+- [ ] Resolve the existing external prerequisites: authorized live tracker repair,
+  native macOS amd64/arm64 and Linux ARM64 access, and final source-bound packaging.
+  These remain S5/V5/final-gate work; available-platform tests do not close them.
+
+Detailed commands, source/fixture hashes, raw stdout/stderr and granular subtasks
+remain in the existing beads. Graph evidence is on vmi1149989 under
+`/data/tmp/bv-graph-navigation.z8eFZAMu`; independent causal fixtures are under
+`/data/tmp/bv-root-causal-acceptance-4k2y5sfz`, with legacy/no-live controls under
+`/data/tmp/bv-causal-legacy-path-yq7wp0hk`. Native Windows source-install replay
+and copied-example evidence are recorded in the V5 and P2 beads. No new task graph
+or report campaign is needed.
+
+## Assessment baseline — 2026-09-06, before this continuation
+
+This was the rescore before the follow-up implementation above.
 The complete September 4 assessment and earlier records remain below as historical
 baselines. Their defect descriptions and task statuses are not the current verdict.
 

@@ -5,10 +5,108 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestTUIGraphPanAndExpand(t *testing.T) {
+	skipIfNoScript(t)
+	dir := t.TempDir()
+	blocker := "B-" + strings.Repeat("x", 80) + "-PAN-END"
+	writeIssuesJSONL(t, dir, fmt.Sprintf(`{"id":"A","title":"Dependent","status":"open","priority":1,"issue_type":"task","dependencies":[{"issue_id":"A","depends_on_id":%q,"type":"blocks"}]}
+{"id":%q,"title":"Graph navigation fixture","status":"open","priority":1,"issue_type":"task"}
+`, blocker, blocker))
+	writeRecipeFile(t, dir, "graph.yaml", "view:\n  show_graph: true\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	bv := buildBvBinary(t)
+	cmd := scriptTUICommand(ctx, bv, "--recipe", "graph")
+	if runtime.GOOS == "linux" {
+		for i, arg := range cmd.Args {
+			if arg == "-c" && i+1 < len(cmd.Args) {
+				cmd.Args[i+1] = "stty columns 70 rows 36 && " + cmd.Args[i+1]
+				break
+			}
+		}
+	} else if runtime.GOOS == "darwin" {
+		cmd = exec.CommandContext(ctx, "script", "-q", "/dev/null", "sh", "-c", "stty columns 70 rows 36 && exec \"$@\"", "sh", bv, "--recipe", "graph")
+	}
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "BV_TUI_AUTOCLOSE_MS=18000")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	path := filepath.Join(t.TempDir(), "graph-pty.log")
+	output, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	cmd.Stdout, cmd.Stderr = output, output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	defer func() { cancel(); stdin.Close(); <-wait }()
+	offset := 0
+	waitFor := func(marker string) string {
+		t.Helper()
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw[offset:]), marker) {
+				t.Logf("PTY rendered %q after byte %d (%d bytes total)", marker, offset, len(raw))
+				frame := string(raw[offset:])
+				offset = len(raw)
+				return frame
+			}
+			select {
+			case <-deadline.C:
+				t.Fatalf("graph did not render %q after byte %d:\n%s", marker, offset, raw)
+			case <-ctx.Done():
+				t.Fatalf("graph PTY timed out: %v\n%s", ctx.Err(), raw)
+			case <-tick.C:
+			}
+		}
+	}
+	press := func(key string) {
+		t.Helper()
+		if _, err := io.WriteString(stdin, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor("collapsed")
+	press(" ")
+	expanded := waitFor("DEPENDENCY PATHS")
+	if strings.Contains(expanded, "PAN-END → A") {
+		t.Fatal("long dependency edge was not initially clipped")
+	}
+	for i := 0; i < 6; i++ {
+		press("L")
+		time.Sleep(30 * time.Millisecond)
+	}
+	waitFor("PAN-END → A")
+	for i := 0; i < 6; i++ {
+		press("H")
+		time.Sleep(30 * time.Millisecond)
+	}
+	waitFor("DEPENDENCY PATHS")
+	press(" ")
+	waitFor("collapsed")
+}
 
 // TestTUIPrioritySnapshot launches the TUI briefly to ensure it initializes and exits cleanly.
 // We rely on BV_TUI_AUTOCLOSE_MS to avoid hanging in CI.

@@ -47,7 +47,7 @@ const (
 	// additionally carries historyArtifactFormatVersion and an entry whose
 	// artifact was written by a different format is a miss (see
 	// getHeadArtifactCached). 3 = first file version storing v2 artifacts.
-	headArtifactCacheVersion            = 3
+	headArtifactCacheVersion            = 4
 	headArtifactCacheFileName           = "correlation_head_artifact_cache.json"
 	headArtifactCacheMaxEntries         = 6
 	headArtifactCacheMaxAge             = 24 * time.Hour

@@ -306,6 +306,9 @@ func (m *ExplicitMatcher) searchWithGrep(pattern string, opts ExtractOptions) ([
 	if opts.Limit > 0 {
 		args = append(args, fmt.Sprintf("-n%d", opts.Limit))
 	}
+	if opts.Revision != "" {
+		args = append(args, opts.Revision)
+	}
 
 	cmd := gitCommand(m.ctx, args...)
 	cmd.Dir = m.repoPath

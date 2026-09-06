@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -1395,16 +1397,257 @@ func TestRobotRelationshipWorkflowSchemasMatchHandlerOutputs(t *testing.T) {
 		}
 	}
 	causalChainProps := requireNestedSchemaProperties(t, causalityProps["chain"], "robot-causality chain")
-	for _, name := range []string{"bead_id", "title", "status", "events", "edge_count", "start_time", "end_time", "total_time", "is_complete"} {
+	for _, name := range []string{"bead_id", "title", "status", "events", "edge_count", "start_time", "end_time", "total_time", "is_complete", "links", "duration_known", "time_basis"} {
 		if causalChainProps[name] == nil {
 			t.Fatalf("robot-causality chain schema missing %q", name)
 		}
 	}
 	causalInsightsProps := requireNestedSchemaProperties(t, causalityProps["insights"], "robot-causality insights")
-	for _, name := range []string{"total_duration", "blocked_duration", "active_duration", "blocked_percentage", "blocked_periods", "critical_path", "summary", "recommendations"} {
+	for _, name := range []string{"total_duration", "blocked_duration", "active_duration", "blocked_percentage", "blocked_periods", "critical_path", "summary", "recommendations", "coverage", "limitations", "blocked_duration_known", "explicit_blocked_duration", "dependency_wait_duration", "critical_path_duration"} {
 		if causalInsightsProps[name] == nil {
 			t.Fatalf("robot-causality insights schema missing %q", name)
 		}
+	}
+}
+
+func TestRobotCausalityCommittedWaitAndUnknownSchema(t *testing.T) {
+	exe := buildTestBinary(t)
+	start := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(start.Add(12*time.Hour).Unix(), 10))
+	for _, tc := range []struct {
+		name       string
+		hours      []int
+		statuses   []string
+		dependency bool
+		missing    bool
+		want       any
+	}{
+		{"known six hours scoped blocker", []int{0, 2, 8, 10}, []string{"open", "blocked", "open", "closed"}, true, false, float64(6 * time.Hour)},
+		{"known zero", []int{0, 10}, []string{"open", "closed"}, false, false, float64(0)},
+		{"unknown missing blocker", []int{0, 2}, []string{"open", "open"}, true, true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			git := func(at time.Time, args ...string) string {
+				t.Helper()
+				cmd := exec.Command("git", args...)
+				cmd.Dir = repo
+				cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid", "GIT_AUTHOR_DATE="+at.Format(time.RFC3339), "GIT_COMMITTER_DATE="+at.Format(time.RFC3339))
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			git(start, "init", "-b", "main")
+			if err := os.Mkdir(filepath.Join(repo, ".beads"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var blockedSHA, anchorSHA string
+			for i, hour := range tc.hours {
+				at := start.Add(time.Duration(hour) * time.Hour)
+				deps := "[]"
+				if tc.dependency && hour >= 2 {
+					deps = `[{"depends_on_id":"B","type":"blocks"}]`
+				}
+				data := fmt.Sprintf("{\"id\":\"A\",\"title\":\"Scoped target\",\"status\":%q,\"priority\":2,\"issue_type\":\"task\",\"created_at\":%q,\"updated_at\":%q,\"labels\":[\"backend\"],\"dependencies\":%s}\n", tc.statuses[i], start.Format(time.RFC3339), at.Format(time.RFC3339), deps)
+				if !tc.missing {
+					status := "open"
+					if hour >= 8 {
+						status = "closed"
+					}
+					data += fmt.Sprintf("{\"id\":\"B\",\"title\":\"Outside selected label\",\"status\":%q,\"priority\":2,\"issue_type\":\"task\",\"created_at\":%q,\"updated_at\":%q,\"labels\":[\"external\"]}\n", status, start.Format(time.RFC3339), at.Format(time.RFC3339))
+				}
+				if err := os.WriteFile(filepath.Join(repo, ".beads", "issues.jsonl"), []byte(data), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				git(at, "add", ".beads/issues.jsonl")
+				git(at, "commit", "-m", fmt.Sprintf("snapshot %d", i))
+				if tc.want == float64(6*time.Hour) && hour == 2 {
+					blockedSHA = git(at, "rev-parse", "HEAD")
+					git(start.Add(3*time.Hour), "commit", "--allow-empty", "-m", "A: code-only anchor")
+					anchorSHA = git(at, "rev-parse", "HEAD")
+				}
+			}
+			out, stderr, err := runCommandWithTimeout(t, repo, exe, "--robot-causality", "A", "--label", "backend")
+			if err != nil {
+				t.Fatalf("actual causal CLI: %v\nstdout:%s\nstderr:%s", err, out, stderr)
+			}
+			var payload struct {
+				Chain    map[string]any `json:"chain"`
+				Insights map[string]any `json:"insights"`
+			}
+			if err := json.Unmarshal([]byte(out), &payload); err != nil {
+				t.Fatalf("invalid output: %v\n%s\n%s", err, out, stderr)
+			}
+			if got := payload.Insights["blocked_duration"]; got != tc.want {
+				t.Fatalf("blocked_duration=%v expected%v\n%s\n%s", got, tc.want, out, stderr)
+			}
+			if payload.Insights["blocked_duration_known"] != (tc.want != nil) {
+				t.Fatalf("measurement availability disagrees: %s", out)
+			}
+			if payload.Chain["bead_id"] != "A" {
+				t.Fatalf("target scope changed: %s", out)
+			}
+			props := requireNestedSchemaProperties(t, robotCausalInsightsSchema(), "causal insights")
+			for _, field := range []string{"blocked_duration", "explicit_blocked_duration", "dependency_wait_duration"} {
+				definition := props[field].(map[string]interface{})
+				if !reflect.DeepEqual(definition["type"], []string{"integer", "null"}) {
+					t.Fatalf("schema rejects actual null/known duration for%s: %v", field, definition)
+				}
+			}
+			if blockedSHA != "" {
+				for _, window := range [][]string{{"--history-limit", "2"}, {"--history-since", "2025-01-15T03:30:00Z"}} {
+					t.Run(window[0], func(t *testing.T) {
+						args := append([]string{"--robot-causality", "A", "--label", "backend"}, window...)
+						out, stderr, err := runCommandWithTimeout(t, repo, exe, args...)
+						if err != nil {
+							t.Fatalf("bounded causal CLI %v: %v\n%s\n%s", args, err, out, stderr)
+						}
+						var got correlation.CausalityResult
+						if err := json.Unmarshal([]byte(out), &got); err != nil {
+							t.Fatal(err)
+						}
+						if got.Insights.BlockedDurationKnown || got.Insights.Coverage != "partial" || !strings.Contains(out, `"blocked_duration":null`) || strings.Contains(out, blockedSHA) {
+							t.Fatalf("truncated history claimed complete measurement or included excluded commit:\n%s", out)
+						}
+					})
+				}
+				t.Run("invalid since rejected", func(t *testing.T) {
+					out, stderr, err := runCommandWithTimeout(t, repo, exe, "--robot-causality", "A", "--history-since", "invalid-date")
+					if err == nil || !strings.Contains(stderr, "parsing --history-since") || strings.Contains(out, `"chain"`) {
+						t.Fatalf("invalid history bound accepted or misdiagnosed: %v\n%s\n%s", err, out, stderr)
+					}
+				})
+				checkRevision := func(t *testing.T, sha string, hours int, wantBlocked time.Duration) string {
+					t.Helper()
+					out, stderr, err := runCommandWithTimeout(t, repo, exe, "--robot-causality", "A", "--label", "backend", "--as-of", sha)
+					if err != nil {
+						t.Fatalf("revision-bound causal CLI: %v\n%s\n%s", err, out, stderr)
+					}
+					var got correlation.CausalityResult
+					if err := json.Unmarshal([]byte(out), &got); err != nil {
+						t.Fatal(err)
+					}
+					end := start.Add(time.Duration(hours) * time.Hour)
+					if !got.Chain.EndTime.Equal(end) || !got.Insights.BlockedDurationKnown || got.Insights.BlockedDuration != wantBlocked || got.Insights.Coverage != "complete" {
+						t.Fatalf("wrong revision measurement, want end%s wait%s:\n%s", end, wantBlocked, out)
+					}
+					for _, event := range got.Chain.Events {
+						if event.Timestamp.After(end) || event.Type == correlation.CausalClosed {
+							t.Fatalf("future lifecycle leaked into %s: %+v\n%s", sha, event, out)
+						}
+					}
+					if strings.Contains(out, `"unsupported":["as_of"]`) {
+						t.Fatalf("implemented as-of still declared unsupported:\n%s", out)
+					}
+					return out
+				}
+				t.Run("revision cold and warm", func(t *testing.T) {
+					cold := checkRevision(t, blockedSHA, 2, 0)
+					warm := checkRevision(t, blockedSHA, 2, 0)
+					if cold != warm {
+						t.Fatalf("revision cache changed exact output:\ncold%s\nwarm%s", cold, warm)
+					}
+				})
+				t.Run("code-only revision extends observed ongoing wait", func(t *testing.T) {
+					checkRevision(t, anchorSHA, 3, time.Hour)
+				})
+				t.Run("current cache remains distinct", func(t *testing.T) {
+					again, stderr, err := runCommandWithTimeout(t, repo, exe, "--robot-causality", "A", "--label", "backend")
+					if err != nil || again != out {
+						t.Fatalf("historical query contaminated current result: %v\n%s\n%s", err, again, stderr)
+					}
+				})
+				t.Run("backdated descendant excluded by ancestry", func(t *testing.T) {
+					path := filepath.Join(repo, ".beads", "issues.jsonl")
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					data = bytes.ReplaceAll(data, []byte("Scoped target"), []byte("Future target edit"))
+					if err := os.WriteFile(path, data, 0o644); err != nil {
+						t.Fatal(err)
+					}
+					git(start.Add(time.Hour), "add", ".beads/issues.jsonl")
+					git(start.Add(time.Hour), "commit", "-m", "A: backdated future descendant")
+					future := git(start, "rev-parse", "HEAD")
+					bounded := checkRevision(t, blockedSHA, 2, 0)
+					if strings.Contains(bounded, future) || strings.Contains(bounded, "Future target edit") {
+						t.Fatalf("backdated descendant leaked:\n%s", bounded)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRobotCausalityUsesHistoricalSourcePath(t *testing.T) {
+	exe := buildTestBinary(t)
+	repo := t.TempDir()
+	start := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", strconv.FormatInt(start.Add(12*time.Hour).Unix(), 10))
+	git := func(hour int, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		at := start.Add(time.Duration(hour) * time.Hour).Format(time.RFC3339)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid", "GIT_AUTHOR_DATE="+at, "GIT_COMMITTER_DATE="+at)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(0, "init", "-b", "main")
+	beadsDir := filepath.Join(repo, ".beads")
+	if err := os.Mkdir(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var historicalSHA string
+	for _, step := range []struct {
+		hour         int
+		file, status string
+	}{{0, "beads.jsonl", "open"}, {2, "beads.jsonl", "blocked"}, {8, "issues.jsonl", "closed"}} {
+		data := fmt.Sprintf("{\"id\":\"A\",\"title\":\"Historical target\",\"status\":%q,\"priority\":2,\"issue_type\":\"task\",\"created_at\":%q,\"updated_at\":%q}\n", step.status, start.Format(time.RFC3339), start.Add(time.Duration(step.hour)*time.Hour).Format(time.RFC3339))
+		if err := os.WriteFile(filepath.Join(beadsDir, step.file), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(step.hour, "add", ".beads/"+step.file)
+		git(step.hour, "commit", "-m", step.status)
+		if step.hour == 2 {
+			historicalSHA = git(2, "rev-parse", "HEAD")
+		}
+	}
+	var firstOutput string
+	for _, live := range []bool{true, false} {
+		t.Run(fmt.Sprintf("live_directory_%v", live), func(t *testing.T) {
+			if !live {
+				// Preserve the fixture bytes while proving the query requires no live source.
+				if err := os.Rename(beadsDir, filepath.Join(repo, "preserved-live-beads")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, stderr, err := runCommandWithTimeout(t, repo, exe, "--robot-causality", "A", "--as-of", historicalSHA)
+			if err != nil {
+				t.Fatalf("historical path CLI: %v\n%s\n%s", err, out, stderr)
+			}
+			var got struct {
+				correlation.CausalityResult
+				SourceAuthority RobotSourceAuthority `json:"source_authority"`
+			}
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.SourceAuthority.Sources) != 1 || got.SourceAuthority.Sources[0].SourcePath != ".beads/beads.jsonl@"+historicalSHA || got.Chain.Status != "blocked" || got.Insights.Coverage != "complete" || !got.Insights.BlockedDurationKnown || got.Insights.BlockedDuration != 0 || !got.Chain.EndTime.Equal(start.Add(2*time.Hour)) || len(got.Chain.Events) < 2 {
+				t.Fatalf("historical authority and causal consumer disagree:\n%s\n%s", out, stderr)
+			}
+			if live {
+				firstOutput = out
+			} else if firstOutput != out {
+				t.Fatalf("live file presence changed historical result:\n%s\n%s", firstOutput, out)
+			}
+		})
 	}
 }
 
@@ -2059,7 +2302,7 @@ func TestModifierFlagValidation(t *testing.T) {
 			name: "history since requires history mode",
 			args: []string{"--history-since", "30 days ago"},
 			wantMessages: []string{
-				"Error: --history-since requires one of --robot-history or --bead-history",
+				"Error: --history-since requires one of --robot-history, --bead-history or --robot-causality",
 				"Try: `bv robot-history --history-since \"30 days ago\" --json`.",
 			},
 		},

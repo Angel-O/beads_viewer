@@ -4477,7 +4477,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "h", "l",
 					"j", "k", "left", "right", "up", "down",
 					"H", "L", "ctrl+d", "ctrl+u", "pgup", "pgdown",
-					"enter":
+					"J", "K", " ", "enter":
 					m = m.handleGraphKeys(msg)
 					viewToggleHandled = true
 				}
@@ -5257,6 +5257,12 @@ func (m *Model) handleGraphKeys(msg tea.KeyMsg) *Model {
 		m.graphView.ScrollLeft()
 	case "L":
 		m.graphView.ScrollRight()
+	case "J":
+		m.graphView.ScrollDown()
+	case "K":
+		m.graphView.ScrollUp()
+	case " ":
+		m.graphView.ToggleExpand()
 	case "enter":
 		if selected := m.graphView.SelectedIssue(); selected != nil {
 			m.revealRecipeIssue(selected.ID)

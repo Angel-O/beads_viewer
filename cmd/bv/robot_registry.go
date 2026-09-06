@@ -339,11 +339,15 @@ func unsupportedScopeFor(command string, ctx RobotContext) []string {
 	}
 	switch normalizeRobotFlagName(command) {
 	case "robot-history", "robot-orphans", "robot-file-beads", "robot-file-hotspots",
-		"robot-file-relations", "robot-impact-network", "robot-related", "robot-causality",
+		"robot-file-relations", "robot-impact-network", "robot-related",
 		"robot-explain-correlation", "robot-confirm-correlation", "robot-reject-correlation",
 		"robot-correlation-stats", "robot-impact",
 		"robot-sprint-list", "robot-sprint-show", "robot-burndown":
 		return []string{"as_of"}
+	case "robot-causality":
+		if ctx.AsOfCommit == "" {
+			return []string{"as_of"}
+		}
 	}
 	return nil
 }
@@ -3386,21 +3390,44 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
-	if err := correlation.ValidateRepository(workDir); err != nil {
-		return err
+	if ctx.AsOfCommit == "" {
+		if err := correlation.ValidateRepository(workDir); err != nil {
+			return err
+		}
 	}
 
 	// Use the dispatch context's issue set: it already carries --as-of,
 	// --label, --recipe, and --repo scoping. Reloading the working tree here
 	// silently bypassed all four (reality check 2026-09-01, gap 2).
 	issues := ctx.Issues
-	beadsDir, err := loader.GetBeadsDir("")
-	if err != nil {
-		return fmt.Errorf("getting beads directory: %w", err)
-	}
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return fmt.Errorf("finding beads file: %w", err)
+	var beadsPath string
+	if ctx.AsOfCommit != "" {
+		// The historical loader has already selected the authoritative file at
+		// this revision. Today's preferred filename may not exist there, and
+		// no working-tree beads file is required for a historical query.
+		if ctx.SourceAuthority != nil {
+			for _, source := range ctx.SourceAuthority.Sources {
+				path, matches := strings.CutSuffix(source.SourcePath, "@"+ctx.AsOfCommit)
+				if source.SourceKind == "git" && source.Status == "loaded" && matches && path != "" {
+					if beadsPath != "" {
+						return fmt.Errorf("multiple historical sources for causal analysis")
+					}
+					beadsPath = path
+				}
+			}
+		}
+		if beadsPath == "" {
+			return fmt.Errorf("missing resolved historical source for causal analysis")
+		}
+	} else {
+		beadsDir, err := loader.GetBeadsDir("")
+		if err != nil {
+			return fmt.Errorf("getting beads directory: %w", err)
+		}
+		beadsPath, err = loader.FindJSONLPath(beadsDir)
+		if err != nil {
+			return fmt.Errorf("finding beads file: %w", err)
+		}
 	}
 
 	beadInfos := make([]correlation.BeadInfo, len(issues))
@@ -3416,7 +3443,17 @@ func handleRobotCausality(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) er
 	if err != nil {
 		return err
 	}
-	report, err := correlator.GenerateReportCached(beadInfos, correlation.CorrelatorOptions{Limit: limit})
+	opts := correlation.CorrelatorOptions{Limit: limit, CausalityBeadID: *cfg.RobotCausalityFlag, Revision: ctx.AsOfCommit}
+	if cfg.HistorySince != nil && strings.TrimSpace(*cfg.HistorySince) != "" {
+		since, err := recipe.ParseRelativeTime(*cfg.HistorySince, robotNow())
+		if err != nil {
+			return fmt.Errorf("parsing --history-since: %w", err)
+		}
+		if !since.IsZero() {
+			opts.Since = &since
+		}
+	}
+	report, err := correlator.GenerateReportCached(beadInfos, opts)
 	if err != nil {
 		return fmt.Errorf("generating history report: %w", err)
 	}

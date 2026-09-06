@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,123 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/version"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestGraphKeysPanExpandAndPreserveScope(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "A", Title: "Selected graph issue", Status: model.StatusOpen, Labels: []string{"keep"}, Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}}},
+		{ID: "B", Title: "Immediate blocker", Status: model.StatusOpen, Labels: []string{"keep"}, Dependencies: []*model.Dependency{{DependsOnID: "C", Type: model.DepBlocks}}},
+		{ID: "C", Title: "Transitive blocker", Status: model.StatusOpen, Labels: []string{"keep"}, Dependencies: []*model.Dependency{{DependsOnID: "A", Type: model.DepBlocks}, {DependsOnID: "OUT", Type: model.DepBlocks}}},
+		{ID: "OUT", Title: "Hidden title must stay hidden", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "SECRET", Type: model.DepBlocks}}},
+	}
+	m := NewModel(issues, nil, "")
+	m.SetFilter("label:keep")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 110, Height: 100})
+	m = updated.(*Model)
+	press := func(key string) {
+		t.Helper()
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = updated.(*Model)
+	}
+	press("g")
+	if !m.isGraphView || m.focused != focusGraph {
+		t.Fatal("graph key did not enter actual graph view")
+	}
+	if !m.graphView.SelectByID("A") {
+		t.Fatal("selected fixture issue missing")
+	}
+	before := ansi.Strip(m.View())
+	if strings.Contains(before, "C → B") {
+		t.Fatal("collapsed graph already contains transitive path")
+	}
+	press(" ")
+	expanded := ansi.Strip(m.View())
+	for _, edge := range []string{"B → A", "C → B", "A → C", "OUT → C (not in filter)"} {
+		if !strings.Contains(expanded, edge) {
+			t.Errorf("expansion did not render actual edge %q:\n%s", edge, expanded)
+		}
+	}
+	for _, hidden := range []string{"Hidden title must stay hidden", "SECRET"} {
+		if strings.Contains(expanded, hidden) {
+			t.Errorf("expansion traversed hidden context %q", hidden)
+		}
+	}
+	press(" ")
+	if collapsed := ansi.Strip(m.View()); strings.Contains(collapsed, "C → B") {
+		t.Fatal("collapse left transitive paths visible")
+	}
+	press(" ")
+	press("j")
+	press("k")
+	if restored := ansi.Strip(m.View()); !strings.Contains(restored, "C → B") {
+		t.Fatal("returning to a node lost its expansion")
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
+	m = updated.(*Model)
+	initial := m.graphView.View(36, 14)
+	press("L")
+	panned := m.graphView.View(36, 14)
+	if strings.Split(initial, "\n")[0] == strings.Split(panned, "\n")[0] {
+		t.Fatal("Model L dispatch did not move graph content")
+	}
+	press("H")
+	if got := m.graphView.View(36, 14); got != initial {
+		t.Fatal("Model H dispatch did not restore graph content")
+	}
+	press("J")
+	if got := m.graphView.View(36, 14); got == initial {
+		t.Fatal("Model J dispatch did not reveal lower graph content")
+	}
+	press("K")
+	if got := m.graphView.View(36, 14); got != initial {
+		t.Fatal("Model K dispatch did not restore graph content")
+	}
+	press("enter")
+	if m.isGraphView {
+		t.Fatal("Enter no longer opens selected issue details")
+	}
+}
+
+func TestGraphExpansionRevealsAllNeighborsAndReloads(t *testing.T) {
+	issues := []model.Issue{{ID: "A", Status: model.StatusOpen}}
+	for i := 1; i <= 8; i++ {
+		id := fmt.Sprintf("B%d", i)
+		issues[0].Dependencies = append(issues[0].Dependencies, &model.Dependency{DependsOnID: id, Type: model.DepBlocks})
+		issues = append(issues, model.Issue{ID: id, Status: model.StatusOpen})
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 100})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	m = updated.(*Model)
+	m.graphView.SelectByID("A")
+	pressSpace := func() {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+		m = updated.(*Model)
+	}
+	if view := ansi.Strip(m.View()); strings.Contains(view, "B8 → A") {
+		t.Fatal("collapsed graph already shows expanded edge list")
+	}
+	pressSpace()
+	view := ansi.Strip(m.View())
+	for i := 1; i <= 8; i++ {
+		if edge := fmt.Sprintf("B%d → A", i); !strings.Contains(view, edge) {
+			t.Errorf("expanded graph omitted neighbor beyond box limit: %s", edge)
+		}
+	}
+	// Populate the canvas cache, then reload with a genuinely changed edge.
+	issues[0].Dependencies = append(issues[0].Dependencies, &model.Dependency{DependsOnID: "B9", Type: model.DepBlocks})
+	issues = append(issues, model.Issue{ID: "B9", Status: model.StatusOpen})
+	m.graphView.SetIssues(issues, nil)
+	if view = ansi.Strip(m.View()); !strings.Contains(view, "B9 → A") || !strings.Contains(view, "B8 → A") {
+		t.Fatalf("reload lost expansion or retained stale canvas:\n%s", view)
+	}
+	pressSpace()
+	if view = ansi.Strip(m.View()); strings.Contains(view, "B8 → A") || strings.Contains(view, "B9 → A") {
+		t.Fatal("collapse retained expanded edges after reload")
+	}
+}
 
 // Cover additional branches in Model.Update for quit/help/tab handling and update notices.
 func TestUpdateHelpQuitAndTabFocus(t *testing.T) {

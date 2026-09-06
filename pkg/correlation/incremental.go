@@ -108,7 +108,10 @@ func (ic *IncrementalCorrelator) GenerateReportWithDetails(beads []BeadInfo, opt
 
 	// Cache miss - try incremental update if we have a cached report with same beads
 	existingReport := ic.findExistingReport(beads, opts)
-	if existingReport != nil && existingReport.LatestCommitSHA != "" {
+	// The incremental merger appends through live HEAD and carries lifecycle
+	// events only. Revision-bound or full causal evidence needs the ordinary
+	// complete extraction below; same-key cache hits above remain usable.
+	if existingReport != nil && existingReport.LatestCommitSHA != "" && opts.Revision == "" && opts.CausalityBeadID == "" {
 		result, err := ic.tryIncrementalUpdate(existingReport, beads, opts)
 		if err == nil && result != nil {
 			ic.recordIncrementalUpdate()

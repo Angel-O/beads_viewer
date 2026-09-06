@@ -53,7 +53,7 @@ import (
 // serialized-size ceiling so it cannot grow without bound.
 
 const (
-	perCommitEventCacheVersion     = 1
+	perCommitEventCacheVersion     = 2
 	perCommitEventCacheFileName    = "correlation_per_commit_event_cache.json"
 	perCommitEventCacheMaxAge      = 30 * 24 * time.Hour // commits are immutable; keep a month
 	perCommitEventCacheMaxCommits  = 4000                // bound the accumulating commit map

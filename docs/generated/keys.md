@@ -48,8 +48,10 @@
 | **graph** | `hjkl` | Navigate graph |
 |  | `H` | Scroll left |
 |  | `L` | Scroll right |
-|  | `PgUp` | Scroll up |
-|  | `PgDn` | Scroll down |
+|  | `J/K` | Scroll graph vertically |
+|  | `space` | Expand/collapse dependency paths |
+|  | `PgUp` | Previous 10 nodes |
+|  | `PgDn` | Next 10 nodes |
 | **board** | `h` | Previous column |
 |  | `l` | Next column |
 |  | `H` | First column |

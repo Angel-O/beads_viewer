@@ -344,15 +344,19 @@ func hashBeads(beads []BeadInfo) string {
 func hashOptions(opts CorrelatorOptions) string {
 	// Serialize options to JSON for consistent hashing
 	data, err := json.Marshal(struct {
-		BeadID string
-		Since  *time.Time
-		Until  *time.Time
-		Limit  int
+		Revision        string
+		BeadID          string
+		Since           *time.Time
+		Until           *time.Time
+		Limit           int
+		CausalityBeadID string
 	}{
-		BeadID: opts.BeadID,
-		Since:  opts.Since,
-		Until:  opts.Until,
-		Limit:  opts.Limit,
+		Revision:        opts.Revision,
+		BeadID:          opts.BeadID,
+		Since:           opts.Since,
+		Until:           opts.Until,
+		Limit:           opts.Limit,
+		CausalityBeadID: opts.CausalityBeadID,
 	})
 	if err != nil {
 		return "default"

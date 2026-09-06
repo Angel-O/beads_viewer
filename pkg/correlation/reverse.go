@@ -236,11 +236,12 @@ type OrphanCommit struct {
 // every walked commit, beads-only bookkeeping commits included; OrphanStats
 // counts only the code commits among them.
 type OrphanWindow struct {
-	Commits int        `json:"commits"`
-	Limit   int        `json:"limit"`
-	Since   *time.Time `json:"since,omitempty"`
-	Until   *time.Time `json:"until,omitempty"`
-	Source  string     `json:"source"`
+	Revision string     `json:"revision,omitempty"`
+	Commits  int        `json:"commits"`
+	Limit    int        `json:"limit"`
+	Since    *time.Time `json:"since,omitempty"`
+	Until    *time.Time `json:"until,omitempty"`
+	Source   string     `json:"source"`
 }
 
 // OrphanStats provides statistics about orphan commits.
@@ -304,11 +305,12 @@ func (rl *ReverseLookup) FindOrphanCommits(opts ExtractOptions) ([]OrphanCommit,
 		CorrelatedCmts:   correlated,
 		BeadsOnlyCommits: beadsOnly,
 		Window: OrphanWindow{
-			Commits: len(walk),
-			Limit:   opts.Limit,
-			Since:   opts.Since,
-			Until:   opts.Until,
-			Source:  "options",
+			Revision: opts.Revision,
+			Commits:  len(walk),
+			Limit:    opts.Limit,
+			Since:    opts.Since,
+			Until:    opts.Until,
+			Source:   "options",
 		},
 	}
 
