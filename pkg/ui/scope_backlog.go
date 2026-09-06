@@ -562,10 +562,12 @@ func (b BacklogModel) renderBacklog(title string) string {
 
 	lines := []string{b.renderBacklogHeader(title, columns)}
 	availableHeight := maxInt(b.height-2, 1)
-	listRows := availableHeight - 5 // header, preview, page hint, and padding
-	if !wide && b.CurrentIssue() == nil {
-		listRows++
+	previewRows := 0
+	if !wide && b.CurrentIssue() != nil {
+		// Keep one table row, separator, and page hint visible at short heights.
+		previewRows = min(2, maxInt(availableHeight-5, 0))
 	}
+	listRows := availableHeight - 4 - previewRows // header, separator, page hint, and padding
 	if listRows < 1 {
 		listRows = 1
 	}
@@ -577,10 +579,11 @@ func (b BacklogModel) renderBacklog(title string) string {
 		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", preview))
 	} else {
 		lines = append(lines, listView)
-		if b.CurrentIssue() != nil {
-			lines = append(lines, b.renderBacklogPreview(contentWidth, 2))
+		if previewRows > 0 {
+			lines = append(lines, b.renderBacklogPreview(contentWidth, previewRows))
 		}
 	}
+	lines = append(lines, "")
 	lines = append(lines, page)
 	return lipgloss.NewStyle().Width(b.width).Height(b.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
 }
@@ -602,6 +605,9 @@ type backlogTableColumns struct {
 	createdWidth  int
 }
 
+// backlogStatusWidth keeps future backend statuses from shifting later cells.
+const backlogStatusWidth = 11
+
 // backlogTableColumnsFor keeps the bounded backlog projection independent of
 // the ordinary List metadata layout.
 func backlogTableColumnsFor(items []IssueItem, width int) backlogTableColumns {
@@ -610,14 +616,13 @@ func backlogTableColumnsFor(items []IssueItem, width int) backlogTableColumns {
 		idWidth:       len("ID"),
 		typeWidth:     len("TYPE"),
 		priorityWidth: len("PR"),
-		statusWidth:   len("STAT"),
+		statusWidth:   backlogStatusWidth,
 		createdWidth:  len("CREATED_AT"),
 	}
 	for _, item := range items {
 		columns.idWidth = maxInt(columns.idWidth, lipgloss.Width(item.Issue.ID))
 		columns.typeWidth = maxInt(columns.typeWidth, lipgloss.Width(string(item.Issue.IssueType)))
 		columns.priorityWidth = maxInt(columns.priorityWidth, lipgloss.Width(fmt.Sprintf("P%d", item.Issue.Priority)))
-		columns.statusWidth = maxInt(columns.statusWidth, lipgloss.Width(strings.ToUpper(string(item.Issue.Status))))
 		columns.createdWidth = maxInt(columns.createdWidth, lipgloss.Width(formatBacklogCreatedAt(item.Issue.CreatedAt)))
 	}
 	return columns
@@ -627,7 +632,8 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 	if createdAt.IsZero() {
 		return "n/a"
 	}
-	return createdAt.Format(time.RFC3339Nano)
+	// Backlog dates are human-facing local time, not backend/RFC3339 timestamps.
+	return strings.Replace(createdAt.In(time.Local).Format("Mon 02 Jan - 15:04"), " Sep ", " Sept ", 1)
 }
 
 func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
@@ -640,14 +646,15 @@ func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColu
 	return titleStyle.Render(title) + "\n" + tableStyle.Render(renderBacklogTableHeader(columns))
 }
 
-const backlogMarkPrefix = "  "
+const backlogMarkPrefix = "    " // independent two-cell cursor and mark slots
 
 func renderBacklogTableHeader(columns backlogTableColumns) string {
+	columns.statusWidth = backlogStatusWidth
 	return backlogMarkPrefix + strings.Join([]string{
 		padRight("ID", columns.idWidth),
 		padRight("TYPE", columns.typeWidth),
 		padRight("PR", columns.priorityWidth),
-		padRight("STAT", columns.statusWidth),
+		padRight("STATUS", columns.statusWidth),
 		padRight("CREATED_AT", columns.createdWidth),
 	}, " ")
 }
@@ -671,18 +678,23 @@ func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows
 }
 
 func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns backlogTableColumns, width int) string {
+	columns.statusWidth = backlogStatusWidth
+	status := truncateRunesHelper(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth, "…")
 	row := strings.Join([]string{
 		padRight(item.Issue.ID, columns.idWidth),
 		padRight(string(item.Issue.IssueType), columns.typeWidth),
 		padRight(fmt.Sprintf("P%d", item.Issue.Priority), columns.priorityWidth),
-		padRight(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth),
+		padRight(status, columns.statusWidth),
 		padRight(formatBacklogCreatedAt(item.Issue.CreatedAt), columns.createdWidth),
 	}, " ")
-	marker := backlogMarkPrefix
-	if item.Marked {
-		marker = "✓ "
+	cursor, mark := "  ", "  "
+	if selected {
+		cursor = "▸ "
 	}
-	row = marker + row
+	if item.Marked {
+		mark = "✓ "
+	}
+	row = cursor + mark + row
 	if selected {
 		return b.theme.Renderer.NewStyle().Background(b.theme.Highlight).Bold(true).Width(width).MaxWidth(width).Render(row)
 	}

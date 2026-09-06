@@ -1737,8 +1737,83 @@ func TestBacklogSplitUsesNaturalTableWidthAndAlignedHeader(t *testing.T) {
 	if got := lipgloss.Width(previewTitle[:strings.Index(previewTitle, "TITLE")]); got != naturalWidth+4 {
 		t.Fatalf("preview starts at cell %d, want natural list width plus padding/gap %d:\n%s", got, naturalWidth+4, view)
 	}
-	if strings.Index(directTableHeader, "ID") != 2 || strings.Index(tableHeader, "ID") != 4 {
-		t.Fatalf("table header ID offsets: direct=%d rendered=%d, want 2-cell prefix plus outer padding: %q", strings.Index(directTableHeader, "ID"), strings.Index(tableHeader, "ID"), tableHeader)
+	if strings.Index(directTableHeader, "ID") != 4 || strings.Index(tableHeader, "ID") != 6 {
+		t.Fatalf("table header ID offsets: direct=%d rendered=%d, want independent cursor and mark cells: %q", strings.Index(directTableHeader, "ID"), strings.Index(tableHeader, "ID"), tableHeader)
+	}
+}
+
+func TestBacklogStatusColumnIsFixedAndTruncatesBeforePadding(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "b-1", IssueType: model.TypeTask, Priority: 1,
+		Status: model.Status("future-status-name"),
+	}}}, 0)
+	columns := backlogTableColumnsFor(b.filteredItems, 80)
+	if columns.statusWidth != backlogStatusWidth {
+		t.Fatalf("status width=%d, want %d", columns.statusWidth, backlogStatusWidth)
+	}
+	if header := renderBacklogTableHeader(columns); !strings.Contains(header, "STATUS     ") {
+		t.Fatalf("status header was not fixed-width STATUS: %q", header)
+	}
+	row := ansi.Strip(b.renderBacklogRow(b.filteredItems[0], false, columns, 80))
+	if !strings.Contains(row, "FUTURE-STA…") || strings.Contains(row, "FUTURE-STATUS-NAME") {
+		t.Fatalf("status was not truncated before padding: %q", row)
+	}
+}
+
+func TestBacklogCursorAndMarkCellsAreIndependentAndHighlightSelectedRows(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
+	b.ToggleMark()
+	columns := backlogTableColumnsFor(b.filteredItems, 40)
+	item := b.filteredItems[0]
+	item.Marked = true
+	selected := b.renderBacklogRow(item, true, columns, 40)
+	unselected := b.renderBacklogRow(b.filteredItems[0], false, columns, 40)
+	stripped := ansi.Strip(selected)
+	if !strings.HasPrefix(stripped, "▸ ✓ ") {
+		t.Fatalf("selected marked row prefix=%q, want independent cursor and mark cells", stripped)
+	}
+	if selected == unselected {
+		t.Fatal("selected row lost its highlight")
+	}
+}
+
+func TestBacklogPageIndicatorHasOneSeparatorAndStaysBounded(t *testing.T) {
+	const width, height = 60, 10
+	b := NewBacklogModel(testTheme())
+	b.SetSize(width, height)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1", Title: "Preview", Description: "Details"}}}, 0)
+	lines := strings.Split(ansi.Strip(b.View()), "\n")
+	page := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "page 1" {
+			page = i
+			break
+		}
+		if lipgloss.Width(line) > width {
+			t.Fatalf("backlog line width=%d exceeds %d: %q", lipgloss.Width(line), width, line)
+		}
+	}
+	if page < 1 || strings.TrimSpace(lines[page-1]) != "" {
+		t.Fatalf("page indicator lacked one blank separator: page=%d\n%s", page, strings.Join(lines, "\n"))
+	}
+	if lipgloss.Height(b.View()) > height {
+		t.Fatalf("backlog height=%d exceeds %d", lipgloss.Height(b.View()), height)
+	}
+}
+
+func TestFormatBacklogCreatedAtUsesLocalSeptemberAndZeroIsNA(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("test-local", -8*60*60)
+	defer func() { time.Local = originalLocal }()
+
+	created := time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)
+	if got := formatBacklogCreatedAt(created); got != "Sat 26 Sept - 16:00" {
+		t.Fatalf("local created date=%q, want Sat 26 Sept - 16:00", got)
+	}
+	if got := formatBacklogCreatedAt(time.Time{}); got != "n/a" {
+		t.Fatalf("zero created date=%q, want n/a", got)
 	}
 }
 
