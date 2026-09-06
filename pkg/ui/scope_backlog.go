@@ -854,9 +854,9 @@ func (b BacklogModel) visibleRangeFor(rows int) (int, int) {
 	return start, min(start+rows, len(b.filteredItems))
 }
 
-// ScopePickerModel owns the named-scope catalog and one bounded member page.
-// Paged mode keeps catalog and member cursors separate; the complete loaders
-// still use the same presentation path for standalone callers.
+// ScopePickerModel owns the named-scope catalog and one loaded member result
+// batch. Paged mode keeps its backend cursor separate from the terminal-sized
+// member viewport; complete loaders still use the same presentation path.
 type ScopePickerModel struct {
 	scopes     []ScopeInfo
 	selected   int
@@ -870,19 +870,21 @@ type ScopePickerModel struct {
 	catalogLoading     bool
 	catalogError       string
 
-	members               []IssueItem
-	filteredMembers       []IssueItem
-	memberSelected        int
-	memberScopeID         string
-	memberGeneration      uint64
-	memberLoading         bool
-	memberError           string
-	memberFocused         bool
-	memberHasMore         bool
-	memberNextCursor      string
-	memberPageIndex       int
-	memberPageCursors     []string
-	memberServerFiltering bool
+	members                []IssueItem
+	filteredMembers        []IssueItem
+	memberSelected         int
+	memberScopeID          string
+	memberGeneration       uint64
+	memberLoading          bool
+	memberError            string
+	memberFocused          bool
+	memberHasMore          bool
+	memberNextCursor       string
+	memberPageIndex        int
+	memberPageCursors      []string
+	memberViewportStart    int
+	memberViewportPrevious bool
+	memberServerFiltering  bool
 
 	memberStatusFilter     string
 	memberRepositoryFilter string
@@ -924,7 +926,14 @@ func newScopeMatchInput(theme Theme) textinput.Model {
 	return input
 }
 
-func (s *ScopePickerModel) SetSize(width, height int) { s.width, s.height = width, height }
+func (s *ScopePickerModel) SetSize(width, height int) {
+	if s.width != width || s.height != height {
+		s.memberViewportStart = 0
+		s.memberSelected = 0
+		s.memberViewportPrevious = false
+	}
+	s.width, s.height = width, height
+}
 func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 	selectedID := ""
 	if selected := s.Selected(); selected != nil {
@@ -1023,9 +1032,9 @@ func (s ScopePickerModel) CatalogHasMore() bool  { return s.catalogHasMore && s.
 func (s ScopePickerModel) OwnsPagingKey(key string) bool {
 	switch key {
 	case "[":
-		return s.memberFocused && s.memberPageIndex > 0 || !s.memberFocused && s.catalogPageIndex > 0
+		return s.memberFocused && (s.CanMoveMemberScreen(-1) || s.memberPageIndex > 0) || !s.memberFocused && s.catalogPageIndex > 0
 	case "]", "right":
-		return s.memberFocused && s.MemberHasMore() || !s.memberFocused && s.CatalogHasMore()
+		return s.memberFocused && s.CanMoveMemberScreen(1) || !s.memberFocused && s.CatalogHasMore()
 	case "left":
 		return true
 	case "n":
@@ -1054,6 +1063,8 @@ func (s *ScopePickerModel) BeginMemberLoad(scopeID string) uint64 {
 	s.memberError = ""
 	s.members = nil
 	s.filteredMembers = nil
+	s.memberViewportStart = 0
+	s.memberViewportPrevious = false
 	s.memberReadyIDs = nil
 	s.memberSelected = 0
 	s.ClearMemberMarks()
@@ -1069,6 +1080,7 @@ func (s *ScopePickerModel) BeginMemberPageLoad(scopeID string) uint64 {
 	s.memberScopeID = scopeID
 	s.memberLoading = true
 	s.memberError = ""
+	s.memberViewportStart = 0
 	s.ClearMemberMarks()
 	return s.memberGeneration
 }
@@ -1082,6 +1094,7 @@ func (s *ScopePickerModel) SetMemberError(scopeID string, generation uint64, err
 		return false
 	}
 	s.memberLoading = false
+	s.memberViewportPrevious = false
 	if err != nil {
 		s.memberError = err.Error()
 	}
@@ -1099,9 +1112,14 @@ func (s *ScopePickerModel) SetMemberReadyIDs(ids map[string]bool) {
 	}
 }
 
-// SetMembers replaces the bounded member projection and reapplies only the
-// display narrowing owned by this picker.
+// SetMembers replaces the bounded member projection, resets its viewport, and
+// reapplies only the display narrowing owned by this picker.
 func (s *ScopePickerModel) SetMembers(items []IssueItem) {
+	s.setMembers(items)
+	s.memberViewportStart = 0
+}
+
+func (s *ScopePickerModel) setMembers(items []IssueItem) {
 	selectedID := ""
 	if selected := s.SelectedMember(); selected != nil {
 		selectedID = selected.Issue.ID
@@ -1140,7 +1158,13 @@ func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueIte
 	s.memberLoading = false
 	s.memberError = ""
 	s.ClearMemberMarks()
-	s.SetMembers(items)
+	s.setMembers(items)
+	if s.memberViewportPrevious {
+		visible := s.memberViewportRows()
+		s.memberViewportStart = maxInt(0, ((len(s.filteredMembers)-1)/visible)*visible)
+		s.memberSelected = s.memberViewportStart
+	}
+	s.memberViewportPrevious = false
 	return true
 }
 
@@ -1197,6 +1221,61 @@ func (s *ScopePickerModel) NextMemberPage() (string, int, bool) {
 	return s.memberNextCursor, next, true
 }
 
+func (s ScopePickerModel) memberPanelRows() int {
+	height := s.height
+	if height <= 0 {
+		height = 20
+	}
+	contentHeight := maxInt(height-1, 3)
+	catalogRows := maxInt(3, contentHeight/2)
+	memberRows := contentHeight - catalogRows - 2
+	if memberRows < 6 {
+		memberRows = 6
+	}
+	return maxInt(memberRows-2, 1)
+}
+
+func (s ScopePickerModel) memberViewportRows() int {
+	return maxInt(s.memberPanelRows()-3, 1)
+}
+
+// MoveMemberScreen moves one terminal-sized viewport without changing the
+// backend result cursor; callers fetch only when this reaches a batch edge.
+func (s *ScopePickerModel) MoveMemberScreen(delta int) bool {
+	if len(s.filteredMembers) == 0 || delta == 0 {
+		return false
+	}
+	visible := s.memberViewportRows()
+	start := s.memberViewportStart
+	if start < 0 {
+		start = 0
+	}
+	if delta > 0 {
+		if start+visible >= len(s.filteredMembers) {
+			return false
+		}
+		start += visible
+	} else {
+		if start == 0 {
+			return false
+		}
+		start = maxInt(0, start-visible)
+	}
+	s.memberViewportStart = start
+	s.memberSelected = start
+	return true
+}
+
+func (s ScopePickerModel) CanMoveMemberScreen(delta int) bool {
+	if s.memberLoading || len(s.filteredMembers) == 0 {
+		return false
+	}
+	if delta < 0 {
+		return s.memberViewportStart > 0
+	}
+	return s.memberViewportStart+s.memberViewportRows() < len(s.filteredMembers) || s.MemberHasMore()
+}
+
 func (s *ScopePickerModel) PreviousMemberPage() (string, int, bool) {
 	if s.memberLoading || s.memberPageIndex <= 0 || s.memberPageIndex >= len(s.memberPageCursors) {
 		return "", 0, false
@@ -1222,6 +1301,8 @@ func (s *ScopePickerModel) ResetPaging() {
 	s.memberNextCursor = ""
 	s.memberPageIndex = 0
 	s.memberPageCursors = []string{""}
+	s.memberViewportStart = 0
+	s.memberViewportPrevious = false
 	s.memberScopeID = ""
 	s.ClearMemberMarks()
 }
@@ -1242,6 +1323,9 @@ func (s *ScopePickerModel) MoveMember(delta int) {
 		return
 	}
 	s.memberSelected = (s.memberSelected + delta + len(s.filteredMembers)) % len(s.filteredMembers)
+	// Keep row navigation on the same screen model used by the viewport keys.
+	visible := s.memberViewportRows()
+	s.memberViewportStart = (s.memberSelected / visible) * visible
 }
 
 func (s ScopePickerModel) SelectedMember() *IssueItem {
@@ -1403,9 +1487,8 @@ func memberRepositoryValue(item IssueItem) string {
 func (s *ScopePickerModel) applyMemberFilters() {
 	if s.memberServerFiltering {
 		s.filteredMembers = append(s.filteredMembers[:0], s.members...)
-		if s.memberSelected >= len(s.filteredMembers) {
-			s.memberSelected = maxInt(0, len(s.filteredMembers)-1)
-		}
+		s.memberSelected = 0
+		s.memberViewportStart = 0
 		return
 	}
 	s.filteredMembers = s.filteredMembers[:0]
@@ -1436,9 +1519,8 @@ func (s *ScopePickerModel) applyMemberFilters() {
 		}
 		s.filteredMembers = append(s.filteredMembers, item)
 	}
-	if s.memberSelected >= len(s.filteredMembers) {
-		s.memberSelected = maxInt(0, len(s.filteredMembers)-1)
-	}
+	s.memberSelected = 0
+	s.memberViewportStart = 0
 }
 
 func (s *ScopePickerModel) SetDetails(details ScopeDetails) {
@@ -1788,14 +1870,20 @@ func (s ScopePickerModel) renderMemberRow(item IssueItem, selected bool, columns
 func (s ScopePickerModel) renderMembers(width, rows int) string {
 	width = maxInt(width, 1)
 	rows = maxInt(rows, 1)
+	visible := maxInt(rows-3, 1)
 	selected := s.Selected()
 	name := "none"
 	if selected != nil {
 		name = selected.Name
 	}
-	page := fmt.Sprintf("page %d", s.memberPageIndex+1)
+	visibleScreens := maxInt((len(s.filteredMembers)+visible-1)/visible, 1)
+	screen := min(s.memberViewportStart/visible+1, visibleScreens)
+	batch := s.memberPageIndex + 1
+	batchCount := maxInt(len(s.memberPageCursors), 1)
+	batch = min(batch, batchCount)
+	page := fmt.Sprintf("screen %d/%d · result batch %d/%d", screen, visibleScreens, batch, batchCount)
 	if s.memberHasMore {
-		page += "+"
+		page = fmt.Sprintf("screen %d/%d+ · result batch %d/%d+", screen, visibleScreens, batch, batchCount)
 	}
 	count := ""
 	if selected != nil {
@@ -1833,10 +1921,9 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	}
 	headerLine := truncateRunesHelper(strings.Join(headerCells, " "), maxInt(width, 1), "…")
 	lines := []string{header, filterLine, headerLine}
-	visible := maxInt(rows-3, 1)
-	start := 0
-	if s.memberSelected >= visible {
-		start = s.memberSelected - visible + 1
+	start := min(maxInt(s.memberViewportStart, 0), maxInt(len(items)-1, 0))
+	if s.memberSelected < start || s.memberSelected >= start+visible {
+		start = (s.memberSelected / visible) * visible
 	}
 	end := min(len(items), start+visible)
 	for i := start; i < end; i++ {
@@ -2140,6 +2227,9 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.scopePicker.memberFocused = !m.scopePicker.memberFocused
 	case "right", "]":
 		if m.scopePicker.MemberFocused() {
+			if m.scopePicker.MoveMemberScreen(1) {
+				break
+			}
 			if cursor, index, ok := m.scopePicker.NextMemberPage(); ok {
 				return m, m.startScopeMembersPageAt(cursor, index)
 			}
@@ -2150,7 +2240,13 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		}
 	case "p", "left", "[":
 		if m.scopePicker.MemberFocused() {
+			if msg.String() != "p" && m.scopePicker.MoveMemberScreen(-1) {
+				break
+			}
 			if cursor, index, ok := m.scopePicker.PreviousMemberPage(); ok {
+				if msg.String() != "p" {
+					m.scopePicker.memberViewportPrevious = true
+				}
 				return m, m.startScopeMembersPageAt(cursor, index)
 			}
 		} else if cursor, index, ok := m.scopePicker.PreviousCatalogPage(); ok {

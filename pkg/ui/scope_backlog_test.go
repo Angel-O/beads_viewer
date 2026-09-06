@@ -708,6 +708,134 @@ func TestPagedScopePickerBuildsIndependentCatalogAndMemberRequests(t *testing.T)
 	}
 }
 
+func TestPagedScopePickerUsesViewportScreensBeforeFetchingNextMemberBatch(t *testing.T) {
+	issues := make([]model.Issue, 53)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("member-%02d", i), Title: fmt.Sprintf("Member %02d", i)}
+	}
+	var requests []ScopeMembersQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryMembers: func(_ context.Context, query ScopeMembersQuery) (ScopeMembersPage, error) {
+			requests = append(requests, query)
+			start := 0
+			if query.Cursor != "" {
+				start = 50
+			}
+			end := min(start+scopePageSize, len(issues))
+			return ScopeMembersPage{
+				Scope:   ScopeInfo{ID: query.ScopeID, Name: "Today", MemberCount: len(issues)},
+				Members: issues[start:end], HasMore: end < len(issues), NextCursor: "members-2",
+			}, nil
+		},
+	}})
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "Today", MemberCount: len(issues)}}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.scopePicker.SetSize(100, 24)
+	for _, message := range runUISemanticCommands(m.openScopePicker("")) {
+		updated, _ := m.Update(message)
+		m = updated.(*Model)
+	}
+	m.scopePicker.memberFocused = true
+	visible := m.scopePicker.memberViewportRows()
+	if visible != 5 {
+		t.Fatalf("member viewport rows=%d, want 5", visible)
+	}
+	if len(requests) != 1 || requests[0].Cursor != "" || m.scopePicker.SelectedMember().Issue.ID != "member-00" {
+		t.Fatalf("initial member page: requests=%#v selected=%#v", requests, m.scopePicker.SelectedMember())
+	}
+	m.scopePicker.ToggleMemberMark()
+
+	for i := 0; i < visible; i++ {
+		updated, cmd := m.handleScopePickerKey(keyMsg("down"))
+		m = updated
+		if cmd != nil || len(requests) != 1 {
+			t.Fatalf("row navigation unexpectedly fetched: cmd=%t requests=%#v", cmd != nil, requests)
+		}
+	}
+	if m.scopePicker.memberViewportStart != visible || m.scopePicker.SelectedMember().Issue.ID != "member-05" {
+		t.Fatalf("down navigation viewport start=%d selected=%#v, want %d/member-05", m.scopePicker.memberViewportStart, m.scopePicker.SelectedMember(), visible)
+	}
+	if view := ansi.Strip(m.scopePicker.View()); !strings.Contains(view, "screen 2/10+ · result batch 1/1+") {
+		t.Fatalf("down navigation indicator=%q", view)
+	}
+
+	updated, cmd := m.handleScopePickerKey(keyMsg("right"))
+	m = updated
+	if cmd != nil || len(requests) != 1 || m.scopePicker.memberViewportStart != visible*2 || m.scopePicker.SelectedMember().Issue.ID != "member-10" {
+		t.Fatalf("right after row navigation: cmd=%t requests=%d start=%d selected=%#v", cmd != nil, len(requests), m.scopePicker.memberViewportStart, m.scopePicker.SelectedMember())
+	}
+	if view := ansi.Strip(m.scopePicker.View()); !strings.Contains(view, "screen 3/10+ · result batch 1/1+") {
+		t.Fatalf("right after row navigation indicator=%q", view)
+	}
+	updated, cmd = m.handleScopePickerKey(keyMsg("left"))
+	m = updated
+	if cmd != nil || len(requests) != 1 || m.scopePicker.memberViewportStart != visible || m.scopePicker.SelectedMember().Issue.ID != "member-05" || m.scopePicker.MemberMarkCount() != 1 {
+		t.Fatalf("left after row navigation: cmd=%t requests=%d start=%d selected=%#v", cmd != nil, len(requests), m.scopePicker.memberViewportStart, m.scopePicker.SelectedMember())
+	}
+	if view := ansi.Strip(m.scopePicker.View()); !strings.Contains(view, "screen 2/10+ · result batch 1/1+") {
+		t.Fatalf("left after row navigation indicator=%q", view)
+	}
+
+	for screen := 3; screen <= 10; screen++ {
+		updated, cmd := m.handleScopePickerKey(keyMsg("right"))
+		m = updated
+		if cmd != nil || len(requests) != 1 {
+			t.Fatalf("screen %d unexpectedly fetched: cmd=%t requests=%#v", screen, cmd != nil, requests)
+		}
+		want := fmt.Sprintf("member-%02d", (screen-1)*visible)
+		if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != want {
+			t.Fatalf("screen %d selected=%#v, want %s", screen, selected, want)
+		}
+	}
+
+	updated, cmd = m.handleScopePickerKey(keyMsg("right"))
+	m = updated
+	if cmd == nil || len(requests) != 1 {
+		t.Fatalf("boundary navigation: cmd=%t requests=%d, want one pending fetch", cmd != nil, len(requests))
+	}
+	updatedTea, _ := m.Update(cmd())
+	m = updatedTea.(*Model)
+	if len(requests) != 2 || requests[1].Cursor != "members-2" || requests[1].Limit != scopePageSize {
+		t.Fatalf("boundary request=%#v, want cursor members-2 and limit %d", requests, scopePageSize)
+	}
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "member-50" {
+		t.Fatalf("final screen selected=%#v, want member-50", selected)
+	}
+	if m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatalf("backend batch navigation retained old page mark count=%d", m.scopePicker.MemberMarkCount())
+	}
+	view := ansi.Strip(m.scopePicker.View())
+	if !strings.Contains(view, "screen 1/1 · result batch 2/2") {
+		t.Fatalf("final viewport/batch indicator=%q", view)
+	}
+
+	updated, cmd = m.handleScopePickerKey(keyMsg("left"))
+	m = updated
+	if cmd == nil || len(requests) != 2 {
+		t.Fatalf("reverse batch navigation: cmd=%t requests=%d", cmd != nil, len(requests))
+	}
+	updatedTea, _ = m.Update(cmd())
+	m = updatedTea.(*Model)
+	if len(requests) != 3 || requests[2].Cursor != "" || requests[2].Limit != scopePageSize {
+		t.Fatalf("reverse request=%#v, want first-page cursor and limit %d", requests, scopePageSize)
+	}
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "member-45" {
+		t.Fatalf("previous screen selected=%#v, want member-45", selected)
+	}
+	if view := ansi.Strip(m.scopePicker.View()); !strings.Contains(view, "screen 10/10+ · result batch 1/2+") {
+		t.Fatalf("previous viewport/batch indicator=%q", view)
+	}
+
+	m.scopePicker.SetMemberFilters("", "open", "")
+	if m.scopePicker.memberViewportStart != 0 || m.scopePicker.SelectedMember().Issue.ID != "member-00" {
+		t.Fatalf("member filter did not reset viewport: start=%d selected=%#v", m.scopePicker.memberViewportStart, m.scopePicker.SelectedMember())
+	}
+	m.scopePicker.SetSize(100, 23)
+	if m.scopePicker.memberViewportStart != 0 {
+		t.Fatalf("resize did not reset viewport start=%d", m.scopePicker.memberViewportStart)
+	}
+}
+
 func TestPagedScopePickerFiltersResetPageAndRejectStaleMembers(t *testing.T) {
 	var requests []ScopeMembersQuery
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
