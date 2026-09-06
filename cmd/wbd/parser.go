@@ -211,6 +211,7 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{
 			{name: "--context", value: "<ctx-id>", description: "Select a registered context; repeatable and ORed."},
 			{name: "--contextless", description: "Include issues without a context; combines exactly with --context."},
+			{name: "--filter", value: "<text>", description: "Filter issue IDs or titles before pagination."},
 			{name: "--status", value: "<status,...>", description: "open|in_progress|blocked|deferred|closed."},
 			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo."},
 			{name: "--sort", value: "<order>", description: "created-desc or priority-asc."},
@@ -226,6 +227,8 @@ func scopeMutationOptions() []optionSpec {
 		{name: "--id", value: "<issue-id>", description: "Explicit issue ID target; also accepted as the sole positional target."},
 		{name: "--epic", value: "<epic-id>", description: "Select exact recursive descendants of one epic."},
 		{name: "--label", value: "<label>", description: "Select one exact ordinary label."},
+		{name: "--context", value: "<ctx-id>", description: "Select a registered repository context; repeatable and ORed."},
+		{name: "--contextless", description: "Include issues without a repository context; combines with --context."},
 		{name: "--status", value: "<status,...>", description: "Candidate statuses."},
 		{name: "--type", value: "<type>", description: "Candidate issue type."},
 		{name: "--scope", value: "<scope-id>", description: "Target scope; defaults to the active scope."},
@@ -290,6 +293,7 @@ type request struct {
 	listBrief          bool
 	backlogContexts    []string
 	backlogContextless bool
+	backlogFilter      string
 	backlogStatus      string
 	backlogType        string
 	backlogSort        string
@@ -302,6 +306,8 @@ type request struct {
 	scopeID            string
 	scopeEpic          string
 	scopeLabel         string
+	scopeContexts      []string
+	scopeContextless   bool
 	scopeStatus        string
 	scopeType          string
 }
@@ -920,6 +926,13 @@ func parseScope(result request, arguments []string) (request, error) {
 			result.args = append(result.args, argument)
 			continue
 		}
+		if (result.scopeSubcommand == "add" || result.scopeSubcommand == "remove") && argument == "--contextless" {
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.scopeContextless = true
+			continue
+		}
 		if result.scopeSubcommand == "add" || result.scopeSubcommand == "remove" {
 			flag, value, consumed, matched, err := optionValueFor("scope "+result.scopeSubcommand, argument, arguments)
 			if err != nil {
@@ -927,10 +940,14 @@ func parseScope(result request, arguments []string) (request, error) {
 			}
 			if matched {
 				arguments = arguments[consumed:]
-				if err := markSeen(seen, flag); err != nil {
-					return result, err
+				if flag != "--context" {
+					if err := markSeen(seen, flag); err != nil {
+						return result, err
+					}
 				}
 				switch flag {
+				case "--context":
+					result.scopeContexts = append(result.scopeContexts, value)
 				case "--id":
 					if err := safeID("scope", value); err != nil {
 						return result, err
@@ -1066,6 +1083,8 @@ func parseBacklog(result request, arguments []string) (request, error) {
 			switch flag {
 			case "--context":
 				result.backlogContexts = append(result.backlogContexts, value)
+			case "--filter":
+				result.backlogFilter = value
 			case "--status":
 				if err := validateStatuses(value); err != nil {
 					return result, err

@@ -745,10 +745,10 @@ func (d IssueDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 	var leftSide strings.Builder
 
 	// Selection indicator with accent color (using pre-computed style)
-	if isSelected {
-		leftSide.WriteString(t.PrimaryBold.Render("▸ "))
-	} else if i.Marked {
+	if i.Marked {
 		leftSide.WriteString(t.PrimaryBold.Render("✓ "))
+	} else if isSelected {
+		leftSide.WriteString(t.PrimaryBold.Render("▸ "))
 	} else {
 		leftSide.WriteString("  ")
 	}

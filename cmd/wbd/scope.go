@@ -72,8 +72,8 @@ func (a *app) scope(request request) int {
 
 // semanticScopeMutation resolves one exact selector target to IDs, then preserves the
 // backend's existing multi-ID scope mutation. Reads are intentionally bounded
-// to the current repository and requested status/type; add starts unscoped,
-// while remove starts with members of the selected scope.
+// to the selected repository/contextless scope and requested status/type; add
+// starts unscoped, while remove starts with members of the selected scope.
 func (a *app) semanticScopeMutation(request request) int {
 	name, err := a.scopeOption(request.args, "--scope")
 	if err != nil {
@@ -85,7 +85,7 @@ func (a *app) semanticScopeMutation(request request) int {
 			return a.fail(err)
 		}
 	}
-	context, err := hub.Context(a.dir)
+	contexts, contextless, explicitScope, err := a.scopeContexts(request)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -101,7 +101,7 @@ func (a *app) semanticScopeMutation(request request) int {
 		}
 	}
 
-	args := []string{"--json", "list"}
+	args := []string{"--json", "list", "--no-directory-labels"}
 	if request.scopeSubcommand == "add" {
 		args = append(args, "--unscoped")
 	} else {
@@ -112,7 +112,17 @@ func (a *app) semanticScopeMutation(request request) int {
 		sort.Strings(ids)
 		args = append(args, "--id", strings.Join(ids, ","))
 	}
-	args = append(args, "--limit", "0", "--label", context)
+	args = append(args, "--limit", "0")
+	if explicitScope {
+		if len(contexts) > 0 {
+			args = append(args, "--label-any", strings.Join(contexts, ","))
+		}
+		if contextless {
+			args = append(args, "--or-no-label-prefix", backlogContextLabelPrefix)
+		}
+	} else {
+		args = append(args, "--label", contexts[0])
+	}
 	targetIDs := scopeTargetIDs(request)
 	if request.scopeSubcommand == "add" && len(targetIDs) > 0 {
 		args = append(args, "--id", strings.Join(targetIDs, ","))
@@ -136,7 +146,10 @@ func (a *app) semanticScopeMutation(request request) int {
 	}
 	var descendants map[string]struct{}
 	if request.scopeEpic != "" {
-		relationshipData, _, relationshipErr := a.runBDCaptureWithStderr(a.dir, "--json", "list", "--all", "--include-all-types", "--limit", "0", "--label", context)
+		// Parent relationships are global; the already filtered candidate set below
+		// applies repository/contextless, status, and type eligibility.
+		relationshipArgs := []string{"--json", "list", "--no-directory-labels", "--all", "--include-all-types", "--limit", "0"}
+		relationshipData, _, relationshipErr := a.runBDCaptureWithStderr(a.dir, relationshipArgs...)
 		if relationshipErr != nil {
 			return a.fail(relationshipErr)
 		}
@@ -193,6 +206,27 @@ func scopeTargetIDs(request request) []string {
 		return []string{request.scopeID}
 	}
 	return append([]string(nil), request.positionals...)
+}
+
+func (a *app) scopeContexts(request request) ([]string, bool, bool, error) {
+	explicit := len(request.scopeContexts) > 0 || request.scopeContextless
+	if !explicit {
+		context, err := hub.Context(a.dir)
+		if err != nil {
+			return nil, false, false, err
+		}
+		return []string{context}, false, false, nil
+	}
+	if len(request.scopeContexts) > 0 {
+		config, err := hub.Resolve(a.paths.Config)
+		if err != nil {
+			return nil, false, true, err
+		}
+		if err := hub.ValidateRegisteredContexts(request.scopeContexts, config.Repositories); err != nil {
+			return nil, false, true, err
+		}
+	}
+	return append([]string(nil), request.scopeContexts...), request.scopeContextless, true, nil
 }
 
 type scopeParentIssue struct {
@@ -320,11 +354,11 @@ func decodeScopeMemberIDs(data []byte) (map[string]struct{}, error) {
 
 func (a *app) writeScopeMutationCount(request request, scope string, count int) int {
 	if request.json {
-		key := "added"
-		if request.scopeSubcommand == "remove" {
-			key = "removed"
-		}
-		return a.writeJSON(map[string]int{key: count})
+		return a.writeJSON(struct {
+			Operation string `json:"operation"`
+			Matched   int    `json:"matched"`
+			Changed   int    `json:"changed"`
+		}{Operation: request.scopeSubcommand, Matched: count, Changed: count})
 	}
 	verb := "Added"
 	preposition := "to"
@@ -354,6 +388,9 @@ func (a *app) backlog(request request) int {
 	}
 	if request.backlogContextless {
 		args = append(args, "--or-no-label-prefix", backlogContextLabelPrefix)
+	}
+	if filter := strings.TrimSpace(request.backlogFilter); filter != "" {
+		args = append(args, "--filter", filter)
 	}
 	if request.backlogStatus != "" {
 		args = append(args, "--status", request.backlogStatus)

@@ -3053,7 +3053,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		details := msg.details
 		m.scopeDetails = &details
-		if msg.generation > 0 {
+		// Generation-less typed responses must populate the member browser too.
+		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
 			m.applyScopePickerDetails(details)
 		}
 
@@ -8111,6 +8112,8 @@ func (m *Model) View() string {
 			sidebarFocus = focusAttention
 		}
 		m.shortcutsSidebar.SetFocus(sidebarFocus)
+		m.shortcutsSidebar.SetScopePickerState(m.scopePicker.MemberFocused(), m.scopePickerMoveIssue != "")
+		m.shortcutsSidebar.SetBacklogSearch(m.backlog.Searching())
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 		sidebar := m.shortcutsSidebar.View()
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, sidebar)
@@ -8814,15 +8817,36 @@ func (m *Model) renderHelpOverlay() string {
 		}
 	case focusScopePicker:
 		scopeControls := []struct{ key, desc string }{
+			{"Tab", "Switch to members"},
 			{"j/k", "Move scope selection"},
-			{"space", "Mark current member"},
-			{"R", "Remove marked/current member"},
-			{"M", "Remove by epic or label"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
 			{"B", "Open global backlog"},
 			{"W", "Close scope picker"},
 			{"Esc / q", "Return to previous view"},
+		}
+		if m.scopePicker.MemberFocused() {
+			scopeControls = []struct{ key, desc string }{
+				{"Tab", "Switch to scope catalog"},
+				{"j/k", "Move member selection"},
+				{"o/c/r", "Filter members by status"},
+				{"I", "Cycle member type filter"},
+				{"w", "Cycle member repository filter"},
+				{"space", "Mark current member"},
+				{"R", "Remove marked/current members"},
+				{"M", "Remove members by epic or label"},
+				{"B", "Open global backlog"},
+				{"W", "Close scope picker"},
+				{"Esc / q", "Return to previous view"},
+			}
+		} else if m.scopePicker.moveTarget != "" {
+			scopeControls = []struct{ key, desc string }{
+				{"j/k", "Move destination scope"},
+				{"Enter", "Move selected bead"},
+				{"B", "Open global backlog"},
+				{"W", "Close scope picker"},
+				{"Esc / q", "Return to previous view"},
+			}
 		}
 		specializedPanels = []string{
 			renderPanel("Scopes", "◉", 0, scopeControls),
@@ -8831,11 +8855,12 @@ func (m *Model) renderHelpOverlay() string {
 	case focusBacklog:
 		backlogControls := []struct{ key, desc string }{
 			{"j/k", "Move selection"},
+			{"PgUp/Dn", "Scroll preview (Ctrl+b/f)"},
 			{"space", "Mark current bead"},
 			{"n/p", "Next / previous page"},
 			{"/", "Filter backlog"},
-			{"A", "Add selected bead to scope"},
-			{"M", "Add by epic or label"},
+			{"A", "Add selected bead to scope (or all marked)"},
+			{"M", "Add by epic or label (semantic)"},
 			{"W", "Open named scopes"},
 			{"B / Esc / q", "Return to List"},
 		}
@@ -9948,26 +9973,31 @@ func (m *Model) renderFooter() string {
 		}
 	} else if m.showScopeCreatePrompt {
 		keyHints = append(keyHints, keyStyle.Render("enter")+" create", keyStyle.Render("esc")+" cancel")
+	} else if m.showScopeMatchPrompt {
+		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker {
-		enterHint := "toggle"
-		if m.scopePickerMoveIssue != "" {
-			enterHint = "move"
-		}
-		keyHints = append(keyHints, keyStyle.Render("tab")+" catalog/members", keyStyle.Render("j/k")+" nav", keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
 		if m.scopePicker.MemberFocused() {
+			keyHints = append(keyHints, keyStyle.Render("tab")+" catalog", keyStyle.Render("j/k")+" members", keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
 			removeHint := "R remove current"
 			if m.scopePicker.MemberMarkCount() > 0 {
 				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match")
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" epic/label", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+		} else if m.scopePickerMoveIssue != "" {
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes", keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
 		}
-		keyHints = append(keyHints, keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
-		addHint := "add current"
-		if m.backlog.MarkCount() > 0 {
-			addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
+		if m.backlog.Searching() {
+			keyHints = append(keyHints, keyStyle.Render("type")+" filter", keyStyle.Render("backspace")+" delete", keyStyle.Render("enter/esc")+" done")
+		} else {
+			addHint := "add current"
+			if m.backlog.MarkCount() > 0 {
+				addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
+			}
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" epic/label", keyStyle.Render("W")+" scopes", keyStyle.Render("B/esc/q")+" list")
 		}
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" match", keyStyle.Render("B/esc")+" list")
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {

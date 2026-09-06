@@ -215,6 +215,7 @@ type BacklogModel struct {
 	nextCursor    string
 	pageIndex     int
 	pageCursors   []string
+	previewOffset int
 	width         int
 	height        int
 	theme         Theme
@@ -264,6 +265,7 @@ func (b *BacklogModel) Reset() {
 	b.nextCursor = ""
 	b.hasMore = false
 	b.pageCursors = []string{""}
+	b.previewOffset = 0
 	b.ClearMarks()
 }
 
@@ -363,6 +365,16 @@ func (b *BacklogModel) Move(delta int) {
 		return
 	}
 	b.selected = (b.selected + delta + items) % items
+	b.previewOffset = 0
+}
+
+// ScrollPreview moves through the complete selected-issue preview without
+// changing the page-local list selection.
+func (b *BacklogModel) ScrollPreview(delta int) {
+	b.previewOffset += delta
+	if b.previewOffset < 0 {
+		b.previewOffset = 0
+	}
 }
 
 func (b *BacklogModel) applyFilter() {
@@ -374,6 +386,7 @@ func (b *BacklogModel) applyFilter() {
 	if b.selected >= len(b.filteredItems) {
 		b.selected = maxInt(0, len(b.filteredItems)-1)
 	}
+	b.previewOffset = 0
 }
 
 func (b BacklogModel) filteredIssueItems() []IssueItem {
@@ -399,35 +412,35 @@ func (b BacklogModel) View() string {
 
 func (b BacklogModel) renderBacklog(title string) string {
 	contentWidth := maxInt(b.width-4, 1)
-	wide := contentWidth >= 100 && b.CurrentIssue() != nil
 	listWidth := contentWidth
+	wideWidth := maxInt(contentWidth*2/3, 1)
+	columns := backlogTableColumnsFor(b.filteredItems, wideWidth)
+	wide := b.CurrentIssue() != nil && backlogTableWidth(columns) <= wideWidth
 	if wide {
-		listWidth = maxInt(contentWidth*2/3, 1)
+		listWidth = wideWidth
+	} else {
+		columns.width = listWidth
 	}
-	delegate := b.delegate
-	delegate.useFullWidth = true
-	delegate.layoutItems = backlogListItems(b.items)
-	delegate.columns = delegate.issueListColumnsFor(delegate.layoutItems, listWidth)
 
-	lines := []string{b.renderBacklogHeader(title, delegate.columns)}
+	lines := []string{b.renderBacklogHeader(title, columns)}
 	availableHeight := maxInt(b.height-2, 1)
-	listRows := availableHeight - 4 // header, page hint, preview, and padding
+	listRows := availableHeight - 5 // header, two-line preview, page hint, and padding
 	if !wide && b.CurrentIssue() == nil {
 		listRows++
 	}
 	if listRows < 1 {
 		listRows = 1
 	}
-	listView := b.renderBacklogList(delegate, listWidth, listRows)
+	listView := b.renderBacklogList(columns, listWidth, listRows)
 	page := b.renderBacklogPage(contentWidth)
 	if wide {
 		previewWidth := maxInt(contentWidth-listWidth-2, 1)
-		preview := b.renderBacklogPreview(previewWidth)
+		preview := b.renderBacklogPreview(previewWidth, listRows)
 		lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top, listView, "  ", preview))
 	} else {
 		lines = append(lines, listView)
 		if b.CurrentIssue() != nil {
-			lines = append(lines, b.renderBacklogPreview(contentWidth))
+			lines = append(lines, b.renderBacklogPreview(contentWidth, 2))
 		}
 	}
 	lines = append(lines, page)
@@ -442,46 +455,124 @@ func backlogListItems(items []IssueItem) []list.Item {
 	return result
 }
 
-func (b BacklogModel) renderBacklogHeader(title string, columns *issueListColumns) string {
+type backlogTableColumns struct {
+	width         int
+	idWidth       int
+	typeWidth     int
+	priorityWidth int
+	statusWidth   int
+	createdWidth  int
+}
+
+// backlogTableColumnsFor keeps the bounded backlog projection independent of
+// the ordinary List metadata layout.
+func backlogTableColumnsFor(items []IssueItem, width int) backlogTableColumns {
+	columns := backlogTableColumns{
+		width:         maxInt(width, 1),
+		idWidth:       len("ID"),
+		typeWidth:     len("TYPE"),
+		priorityWidth: len("PR"),
+		statusWidth:   len("STAT"),
+		createdWidth:  len("CREATED_AT"),
+	}
+	for _, item := range items {
+		columns.idWidth = maxInt(columns.idWidth, lipgloss.Width(item.Issue.ID))
+		columns.typeWidth = maxInt(columns.typeWidth, lipgloss.Width(string(item.Issue.IssueType)))
+		columns.priorityWidth = maxInt(columns.priorityWidth, lipgloss.Width(fmt.Sprintf("P%d", item.Issue.Priority)))
+		columns.statusWidth = maxInt(columns.statusWidth, lipgloss.Width(strings.ToUpper(string(item.Issue.Status))))
+		columns.createdWidth = maxInt(columns.createdWidth, lipgloss.Width(formatBacklogCreatedAt(item.Issue.CreatedAt)))
+	}
+	return columns
+}
+
+func formatBacklogCreatedAt(createdAt time.Time) string {
+	if createdAt.IsZero() {
+		return "n/a"
+	}
+	return createdAt.Format(time.RFC3339Nano)
+}
+
+func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
 	return b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Render(title) + "\n" +
 		b.theme.Renderer.NewStyle().Background(b.theme.Primary).
 			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).Bold(true).Inline(true).
-			Render(renderIssueListHeader(columns))
+			Render(renderBacklogTableHeader(columns))
 }
 
-func (b BacklogModel) renderBacklogList(delegate IssueDelegate, width, rows int) string {
+func renderBacklogTableHeader(columns backlogTableColumns) string {
+	return strings.Join([]string{
+		padRight("ID", columns.idWidth),
+		padRight("TYPE", columns.typeWidth),
+		padRight("PR", columns.priorityWidth),
+		padRight("STAT", columns.statusWidth),
+		padRight("CREATED_AT", columns.createdWidth),
+	}, " ")
+}
+
+func backlogTableWidth(columns backlogTableColumns) int {
+	return 2 + lipgloss.Width(renderBacklogTableHeader(columns))
+}
+
+func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows int) string {
 	if len(b.filteredItems) == 0 {
 		return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render("No unscoped beads.")
 	}
 	start, end := b.visibleRangeFor(rows)
-	items := backlogListItems(b.filteredItems)
-	for i := range items {
-		item := items[i].(IssueItem)
-		item.Marked = b.marked[item.Issue.ID]
-		items[i] = item
-	}
-	l := list.New(items, delegate, width, rows)
-	l.Select(b.selected)
 	lines := make([]string, 0, end-start)
 	for index := start; index < end; index++ {
-		var row bytes.Buffer
-		delegate.Render(&row, l, index, items[index])
-		lines = append(lines, row.String())
+		item := b.filteredItems[index]
+		item.Marked = b.marked[item.Issue.ID]
+		lines = append(lines, b.renderBacklogRow(item, index == b.selected, columns, width))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (b BacklogModel) renderBacklogPreview(width int) string {
+func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns backlogTableColumns, width int) string {
+	row := strings.Join([]string{
+		padRight(item.Issue.ID, columns.idWidth),
+		padRight(string(item.Issue.IssueType), columns.typeWidth),
+		padRight(fmt.Sprintf("P%d", item.Issue.Priority), columns.priorityWidth),
+		padRight(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth),
+		padRight(formatBacklogCreatedAt(item.Issue.CreatedAt), columns.createdWidth),
+	}, " ")
+	marker := "  "
+	if item.Marked {
+		marker = "✓ "
+	}
+	row = marker + row
+	if selected {
+		return b.theme.Renderer.NewStyle().Background(b.theme.Highlight).Bold(true).Width(width).MaxWidth(width).Render(row)
+	}
+	return b.theme.Renderer.NewStyle().Width(width).MaxWidth(width).Render(row)
+}
+
+func (b BacklogModel) renderBacklogPreview(width int, heights ...int) string {
 	issue := b.CurrentIssue()
 	if issue == nil {
 		return ""
 	}
-	description := strings.Join(strings.Fields(issue.Description), " ")
+	title := issue.Title
+	if title == "" {
+		title = "(untitled)"
+	}
+	description := strings.TrimSpace(issue.Description)
 	if description == "" {
 		description = "(no description)"
 	}
-	return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render(
-		ansi.Truncate("DESCRIPTION  "+description, maxInt(width, 1), "…"))
+	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Width(maxInt(width, 1))
+	descriptionStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Width(maxInt(width, 1))
+	content := titleStyle.Render("TITLE  "+title) + "\n" + descriptionStyle.Render("DESCRIPTION  "+description)
+	if len(heights) == 0 || heights[0] <= 0 {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	height := heights[0]
+	if height >= len(lines) {
+		return content
+	}
+	maxOffset := len(lines) - height
+	offset := min(maxInt(b.previewOffset, 0), maxOffset)
+	return strings.Join(lines[offset:offset+height], "\n")
 }
 
 func (b BacklogModel) renderBacklogPage(width int) string {
@@ -1332,6 +1423,10 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.backlog.Move(1)
 	case "k", "up":
 		m.backlog.Move(-1)
+	case "pgdown", "ctrl+f":
+		m.backlog.ScrollPreview(1)
+	case "pgup", "ctrl+b":
+		m.backlog.ScrollPreview(-1)
 	case "/":
 		m.backlog.BeginSearch()
 		m.backlog.ClearMarks()
