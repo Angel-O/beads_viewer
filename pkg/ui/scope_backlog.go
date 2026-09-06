@@ -570,7 +570,7 @@ func (b BacklogModel) renderBacklog(title string) string {
 		listRows = 1
 	}
 	listView := b.renderBacklogList(columns, listWidth, listRows)
-	page := b.renderBacklogPage(contentWidth)
+	page := b.renderBacklogPage(listWidth)
 	if wide {
 		previewWidth := maxInt(contentWidth-listWidth-2, 1)
 		preview := b.renderBacklogPreview(previewWidth, listRows)
@@ -1124,7 +1124,7 @@ func (s ScopePickerModel) View() string {
 		heading = "Move: " + s.moveTarget
 	}
 	contentWidth := maxInt(width-4, 1)
-	contentHeight := maxInt(height-4, 3)
+	contentHeight := maxInt(height-1, 3)
 	catalogRows := maxInt(3, contentHeight/2)
 	memberRows := contentHeight - catalogRows - 2
 	if memberRows < 6 {
@@ -1137,15 +1137,15 @@ func (s ScopePickerModel) View() string {
 		catalogStyle, memberStyle = FocusedPanelStyle, PanelStyle
 	}
 	panel := func(style lipgloss.Style, content string, panelWidth, panelHeight int) string {
-		innerWidth, innerHeight := maxInt(panelWidth-2, 1), maxInt(panelHeight-2, 1)
-		return style.Width(innerWidth).Height(innerHeight).Render(content)
+		innerHeight := maxInt(panelHeight-2, 1)
+		return style.Padding(0, 1).Width(maxInt(panelWidth-2, 1)).Height(innerHeight).Render(content)
 	}
-	catalog := panel(catalogStyle, s.renderCatalog(heading, contentWidth-2, catalogRows-2), contentWidth, catalogRows)
-	members := panel(memberStyle, s.renderMembers(contentWidth-2, memberRows-2), contentWidth, memberRows)
+	catalog := panel(catalogStyle, s.renderCatalog(heading, contentWidth-4, catalogRows-2), contentWidth, catalogRows)
+	members := panel(memberStyle, s.renderMembers(contentWidth-4, memberRows-2), contentWidth, memberRows)
 	view := catalog + "\n\n" + members
 	return lipgloss.NewStyle().
 		Width(maxInt(width, 1)).
-		Height(maxInt(height-2, 1)).
+		Height(maxInt(height, 1)).
 		Padding(1, 2).
 		Render(view)
 }
@@ -1208,31 +1208,88 @@ func scopeMemberRepository(item IssueItem) string {
 	return repository
 }
 
+// scopeMemberContext renders the local member's context without letting a
+// long name escape the bounded member row.
+func scopeMemberContext(item IssueItem, width int) string {
+	repository := memberRepositoryValue(item)
+	if repository == "" || width <= 0 {
+		return ""
+	}
+	extra := ""
+	if item.RepositoryExtra > 0 {
+		extra = fmt.Sprintf(" +%d", item.RepositoryExtra)
+	}
+	nameWidth := maxInt(width-lipgloss.Width(extra)-2, 1)
+	if item.RepositoryID != "" {
+		return RenderRepositoryBadgeCompact(item.RepositoryID, repository, nameWidth) + extra
+	}
+	if item.RepoPrefix != "" {
+		return RenderRepoBadge(item.RepoPrefix) + extra
+	}
+	return lipgloss.NewStyle().Foreground(GetRepoColor(repository)).Bold(true).
+		Render(truncateRunesHelper(repository, nameWidth, "…")) + extra
+}
+
+func scopeMemberLabel(item IssueItem, width int) string {
+	labels := scopeMemberLabels(item)
+	if len(labels) == 0 || width < 3 {
+		return ""
+	}
+	labelStyle := itemLabelStyle()
+	text := truncateRunesHelper(strings.Join(labels, ","), maxInt(width-2, 1), "…")
+	return labelStyle.Render(text)
+}
+
+// itemLabelStyle keeps the bounded member label column visually consistent
+// with the ordinary list's single accent label pill.
+func itemLabelStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(ColorPrimary).Background(ColorBgSubtle).Padding(0, 1)
+}
+
 func scopeMemberColumnsFor(items []IssueItem, width int) scopeMemberColumns {
 	width = maxInt(width, 1)
-	columns := scopeMemberColumns{mark: 1, priority: 2, status: len("STAT"), age: 4}
+	columns := scopeMemberColumns{
+		mark:       2,
+		repository: len("CONTEXT"),
+		issueType:  len("TYPE"),
+		priority:   lipgloss.Width(RenderPriorityBadge(0)),
+		status:     lipgloss.Width(RenderStatusBadge("open")),
+		id:         len("ID"),
+		age:        4,
+	}
+	titleWidth := 1
 	for _, item := range items {
-		columns.repository = maxInt(columns.repository, lipgloss.Width(scopeMemberRepository(item)))
-		columns.issueType = maxInt(columns.issueType, lipgloss.Width(strings.ToUpper(string(item.Issue.IssueType))))
+		columns.repository = maxInt(columns.repository, lipgloss.Width(scopeMemberRepository(item))+2)
+		icon := model.IssueTypeIcon(string(item.Issue.IssueType))
+		columns.issueType = maxInt(columns.issueType, lipgloss.Width(icon)+1+lipgloss.Width(strings.ToUpper(string(item.Issue.IssueType))))
 		columns.id = maxInt(columns.id, lipgloss.Width(item.Issue.ID))
-		for _, label := range scopeMemberLabels(item) {
-			columns.labels = maxInt(columns.labels, lipgloss.Width(label))
+		titleWidth = maxInt(titleWidth, lipgloss.Width(item.Issue.Title))
+		if labels := scopeMemberLabels(item); len(labels) > 0 {
+			columns.labels = maxInt(columns.labels, lipgloss.Width(itemLabelStyle().Render(strings.Join(labels, ","))))
 		}
 	}
 	columns.repository = min(columns.repository, 16)
-	columns.issueType = min(maxInt(columns.issueType, len("TYPE")), 8)
+	columns.issueType = min(columns.issueType, 10)
 	columns.id = min(maxInt(columns.id, len("ID")), 24)
 	columns.labels = min(columns.labels, 20)
-	separators := 8
-	reserved := columns.mark + columns.repository + columns.issueType + columns.priority + columns.status + columns.id + columns.age + separators
-	columns.title = maxInt(1, width-reserved-columns.labels-1)
+	if columns.labels > 0 {
+		titleWidth = min(titleWidth, maxInt(width-columns.mark-columns.repository-columns.issueType-columns.priority-columns.status-columns.id-columns.age-columns.labels-8, 1))
+	}
+	separators := 7
+	if columns.labels > 0 {
+		separators++
+	}
+	reserved := columns.mark + columns.repository + columns.issueType + columns.priority + columns.status + columns.id + columns.age + columns.labels + separators
+	columns.title = min(titleWidth, maxInt(width-reserved, 1))
 	total := func() int {
 		return columns.mark + columns.repository + columns.issueType + columns.priority + columns.status + columns.id + columns.age + columns.title + columns.labels + separators
 	}
 	for total() > width {
 		switch {
-		case columns.labels > 0:
+		case columns.labels > 3:
 			columns.labels--
+		case columns.title > 1:
+			columns.title--
 		case columns.repository > 1:
 			columns.repository--
 		case columns.id > 1:
@@ -1256,26 +1313,49 @@ func scopeMemberCell(value string, width int) string {
 	return padRight(truncateRunesHelper(value, width, "…"), width)
 }
 
+func scopeMemberStyledCell(value string, width int) string {
+	valueWidth := lipgloss.Width(value)
+	if valueWidth > width {
+		return ansi.Truncate(value, width, "…")
+	}
+	return value + strings.Repeat(" ", width-valueWidth)
+}
+
 func (s ScopePickerModel) renderMemberRow(item IssueItem, selected bool, columns scopeMemberColumns, width int) string {
-	mark := ""
+	mark := "  "
 	if item.Marked {
-		mark = "✓"
+		mark = s.theme.PrimaryBold.Render("✓ ")
+	} else if selected {
+		mark = s.theme.PrimaryBold.Render("▸ ")
+	}
+	icon, iconColor := s.theme.GetTypeIcon(string(item.Issue.IssueType))
+	typeText := strings.ToUpper(string(item.Issue.IssueType))
+	typeValue := s.theme.Renderer.NewStyle().Foreground(iconColor).Render(icon) + " " + typeText
+	idStyle := s.theme.SecondaryText
+	if selected {
+		idStyle = idStyle.Bold(true)
+	}
+	titleStyle := s.theme.Renderer.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#E8E8E8"})
+	if selected {
+		titleStyle = titleStyle.Foreground(s.theme.Primary).Bold(true)
 	}
 	values := []string{
-		scopeMemberCell(mark, columns.mark),
-		scopeMemberCell(scopeMemberRepository(item), columns.repository),
-		scopeMemberCell(strings.ToUpper(string(item.Issue.IssueType)), columns.issueType),
-		scopeMemberCell(fmt.Sprintf("P%d", item.Issue.Priority), columns.priority),
-		scopeMemberCell(strings.ToUpper(string(item.Issue.Status)), columns.status),
-		scopeMemberCell(item.Issue.ID, columns.id),
-		scopeMemberCell(formatIssueListAge(item.Issue.CreatedAt), columns.age),
-		scopeMemberCell(item.Issue.Title, columns.title),
+		scopeMemberStyledCell(mark, columns.mark),
+		scopeMemberStyledCell(scopeMemberContext(item, columns.repository), columns.repository),
+		scopeMemberStyledCell(typeValue, columns.issueType),
+		scopeMemberStyledCell(RenderPriorityBadge(item.Issue.Priority), columns.priority),
+		scopeMemberStyledCell(RenderStatusBadge(string(item.Issue.Status)), columns.status),
+		scopeMemberStyledCell(idStyle.Render(truncateRunesHelper(item.Issue.ID, columns.id, "…")), columns.id),
+		scopeMemberStyledCell(s.theme.MutedText.Render(formatIssueListAge(item.Issue.CreatedAt)), columns.age),
+		scopeMemberStyledCell(titleStyle.Render(truncateRunesHelper(item.Issue.Title, columns.title, "…")), columns.title),
 	}
 	if columns.labels > 0 {
-		values = append(values, scopeMemberCell(strings.Join(scopeMemberLabels(item), ","), columns.labels))
+		values = append(values, scopeMemberStyledCell(scopeMemberLabel(item, columns.labels), columns.labels))
 	}
-	row := strings.TrimRight(strings.Join(values, " "), " ")
-	row = truncateRunesHelper(row, maxInt(width, 1), "…")
+	row := strings.Join(values, " ")
+	if lipgloss.Width(row) > width {
+		row = ansi.Truncate(row, maxInt(width, 1), "…")
+	}
 	style := s.theme.Renderer.NewStyle().Width(maxInt(width, 1)).MaxWidth(maxInt(width, 1))
 	if selected {
 		style = style.Background(s.theme.Highlight).Bold(true)
@@ -1310,7 +1390,7 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	columns := scopeMemberColumnsFor(items, width)
 	headerCells := []string{
 		scopeMemberCell("", columns.mark),
-		scopeMemberCell("REPOSITORY", columns.repository),
+		scopeMemberCell("CONTEXT", columns.repository),
 		scopeMemberCell("TYPE", columns.issueType),
 		scopeMemberCell("PR", columns.priority),
 		scopeMemberCell("STAT", columns.status),
@@ -1424,6 +1504,9 @@ func (m Model) renderScopeBadge() string {
 }
 
 func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
+	if m.isBacklogView {
+		m.closeBacklog()
+	}
 	m.showScopePicker = true
 	m.scopePickerOrigin = m.focused
 	m.scopePickerMoveIssue = moveIssue
