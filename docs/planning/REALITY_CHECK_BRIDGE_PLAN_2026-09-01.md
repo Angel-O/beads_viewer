@@ -53,13 +53,23 @@ historical-evidence descriptions refer to the source before these changes.
   retains its original threshold. Graph is about 7% smaller and triage about 13%
   larger on this snapshot. Corrected callback-locking guidance matches the passing
   eight-metric callback test. These are bounded results, not universal size claims.
-- [ ] Bind all final source/test/doc files, finish their affected checks, update
-  the remaining acceptance items and commit the implementation on `main`.
-- [ ] Complete original P1 responsiveness evidence and then the final source and
-  dependency cohort. The existing f4f run remains active on its original host and
-  unchanged deadlines; all 288 UI and 72 timed CLI records have completed, with
-  all 36 exact-output records now exist, with the final verifier and original
-  negative controls still pending. It does not certify this new implementation.
+- [x] Bind all final source/test/doc files, finish their affected checks, update
+  the remaining acceptance items and commit the implementation on `main` as
+  `93b90959`. The tested file manifest and patch are preserved in the P2 bead;
+  the commit contains the same runtime/test/doc bytes. No release was published.
+- [x] Complete the original `f4f86f62` responsiveness run on its original host with
+  unchanged deadlines: 288 UI, 72 timed CLI and 36 exact-output records, original
+  verifier, slow-handler and parity controls, and unchanged checks of all 4,194
+  tracked files. Root independently read the final records and verified the
+  runner-log hash. The independent raw recount reports worst current UI p99 of
+  32.585 ms, but a large CLI case still reaches 13.469 s at p99. Skipped metrics
+  and unpaired extra completions remain disclosed.
+- [ ] Verify the final runtime/dependency cohort, `93b90959`, with the same matrix.
+  The persistent run started on hz3 at 21:55:14 UTC, after the original jobs
+  finished, preserving all original sample counts, controls and limits. Child
+  PID 64372 and wrapper PID 64284 use fresh `bv-p1-latency-93b90959-*` directories
+  under `/data/tmp`. Completion remains pending; the launch directory retains
+  `runner.log`, `matrix-execution-start.json` and eventual completion/control files.
 - [ ] Resolve the existing external prerequisites: authorized live tracker repair,
   native macOS amd64/arm64 and Linux ARM64 access, and final source-bound packaging.
   These remain S5/V5/final-gate work; available-platform tests do not close them.
@@ -71,6 +81,19 @@ remain in the existing beads. Graph evidence is on vmi1149989 under
 `/data/tmp/bv-causal-legacy-path-yq7wp0hk`. Native Windows source-install replay
 and copied-example evidence are recorded in the V5 and P2 beads. No new task graph
 or report campaign is needed.
+
+Final local storage incident: the filesystem filled during the last plan update,
+leaving this file empty. Its complete committed contents were recovered from
+`93b90959`, these final TODO updates were manually reapplied, and the restored
+169,752-byte intermediate was checked against its recovery copy. No file was
+deleted. A tracker comment attempt running as the ordinary user entered an
+ENOSPC retry loop; that owned writer was stopped. The database, WAL, SHM and JSONL
+were preserved under `/dev/shm/bv-beads-recovery-20260906-2203`, and the preserved
+database passes SQLite `quick_check`. A subsequent root tracker attempt refused
+namespace authority, so no further tracker mutation was attempted. The launch
+details above remain the handoff for the active P1 bead. Bounded reserved-space
+writes restore and commit these existing records; ordinary-user free space is
+still zero. No runtime/test files changed after the implementation commit.
 
 ## Assessment baseline — 2026-09-06, before this continuation
 
