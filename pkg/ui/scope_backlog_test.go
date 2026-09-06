@@ -558,6 +558,188 @@ func TestScopePickerLoadsSelectedMembersAndRejectsStaleResponses(t *testing.T) {
 	}
 }
 
+func TestPagedScopePickerBuildsIndependentCatalogAndMemberRequests(t *testing.T) {
+	var catalogs []ScopeCatalogQuery
+	var members []ScopeMembersQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryCatalog: func(_ context.Context, query ScopeCatalogQuery) (ScopeCatalogPage, error) {
+			catalogs = append(catalogs, query)
+			return ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "s1", Name: "Today", MemberCount: 4}}, HasMore: true, NextCursor: "catalog-2"}, nil
+		},
+		QueryMembers: func(_ context.Context, query ScopeMembersQuery) (ScopeMembersPage, error) {
+			members = append(members, query)
+			return ScopeMembersPage{Scope: ScopeInfo{ID: query.ScopeID, Name: "Today", MemberCount: 4}, Members: []model.Issue{{ID: "m-1", Title: "Member", Status: model.StatusOpen}}, HasMore: true, NextCursor: "members-2"}, nil
+		},
+	}})
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "Today"}}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+
+	for _, message := range runUISemanticCommands(m.openScopePicker("")) {
+		updated, _ := m.Update(message)
+		m = updated.(*Model)
+	}
+	if len(catalogs) != 1 || catalogs[0].Cursor != "" || catalogs[0].Limit != scopePageSize {
+		t.Fatalf("catalog requests = %#v", catalogs)
+	}
+	if len(members) != 1 || members[0].ScopeID != "s1" || members[0].Cursor != "" || members[0].Limit != scopePageSize {
+		t.Fatalf("member requests = %#v", members)
+	}
+
+	updated, _ := m.handleScopePickerKey(keyMsg("tab"))
+	m = updated
+	updated, _ = m.handleScopePickerKey(keyMsg("space"))
+	m = updated
+	if m.scopePicker.MemberMarkCount() != 1 {
+		t.Fatalf("page-local mark count=%d, want 1", m.scopePicker.MemberMarkCount())
+	}
+	updated, memberNext := m.handleScopePickerKey(keyMsg("n"))
+	m = updated
+	if memberNext == nil {
+		t.Fatal("member page request missing")
+	}
+	updatedTea, _ := m.Update(memberNext())
+	m = updatedTea.(*Model)
+	if m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatalf("member page retained mark count=%d", m.scopePicker.MemberMarkCount())
+	}
+	updated, _ = m.handleScopePickerKey(keyMsg("tab"))
+	m = updated
+	updated, catalogNext := m.handleScopePickerKey(keyMsg("right"))
+	m = updated
+	if catalogNext == nil || m.scopePicker.CatalogPageIndex() != 1 {
+		t.Fatalf("catalog next page: cmd=%t index=%d", catalogNext != nil, m.scopePicker.CatalogPageIndex())
+	}
+	updatedTea, _ = m.Update(catalogNext())
+	m = updatedTea.(*Model)
+	if len(catalogs) != 2 || catalogs[1].Cursor != "catalog-2" || len(members) != 2 {
+		t.Fatalf("catalog navigation requests: catalogs=%#v members=%#v", catalogs, members)
+	}
+
+	m.scopePicker.memberRepositoryFilter = "ctx:alpha"
+	m.scopePicker.memberStatusFilter = "ready"
+	m.scopePicker.memberTypeFilter = model.TypeTask
+	filterRequest := m.startScopeMembersPage("", 0)
+	if filterRequest == nil || m.scopePicker.MemberPageIndex() != 0 {
+		t.Fatalf("member filter reset: cmd=%t index=%d", filterRequest != nil, m.scopePicker.MemberPageIndex())
+	}
+	updatedTea, _ = m.Update(filterRequest())
+	m = updatedTea.(*Model)
+	if len(members) != 3 || members[2].Cursor != "" || members[2].Status != "ready" || members[2].Type != string(model.TypeTask) || !reflect.DeepEqual(members[2].Contexts, []string{"ctx:alpha"}) {
+		t.Fatalf("member navigation request = %#v", members)
+	}
+}
+
+func TestPagedScopePickerFiltersResetPageAndRejectStaleMembers(t *testing.T) {
+	var requests []ScopeMembersQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryMembers: func(_ context.Context, query ScopeMembersQuery) (ScopeMembersPage, error) {
+			requests = append(requests, query)
+			return ScopeMembersPage{Scope: ScopeInfo{ID: query.ScopeID, Name: query.ScopeID}, Members: []model.Issue{{ID: query.ScopeID + "-member"}}}, nil
+		},
+	}})
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "One"}, {ID: "s2", Name: "Two"}}
+	first := m.openScopePicker("")
+	if first == nil {
+		t.Fatal("initial member request missing")
+	}
+	updated, second := m.handleScopePickerKey(keyMsg("down"))
+	m = updated
+	if second == nil {
+		t.Fatal("second member request missing")
+	}
+	updatedTea, _ := m.Update(second())
+	m = updatedTea.(*Model)
+	updatedTea, _ = m.Update(first())
+	m = updatedTea.(*Model)
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "s2-member" {
+		t.Fatalf("stale member response selected %#v", selected)
+	}
+
+	// A server-owned filter starts a fresh member page and never filters the
+	// already loaded page locally.
+	m.scopePicker.memberFocused = true
+	updated, filterRequest := m.handleScopePickerKey(keyMsg("c"))
+	m = updated
+	if filterRequest == nil || m.scopePicker.MemberPageIndex() != 0 || m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatalf("filter reset: cmd=%t page=%d marks=%d", filterRequest != nil, m.scopePicker.MemberPageIndex(), m.scopePicker.MemberMarkCount())
+	}
+	updatedTea, _ = m.Update(filterRequest())
+	m = updatedTea.(*Model)
+	if len(requests) != 3 || requests[2].Status != "completed" || requests[2].Cursor != "" {
+		t.Fatalf("filter request = %#v", requests)
+	}
+
+	m.scopePicker.memberFocused = true
+	updated, _ = m.handleScopePickerKey(keyMsg("space"))
+	m = updated
+	if m.scopePicker.MemberMarkCount() != 1 {
+		t.Fatalf("mark count=%d, want 1", m.scopePicker.MemberMarkCount())
+	}
+	m.closeScopePicker()
+	if m.scopePicker.MemberPageIndex() != 0 || m.scopePicker.CatalogPageIndex() != 0 || m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatalf("return did not reset picker paging/marks: member=%d catalog=%d marks=%d", m.scopePicker.MemberPageIndex(), m.scopePicker.CatalogPageIndex(), m.scopePicker.MemberMarkCount())
+	}
+}
+
+func TestPagedScopePickerPreservesActiveScopeAcrossCatalogPages(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	active := ScopeInfo{ID: "s2", Name: "Active", Active: true}
+	m.activeScope = &active
+	generation := m.scopePicker.BeginCatalogLoad()
+	updated, _ := m.Update(scopeCatalogPageMsg{
+		page:       ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "s1", Name: "Other", Active: true}, {ID: "s2", Name: "Active"}}},
+		generation: generation,
+	})
+	m = updated.(*Model)
+	if m.activeScope == nil || m.activeScope.ID != "s2" {
+		t.Fatalf("active scope = %#v, want s2", m.activeScope)
+	}
+	if m.scopeCatalog[0].Active || !m.scopeCatalog[1].Active {
+		t.Fatalf("catalog active flags = %#v, want only s2 active", m.scopeCatalog)
+	}
+}
+
+func TestPagedScopePickerUsesCanonicalFilterChoicesAndBackendClosedStatus(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetMemberContextCatalog(hubScopeCatalog("ctx:alpha"))
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "one", IssueType: model.TypeBug}}})
+	picker.SetMemberServerFiltering(true)
+	picker.CycleMemberRepository()
+	if contexts := picker.MemberContexts(); !reflect.DeepEqual(contexts, []string{"ctx:alpha"}) {
+		t.Fatalf("contexts = %#v, want registered alpha context", contexts)
+	}
+
+	var got ScopeMembersQuery
+	m := NewModel([]model.Issue{{ID: "main", IssueType: "decision"}}, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryMembers: func(_ context.Context, query ScopeMembersQuery) (ScopeMembersPage, error) {
+			got = query
+			return ScopeMembersPage{Scope: ScopeInfo{ID: "s1"}}, nil
+		},
+	}})
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "One"}}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.scopePicker.SetMemberFilters("", "closed", "")
+	cmd := m.startScopeMembersPage("", 0)
+	if cmd == nil {
+		t.Fatal("member page command missing")
+	}
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	m.scopePicker.CycleMemberType()
+	cmd = m.startScopeMembersPage("", 0)
+	if cmd == nil {
+		t.Fatal("filtered member page command missing")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if got.Status != "completed" {
+		t.Fatalf("backend status = %q, want completed", got.Status)
+	}
+	if got.Type != string(model.TypeBug) {
+		t.Fatalf("backend type = %q, want canonical type bug", got.Type)
+	}
+}
+
 func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 	picker := NewScopePickerModel(testTheme())
 	picker.SetSize(100, 24)

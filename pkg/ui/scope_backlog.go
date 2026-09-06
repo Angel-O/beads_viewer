@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 // ScopeInfo is the display projection needed by the Viewer scope chooser.
@@ -165,6 +166,23 @@ type scopeSnapshotMsg struct {
 	err      error
 }
 
+type scopeCatalogPageMsg struct {
+	page       ScopeCatalogPage
+	cursor     string
+	index      int
+	generation uint64
+	err        error
+}
+
+type scopeMembersPageMsg struct {
+	page       ScopeMembersPage
+	scopeID    string
+	cursor     string
+	index      int
+	generation uint64
+	err        error
+}
+
 type backlogPageMsg struct {
 	page       BacklogPage
 	cursor     string
@@ -194,6 +212,26 @@ func loadScopeSnapshotCmd(service ScopeServices) tea.Cmd {
 		}
 		snapshot, err := service.Load(context.Background())
 		return scopeSnapshotMsg{snapshot: snapshot, err: err}
+	}
+}
+
+func loadScopeCatalogPageCmd(service ScopeServices, query ScopeCatalogQuery, index int, generation uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service.QueryCatalog == nil {
+			return scopeCatalogPageMsg{cursor: query.Cursor, index: index, generation: generation}
+		}
+		page, err := service.QueryCatalog(context.Background(), query)
+		return scopeCatalogPageMsg{page: page, cursor: query.Cursor, index: index, generation: generation, err: err}
+	}
+}
+
+func loadScopeMembersPageCmd(service ScopeServices, query ScopeMembersQuery, index int, generation uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service.QueryMembers == nil {
+			return scopeMembersPageMsg{scopeID: query.ScopeID, cursor: query.Cursor, index: index, generation: generation}
+		}
+		page, err := service.QueryMembers(context.Background(), query)
+		return scopeMembersPageMsg{page: page, scopeID: query.ScopeID, cursor: query.Cursor, index: index, generation: generation, err: err}
 	}
 }
 
@@ -237,6 +275,7 @@ func runScopeMutationCmd(mutation ScopeMutation, restoreFocus bool, run func(con
 }
 
 const backlogPageSize = 50
+const scopePageSize = 50
 
 const backlogStatusAll = "all"
 
@@ -249,6 +288,15 @@ func isScopeBacklogGlobalKey(key string) bool {
 	switch key {
 	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5",
 		"w", "W", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
+		return true
+	default:
+		return false
+	}
+}
+
+func isScopePickerPagingKey(key string) bool {
+	switch key {
+	case "n", "p", "left", "right", "[", "]":
 		return true
 	default:
 		return false
@@ -801,26 +849,41 @@ func (b BacklogModel) visibleRangeFor(rows int) (int, int) {
 	return start, min(start+rows, len(b.filteredItems))
 }
 
-// ScopePickerModel owns the small named-scope catalog and one bounded member
-// projection. Member filters only change presentation; details are still
-// loaded exactly once per selected scope and are never paginated or cached.
+// ScopePickerModel owns the named-scope catalog and one bounded member page.
+// Paged mode keeps catalog and member cursors separate; the complete loaders
+// still use the same presentation path for standalone callers.
 type ScopePickerModel struct {
 	scopes     []ScopeInfo
 	selected   int
 	moveTarget string
 
-	members          []IssueItem
-	filteredMembers  []IssueItem
-	memberSelected   int
-	memberScopeID    string
-	memberGeneration uint64
-	memberLoading    bool
-	memberError      string
-	memberFocused    bool
+	catalogHasMore     bool
+	catalogNextCursor  string
+	catalogPageIndex   int
+	catalogPageCursors []string
+	catalogGeneration  uint64
+	catalogLoading     bool
+	catalogError       string
+
+	members               []IssueItem
+	filteredMembers       []IssueItem
+	memberSelected        int
+	memberScopeID         string
+	memberGeneration      uint64
+	memberLoading         bool
+	memberError           string
+	memberFocused         bool
+	memberHasMore         bool
+	memberNextCursor      string
+	memberPageIndex       int
+	memberPageCursors     []string
+	memberServerFiltering bool
 
 	memberStatusFilter     string
 	memberRepositoryFilter string
+	memberContextFilter    []string
 	memberTypeFilter       model.IssueType
+	memberContextCatalog   repositorypkg.Catalog
 	memberReadyIDs         map[string]bool
 	memberMarkedIDs        map[string]bool
 
@@ -828,7 +891,9 @@ type ScopePickerModel struct {
 	theme         Theme
 }
 
-func NewScopePickerModel(theme Theme) ScopePickerModel { return ScopePickerModel{theme: theme} }
+func NewScopePickerModel(theme Theme) ScopePickerModel {
+	return ScopePickerModel{theme: theme, catalogPageCursors: []string{""}, memberPageCursors: []string{""}}
+}
 
 func newScopeNameInput(theme Theme) textinput.Model {
 	input := textinput.New()
@@ -886,6 +951,87 @@ func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 	}
 }
 
+func (s *ScopePickerModel) BeginCatalogLoad() uint64 {
+	s.catalogGeneration++
+	s.catalogLoading = true
+	s.catalogError = ""
+	return s.catalogGeneration
+}
+
+func (s ScopePickerModel) acceptsCatalogPage(generation uint64) bool {
+	return generation > 0 && generation == s.catalogGeneration
+}
+
+func (s *ScopePickerModel) SetCatalogPage(page ScopeCatalogPage, index int, generation uint64) bool {
+	if !s.acceptsCatalogPage(generation) {
+		return false
+	}
+	s.catalogLoading = false
+	s.catalogError = ""
+	s.catalogHasMore = page.HasMore
+	s.catalogNextCursor = page.NextCursor
+	s.catalogPageIndex = maxInt(0, index)
+	if len(s.catalogPageCursors) == 0 {
+		s.catalogPageCursors = []string{""}
+	}
+	if s.catalogPageIndex >= len(s.catalogPageCursors) {
+		s.catalogPageCursors = append(s.catalogPageCursors, make([]string, s.catalogPageIndex-len(s.catalogPageCursors)+1)...)
+	}
+	s.SetScopes(page.Scopes)
+	return true
+}
+
+func (s *ScopePickerModel) SetCatalogError(generation uint64, err error) bool {
+	if !s.acceptsCatalogPage(generation) {
+		return false
+	}
+	s.catalogLoading = false
+	if err != nil {
+		s.catalogError = err.Error()
+	}
+	return true
+}
+
+func (s *ScopePickerModel) NextCatalogPage() (string, int, bool) {
+	if s.catalogLoading || !s.catalogHasMore || s.catalogNextCursor == "" {
+		return "", 0, false
+	}
+	next := s.catalogPageIndex + 1
+	if next < len(s.catalogPageCursors) {
+		s.catalogPageCursors = s.catalogPageCursors[:next]
+	}
+	s.catalogPageCursors = append(s.catalogPageCursors, s.catalogNextCursor)
+	s.catalogPageIndex = next
+	return s.catalogNextCursor, next, true
+}
+
+func (s *ScopePickerModel) PreviousCatalogPage() (string, int, bool) {
+	if s.catalogLoading || s.catalogPageIndex <= 0 || s.catalogPageIndex >= len(s.catalogPageCursors) {
+		return "", 0, false
+	}
+	s.catalogPageIndex--
+	return s.catalogPageCursors[s.catalogPageIndex], s.catalogPageIndex, true
+}
+
+func (s ScopePickerModel) CatalogPageIndex() int { return s.catalogPageIndex }
+func (s ScopePickerModel) CatalogHasMore() bool  { return s.catalogHasMore && s.catalogNextCursor != "" }
+func (s ScopePickerModel) OwnsPagingKey(key string) bool {
+	switch key {
+	case "[":
+		return s.memberFocused && s.memberPageIndex > 0 || !s.memberFocused && s.catalogPageIndex > 0
+	case "]", "right":
+		return s.memberFocused && s.MemberHasMore() || !s.memberFocused && s.CatalogHasMore()
+	case "left":
+		return true
+	case "n":
+		return s.memberFocused && s.MemberHasMore() || !s.memberFocused
+	case "p":
+		return true
+	default:
+		return false
+	}
+}
+
 // SelectedScopeID returns the catalog identity whose members should be shown.
 func (s ScopePickerModel) SelectedScopeID() string {
 	if selected := s.Selected(); selected != nil {
@@ -905,6 +1051,19 @@ func (s *ScopePickerModel) BeginMemberLoad(scopeID string) uint64 {
 	s.filteredMembers = nil
 	s.memberReadyIDs = nil
 	s.memberSelected = 0
+	s.ClearMemberMarks()
+	s.memberHasMore = false
+	s.memberNextCursor = ""
+	s.memberPageIndex = 0
+	s.memberPageCursors = []string{""}
+	return s.memberGeneration
+}
+
+func (s *ScopePickerModel) BeginMemberPageLoad(scopeID string) uint64 {
+	s.memberGeneration++
+	s.memberScopeID = scopeID
+	s.memberLoading = true
+	s.memberError = ""
 	s.ClearMemberMarks()
 	return s.memberGeneration
 }
@@ -956,8 +1115,115 @@ func (s *ScopePickerModel) SetMembers(items []IssueItem) {
 	}
 }
 
+func (s ScopePickerModel) acceptsMemberPage(scopeID string, generation uint64) bool {
+	return s.acceptsMemberDetails(scopeID, generation)
+}
+
+func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueItem, index int, generation uint64) bool {
+	if !s.acceptsMemberPage(page.Scope.ID, generation) {
+		return false
+	}
+	s.memberHasMore = page.HasMore
+	s.memberNextCursor = page.NextCursor
+	s.memberPageIndex = maxInt(0, index)
+	if len(s.memberPageCursors) == 0 {
+		s.memberPageCursors = []string{""}
+	}
+	if s.memberPageIndex >= len(s.memberPageCursors) {
+		s.memberPageCursors = append(s.memberPageCursors, make([]string, s.memberPageIndex-len(s.memberPageCursors)+1)...)
+	}
+	s.memberLoading = false
+	s.memberError = ""
+	s.ClearMemberMarks()
+	s.SetMembers(items)
+	return true
+}
+
+func (s *ScopePickerModel) SetMemberServerFiltering(enabled bool) { s.memberServerFiltering = enabled }
+
+// SetMemberContextCatalog keeps server-side context choices independent of the
+// currently loaded member page.
+func (s *ScopePickerModel) SetMemberContextCatalog(contexts repositorypkg.Catalog) {
+	s.memberContextCatalog = append(repositorypkg.Catalog(nil), contexts...)
+}
+
+func (s ScopePickerModel) MemberFilters() (repository, status string, issueType model.IssueType) {
+	return s.memberRepositoryFilter, s.memberStatusFilter, s.memberTypeFilter
+}
+
+func (s ScopePickerModel) MemberContexts() []string {
+	if len(s.memberContextFilter) > 0 {
+		return append([]string(nil), s.memberContextFilter...)
+	}
+	if s.memberRepositoryFilter == "" {
+		return nil
+	}
+	for _, context := range s.memberContextCatalog {
+		if context.Name == s.memberRepositoryFilter || context.ID == s.memberRepositoryFilter {
+			return []string{context.ID}
+		}
+	}
+	contexts := make([]string, 0, 1)
+	seen := make(map[string]bool)
+	for _, item := range s.members {
+		if memberRepositoryValue(item) != s.memberRepositoryFilter || item.RepositoryID == "" || seen[item.RepositoryID] {
+			continue
+		}
+		seen[item.RepositoryID] = true
+		contexts = append(contexts, item.RepositoryID)
+	}
+	if len(contexts) == 0 {
+		return []string{s.memberRepositoryFilter}
+	}
+	sort.Strings(contexts)
+	return contexts
+}
+
+func (s *ScopePickerModel) NextMemberPage() (string, int, bool) {
+	if s.memberLoading || !s.memberHasMore || s.memberNextCursor == "" {
+		return "", 0, false
+	}
+	next := s.memberPageIndex + 1
+	if next < len(s.memberPageCursors) {
+		s.memberPageCursors = s.memberPageCursors[:next]
+	}
+	s.memberPageCursors = append(s.memberPageCursors, s.memberNextCursor)
+	s.memberPageIndex = next
+	return s.memberNextCursor, next, true
+}
+
+func (s *ScopePickerModel) PreviousMemberPage() (string, int, bool) {
+	if s.memberLoading || s.memberPageIndex <= 0 || s.memberPageIndex >= len(s.memberPageCursors) {
+		return "", 0, false
+	}
+	s.memberPageIndex--
+	return s.memberPageCursors[s.memberPageIndex], s.memberPageIndex, true
+}
+
+func (s ScopePickerModel) MemberPageIndex() int { return s.memberPageIndex }
+func (s ScopePickerModel) MemberHasMore() bool  { return s.memberHasMore && s.memberNextCursor != "" }
+
+func (s *ScopePickerModel) ResetPaging() {
+	s.catalogGeneration++
+	s.catalogLoading = false
+	s.catalogHasMore = false
+	s.catalogNextCursor = ""
+	s.catalogPageIndex = 0
+	s.catalogPageCursors = []string{""}
+	s.catalogError = ""
+	s.memberGeneration++
+	s.memberLoading = false
+	s.memberHasMore = false
+	s.memberNextCursor = ""
+	s.memberPageIndex = 0
+	s.memberPageCursors = []string{""}
+	s.memberScopeID = ""
+	s.ClearMemberMarks()
+}
+
 func (s *ScopePickerModel) SetMemberFilters(repository, status string, issueType model.IssueType) {
 	s.memberRepositoryFilter = repository
+	s.memberContextFilter = nil
 	s.memberStatusFilter = status
 	s.memberTypeFilter = issueType
 	s.ClearMemberMarks()
@@ -1009,6 +1275,26 @@ func (s ScopePickerModel) MemberMarkCount() int { return len(s.MarkedMemberIDs()
 func (s *ScopePickerModel) CycleMemberRepository() {
 	values := s.memberRepositoryValues()
 	s.memberRepositoryFilter = cycleStringFilter(s.memberRepositoryFilter, values)
+	s.memberContextFilter = nil
+	if s.memberServerFiltering && s.memberRepositoryFilter != "" {
+		for _, context := range s.memberContextCatalog {
+			if context.Name == s.memberRepositoryFilter || context.ID == s.memberRepositoryFilter {
+				s.memberContextFilter = []string{context.ID}
+				break
+			}
+		}
+		if len(s.memberContextFilter) == 0 {
+			for _, item := range s.members {
+				if memberRepositoryValue(item) == s.memberRepositoryFilter && item.RepositoryID != "" {
+					s.memberContextFilter = append(s.memberContextFilter, item.RepositoryID)
+				}
+			}
+		}
+		if len(s.memberContextFilter) == 0 {
+			s.memberContextFilter = []string{s.memberRepositoryFilter}
+		}
+		sort.Strings(s.memberContextFilter)
+	}
 	s.ClearMemberMarks()
 	s.applyMemberFilters()
 }
@@ -1024,12 +1310,19 @@ func (s *ScopePickerModel) ToggleMemberStatus(status string) {
 }
 
 func (s *ScopePickerModel) CycleMemberType() {
-	values := make([]string, 0)
-	seen := make(map[model.IssueType]bool)
-	for _, item := range s.members {
-		if item.Issue.IssueType != "" && !seen[item.Issue.IssueType] {
-			seen[item.Issue.IssueType] = true
-			values = append(values, string(item.Issue.IssueType))
+	var values []string
+	if s.memberServerFiltering {
+		values = []string{
+			string(model.TypeBug), string(model.TypeFeature), string(model.TypeTask),
+			string(model.TypeEpic), string(model.TypeChore),
+		}
+	} else {
+		seen := make(map[model.IssueType]bool)
+		for _, item := range s.members {
+			if item.Issue.IssueType != "" && !seen[item.Issue.IssueType] {
+				seen[item.Issue.IssueType] = true
+				values = append(values, string(item.Issue.IssueType))
+			}
 		}
 	}
 	sort.Strings(values)
@@ -1041,6 +1334,22 @@ func (s *ScopePickerModel) CycleMemberType() {
 }
 
 func (s ScopePickerModel) memberRepositoryValues() []string {
+	if len(s.memberContextCatalog) > 0 {
+		seen := make(map[string]bool)
+		values := make([]string, 0, len(s.memberContextCatalog))
+		for _, context := range s.memberContextCatalog {
+			value := context.Name
+			if value == "" {
+				value = context.ID
+			}
+			if value != "" && !seen[value] {
+				seen[value] = true
+				values = append(values, value)
+			}
+		}
+		sort.Strings(values)
+		return values
+	}
 	seen := make(map[string]bool)
 	for _, item := range s.members {
 		if value := memberRepositoryValue(item); value != "" {
@@ -1087,6 +1396,13 @@ func memberRepositoryValue(item IssueItem) string {
 }
 
 func (s *ScopePickerModel) applyMemberFilters() {
+	if s.memberServerFiltering {
+		s.filteredMembers = append(s.filteredMembers[:0], s.members...)
+		if s.memberSelected >= len(s.filteredMembers) {
+			s.memberSelected = maxInt(0, len(s.filteredMembers)-1)
+		}
+		return
+	}
 	s.filteredMembers = s.filteredMembers[:0]
 	for _, item := range s.members {
 		if s.memberRepositoryFilter != "" && memberRepositoryValue(item) != s.memberRepositoryFilter {
@@ -1210,9 +1526,17 @@ func (s ScopePickerModel) View() string {
 func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string {
 	width = maxInt(width, 1)
 	rows = maxInt(rows, 1)
-	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper(heading, width, "…"))
+	page := fmt.Sprintf("page %d", s.catalogPageIndex+1)
+	if s.catalogHasMore {
+		page += "+"
+	}
+	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper(heading+" · "+page, width, "…"))
 	lines := []string{title, ""}
-	if len(s.scopes) == 0 {
+	if s.catalogLoading {
+		lines = append(lines, "Loading scopes…")
+	} else if s.catalogError != "" {
+		lines = append(lines, "Scopes unavailable: "+s.catalogError)
+	} else if len(s.scopes) == 0 {
 		lines = append(lines, "No scopes available.")
 	} else {
 		start := 0
@@ -1428,7 +1752,15 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	if selected != nil {
 		name = selected.Name
 	}
-	header := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper("Members · "+name, width, "…"))
+	page := fmt.Sprintf("page %d", s.memberPageIndex+1)
+	if s.memberHasMore {
+		page += "+"
+	}
+	count := ""
+	if selected != nil {
+		count = fmt.Sprintf(" · %d members", selected.MemberCount)
+	}
+	header := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper("Members · "+name+count+" · "+page, width, "…"))
 	if s.memberLoading {
 		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(truncateRunesHelper("Loading members…", width, "…"))
 	}
@@ -1560,6 +1892,55 @@ func (m Model) renderScopeBadge() string {
 	return lipgloss.NewStyle().Background(ColorBgHighlight).Foreground(ColorInfo).Padding(0, 1).Render(label)
 }
 
+func (m *Model) startScopeCatalogPage(cursor string, index int) tea.Cmd {
+	if m.runtimeServices.Scopes.QueryCatalog == nil {
+		return loadScopeSnapshotCmd(m.runtimeServices.Scopes)
+	}
+	generation := m.scopePicker.BeginCatalogLoad()
+	return loadScopeCatalogPageCmd(m.runtimeServices.Scopes, ScopeCatalogQuery{Cursor: cursor, Limit: scopePageSize}, index, generation)
+}
+
+func (m *Model) startScopeMembersPage(cursor string, index int) tea.Cmd {
+	if m.runtimeServices.Scopes.QueryMembers == nil {
+		return m.loadSelectedScopeDetails()
+	}
+	scopeID := m.scopePicker.SelectedScopeID()
+	if scopeID == "" {
+		return nil
+	}
+	m.scopePicker.SetMemberContextCatalog(m.repositoryCatalog)
+	_, status, issueType := m.scopePicker.MemberFilters()
+	if status == "closed" {
+		status = "completed"
+	}
+	generation := m.scopePicker.BeginMemberLoad(scopeID)
+	m.scopePicker.SetMemberServerFiltering(true)
+	return loadScopeMembersPageCmd(m.runtimeServices.Scopes, ScopeMembersQuery{
+		ScopeID: scopeID, Cursor: cursor, Limit: scopePageSize, Status: status,
+		Type: string(issueType), Contexts: m.scopePicker.MemberContexts(),
+	}, index, generation)
+}
+
+func (m *Model) startScopeMembersPageAt(cursor string, index int) tea.Cmd {
+	if m.runtimeServices.Scopes.QueryMembers == nil {
+		return nil
+	}
+	scopeID := m.scopePicker.SelectedScopeID()
+	if scopeID == "" {
+		return nil
+	}
+	m.scopePicker.SetMemberContextCatalog(m.repositoryCatalog)
+	_, status, issueType := m.scopePicker.MemberFilters()
+	if status == "closed" {
+		status = "completed"
+	}
+	generation := m.scopePicker.BeginMemberPageLoad(scopeID)
+	return loadScopeMembersPageCmd(m.runtimeServices.Scopes, ScopeMembersQuery{
+		ScopeID: scopeID, Cursor: cursor, Limit: scopePageSize, Status: status,
+		Type: string(issueType), Contexts: m.scopePicker.MemberContexts(),
+	}, index, generation)
+}
+
 func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	if m.isBacklogView {
 		m.closeBacklog()
@@ -1582,7 +1963,12 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 		m.scopePicker.SetMemberFilters("", status, issueType)
 	}
 	var cmds []tea.Cmd
-	if m.runtimeServices.Scopes.Load != nil {
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		cmds = append(cmds, m.startScopeCatalogPage("", 0))
+		if m.runtimeServices.Scopes.Load != nil {
+			cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+		}
+	} else if m.runtimeServices.Scopes.Load != nil {
 		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
 	}
 	if details := m.loadSelectedScopeDetails(); details != nil {
@@ -1598,6 +1984,9 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 }
 
 func (m *Model) loadSelectedScopeDetails() tea.Cmd {
+	if m.runtimeServices.Scopes.QueryMembers != nil {
+		return m.startScopeMembersPage("", 0)
+	}
 	if m.runtimeServices.Scopes.LoadDetails == nil {
 		return nil
 	}
@@ -1634,7 +2023,7 @@ func (m *Model) closeScopePicker() {
 	m.scopePickerMoveIssue = ""
 	m.scopePicker.SetMoveTarget("")
 	m.scopePicker.memberFocused = false
-	m.scopePicker.ClearMemberMarks()
+	m.scopePicker.ResetPaging()
 	m.focused = m.scopePickerOrigin
 }
 
@@ -1708,18 +2097,45 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		}
 	case "tab":
 		m.scopePicker.memberFocused = !m.scopePicker.memberFocused
+	case "right", "]":
+		if m.scopePicker.MemberFocused() {
+			if cursor, index, ok := m.scopePicker.NextMemberPage(); ok {
+				return m, m.startScopeMembersPageAt(cursor, index)
+			}
+		} else if msg.String() != "n" {
+			if cursor, index, ok := m.scopePicker.NextCatalogPage(); ok {
+				return m, m.startScopeCatalogPage(cursor, index)
+			}
+		}
+	case "p", "left", "[":
+		if m.scopePicker.MemberFocused() {
+			if cursor, index, ok := m.scopePicker.PreviousMemberPage(); ok {
+				return m, m.startScopeMembersPageAt(cursor, index)
+			}
+		} else if cursor, index, ok := m.scopePicker.PreviousCatalogPage(); ok {
+			return m, m.startScopeCatalogPage(cursor, index)
+		}
 	case "w":
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.CycleMemberRepository()
+			if m.scopePicker.memberServerFiltering {
+				return m, m.startScopeMembersPage("", 0)
+			}
 		}
 	case "o", "c", "r":
 		if m.scopePicker.MemberFocused() {
 			status := map[string]string{"o": "open", "c": "closed", "r": "ready"}[msg.String()]
 			m.scopePicker.ToggleMemberStatus(status)
+			if m.scopePicker.memberServerFiltering {
+				return m, m.startScopeMembersPage("", 0)
+			}
 		}
 	case "I":
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.CycleMemberType()
+			if m.scopePicker.memberServerFiltering {
+				return m, m.startScopeMembersPage("", 0)
+			}
 		}
 	// Bubble Tea reports a physical space as either a space rune or "space".
 	case " ", "space":
@@ -1786,6 +2202,12 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			return m.runtimeServices.Scopes.Activate(ctx, selected.ID)
 		})
 	case "n":
+		if m.scopePicker.MemberFocused() {
+			if cursor, index, ok := m.scopePicker.NextMemberPage(); ok {
+				return m, m.startScopeMembersPageAt(cursor, index)
+			}
+			return m, nil
+		}
 		if m.scopePickerMoveIssue != "" {
 			return m, nil
 		}
@@ -2172,7 +2594,10 @@ func (m *Model) scopeMoveTargetTitle(issueID string) string {
 }
 
 func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
-	cmds := []tea.Cmd{loadScopeSnapshotCmd(m.runtimeServices.Scopes)}
+	cmds := []tea.Cmd{m.startScopeCatalogPage("", 0)}
+	if m.runtimeServices.Scopes.QueryCatalog != nil && m.runtimeServices.Scopes.Load != nil {
+		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+	}
 	if mutation.Kind == ScopeMutationRemove && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
 		if m.showScopePicker && m.scopePicker.SelectedScopeID() == mutation.ScopeID {
 			cmds = append(cmds, m.loadSelectedScopeDetails())
