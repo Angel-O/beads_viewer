@@ -698,23 +698,26 @@ type backlogTableColumns struct {
 	createdWidth  int
 }
 
-// backlogStatusWidth keeps future backend statuses from shifting later cells.
-const backlogStatusWidth = 11
+// Fixed cells keep later backlog columns stable when pages contain different
+// ID or type lengths; values are truncated before padding to those cells.
+const (
+	backlogIDWidth     = 18
+	backlogTypeWidth   = 10
+	backlogStatusWidth = 11
+)
 
 // backlogTableColumnsFor keeps the bounded backlog projection independent of
 // the ordinary List metadata layout.
 func backlogTableColumnsFor(items []IssueItem, width int) backlogTableColumns {
 	columns := backlogTableColumns{
 		width:         maxInt(width, 1),
-		idWidth:       len("ID"),
-		typeWidth:     len("TYPE"),
+		idWidth:       backlogIDWidth,
+		typeWidth:     backlogTypeWidth,
 		priorityWidth: len("PR"),
 		statusWidth:   backlogStatusWidth,
 		createdWidth:  len("CREATED_AT"),
 	}
 	for _, item := range items {
-		columns.idWidth = maxInt(columns.idWidth, lipgloss.Width(item.Issue.ID))
-		columns.typeWidth = maxInt(columns.typeWidth, lipgloss.Width(string(item.Issue.IssueType)))
 		columns.priorityWidth = maxInt(columns.priorityWidth, lipgloss.Width(fmt.Sprintf("P%d", item.Issue.Priority)))
 		columns.createdWidth = maxInt(columns.createdWidth, lipgloss.Width(formatBacklogCreatedAt(item.Issue.CreatedAt)))
 	}
@@ -772,10 +775,12 @@ func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows
 
 func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns backlogTableColumns, width int) string {
 	columns.statusWidth = backlogStatusWidth
+	id := truncateRunesHelper(item.Issue.ID, columns.idWidth, "…")
+	issueType := truncateRunesHelper(string(item.Issue.IssueType), columns.typeWidth, "…")
 	status := truncateRunesHelper(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth, "…")
 	row := strings.Join([]string{
-		padRight(item.Issue.ID, columns.idWidth),
-		padRight(string(item.Issue.IssueType), columns.typeWidth),
+		padRight(id, columns.idWidth),
+		padRight(issueType, columns.typeWidth),
 		padRight(fmt.Sprintf("P%d", item.Issue.Priority), columns.priorityWidth),
 		padRight(status, columns.statusWidth),
 		padRight(formatBacklogCreatedAt(item.Issue.CreatedAt), columns.createdWidth),
