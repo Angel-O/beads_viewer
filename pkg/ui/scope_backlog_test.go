@@ -245,6 +245,54 @@ func TestBacklogPageIndicatorIsOnlyCenteredPageNumber(t *testing.T) {
 	}
 }
 
+func TestBacklogPageIndicatorUsesTheTableWidth(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "b-1", Title: "Readable title", Status: model.StatusOpen,
+		IssueType: model.TypeTask, Priority: 1,
+	}}}, 0)
+
+	contentWidth := b.width - 4
+	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
+	listWidth := backlogTableWidth(columns)
+	view := ansi.Strip(b.View())
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "page 1") {
+			want := 2 + (listWidth-lipgloss.Width("page 1"))/2
+			if got := strings.Index(line, "page 1"); got != want {
+				t.Fatalf("page offset=%d, want %d under list width %d: %q", got, want, listWidth, line)
+			}
+			return
+		}
+	}
+	t.Fatalf("backlog view omitted page indicator:\n%s", view)
+}
+
+func TestScopePickerFromBacklogReturnsToListAndReopensBacklog(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load:        func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+		LoadBacklog: func(context.Context, string, int) (BacklogPage, error) { return BacklogPage{}, nil },
+	}})
+	m.isBacklogView, m.focused = true, focusBacklog
+
+	updated, _ := m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.isBacklogView || m.scopePickerOrigin != focusList {
+		t.Fatalf("W transition: picker=%t backlog=%t origin=%s", m.showScopePicker, m.isBacklogView, m.scopePickerOrigin)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showScopePicker || m.isBacklogView || m.focused != focusList {
+		t.Fatalf("Esc transition: picker=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+	}
+	updated, cmd := m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if !m.isBacklogView || m.focused != focusBacklog || cmd == nil {
+		t.Fatalf("B transition: backlog=%t focus=%s cmd=%t", m.isBacklogView, m.focused, cmd != nil)
+	}
+}
+
 func TestScopePickerFramesStayBoundedAndFollowTabFocus(t *testing.T) {
 	profile := lipgloss.DefaultRenderer().ColorProfile()
 	defer lipgloss.SetColorProfile(profile)
@@ -279,6 +327,52 @@ func TestScopePickerHeight18ShowsMemberRowInsideFrame(t *testing.T) {
 	}
 	if lipgloss.Height(view) > 18 || lipgloss.Width(view) > 100 {
 		t.Fatalf("height-18 picker exceeded bounds: %dx%d", lipgloss.Width(view), lipgloss.Height(view))
+	}
+}
+
+func TestScopePickerHeight18UsesInnerPaddingAndBottomFrame(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(100, 18)
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1", Title: "Visible member", Status: model.StatusOpen}}})
+	view := ansi.Strip(picker.View())
+	lines := strings.Split(view, "\n")
+	lastBottom := -1
+	for index, line := range lines {
+		if strings.Contains(line, "╰") {
+			lastBottom = index
+		}
+	}
+	if lastBottom < len(lines)-2 {
+		t.Fatalf("members frame ended too far above bottom (line %d of %d):\n%s", lastBottom, len(lines), view)
+	}
+	if !strings.Contains(view, "│ Scopes") || !strings.Contains(view, "│ Members · Today") {
+		t.Fatalf("frame content did not retain one-cell horizontal padding:\n%s", view)
+	}
+}
+
+func TestScopePickerFullWidthRowsAndFramesKeepAssignedHeight(t *testing.T) {
+	const width, height = 100, 18
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(width, height)
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1", Title: "Visible member", Status: model.StatusOpen}}})
+
+	view := ansi.Strip(picker.View())
+	if lipgloss.Width(view) != width || lipgloss.Height(view) != height {
+		t.Fatalf("scope picker dimensions = %dx%d, want %dx%d", lipgloss.Width(view), lipgloss.Height(view), width, height)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		left, right := strings.IndexRune(line, '╭'), strings.LastIndex(line, "╮")
+		if left >= 0 && right > left && lipgloss.Width(line[left:right+len("╮")]) != width-4 {
+			t.Fatalf("panel frame width = %d, want %d: %q", lipgloss.Width(line[left:right+len("╮")]), width-4, line)
+		}
+	}
+	memberView := ansi.Strip(picker.renderMembers(width-8, 6))
+	for _, line := range strings.Split(memberView, "\n") {
+		if strings.Contains(line, "member-1") && lipgloss.Width(line) != width-8 {
+			t.Fatalf("member row width = %d, want %d: %q", lipgloss.Width(line), width-8, line)
+		}
 	}
 }
 
@@ -321,6 +415,80 @@ func TestScopeMemberRowsUseLocalBoundedOrderAndLabels(t *testing.T) {
 		if lipgloss.Width(line) > 70 {
 			t.Fatalf("member row exceeded width: %d: %q", lipgloss.Width(line), line)
 		}
+	}
+}
+
+func TestScopeMemberRowsRestoreStyledVisualSemantics(t *testing.T) {
+	profile := lipgloss.DefaultRenderer().ColorProfile()
+	defer lipgloss.SetColorProfile(profile)
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.TrueColor)
+	picker := NewScopePickerModel(DefaultTheme(renderer))
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{
+		Issue:        model.Issue{ID: "member-1", Title: "Member title", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, Labels: []string{"backend"}},
+		RepositoryID: "ctx:alpha", RepositoryName: "alpha", HubPresentation: true, PresentationLabels: []string{"backend"},
+	}})
+	view := picker.renderMembers(100, 5)
+	icon, _ := picker.theme.GetTypeIcon(string(model.TypeTask))
+	for _, want := range []string{
+		"▸ ", icon, RenderRepositoryBadge("ctx:alpha", "alpha"),
+		RenderPriorityBadge(1), RenderStatusBadge("open"),
+		itemLabelStyle().Render("backend"),
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("member view missing styled visual %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("member view lost ANSI styling:\n%s", view)
+	}
+}
+
+func TestScopeMemberTitleAndLabelColumnsAreNaturalAndBounded(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "one", Title: "Short", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"backend"}}},
+		{Issue: model.Issue{ID: "two", Title: "A deliberately long title that must truncate", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"backend"}}},
+	})
+	const width = 70
+	columns := scopeMemberColumnsFor(picker.filteredMembers, width)
+	if columns.title >= width/2 || columns.labels < lipgloss.Width(itemLabelStyle().Render("backend")) {
+		t.Fatalf("natural title/label widths = %+v", columns)
+	}
+	rows := make([]string, 0, 2)
+	for index, item := range picker.filteredMembers {
+		rows = append(rows, ansi.Strip(picker.renderMemberRow(item, index == picker.memberSelected, columns, width)))
+	}
+	labelOffsets := make([]int, 0, len(rows))
+	for _, row := range rows {
+		titleAt := displayOffset(row, "Short")
+		if titleAt < 0 {
+			titleAt = displayOffset(row, "A deliberately")
+		}
+		labelAt := displayOffset(row, "backend")
+		if titleAt < 0 || labelAt <= titleAt+columns.title || labelAt > titleAt+columns.title+3 {
+			t.Fatalf("label did not follow bounded title cell: title=%d label=%d columns=%+v row=%q", titleAt, labelAt, columns, row)
+		}
+		labelOffsets = append(labelOffsets, labelAt)
+	}
+	if !strings.Contains(rows[1], "…") {
+		t.Fatalf("long title was not truncated:\n%s", strings.Join(rows, "\n"))
+	}
+	if labelOffsets[0] != labelOffsets[1] {
+		t.Fatalf("labels are not left-aligned: %d and %d", labelOffsets[0], labelOffsets[1])
+	}
+}
+
+func TestScopeMemberHeaderCallsContextColumnContext(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1", Title: "Member", Status: model.StatusOpen}}})
+	view := ansi.Strip(picker.renderMembers(100, 5))
+	if !strings.Contains(view, "CONTEXT") || strings.Contains(view, "REPOSITORY") {
+		t.Fatalf("member header context label = %q", view)
 	}
 }
 
@@ -703,8 +871,8 @@ func TestScopePickerWTogglesToItsPriorView(t *testing.T) {
 	m.openScopePicker("")
 	updated, _ = m.Update(keyMsg("W"))
 	m = updated.(*Model)
-	if m.showScopePicker || !m.isBacklogView || m.focused != focusBacklog {
-		t.Fatalf("W did not restore backlog origin: shown=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+	if m.showScopePicker || m.isBacklogView || m.focused != focusList {
+		t.Fatalf("W did not close backlog before restoring list origin: shown=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
 	}
 }
 
