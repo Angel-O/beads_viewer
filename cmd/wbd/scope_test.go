@@ -29,6 +29,99 @@ func TestScopeParserExposesPublicSubcommands(t *testing.T) {
 	}
 }
 
+func TestScopeParserSupportsPaginationAndMemberFilters(t *testing.T) {
+	request, err := parse([]string{
+		"scope", "show", "scope-work", "--paginate", "--limit", "2", "--cursor", "opaque:/+= token",
+		"--status", "ready", "--type", "task", "--context", "ctx:a", "--context", "ctx:b", "--json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.scopePaginate || !request.scopeLimitSet || request.scopeCursor != "opaque:/+= token" ||
+		!reflect.DeepEqual(request.scopeContexts, []string{"ctx:a", "ctx:b"}) ||
+		!reflect.DeepEqual(request.args, []string{
+			"--paginate", "--limit", "2", "--cursor", "opaque:/+= token",
+			"--status", "ready", "--type", "task", "--context", "ctx:a", "--context", "ctx:b",
+		}) {
+		t.Fatalf("parsed scope request = %#v", request)
+	}
+}
+
+func TestScopeShowStatusAcceptsOnlyBackendStates(t *testing.T) {
+	for _, status := range []string{"open", "completed", "ready"} {
+		if _, err := parse([]string{"scope", "show", "scope-work", "--status", status}); err != nil {
+			t.Errorf("scope show --status %q: %v", status, err)
+		}
+	}
+}
+
+func TestScopeParserRejectsUnboundedOrInvalidFilters(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"scope", "list", "--paginate"},
+		{"scope", "show", "scope-work", "--cursor", "opaque"},
+		{"scope", "list", "--limit", "0"},
+		{"scope", "show", "scope-work", "--status", "unknown"},
+		{"scope", "show", "scope-work", "--status", "open,ready"},
+		{"scope", "show", "scope-work", "--status", "closed"},
+		{"scope", "show", "scope-work", "--type", "unknown"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Errorf("parse(%v) unexpectedly succeeded", arguments)
+		}
+	}
+}
+
+func TestScopePaginationAndMemberFiltersForwardWithoutRewritingOutput(t *testing.T) {
+	t.Run("scope list", func(t *testing.T) {
+		test := newAppTest(t, false)
+		response := `{"scopes":[{"id":"scope-a"}],"pagination":{"limit":1,"has_more":true,"next_cursor":"opaque:/+= token"}}`
+		setResponses(t, map[string]string{"scope:list": response})
+		code, stdout, stderr := test.run("scope", "list", "--paginate", "--limit", "1", "--cursor", "opaque:/+= token", "--json")
+		if code != 0 || stdout != response || stderr != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		want := []string{"--db", test.store, "--json", "scope", "list", "--paginate", "--limit", "1", "--cursor", "opaque:/+= token"}
+		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls=%#v want=%#v", calls, want)
+		}
+	})
+
+	t.Run("scope show", func(t *testing.T) {
+		test := newAppTest(t, false)
+		writeHubConfig(t, test, map[string]string{"ctx:a": "/a", "ctx:b": "/b"})
+		response := `{"id":"scope-a","members":[{"id":"bead-1"}],"pagination":{"limit":2,"has_more":false}}`
+		setResponses(t, map[string]string{"scope:show": response})
+		code, stdout, stderr := test.run(
+			"scope", "show", "scope-a", "--status", "ready", "--type", "task",
+			"--context", "ctx:a", "--context", "ctx:b", "--paginate", "--limit", "2",
+			"--cursor", "opaque:/+= token", "--json",
+		)
+		if code != 0 || stdout != response || stderr != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		want := []string{
+			"--db", test.store, "--json", "scope", "show", "scope-a", "--status", "ready",
+			"--type", "task", "--context", "ctx:a", "--context", "ctx:b", "--paginate", "--limit", "2",
+			"--cursor", "opaque:/+= token",
+		}
+		if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls=%#v want=%#v", calls, want)
+		}
+	})
+}
+
+func TestScopeShowRejectsUnregisteredMemberContextBeforeBackend(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:known": "/known"})
+	code, _, stderr := test.run("scope", "show", "scope-a", "--context", "ctx:missing")
+	if code != 1 || !strings.Contains(stderr, "ctx:missing") || !strings.Contains(stderr, "not registered") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if calls := test.calls(); len(calls) != 0 {
+		t.Fatalf("unregistered context was delegated: %#v", calls)
+	}
+}
+
 func TestScopeOmittedTargetsResolveActiveScope(t *testing.T) {
 	tests := []struct {
 		name string

@@ -197,8 +197,27 @@ var commandSpecs = map[string]commandSpec{
 		path: "scope create", usage: "wbd scope create <id> <name> [--activate] [--json]", summary: "Create a named backlog scope.",
 		options: []optionSpec{{name: "--activate", description: "Activate the scope in the same backend call."}, {name: "--json", description: "Emit JSON."}},
 	},
-	"scope list":       {path: "scope list", usage: "wbd scope list [--json]", summary: "List named backlog scopes.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
-	"scope show":       {path: "scope show", usage: "wbd scope show <id> [--json]", summary: "Show one backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
+	"scope list": {
+		path: "scope list", usage: "wbd scope list [options]", summary: "List named backlog scopes.",
+		options: []optionSpec{
+			{name: "--paginate", description: "Forward bounded pagination to bd; requires --limit."},
+			{name: "--limit", value: "<1-1000>", description: "Maximum results."},
+			{name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous page."},
+			{name: "--json", description: "Emit JSON."},
+		},
+	},
+	"scope show": {
+		path: "scope show", usage: "wbd scope show <id> [options]", summary: "Show one backlog scope.",
+		options: []optionSpec{
+			{name: "--paginate", description: "Forward bounded pagination to bd; requires --limit."},
+			{name: "--limit", value: "<1-1000>", description: "Maximum member results."},
+			{name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous page."},
+			{name: "--status", value: "<open|completed|ready>", description: "Exactly one member state."},
+			{name: "--type", value: "<type>", description: "Member issue type."},
+			{name: "--context", value: "<ctx-id>", description: "Filter members by a registered context; repeatable."},
+			{name: "--json", description: "Emit JSON."},
+		},
+	},
 	"scope active":     {path: "scope active", usage: "wbd scope active [--json]", summary: "Show the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
 	"scope activate":   {path: "scope activate", usage: "wbd scope activate <id> [--json]", summary: "Activate a backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
 	"scope deactivate": {path: "scope deactivate", usage: "wbd scope deactivate [--json]", summary: "Deactivate the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
@@ -312,6 +331,9 @@ type request struct {
 	scopeContextless   bool
 	scopeStatus        string
 	scopeType          string
+	scopePaginate      bool
+	scopeLimitSet      bool
+	scopeCursor        string
 }
 
 func commandName(arguments []string) (string, error) {
@@ -918,6 +940,17 @@ func parseScope(result request, arguments []string) (request, error) {
 			}
 			continue
 		}
+		if argument == "--paginate" {
+			if result.scopeSubcommand != "list" && result.scopeSubcommand != "show" {
+				return result, fmt.Errorf("unsupported option for scope %s: %s", result.scopeSubcommand, argument)
+			}
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.scopePaginate = true
+			result.args = append(result.args, argument)
+			continue
+		}
 		if argument == "--activate" {
 			if result.scopeSubcommand != "create" {
 				return result, fmt.Errorf("unsupported option for scope %s: %s", result.scopeSubcommand, argument)
@@ -993,8 +1026,31 @@ func parseScope(result request, arguments []string) (request, error) {
 		}
 		if matched {
 			arguments = arguments[consumed:]
-			if err := markSeen(seen, flag); err != nil {
-				return result, err
+			if flag != "--context" || result.scopeSubcommand != "show" {
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+			}
+			switch flag {
+			case "--limit":
+				if err := validateLimit(value); err != nil {
+					return result, err
+				}
+				result.scopeLimitSet = true
+			case "--cursor":
+				result.scopeCursor = value
+			case "--status":
+				if err := validateScopeShowStatus(value); err != nil {
+					return result, err
+				}
+			case "--type":
+				if err := validateType(value); err != nil {
+					return result, err
+				}
+			case "--context":
+				if result.scopeSubcommand == "show" {
+					result.scopeContexts = append(result.scopeContexts, value)
+				}
 			}
 			result.args = append(result.args, flag, value)
 			continue
@@ -1044,6 +1100,12 @@ func parseScope(result request, arguments []string) (request, error) {
 	}
 	if len(result.positionals) != wantPositionals {
 		return result, errors.New(usageFor("scope " + result.scopeSubcommand))
+	}
+	if result.scopePaginate && !result.scopeLimitSet {
+		return result, errors.New("--paginate requires --limit so the page is bounded")
+	}
+	if result.scopeCursor != "" && !result.scopeLimitSet {
+		return result, errors.New("--cursor requires --limit so the page is bounded")
 	}
 	return result, nil
 }
@@ -1541,6 +1603,13 @@ func validateStatuses(value string) error {
 		}
 	}
 	return nil
+}
+
+func validateScopeShowStatus(value string) error {
+	if oneOf(value, "open", "completed", "ready") {
+		return nil
+	}
+	return fmt.Errorf("invalid scope show status: %s; use open, completed, or ready", value)
 }
 
 func validateLabels(value string, mutation bool) error {
