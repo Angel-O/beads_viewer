@@ -570,7 +570,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog", "space", "Mark current", "M", "epic or label"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog"}},
 		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope", "space", "Mark current", "M", "epic or label"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -589,6 +589,89 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 				t.Fatalf("scope help retained move action:\n%s", help)
 			}
 		})
+	}
+}
+
+func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 240, 40
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+	m.scopePicker.memberFocused = true
+	help := ansi.Strip(m.renderHelpOverlay())
+	for _, want := range []string{"Switch to scope catalog", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member repository filter", "Mark current member", "Remove marked/current members", "Remove members by epic or label"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("scope member help missing %q:\n%s", want, help)
+		}
+	}
+	for _, unavailable := range []string{"Toggle active scope", "Create inactive named scope"} {
+		if strings.Contains(help, unavailable) {
+			t.Fatalf("scope member help advertises catalog-only control %q:\n%s", unavailable, help)
+		}
+	}
+
+	footer := ansi.Strip(m.renderFooter())
+	for _, want := range []string{"tab catalog", "j/k members", "o/c/r status", "I type", "w repository", "space mark", "R remove current", "M epic/label", "B backlog", "W close"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("scope member footer missing %q: %q", want, footer)
+		}
+	}
+	if strings.Contains(footer, "enter toggle") || strings.Contains(footer, "n new") {
+		t.Fatalf("scope member footer advertises catalog-only control: %q", footer)
+	}
+
+	m.scopePicker.SetMoveTarget("Visible bead")
+	help = ansi.Strip(m.renderHelpOverlay())
+	for _, want := range []string{"Switch to scope catalog", "Move member selection", "Filter members by status"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("moving scope member help missing %q:\n%s", want, help)
+		}
+	}
+	for _, unavailable := range []string{"Move destination scope", "Move selected bead"} {
+		if strings.Contains(help, unavailable) {
+			t.Fatalf("moving scope member help advertises destination control %q:\n%s", unavailable, help)
+		}
+	}
+	footer = ansi.Strip(m.renderFooter())
+	for _, want := range []string{"tab catalog", "j/k members", "o/c/r status"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("moving scope member footer missing %q: %q", want, footer)
+		}
+	}
+	if strings.Contains(footer, "enter move") || strings.Contains(footer, "destination") {
+		t.Fatalf("moving scope member footer advertises destination control: %q", footer)
+	}
+}
+
+func TestBacklogHelpAndFooterDescribePreviewAndBatchControls(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 240, 40
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	help := ansi.Strip(m.renderHelpOverlay())
+	for _, want := range []string{"PgUp/Dn", "Scroll preview", "Mark current bead", "Next / previous page", "Filter backlog", "Add selected bead to scope (or all marked)", "Add by epic or label (semantic)"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("backlog help missing %q:\n%s", want, help)
+		}
+	}
+	footer := ansi.Strip(m.renderFooter())
+	for _, want := range []string{"pgup/dn preview", "space mark", "n/p page", "/ filter", "A add current", "M epic/label", "W scopes", "B/esc/q list"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("backlog footer missing %q: %q", want, footer)
+		}
+	}
+
+	m.backlog.BeginSearch()
+	footer = ansi.Strip(m.renderFooter())
+	for _, want := range []string{"type filter", "backspace delete", "enter/esc done"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("backlog filter footer missing %q: %q", want, footer)
+		}
+	}
+	for _, unavailable := range []string{"space mark", "n/p page", "A add"} {
+		if strings.Contains(footer, unavailable) {
+			t.Fatalf("backlog filter footer advertises view control %q: %q", unavailable, footer)
+		}
 	}
 }
 

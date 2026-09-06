@@ -376,9 +376,108 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusBacklog)
 	backlogView := sidebar.View()
-	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "A", "Add to scope"} {
+	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "PgUp/Dn", "Scroll preview", "space", "Mark current row/member", "A", "Add to scope", "M", "Add/remove by epic or"} {
 		if !strings.Contains(backlogView, expected) {
 			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
+		}
+	}
+}
+
+func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusScopePicker)
+	descriptions := func() map[string]string {
+		result := make(map[string]string)
+		for _, section := range sidebar.sectionsFromRegistry() {
+			for _, item := range section.items {
+				result[item.key] = item.desc
+			}
+		}
+		return result
+	}
+
+	catalog := descriptions()
+	for _, unavailable := range []string{"space", "R", "M", "o", "c", "r", "I", "w"} {
+		if _, ok := catalog[unavailable]; ok {
+			t.Fatalf("scope catalog sidebar advertises member-only control %q: %#v", unavailable, catalog)
+		}
+	}
+	for key, description := range map[string]string{"tab": "Switch catalog/members", "enter": "Toggle active scope", "n": "Create inactive named scope"} {
+		if catalog[key] != description {
+			t.Fatalf("scope catalog sidebar missing %q: %#v", description, catalog)
+		}
+	}
+
+	sidebar.SetScopePickerState(true, false)
+	members := descriptions()
+	for key, description := range map[string]string{"tab": "Switch catalog/members", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Add/remove by epic or label"} {
+		if members[key] != description {
+			t.Fatalf("scope member sidebar missing %q: %#v", description, members)
+		}
+	}
+	for _, unavailable := range []string{"enter", "n"} {
+		if _, ok := members[unavailable]; ok {
+			t.Fatalf("scope member sidebar advertises catalog-only control %q: %#v", unavailable, members)
+		}
+	}
+
+	sidebar.SetScopePickerState(true, true)
+	movingMember := descriptions()
+	for _, expected := range []string{"tab", "j", "o", "I", "w", "space", "R", "M"} {
+		if _, ok := movingMember[expected]; !ok {
+			t.Fatalf("moving scope member sidebar missing %q: %#v", expected, movingMember)
+		}
+	}
+	if _, ok := movingMember["enter"]; ok {
+		t.Fatalf("moving scope member sidebar advertises ineffective Enter: %#v", movingMember)
+	}
+
+	sidebar.SetScopePickerState(false, true)
+	destination := descriptions()
+	if destination["enter"] != "Move selected bead" {
+		t.Fatalf("scope destination sidebar missing move action: %#v", destination)
+	}
+	if destination["esc"] != "Back/close" {
+		t.Fatalf("scope destination sidebar missing close action: %#v", destination)
+	}
+	for _, unavailable := range []string{"n", "space", "M"} {
+		if _, ok := destination[unavailable]; ok {
+			t.Fatalf("scope destination sidebar advertises unavailable control %q: %#v", unavailable, destination)
+		}
+	}
+}
+
+func TestShortcutsSidebarTracksBacklogSearchStateFromModel(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 80, 30
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.showShortcutsSidebar = true
+	m.backlog.BeginSearch()
+	_ = m.View()
+	if !m.shortcutsSidebar.backlogSearch {
+		t.Fatal("Model.View did not pass backlog search state to the sidebar")
+	}
+	sections := m.shortcutsSidebar.sectionsFromRegistry()
+	keys := make(map[string]bool)
+	for _, section := range sections {
+		for _, item := range section.items {
+			keys[item.key] = true
+		}
+	}
+	for _, expected := range []string{"type", "backspace", "enter/esc", "ctrl+j/k"} {
+		if !keys[expected] {
+			t.Fatalf("backlog search sidebar missing %q: %#v", expected, sections)
+		}
+	}
+	for _, unavailable := range []string{"j/k", "space", "n", "p", "A", "M"} {
+		if keys[unavailable] {
+			t.Fatalf("backlog search sidebar advertises backlog control %q: %#v", unavailable, sections)
 		}
 	}
 }

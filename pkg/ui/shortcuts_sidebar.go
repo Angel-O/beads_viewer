@@ -10,14 +10,17 @@ import (
 // ShortcutsSidebar provides a toggleable panel showing context-aware keyboard shortcuts
 // Unlike the help overlay, this can remain visible while working (bv-3qi5)
 type ShortcutsSidebar struct {
-	width        int
-	height       int
-	scrollOffset int
-	theme        Theme
-	context      string       // Current context for filtering shortcuts
-	keyRegistry  *KeyRegistry // Registry for auto-generated bindings (bv-xl6g)
-	focusHint    focus        // Current focus for registry lookup (bv-xl6g)
-	splitView    bool         // Whether List focus is the left pane of Split view
+	width         int
+	height        int
+	scrollOffset  int
+	theme         Theme
+	context       string       // Current context for filtering shortcuts
+	keyRegistry   *KeyRegistry // Registry for auto-generated bindings (bv-xl6g)
+	focusHint     focus        // Current focus for registry lookup (bv-xl6g)
+	splitView     bool         // Whether List focus is the left pane of Split view
+	scopeMembers  bool         // Whether the Scope picker is focused on members
+	scopeMove     bool         // Whether the Scope picker chooses a move destination
+	backlogSearch bool         // Whether backlog search owns printable input
 }
 
 // shortcutItem represents a single keyboard shortcut
@@ -64,6 +67,18 @@ func (s *ShortcutsSidebar) SetSplitView(split bool) {
 	s.splitView = split
 }
 
+// SetScopePickerState keeps scope-specific shortcuts aligned with the active
+// picker region without changing the picker itself.
+func (s *ShortcutsSidebar) SetScopePickerState(members, move bool) {
+	s.scopeMembers = members
+	s.scopeMove = move
+}
+
+// SetBacklogSearch keeps the sidebar on the controls owned by backlog search.
+func (s *ShortcutsSidebar) SetBacklogSearch(searching bool) {
+	s.backlogSearch = searching
+}
+
 // SetKeyRegistry sets the key registry for auto-generated bindings (bv-xl6g)
 func (s *ShortcutsSidebar) SetKeyRegistry(r *KeyRegistry) {
 	s.keyRegistry = r
@@ -105,8 +120,19 @@ func (s *ShortcutsSidebar) Width() int {
 }
 
 // sectionsFromRegistry builds shortcut sections from the key registry (bv-xl6g).
+// Search-owned backlog input gets a small local section instead of view actions.
 // Returns nil if registry is nil or has no bindings for current focus.
 func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
+	if s.focusHint == focusBacklog && s.backlogSearch {
+		return []shortcutSection{
+			{title: "Filter", items: []shortcutItem{
+				{key: "type", desc: "Edit filter"},
+				{key: "backspace", desc: "Delete filter"},
+				{key: "enter/esc", desc: "Finish filter"},
+			}},
+			{title: "Sidebar", items: []shortcutItem{{key: "ctrl+j/k", desc: "Scroll sidebar"}}},
+		}
+	}
 	if s.keyRegistry == nil {
 		return nil
 	}
@@ -121,6 +147,21 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryOrder := []string{} // Preserve order of first appearance
 
 	for _, b := range bindings {
+		if s.focusHint == focusScopePicker {
+			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "r" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "R" || b.Key == "M"
+			if memberOnly && !s.scopeMembers {
+				continue
+			}
+			if s.scopeMembers && (b.Key == "enter" || b.Key == "n") {
+				continue
+			}
+			if s.scopeMove && !s.scopeMembers && (memberOnly || b.Key == "n") {
+				continue
+			}
+			if s.scopeMove && !s.scopeMembers && b.Key == "enter" {
+				b.Desc = "Move selected bead"
+			}
+		}
 		// Ctrl+j/k are consumed by the open sidebar, so the underlying view's
 		// detail-scroll bindings must not be shown alongside the sidebar control.
 		if b.Key == "ctrl+j" || b.Key == "ctrl+k" {
