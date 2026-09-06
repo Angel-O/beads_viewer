@@ -1110,6 +1110,74 @@ func TestBacklogRenderUsesBoundedColumnsAndFullPreview(t *testing.T) {
 	}
 }
 
+func TestBacklogSplitUsesNaturalTableWidthAndAlignedHeader(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "backlog-1", Title: "Readable title", Description: "Description",
+		Status: model.StatusOpen, IssueType: model.TypeFeature, Priority: 1,
+		CreatedAt: time.Date(2026, 9, 5, 12, 34, 56, 0, time.UTC),
+	}}}, 0)
+
+	contentWidth := b.width - 4
+	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
+	naturalWidth := backlogTableWidth(columns)
+	fitWidth := contentWidth * 2 / 3
+	if naturalWidth >= fitWidth {
+		t.Fatalf("test table width=%d must fit within existing split bound %d", naturalWidth, fitWidth)
+	}
+
+	view := ansi.Strip(b.View())
+	lines := strings.Split(view, "\n")
+	var tableHeader, previewTitle string
+	for _, line := range lines {
+		if strings.Contains(line, "ID") && strings.Contains(line, "CREATED_AT") {
+			tableHeader = line
+		}
+		if strings.Contains(line, "TITLE  Readable title") {
+			previewTitle = line
+		}
+	}
+	if tableHeader == "" || previewTitle == "" {
+		t.Fatalf("split backlog omitted table header or preview:\n%s", view)
+	}
+	columns.width = naturalWidth
+	header := ansi.Strip(b.renderBacklogHeader("Global backlog", columns))
+	directTableHeader := strings.Split(header, "\n")[1]
+	for _, line := range strings.Split(header, "\n") {
+		if got := lipgloss.Width(line); got != naturalWidth {
+			t.Fatalf("backlog header width=%d, want list width %d: %q", got, naturalWidth, line)
+		}
+	}
+	if got := lipgloss.Width(previewTitle[:strings.Index(previewTitle, "TITLE")]); got != naturalWidth+4 {
+		t.Fatalf("preview starts at cell %d, want natural list width plus padding/gap %d:\n%s", got, naturalWidth+4, view)
+	}
+	if strings.Index(directTableHeader, "ID") != 2 || strings.Index(tableHeader, "ID") != 4 {
+		t.Fatalf("table header ID offsets: direct=%d rendered=%d, want 2-cell prefix plus outer padding: %q", strings.Index(directTableHeader, "ID"), strings.Index(tableHeader, "ID"), tableHeader)
+	}
+}
+
+func TestBacklogMarkAcceptsPhysicalSpaceInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "bubble tea key space", key: tea.KeyMsg{Type: tea.KeySpace}},
+		{name: "space rune", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}},
+		{name: "synthetic space", key: keyMsg("space")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.isBacklogView, m.focused = true, focusBacklog
+			m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
+			updated, _ := m.Update(tc.key)
+			if got := updated.(*Model).backlog.MarkCount(); got != 1 {
+				t.Fatalf("mark count=%d, want 1 for %s", got, tc.name)
+			}
+		})
+	}
+}
+
 func TestBacklogMovesPreviewBelowWhenExactTableDoesNotFit(t *testing.T) {
 	b := NewBacklogModel(testTheme())
 	b.SetSize(80, 12)
