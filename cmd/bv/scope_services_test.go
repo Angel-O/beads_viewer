@@ -214,9 +214,9 @@ func TestHubScopeServicesQueryCatalogAndMembersBuildPagedCommands(t *testing.T) 
 	script := `#!/bin/sh
 printf '%s\n' "$@" > "$WBD_SCOPE_CALLS"
 if [ "$2" = "list" ]; then
-  printf '%s' '{"items":[{"id":"scope-a","name":"Today","member_count":2,"new_scope_field":"allowed"}],"limit":2,"returned_count":1,"total_matching":3,"has_more":true,"next_cursor":"catalog-next"}'
+  printf '%s' '{"schema_version":1,"items":[{"id":"scope-a","name":"Today","member_count":2,"new_scope_field":"allowed"}],"limit":2,"returned_count":1,"total_matching":3,"has_more":true,"next_cursor":"catalog-next"}'
 else
-  printf '%s' '{"scope":{"id":"scope-a","name":"Today","member_count":99,"created_on":"2026-09-05T00:00:00Z","new_scope_field":"allowed"},"members":[{"id":"b1","title":"Member","status":"open","issue_type":"task","new_member_field":"allowed"}],"member_count":2,"completed_count":1,"limit":3,"returned_count":1,"total_matching":1,"has_more":false}'
+  printf '%s' '{"schema_version":1,"scope":{"id":"scope-a","name":"Today","member_count":99,"created_on":"2026-09-05T00:00:00Z","new_scope_field":"allowed"},"members":[{"id":"b1","title":"Member","status":"open","issue_type":"task","new_member_field":"allowed"}],"member_count":2,"completed_count":1,"limit":3,"returned_count":1,"total_matching":1,"has_more":false}'
 fi
 `
 	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {

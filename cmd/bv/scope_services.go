@@ -309,6 +309,8 @@ func decodeBacklogPage(data []byte) (ui.BacklogPage, error) {
 }
 
 type scopePaginationWire struct {
+	// SchemaVersion is emitted by bd on paginated scope envelopes.
+	SchemaVersion int     `json:"schema_version"`
 	Limit         *int    `json:"limit"`
 	ReturnedCount *int    `json:"returned_count"`
 	TotalMatching *int    `json:"total_matching"`
