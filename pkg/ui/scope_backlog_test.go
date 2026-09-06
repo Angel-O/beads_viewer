@@ -969,13 +969,17 @@ func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 	if len(picker.filteredMembers) != 1 || picker.filteredMembers[0].Issue.ID != "api-1" {
 		t.Fatalf("repository member filter = %#v", picker.filteredMembers)
 	}
+	selectedView := ansi.Strip(picker.renderMembers(100, 5))
+	if !strings.Contains(selectedView, "context:api") || strings.Contains(selectedView, "repository:api") {
+		t.Fatalf("selected member context filter wording = %q", selectedView)
+	}
 	picker.memberRepositoryFilter = ""
 	picker.CycleMemberType()
 	if len(picker.filteredMembers) != 1 || picker.filteredMembers[0].Issue.ID != "web-1" {
 		t.Fatalf("type member filter = %#v", picker.filteredMembers)
 	}
 	view := ansi.Strip(picker.View())
-	for _, want := range []string{"Scopes", "Members · Today", "repository:all", "type:bug", "web-1"} {
+	for _, want := range []string{"Scopes", "Members · Today", "context:all", "type:bug", "web-1"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("member picker missing %q:\n%s", want, view)
 		}
