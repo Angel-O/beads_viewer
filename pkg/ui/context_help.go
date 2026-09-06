@@ -386,13 +386,13 @@ const contextHelpLabelPicker = `## Label Picker
 **Search**
   Type      Filter labels by text`
 
-const contextHelpRepoPicker = `## Repository Scope
+const contextHelpRepoPicker = `## Context
 
 **Navigation**
   j/k       Move selection
   ↑/↓       Move selection
   Space     Toggle repository
-  Enter     Apply scope
+  Enter     Apply context
   Esc       Cancel
 
 **Actions**

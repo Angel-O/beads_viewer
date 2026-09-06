@@ -301,7 +301,7 @@ func TestShortcutsSidebarHidesListEnterInSplitView(t *testing.T) {
 	m := Model{keyRegistry: registry}
 	m.registerKeyBindings()
 	sidebar := NewShortcutsSidebar(testTheme())
-	sidebar.SetSize(34, 40)
+	sidebar.SetSize(34, 60)
 	sidebar.SetKeyRegistry(registry)
 	sidebar.SetFocus(focusList)
 
@@ -350,9 +350,14 @@ func TestShortcutsSidebarShowsOnlyActiveScrollControl(t *testing.T) {
 	}
 
 	sidebar.SetFocus(focusList)
-	if view := sidebar.View(); !strings.Contains(view, "ctrl+j/k scroll") {
-		t.Fatalf("sidebar footer does not identify its actual scroll keys: %q", view)
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			if item.key == "ctrl+j/k" && item.desc == "Scroll sidebar" {
+				return
+			}
+		}
 	}
+	t.Fatal("list sidebar lacks its active ctrl+j/k scroll binding")
 }
 
 func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
@@ -633,6 +638,47 @@ func TestShortcutsSidebarGroupsGlobalAliases(t *testing.T) {
 		if !found {
 			t.Fatalf("sidebar missing grouped alias %q: %#v", want, global)
 		}
+	}
+}
+
+func TestShortcutsSidebarPutsActionsFirstAndUsesContextPickerLabel(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusList)
+
+	sections := sidebar.sectionsFromRegistry()
+	if len(sections) == 0 || sections[0].title != "Actions" {
+		t.Fatalf("list sidebar does not put operations first: %#v", sections)
+	}
+	var listItems []shortcutItem
+	for _, section := range sections {
+		listItems = append(listItems, section.items...)
+	}
+	for _, item := range listItems {
+		if item.key == "w" && item.desc != "Context picker (Hub)" {
+			t.Fatalf("list sidebar has incorrect Hub filter terminology: %#v", item)
+		}
+	}
+
+	sidebar.SetFocus(focusBoard)
+	boardSections := sidebar.sectionsFromRegistry()
+	var hasBoardOperation bool
+	for _, section := range boardSections {
+		for _, item := range section.items {
+			if item.desc == "Add comment" {
+				t.Fatalf("board sidebar is not contextual to the focused panel: %#v", item)
+			}
+			if item.desc == "Cycle empty columns" {
+				hasBoardOperation = true
+			}
+		}
+	}
+	if !hasBoardOperation {
+		t.Fatalf("board sidebar is missing its panel operation: %#v", boardSections)
 	}
 }
 

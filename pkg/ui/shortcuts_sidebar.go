@@ -220,9 +220,9 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryItems["Sidebar"] = []shortcutItem{{key: "ctrl+j/k", desc: "Scroll sidebar"}}
 	categoryOrder = append(categoryOrder, "Sidebar")
 
-	// Keep the most useful categories at the top; bindings within each section
-	// remain sorted by the registry.
-	preferredOrder := []string{"Navigation", "Views", "Filters", "Actions", "Global", "Sidebar"}
+	// Keep focused operations first, then navigation and shared controls;
+	// bindings within each section remain sorted by the registry.
+	preferredOrder := []string{"Actions", "Navigation", "Views", "Filters", "Global", "Sidebar"}
 	orderedCategories := make([]string, 0, len(categoryOrder))
 	seenCategories := make(map[string]struct{}, len(categoryOrder))
 	for _, cat := range preferredOrder {
@@ -389,7 +389,7 @@ func (s *ShortcutsSidebar) hardcodedSections() []shortcutSection {
 				{"c", "Closed only"},
 				{"r", "Ready (no blocks)"},
 				{"l", "Label picker"},
-				{"w", "Repository scope"},
+				{"w", "Context picker (Hub)"},
 				{"/", "Search"},
 			},
 		},
