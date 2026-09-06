@@ -376,7 +376,7 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusBacklog)
 	backlogView := sidebar.View()
-	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "PgUp/Dn", "Scroll preview", "space", "Mark current row/member", "A", "Add to scope", "M", "Add/remove by epic or"} {
+	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "space", "Mark current row/member", "A", "Add to scope", "M", "Add/remove by epic or"} {
 		if !strings.Contains(backlogView, expected) {
 			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
 		}

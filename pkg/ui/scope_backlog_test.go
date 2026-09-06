@@ -1345,6 +1345,43 @@ func TestScopeMemberMarksSubmitOneBatchRemoveAndClearOnFilter(t *testing.T) {
 	}
 }
 
+func TestScopeMemberMarksAcceptPhysicalSpaceInputsAndSubmitBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "bubble tea key space", key: tea.KeyMsg{Type: tea.KeySpace}},
+		{name: "space rune", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got ScopeMutation
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				Mutate: func(_ context.Context, mutation ScopeMutation) error { got = mutation; return nil },
+			}})
+			m.showScopePicker, m.focused = true, focusScopePicker
+			m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+			m.scopePicker.memberFocused = true
+			m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "b-1"}}, {Issue: model.Issue{ID: "b-2"}}})
+
+			for _, key := range []tea.KeyMsg{tc.key, keyMsg("j"), tc.key} {
+				updated, _ := m.Update(key)
+				m = updated.(*Model)
+			}
+			updated, cmd := m.Update(keyMsg("R"))
+			m = updated.(*Model)
+			if cmd == nil {
+				t.Fatal("marked remove did not start")
+			}
+			updated, _ = m.Update(cmd())
+			m = updated.(*Model)
+
+			if got.Kind != ScopeMutationRemove || got.ScopeID != "today" || strings.Join(got.IssueIDs, ",") != "b-1,b-2" {
+				t.Fatalf("batch mutation=%#v, want remove today [b-1 b-2]", got)
+			}
+		})
+	}
+}
+
 func TestScopeMatchPromptRoutesEpicOrLabelAndCancelPreservesMarks(t *testing.T) {
 	var got ScopeMutation
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{

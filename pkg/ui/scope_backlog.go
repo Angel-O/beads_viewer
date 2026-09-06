@@ -1293,7 +1293,8 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.CycleMemberType()
 		}
-	case "space":
+	// Bubble Tea reports a physical space as either a space rune or "space".
+	case " ", "space":
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.ToggleMemberMark()
 		}
