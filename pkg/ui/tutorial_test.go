@@ -37,23 +37,28 @@ func TestNewTutorialModel(t *testing.T) {
 	}
 }
 
-func TestRepositoryScopeTutorialCopy(t *testing.T) {
+func TestContextTutorialCopy(t *testing.T) {
 	m := newTestTutorialModel()
 	for _, page := range m.pages {
 		if page.ID != "advanced-workspace" {
 			continue
 		}
-		if page.Title != "Repository Scope" {
+		if page.Title != "Context" {
 			t.Fatalf("repository tutorial title = %q", page.Title)
 		}
-		for _, want := range []string{"wbv --hub", "empty draft means all", "matching the launch checkout or worktree", "does not change robot or export output"} {
+		for _, want := range []string{"wbv --hub", "Open Context picker", "empty draft means all", "Context lasts", "matching the launch checkout or worktree", "does not change robot or export output"} {
 			if !strings.Contains(page.Content, want) {
 				t.Fatalf("repository tutorial missing %q", want)
 			}
 		}
+		for _, stale := range []string{"## Repository Scope", "Open repository scope picker", "Scope lasts"} {
+			if strings.Contains(page.Content, stale) {
+				t.Fatalf("Hub tutorial retains stale scope terminology %q: %q", stale, page.Content)
+			}
+		}
 		return
 	}
-	t.Fatal("repository scope tutorial page not found")
+	t.Fatal("Context tutorial page not found")
 }
 
 func TestTutorialKeyboardReferenceUsesContextualShortcuts(t *testing.T) {

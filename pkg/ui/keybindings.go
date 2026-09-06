@@ -294,7 +294,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"r", "Ready (unblocked)", "Filters", "list,board,tree"},
 		{"l", "Label picker", "Filters", "list"},
 		{"I", "Exact issue-type picker", "Filters", "list"},
-		{"w", "Repository scope picker", "Filters", "list"},
+		{"w", "Context picker (Hub)", "Filters", "list"},
 		{"o", "Narrow members to open", "Filters", "scope"},
 		{"c", "Narrow members to closed", "Filters", "scope"},
 		{"r", "Narrow members to ready", "Filters", "scope"},
