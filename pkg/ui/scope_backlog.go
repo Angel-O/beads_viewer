@@ -1962,7 +1962,8 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	if s.memberError != "" {
 		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Blocked).Render(truncateRunesHelper("Members unavailable: "+s.memberError, width, "…"))
 	}
-	filter := fmt.Sprintf("repository:%s · status:%s · type:%s", memberFilterLabel(s.memberRepositoryFilter), memberFilterLabel(s.memberStatusFilter), memberFilterLabel(string(s.memberTypeFilter)))
+	// Hub member queries retain repository-named state while showing context terminology.
+	filter := fmt.Sprintf("context:%s · status:%s · type:%s", memberFilterLabel(s.memberRepositoryFilter), memberFilterLabel(s.memberStatusFilter), memberFilterLabel(string(s.memberTypeFilter)))
 	filterLine := s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(truncateRunesHelper(filter, width, "…"))
 	if len(s.filteredMembers) == 0 {
 		return header + "\n" + filterLine + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(truncateRunesHelper("No members match.", width, "…"))
