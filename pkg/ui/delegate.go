@@ -22,6 +22,7 @@ type IssueDelegate struct {
 	ShowRepositories     bool // When true, shows Hub repository badges
 	RepositoryNameWidth  int  // Shared Hub repository name column width in cells
 	RepositoryExtraWidth int  // Shared Hub +N sub-column width in cells
+	HideAssignee         bool // Display-only: reserve no assignee column
 	ShowSearchScores     bool // Show semantic/hybrid score badge when search is active
 	triageSlotWidth      int  // Shared visual width for the current list layout
 	layoutItems          []list.Item
@@ -111,7 +112,7 @@ func (d IssueDelegate) issueListColumnsFor(items []list.Item, listWidth int) *is
 			columns.showSearch = true
 			columns.searchWidth = max(columns.searchWidth, lipgloss.Width(fmt.Sprintf("[%.2f]", i.SearchScore)))
 		}
-		if i.Issue.Assignee != "" {
+		if i.Issue.Assignee != "" && !d.HideAssignee {
 			columns.showAssignee = true
 		}
 		labels := i.Issue.Labels

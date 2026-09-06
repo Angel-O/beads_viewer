@@ -253,6 +253,48 @@ func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 	}
 }
 
+func TestScopePickerMemberRenderHidesAssigneeWithoutChangingIssue(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{
+		ID: "member-1", Title: "Assigned member", Status: model.StatusOpen,
+		IssueType: model.TypeTask, Assignee: "agent-7",
+	}}})
+
+	view := ansi.Strip(picker.renderMembers(120, 5))
+	if strings.Contains(view, "@agent-7") {
+		t.Fatalf("member browser rendered assignee:\n%s", view)
+	}
+	if got := picker.members[0].Issue.Assignee; got != "agent-7" {
+		t.Fatalf("member issue assignee = %q, want agent-7", got)
+	}
+}
+
+func TestScopePickerMemberRenderAlignsMixedRepositoryExtras(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "member-1", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryID: "ctx:one", RepositoryName: "one", RepositoryExtra: 1, HubPresentation: true},
+		{Issue: model.Issue{ID: "member-2", Title: "Two", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryID: "ctx:two", RepositoryName: "two", RepositoryExtra: 10, HubPresentation: true},
+	})
+
+	view := ansi.Strip(picker.renderMembers(120, 6))
+	rows := make([]string, 0, 2)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "member-") {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("member rows = %d, want 2:\n%s", len(rows), view)
+	}
+	for _, marker := range []string{"OPEN", "member-"} {
+		if got := displayOffset(rows[0], marker); got != displayOffset(rows[1], marker) {
+			t.Fatalf("%s starts are not aligned: %d and %d\n%s", marker, displayOffset(rows[0], marker), displayOffset(rows[1], marker), view)
+		}
+	}
+}
+
 func TestGenerationlessScopeDetailsPopulateMemberBrowser(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{})
 	m.showScopePicker = true

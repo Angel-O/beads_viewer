@@ -1045,14 +1045,19 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	items := make([]list.Item, len(s.filteredMembers))
 	showRepositories := false
 	workspaceMode := false
+	repositoryExtraWidth := 0
 	for i, item := range s.filteredMembers {
 		item.Marked = s.memberMarkedIDs[item.Issue.ID]
 		items[i] = item
 		showRepositories = showRepositories || item.HubPresentation
 		workspaceMode = workspaceMode || item.RepoPrefix != ""
+		if item.RepositoryExtra > 0 {
+			repositoryExtraWidth = maxInt(repositoryExtraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
+		}
 	}
-	delegate := IssueDelegate{Theme: s.theme, ShowRepositories: showRepositories, WorkspaceMode: workspaceMode, useFullWidth: true, layoutItems: items}
+	delegate := IssueDelegate{Theme: s.theme, ShowRepositories: showRepositories, WorkspaceMode: workspaceMode, HideAssignee: true, useFullWidth: true, layoutItems: items}
 	delegate.RepositoryNameWidth = 12
+	delegate.RepositoryExtraWidth = repositoryExtraWidth
 	delegate.columns = delegate.issueListColumnsFor(items, width)
 	l := list.New(items, delegate, width, maxInt(rows-2, 1))
 	l.Select(s.memberSelected)
