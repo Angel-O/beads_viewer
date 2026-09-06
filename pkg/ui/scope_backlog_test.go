@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
@@ -1149,6 +1152,36 @@ func TestBacklogRenderUsesBoundedColumnsAndFullPreview(t *testing.T) {
 		if lipgloss.Width(line) > 120 {
 			t.Fatalf("backlog line width = %d, want <= 120: %q", lipgloss.Width(line), line)
 		}
+	}
+}
+
+func TestBacklogHeaderUsesBrightForegroundOnDarkTerminal(t *testing.T) {
+	savedProfile := TermProfile
+	defer func() { TermProfile = savedProfile }()
+	TermProfile = colorprofile.TrueColor
+
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.TrueColor)
+	renderer.SetHasDarkBackground(true)
+	b := NewBacklogModel(DefaultTheme(renderer))
+	header := b.renderBacklogHeader("Global backlog", backlogTableColumns{width: 32})
+
+	if !strings.Contains(header, "38;2;255;255;255") {
+		t.Fatalf("backlog header did not render bright white foreground: %q", header)
+	}
+	if strings.Contains(header, "38;2;40;42;54") {
+		t.Fatalf("backlog header retained near-black foreground: %q", header)
+	}
+}
+
+func TestBacklogPreviewSeparatesTitleAndDescription(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{Title: "Readable title", Description: "Description"}}}, 0)
+
+	preview := ansi.Strip(b.renderBacklogPreview(80))
+	lines := strings.Split(preview, "\n")
+	if len(lines) < 3 || strings.TrimSpace(lines[0]) != "TITLE  Readable title" || lines[1] != "" || strings.TrimSpace(lines[2]) != "DESCRIPTION  Description" {
+		t.Fatalf("backlog preview omitted blank title/description separator: %q", preview)
 	}
 }
 

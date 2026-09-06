@@ -426,7 +426,7 @@ func (b BacklogModel) renderBacklog(title string) string {
 
 	lines := []string{b.renderBacklogHeader(title, columns)}
 	availableHeight := maxInt(b.height-2, 1)
-	listRows := availableHeight - 5 // header, two-line preview, page hint, and padding
+	listRows := availableHeight - 5 // header, preview, page hint, and padding
 	if !wide && b.CurrentIssue() == nil {
 		listRows++
 	}
@@ -497,8 +497,9 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
 	width := maxInt(columns.width, 1)
 	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Width(width).MaxWidth(width)
+	// Keep the global-backlog column labels bright against the dark header fill.
 	tableStyle := b.theme.Renderer.NewStyle().Background(b.theme.Primary).
-		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).Bold(true).Inline(true).
+		Foreground(ThemeFg("#FFFFFF")).Bold(true).Inline(true).
 		Width(width).MaxWidth(width)
 	return titleStyle.Render(title) + "\n" + tableStyle.Render(renderBacklogTableHeader(columns))
 }
@@ -567,7 +568,7 @@ func (b BacklogModel) renderBacklogPreview(width int, heights ...int) string {
 	}
 	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Width(maxInt(width, 1))
 	descriptionStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Width(maxInt(width, 1))
-	content := titleStyle.Render("TITLE  "+title) + "\n" + descriptionStyle.Render("DESCRIPTION  "+description)
+	content := titleStyle.Render("TITLE  "+title) + "\n\n" + descriptionStyle.Render("DESCRIPTION  "+description)
 	if len(heights) == 0 || heights[0] <= 0 {
 		return content
 	}
