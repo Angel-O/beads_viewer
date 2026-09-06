@@ -616,7 +616,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		wants []string
 	}{
 		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog"}},
-		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "ID/title search", "l", "exact label", "s", "Cycle status", "A", "Add selected bead to scope", "space", "Mark current", "M", "epic or label"}},
+		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "ID/title search", "l", "Filter by exact label", "s", "Cycle status", "A", "Add selected bead to scope", "space", "Mark current", "M", "Add matching exact label/epic issues to active scope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewModel(nil, nil, "")
@@ -694,16 +694,22 @@ func TestBacklogHelpAndFooterDescribePreviewAndBatchControls(t *testing.T) {
 	m.isBacklogView = true
 	m.focused = focusBacklog
 	help := ansi.Strip(m.renderHelpOverlay())
-	for _, want := range []string{"PgUp/Dn", "Scroll preview", "Mark current bead", "Next / previous page", "ID/title search", "exact label", "Cycle status", "Add selected bead to scope (or all marked)", "Add by epic or label (semantic)"} {
+	for _, want := range []string{"PgUp/Dn", "Scroll preview", "Mark current bead", "Next / previous page", "ID/title search", "Filter by exact label", "Cycle status", "Add selected bead to scope (or all marked)", "Add matching exact label/epic issues to active scope"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("backlog help missing %q:\n%s", want, help)
 		}
 	}
+	if strings.Contains(help, "Add by epic or label") {
+		t.Fatalf("backlog help retains ambiguous match wording:\n%s", help)
+	}
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"pgup/dn preview", "space mark", "n/p page", "/ filter", "A add current", "M epic/label", "W scopes", "B/esc/q list"} {
+	for _, want := range []string{"pgup/dn preview", "space mark", "n/p page", "/ filter", "A add current", "M add scope", "W scopes", "B list"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("backlog footer missing %q: %q", want, footer)
 		}
+	}
+	if strings.Contains(footer, "B/esc/q list") || strings.Contains(footer, "esc/q list") {
+		t.Fatalf("backlog footer expands the return hint: %q", footer)
 	}
 
 	m.backlog.BeginSearch()
@@ -717,6 +723,30 @@ func TestBacklogHelpAndFooterDescribePreviewAndBatchControls(t *testing.T) {
 		if strings.Contains(footer, unavailable) {
 			t.Fatalf("backlog filter footer advertises view control %q: %q", unavailable, footer)
 		}
+	}
+}
+
+func TestBacklogScopeMatchPromptNamesExactMatchAction(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 100, 30
+	prompt := ansi.Strip(m.renderScopeMatchPrompt())
+	for _, want := range []string{"Add matching exact label/epic issues to active scope", "Enter label:name or epic:id"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("scope match prompt missing %q: %q", want, prompt)
+		}
+	}
+}
+
+func TestScopeMatchPromptNamesRemovalFromSelectedScope(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 100, 30
+	m.scopeMatchAction = "remove"
+	prompt := ansi.Strip(m.renderScopeMatchPrompt())
+	if !strings.Contains(prompt, "Remove matching exact label/epic issues from selected scope") {
+		t.Fatalf("removal scope match prompt is inaccurate: %q", prompt)
+	}
+	if strings.Contains(prompt, "Add matching exact label/epic issues to active scope") {
+		t.Fatalf("removal scope match prompt retains add wording: %q", prompt)
 	}
 }
 
