@@ -42,9 +42,12 @@ type BacklogPage struct {
 }
 
 // BacklogQuery is the complete request for one bounded backlog page. Filter
-// is a user-facing query; Cursor is opaque and must not be decoded or edited.
+// searches ID/title; Label and Status are backend-owned exact filters. Cursor
+// is opaque and must not be decoded or edited. An empty Status means all.
 type BacklogQuery struct {
 	Filter string
+	Label  string
+	Status string
 	Cursor string
 	Limit  int
 }
@@ -188,9 +191,13 @@ func runScopeMutationCmd(mutation ScopeMutation, restoreFocus bool, run func(con
 
 const backlogPageSize = 50
 
+const backlogStatusAll = "all"
+
+var backlogStatuses = [...]string{backlogStatusAll, "open", "in_progress", "blocked", "deferred", "closed"}
+
 // isScopeBacklogGlobalKey leaves global controls and view jumps on the main
-// Update path. Search input is intentionally excluded so printable keys remain
-// query text.
+// Update path. Search and label input are intentionally excluded so printable
+// keys remain input text.
 func isScopeBacklogGlobalKey(key string) bool {
 	switch key {
 	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5",
@@ -199,6 +206,10 @@ func isScopeBacklogGlobalKey(key string) bool {
 	default:
 		return false
 	}
+}
+
+func isBacklogReloadNotice(status string) bool {
+	return status == "Refreshing…" || strings.HasPrefix(status, "Reloaded ")
 }
 
 // BacklogModel renders the global, unscoped backlog independently of the
@@ -210,7 +221,11 @@ type BacklogModel struct {
 	filteredItems []IssueItem
 	selected      int
 	filter        string
+	label         string
+	status        string
 	searching     bool
+	labelEditing  bool
+	labelInput    textinput.Model
 	hasMore       bool
 	nextCursor    string
 	pageIndex     int
@@ -224,7 +239,25 @@ type BacklogModel struct {
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
-	return BacklogModel{theme: theme, pageCursors: []string{""}, delegate: IssueDelegate{Theme: theme, useFullWidth: true}}
+	return BacklogModel{
+		theme:       theme,
+		status:      backlogStatusAll,
+		pageCursors: []string{""},
+		delegate:    IssueDelegate{Theme: theme, useFullWidth: true},
+		labelInput:  newBacklogLabelInput(theme),
+	}
+}
+
+func newBacklogLabelInput(theme Theme) textinput.Model {
+	input := textinput.New()
+	input.Placeholder = "ordinary label"
+	input.CharLimit = 100
+	input.Width = 30
+	input.Prompt = "Label: "
+	input.PromptStyle = lipgloss.NewStyle().Foreground(theme.Primary).Bold(true)
+	input.TextStyle = lipgloss.NewStyle().Foreground(theme.Base.GetForeground())
+	input.Blur()
+	return input
 }
 
 func (b *BacklogModel) SetSize(width, height int) {
@@ -266,6 +299,8 @@ func (b *BacklogModel) Reset() {
 	b.hasMore = false
 	b.pageCursors = []string{""}
 	b.previewOffset = 0
+	b.labelEditing = false
+	b.labelInput.Blur()
 	b.ClearMarks()
 }
 
@@ -316,6 +351,57 @@ func (b BacklogModel) PageIndex() int     { return b.pageIndex }
 func (b BacklogModel) NextCursor() string { return b.nextCursor }
 func (b BacklogModel) Filter() string     { return b.filter }
 func (b BacklogModel) Searching() bool    { return b.searching }
+func (b BacklogModel) Label() string      { return b.label }
+func (b BacklogModel) Status() string {
+	if b.status == "" {
+		return backlogStatusAll
+	}
+	return b.status
+}
+func (b BacklogModel) LabelEditing() bool { return b.labelEditing }
+
+// BeginLabelEdit opens the single-value exact ordinary-label editor.
+func (b *BacklogModel) BeginLabelEdit() tea.Cmd {
+	b.labelInput.SetValue(b.label)
+	b.labelEditing = true
+	return b.labelInput.Focus()
+}
+
+func (b *BacklogModel) EndLabelEdit() {
+	b.labelEditing = false
+	b.labelInput.Blur()
+}
+
+func (b *BacklogModel) UpdateLabelInput(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	b.labelInput, cmd = b.labelInput.Update(msg)
+	return cmd
+}
+
+func (b BacklogModel) LabelInputValue() string { return b.labelInput.Value() }
+
+func (b *BacklogModel) SetLabel(value string) { b.label = strings.TrimSpace(value) }
+
+func (b *BacklogModel) CancelLabelEdit() {
+	b.labelInput.SetValue(b.label)
+	b.EndLabelEdit()
+}
+
+func (b *BacklogModel) CycleStatus() {
+	current := b.Status()
+	for i, status := range backlogStatuses {
+		if status == current {
+			b.status = backlogStatuses[(i+1)%len(backlogStatuses)]
+			return
+		}
+	}
+	b.status = backlogStatusAll
+}
+
+func isBacklogOrdinaryLabel(value string) bool {
+	label := strings.TrimSpace(value)
+	return label != "" && !strings.Contains(label, ",") && !strings.HasPrefix(label, "ctx:")
+}
 
 func (b *BacklogModel) NextPageCursor() string {
 	if !b.HasMore() {
@@ -404,10 +490,23 @@ func (b BacklogModel) filteredIssueItems() []IssueItem {
 }
 
 func (b BacklogModel) View() string {
+	filters := []string{}
 	if b.searching {
-		return b.renderBacklog("Backlog search: " + b.filter + "_")
+		filters = append(filters, "search: "+b.filter+"_")
+	} else if strings.TrimSpace(b.filter) != "" {
+		filters = append(filters, "search: "+b.filter)
 	}
-	return b.renderBacklog("Global backlog")
+	if b.labelEditing {
+		filters = append(filters, "label: "+b.labelInput.Value()+"_")
+	} else if b.label != "" {
+		filters = append(filters, "label: "+b.label)
+	}
+	filters = append(filters, "status: "+b.Status())
+	title := "Global backlog"
+	if len(filters) > 0 {
+		title += " · " + strings.Join(filters, " · ")
+	}
+	return b.renderBacklog(title)
 }
 
 func (b BacklogModel) renderBacklog(title string) string {
@@ -1242,7 +1341,29 @@ func (m *Model) openBacklog() tea.Cmd {
 	m.backlog.Reset()
 	m.backlogLoading = true
 	m.backlogPageGeneration++
-	return loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Limit: backlogPageSize}, 0, m.backlogPageGeneration)
+	return loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration)
+}
+
+func (m *Model) backlogQuery(cursor string) BacklogQuery {
+	status := m.backlog.Status()
+	if status == backlogStatusAll {
+		status = ""
+	}
+	return BacklogQuery{
+		Filter: m.backlog.Filter(),
+		Label:  m.backlog.Label(),
+		Status: status,
+		Cursor: cursor,
+		Limit:  backlogPageSize,
+	}
+}
+
+func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {
+	m.backlog.ClearMarks()
+	m.backlog.ResetPagination()
+	m.backlogLoading = true
+	m.backlogPageGeneration++
+	return loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration)
 }
 
 func (m *Model) closeBacklog() {
@@ -1406,6 +1527,43 @@ func (m *Model) handleScopeCreateKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 }
 
 func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	// Local backlog navigation dismisses only reload feedback so the backlog
+	// controls can reappear; action results and errors remain visible.
+	if !m.statusIsError && isBacklogReloadNotice(m.statusMsg) {
+		m.statusMsg = ""
+	}
+	if m.backlog.LabelEditing() {
+		switch msg.String() {
+		case "enter":
+			label := strings.TrimSpace(m.backlog.LabelInputValue())
+			if isBacklogOrdinaryLabel(label) {
+				oldLabel := m.backlog.Label()
+				m.backlog.EndLabelEdit()
+				m.backlog.SetLabel(label)
+				if oldLabel != m.backlog.Label() {
+					return m, m.reloadBacklogFromFirstPage()
+				}
+				return m, nil
+			}
+			if label == "" {
+				oldLabel := m.backlog.Label()
+				m.backlog.EndLabelEdit()
+				m.backlog.SetLabel("")
+				if oldLabel != "" {
+					return m, m.reloadBacklogFromFirstPage()
+				}
+				return m, nil
+			}
+			m.statusMsg = "Enter one ordinary label"
+			m.statusIsError = true
+			return m, nil
+		case "esc":
+			m.backlog.CancelLabelEdit()
+			return m, nil
+		default:
+			return m, m.backlog.UpdateLabelInput(msg)
+		}
+	}
 	if m.backlog.Searching() {
 		oldFilter := m.backlog.Filter()
 		switch msg.String() {
@@ -1421,11 +1579,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			}
 		}
 		if oldFilter != m.backlog.Filter() {
-			m.backlog.ClearMarks()
-			m.backlog.ResetPagination()
-			m.backlogLoading = true
-			m.backlogPageGeneration++
-			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Limit: backlogPageSize}, 0, m.backlogPageGeneration)
+			return m, m.reloadBacklogFromFirstPage()
 		}
 		return m, nil
 	}
@@ -1443,6 +1597,14 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "/":
 		m.backlog.BeginSearch()
 		m.backlog.ClearMarks()
+	case "l":
+		return m, m.backlog.BeginLabelEdit()
+	case "s":
+		before := m.backlog.Status()
+		m.backlog.CycleStatus()
+		if before != m.backlog.Status() {
+			return m, m.reloadBacklogFromFirstPage()
+		}
 	case " ", "space":
 		m.backlog.ToggleMark()
 	case "n", "right":
@@ -1450,7 +1612,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			m.backlog.ClearMarks()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
-			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Cursor: cursor, Limit: backlogPageSize}, m.backlog.PageIndex()+1, m.backlogPageGeneration)
+			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(cursor), m.backlog.PageIndex()+1, m.backlogPageGeneration)
 		}
 	case "p", "left":
 		if m.backlog.PageIndex() > 0 {
@@ -1458,7 +1620,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			cursor := m.backlog.PreviousPageCursor()
 			m.backlogLoading = true
 			m.backlogPageGeneration++
-			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{Filter: m.backlog.Filter(), Cursor: cursor, Limit: backlogPageSize}, m.backlog.PageIndex(), m.backlogPageGeneration)
+			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(cursor), m.backlog.PageIndex(), m.backlogPageGeneration)
 		}
 	case "A":
 		return m, m.startScopeMutation("add")
@@ -1721,11 +1883,8 @@ func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	if m.isBacklogView {
 		m.backlogLoading = true
 		m.backlogPageGeneration++
-		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes, BacklogQuery{
-			Filter: m.backlog.Filter(),
-			Cursor: m.backlog.CurrentPageCursor(),
-			Limit:  backlogPageSize,
-		}, m.backlog.PageIndex(), m.backlogPageGeneration))
+		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes,
+			m.backlogQuery(m.backlog.CurrentPageCursor()), m.backlog.PageIndex(), m.backlogPageGeneration))
 	}
 	return tea.Batch(cmds...)
 }

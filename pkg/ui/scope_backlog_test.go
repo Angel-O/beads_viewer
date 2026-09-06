@@ -616,7 +616,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		wants []string
 	}{
 		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members", "Enter", "Toggle active scope", "n", "Create inactive named scope", "B", "global backlog"}},
-		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "Filter backlog", "A", "Add selected bead to scope", "space", "Mark current", "M", "epic or label"}},
+		{name: "backlog", focus: focusBacklog, wants: []string{"Backlog", "n/p", "Next / previous page", "/", "ID/title search", "l", "exact label", "s", "Cycle status", "A", "Add selected bead to scope", "space", "Mark current", "M", "epic or label"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewModel(nil, nil, "")
@@ -694,7 +694,7 @@ func TestBacklogHelpAndFooterDescribePreviewAndBatchControls(t *testing.T) {
 	m.isBacklogView = true
 	m.focused = focusBacklog
 	help := ansi.Strip(m.renderHelpOverlay())
-	for _, want := range []string{"PgUp/Dn", "Scroll preview", "Mark current bead", "Next / previous page", "Filter backlog", "Add selected bead to scope (or all marked)", "Add by epic or label (semantic)"} {
+	for _, want := range []string{"PgUp/Dn", "Scroll preview", "Mark current bead", "Next / previous page", "ID/title search", "exact label", "Cycle status", "Add selected bead to scope (or all marked)", "Add by epic or label (semantic)"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("backlog help missing %q:\n%s", want, help)
 		}
@@ -909,6 +909,54 @@ func TestBacklogSearchKeepsViewJumpKeysAsQueryText(t *testing.T) {
 	}
 }
 
+func TestBacklogLocalNavigationDismissesReloadStatusButPreservesErrors(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
+
+	m.statusMsg = "Reloaded 1 issues"
+	m.statusIsError = false
+	updated, _ := m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "" || m.statusIsError {
+		t.Fatalf("local navigation retained reload status=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+
+	m.statusMsg = "Backlog load failed: unavailable"
+	m.statusIsError = true
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "Backlog load failed: unavailable" || !m.statusIsError {
+		t.Fatalf("local navigation changed action error=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+
+	m.statusMsg = "Scope add succeeded"
+	m.statusIsError = false
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "Scope add succeeded" || m.statusIsError {
+		t.Fatalf("local navigation changed successful action=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
+func TestBacklogFooterOmitsSnapshotStatsButOrdinaryFooterShowsThem(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width = 240
+	m.countOpen, m.countReady, m.countBlocked, m.countClosed = 1, 2, 3, 4
+	wantStats := "○1 ◉2 ◈3 ●4"
+
+	ordinary := ansi.Strip(m.renderFooter())
+	if !strings.Contains(ordinary, wantStats) {
+		t.Fatalf("ordinary footer missing snapshot stats %q: %q", wantStats, ordinary)
+	}
+
+	m.isBacklogView = true
+	backlog := ansi.Strip(m.renderFooter())
+	if strings.Contains(backlog, wantStats) {
+		t.Fatalf("backlog footer retained snapshot stats %q: %q", wantStats, backlog)
+	}
+}
+
 func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	var cursors []string
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
@@ -944,6 +992,101 @@ func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	updated, _ = m.Update(cmd())
 	if cursors[len(cursors)-1] != "" {
 		t.Fatalf("filter did not reset cursor: %v", cursors)
+	}
+}
+
+func TestBacklogStatusCycleForwardsExactFilterAndResetsPaging(t *testing.T) {
+	var got BacklogQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			got = query
+			return BacklogPage{}, nil
+		},
+	}})
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{HasMore: true, NextCursor: "opaque-next"}, 0)
+	m.backlog.NextPageCursor()
+	m.backlog.SetPage(BacklogPage{}, 1)
+	m.backlogPageGeneration = 9
+
+	updated, cmd := m.Update(keyMsg("s"))
+	m = updated.(*Model)
+	if cmd == nil || m.backlog.Status() != "open" || m.backlog.PageIndex() != 0 || m.backlog.CurrentPageCursor() != "" || m.backlogPageGeneration != 10 {
+		t.Fatalf("status change state: cmd=%t status=%q page=%d cursor=%q generation=%d", cmd != nil, m.backlog.Status(), m.backlog.PageIndex(), m.backlog.CurrentPageCursor(), m.backlogPageGeneration)
+	}
+	_ = cmd()
+	if got.Status != "open" || got.Cursor != "" {
+		t.Fatalf("status query=%#v, want open on first page", got)
+	}
+
+	for _, want := range []string{"in_progress", "blocked", "deferred", "closed", "all"} {
+		m.backlog.CycleStatus()
+		if got := m.backlog.Status(); got != want {
+			t.Fatalf("status cycle=%q, want %q", got, want)
+		}
+	}
+}
+
+func TestBacklogLabelInputAppliesExactOrdinaryLabelAndResetsPaging(t *testing.T) {
+	var got BacklogQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			got = query
+			return BacklogPage{}, nil
+		},
+	}})
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetLabel("old")
+	m.backlog.SetPage(BacklogPage{HasMore: true, NextCursor: "opaque-next"}, 0)
+	m.backlog.NextPageCursor()
+	m.backlog.SetPage(BacklogPage{}, 1)
+	m.backlogPageGeneration = 3
+
+	updated, _ := m.Update(keyMsg("l"))
+	m = updated.(*Model)
+	if !m.backlog.LabelEditing() || m.backlog.LabelInputValue() != "old" {
+		t.Fatalf("label editor state: editing=%t value=%q", m.backlog.LabelEditing(), m.backlog.LabelInputValue())
+	}
+	for range 3 {
+		updated, _ = m.Update(keyMsg("backspace"))
+		m = updated.(*Model)
+	}
+	updated, _ = m.Update(keyMsg("team"))
+	m = updated.(*Model)
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil || m.backlog.LabelEditing() || m.backlog.Label() != "team" || m.backlog.PageIndex() != 0 || m.backlog.CurrentPageCursor() != "" || m.backlogPageGeneration != 4 {
+		t.Fatalf("label change state: cmd=%t editing=%t label=%q page=%d cursor=%q generation=%d", cmd != nil, m.backlog.LabelEditing(), m.backlog.Label(), m.backlog.PageIndex(), m.backlog.CurrentPageCursor(), m.backlogPageGeneration)
+	}
+	_ = cmd()
+	if got.Label != "team" || got.Status != "" || got.Cursor != "" {
+		t.Fatalf("label query=%#v, want exact label on first page", got)
+	}
+
+	updated, _ = m.Update(keyMsg("l"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg(","))
+	m = updated.(*Model)
+	updated, cmd = m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd != nil || !m.backlog.LabelEditing() || !m.statusIsError || m.statusMsg != "Enter one ordinary label" {
+		t.Fatalf("invalid label state: cmd=%t editing=%t error=%t status=%q", cmd != nil, m.backlog.LabelEditing(), m.statusIsError, m.statusMsg)
+	}
+}
+
+func TestBacklogViewShowsActiveSearchLabelAndStatus(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	b.BeginSearch()
+	b.AddFilter("needle")
+	b.SetLabel("team")
+	b.CycleStatus()
+
+	view := ansi.Strip(b.View())
+	for _, want := range []string{"Global backlog", "search: needle_", "label: team", "status: open"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("backlog view missing active filter %q:\n%s", want, view)
+		}
 	}
 }
 

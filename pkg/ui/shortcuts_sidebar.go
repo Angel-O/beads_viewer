@@ -21,6 +21,7 @@ type ShortcutsSidebar struct {
 	scopeMembers  bool         // Whether the Scope picker is focused on members
 	scopeMove     bool         // Whether the Scope picker chooses a move destination
 	backlogSearch bool         // Whether backlog search owns printable input
+	backlogLabel  bool         // Whether backlog label input owns printable input
 }
 
 // shortcutItem represents a single keyboard shortcut
@@ -79,6 +80,11 @@ func (s *ShortcutsSidebar) SetBacklogSearch(searching bool) {
 	s.backlogSearch = searching
 }
 
+// SetBacklogLabelEditing keeps the sidebar aligned with exact label input.
+func (s *ShortcutsSidebar) SetBacklogLabelEditing(editing bool) {
+	s.backlogLabel = editing
+}
+
 // SetKeyRegistry sets the key registry for auto-generated bindings (bv-xl6g)
 func (s *ShortcutsSidebar) SetKeyRegistry(r *KeyRegistry) {
 	s.keyRegistry = r
@@ -126,9 +132,19 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	if s.focusHint == focusBacklog && s.backlogSearch {
 		return []shortcutSection{
 			{title: "Filter", items: []shortcutItem{
-				{key: "type", desc: "Edit filter"},
-				{key: "backspace", desc: "Delete filter"},
-				{key: "enter/esc", desc: "Finish filter"},
+				{key: "type", desc: "Edit ID/title search"},
+				{key: "backspace", desc: "Delete search"},
+				{key: "enter/esc", desc: "Finish search"},
+			}},
+			{title: "Sidebar", items: []shortcutItem{{key: "ctrl+j/k", desc: "Scroll sidebar"}}},
+		}
+	}
+	if s.focusHint == focusBacklog && s.backlogLabel {
+		return []shortcutSection{
+			{title: "Filter", items: []shortcutItem{
+				{key: "type", desc: "Edit exact label"},
+				{key: "backspace", desc: "Delete label"},
+				{key: "enter/esc", desc: "Apply/cancel label"},
 			}},
 			{title: "Sidebar", items: []shortcutItem{{key: "ctrl+j/k", desc: "Scroll sidebar"}}},
 		}
