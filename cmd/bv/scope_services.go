@@ -231,15 +231,18 @@ func runWBDBacklogCommand(ctx context.Context, workDir string, args ...string) (
 	commandArgs = append(commandArgs, "--json")
 	command := exec.CommandContext(ctx, "wbd", commandArgs...)
 	command.Dir = workDir
-	output, err := command.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = err.Error()
 		}
 		return nil, fmt.Errorf("wbd backlog failed: %s", detail)
 	}
-	return output, nil
+	return stdout.Bytes(), nil
 }
 
 func decodeScopeInfos(data []byte) ([]ui.ScopeInfo, error) {

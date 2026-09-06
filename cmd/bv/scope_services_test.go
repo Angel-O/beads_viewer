@@ -35,6 +35,27 @@ func TestDecodeBacklogPagePreservesOpaqueCursor(t *testing.T) {
 	}
 }
 
+func TestHubScopeServiceBacklogIgnoresWarningOnStderr(t *testing.T) {
+	root := t.TempDir()
+	wbd := filepath.Join(root, "wbd")
+	script := `#!/bin/sh
+printf '%s' '{"issues":[{"id":"b1","title":"Backlog","status":"open","issue_type":"task"}],"pagination":{}}'
+printf '%s\n' 'bd warning: source directory is not a Git repository' >&2
+`
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	page, err := newHubScopeServices(root).QueryBacklog(context.Background(), ui.BacklogQuery{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Issues) != 1 || page.Issues[0].ID != "b1" {
+		t.Fatalf("backlog page = %#v", page)
+	}
+}
+
 func TestHubScopeServiceCreatesSluggedInactiveScopeFromName(t *testing.T) {
 	root := t.TempDir()
 	calls := filepath.Join(root, "calls")
