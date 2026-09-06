@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
 
@@ -138,19 +140,186 @@ func TestScopePickerViewOmitsLocalHintsAndSpacesHeader(t *testing.T) {
 	lines := strings.Split(view, "\n")
 	header, entry := -1, -1
 	for index, line := range lines {
-		switch strings.TrimSpace(line) {
-		case "Scopes":
+		switch {
+		case strings.Contains(line, "Scopes"):
 			header = index
-		case "> Today · 2026-01-02/2":
+		case strings.Contains(line, "> Today · 2026-01-02/2"):
 			entry = index
 		}
 	}
-	if header < 0 || entry < 0 || entry != header+2 || strings.TrimSpace(lines[header+1]) != "" {
+	if header < 0 || entry < 0 || entry != header+2 {
 		t.Fatalf("scope header spacing missing:\n%s", view)
 	}
 	for _, hint := range []string{"enter activate", "n new scope", "esc back", "enter move bead"} {
 		if strings.Contains(view, hint) {
 			t.Fatalf("scope picker retained local hint %q:\n%s", hint, view)
+		}
+	}
+}
+
+func TestBacklogContextPickerIsolatedFromGenericScope(t *testing.T) {
+	var got BacklogQuery
+	m := NewModel([]model.Issue{
+		{ID: "alpha-item", Labels: []string{"ctx:alpha"}},
+		{ID: "beta-item", Labels: []string{"ctx:beta"}},
+	}, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			got = query
+			return BacklogPage{Issues: []model.Issue{{ID: "beta-item", Labels: []string{"ctx:beta"}}}}, nil
+		},
+	}})
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	generic, err := hub.NewSelectedContextsHubScope([]string{"ctx:alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHubScope(generic); err != nil {
+		t.Fatal(err)
+	}
+	wantGenericIDs := visibleIssueIDs(m)
+	wantGenericScope := m.HubScope()
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "old"}}, HasMore: true, NextCursor: "old-cursor"}, 1)
+	m.backlog.ToggleMark()
+	m.backlogPageGeneration = 4
+
+	updated, _ := m.Update(keyMsg("w"))
+	m = updated.(*Model)
+	if !m.showRepoPicker || m.repoPickerOrigin != focusBacklog {
+		t.Fatalf("backlog context picker state: shown=%v origin=%v", m.showRepoPicker, m.repoPickerOrigin)
+	}
+	m.repoPicker.ClearSelection()
+	m.repoPicker.MoveDown()
+	m.repoPicker.ToggleSelected()
+	m.repoPicker.MoveUp()
+	m.repoPicker.ToggleSelected()
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("backlog context apply did not reload")
+	}
+	for _, msg := range runUISemanticCommands(cmd) {
+		updated, _ = m.Update(msg)
+		m = updated.(*Model)
+	}
+
+	if !reflect.DeepEqual(m.HubScope(), wantGenericScope) || !reflect.DeepEqual(visibleIssueIDs(m), wantGenericIDs) {
+		t.Fatalf("backlog apply changed generic scope/list: scope=%#v ids=%v", m.HubScope(), visibleIssueIDs(m))
+	}
+	if got.Contexts == nil || !reflect.DeepEqual(got.Contexts, []string{"ctx:alpha"}) || !got.IncludeContextless {
+		t.Fatalf("backlog context query=%#v, want alpha plus contextless", got)
+	}
+	if m.showRepoPicker || m.focused != focusBacklog || m.backlog.PageIndex() != 0 || m.backlog.CurrentPageCursor() != "" || m.backlogPageGeneration != 5 || m.backlog.MarkCount() != 0 {
+		t.Fatalf("backlog apply state: picker=%v focus=%v page=%d cursor=%q generation=%d marks=%d", m.showRepoPicker, m.focused, m.backlog.PageIndex(), m.backlog.CurrentPageCursor(), m.backlogPageGeneration, m.backlog.MarkCount())
+	}
+	m.backlog.SetSize(80, 12)
+	if view := ansi.Strip(m.backlog.View()); !strings.Contains(view, "contexts: ctx:alpha, no-context") {
+		t.Fatalf("backlog heading omitted active context: %s", view)
+	}
+}
+
+func TestBacklogContextQueryUsesAllForEmptyDraftAndContextlessOption(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha")
+	if got := m.backlogQuery(""); !reflect.DeepEqual(got.Contexts, []string(nil)) || got.IncludeContextless {
+		t.Fatalf("empty backlog context query=%#v, want all", got)
+	}
+	m.backlog.SetContextFilter(nil, true, nil)
+	got := m.backlogQuery("")
+	if got.Contexts != nil || !got.IncludeContextless {
+		t.Fatalf("contextless backlog query=%#v, want contextless-only", got)
+	}
+}
+
+func TestBacklogPageIndicatorIsOnlyCenteredPageNumber(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(60, 10)
+	b.SetPage(BacklogPage{}, 2)
+	page := ansi.Strip(b.renderBacklogPage(40))
+	if strings.TrimSpace(page) != "page 3" || strings.Contains(page, "·") {
+		t.Fatalf("page indicator=%q, want only page 3", page)
+	}
+	if left := strings.Index(page, "page 3"); left != (40-lipgloss.Width("page 3"))/2 {
+		t.Fatalf("page indicator offset=%d, want centered offset=%d: %q", left, (40-lipgloss.Width("page 3"))/2, page)
+	}
+}
+
+func TestScopePickerFramesStayBoundedAndFollowTabFocus(t *testing.T) {
+	profile := lipgloss.DefaultRenderer().ColorProfile()
+	defer lipgloss.SetColorProfile(profile)
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(80, 20)
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "b-1", Title: "Member"}}})
+	catalogFocused := picker.View()
+	picker.memberFocused = true
+	membersFocused := picker.View()
+	if lipgloss.Width(catalogFocused) > 80 || lipgloss.Height(catalogFocused) > 20 || lipgloss.Width(membersFocused) > 80 || lipgloss.Height(membersFocused) > 20 {
+		t.Fatalf("scope picker exceeded assigned bounds")
+	}
+	if strings.Count(catalogFocused, "╭") != 2 || strings.Count(membersFocused, "╭") != 2 {
+		t.Fatalf("scope picker did not frame both panels")
+	}
+	if catalogFocused == membersFocused {
+		t.Fatal("Tab focus did not change panel presentation")
+	}
+}
+
+func TestScopePickerHeight18ShowsMemberRowInsideFrame(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(100, 18)
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1", Title: "Visible member", Status: model.StatusOpen}}})
+	picker.memberFocused = true
+	view := picker.View()
+	if !strings.Contains(ansi.Strip(view), "member-1") {
+		t.Fatalf("height-18 member panel clipped its first row:\n%s", view)
+	}
+	if lipgloss.Height(view) > 18 || lipgloss.Width(view) > 100 {
+		t.Fatalf("height-18 picker exceeded bounds: %dx%d", lipgloss.Width(view), lipgloss.Height(view))
+	}
+}
+
+func TestScopeMemberRowsUseLocalBoundedOrderAndLabels(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	now := time.Now()
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "short", Title: "A deliberately long member title that must truncate", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, CreatedAt: now.Add(-2 * time.Hour), Labels: []string{"ctx:one", "backend"}}, RepositoryName: "one", RepositoryExtra: 1, HubPresentation: true, PresentationLabels: []string{"ctx:one", "backend"}},
+		{Issue: model.Issue{ID: "long-id", Title: "Other", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, CreatedAt: now.Add(-3 * time.Hour), Labels: []string{"ctx:two", "frontend"}}, RepositoryName: "two", RepositoryExtra: 10, HubPresentation: true, PresentationLabels: []string{"ctx:two", "frontend"}},
+	})
+	view := ansi.Strip(picker.renderMembers(70, 8))
+	rows := make([]string, 0, 2)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "short") || strings.Contains(line, "long-id") {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("member rows=%d:\n%s", len(rows), view)
+	}
+	ordered := []string{"one +1", "TASK", "P1", "OPEN", "short", "2h", "A deliberately", "backend"}
+	previous := -1
+	for _, value := range ordered {
+		at := strings.Index(rows[0], value)
+		if at <= previous {
+			t.Fatalf("member row order lost at %q:\n%s", value, rows[0])
+		}
+		previous = at
+	}
+	for _, column := range []string{"OPEN", "short", "long-id"} {
+		if len(rows) == 2 && displayOffset(rows[0], column) >= 0 && displayOffset(rows[1], column) >= 0 && column != "short" && column != "long-id" && displayOffset(rows[0], column) != displayOffset(rows[1], column) {
+			t.Fatalf("%s column is not aligned:\n%s", column, view)
+		}
+	}
+	if strings.Contains(view, "ctx:one") || !strings.Contains(view, "backend") || !strings.Contains(view, "…") {
+		t.Fatalf("member renderer labels/title handling incorrect:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 70 {
+			t.Fatalf("member row exceeded width: %d: %q", lipgloss.Width(line), line)
 		}
 	}
 }
@@ -1135,7 +1304,7 @@ func TestTypedBacklogQueryCarriesBoundedRequest(t *testing.T) {
 	if !ok {
 		t.Fatalf("typed backlog command returned %T", raw)
 	}
-	if got != want || msg.cursor != want.Cursor || msg.index != 2 || msg.generation != 7 {
+	if !reflect.DeepEqual(got, want) || msg.cursor != want.Cursor || msg.index != 2 || msg.generation != 7 {
 		t.Fatalf("query=%#v message=%#v, want query=%#v and matching paging metadata", got, msg, want)
 	}
 }
@@ -1185,7 +1354,7 @@ func TestBacklogAddRefreshPreservesCurrentPageRequest(t *testing.T) {
 			break
 		}
 	}
-	if want := (BacklogQuery{Filter: "alpha", Cursor: "cursor-1", Limit: backlogPageSize}); got != want {
+	if want := (BacklogQuery{Filter: "alpha", Cursor: "cursor-1", Limit: backlogPageSize}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("backlog add refresh query=%#v, want %#v", got, want)
 	}
 	if gotPage.index != 1 || gotPage.generation != 5 || m.backlog.PageIndex() != 1 || m.backlogPageGeneration != 5 {
