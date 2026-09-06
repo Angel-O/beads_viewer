@@ -285,7 +285,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"tab", "Switch catalog/members", "Navigation", "scope"},
 		{"n", "Next backlog page", "Navigation", "backlog"},
 		{"p", "Previous backlog page", "Navigation", "backlog"},
-		{"PgUp/Dn", "Scroll preview (Ctrl+b/f)", "Navigation", "backlog"},
+		{"pgup/pgdown", "Scroll preview (Ctrl+b/f)", "Navigation", "backlog"},
 		{"[", "Label dashboard", "Views", "detail"},
 		{"]", "Attention view", "Views", "detail"},
 		// Filters
