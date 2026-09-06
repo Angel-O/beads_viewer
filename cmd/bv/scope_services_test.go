@@ -167,6 +167,46 @@ printf '%s' '{}'
 	}
 }
 
+func TestHubScopeServiceForwardsBacklogContextSelection(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$WBD_SCOPE_CALLS"
+printf '%s' '{"issues":[],"pagination":{}}'
+`
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+	service := newHubScopeServices(root)
+
+	for _, test := range []struct {
+		name  string
+		query ui.BacklogQuery
+		want  []string
+	}{
+		{name: "all/no selection", query: ui.BacklogQuery{Limit: 7}, want: []string{"backlog", "list", "--limit", "7", "--json"}},
+		{name: "single", query: ui.BacklogQuery{Contexts: []string{"ctx:one"}, Limit: 7}, want: []string{"backlog", "list", "--context", "ctx:one", "--limit", "7", "--json"}},
+		{name: "ordered multiple", query: ui.BacklogQuery{Contexts: []string{"ctx:two", "ctx:one", "ctx:three"}, Limit: 7}, want: []string{"backlog", "list", "--context", "ctx:two", "--context", "ctx:one", "--context", "ctx:three", "--limit", "7", "--json"}},
+		{name: "contextless composition", query: ui.BacklogQuery{Contexts: []string{"ctx:one", "ctx:two"}, IncludeContextless: true, Limit: 7}, want: []string{"backlog", "list", "--context", "ctx:one", "--context", "ctx:two", "--contextless", "--limit", "7", "--json"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := service.QueryBacklog(context.Background(), test.query); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := splitLines(string(data)); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("wbd backlog args=%#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func splitLines(value string) []string {
 	lines := strings.Split(strings.TrimSpace(value), "\n")
 	return lines

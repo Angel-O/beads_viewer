@@ -28,6 +28,13 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 		if status := strings.TrimSpace(query.Status); status != "" && status != "all" {
 			args = append(args, "--status", status)
 		}
+		// No context flags deliberately means all contexts, matching wbd's default.
+		for _, contextID := range query.Contexts {
+			args = append(args, "--context", contextID)
+		}
+		if query.IncludeContextless {
+			args = append(args, "--contextless")
+		}
 		args = append(args, "--limit", strconv.Itoa(query.Limit))
 		if query.Cursor != "" {
 			args = append(args, "--cursor", query.Cursor)
