@@ -253,6 +253,48 @@ func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 	}
 }
 
+func TestScopePickerMemberRenderHidesAssigneeWithoutChangingIssue(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{
+		ID: "member-1", Title: "Assigned member", Status: model.StatusOpen,
+		IssueType: model.TypeTask, Assignee: "agent-7",
+	}}})
+
+	view := ansi.Strip(picker.renderMembers(120, 5))
+	if strings.Contains(view, "@agent-7") {
+		t.Fatalf("member browser rendered assignee:\n%s", view)
+	}
+	if got := picker.members[0].Issue.Assignee; got != "agent-7" {
+		t.Fatalf("member issue assignee = %q, want agent-7", got)
+	}
+}
+
+func TestScopePickerMemberRenderAlignsMixedRepositoryExtras(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "member-1", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryID: "ctx:one", RepositoryName: "one", RepositoryExtra: 1, HubPresentation: true},
+		{Issue: model.Issue{ID: "member-2", Title: "Two", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryID: "ctx:two", RepositoryName: "two", RepositoryExtra: 10, HubPresentation: true},
+	})
+
+	view := ansi.Strip(picker.renderMembers(120, 6))
+	rows := make([]string, 0, 2)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "member-") {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("member rows = %d, want 2:\n%s", len(rows), view)
+	}
+	for _, marker := range []string{"OPEN", "member-"} {
+		if got := displayOffset(rows[0], marker); got != displayOffset(rows[1], marker) {
+			t.Fatalf("%s starts are not aligned: %d and %d\n%s", marker, displayOffset(rows[0], marker), displayOffset(rows[1], marker), view)
+		}
+	}
+}
+
 func TestGenerationlessScopeDetailsPopulateMemberBrowser(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{})
 	m.showScopePicker = true
@@ -1110,6 +1152,74 @@ func TestBacklogRenderUsesBoundedColumnsAndFullPreview(t *testing.T) {
 	}
 }
 
+func TestBacklogSplitUsesNaturalTableWidthAndAlignedHeader(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "backlog-1", Title: "Readable title", Description: "Description",
+		Status: model.StatusOpen, IssueType: model.TypeFeature, Priority: 1,
+		CreatedAt: time.Date(2026, 9, 5, 12, 34, 56, 0, time.UTC),
+	}}}, 0)
+
+	contentWidth := b.width - 4
+	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
+	naturalWidth := backlogTableWidth(columns)
+	fitWidth := contentWidth * 2 / 3
+	if naturalWidth >= fitWidth {
+		t.Fatalf("test table width=%d must fit within existing split bound %d", naturalWidth, fitWidth)
+	}
+
+	view := ansi.Strip(b.View())
+	lines := strings.Split(view, "\n")
+	var tableHeader, previewTitle string
+	for _, line := range lines {
+		if strings.Contains(line, "ID") && strings.Contains(line, "CREATED_AT") {
+			tableHeader = line
+		}
+		if strings.Contains(line, "TITLE  Readable title") {
+			previewTitle = line
+		}
+	}
+	if tableHeader == "" || previewTitle == "" {
+		t.Fatalf("split backlog omitted table header or preview:\n%s", view)
+	}
+	columns.width = naturalWidth
+	header := ansi.Strip(b.renderBacklogHeader("Global backlog", columns))
+	directTableHeader := strings.Split(header, "\n")[1]
+	for _, line := range strings.Split(header, "\n") {
+		if got := lipgloss.Width(line); got != naturalWidth {
+			t.Fatalf("backlog header width=%d, want list width %d: %q", got, naturalWidth, line)
+		}
+	}
+	if got := lipgloss.Width(previewTitle[:strings.Index(previewTitle, "TITLE")]); got != naturalWidth+4 {
+		t.Fatalf("preview starts at cell %d, want natural list width plus padding/gap %d:\n%s", got, naturalWidth+4, view)
+	}
+	if strings.Index(directTableHeader, "ID") != 2 || strings.Index(tableHeader, "ID") != 4 {
+		t.Fatalf("table header ID offsets: direct=%d rendered=%d, want 2-cell prefix plus outer padding: %q", strings.Index(directTableHeader, "ID"), strings.Index(tableHeader, "ID"), tableHeader)
+	}
+}
+
+func TestBacklogMarkAcceptsPhysicalSpaceInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "bubble tea key space", key: tea.KeyMsg{Type: tea.KeySpace}},
+		{name: "space rune", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}},
+		{name: "synthetic space", key: keyMsg("space")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.isBacklogView, m.focused = true, focusBacklog
+			m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
+			updated, _ := m.Update(tc.key)
+			if got := updated.(*Model).backlog.MarkCount(); got != 1 {
+				t.Fatalf("mark count=%d, want 1 for %s", got, tc.name)
+			}
+		})
+	}
+}
+
 func TestBacklogMovesPreviewBelowWhenExactTableDoesNotFit(t *testing.T) {
 	b := NewBacklogModel(testTheme())
 	b.SetSize(80, 12)
@@ -1232,6 +1342,43 @@ func TestScopeMemberMarksSubmitOneBatchRemoveAndClearOnFilter(t *testing.T) {
 	m.scopePicker.ToggleMemberStatus("open")
 	if m.scopePicker.MemberMarkCount() != 0 {
 		t.Fatal("member filter retained marks")
+	}
+}
+
+func TestScopeMemberMarksAcceptPhysicalSpaceInputsAndSubmitBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{name: "bubble tea key space", key: tea.KeyMsg{Type: tea.KeySpace}},
+		{name: "space rune", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got ScopeMutation
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				Mutate: func(_ context.Context, mutation ScopeMutation) error { got = mutation; return nil },
+			}})
+			m.showScopePicker, m.focused = true, focusScopePicker
+			m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+			m.scopePicker.memberFocused = true
+			m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "b-1"}}, {Issue: model.Issue{ID: "b-2"}}})
+
+			for _, key := range []tea.KeyMsg{tc.key, keyMsg("j"), tc.key} {
+				updated, _ := m.Update(key)
+				m = updated.(*Model)
+			}
+			updated, cmd := m.Update(keyMsg("R"))
+			m = updated.(*Model)
+			if cmd == nil {
+				t.Fatal("marked remove did not start")
+			}
+			updated, _ = m.Update(cmd())
+			m = updated.(*Model)
+
+			if got.Kind != ScopeMutationRemove || got.ScopeID != "today" || strings.Join(got.IssueIDs, ",") != "b-1,b-2" {
+				t.Fatalf("batch mutation=%#v, want remove today [b-1 b-2]", got)
+			}
+		})
 	}
 }
 

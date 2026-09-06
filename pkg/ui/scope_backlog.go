@@ -412,15 +412,17 @@ func (b BacklogModel) View() string {
 
 func (b BacklogModel) renderBacklog(title string) string {
 	contentWidth := maxInt(b.width-4, 1)
-	listWidth := contentWidth
 	wideWidth := maxInt(contentWidth*2/3, 1)
-	columns := backlogTableColumnsFor(b.filteredItems, wideWidth)
-	wide := b.CurrentIssue() != nil && backlogTableWidth(columns) <= wideWidth
+	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
+	naturalTableWidth := backlogTableWidth(columns)
+	wide := b.CurrentIssue() != nil && naturalTableWidth <= wideWidth
+	listWidth := contentWidth
 	if wide {
-		listWidth = wideWidth
-	} else {
-		columns.width = listWidth
+		// Keep the table at its measured width so the preview gets the rest of
+		// the pane, while the existing two-thirds fit decision remains intact.
+		listWidth = naturalTableWidth
 	}
+	columns.width = listWidth
 
 	lines := []string{b.renderBacklogHeader(title, columns)}
 	availableHeight := maxInt(b.height-2, 1)
@@ -493,14 +495,18 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 }
 
 func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
-	return b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Render(title) + "\n" +
-		b.theme.Renderer.NewStyle().Background(b.theme.Primary).
-			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).Bold(true).Inline(true).
-			Render(renderBacklogTableHeader(columns))
+	width := maxInt(columns.width, 1)
+	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Width(width).MaxWidth(width)
+	tableStyle := b.theme.Renderer.NewStyle().Background(b.theme.Primary).
+		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#282A36"}).Bold(true).Inline(true).
+		Width(width).MaxWidth(width)
+	return titleStyle.Render(title) + "\n" + tableStyle.Render(renderBacklogTableHeader(columns))
 }
 
+const backlogMarkPrefix = "  "
+
 func renderBacklogTableHeader(columns backlogTableColumns) string {
-	return strings.Join([]string{
+	return backlogMarkPrefix + strings.Join([]string{
 		padRight("ID", columns.idWidth),
 		padRight("TYPE", columns.typeWidth),
 		padRight("PR", columns.priorityWidth),
@@ -510,7 +516,7 @@ func renderBacklogTableHeader(columns backlogTableColumns) string {
 }
 
 func backlogTableWidth(columns backlogTableColumns) int {
-	return 2 + lipgloss.Width(renderBacklogTableHeader(columns))
+	return lipgloss.Width(renderBacklogTableHeader(columns))
 }
 
 func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows int) string {
@@ -535,7 +541,7 @@ func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns ba
 		padRight(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth),
 		padRight(formatBacklogCreatedAt(item.Issue.CreatedAt), columns.createdWidth),
 	}, " ")
-	marker := "  "
+	marker := backlogMarkPrefix
 	if item.Marked {
 		marker = "✓ "
 	}
@@ -1039,14 +1045,19 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	items := make([]list.Item, len(s.filteredMembers))
 	showRepositories := false
 	workspaceMode := false
+	repositoryExtraWidth := 0
 	for i, item := range s.filteredMembers {
 		item.Marked = s.memberMarkedIDs[item.Issue.ID]
 		items[i] = item
 		showRepositories = showRepositories || item.HubPresentation
 		workspaceMode = workspaceMode || item.RepoPrefix != ""
+		if item.RepositoryExtra > 0 {
+			repositoryExtraWidth = maxInt(repositoryExtraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
+		}
 	}
-	delegate := IssueDelegate{Theme: s.theme, ShowRepositories: showRepositories, WorkspaceMode: workspaceMode, useFullWidth: true, layoutItems: items}
+	delegate := IssueDelegate{Theme: s.theme, ShowRepositories: showRepositories, WorkspaceMode: workspaceMode, HideAssignee: true, useFullWidth: true, layoutItems: items}
 	delegate.RepositoryNameWidth = 12
+	delegate.RepositoryExtraWidth = repositoryExtraWidth
 	delegate.columns = delegate.issueListColumnsFor(items, width)
 	l := list.New(items, delegate, width, maxInt(rows-2, 1))
 	l.Select(s.memberSelected)
@@ -1282,7 +1293,8 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.CycleMemberType()
 		}
-	case "space":
+	// Bubble Tea reports a physical space as either a space rune or "space".
+	case " ", "space":
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.ToggleMemberMark()
 		}
@@ -1430,7 +1442,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "/":
 		m.backlog.BeginSearch()
 		m.backlog.ClearMarks()
-	case "space":
+	case " ", "space":
 		m.backlog.ToggleMark()
 	case "n", "right":
 		if cursor := m.backlog.NextPageCursor(); cursor != "" {
