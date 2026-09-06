@@ -1232,6 +1232,9 @@ type Model struct {
 	backlogLoading        bool
 	backlogPageGeneration uint64
 	backlogScopeLoaded    bool
+	// Picker application stores the reload command until the overlay dispatch
+	// returns it; the legacy picker handler returns only *Model.
+	backlogReloadCmd tea.Cmd
 
 	// Time-travel mode
 	timeTravelMode   bool
@@ -4990,7 +4993,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quitCommand()
 			}
 			m = m.handleRepoPickerKeys(msg)
-			return m, m.pendingSemanticFilterCmd()
+			cmds = append(cmds, m.backlogReloadCmd)
+			m.backlogReloadCmd = nil
+			cmds = append(cmds, m.pendingSemanticFilterCmd())
+			return m, tea.Batch(cmds...)
 		}
 
 		// Handle issue-type picker overlay before global keys.
@@ -5864,7 +5870,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.closeBacklog()
 					return m, nil
 				}
-				if m.runtimeServices.Scopes.LoadBacklog == nil {
+				if m.runtimeServices.Scopes.LoadBacklog == nil && m.runtimeServices.Scopes.QueryBacklog == nil {
 					m.statusMsg, m.statusIsError = "Global backlog requires Hub mode", true
 					return m, nil
 				}
@@ -6125,7 +6131,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repoPickerOrigin = m.focused
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-				if m.hubRepositoryMode {
+				if m.isBacklogView {
+					m.repoPicker.SetHubScope(m.backlogHubScope())
+				} else if m.hubRepositoryMode {
 					m.repoPicker.SetHubScope(m.hubScope)
 				} else {
 					m.repoPicker.SetActiveRepos(m.activeRepos)
@@ -7234,6 +7242,9 @@ func (m *Model) resetRecipePicker() {
 
 func (m *Model) applyRepositoryPickerSelection() *Model {
 	selected := m.repoPicker.SelectedRepos()
+	if m.repoPickerOrigin == focusBacklog {
+		return m.applyBacklogPickerSelection(selected)
+	}
 	focusAfterApply := focusList
 	if m.repoPickerOrigin == focusScopePicker {
 		focusAfterApply = focusScopePicker
@@ -7265,6 +7276,55 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 	m.SetRepositoryScope(selected)
 	m.showRepoPicker = false
 	m.focused = focusAfterApply
+	return m
+}
+
+func (m Model) backlogHubScope() hub.HubScope {
+	contexts := m.backlog.Contexts()
+	if len(contexts) == 0 {
+		if m.backlog.IncludeContextless() {
+			return hub.NewContextlessHubScope()
+		}
+		return hub.NewAllItemsHubScope()
+	}
+	if m.backlog.IncludeContextless() {
+		if scope, err := hub.NewSelectedContextsAndContextlessHubScope(contexts); err == nil {
+			return scope
+		}
+	} else if scope, err := hub.NewSelectedContextsHubScope(contexts); err == nil {
+		return scope
+	}
+	return hub.NewAllItemsHubScope()
+}
+
+func (m *Model) applyBacklogPickerSelection(selected map[string]bool) *Model {
+	includeContextless := m.repoPicker.ContextlessSelected()
+	contexts := sortedRepoKeys(selected)
+	// An empty draft is the backlog's all-items choice. Treat the equivalent
+	// all-contexts-plus-contextless draft the same way so the query stays small.
+	if (len(contexts) == 0 && !includeContextless) ||
+		(includeContextless && len(contexts) == len(m.repositoryCatalog) && len(contexts) > 0) {
+		contexts = nil
+		includeContextless = false
+	}
+	names := make([]string, 0, len(contexts))
+	for _, contextID := range contexts {
+		for _, repository := range m.repositoryCatalog {
+			if repository.ID == contextID {
+				name := repository.Name
+				if name == "" {
+					name = repository.ID
+				}
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	m.backlog.SetContextFilter(contexts, includeContextless, names)
+	m.backlog.resetCursor()
+	m.showRepoPicker = false
+	m.focused = focusBacklog
+	m.backlogReloadCmd = m.reloadBacklogFromFirstPage()
 	return m
 }
 

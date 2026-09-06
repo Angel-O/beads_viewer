@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -42,14 +41,17 @@ type BacklogPage struct {
 }
 
 // BacklogQuery is the complete request for one bounded backlog page. Filter
-// searches ID/title; Label and Status are backend-owned exact filters. Cursor
-// is opaque and must not be decoded or edited. An empty Status means all.
+// searches ID/title; Label and Status are backend-owned exact filters. Contexts
+// and IncludeContextless are owned by the backlog picker. Cursor is opaque and
+// must not be decoded or edited. An empty Status means all.
 type BacklogQuery struct {
-	Filter string
-	Label  string
-	Status string
-	Cursor string
-	Limit  int
+	Filter             string
+	Label              string
+	Status             string
+	Contexts           []string
+	IncludeContextless bool
+	Cursor             string
+	Limit              int
 }
 
 // ScopeDetails is the bounded result for one selected named scope. The
@@ -215,27 +217,30 @@ func isBacklogReloadNotice(status string) bool {
 // BacklogModel renders the global, unscoped backlog independently of the
 // ordinary graph snapshot. It deliberately owns only one page and cursors.
 type BacklogModel struct {
-	issues        []model.Issue
-	items         []IssueItem
-	filtered      []model.Issue
-	filteredItems []IssueItem
-	selected      int
-	filter        string
-	label         string
-	status        string
-	searching     bool
-	labelEditing  bool
-	labelInput    textinput.Model
-	hasMore       bool
-	nextCursor    string
-	pageIndex     int
-	pageCursors   []string
-	previewOffset int
-	width         int
-	height        int
-	theme         Theme
-	delegate      IssueDelegate
-	marked        map[string]bool
+	issues             []model.Issue
+	items              []IssueItem
+	filtered           []model.Issue
+	filteredItems      []IssueItem
+	selected           int
+	filter             string
+	label              string
+	status             string
+	searching          bool
+	labelEditing       bool
+	labelInput         textinput.Model
+	hasMore            bool
+	nextCursor         string
+	pageIndex          int
+	pageCursors        []string
+	previewOffset      int
+	contexts           []string
+	contextNames       []string
+	includeContextless bool
+	width              int
+	height             int
+	theme              Theme
+	delegate           IssueDelegate
+	marked             map[string]bool
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
@@ -309,6 +314,34 @@ func (b *BacklogModel) ResetPagination() {
 	b.nextCursor = ""
 	b.hasMore = false
 	b.pageCursors = []string{""}
+}
+
+func (b *BacklogModel) resetCursor() { b.selected, b.previewOffset = 0, 0 }
+
+// SetContextFilter records the backlog-owned Hub context projection. It does
+// not touch the generic Model scope or its active issue list.
+func (b *BacklogModel) SetContextFilter(contexts []string, includeContextless bool, names []string) {
+	b.contexts = append([]string(nil), contexts...)
+	b.contextNames = append([]string(nil), names...)
+	b.includeContextless = includeContextless
+}
+
+func (b BacklogModel) Contexts() []string { return append([]string(nil), b.contexts...) }
+
+func (b BacklogModel) IncludeContextless() bool { return b.includeContextless }
+
+func (b BacklogModel) contextFilterLabel() string {
+	labels := append([]string(nil), b.contextNames...)
+	if len(labels) != len(b.contexts) {
+		labels = append([]string(nil), b.contexts...)
+	}
+	if b.includeContextless {
+		labels = append(labels, contextlessRepositoryID)
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	return strings.Join(labels, ", ")
 }
 
 // ToggleMark marks only the current row on the loaded page. Marks never cross
@@ -503,6 +536,9 @@ func (b BacklogModel) View() string {
 	}
 	filters = append(filters, "status: "+b.Status())
 	title := "Global backlog"
+	if contexts := b.contextFilterLabel(); contexts != "" {
+		title += " · contexts: " + contexts
+	}
 	if len(filters) > 0 {
 		title += " · " + strings.Join(filters, " · ")
 	}
@@ -514,6 +550,7 @@ func (b BacklogModel) renderBacklog(title string) string {
 	wideWidth := maxInt(contentWidth*2/3, 1)
 	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
 	naturalTableWidth := backlogTableWidth(columns)
+	naturalTableWidth = maxInt(naturalTableWidth, lipgloss.Width(title))
 	wide := b.CurrentIssue() != nil && naturalTableWidth <= wideWidth
 	listWidth := contentWidth
 	if wide {
@@ -595,7 +632,7 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 
 func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
 	width := maxInt(columns.width, 1)
-	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Width(width).MaxWidth(width)
+	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Inline(true).Width(width).MaxWidth(width)
 	// Keep the global-backlog column labels bright against the dark header fill.
 	tableStyle := b.theme.Renderer.NewStyle().Background(b.theme.Primary).
 		Foreground(ThemeFg("#FFFFFF")).Bold(true).Inline(true).
@@ -682,18 +719,8 @@ func (b BacklogModel) renderBacklogPreview(width int, heights ...int) string {
 }
 
 func (b BacklogModel) renderBacklogPage(width int) string {
-	page := fmt.Sprintf("page %d", b.pageIndex+1)
-	if b.HasMore() {
-		page += " · n next"
-	}
-	if b.pageIndex > 0 {
-		page += " · p previous"
-	}
-	page += " · / filter · A add"
-	if count := b.MarkCount(); count > 0 {
-		page += fmt.Sprintf(" · %d marked", count)
-	}
-	return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render(ansi.Truncate(page, maxInt(width, 1), "…"))
+	return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).
+		Width(maxInt(width, 1)).Align(lipgloss.Center).Render(fmt.Sprintf("page %d", b.pageIndex+1))
 }
 
 // visibleRange keeps the selected backlog row on screen while reserving the
@@ -854,10 +881,22 @@ func (s *ScopePickerModel) SetMemberReadyIDs(ids map[string]bool) {
 // SetMembers replaces the bounded member projection and reapplies only the
 // display narrowing owned by this picker.
 func (s *ScopePickerModel) SetMembers(items []IssueItem) {
+	selectedID := ""
+	if selected := s.SelectedMember(); selected != nil {
+		selectedID = selected.Issue.ID
+	}
 	s.members = append([]IssueItem(nil), items...)
 	s.memberLoading = false
 	s.memberError = ""
 	s.applyMemberFilters()
+	if selectedID != "" {
+		for i, item := range s.filteredMembers {
+			if item.Issue.ID == selectedID {
+				s.memberSelected = i
+				break
+			}
+		}
+	}
 }
 
 func (s *ScopePickerModel) SetMemberFilters(repository, status string, issueType model.IssueType) {
@@ -1074,6 +1113,12 @@ func (s ScopePickerModel) View() string {
 	if height <= 0 {
 		height = 20
 	}
+	// A framed member panel needs six outer rows: borders, heading, filters,
+	// column header, and one member row. Below the minimum useful framed layout,
+	// keep the picker bounded with its compact presentation.
+	if width < 20 || height < 15 {
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, truncateRunesHelper("Scopes", width, "…"))
+	}
 	heading := "Scopes"
 	if s.moveTarget != "" {
 		heading = "Move: " + s.moveTarget
@@ -1082,13 +1127,21 @@ func (s ScopePickerModel) View() string {
 	contentHeight := maxInt(height-4, 3)
 	catalogRows := maxInt(3, contentHeight/2)
 	memberRows := contentHeight - catalogRows - 2
-	if memberRows < 2 {
-		memberRows = 2
+	if memberRows < 6 {
+		memberRows = 6
 		catalogRows = maxInt(1, contentHeight-memberRows-2)
 	}
 
-	catalog := s.renderCatalog(heading, contentWidth, catalogRows)
-	members := s.renderMembers(contentWidth, memberRows)
+	catalogStyle, memberStyle := PanelStyle, FocusedPanelStyle
+	if !s.memberFocused {
+		catalogStyle, memberStyle = FocusedPanelStyle, PanelStyle
+	}
+	panel := func(style lipgloss.Style, content string, panelWidth, panelHeight int) string {
+		innerWidth, innerHeight := maxInt(panelWidth-2, 1), maxInt(panelHeight-2, 1)
+		return style.Width(innerWidth).Height(innerHeight).Render(content)
+	}
+	catalog := panel(catalogStyle, s.renderCatalog(heading, contentWidth-2, catalogRows-2), contentWidth, catalogRows)
+	members := panel(memberStyle, s.renderMembers(contentWidth-2, memberRows-2), contentWidth, memberRows)
 	view := catalog + "\n\n" + members
 	return lipgloss.NewStyle().
 		Width(maxInt(width, 1)).
@@ -1098,7 +1151,9 @@ func (s ScopePickerModel) View() string {
 }
 
 func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string {
-	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(heading)
+	width = maxInt(width, 1)
+	rows = maxInt(rows, 1)
+	title := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper(heading, width, "…"))
 	lines := []string{title, ""}
 	if len(s.scopes) == 0 {
 		lines = append(lines, "No scopes available.")
@@ -1118,62 +1173,166 @@ func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string 
 			if s.scopes[i].Active {
 				active = "  (active)"
 			}
-			lines = append(lines, fmt.Sprintf("%s%s · %s/%d%s", prefix, s.scopes[i].Name, s.scopes[i].CreatedAt.Format("2006-01-02"), s.scopes[i].MemberCount, active))
+			lines = append(lines, truncateRunesHelper(fmt.Sprintf("%s%s · %s/%d%s", prefix, s.scopes[i].Name, s.scopes[i].CreatedAt.Format("2006-01-02"), s.scopes[i].MemberCount, active), width, "…"))
 		}
 	}
 	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
 }
 
+type scopeMemberColumns struct {
+	mark, repository, issueType, priority, status, id, age, title, labels int
+}
+
+func scopeMemberLabels(item IssueItem) []string {
+	labels := item.Issue.Labels
+	if item.HubPresentation {
+		labels = item.PresentationLabels
+	}
+	filtered := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if !isHubContextLabel(label) {
+			filtered = append(filtered, label)
+		}
+	}
+	return filtered
+}
+
+func scopeMemberRepository(item IssueItem) string {
+	repository := memberRepositoryValue(item)
+	if repository == "" {
+		return ""
+	}
+	if item.RepositoryExtra > 0 {
+		repository += fmt.Sprintf(" +%d", item.RepositoryExtra)
+	}
+	return repository
+}
+
+func scopeMemberColumnsFor(items []IssueItem, width int) scopeMemberColumns {
+	width = maxInt(width, 1)
+	columns := scopeMemberColumns{mark: 1, priority: 2, status: len("STAT"), age: 4}
+	for _, item := range items {
+		columns.repository = maxInt(columns.repository, lipgloss.Width(scopeMemberRepository(item)))
+		columns.issueType = maxInt(columns.issueType, lipgloss.Width(strings.ToUpper(string(item.Issue.IssueType))))
+		columns.id = maxInt(columns.id, lipgloss.Width(item.Issue.ID))
+		for _, label := range scopeMemberLabels(item) {
+			columns.labels = maxInt(columns.labels, lipgloss.Width(label))
+		}
+	}
+	columns.repository = min(columns.repository, 16)
+	columns.issueType = min(maxInt(columns.issueType, len("TYPE")), 8)
+	columns.id = min(maxInt(columns.id, len("ID")), 24)
+	columns.labels = min(columns.labels, 20)
+	separators := 8
+	reserved := columns.mark + columns.repository + columns.issueType + columns.priority + columns.status + columns.id + columns.age + separators
+	columns.title = maxInt(1, width-reserved-columns.labels-1)
+	total := func() int {
+		return columns.mark + columns.repository + columns.issueType + columns.priority + columns.status + columns.id + columns.age + columns.title + columns.labels + separators
+	}
+	for total() > width {
+		switch {
+		case columns.labels > 0:
+			columns.labels--
+		case columns.repository > 1:
+			columns.repository--
+		case columns.id > 1:
+			columns.id--
+		case columns.issueType > 1:
+			columns.issueType--
+		case columns.status > 1:
+			columns.status--
+		case columns.age > 1:
+			columns.age--
+		case columns.priority > 1:
+			columns.priority--
+		default:
+			return columns
+		}
+	}
+	return columns
+}
+
+func scopeMemberCell(value string, width int) string {
+	return padRight(truncateRunesHelper(value, width, "…"), width)
+}
+
+func (s ScopePickerModel) renderMemberRow(item IssueItem, selected bool, columns scopeMemberColumns, width int) string {
+	mark := ""
+	if item.Marked {
+		mark = "✓"
+	}
+	values := []string{
+		scopeMemberCell(mark, columns.mark),
+		scopeMemberCell(scopeMemberRepository(item), columns.repository),
+		scopeMemberCell(strings.ToUpper(string(item.Issue.IssueType)), columns.issueType),
+		scopeMemberCell(fmt.Sprintf("P%d", item.Issue.Priority), columns.priority),
+		scopeMemberCell(strings.ToUpper(string(item.Issue.Status)), columns.status),
+		scopeMemberCell(item.Issue.ID, columns.id),
+		scopeMemberCell(formatIssueListAge(item.Issue.CreatedAt), columns.age),
+		scopeMemberCell(item.Issue.Title, columns.title),
+	}
+	if columns.labels > 0 {
+		values = append(values, scopeMemberCell(strings.Join(scopeMemberLabels(item), ","), columns.labels))
+	}
+	row := strings.TrimRight(strings.Join(values, " "), " ")
+	row = truncateRunesHelper(row, maxInt(width, 1), "…")
+	style := s.theme.Renderer.NewStyle().Width(maxInt(width, 1)).MaxWidth(maxInt(width, 1))
+	if selected {
+		style = style.Background(s.theme.Highlight).Bold(true)
+	}
+	return style.Render(row)
+}
+
 func (s ScopePickerModel) renderMembers(width, rows int) string {
+	width = maxInt(width, 1)
+	rows = maxInt(rows, 1)
 	selected := s.Selected()
 	name := "none"
 	if selected != nil {
 		name = selected.Name
 	}
-	header := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render("Members · " + name)
+	header := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper("Members · "+name, width, "…"))
 	if s.memberLoading {
-		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render("Loading members…")
+		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(truncateRunesHelper("Loading members…", width, "…"))
 	}
 	if s.memberError != "" {
-		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Blocked).Render("Members unavailable: "+s.memberError)
+		return header + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Blocked).Render(truncateRunesHelper("Members unavailable: "+s.memberError, width, "…"))
 	}
 	filter := fmt.Sprintf("repository:%s · status:%s · type:%s", memberFilterLabel(s.memberRepositoryFilter), memberFilterLabel(s.memberStatusFilter), memberFilterLabel(string(s.memberTypeFilter)))
-	filterLine := s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(filter)
+	filterLine := s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(truncateRunesHelper(filter, width, "…"))
 	if len(s.filteredMembers) == 0 {
-		return header + "\n" + filterLine + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render("No members match.")
+		return header + "\n" + filterLine + "\n" + s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).Render(truncateRunesHelper("No members match.", width, "…"))
 	}
-	items := make([]list.Item, len(s.filteredMembers))
-	showRepositories := false
-	workspaceMode := false
-	repositoryExtraWidth := 0
-	for i, item := range s.filteredMembers {
-		item.Marked = s.memberMarkedIDs[item.Issue.ID]
-		items[i] = item
-		showRepositories = showRepositories || item.HubPresentation
-		workspaceMode = workspaceMode || item.RepoPrefix != ""
-		if item.RepositoryExtra > 0 {
-			repositoryExtraWidth = maxInt(repositoryExtraWidth, lipgloss.Width(fmt.Sprintf("+%d", item.RepositoryExtra)))
-		}
+	items := append([]IssueItem(nil), s.filteredMembers...)
+	for i := range items {
+		items[i].Marked = s.memberMarkedIDs[items[i].Issue.ID]
 	}
-	delegate := IssueDelegate{Theme: s.theme, ShowRepositories: showRepositories, WorkspaceMode: workspaceMode, HideAssignee: true, useFullWidth: true, layoutItems: items}
-	delegate.RepositoryNameWidth = 12
-	delegate.RepositoryExtraWidth = repositoryExtraWidth
-	delegate.columns = delegate.issueListColumnsFor(items, width)
-	l := list.New(items, delegate, width, maxInt(rows-2, 1))
-	l.Select(s.memberSelected)
-	lines := []string{header, filterLine}
-	visible := maxInt(rows-2, 1)
+	columns := scopeMemberColumnsFor(items, width)
+	headerCells := []string{
+		scopeMemberCell("", columns.mark),
+		scopeMemberCell("REPOSITORY", columns.repository),
+		scopeMemberCell("TYPE", columns.issueType),
+		scopeMemberCell("PR", columns.priority),
+		scopeMemberCell("STAT", columns.status),
+		scopeMemberCell("ID", columns.id),
+		scopeMemberCell("AGE", columns.age),
+		scopeMemberCell("TITLE", columns.title),
+	}
+	if columns.labels > 0 {
+		headerCells = append(headerCells, scopeMemberCell("LABELS", columns.labels))
+	}
+	headerLine := truncateRunesHelper(strings.Join(headerCells, " "), maxInt(width, 1), "…")
+	lines := []string{header, filterLine, headerLine}
+	visible := maxInt(rows-3, 1)
 	start := 0
 	if s.memberSelected >= visible {
 		start = s.memberSelected - visible + 1
 	}
 	end := min(len(items), start+visible)
 	for i := start; i < end; i++ {
-		var row bytes.Buffer
-		delegate.Render(&row, l, i, items[i])
-		lines = append(lines, row.String())
+		lines = append(lines, s.renderMemberRow(items[i], i == s.memberSelected, columns, width))
 	}
-	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).MaxHeight(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
 }
 
 func memberFilterLabel(value string) string {
@@ -1355,11 +1514,13 @@ func (m *Model) backlogQuery(cursor string) BacklogQuery {
 		status = ""
 	}
 	return BacklogQuery{
-		Filter: m.backlog.Filter(),
-		Label:  m.backlog.Label(),
-		Status: status,
-		Cursor: cursor,
-		Limit:  backlogPageSize,
+		Filter:             m.backlog.Filter(),
+		Label:              m.backlog.Label(),
+		Status:             status,
+		Contexts:           m.backlog.Contexts(),
+		IncludeContextless: m.backlog.IncludeContextless(),
+		Cursor:             cursor,
+		Limit:              backlogPageSize,
 	}
 }
 
