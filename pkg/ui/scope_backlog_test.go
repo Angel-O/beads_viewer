@@ -1943,6 +1943,51 @@ func TestBacklogStatusColumnIsFixedAndTruncatesBeforePadding(t *testing.T) {
 	}
 }
 
+func TestBacklogPagedRowsKeepFixedColumnsAndTruncateBeforePadding(t *testing.T) {
+	created := time.Date(2026, 9, 5, 12, 34, 56, 0, time.UTC)
+	pages := []model.Issue{
+		{ID: "short-id", IssueType: model.TypeTask, Priority: 1, Status: model.Status("future-status-name"), CreatedAt: created},
+		{ID: "long-backlog-identifier-0123456789", IssueType: model.IssueType("custom-long-type"), Priority: 1, Status: model.Status("future-status-name"), CreatedAt: created},
+	}
+	var firstStarts [3]int
+	for i, issue := range pages {
+		b := NewBacklogModel(testTheme())
+		b.SetPage(BacklogPage{Issues: []model.Issue{issue}}, i)
+		columns := backlogTableColumnsFor(b.filteredItems, 120)
+		if columns.idWidth != backlogIDWidth || columns.typeWidth != backlogTypeWidth {
+			t.Fatalf("page %d widths = (%d, %d), want fixed (%d, %d)", i+1, columns.idWidth, columns.typeWidth, backlogIDWidth, backlogTypeWidth)
+		}
+		row := ansi.Strip(b.renderBacklogRow(b.filteredItems[0], false, columns, 120))
+		wantID := truncateRunesHelper(issue.ID, backlogIDWidth, "…")
+		wantType := truncateRunesHelper(string(issue.IssueType), backlogTypeWidth, "…")
+		wantStatus := truncateRunesHelper(strings.ToUpper(string(issue.Status)), backlogStatusWidth, "…")
+		wantCreated := formatBacklogCreatedAt(created)
+		values := []string{wantType, wantStatus, wantCreated}
+		var starts [3]int
+		for j, value := range values {
+			starts[j] = displayOffset(row, value)
+			if starts[j] < 0 {
+				t.Fatalf("page %d omitted column %q: %q", i+1, value, row)
+			}
+		}
+		if wantID != issue.ID && strings.Contains(row, issue.ID) {
+			t.Fatalf("page %d rendered full ID instead of %q: %q", i+1, wantID, row)
+		}
+		if wantType != string(issue.IssueType) && strings.Contains(row, string(issue.IssueType)) {
+			t.Fatalf("page %d rendered full TYPE instead of %q: %q", i+1, wantType, row)
+		}
+		if i == 0 {
+			firstStarts = starts
+		} else {
+			for j, name := range []string{"TYPE", "STATUS", "CREATED_AT"} {
+				if starts[j] != firstStarts[j] {
+					t.Fatalf("page %d %s start=%d changed from page 1 start=%d: %q", i+1, name, starts[j], firstStarts[j], row)
+				}
+			}
+		}
+	}
+}
+
 func TestBacklogCursorAndMarkCellsAreIndependentAndHighlightSelectedRows(t *testing.T) {
 	b := NewBacklogModel(testTheme())
 	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "b-1"}}}, 0)
