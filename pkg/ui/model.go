@@ -8861,10 +8861,10 @@ func (m *Model) renderHelpOverlay() string {
 			{"space", "Mark current bead"},
 			{"n/p", "Next / previous page"},
 			{"/", "ID/title search"},
-			{"l", "Edit exact label filter"},
+			{"l", "Filter by exact label"},
 			{"s", "Cycle status: all/open/in_progress/blocked/deferred/closed"},
 			{"A", "Add selected bead to scope (or all marked)"},
-			{"M", "Add by epic or label (semantic)"},
+			{"M", "Add matching exact label/epic issues to active scope"},
 			{"W", "Open named scopes"},
 			{"B / Esc / q", "Return to List"},
 		}
@@ -10000,7 +10000,7 @@ func (m *Model) renderFooter() string {
 			if m.backlog.MarkCount() > 0 {
 				addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" epic/label", keyStyle.Render("W")+" scopes", keyStyle.Render("B/esc/q")+" list")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" add scope", keyStyle.Render("W")+" scopes", keyStyle.Render("B")+" list")
 		}
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")

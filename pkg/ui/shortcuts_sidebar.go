@@ -163,6 +163,16 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryOrder := []string{} // Preserve order of first appearance
 
 	for _, b := range bindings {
+		// Backlog's M only adds matches to the active scope; keep its sidebar
+		// wording distinct from the exact label filter and scope-member toggle.
+		if s.focusHint == focusBacklog {
+			switch b.Key {
+			case "l":
+				b.Desc = "Filter by exact label"
+			case "M":
+				b.Desc = "Add matching exact label/epic issues to active scope"
+			}
+		}
 		if s.focusHint == focusScopePicker {
 			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "r" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "R" || b.Key == "M"
 			if memberOnly && !s.scopeMembers {

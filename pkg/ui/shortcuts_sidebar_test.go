@@ -376,9 +376,26 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusBacklog)
 	backlogView := sidebar.View()
-	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "l", "Edit exact label filter", "s", "Cycle exact status", "space", "Mark current row/member", "A", "Add to scope", "M", "Add/remove by epic or"} {
+	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "l", "Filter by exact label", "s", "Cycle exact status", "space", "Mark current row/member", "A", "Add to scope"} {
 		if !strings.Contains(backlogView, expected) {
 			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
+		}
+	}
+	descriptions := make(map[string]string)
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			descriptions[item.key] = item.desc
+		}
+	}
+	for key, expected := range map[string]string{
+		"l":   "Filter by exact label",
+		"M":   "Add matching exact label/epic issues to active scope",
+		"esc": "Back/close",
+		"q":   "Back/quit",
+		"B":   "Return to list",
+	} {
+		if descriptions[key] != expected {
+			t.Fatalf("backlog sidebar %s description=%q, want %q", key, descriptions[key], expected)
 		}
 	}
 }

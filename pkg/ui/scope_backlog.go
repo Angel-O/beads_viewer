@@ -1220,7 +1220,12 @@ func (m Model) renderScopeMatchPrompt() string {
 		Padding(1, 3).
 		Align(lipgloss.Center)
 	muted := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
+	action := "Add matching exact label/epic issues to active scope"
+	if m.scopeMatchAction == "remove" {
+		action = "Remove matching exact label/epic issues from selected scope"
+	}
 	content := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true).Render("Scope match") + "\n\n" +
+		muted.Render(action) + "\n\n" +
 		muted.Render("Enter label:name or epic:id") + "\n\n" +
 		m.scopeMatchInput.View() + "\n\n" +
 		muted.Render("Enter apply · Esc cancel")
