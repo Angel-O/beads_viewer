@@ -138,21 +138,100 @@ func TestScopePickerViewOmitsLocalHintsAndSpacesHeader(t *testing.T) {
 	picker.SetScopes([]ScopeInfo{{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2}})
 	view := ansi.Strip(picker.View())
 	lines := strings.Split(view, "\n")
-	header, entry := -1, -1
+	header, entry, detail := -1, -1, -1
 	for index, line := range lines {
 		switch {
 		case strings.Contains(line, "Scopes"):
 			header = index
-		case strings.Contains(line, "> Today · 2026-01-02/2"):
+		case strings.Contains(line, "▸ Today"):
 			entry = index
+		case strings.Contains(line, "created: 2026-01-02 · members: 2"):
+			detail = index
 		}
 	}
-	if header < 0 || entry < 0 || entry != header+2 {
+	if header < 0 || entry < 0 || detail < 0 || entry != header+2 || detail != entry+1 {
 		t.Fatalf("scope header spacing missing:\n%s", view)
 	}
 	for _, hint := range []string{"enter activate", "n new scope", "esc back", "enter move bead"} {
 		if strings.Contains(view, hint) {
 			t.Fatalf("scope picker retained local hint %q:\n%s", hint, view)
+		}
+	}
+}
+
+func TestScopePickerCatalogUsesCompactRowsWhenPanelIsConstrained(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(80, 15)
+	picker.SetScopes([]ScopeInfo{{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2}})
+
+	view := ansi.Strip(picker.View())
+	if !strings.Contains(view, "▸ Today · 2026-01-02/2") {
+		t.Fatalf("compact catalog row missing:\n%s", view)
+	}
+	if strings.Contains(view, "created:") || strings.Contains(view, "members:") {
+		t.Fatalf("constrained catalog rendered rich details:\n%s", view)
+	}
+}
+
+func TestScopePickerCompactCatalogBoundsRowsAtNarrowViewport(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(30, 15)
+	picker.SetScopes([]ScopeInfo{
+		{Name: "A very long active scope name", Active: true, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 123},
+		{Name: "Selected later", CreatedAt: time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), MemberCount: 4},
+	})
+	picker.Move(1)
+
+	view := ansi.Strip(picker.View())
+	if !strings.Contains(view, "Selected later") {
+		t.Fatalf("selected subsequent scope was clipped from narrow catalog:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > 30 {
+			t.Fatalf("narrow picker row width=%d, want <= 30: %q", width, line)
+		}
+	}
+}
+
+func TestScopePickerCatalogStylesSelectedNameAndActiveScope(t *testing.T) {
+	renderer := lipgloss.NewRenderer(io.Discard)
+	renderer.SetColorProfile(termenv.ANSI)
+	theme := DefaultTheme(renderer)
+	picker := NewScopePickerModel(theme)
+	picker.SetSize(80, 20)
+	picker.SetScopes([]ScopeInfo{
+		{Name: "Earlier", CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), MemberCount: 1},
+		{Name: "Current", Active: true, CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2},
+	})
+
+	view := picker.View()
+	if want := theme.Renderer.NewStyle().Foreground(theme.Primary).Bold(true).Render("Current"); !strings.Contains(view, want) {
+		t.Fatalf("selected scope name lost selected styling: %q", view)
+	}
+	if want := theme.Renderer.NewStyle().Foreground(theme.Open).Bold(true).Render("  (active)"); !strings.Contains(view, want) {
+		t.Fatalf("active scope marker lost active styling: %q", view)
+	}
+}
+
+func TestScopePickerCatalogWindowUsesTwoLineRowBounds(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{
+		{Name: "One"}, {Name: "Two"}, {Name: "Three"},
+		{Name: "Four"}, {Name: "Five"}, {Name: "Six"},
+	})
+	picker.Move(5)
+
+	for _, rows := range []int{5, 6, 7} {
+		catalog := ansi.Strip(picker.renderCatalog("Scopes", 60, rows))
+		visible := (rows - 2) / 2
+		if got := strings.Count(catalog, "created:"); got > visible {
+			t.Fatalf("rows=%d rendered %d rich rows, want at most %d:\n%s", rows, got, visible, catalog)
+		}
+		if !strings.Contains(catalog, "Six") || !strings.Contains(catalog, "members: 0") {
+			t.Fatalf("rows=%d scrolled selected row out of viewport:\n%s", rows, catalog)
+		}
+		if height := lipgloss.Height(catalog); height > rows {
+			t.Fatalf("rows=%d catalog height=%d:\n%s", rows, height, catalog)
 		}
 	}
 }

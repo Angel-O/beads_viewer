@@ -1544,25 +1544,61 @@ func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string 
 	} else if len(s.scopes) == 0 {
 		lines = append(lines, "No scopes available.")
 	} else {
+		// Match the Context picker: a catalog row gets a muted detail line when
+		// the panel can afford two-line entries, otherwise keep the old compact
+		// one-line row. Windowing uses that same row height so the panel cannot
+		// render past its assigned viewport.
+		showDetails := rows >= 5
+		rowHeight := 1
+		if showDetails {
+			rowHeight = 2
+		}
+		visible := (rows - len(lines)) / rowHeight
+		if visible < 0 {
+			visible = 0
+		}
 		start := 0
-		visible := maxInt(rows-2, 1)
-		if s.selected >= visible {
+		if visible > 0 && s.selected >= visible {
 			start = s.selected - visible + 1
 		}
 		end := min(len(s.scopes), start+visible)
 		for i := start; i < end; i++ {
 			prefix := "  "
 			if i == s.selected {
-				prefix = "> "
+				prefix = "▸ "
 			}
+			nameStyle := s.theme.Renderer.NewStyle().Foreground(s.theme.Base.GetForeground())
+			if i == s.selected {
+				nameStyle = nameStyle.Foreground(s.theme.Primary).Bold(true)
+			}
+			activeStyle := s.theme.Renderer.NewStyle().Foreground(s.theme.Open).Bold(true)
 			active := ""
 			if s.scopes[i].Active {
 				active = "  (active)"
 			}
-			lines = append(lines, truncateRunesHelper(fmt.Sprintf("%s%s · %s/%d%s", prefix, s.scopes[i].Name, s.scopes[i].CreatedAt.Format("2006-01-02"), s.scopes[i].MemberCount, active), width, "…"))
+			activeRendered := ""
+			if active != "" {
+				activeRendered = activeStyle.Render(active)
+			}
+			date := s.scopes[i].CreatedAt.Format("2006-01-02")
+			if !showDetails {
+				suffix := fmt.Sprintf(" · %s/%d", date, s.scopes[i].MemberCount)
+				// Truncate the complete styled row, not just the name: the
+				// date/count and active marker must not escape narrow panels.
+				row := prefix + nameStyle.Render(s.scopes[i].Name) + suffix + activeRendered
+				lines = append(lines, ansi.Truncate(row, width, "…"))
+				continue
+			}
+
+			nameWidth := maxInt(width-lipgloss.Width(prefix)-lipgloss.Width(active), 0)
+			displayName := truncateRunesHelper(s.scopes[i].Name, nameWidth, "…")
+			lines = append(lines, prefix+nameStyle.Render(displayName)+activeRendered)
+			detail := fmt.Sprintf("    created: %s · members: %d", date, s.scopes[i].MemberCount)
+			lines = append(lines, s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).
+				Render(truncateRunesHelper(detail, width, "…")))
 		}
 	}
-	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(width).Height(rows).MaxHeight(rows).Render(strings.Join(lines, "\n"))
 }
 
 type scopeMemberColumns struct {
