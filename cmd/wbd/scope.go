@@ -17,9 +17,20 @@ const backlogContextLabelPrefix = "ctx:"
 
 // Scope JSON is deliberately bd's stabilized contract: wbd forwards successful
 // JSON bytes rather than decoding and re-encoding an evolving backend schema.
-// Backlog pages use the shared stable issue projection and cursor validation.
+// Approved scope pagination and member filters stay backend-owned and are
+// forwarded unchanged; semantic mutations retain their complete reads.
 
 func (a *app) scope(request request) int {
+	if request.scopeSubcommand == "show" && len(request.scopeContexts) > 0 {
+		config, err := hub.Resolve(a.paths.Config)
+		if err != nil {
+			return a.fail(err)
+		}
+		if err := hub.ValidateRegisteredContexts(request.scopeContexts, config.Repositories); err != nil {
+			return a.fail(err)
+		}
+	}
+
 	args := appendJSON(nil, request.json)
 	args = append(args, "scope", request.scopeSubcommand)
 
