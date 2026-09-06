@@ -150,6 +150,16 @@ func TestGetContextHelpFallback(t *testing.T) {
 	}
 }
 
+func TestContextHelpRepoPickerUsesContextTerminology(t *testing.T) {
+	content := GetContextHelp(ContextRepoPicker)
+	if !strings.Contains(content, "## Context") || !strings.Contains(content, "Apply context") {
+		t.Fatalf("repository picker help does not use Context terminology: %q", content)
+	}
+	if strings.Contains(content, "scope") || strings.Contains(content, "Scope") {
+		t.Fatalf("repository picker help retains scope terminology: %q", content)
+	}
+}
+
 func TestContextHelpContentQuality(t *testing.T) {
 	// Verify each help content has expected structure
 	for ctx, content := range ContextHelpContent {

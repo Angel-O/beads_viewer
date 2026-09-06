@@ -959,7 +959,7 @@ func defaultTutorialPages() []TutorialPage {
 		},
 		{
 			ID:      "advanced-workspace",
-			Title:   "Repository Scope",
+			Title:   "Context",
 			Section: "Advanced",
 			Content: advancedWorkspaceContent,
 		},
@@ -2038,7 +2038,7 @@ The output is **self-contained HTML** that works offline:
 > Press **→** to continue.`
 
 // advancedWorkspaceContent covers repository scope in Hub and workspace modes.
-const advancedWorkspaceContent = `## Repository Scope
+const advancedWorkspaceContent = `## Context
 
 Manage Hub or legacy workspace repositories as a single unified project.
 
@@ -2060,7 +2060,7 @@ Legacy workspace mode reads ` + "`.bv/workspace.yaml`" + `.
 
 | Key | Action |
 |-----|--------|
-| **w** | Open repository scope picker |
+| **w** | Open Context picker |
 
 ### Aggregated Views
 
@@ -2099,9 +2099,9 @@ Press **w** to open the repo picker, then:
 | **/** | Search friendly name, path, or exact ID |
 | **Esc** | Clear search first, then cancel |
 
-Applying an empty draft means all repositories. Scope lasts only for the current session. Hub boards start at the registered repository matching the launch checkout or worktree; unsupported or unregistered launch directories, and legacy workspaces, start at all repositories.
+Applying an empty draft means all repositories. Context lasts only for the current session. Hub boards start at the registered repository matching the launch checkout or worktree; unsupported or unregistered launch directories, and legacy workspaces, start at all repositories.
 
-Repository picker scope applies only to the interactive board. It does not change robot or export output.
+The Context filter applies only to the interactive board. It does not change robot or export output.
 
 > **Note:** Local ` + "`wbv`" + ` boards do not have repository scope. Use ` + "`wbv --hub`" + `.
 

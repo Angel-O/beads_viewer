@@ -301,7 +301,7 @@ func TestShortcutsSidebarHidesListEnterInSplitView(t *testing.T) {
 	m := Model{keyRegistry: registry}
 	m.registerKeyBindings()
 	sidebar := NewShortcutsSidebar(testTheme())
-	sidebar.SetSize(34, 40)
+	sidebar.SetSize(34, 60)
 	sidebar.SetKeyRegistry(registry)
 	sidebar.SetFocus(focusList)
 
@@ -350,9 +350,14 @@ func TestShortcutsSidebarShowsOnlyActiveScrollControl(t *testing.T) {
 	}
 
 	sidebar.SetFocus(focusList)
-	if view := sidebar.View(); !strings.Contains(view, "ctrl+j/k scroll") {
-		t.Fatalf("sidebar footer does not identify its actual scroll keys: %q", view)
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			if item.key == "ctrl+j/k" && item.desc == "Scroll sidebar" {
+				return
+			}
+		}
 	}
+	t.Fatal("list sidebar lacks its active ctrl+j/k scroll binding")
 }
 
 func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
@@ -376,9 +381,155 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 
 	sidebar.SetFocus(focusBacklog)
 	backlogView := sidebar.View()
-	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "A", "Add to scope"} {
+	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "l", "Filter by exact label", "s", "Cycle exact status", "space", "Mark current row/member", "A", "Add to scope"} {
 		if !strings.Contains(backlogView, expected) {
 			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
+		}
+	}
+	descriptions := make(map[string]string)
+	for _, section := range sidebar.sectionsFromRegistry() {
+		for _, item := range section.items {
+			descriptions[item.key] = item.desc
+		}
+	}
+	for key, expected := range map[string]string{
+		"l":   "Filter by exact label",
+		"M":   "Add matching exact label/epic issues to active scope",
+		"esc": "Back/close",
+		"q":   "Back/quit",
+		"B":   "Return to list",
+	} {
+		if descriptions[key] != expected {
+			t.Fatalf("backlog sidebar %s description=%q, want %q", key, descriptions[key], expected)
+		}
+	}
+}
+
+func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusScopePicker)
+	descriptions := func() map[string]string {
+		result := make(map[string]string)
+		for _, section := range sidebar.sectionsFromRegistry() {
+			for _, item := range section.items {
+				result[item.key] = item.desc
+			}
+		}
+		return result
+	}
+
+	catalog := descriptions()
+	for _, unavailable := range []string{"space", "R", "M", "o", "c", "r", "I", "w"} {
+		if _, ok := catalog[unavailable]; ok {
+			t.Fatalf("scope catalog sidebar advertises member-only control %q: %#v", unavailable, catalog)
+		}
+	}
+	for key, description := range map[string]string{"tab": "Switch catalog/members", "enter": "Toggle active scope", "n": "Create inactive named scope"} {
+		if catalog[key] != description {
+			t.Fatalf("scope catalog sidebar missing %q: %#v", description, catalog)
+		}
+	}
+
+	sidebar.SetScopePickerState(true, false)
+	members := descriptions()
+	for key, description := range map[string]string{"tab": "Switch catalog/members", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Add/remove by epic or label"} {
+		if members[key] != description {
+			t.Fatalf("scope member sidebar missing %q: %#v", description, members)
+		}
+	}
+	for _, unavailable := range []string{"enter", "n"} {
+		if _, ok := members[unavailable]; ok {
+			t.Fatalf("scope member sidebar advertises catalog-only control %q: %#v", unavailable, members)
+		}
+	}
+
+	sidebar.SetScopePickerState(true, true)
+	movingMember := descriptions()
+	for _, expected := range []string{"tab", "j", "o", "I", "w", "space", "R", "M"} {
+		if _, ok := movingMember[expected]; !ok {
+			t.Fatalf("moving scope member sidebar missing %q: %#v", expected, movingMember)
+		}
+	}
+	if _, ok := movingMember["enter"]; ok {
+		t.Fatalf("moving scope member sidebar advertises ineffective Enter: %#v", movingMember)
+	}
+
+	sidebar.SetScopePickerState(false, true)
+	destination := descriptions()
+	if destination["enter"] != "Move selected bead" {
+		t.Fatalf("scope destination sidebar missing move action: %#v", destination)
+	}
+	if destination["esc"] != "Back/close" {
+		t.Fatalf("scope destination sidebar missing close action: %#v", destination)
+	}
+	for _, unavailable := range []string{"n", "space", "M"} {
+		if _, ok := destination[unavailable]; ok {
+			t.Fatalf("scope destination sidebar advertises unavailable control %q: %#v", unavailable, destination)
+		}
+	}
+}
+
+func TestShortcutsSidebarTracksBacklogSearchStateFromModel(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 80, 30
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.showShortcutsSidebar = true
+	m.backlog.BeginSearch()
+	_ = m.View()
+	if !m.shortcutsSidebar.backlogSearch {
+		t.Fatal("Model.View did not pass backlog search state to the sidebar")
+	}
+	sections := m.shortcutsSidebar.sectionsFromRegistry()
+	keys := make(map[string]bool)
+	for _, section := range sections {
+		for _, item := range section.items {
+			keys[item.key] = true
+		}
+	}
+	for _, expected := range []string{"type", "backspace", "enter/esc", "ctrl+j/k"} {
+		if !keys[expected] {
+			t.Fatalf("backlog search sidebar missing %q: %#v", expected, sections)
+		}
+	}
+	for _, unavailable := range []string{"j/k", "space", "n", "p", "A", "M"} {
+		if keys[unavailable] {
+			t.Fatalf("backlog search sidebar advertises backlog control %q: %#v", unavailable, sections)
+		}
+	}
+}
+
+func TestShortcutsSidebarTracksBacklogLabelInputStateFromModel(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 80, 30
+	m.isBacklogView = true
+	m.focused = focusBacklog
+	m.showShortcutsSidebar = true
+	m.backlog.BeginLabelEdit()
+	_ = m.View()
+	if !m.shortcutsSidebar.backlogLabel {
+		t.Fatal("Model.View did not pass backlog label input state to the sidebar")
+	}
+	sections := m.shortcutsSidebar.sectionsFromRegistry()
+	keys := make(map[string]bool)
+	for _, section := range sections {
+		for _, item := range section.items {
+			keys[item.key] = true
+		}
+	}
+	for _, expected := range []string{"type", "backspace", "enter/esc", "ctrl+j/k"} {
+		if !keys[expected] {
+			t.Fatalf("backlog label sidebar missing %q: %#v", expected, sections)
+		}
+	}
+	for _, unavailable := range []string{"j/k", "space", "n", "p", "A", "M"} {
+		if keys[unavailable] {
+			t.Fatalf("backlog label sidebar advertises backlog control %q: %#v", unavailable, sections)
 		}
 	}
 }
@@ -487,6 +638,47 @@ func TestShortcutsSidebarGroupsGlobalAliases(t *testing.T) {
 		if !found {
 			t.Fatalf("sidebar missing grouped alias %q: %#v", want, global)
 		}
+	}
+}
+
+func TestShortcutsSidebarPutsActionsFirstAndUsesContextPickerLabel(t *testing.T) {
+	registry := NewKeyRegistry()
+	m := Model{keyRegistry: registry}
+	m.registerKeyBindings()
+	sidebar := NewShortcutsSidebar(testTheme())
+	sidebar.SetSize(34, 60)
+	sidebar.SetKeyRegistry(registry)
+	sidebar.SetFocus(focusList)
+
+	sections := sidebar.sectionsFromRegistry()
+	if len(sections) == 0 || sections[0].title != "Actions" {
+		t.Fatalf("list sidebar does not put operations first: %#v", sections)
+	}
+	var listItems []shortcutItem
+	for _, section := range sections {
+		listItems = append(listItems, section.items...)
+	}
+	for _, item := range listItems {
+		if item.key == "w" && item.desc != "Context picker (Hub)" {
+			t.Fatalf("list sidebar has incorrect Hub filter terminology: %#v", item)
+		}
+	}
+
+	sidebar.SetFocus(focusBoard)
+	boardSections := sidebar.sectionsFromRegistry()
+	var hasBoardOperation bool
+	for _, section := range boardSections {
+		for _, item := range section.items {
+			if item.desc == "Add comment" {
+				t.Fatalf("board sidebar is not contextual to the focused panel: %#v", item)
+			}
+			if item.desc == "Cycle empty columns" {
+				hasBoardOperation = true
+			}
+		}
+	}
+	if !hasBoardOperation {
+		t.Fatalf("board sidebar is missing its panel operation: %#v", boardSections)
 	}
 }
 

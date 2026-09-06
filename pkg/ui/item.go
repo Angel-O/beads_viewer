@@ -34,6 +34,7 @@ func (s DiffStatus) Badge() string {
 // IssueItem wraps model.Issue to implement list.Item
 type IssueItem struct {
 	Issue      model.Issue
+	Marked     bool
 	GraphScore float64
 	Impact     float64
 	DiffStatus DiffStatus // Diff state for time-travel mode

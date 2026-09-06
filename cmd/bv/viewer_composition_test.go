@@ -167,6 +167,9 @@ func TestComposeViewerServicesProvidesBoundedHubScopeSeam(t *testing.T) {
 	if got.HubScopeSnapshot == nil || got.HubScopeMemberIDs == nil || got.HubChangeSignal == "" {
 		t.Fatalf("Hub scope composition = snapshot %v, members %v, signal %q", got.HubScopeSnapshot != nil, got.HubScopeMemberIDs != nil, got.HubChangeSignal)
 	}
+	if got.ScopeServices.QueryBacklog == nil || got.ScopeServices.LoadDetails == nil || got.ScopeServices.Mutate == nil || got.ScopeServices.MutateMatching == nil {
+		t.Fatalf("typed Hub scope services were not composed: %#v", got.ScopeServices)
+	}
 
 	local, err := composeViewerServices(viewerCompositionInput{HistoryMode: "git", WorkDir: root})
 	if err != nil {

@@ -662,7 +662,7 @@ func structuredTutorialPages() []StructuredTutorialPage {
 		},
 		{
 			ID:      "advanced-workspace",
-			Title:   "Repository Scope",
+			Title:   "Context",
 			Section: "Advanced",
 			Elements: []TutorialElement{
 				Section{Title: "Hub and workspace repositories, unified view"},
@@ -679,7 +679,7 @@ func structuredTutorialPages() []StructuredTutorialPage {
 				Spacer{Lines: 1},
 				Section{Title: "Navigation"},
 				KeyTable{Bindings: []KeyHint{
-					{Key: "w", Desc: "Open repository scope picker"},
+					{Key: "w", Desc: "Open Context picker"},
 					{Key: "j/k, arrows", Desc: "Navigate repositories"},
 					{Key: "Space", Desc: "Toggle repository"},
 					{Key: "a", Desc: "Toggle all / none"},

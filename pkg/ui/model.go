@@ -1216,14 +1216,25 @@ type Model struct {
 	showScopeCreatePrompt bool
 	scopePicker           ScopePickerModel
 	scopeCreateInput      textinput.Model
+	showScopeMatchPrompt  bool
+	scopeMatchInput       textinput.Model
+	scopeMatchAction      string
+	scopeMatchOrigin      focus
+	scopeMatchScopeID     string
 	scopePickerOrigin     focus
 	scopePickerMoveIssue  string
 	scopeCatalog          []ScopeInfo
 	activeScope           *ScopeInfo
+	// scopeDetails retains the last successful selected-scope detail load;
+	// failed reloads must not replace it with an empty result.
+	scopeDetails          *ScopeDetails
 	backlog               BacklogModel
 	backlogLoading        bool
 	backlogPageGeneration uint64
 	backlogScopeLoaded    bool
+	// Picker application stores the reload command until the overlay dispatch
+	// returns it; the legacy picker handler returns only *Model.
+	backlogReloadCmd tea.Cmd
 
 	// Time-travel mode
 	timeTravelMode   bool
@@ -2475,6 +2486,8 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		labelDrilldownCache: make(map[string][]model.Issue),
 		timeTravelInput:     ti,
 		scopeCreateInput:    newScopeNameInput(theme),
+		scopeMatchInput:     newScopeMatchInput(theme),
+		backlog:             NewBacklogModel(theme),
 		commentInput: func() textarea.Model {
 			input := textarea.New()
 			input.Placeholder = "Write a Markdown comment..."
@@ -2800,7 +2813,12 @@ func (m *Model) Init() tea.Cmd {
 	} else if m.watcher != nil {
 		cmds = append(cmds, WatchFileCmd(m.watcher))
 	}
-	if m.runtimeServices.Scopes.Load != nil {
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		cmds = append(cmds, m.startScopeCatalogPage("", 0))
+		if m.runtimeServices.Scopes.Load != nil {
+			cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+		}
+	} else if m.runtimeServices.Scopes.Load != nil {
 		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
 	}
 	// Start loading history in background.
@@ -3014,7 +3032,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			break
 		}
+		previousSelected := m.scopePicker.SelectedScopeID()
 		m.backlogScopeLoaded = true
+		if m.runtimeServices.Scopes.QueryCatalog != nil {
+			m.activeScope = nil
+			if msg.snapshot.Active != nil {
+				active := *msg.snapshot.Active
+				m.activeScope = &active
+			}
+			for i := range m.scopeCatalog {
+				m.scopeCatalog[i].Active = m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID
+			}
+			m.scopePicker.SetScopes(m.scopeCatalog)
+			break
+		}
 		m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
 		m.scopePicker.SetScopes(m.scopeCatalog)
 		m.activeScope = nil
@@ -3026,6 +3057,78 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.scopePicker.SetScopes(m.scopeCatalog)
 		}
+		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+			m.scopePicker.ClearMemberMarks()
+			cmds = append(cmds, m.loadSelectedScopeDetails())
+		}
+
+	case scopeCatalogPageMsg:
+		if !m.scopePicker.acceptsCatalogPage(msg.generation) {
+			break
+		}
+		if msg.err != nil {
+			m.scopePicker.SetCatalogError(msg.generation, msg.err)
+			m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+			m.statusIsError = true
+			break
+		}
+		m.backlogScopeLoaded = true
+		previousSelected := m.scopePicker.SelectedScopeID()
+		page := msg.page
+		page.Scopes = append([]ScopeInfo(nil), msg.page.Scopes...)
+		activeID := ""
+		if m.activeScope != nil {
+			activeID = m.activeScope.ID
+		}
+		for i := range page.Scopes {
+			page.Scopes[i].Active = activeID != "" && page.Scopes[i].ID == activeID
+		}
+		m.scopeCatalog = append([]ScopeInfo(nil), page.Scopes...)
+		m.scopePicker.SetCatalogPage(page, msg.index, msg.generation)
+		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+			// Catalog paging changes the selected page; member pages belong to the
+			// selected scope and must never survive that boundary.
+			m.scopePicker.ClearMemberMarks()
+			cmds = append(cmds, m.loadSelectedScopeDetails())
+		}
+
+	case scopeDetailsMsg:
+		if msg.generation > 0 && !m.scopePicker.acceptsMemberDetails(msg.scopeID, msg.generation) {
+			break
+		}
+		if msg.err != nil {
+			if msg.generation > 0 {
+				m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+			}
+			break
+		}
+		details := msg.details
+		m.scopeDetails = &details
+		// Generation-less typed responses must populate the member browser too.
+		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
+			m.applyScopePickerDetails(details)
+		}
+
+	case scopeMembersPageMsg:
+		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.generation) {
+			break
+		}
+		if msg.err != nil {
+			m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+			break
+		}
+		if msg.page.Scope.ID == "" {
+			msg.page.Scope.ID = msg.scopeID
+		}
+		items := make([]IssueItem, len(msg.page.Members))
+		ready := make(map[string]bool, len(items))
+		for i, issue := range msg.page.Members {
+			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+			m.decorateIssueItem(&items[i])
+			ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
+		}
+		m.scopePicker.SetMemberReadyIDs(ready)
+		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation)
 
 	case backlogPageMsg:
 		if msg.generation != m.backlogPageGeneration {
@@ -3038,6 +3141,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.backlog.SetPage(msg.page, msg.index)
+		items := make([]IssueItem, len(msg.page.Issues))
+		for i, issue := range msg.page.Issues {
+			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+			m.decorateIssueItem(&items[i])
+		}
+		m.backlog.setPresentation(items)
 
 	case scopeMutationMsg:
 		if msg.err != nil {
@@ -3048,9 +3157,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.restoreFocus {
 			m.closeScopePicker()
 		}
+		m.clearScopeActionMarks()
 		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
 		m.statusIsError = false
-		cmds = append(cmds, m.refreshAfterScopeMutation())
+		mutation := msg.mutation
+		if mutation.Kind == "" {
+			mutation.Kind = ScopeMutationKind(msg.action)
+		}
+		cmds = append(cmds, m.refreshAfterScopeMutation(mutation))
 
 	case commentAddedMsg:
 		m.commentSubmitting = false
@@ -4659,6 +4773,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.handleScopeCreateKey(msg)
 		}
+		if m.focused == focusScopeCreateInput && m.showScopeMatchPrompt {
+			if msg.String() == "ctrl+c" {
+				return m, m.quitCommand()
+			}
+			return m.handleScopeMatchKey(msg)
+		}
 		if m.focused == focusCommentInput && m.showCommentPrompt {
 			if msg.String() == "ctrl+c" {
 				return m, tea.Quit
@@ -4688,10 +4808,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
 		}
-		if m.showScopePicker && !m.showRepoPicker && !isScopeBacklogGlobalKey(msg.String()) {
+		if m.showScopePicker && !m.showRepoPicker &&
+			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused() || isScopePickerPagingKey(msg.String()) && m.scopePicker.OwnsPagingKey(msg.String())) {
 			return m.handleScopePickerKey(msg)
 		}
-		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || !isScopeBacklogGlobalKey(msg.String())) {
+		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
 			return m.handleBacklogKey(msg)
 		}
 		// Clear status message on any keypress
@@ -4940,7 +5061,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quitCommand()
 			}
 			m = m.handleRepoPickerKeys(msg)
-			return m, m.pendingSemanticFilterCmd()
+			cmds = append(cmds, m.backlogReloadCmd)
+			m.backlogReloadCmd = nil
+			cmds = append(cmds, m.pendingSemanticFilterCmd())
+			return m, tea.Batch(cmds...)
 		}
 
 		// Handle issue-type picker overlay before global keys.
@@ -5814,7 +5938,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.closeBacklog()
 					return m, nil
 				}
-				if m.runtimeServices.Scopes.LoadBacklog == nil {
+				if m.runtimeServices.Scopes.LoadBacklog == nil && m.runtimeServices.Scopes.QueryBacklog == nil {
 					m.statusMsg, m.statusIsError = "Global backlog requires Hub mode", true
 					return m, nil
 				}
@@ -6075,7 +6199,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repoPickerOrigin = m.focused
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-				if m.hubRepositoryMode {
+				if m.isBacklogView {
+					m.repoPicker.SetHubScope(m.backlogHubScope())
+				} else if m.hubRepositoryMode {
 					m.repoPicker.SetHubScope(m.hubScope)
 				} else {
 					m.repoPicker.SetActiveRepos(m.activeRepos)
@@ -7184,6 +7310,9 @@ func (m *Model) resetRecipePicker() {
 
 func (m *Model) applyRepositoryPickerSelection() *Model {
 	selected := m.repoPicker.SelectedRepos()
+	if m.repoPickerOrigin == focusBacklog {
+		return m.applyBacklogPickerSelection(selected)
+	}
 	focusAfterApply := focusList
 	if m.repoPickerOrigin == focusScopePicker {
 		focusAfterApply = focusScopePicker
@@ -7215,6 +7344,55 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 	m.SetRepositoryScope(selected)
 	m.showRepoPicker = false
 	m.focused = focusAfterApply
+	return m
+}
+
+func (m Model) backlogHubScope() hub.HubScope {
+	contexts := m.backlog.Contexts()
+	if len(contexts) == 0 {
+		if m.backlog.IncludeContextless() {
+			return hub.NewContextlessHubScope()
+		}
+		return hub.NewAllItemsHubScope()
+	}
+	if m.backlog.IncludeContextless() {
+		if scope, err := hub.NewSelectedContextsAndContextlessHubScope(contexts); err == nil {
+			return scope
+		}
+	} else if scope, err := hub.NewSelectedContextsHubScope(contexts); err == nil {
+		return scope
+	}
+	return hub.NewAllItemsHubScope()
+}
+
+func (m *Model) applyBacklogPickerSelection(selected map[string]bool) *Model {
+	includeContextless := m.repoPicker.ContextlessSelected()
+	contexts := sortedRepoKeys(selected)
+	// An empty draft is the backlog's all-items choice. Treat the equivalent
+	// all-contexts-plus-contextless draft the same way so the query stays small.
+	if (len(contexts) == 0 && !includeContextless) ||
+		(includeContextless && len(contexts) == len(m.repositoryCatalog) && len(contexts) > 0) {
+		contexts = nil
+		includeContextless = false
+	}
+	names := make([]string, 0, len(contexts))
+	for _, contextID := range contexts {
+		for _, repository := range m.repositoryCatalog {
+			if repository.ID == contextID {
+				name := repository.Name
+				if name == "" {
+					name = repository.ID
+				}
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	m.backlog.SetContextFilter(contexts, includeContextless, names)
+	m.backlog.resetCursor()
+	m.showRepoPicker = false
+	m.focused = focusBacklog
+	m.backlogReloadCmd = m.reloadBacklogFromFirstPage()
 	return m
 }
 
@@ -7989,6 +8167,8 @@ func (m *Model) View() string {
 		body = m.repoPicker.View()
 	} else if m.showScopeCreatePrompt {
 		body = m.renderScopeCreatePrompt()
+	} else if m.showScopeMatchPrompt {
+		body = m.renderScopeMatchPrompt()
 	} else if m.showScopePicker {
 		m.scopePicker.SetSize(m.mainContentWidth(), m.height-1)
 		body = m.scopePicker.View()
@@ -7998,6 +8178,7 @@ func (m *Model) View() string {
 		body = m.labelPicker.View()
 	} else if m.isBacklogView {
 		m.backlog.SetSize(m.mainContentWidth(), m.height-1)
+		m.backlog.setDelegate(m.backlogIssueDelegate())
 		body = m.backlog.View()
 	} else if m.snapshotInitPending && m.snapshot == nil {
 		body = m.renderLoadingScreen()
@@ -8060,6 +8241,9 @@ func (m *Model) View() string {
 			sidebarFocus = focusAttention
 		}
 		m.shortcutsSidebar.SetFocus(sidebarFocus)
+		m.shortcutsSidebar.SetScopePickerState(m.scopePicker.MemberFocused(), m.scopePickerMoveIssue != "")
+		m.shortcutsSidebar.SetBacklogSearch(m.backlog.Searching())
+		m.shortcutsSidebar.SetBacklogLabelEditing(m.backlog.LabelEditing())
 		m.shortcutsSidebar.SetSize(m.shortcutsSidebar.Width(), m.height-2)
 		sidebar := m.shortcutsSidebar.View()
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, sidebar)
@@ -8088,6 +8272,20 @@ func (m Model) renderTreeBody() string {
 	width := m.mainContentWidth()
 	tree := m.theme.Renderer.NewStyle().MaxWidth(width).Render(m.tree.View())
 	return lipgloss.Place(width, m.height-1, lipgloss.Left, lipgloss.Top, tree)
+}
+
+func (m Model) backlogIssueDelegate() IssueDelegate {
+	delegate := IssueDelegate{
+		Theme:            m.theme,
+		WorkspaceMode:    m.workspaceMode,
+		ShowRepositories: m.hubRepositoryPresentation(),
+		useFullWidth:     true,
+		layoutItems:      backlogListItems(m.backlog.items),
+	}
+	delegate.RepositoryNameWidth, delegate.RepositoryExtraWidth = m.repositoryListColumnWidthsFor(
+		delegate, m.backlog.issues, m.backlog.width,
+	)
+	return delegate
 }
 
 func (m Model) renderQuitConfirm() string {
@@ -8749,12 +8947,39 @@ func (m *Model) renderHelpOverlay() string {
 		}
 	case focusScopePicker:
 		scopeControls := []struct{ key, desc string }{
+			{"Tab", "Switch to members"},
 			{"j/k", "Move scope selection"},
+			{"←/→", "Previous / next scope page"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
 			{"B", "Open global backlog"},
 			{"W", "Close scope picker"},
 			{"Esc / q", "Return to previous view"},
+		}
+		if m.scopePicker.MemberFocused() {
+			scopeControls = []struct{ key, desc string }{
+				{"Tab", "Switch to scope catalog"},
+				{"j/k", "Move member selection"},
+				{"n/p", "Next / previous member page"},
+				{"o/c/r", "Filter members by status"},
+				{"I", "Cycle member type filter"},
+				{"w", "Cycle member repository filter"},
+				{"space", "Mark current member"},
+				{"R", "Remove marked/current members"},
+				{"M", "Remove members by epic or label"},
+				{"B", "Open global backlog"},
+				{"W", "Close scope picker"},
+				{"Esc / q", "Return to previous view"},
+			}
+		} else if m.scopePicker.moveTarget != "" {
+			scopeControls = []struct{ key, desc string }{
+				{"j/k", "Move destination scope"},
+				{"←/→", "Previous / next scope page"},
+				{"Enter", "Move selected bead"},
+				{"B", "Open global backlog"},
+				{"W", "Close scope picker"},
+				{"Esc / q", "Return to previous view"},
+			}
 		}
 		specializedPanels = []string{
 			renderPanel("Scopes", "◉", 0, scopeControls),
@@ -8763,9 +8988,14 @@ func (m *Model) renderHelpOverlay() string {
 	case focusBacklog:
 		backlogControls := []struct{ key, desc string }{
 			{"j/k", "Move selection"},
+			{"PgUp/Dn", "Scroll preview (Ctrl+b/f)"},
+			{"space", "Mark current bead"},
 			{"n/p", "Next / previous page"},
-			{"/", "Filter backlog"},
-			{"A", "Add selected bead to scope"},
+			{"/", "ID/title search"},
+			{"l", "Filter by exact label"},
+			{"s", "Cycle status: all/open/in_progress/blocked/deferred/closed"},
+			{"A", "Add selected bead to scope (or all marked)"},
+			{"M", "Add matching exact label/epic issues to active scope"},
 			{"W", "Open named scopes"},
 			{"B / Esc / q", "Return to List"},
 		}
@@ -9593,7 +9823,7 @@ func (m *Model) renderFooter() string {
 			Padding(0, 1)
 		statsSection = timeTravelStyle.Render(fmt.Sprintf("⏱ %s: +%d ✅%d ~%d",
 			m.timeTravelSince, d.IssuesAdded, d.IssuesClosed, d.IssuesModified))
-	} else {
+	} else if !m.isBacklogView {
 		// Polished stats with mini indicators
 		statsStyle := lipgloss.NewStyle().
 			Background(ColorBgHighlight).
@@ -9878,14 +10108,39 @@ func (m *Model) renderFooter() string {
 		}
 	} else if m.showScopeCreatePrompt {
 		keyHints = append(keyHints, keyStyle.Render("enter")+" create", keyStyle.Render("esc")+" cancel")
+	} else if m.showScopeMatchPrompt {
+		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker {
-		enterHint := "toggle"
-		if m.scopePickerMoveIssue != "" {
-			enterHint = "move"
+		if m.scopePicker.MemberFocused() {
+			keyHints = append(keyHints, keyStyle.Render("tab")+" catalog", keyStyle.Render("j/k")+" members")
+			if m.runtimeServices.Scopes.QueryMembers != nil {
+				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
+			}
+			keyHints = append(keyHints, keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
+			removeHint := "R remove current"
+			if m.scopePicker.MemberMarkCount() > 0 {
+				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
+			}
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" epic/label", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+		} else if m.scopePickerMoveIssue != "" {
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+		} else {
+			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes")
+			if m.runtimeServices.Scopes.QueryCatalog != nil {
+				keyHints = append(keyHints, keyStyle.Render("←/→")+" page")
+			}
+			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("B")+" backlog", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
 		}
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("enter")+" "+enterHint, keyStyle.Render("n")+" new", keyStyle.Render("esc")+" back")
 	} else if m.isBacklogView {
-		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" add", keyStyle.Render("B/esc")+" list")
+		if m.backlog.Searching() {
+			keyHints = append(keyHints, keyStyle.Render("type")+" filter", keyStyle.Render("backspace")+" delete", keyStyle.Render("enter/esc")+" done")
+		} else {
+			addHint := "add current"
+			if m.backlog.MarkCount() > 0 {
+				addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
+			}
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" add scope", keyStyle.Render("W")+" scopes", keyStyle.Render("B")+" list")
+		}
 	} else if m.showTypePicker {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("space")+" toggle", keyStyle.Render("a")+" all/none", keyStyle.Render("⏎")+" apply", keyStyle.Render("esc")+" back")
 	} else if m.showLabelPicker {
