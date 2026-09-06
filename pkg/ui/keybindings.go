@@ -183,6 +183,8 @@ func focusesForBindingDoc(doc KeyBindingDoc) []focus {
 			addFocus(focusAttention)
 		case "scope":
 			addFocus(focusScopePicker)
+		case "global-issues":
+			addFocus(focusGlobalIssues)
 		case "backlog":
 			addFocus(focusBacklog)
 		}
@@ -206,6 +208,7 @@ func allDocumentedFocuses() []focus {
 		focusSprint,
 		focusAttention,
 		focusScopePicker,
+		focusGlobalIssues,
 		focusBacklog,
 	}
 }
@@ -240,11 +243,11 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"ctrl+u", "Page up", "Navigation", "list,detail,board,graph,tree"},
 		{"pgup", "Page up", "Navigation", "tree"},
 		{"pgdown", "Page down", "Navigation", "tree"},
-		{"esc", "Back/close", "Navigation", "list,detail,board,insights,history,actionable,label-dashboard,flow,sprint,scope,backlog"},
-		{"q", "Back/quit", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,backlog"},
-		{"ctrl+c", "Force quit", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
-		{"`", "Full tutorial", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
-		{"F2/;", "Shortcuts sidebar", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
+		{"esc", "Back/close", "Navigation", "list,detail,board,insights,history,actionable,label-dashboard,flow,sprint,scope,global-issues"},
+		{"q", "Back/quit", "Navigation", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,global-issues"},
+		{"ctrl+c", "Force quit", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,global-issues"},
+		{"`", "Full tutorial", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,global-issues"},
+		{"F2/;", "Shortcuts sidebar", "Global", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,global-issues"},
 
 		// View Switching
 		{"a", "Actionable view", "Views", "list,detail"},
@@ -253,7 +256,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"h", "History view", "Views", "list,detail"},
 		{"i", "Insights panel", "Views", "list,detail"},
 		{"E", "Enter Tree (uppercase)", "Views", "list,detail"},
-		{"?", "Help overlay", "Views", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,backlog"},
+		{"?", "Help overlay", "Views", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,attention,scope,global-issues"},
 		{"tab", "Switch panes in Split", "Views", "list,detail"},
 		{"p", "Priority hints", "Views", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
 		{"b", "Return to List", "Views", "board"},
@@ -272,20 +275,17 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"E", "Enter Tree (uppercase)", "Views", "board,graph,insights,history,actionable,flow,label-dashboard"},
 		{"h", "History view", "Views", "actionable,flow"},
 		{"P", "Sprint dashboard", "Views", "list,detail"},
-		{"B", "Global backlog", "Views", "list,detail,scope"},
+		{"B", "Global issues (in Scope)", "Views", "list,detail"},
 		{"W", "Named scopes", "Views", "list,detail"},
-		{"W", "Open/close named scopes", "Views", "scope,backlog"},
+		{"W", "Close Scope screen", "Views", "scope,global-issues"},
 		{"enter", "Toggle active scope", "Views", "scope"},
 		{"n", "Create inactive named scope", "Views", "scope"},
-		{"B", "Return to list", "Views", "backlog"},
 		{"j", "Move scope/member selection", "Navigation", "scope"},
 		{"k", "Move scope/member selection", "Navigation", "scope"},
-		{"j", "Move selection", "Navigation", "backlog"},
-		{"k", "Move selection", "Navigation", "backlog"},
-		{"tab", "Switch catalog/members", "Navigation", "scope"},
-		{"n", "Next backlog page", "Navigation", "backlog"},
-		{"p", "Previous backlog page", "Navigation", "backlog"},
-		{"pgup/pgdown", "Scroll preview (Ctrl+b/f)", "Navigation", "backlog"},
+		{"tab", "Switch catalog/members/Global issues", "Navigation", "scope"},
+		{"j/k", "Move Global issues selection", "Navigation", "global-issues"},
+		{"n/p", "Next / previous Global issues page", "Navigation", "global-issues"},
+		{"pgup/pgdown", "Scroll Global issues preview (Ctrl+b/f)", "Navigation", "global-issues"},
 		{"[", "Label dashboard", "Views", "detail"},
 		{"]", "Attention view", "Views", "detail"},
 		// Filters
@@ -300,9 +300,9 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"r", "Narrow members to ready", "Filters", "scope"},
 		{"I", "Cycle member type filter", "Filters", "scope"},
 		{"w", "Cycle member repository filter", "Filters", "scope"},
-		{"/", "ID/title search", "Filters", "list,backlog"},
-		{"l", "Edit exact label filter", "Filters", "backlog"},
-		{"s", "Cycle exact status filter", "Filters", "backlog"},
+		{"/", "ID/title search", "Filters", "list,global-issues"},
+		{"l", "Edit exact label filter", "Filters", "global-issues"},
+		{"s", "Cycle exact status filter", "Filters", "global-issues"},
 		{"ctrl+s", "Semantic search toggle", "Filters", "list"},
 		{"H", "Hybrid search toggle", "Filters", "list"},
 		{"alt+h", "Hybrid preset", "Filters", "list"},
@@ -323,14 +323,14 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"V", "Cass sessions", "Actions", "list"},
 		{"s", "Cycle sort mode", "Actions", "list"},
 		{"S", "Apply triage sort", "Actions", "list"},
-		{"A", "Add to scope", "Actions", "list,detail,backlog"},
+		{"A", "Add to scope", "Actions", "list,detail,global-issues"},
 		{"R", "Remove from scope", "Actions", "list,detail"},
-		{"space", "Mark current row/member", "Actions", "backlog,scope"},
-		{"M", "Add/remove by epic or label", "Actions", "backlog,scope"},
+		{"space", "Mark current row/member", "Actions", "global-issues,scope"},
+		{"M", "Add/remove by epic or label", "Actions", "global-issues,scope"},
 		{"R", "Remove marked/current member", "Actions", "scope"},
 		{"m", "Move to scope", "Actions", "list,detail"},
 		{"!", "Alerts panel", "Actions", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
-		{"Ctrl+R/F5", "Force refresh", "Actions", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,backlog"},
+		{"Ctrl+R/F5", "Force refresh", "Actions", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,global-issues"},
 		{"<", "Shrink list pane", "Actions", "list,detail"},
 		{">", "Expand list pane", "Actions", "list,detail"},
 

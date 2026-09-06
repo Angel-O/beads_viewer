@@ -10,18 +10,19 @@ import (
 // ShortcutsSidebar provides a toggleable panel showing context-aware keyboard shortcuts
 // Unlike the help overlay, this can remain visible while working (bv-3qi5)
 type ShortcutsSidebar struct {
-	width         int
-	height        int
-	scrollOffset  int
-	theme         Theme
-	context       string       // Current context for filtering shortcuts
-	keyRegistry   *KeyRegistry // Registry for auto-generated bindings (bv-xl6g)
-	focusHint     focus        // Current focus for registry lookup (bv-xl6g)
-	splitView     bool         // Whether List focus is the left pane of Split view
-	scopeMembers  bool         // Whether the Scope picker is focused on members
-	scopeMove     bool         // Whether the Scope picker chooses a move destination
-	backlogSearch bool         // Whether backlog search owns printable input
-	backlogLabel  bool         // Whether backlog label input owns printable input
+	width             int
+	height            int
+	scrollOffset      int
+	theme             Theme
+	context           string       // Current context for filtering shortcuts
+	keyRegistry       *KeyRegistry // Registry for auto-generated bindings (bv-xl6g)
+	focusHint         focus        // Current focus for registry lookup (bv-xl6g)
+	splitView         bool         // Whether List focus is the left pane of Split view
+	scopeMembers      bool         // Whether the Scope picker is focused on members
+	scopeMove         bool         // Whether the Scope picker chooses a move destination
+	backlogSearch     bool         // Whether backlog search owns printable input
+	backlogLabel      bool         // Whether backlog label input owns printable input
+	globalIssuesTitle string       // Current lower-panel title
 }
 
 // shortcutItem represents a single keyboard shortcut
@@ -40,9 +41,10 @@ type shortcutSection struct {
 // NewShortcutsSidebar creates a new shortcuts sidebar
 func NewShortcutsSidebar(theme Theme) ShortcutsSidebar {
 	return ShortcutsSidebar{
-		theme:   theme,
-		width:   34, // Fixed width for sidebar (increased for readability)
-		context: "list",
+		theme:             theme,
+		width:             34, // Fixed width for sidebar (increased for readability)
+		context:           "list",
+		globalIssuesTitle: "Global issues",
 	}
 }
 
@@ -75,14 +77,23 @@ func (s *ShortcutsSidebar) SetScopePickerState(members, move bool) {
 	s.scopeMove = move
 }
 
-// SetBacklogSearch keeps the sidebar on the controls owned by backlog search.
+// SetBacklogSearch keeps the sidebar on the controls owned by Global issues search.
 func (s *ShortcutsSidebar) SetBacklogSearch(searching bool) {
 	s.backlogSearch = searching
 }
 
-// SetBacklogLabelEditing keeps the sidebar aligned with exact label input.
+// SetBacklogLabelEditing keeps the sidebar aligned with Global issues label input.
 func (s *ShortcutsSidebar) SetBacklogLabelEditing(editing bool) {
 	s.backlogLabel = editing
+}
+
+// SetGlobalIssuesTitle keeps lower-panel shortcut wording aligned with the
+// selected-scope complement, when one is active.
+func (s *ShortcutsSidebar) SetGlobalIssuesTitle(title string) {
+	if title == "" {
+		title = "Global issues"
+	}
+	s.globalIssuesTitle = title
 }
 
 // SetKeyRegistry sets the key registry for auto-generated bindings (bv-xl6g)
@@ -129,7 +140,7 @@ func (s *ShortcutsSidebar) Width() int {
 // Search-owned backlog input gets a small local section instead of view actions.
 // Returns nil if registry is nil or has no bindings for current focus.
 func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
-	if s.focusHint == focusBacklog && s.backlogSearch {
+	if (s.focusHint == focusBacklog || s.focusHint == focusGlobalIssues) && s.backlogSearch {
 		return []shortcutSection{
 			{title: "Filter", items: []shortcutItem{
 				{key: "type", desc: "Edit ID/title search"},
@@ -139,7 +150,7 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			{title: "Sidebar", items: []shortcutItem{{key: "ctrl+j/k", desc: "Scroll sidebar"}}},
 		}
 	}
-	if s.focusHint == focusBacklog && s.backlogLabel {
+	if (s.focusHint == focusBacklog || s.focusHint == focusGlobalIssues) && s.backlogLabel {
 		return []shortcutSection{
 			{title: "Filter", items: []shortcutItem{
 				{key: "type", desc: "Edit exact label"},
@@ -163,9 +174,20 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 	categoryOrder := []string{} // Preserve order of first appearance
 
 	for _, b := range bindings {
-		// Backlog's M only adds matches to the active scope; keep its sidebar
+		if s.focusHint == focusGlobalIssues && s.globalIssuesTitle != "" {
+			b.Desc = strings.ReplaceAll(b.Desc, "Global issues", s.globalIssuesTitle)
+		}
+		// The issue panel's M only adds matches to the active scope; keep its sidebar
 		// wording distinct from the exact label filter and scope-member toggle.
 		if s.focusHint == focusBacklog {
+			switch b.Key {
+			case "l":
+				b.Desc = "Filter by exact label"
+			case "M":
+				b.Desc = "Add matching exact label/epic issues to active scope"
+			}
+		}
+		if s.focusHint == focusGlobalIssues {
 			switch b.Key {
 			case "l":
 				b.Desc = "Filter by exact label"
@@ -180,6 +202,15 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			}
 			if s.scopeMembers && (b.Key == "enter" || b.Key == "n") {
 				continue
+			}
+			if s.scopeMembers && b.Key == "tab" {
+				b.Desc = "Switch to " + s.globalIssuesTitle
+			}
+			if s.scopeMove && !s.scopeMembers && b.Key == "tab" {
+				b.Desc = "Switch to members"
+			}
+			if !s.scopeMembers && !s.scopeMove && b.Key == "tab" {
+				b.Desc = strings.ReplaceAll(b.Desc, "Global issues", s.globalIssuesTitle)
 			}
 			if s.scopeMove && !s.scopeMembers && (memberOnly || b.Key == "n") {
 				continue
@@ -556,6 +587,8 @@ func ContextFromFocus(f focus) string {
 		return "sprint"
 	case focusScopePicker:
 		return "scope"
+	case focusGlobalIssues:
+		return "global-issues"
 	case focusBacklog:
 		return "backlog"
 	default:

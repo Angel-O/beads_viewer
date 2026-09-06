@@ -360,7 +360,7 @@ func TestShortcutsSidebarShowsOnlyActiveScrollControl(t *testing.T) {
 	t.Fatal("list sidebar lacks its active ctrl+j/k scroll binding")
 }
 
-func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
+func TestShortcutsSidebarShowsDedicatedScopeAndGlobalIssuesBindings(t *testing.T) {
 	registry := NewKeyRegistry()
 	m := Model{keyRegistry: registry}
 	m.registerKeyBindings()
@@ -379,11 +379,11 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 		t.Fatalf("scope sidebar retained move action:\n%s", scopeView)
 	}
 
-	sidebar.SetFocus(focusBacklog)
-	backlogView := sidebar.View()
-	for _, expected := range []string{"n", "Next backlog page", "p", "Previous backlog page", "pgup/pgd", "Scroll preview", "l", "Filter by exact label", "s", "Cycle exact status", "space", "Mark current row/member", "A", "Add to scope"} {
-		if !strings.Contains(backlogView, expected) {
-			t.Fatalf("backlog sidebar missing %q:\n%s", expected, backlogView)
+	sidebar.SetFocus(focusGlobalIssues)
+	globalView := sidebar.View()
+	for _, expected := range []string{"n/p", "Next / previous Global", "pgup/pgd", "Scroll Global issues", "l", "Filter by exact label", "s", "Cycle exact status", "space", "Mark current row/member", "A", "Add to scope"} {
+		if !strings.Contains(globalView, expected) {
+			t.Fatalf("Global issues sidebar missing %q:\n%s", expected, globalView)
 		}
 	}
 	descriptions := make(map[string]string)
@@ -397,7 +397,7 @@ func TestShortcutsSidebarShowsDedicatedScopeAndBacklogBindings(t *testing.T) {
 		"M":   "Add matching exact label/epic issues to active scope",
 		"esc": "Back/close",
 		"q":   "Back/quit",
-		"B":   "Return to list",
+		"W":   "Close Scope screen",
 	} {
 		if descriptions[key] != expected {
 			t.Fatalf("backlog sidebar %s description=%q, want %q", key, descriptions[key], expected)
@@ -429,15 +429,20 @@ func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
 			t.Fatalf("scope catalog sidebar advertises member-only control %q: %#v", unavailable, catalog)
 		}
 	}
-	for key, description := range map[string]string{"tab": "Switch catalog/members", "enter": "Toggle active scope", "n": "Create inactive named scope"} {
+	for key, description := range map[string]string{"tab": "Switch catalog/members/Global issues", "enter": "Toggle active scope", "n": "Create inactive named scope"} {
 		if catalog[key] != description {
 			t.Fatalf("scope catalog sidebar missing %q: %#v", description, catalog)
 		}
 	}
+	sidebar.SetGlobalIssuesTitle("Out-of-scope issues")
+	catalog = descriptions()
+	if catalog["tab"] != "Switch catalog/members/Out-of-scope issues" {
+		t.Fatalf("selected-scope catalog sidebar tab=%q", catalog["tab"])
+	}
 
 	sidebar.SetScopePickerState(true, false)
 	members := descriptions()
-	for key, description := range map[string]string{"tab": "Switch catalog/members", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Add/remove by epic or label"} {
+	for key, description := range map[string]string{"tab": "Switch to Out-of-scope issues", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Add/remove by epic or label"} {
 		if members[key] != description {
 			t.Fatalf("scope member sidebar missing %q: %#v", description, members)
 		}

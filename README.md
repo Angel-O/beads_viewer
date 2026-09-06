@@ -3758,6 +3758,7 @@ bv has a comprehensive built-in help system:
 | | `f` | Toggle **Flow Matrix** (cross-label dependencies) |
 | | `[` / `f3` | Toggle **Label Dashboard** (label health analytics) |
 | | `]` / `F4` | Toggle **Attention View** (label attention scores) |
+| **Scope / Global Issues** | `n/p` | Next / previous Global issues page |
 | **Kanban Board** | `h` / `l` | Move Between Columns |
 | | `j` / `k` | Move Within Column |
 | | `H/L` | First / last column |
