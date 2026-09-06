@@ -702,10 +702,10 @@ type backlogTableColumns struct {
 // Fixed cells keep later backlog columns stable when pages contain different
 // ID or type lengths; values are truncated before padding to those cells.
 const (
-	backlogIDWidth      = 18
-	backlogTypeWidth    = 10
+	backlogIDWidth      = 12 // Reclaim excess ID padding for the context column.
+	backlogTypeWidth    = 8  // Common issue types fit without the old excess padding.
 	backlogStatusWidth  = 11
-	backlogContextWidth = 8 // Keep the added column from displacing the preview.
+	backlogContextWidth = repositoryListNameWidthCap
 )
 
 // backlogContextName returns the existing friendly context decoration without
@@ -728,6 +728,18 @@ func backlogContextValue(item IssueItem) string {
 		context += fmt.Sprintf(" +%d", item.RepositoryExtra)
 	}
 	return context
+}
+
+// backlogContextNames keeps the preview's context list independent from the
+// table's compact primary-name/+N presentation.
+func backlogContextNames(item IssueItem) []string {
+	if len(item.RepositoryNames) > 0 {
+		return item.RepositoryNames
+	}
+	if context := backlogContextName(item); context != "" {
+		return []string{context}
+	}
+	return nil
 }
 
 func backlogContextCell(item IssueItem, width int) string {
@@ -795,11 +807,11 @@ const backlogMarkPrefix = "    " // independent two-cell cursor and mark slots
 func renderBacklogTableHeader(columns backlogTableColumns) string {
 	columns.statusWidth = backlogStatusWidth
 	return backlogMarkPrefix + strings.Join([]string{
+		padRight(truncateRunesHelper("CONTEXT", columns.contextWidth, "…"), columns.contextWidth),
 		padRight("ID", columns.idWidth),
 		padRight("TYPE", columns.typeWidth),
 		padRight("PR", columns.priorityWidth),
 		padRight("STATUS", columns.statusWidth),
-		padRight(truncateRunesHelper("CONTEXT", columns.contextWidth, "…"), columns.contextWidth),
 		padRight("CREATED_AT", columns.createdWidth),
 	}, " ")
 }
@@ -829,11 +841,11 @@ func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns ba
 	status := truncateRunesHelper(strings.ToUpper(string(item.Issue.Status)), columns.statusWidth, "…")
 	context := backlogContextCell(item, columns.contextWidth)
 	row := strings.Join([]string{
+		padRight(context, columns.contextWidth),
 		padRight(id, columns.idWidth),
 		padRight(issueType, columns.typeWidth),
 		padRight(fmt.Sprintf("P%d", item.Issue.Priority), columns.priorityWidth),
 		padRight(status, columns.statusWidth),
-		padRight(context, columns.contextWidth),
 		padRight(formatBacklogCreatedAt(item.Issue.CreatedAt), columns.createdWidth),
 	}, " ")
 	cursor, mark := "  ", "  "
@@ -860,9 +872,12 @@ func (b BacklogModel) renderBacklogPreview(width int, heights ...int) string {
 	if title == "" {
 		title = "(untitled)"
 	}
-	context := backlogContextValue(item)
-	if context == "" {
+	contexts := backlogContextNames(item)
+	context := ""
+	if len(contexts) == 0 {
 		context = "(none)"
+	} else {
+		context = strings.Join(contexts, "\n")
 	}
 	labels := strings.Join(scopeMemberLabels(item), ", ")
 	if labels == "" {
