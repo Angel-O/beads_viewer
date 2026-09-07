@@ -17,11 +17,18 @@ func TestDecodeScopeInfos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(scopes) != 1 || scopes[0].ID != "s1" || scopes[0].Name != "Today" || scopes[0].MemberCount != 4 {
+	if len(scopes) != 1 || scopes[0].ID != "s1" || scopes[0].Name != "Today" || scopes[0].MemberCount != 4 || !scopes[0].MemberCountKnown {
 		t.Fatalf("decoded scopes = %#v", scopes)
 	}
 	if !scopes[0].CreatedAt.Equal(time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("created_at = %v", scopes[0].CreatedAt)
+	}
+}
+
+func TestUIScopeSnapshotCarriesMemberLimit(t *testing.T) {
+	snapshot := uiScopeSnapshot(hubScopeSnapshot{Active: &RobotActiveScope{ID: "s1", MemberCount: 4, MemberLimit: 37}})
+	if snapshot.Active == nil || snapshot.Active.MemberCount != 4 || snapshot.Active.MemberLimit != 37 {
+		t.Fatalf("UI scope snapshot = %#v, want count 4 and limit 37", snapshot.Active)
 	}
 }
 
@@ -235,7 +242,7 @@ func TestHubScopeServicesQueryCatalogAndMembersBuildPagedCommands(t *testing.T) 
 	script := `#!/bin/sh
 printf '%s\n' "$@" > "$WBD_SCOPE_CALLS"
 if [ "$2" = "list" ]; then
-  printf '%s' '{"schema_version":1,"items":[{"id":"scope-a","name":"Today","member_count":2,"new_scope_field":"allowed"}],"limit":2,"returned_count":1,"total_matching":3,"has_more":true,"next_cursor":"catalog-next"}'
+  printf '%s' '{"schema_version":1,"items":[{"id":"scope-a","name":"Today","member_count":2,"completed_count":1,"new_scope_field":"allowed"}],"limit":2,"returned_count":1,"total_matching":3,"has_more":true,"next_cursor":"catalog-next"}'
 else
   printf '%s' '{"schema_version":1,"scope":{"id":"scope-a","name":"Today","member_count":99,"created_on":"2026-09-05T00:00:00Z","new_scope_field":"allowed"},"members":[{"id":"b1","title":"Member","status":"open","issue_type":"task","new_member_field":"allowed"}],"member_count":2,"completed_count":1,"limit":3,"returned_count":1,"total_matching":1,"has_more":false}'
 fi
@@ -251,7 +258,7 @@ fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Scopes) != 1 || catalog.Scopes[0].ID != "scope-a" || !catalog.HasMore || catalog.NextCursor != "catalog-next" {
+	if len(catalog.Scopes) != 1 || catalog.Scopes[0].ID != "scope-a" || catalog.Scopes[0].CompletedCount != 1 || !catalog.Scopes[0].CompletedCountKnown || !catalog.HasMore || catalog.NextCursor != "catalog-next" {
 		t.Fatalf("catalog page = %#v", catalog)
 	}
 	data, err := os.ReadFile(calls)
@@ -268,7 +275,7 @@ fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if members.Scope.ID != "scope-a" || members.Scope.Name != "Today" || members.Scope.MemberCount != 2 || !members.Scope.CreatedAt.Equal(time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)) || len(members.Members) != 1 || members.Members[0].ID != "b1" || members.HasMore || members.NextCursor != "" {
+	if members.Scope.ID != "scope-a" || members.Scope.Name != "Today" || members.Scope.MemberCount != 2 || members.CompletedCount != 1 || members.Scope.CompletedCount != 1 || !members.Scope.CompletedCountKnown || !members.Scope.CreatedAt.Equal(time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)) || len(members.Members) != 1 || members.Members[0].ID != "b1" || members.HasMore || members.NextCursor != "" {
 		t.Fatalf("members page = %#v", members)
 	}
 	data, err = os.ReadFile(calls)
@@ -280,6 +287,25 @@ fi
 		"--status", "completed", "--type", "task", "--context", "ctx:a", "--context", "ctx:b", "--json",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("members wbd args=%#v, want %#v", got, want)
+	}
+}
+
+func TestDecodePagedScopeCountsAcceptBoundaryAndRejectNegativeValues(t *testing.T) {
+	valid := `{"scope":{"id":"scope-a"},"members":[],"member_count":0,"completed_count":0,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`
+	page, err := decodeScopeMembersPage([]byte(valid), 2, "scope-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Scope.MemberCount != 0 || page.CompletedCount != 0 || !page.Scope.MemberCountKnown || !page.Scope.CompletedCountKnown {
+		t.Fatalf("boundary counts = %#v, want explicit zero counts", page)
+	}
+	for _, data := range []string{
+		`{"scope":{"id":"scope-a"},"members":[],"member_count":-1,"completed_count":0,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`,
+		`{"scope":{"id":"scope-a"},"members":[],"member_count":1,"completed_count":-1,"limit":2,"returned_count":0,"total_matching":0,"has_more":false}`,
+	} {
+		if _, err := decodeScopeMembersPage([]byte(data), 2, "scope-a"); err == nil {
+			t.Fatalf("negative count decoded: %s", data)
+		}
 	}
 }
 

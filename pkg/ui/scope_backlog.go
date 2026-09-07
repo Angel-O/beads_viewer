@@ -20,11 +20,19 @@ import (
 // ScopeInfo is the display projection needed by the Viewer scope chooser.
 // Membership itself remains owned by wbd; the UI only retains identity/count.
 type ScopeInfo struct {
-	ID          string
-	Name        string
-	CreatedAt   time.Time
-	MemberCount int
-	Active      bool
+	// The Known flags preserve explicit zeroes from typed backend responses;
+	// legacy count-less responses must not erase a count already shown by the
+	// Viewer.
+	ID                  string
+	Name                string
+	CreatedAt           time.Time
+	MemberCount         int
+	MemberLimit         int
+	CompletedCount      int
+	MemberCountKnown    bool
+	MemberLimitKnown    bool
+	CompletedCountKnown bool
+	Active              bool
 }
 
 // ScopeSnapshot is the complete named-scope state needed by the Viewer.
@@ -60,10 +68,47 @@ type ScopeMembersQuery struct {
 
 // ScopeMembersPage is one bounded page of full member issue projections.
 type ScopeMembersPage struct {
-	Scope      ScopeInfo
-	Members    []model.Issue
-	HasMore    bool
-	NextCursor string
+	Scope          ScopeInfo
+	CompletedCount int
+	Members        []model.Issue
+	HasMore        bool
+	NextCursor     string
+}
+
+// scopeInfoCountKnown treats non-zero values from older in-process callers as
+// known while allowing decoders to distinguish an explicit zero from omission.
+func scopeInfoCountKnown(value int, known bool) bool { return known || value != 0 }
+
+func mergeScopeInfo(previous, incoming ScopeInfo) ScopeInfo {
+	merged := incoming
+	if merged.ID == "" {
+		merged.ID = previous.ID
+	}
+	if merged.Name == "" {
+		merged.Name = previous.Name
+	}
+	if merged.CreatedAt.IsZero() {
+		merged.CreatedAt = previous.CreatedAt
+	}
+	if !scopeInfoCountKnown(incoming.MemberCount, incoming.MemberCountKnown) {
+		merged.MemberCount = previous.MemberCount
+		merged.MemberCountKnown = previous.MemberCountKnown || previous.MemberCount != 0
+	}
+	if !scopeInfoCountKnown(incoming.MemberLimit, incoming.MemberLimitKnown) {
+		merged.MemberLimit = previous.MemberLimit
+		merged.MemberLimitKnown = previous.MemberLimitKnown || previous.MemberLimit != 0
+	}
+	if !scopeInfoCountKnown(incoming.CompletedCount, incoming.CompletedCountKnown) {
+		merged.CompletedCount = previous.CompletedCount
+		merged.CompletedCountKnown = previous.CompletedCountKnown || previous.CompletedCount != 0
+	}
+	return merged
+}
+
+func mergeScopeInfoPreservingActive(previous, incoming ScopeInfo) ScopeInfo {
+	merged := mergeScopeInfo(previous, incoming)
+	merged.Active = previous.Active || incoming.Active
+	return merged
 }
 
 // Request/response aliases keep the seam readable to callers that prefer
@@ -1153,6 +1198,14 @@ func (s *ScopePickerModel) SetCatalogPage(page ScopeCatalogPage, index int, gene
 	if s.catalogPageIndex >= len(s.catalogPageCursors) {
 		s.catalogPageCursors = append(s.catalogPageCursors, make([]string, s.catalogPageIndex-len(s.catalogPageCursors)+1)...)
 	}
+	for i := range page.Scopes {
+		for _, current := range s.scopes {
+			if current.ID == page.Scopes[i].ID {
+				page.Scopes[i] = mergeScopeInfoPreservingActive(current, page.Scopes[i])
+				break
+			}
+		}
+	}
 	s.SetScopes(page.Scopes)
 	return true
 }
@@ -1307,6 +1360,16 @@ func (s ScopePickerModel) acceptsMemberPage(scopeID string, generation uint64) b
 func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueItem, index int, generation uint64) bool {
 	if !s.acceptsMemberPage(page.Scope.ID, generation) {
 		return false
+	}
+	if !scopeInfoCountKnown(page.Scope.CompletedCount, page.Scope.CompletedCountKnown) && page.CompletedCount != 0 {
+		page.Scope.CompletedCount = page.CompletedCount
+		page.Scope.CompletedCountKnown = true
+	}
+	for i := range s.scopes {
+		if s.scopes[i].ID == page.Scope.ID {
+			s.scopes[i] = mergeScopeInfoPreservingActive(s.scopes[i], page.Scope)
+			break
+		}
 	}
 	s.memberHasMore = page.HasMore
 	s.memberNextCursor = page.NextCursor
@@ -1904,10 +1967,30 @@ func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string 
 			}
 			date := s.scopes[i].CreatedAt.Format("2006-01-02")
 			if !showDetails {
-				suffix := fmt.Sprintf(" · %s/%d", date, s.scopes[i].MemberCount)
-				// Truncate the complete styled row, not just the name: the
-				// date/count and active marker must not escape narrow panels.
-				row := prefix + nameStyle.Render(s.scopes[i].Name) + suffix + activeRendered
+				if !scopeInfoCountKnown(s.scopes[i].CompletedCount, s.scopes[i].CompletedCountKnown) {
+					row := prefix + nameStyle.Render(s.scopes[i].Name) + fmt.Sprintf(" · %s/%d", date, s.scopes[i].MemberCount) + activeRendered
+					lines = append(lines, ansi.Truncate(row, width, "…"))
+					continue
+				}
+				progress := " · " + scopeMemberProgressCompact(s.scopes[i])
+				remaining := width - lipgloss.Width(prefix) - lipgloss.Width(progress)
+				if remaining < lipgloss.Width(activeRendered) {
+					activeRendered = ""
+				}
+				remaining -= lipgloss.Width(activeRendered)
+				datePart := " · " + date
+				nameWidth := remaining
+				if remaining > lipgloss.Width(datePart) {
+					nameWidth -= lipgloss.Width(datePart)
+				} else {
+					datePart = ""
+				}
+				displayName := ""
+				if nameWidth > 0 {
+					displayName = truncateRunesHelper(s.scopes[i].Name, nameWidth, "…")
+				}
+				// Keep complete progress visible before optional date/name text.
+				row := prefix + nameStyle.Render(displayName) + datePart + progress + activeRendered
 				lines = append(lines, ansi.Truncate(row, width, "…"))
 				continue
 			}
@@ -1915,12 +1998,29 @@ func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string 
 			nameWidth := maxInt(width-lipgloss.Width(prefix)-lipgloss.Width(active), 0)
 			displayName := truncateRunesHelper(s.scopes[i].Name, nameWidth, "…")
 			lines = append(lines, prefix+nameStyle.Render(displayName)+activeRendered)
-			detail := fmt.Sprintf("    created: %s · members: %d", date, s.scopes[i].MemberCount)
+			detail := fmt.Sprintf("    created: %s · %s", date, scopeMemberProgress(s.scopes[i]))
+			if scopeInfoCountKnown(s.scopes[i].CompletedCount, s.scopes[i].CompletedCountKnown) {
+				detail = fmt.Sprintf("    %s · created: %s", scopeMemberProgress(s.scopes[i]), date)
+			}
 			lines = append(lines, s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).
 				Render(truncateRunesHelper(detail, width, "…")))
 		}
 	}
 	return lipgloss.NewStyle().Width(width).Height(rows).MaxHeight(rows).Render(strings.Join(lines, "\n"))
+}
+
+func scopeMemberProgress(scope ScopeInfo) string {
+	if scopeInfoCountKnown(scope.CompletedCount, scope.CompletedCountKnown) {
+		return fmt.Sprintf("completed: %d/%d", scope.CompletedCount, scope.MemberCount)
+	}
+	return fmt.Sprintf("members: %d", scope.MemberCount)
+}
+
+func scopeMemberProgressCompact(scope ScopeInfo) string {
+	if scopeInfoCountKnown(scope.CompletedCount, scope.CompletedCountKnown) {
+		return scopeMemberProgress(scope)
+	}
+	return fmt.Sprintf("count: %d", scope.MemberCount)
 }
 
 type scopeMemberColumns struct {
@@ -2127,7 +2227,7 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	}
 	count := ""
 	if selected != nil {
-		count = fmt.Sprintf(" · %d members", selected.MemberCount)
+		count = " · " + scopeMemberHeaderProgress(*selected)
 	}
 	header := s.theme.Renderer.NewStyle().Foreground(s.theme.Primary).Bold(true).Render(truncateRunesHelper("Members · "+name+count+" · "+page, width, "…"))
 	if s.memberLoading {
@@ -2171,6 +2271,13 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 		lines = append(lines, s.renderMemberRow(items[i], i == s.memberSelected, columns, width))
 	}
 	return lipgloss.NewStyle().Width(width).Height(maxInt(rows, 1)).MaxHeight(maxInt(rows, 1)).Render(strings.Join(lines, "\n"))
+}
+
+func scopeMemberHeaderProgress(scope ScopeInfo) string {
+	if scopeInfoCountKnown(scope.CompletedCount, scope.CompletedCountKnown) {
+		return scopeMemberProgress(scope)
+	}
+	return fmt.Sprintf("%d members", scope.MemberCount)
 }
 
 func memberFilterLabel(value string) string {
@@ -2306,7 +2413,7 @@ func (m Model) renderScopeBadge() string {
 	}
 	label := "scope none"
 	if m.activeScope != nil {
-		label = fmt.Sprintf("%s · %d/100", m.activeScope.Name, m.activeScope.MemberCount)
+		label = fmt.Sprintf("%s · %d/%d", m.activeScope.Name, m.activeScope.MemberCount, m.activeScope.MemberLimit)
 	}
 	return lipgloss.NewStyle().Background(ColorBgHighlight).Foreground(ColorInfo).Padding(0, 1).Render(label)
 }

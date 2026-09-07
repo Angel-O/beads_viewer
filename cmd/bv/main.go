@@ -5208,11 +5208,14 @@ func uiScopeSnapshot(snapshot hubScopeSnapshot) *ui.ScopeSnapshot {
 	active := snapshot.Active
 	createdAt, _ := time.Parse(time.RFC3339, active.CreatedOn)
 	result.Active = &ui.ScopeInfo{
-		ID:          active.ID,
-		Name:        active.Name,
-		CreatedAt:   createdAt,
-		MemberCount: active.MemberCount,
-		Active:      true,
+		ID:               active.ID,
+		Name:             active.Name,
+		CreatedAt:        createdAt,
+		MemberCount:      active.MemberCount,
+		MemberLimit:      active.MemberLimit,
+		MemberCountKnown: true,
+		MemberLimitKnown: true,
+		Active:           true,
 	}
 	result.Scopes = []ui.ScopeInfo{*result.Active}
 	return result
