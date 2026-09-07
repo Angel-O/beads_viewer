@@ -2408,7 +2408,8 @@ func (s *ScopePickerModel) renderTopSplit(width, height int, scopeFocused bool) 
 	membersWidth := maxInt(contentWidth-selectorWidth-2, 1)
 	panelHeight := maxInt(height, 1)
 	catalogStyle, memberStyle := scopeTopSplitStyles(scopeFocused, s.memberFocused)
-	memberRows := maxInt(panelHeight-4, 1)
+	// Only the panel border consumes rows; the member table uses the rest.
+	memberRows := maxInt(panelHeight-2, 1)
 	s.memberViewportRowsOverride = maxInt(memberRows-3, 1)
 	s.clampMemberViewport()
 	panel := func(style lipgloss.Style, content string, panelWidth int) string {
