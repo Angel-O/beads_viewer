@@ -70,10 +70,22 @@
   `hz3:/data/tmp/bv-p1-latency-f719c41a-launch`.
 - [ ] Complete queued f719's original full P1 matrix and final acceptance:
   288 UI records (144 current), 72 timed CLI records/14,400 samples, 36 exact
-  records/144 outputs and the original slowdown/parity controls. At 08:17:49 UTC
+  records/144 outputs and the original slowdown/parity controls. At 08:22:57 UTC
   the measured 7f wrapper has not completed; f719 remains queued without a
   measured start or failed precondition. Keep `bv-apal.1` in progress and final
   proof open. Earlier 4a delivery retains only its original revision scope.
+- [x] Review the 20 completed 7f CLI records available at 08:28:34 UTC:
+  recompute all 4,000 durations' quantiles/maxima, verify actual fixture hashes,
+  bound binary roles and identical host/toolchain/seed, and compare the ten
+  baseline/current decision projections. Recheck all 1,600 saved deep-chain
+  outputs and their empty stderr: ordered IDs, readiness and metric states
+  agree. This is partial timed-cohort evidence, not complete fixed-clock parity.
+  Deep-chain 1k cold current p99 is 3.531 s, max 68.491 s; that maximum sample
+  reports only 10 ms of triage computation. A separate live baseline observation
+  shows `folio_wait_bit_common` and host I/O full avg60 of 44.25%; this does not
+  locate or explain the current sample's pause. Retained readback is
+  `/data/tmp/bv-cache-contention-7y6udeip/delivery/cli-readback-0830.stdout`
+  (SHA-256 `a7727aaa…`). Preserve the original limits and remaining matrix.
 
 - [x] Reconcile the concurrent 06:39:53 UTC rebase onto the v0.24.0 release
   metadata. `250a8b98` became `6c8a4474`; `main` is now `4a5a564f`, tree
