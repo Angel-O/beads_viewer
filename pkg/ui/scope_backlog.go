@@ -395,6 +395,7 @@ type BacklogModel struct {
 	filteredItems      []IssueItem
 	selected           int
 	selectedIssueID    string
+	viewportStart      int
 	filter             string
 	label              string
 	status             string
@@ -448,6 +449,7 @@ func newBacklogLabelInput(theme Theme) textinput.Model {
 
 func (b *BacklogModel) SetSize(width, height int) {
 	b.width, b.height = width, height
+	b.clampEmbeddedViewport(b.embeddedViewportRows(b.displayTitle()))
 }
 
 func (b *BacklogModel) SetPage(page BacklogPage, index int) {
@@ -464,6 +466,7 @@ func (b *BacklogModel) SetPage(page BacklogPage, index int) {
 	b.hasMore, b.nextCursor, b.pageIndex = page.HasMore, page.NextCursor, index
 	b.selectedIssueID = ""
 	b.selected = 0
+	b.viewportStart = 0
 	b.previewOffset = 0
 	b.reconcileSelection("", 0)
 }
@@ -485,6 +488,7 @@ func (b *BacklogModel) Reset() {
 	b.filteredItems = nil
 	b.selected = 0
 	b.selectedIssueID = ""
+	b.viewportStart = 0
 	b.pageIndex = 0
 	b.nextCursor = ""
 	b.hasMore = false
@@ -580,11 +584,13 @@ func (b *BacklogModel) SetExcludedIDs(ids []string) {
 		}
 	}
 	b.excludedIDs = excluded
+	b.viewportStart = 0
 	b.applyFilter()
 }
 
 func (b *BacklogModel) ResetPagination() {
 	b.pageIndex = 0
+	b.viewportStart = 0
 	b.nextCursor = ""
 	b.hasMore = false
 	b.pageCursors = []string{""}
@@ -592,7 +598,7 @@ func (b *BacklogModel) ResetPagination() {
 }
 
 func (b *BacklogModel) resetCursor() {
-	b.selected, b.previewOffset, b.selectedIssueID = 0, 0, ""
+	b.selected, b.previewOffset, b.selectedIssueID, b.viewportStart = 0, 0, "", 0
 }
 
 // SetContextFilter records the backlog-owned Hub context projection. It does
@@ -824,6 +830,60 @@ func (b *BacklogModel) Move(delta int) {
 	b.selected = (b.selected + delta + items) % items
 	b.selectedIssueID = b.filteredItems[b.selected].Issue.ID
 	b.previewOffset = 0
+	b.clampEmbeddedViewport(b.embeddedViewportRows(b.displayTitle()))
+}
+
+func (b BacklogModel) embeddedViewportRows(title string) int {
+	contentWidth := maxInt(b.width-2, 1)
+	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
+	naturalTableWidth := maxInt(backlogTableWidth(columns), lipgloss.Width(title))
+	wide := b.CurrentIssue() != nil && naturalTableWidth <= maxInt(contentWidth*2/3, 1)
+	previewRows := 0
+	if !wide && b.CurrentIssue() != nil {
+		previewRows = min(2, maxInt(b.height-3, 0))
+	}
+	return maxInt(maxInt(b.height, 1)-2-previewRows, 1)
+}
+
+func (b *BacklogModel) clampEmbeddedViewport(rows int) {
+	if len(b.filteredItems) == 0 {
+		b.viewportStart = 0
+		return
+	}
+	rows = maxInt(rows, 1)
+	maxStart := ((len(b.filteredItems) - 1) / rows) * rows
+	start := min(maxInt(b.viewportStart, 0), maxStart)
+	if start%rows != 0 || b.selected < start || b.selected >= start+rows {
+		start = (maxInt(b.selected, 0) / rows) * rows
+	}
+	b.viewportStart = min(start, maxStart)
+}
+
+// MoveScreen advances one terminal-sized Out-of-scope viewport without
+// changing the opaque backend cursor.
+func (b *BacklogModel) MoveScreen(delta, rows int) bool {
+	if b.loading || len(b.filteredItems) == 0 || delta == 0 {
+		return false
+	}
+	rows = maxInt(rows, 1)
+	b.clampEmbeddedViewport(rows)
+	start := b.viewportStart
+	if delta > 0 {
+		if start+rows >= len(b.filteredItems) {
+			return false
+		}
+		start += rows
+	} else {
+		if start == 0 {
+			return false
+		}
+		start = maxInt(0, start-rows)
+	}
+	b.viewportStart = start
+	b.selected = start
+	b.selectedIssueID = b.filteredItems[start].Issue.ID
+	b.previewOffset = 0
+	return true
 }
 
 // ScrollPreview moves through the complete selected-issue preview without
@@ -858,6 +918,7 @@ func (b *BacklogModel) applyFilter() {
 			}
 		}
 	}
+	b.clampEmbeddedViewport(b.embeddedViewportRows(b.displayTitle()))
 }
 
 // reconcileSelection derives the row coordinate from the stable issue ID. A
@@ -916,6 +977,10 @@ func (b BacklogModel) filteredIssueItems() []IssueItem {
 }
 
 func (b BacklogModel) View() string {
+	return b.renderBacklog(b.displayTitle(), false)
+}
+
+func (b BacklogModel) displayTitle() string {
 	filters := []string{}
 	if b.searching {
 		filters = append(filters, "search: "+b.filter+"_")
@@ -938,11 +1003,16 @@ func (b BacklogModel) View() string {
 	if len(filters) > 0 {
 		title += " · " + strings.Join(filters, " · ")
 	}
-	return b.renderBacklog(title)
+	return title
 }
 
-func (b BacklogModel) renderBacklog(title string) string {
+// embedded leaves padding and pagination ownership to the Scope lower frame.
+func (b *BacklogModel) renderBacklog(title string, embeddedArgs ...bool) string {
+	embedded := len(embeddedArgs) > 0 && embeddedArgs[0]
 	contentWidth := maxInt(b.width-4, 1)
+	if embedded {
+		contentWidth = maxInt(b.width-2, 1)
+	}
 	wideWidth := maxInt(contentWidth*2/3, 1)
 	columns := backlogTableColumnsFor(b.filteredItems, contentWidth)
 	naturalTableWidth := backlogTableWidth(columns)
@@ -956,19 +1026,48 @@ func (b BacklogModel) renderBacklog(title string) string {
 	}
 	columns.width = listWidth
 
-	lines := []string{b.renderBacklogHeader(title, columns)}
-	availableHeight := maxInt(b.height-2, 1)
+	availableHeight := maxInt(b.height, 1)
+	if !embedded {
+		availableHeight = maxInt(b.height-2, 1)
+	}
 	previewRows := 0
 	if !wide && b.CurrentIssue() != nil {
-		// Keep one table row, separator, and page hint visible at short heights.
-		previewRows = min(2, maxInt(availableHeight-5, 0))
+		// Keep one table row and the preview visible at short heights.
+		reserved := 3
+		if !embedded {
+			reserved = 5
+		}
+		previewRows = min(2, maxInt(availableHeight-reserved, 0))
 	}
-	listRows := availableHeight - 4 - previewRows // header, separator, page hint, and padding
+	listRows := availableHeight - 2 - previewRows // two-line table header
+	if !embedded {
+		listRows = availableHeight - 4 - previewRows // header, separator, page hint, and padding
+	}
 	if listRows < 1 {
 		listRows = 1
 	}
-	listView := b.renderBacklogList(columns, listWidth, listRows)
-	page := b.renderBacklogPage(listWidth)
+	if embedded {
+		listRows = b.embeddedViewportRows(title)
+		b.clampEmbeddedViewport(listRows)
+	}
+	headerTitle := title
+	if embedded {
+		visibleScreens := maxInt((len(b.filteredItems)+listRows-1)/listRows, 1)
+		screen := min(b.viewportStart/listRows+1, visibleScreens)
+		batch := min(maxInt(b.pageIndex+1, 1), maxInt(len(b.pageCursors), 1))
+		batchCount := maxInt(len(b.pageCursors), 1)
+		screenLabel := fmt.Sprintf("screen %d/%d · result batch %d/%d", screen, visibleScreens, batch, batchCount)
+		if b.hasMore {
+			screenLabel = fmt.Sprintf("screen %d/%d+ · result batch %d/%d+", screen, visibleScreens, batch, batchCount)
+		}
+		headerTitle += " · " + screenLabel
+	}
+	headerWidth := listWidth
+	if embedded {
+		headerWidth = contentWidth
+	}
+	lines := []string{b.renderBacklogHeader(headerTitle, columns, headerWidth, listWidth)}
+	listView := b.renderBacklogList(columns, listWidth, listRows, embedded)
 	if wide {
 		previewWidth := maxInt(contentWidth-listWidth-2, 1)
 		preview := b.renderBacklogPreview(previewWidth, listRows)
@@ -979,8 +1078,14 @@ func (b BacklogModel) renderBacklog(title string) string {
 			lines = append(lines, b.renderBacklogPreview(contentWidth, previewRows))
 		}
 	}
-	lines = append(lines, "")
-	lines = append(lines, page)
+	if !embedded {
+		page := b.renderBacklogPage(listWidth)
+		lines = append(lines, "")
+		lines = append(lines, page)
+	}
+	if embedded {
+		return strings.Join(lines, "\n")
+	}
 	return lipgloss.NewStyle().Width(b.width).Height(b.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
 }
 
@@ -1095,13 +1200,19 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 	return createdAt.In(time.Local).Format("Mon 02 Jan - 15:04")
 }
 
-func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns) string {
-	width := maxInt(columns.width, 1)
-	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Inline(true).Width(width).MaxWidth(width)
+func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns, widths ...int) string {
+	titleWidth, tableWidth := maxInt(columns.width, 1), maxInt(columns.width, 1)
+	if len(widths) > 0 {
+		titleWidth = maxInt(widths[0], 1)
+	}
+	if len(widths) > 1 {
+		tableWidth = maxInt(widths[1], 1)
+	}
+	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Inline(true).Width(titleWidth).MaxWidth(titleWidth)
 	// Keep the global-backlog column labels bright against the dark header fill.
 	tableStyle := b.theme.Renderer.NewStyle().Background(b.theme.Primary).
 		Foreground(ThemeFg("#FFFFFF")).Bold(true).Inline(true).
-		Width(width).MaxWidth(width)
+		Width(tableWidth).MaxWidth(tableWidth)
 	return titleStyle.Render(title) + "\n" + tableStyle.Render(renderBacklogTableHeader(columns))
 }
 
@@ -1123,7 +1234,8 @@ func backlogTableWidth(columns backlogTableColumns) int {
 	return lipgloss.Width(renderBacklogTableHeader(columns))
 }
 
-func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows int) string {
+func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows int, embeddedArgs ...bool) string {
+	embedded := len(embeddedArgs) > 0 && embeddedArgs[0]
 	if b.loading {
 		return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render("Loading issues…")
 	}
@@ -1134,6 +1246,10 @@ func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows
 		return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render("No unscoped beads.")
 	}
 	start, end := b.visibleRangeFor(rows)
+	if embedded {
+		start = min(maxInt(b.viewportStart, 0), maxInt(len(b.filteredItems)-1, 0))
+		end = min(start+rows, len(b.filteredItems))
+	}
 	lines := make([]string, 0, end-start)
 	for index := start; index < end; index++ {
 		item := b.filteredItems[index]
@@ -2799,7 +2915,7 @@ func (m *Model) renderScopeScreen() string {
 	frameHeight := maxInt(bottomHeight-2, 1)
 	m.backlog.SetSize(frameWidth, frameHeight)
 	m.backlog.setDelegate(m.backlogIssueDelegate())
-	bottom := m.backlog.View()
+	bottom := m.backlog.renderBacklog(m.backlog.displayTitle(), true)
 	lowerStyle := scopeLowerPanelStyle(m.focused == focusGlobalIssues)
 	bottom = lowerStyle.Padding(0, 1).Width(frameWidth).Height(frameHeight).Render(bottom)
 	return lipgloss.NewStyle().Width(width).Height(bodyHeight).MaxHeight(bodyHeight).
@@ -3513,6 +3629,9 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case " ", "space":
 		m.backlog.ToggleMark()
 	case "n", "right":
+		if global && msg.String() == "right" && m.backlog.MoveScreen(1, m.backlog.embeddedViewportRows(m.backlog.displayTitle())) {
+			break
+		}
 		if cursor := m.backlog.NextPageCursor(); cursor != "" {
 			m.backlog.ClearMarks()
 			m.backlog.SetLoading(true)
@@ -3521,6 +3640,9 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(cursor), m.backlog.PageIndex()+1, m.backlogPageGeneration)
 		}
 	case "p", "left":
+		if global && msg.String() == "left" && m.backlog.MoveScreen(-1, m.backlog.embeddedViewportRows(m.backlog.displayTitle())) {
+			break
+		}
 		if m.backlog.PageIndex() > 0 {
 			m.backlog.ClearMarks()
 			cursor := m.backlog.PreviousPageCursor()

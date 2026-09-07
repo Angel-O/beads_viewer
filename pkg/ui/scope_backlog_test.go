@@ -311,6 +311,131 @@ func TestScopeScreenRetainsGlobalPreviewAndFilters(t *testing.T) {
 	}
 }
 
+func TestEmbeddedOutOfScopeResizeKeepsRowsAndIndicatorsInAgreement(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.showScopePicker, m.ready = 160, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	issues := make([]model.Issue, 25)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("outside-%02d", i), Title: "Outside", Status: model.StatusOpen}
+	}
+	m.backlog.SetPage(BacklogPage{Issues: issues, HasMore: true, NextCursor: "next"}, 0)
+	for _, height := range []int{30, 22} {
+		m.height = height
+		view := ansi.Strip(m.renderScopeScreen())
+		lines := strings.Split(view, "\n")
+		bodyHeight := height - 1
+		topHeight := bodyHeight / 2
+		rows := m.backlog.height - 2
+		visibleScreens := (len(issues) + rows - 1) / rows
+		header := lines[topHeight+1]
+		want := fmt.Sprintf("screen 1/%d+ · result batch 1/1+", visibleScreens)
+		if !strings.Contains(header, want) {
+			t.Fatalf("height=%d header=%q, want %q", height, header, want)
+		}
+		shown := 0
+		for _, line := range lines[topHeight:] {
+			if strings.Contains(line, "outside-") {
+				shown++
+			}
+		}
+		if shown != min(rows, len(issues)) {
+			t.Fatalf("height=%d rendered rows=%d, want %d with content height %d", height, shown, min(rows, len(issues)), m.backlog.height)
+		}
+	}
+
+	m.backlog.NextPageCursor()
+	m.backlog.SetPage(BacklogPage{Issues: issues}, 1)
+	view := ansi.Strip(m.renderScopeScreen())
+	if !strings.Contains(view, "result batch 2/2") || strings.Contains(view, "page 2") {
+		t.Fatalf("embedded backend page indicator/footer mismatch:\n%s", view)
+	}
+}
+
+func TestEmbeddedOutOfScopeResizeRealignsViewportBoundary(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	issues := make([]model.Issue, 30)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("outside-%02d", i), Title: "Outside"}
+	}
+	b.SetPage(BacklogPage{Issues: issues}, 0)
+	b.SetSize(120, 9)
+	if got := b.embeddedViewportRows(b.displayTitle()); got != 7 {
+		t.Fatalf("initial embedded rows=%d, want 7", got)
+	}
+	b.viewportStart = 7
+	b.selected = 8
+	b.selectedIssueID = issues[8].ID
+	b.SetSize(120, 13)
+	if got := b.embeddedViewportRows(b.displayTitle()); got != 11 {
+		t.Fatalf("resized embedded rows=%d, want 11", got)
+	}
+	if b.viewportStart != 0 || b.selected != 8 {
+		t.Fatalf("resize viewport start=%d selected=%d, want boundary 0 with selected row retained", b.viewportStart, b.selected)
+	}
+	view := ansi.Strip(b.renderBacklog(b.displayTitle(), true))
+	if !strings.Contains(view, "screen 1/3") || !strings.Contains(view, "outside-08") {
+		t.Fatalf("resized viewport indicator/selection mismatch:\n%s", view)
+	}
+}
+
+func TestEmbeddedOutOfScopeUsesOnlyLowerFramePadding(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 120, 30, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	m.scopeMembershipIDs = map[string][]string{"s1": {"member"}}
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "outside", Title: "Outside", Status: model.StatusOpen}}}, 0)
+	lines := strings.Split(ansi.Strip(m.renderScopeScreen()), "\n")
+	lowerTop := (m.height - 1) / 2
+	if got := displayOffset(lines[lowerTop+1], "Out-of-scope issues"); got != 2 {
+		t.Fatalf("embedded lower title offset=%d, want one-cell frame padding: %q", got, lines[lowerTop+1])
+	}
+	if got := displayOffset(lines[lowerTop+2], "CONTEXT"); got != 6 {
+		t.Fatalf("embedded table header offset=%d, want lower-frame padding plus cursor cells: %q", got, lines[lowerTop+2])
+	}
+}
+
+func TestEmbeddedOutOfScopeHeaderUsesPanelWidthForLongFilters(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 140, 30, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	m.backlog.SetContextFilter([]string{"ctx:long"}, false, []string{"context-name-that-fits"})
+	m.backlog.status = "status-name-that-fits"
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "outside", Title: "Outside", Status: model.StatusOpen}}}, 0)
+	lines := strings.Split(ansi.Strip(m.renderScopeScreen()), "\n")
+	header := lines[(m.height-1)/2+1]
+	if !strings.Contains(header, "screen 1/1 · result batch 1/1") {
+		t.Fatalf("embedded long filter header clipped its indicators: %q", header)
+	}
+}
+
+func TestEmbeddedOutOfScopeWidePreviewClipsTableHeaderToTableWidth(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "outside", Title: "Outside", Description: "Preview", Status: model.StatusOpen,
+	}}}, 0)
+	columns := backlogTableColumnsFor(b.filteredItems, b.width-2)
+	listWidth := backlogTableWidth(columns)
+	if listWidth > (b.width-2)*2/3 {
+		t.Fatalf("test table width=%d does not leave a wide preview in %d columns", listWidth, b.width)
+	}
+	lines := strings.Split(ansi.Strip(b.renderBacklog(b.displayTitle(), true)), "\n")
+	var tableHeader string
+	for _, line := range lines {
+		if strings.Contains(line, "CONTEXT") && strings.Contains(line, "CREATED_AT") {
+			tableHeader = line
+			break
+		}
+	}
+	if tableHeader == "" || !strings.Contains(strings.Join(lines, "\n"), "TITLE") {
+		t.Fatalf("wide embedded backlog omitted table or preview:\n%s", strings.Join(lines, "\n"))
+	}
+	if got := lipgloss.Width(tableHeader); got != listWidth {
+		t.Fatalf("embedded table header width=%d, want table width %d:\n%s", got, listWidth, tableHeader)
+	}
+}
+
 func TestScopeScreenDispatchesGlobalControlsAfterTopPanes(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.width, m.height, m.showScopePicker, m.ready = 240, 30, true, true
@@ -1237,6 +1362,87 @@ func TestPagedScopePickerUsesViewportScreensBeforeFetchingNextMemberBatch(t *tes
 	m.scopePicker.SetSize(100, 23)
 	if m.scopePicker.memberViewportStart != 0 {
 		t.Fatalf("resize did not reset viewport start=%d", m.scopePicker.memberViewportStart)
+	}
+}
+
+func TestPagedOutOfScopeUsesViewportScreensBeforeFetchingNextBatch(t *testing.T) {
+	issues := make([]model.Issue, 53)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("outside-%02d", i), Title: fmt.Sprintf("Outside %02d", i)}
+	}
+	var requests []BacklogQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			requests = append(requests, query)
+			start := 0
+			if query.Cursor != "" {
+				start = 50
+			}
+			end := min(start+backlogPageSize, len(issues))
+			return BacklogPage{Issues: issues[start:end], HasMore: end < len(issues), NextCursor: "backlog-2"}, nil
+		},
+	}})
+	m.width, m.height, m.showScopePicker, m.ready = 100, 24, true, true
+	m.focused = focusGlobalIssues
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	m.scopeMembershipIDs = map[string][]string{"s1": {"member"}}
+	m.backlog.SetPage(BacklogPage{Issues: issues[:50], HasMore: true, NextCursor: "backlog-2"}, 0)
+	header := func() string {
+		return strings.Split(ansi.Strip(m.renderScopeScreen()), "\n")[(m.height-1)/2+1]
+	}
+	_ = header()
+	visible := m.backlog.embeddedViewportRows(m.backlog.displayTitle())
+	visibleScreens := (50 + visible - 1) / visible
+	if selected := m.backlog.CurrentIssue(); selected == nil || selected.ID != "outside-00" {
+		t.Fatalf("initial Out-of-scope selection=%#v", selected)
+	}
+	if !strings.Contains(header(), fmt.Sprintf("screen 1/%d+ · result batch 1/1+", visibleScreens)) {
+		t.Fatalf("initial Out-of-scope indicator=%q", header())
+	}
+
+	for screen := 2; screen <= visibleScreens; screen++ {
+		updated, cmd := m.handleBacklogKey(keyMsg("right"))
+		m = updated
+		if cmd != nil || m.backlog.viewportStart != (screen-1)*visible {
+			t.Fatalf("screen %d navigation: cmd=%t start=%d", screen, cmd != nil, m.backlog.viewportStart)
+		}
+		if !strings.Contains(header(), fmt.Sprintf("screen %d/%d+ · result batch 1/1+", screen, visibleScreens)) {
+			t.Fatalf("screen %d indicator=%q", screen, header())
+		}
+	}
+
+	updated, cmd := m.handleBacklogKey(keyMsg("right"))
+	m = updated
+	if cmd == nil || m.backlog.viewportStart != (visibleScreens-1)*visible {
+		t.Fatalf("batch boundary navigation: cmd=%t start=%d", cmd != nil, m.backlog.viewportStart)
+	}
+	updatedTea, _ := m.Update(cmd())
+	m = updatedTea.(*Model)
+	if len(requests) != 1 || requests[0].Cursor != "backlog-2" {
+		t.Fatalf("next batch request=%#v", requests)
+	}
+	if selected := m.backlog.CurrentIssue(); selected == nil || selected.ID != "outside-50" {
+		t.Fatalf("next batch selection=%#v, want outside-50", selected)
+	}
+	if !strings.Contains(header(), "screen 1/1 · result batch 2/2") {
+		t.Fatalf("next batch indicator=%q", header())
+	}
+
+	updated, cmd = m.handleBacklogKey(keyMsg("left"))
+	m = updated
+	if cmd == nil || m.backlog.viewportStart != 0 {
+		t.Fatalf("previous batch boundary: cmd=%t start=%d", cmd != nil, m.backlog.viewportStart)
+	}
+	updatedTea, _ = m.Update(cmd())
+	m = updatedTea.(*Model)
+	if len(requests) != 2 || requests[1].Cursor != "" {
+		t.Fatalf("previous batch request=%#v", requests)
+	}
+	if selected := m.backlog.CurrentIssue(); selected == nil || selected.ID != "outside-00" {
+		t.Fatalf("previous batch selection=%#v, want outside-00", selected)
+	}
+	if !strings.Contains(header(), fmt.Sprintf("screen 1/%d+ · result batch 1/2+", visibleScreens)) {
+		t.Fatalf("previous batch indicator=%q", header())
 	}
 }
 
