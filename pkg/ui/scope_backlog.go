@@ -2098,9 +2098,11 @@ func (s *ScopePickerModel) ToggleMemberStatus(status string) {
 func (s *ScopePickerModel) CycleMemberType() {
 	var values []string
 	if s.memberServerFiltering {
+		// Keep server-side Scope Members filtering limited to supported Beads types.
 		values = []string{
 			string(model.TypeBug), string(model.TypeFeature), string(model.TypeTask),
 			string(model.TypeEpic), string(model.TypeChore),
+			"decision", "todo",
 		}
 	} else {
 		seen := make(map[model.IssueType]bool)
