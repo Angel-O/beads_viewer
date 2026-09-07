@@ -246,9 +246,10 @@ type scopeDetailsMsg struct {
 }
 
 type scopeMembershipMsg struct {
-	scopeID string
-	ids     []string
-	err     error
+	scopeID    string
+	ids        []string
+	generation uint64
+	err        error
 }
 
 type scopeMutationMsg struct {
@@ -302,20 +303,24 @@ func loadScopeDetailsCmd(service ScopeServices, scopeID string, generations ...u
 	}
 }
 
-func loadScopeMembershipCmd(service ScopeServices, scopeID string) tea.Cmd {
+func loadScopeMembershipCmd(service ScopeServices, scopeID string, generations ...uint64) tea.Cmd {
+	var generation uint64
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
 	return func() tea.Msg {
 		if service.LoadDetails == nil {
-			return scopeMembershipMsg{scopeID: scopeID, err: fmt.Errorf("complete scope membership is unavailable")}
+			return scopeMembershipMsg{scopeID: scopeID, generation: generation, err: fmt.Errorf("complete scope membership is unavailable")}
 		}
 		details, err := service.LoadDetails(context.Background(), scopeID)
 		if err != nil {
-			return scopeMembershipMsg{scopeID: scopeID, err: err}
+			return scopeMembershipMsg{scopeID: scopeID, generation: generation, err: err}
 		}
 		ids, complete := completeScopeMemberIDs(details)
 		if !complete {
-			return scopeMembershipMsg{scopeID: scopeID, err: fmt.Errorf("complete scope membership is unavailable")}
+			return scopeMembershipMsg{scopeID: scopeID, generation: generation, err: fmt.Errorf("complete scope membership is unavailable")}
 		}
-		return scopeMembershipMsg{scopeID: scopeID, ids: ids}
+		return scopeMembershipMsg{scopeID: scopeID, ids: ids, generation: generation}
 	}
 }
 
@@ -492,6 +497,18 @@ func (b *BacklogModel) Reset() {
 	b.excludedIDs = nil
 }
 
+// InvalidatePage clears page rows and local interaction state without changing
+// the active filter tuple. The next query must repopulate page one.
+func (b *BacklogModel) InvalidatePage() {
+	b.issues = nil
+	b.items = nil
+	b.filtered = nil
+	b.filteredItems = nil
+	b.resetCursor()
+	b.ClearMarks()
+	b.ResetPagination()
+}
+
 // SetLoading makes an old page non-actionable while its replacement is in
 // flight; the retained page remains available for the next accepted response.
 func (b *BacklogModel) SetLoading(loading bool) { b.loading = loading }
@@ -554,9 +571,7 @@ func (b *BacklogModel) SetContextFilter(contexts []string, includeContextless bo
 	b.contextNames = append([]string(nil), names...)
 	b.includeContextless = includeContextless
 	if changed {
-		b.ClearMarks()
-		b.resetCursor()
-		b.ResetPagination()
+		b.InvalidatePage()
 	}
 }
 
@@ -651,9 +666,7 @@ func (b *BacklogModel) SetLabel(value string) {
 	value = strings.TrimSpace(value)
 	if b.label != value {
 		b.label = value
-		b.ClearMarks()
-		b.resetCursor()
-		b.ResetPagination()
+		b.InvalidatePage()
 	}
 }
 
@@ -674,16 +687,12 @@ func (b *BacklogModel) CycleStatus() {
 	for i, status := range backlogStatuses {
 		if status == current {
 			b.status = backlogStatuses[(i+1)%len(backlogStatuses)]
-			b.ClearMarks()
-			b.resetCursor()
-			b.ResetPagination()
+			b.InvalidatePage()
 			return
 		}
 	}
 	b.status = backlogStatusAll
-	b.ClearMarks()
-	b.resetCursor()
-	b.ResetPagination()
+	b.InvalidatePage()
 }
 
 func isBacklogOrdinaryLabel(value string) bool {
@@ -725,31 +734,32 @@ func (b BacklogModel) CurrentPageCursor() string {
 	return b.pageCursors[b.pageIndex]
 }
 
+func (b BacklogModel) pageCursorAt(index int) (string, bool) {
+	if b.pageHistoryKey != b.filterTupleKey() || index < 0 || index >= len(b.pageCursors) {
+		return "", false
+	}
+	return b.pageCursors[index], true
+}
+
 func (b *BacklogModel) BeginSearch() { b.searching = true }
 func (b *BacklogModel) EndSearch()   { b.searching = false }
 func (b *BacklogModel) ClearFilter() {
 	if b.filter != "" {
 		b.filter = ""
-		b.ClearMarks()
-		b.resetCursor()
-		b.ResetPagination()
+		b.InvalidatePage()
 		b.applyFilter()
 	}
 }
 func (b *BacklogModel) Backspace() {
 	if b.filter != "" {
 		b.filter = b.filter[:len(b.filter)-1]
-		b.ClearMarks()
-		b.resetCursor()
-		b.ResetPagination()
+		b.InvalidatePage()
 		b.applyFilter()
 	}
 }
 func (b *BacklogModel) AddFilter(value string) {
 	b.filter += value
-	b.ClearMarks()
-	b.resetCursor()
-	b.ResetPagination()
+	b.InvalidatePage()
 	b.applyFilter()
 }
 func (b *BacklogModel) Move(delta int) {
@@ -1461,6 +1471,9 @@ func (s *ScopePickerModel) BeginMemberPageLoad(scopeID string) uint64 {
 	s.memberError = ""
 	s.memberRequestKey = s.memberFilterKey()
 	s.memberViewportStart = 0
+	s.members = nil
+	s.filteredMembers = nil
+	s.memberReadyIDs = nil
 	s.ClearMemberMarks()
 	s.memberSelected = -1
 	s.memberSelectedID = ""
@@ -1519,8 +1532,21 @@ func (s *ScopePickerModel) setMembers(items []IssueItem) {
 	}
 }
 
-func (s ScopePickerModel) acceptsMemberPage(scopeID, requestKey string, generation uint64) bool {
-	return s.acceptsMemberDetails(scopeID, generation) && requestKey != "" && requestKey == s.memberRequestKey
+func (s ScopePickerModel) acceptsMemberPage(scopeID, requestKey string, generation uint64, cursors ...string) bool {
+	if !s.acceptsMemberDetails(scopeID, generation) || requestKey == "" || requestKey != s.memberRequestKey {
+		return false
+	}
+	if len(cursors) > 0 && cursors[0] != s.currentMemberPageCursor() {
+		return false
+	}
+	return true
+}
+
+func (s ScopePickerModel) currentMemberPageCursor() string {
+	if s.memberPageIndex < 0 || s.memberPageIndex >= len(s.memberPageCursors) {
+		return ""
+	}
+	return s.memberPageCursors[s.memberPageIndex]
 }
 
 func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueItem, index int, generation uint64, requestKey string) bool {
@@ -1719,6 +1745,40 @@ func (s *ScopePickerModel) ResetPaging() {
 	s.memberSelected = 0
 	s.memberSelectedID = ""
 	s.memberPageHistoryKey = s.memberFilterKey()
+	s.ClearMemberMarks()
+}
+
+// ResetForRefresh retains member filter values but invalidates every paged
+// scope pane. New responses therefore cannot repopulate an old page.
+func (s *ScopePickerModel) ResetForRefresh() {
+	s.catalogGeneration++
+	s.catalogLoading = false
+	s.catalogHasMore = false
+	s.catalogNextCursor = ""
+	s.catalogPageIndex = 0
+	s.catalogPageCursors = []string{""}
+	s.catalogError = ""
+	s.scopes = nil
+	s.selected = 0
+	s.selectedScopeID = ""
+
+	s.memberGeneration++
+	s.memberLoading = false
+	s.memberError = ""
+	s.memberScopeID = ""
+	s.members = nil
+	s.filteredMembers = nil
+	s.memberReadyIDs = nil
+	s.memberSelected = 0
+	s.memberSelectedID = ""
+	s.memberViewportStart = 0
+	s.memberViewportPrevious = false
+	s.memberHasMore = false
+	s.memberNextCursor = ""
+	s.memberPageIndex = 0
+	s.memberPageCursors = []string{""}
+	s.memberPageHistoryKey = s.memberFilterKey()
+	s.memberRequestKey = s.memberPageHistoryKey
 	s.ClearMemberMarks()
 }
 
@@ -2739,6 +2799,44 @@ func (m *Model) startScopeMembersPageAt(cursor string, index int) tea.Cmd {
 	}, index, generation, m.scopePicker.memberRequestKey)
 }
 
+func (m *Model) acceptsScopeMembership(msg scopeMembershipMsg) bool {
+	if msg.scopeID == "" || msg.scopeID != m.scopePicker.SelectedScopeID() {
+		return false
+	}
+	if m.scopeMembershipScopeID != "" {
+		return msg.scopeID == m.scopeMembershipScopeID && msg.generation != 0 && msg.generation == m.scopeMembershipGeneration
+	}
+	// Keep the legacy, direct command seam usable for callers that do not start
+	// a tracked membership request first.
+	return msg.generation == 0
+}
+
+func (m *Model) invalidateScopeComplement(scopeID string) tea.Cmd {
+	if m.scopeMembershipIDs != nil {
+		delete(m.scopeMembershipIDs, scopeID)
+	}
+	m.scopeMembershipScopeID = scopeID
+	m.scopeMembershipGeneration++
+	if m.scopeMembershipGeneration == 0 {
+		m.scopeMembershipGeneration++
+	}
+	m.scopeMembershipLoading = scopeID != ""
+	if m.scopeRefreshBacklogPending {
+		m.scopeRefreshBacklogPending = false
+		return nil
+	}
+	m.backlog.InvalidatePage()
+	m.backlogPageGeneration++
+	if m.runtimeServices.Scopes.QueryBacklog == nil && m.runtimeServices.Scopes.LoadBacklog == nil {
+		m.backlog.SetLoading(false)
+		m.backlogLoading = false
+		return nil
+	}
+	m.backlog.SetLoading(true)
+	m.backlogLoading = true
+	return loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration)
+}
+
 func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	if moveIssue != "" {
 		return m.openMoveDestinationPicker(moveIssue)
@@ -2775,7 +2873,7 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	if details := m.loadSelectedScopeDetails(); details != nil {
 		cmds = append(cmds, details)
 	}
-	if m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil {
+	if (m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil) && !m.backlogLoading {
 		m.backlog.Reset()
 		m.backlog.SetLoading(true)
 		m.backlogLoading = true
@@ -2850,23 +2948,30 @@ func cloneScopeMembershipIDs(values map[string][]string) map[string][]string {
 }
 
 func (m *Model) loadSelectedScopeDetails() tea.Cmd {
+	return m.loadSelectedScopeDetailsWithInvalidation(true)
+}
+
+func (m *Model) loadSelectedScopeDetailsWithInvalidation(invalidate bool) tea.Cmd {
+	scopeID := m.scopePicker.SelectedScopeID()
+	var complement tea.Cmd
+	if invalidate {
+		complement = m.invalidateScopeComplement(scopeID)
+	}
 	if m.runtimeServices.Scopes.QueryMembers != nil {
 		members := m.startScopeMembersPage("", 0)
-		scopeID := m.scopePicker.SelectedScopeID()
 		if scopeID == "" || m.runtimeServices.Scopes.LoadDetails == nil {
-			return members
+			return tea.Batch(complement, members)
 		}
-		return tea.Batch(members, loadScopeMembershipCmd(m.runtimeServices.Scopes, scopeID))
+		return tea.Batch(complement, members, loadScopeMembershipCmd(m.runtimeServices.Scopes, scopeID, m.scopeMembershipGeneration))
 	}
 	if m.runtimeServices.Scopes.LoadDetails == nil {
-		return nil
+		return complement
 	}
-	scopeID := m.scopePicker.SelectedScopeID()
 	if scopeID == "" {
-		return nil
+		return complement
 	}
 	generation := m.scopePicker.BeginMemberLoad(scopeID)
-	return loadScopeDetailsCmd(m.runtimeServices.Scopes, scopeID, generation)
+	return tea.Batch(complement, loadScopeDetailsCmd(m.runtimeServices.Scopes, scopeID, generation))
 }
 
 func (m *Model) applyScopePickerDetails(details ScopeDetails) {
@@ -2952,12 +3057,54 @@ func (m *Model) backlogQuery(cursor string) BacklogQuery {
 }
 
 func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {
+	if m.runtimeServices.Scopes.QueryBacklog == nil && m.runtimeServices.Scopes.LoadBacklog == nil {
+		return nil
+	}
 	m.backlog.ClearMarks()
 	m.backlog.ResetPagination()
 	m.backlog.SetLoading(true)
 	m.backlogLoading = true
 	m.backlogPageGeneration++
 	return loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration)
+}
+
+// refreshScopeSession resets all three paged panes while keeping their filter
+// values. Every request gets a new generation, so an older page cannot win.
+func (m *Model) refreshScopeSession() tea.Cmd {
+	if !m.showScopePicker || m.scopePickerMoveIssue != "" {
+		return nil
+	}
+	m.scopePicker.ResetForRefresh()
+	m.scopeCatalog = nil
+	m.activeScope = nil
+	m.scopeDetails = nil
+	m.scopeMembershipIDs = nil
+	m.scopeMembershipScopeID = ""
+	m.scopeMembershipLoading = false
+	m.scopeRefreshBacklogPending = true
+	m.backlog.Reset()
+	var cmds []tea.Cmd
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		cmds = append(cmds, m.startScopeCatalogPage("", 0))
+		if m.runtimeServices.Scopes.Load != nil {
+			cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+		}
+	} else if m.runtimeServices.Scopes.Load != nil {
+		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+	}
+	if m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil {
+		m.backlog.SetLoading(true)
+		m.backlogLoading = true
+		m.backlogPageGeneration++
+		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) closeBacklog() {
@@ -3535,7 +3682,7 @@ func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	}
 	if (mutation.Kind == ScopeMutationAdd || mutation.Kind == ScopeMutationRemove) && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
 		if m.showScopePicker && m.scopePicker.SelectedScopeID() == mutation.ScopeID {
-			cmds = append(cmds, m.loadSelectedScopeDetails())
+			cmds = append(cmds, m.loadSelectedScopeDetailsWithInvalidation(false))
 		} else {
 			cmds = append(cmds, loadScopeDetailsCmd(m.runtimeServices.Scopes, mutation.ScopeID))
 		}

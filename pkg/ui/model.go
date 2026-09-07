@@ -1240,12 +1240,16 @@ type Model struct {
 	activeScope             *ScopeInfo
 	// scopeDetails retains the last successful selected-scope detail load;
 	// failed reloads must not replace it with an empty result.
-	scopeDetails          *ScopeDetails
-	scopeMembershipIDs    map[string][]string
-	backlog               BacklogModel
-	backlogLoading        bool
-	backlogPageGeneration uint64
-	backlogScopeLoaded    bool
+	scopeDetails               *ScopeDetails
+	scopeMembershipIDs         map[string][]string
+	scopeMembershipScopeID     string
+	scopeMembershipGeneration  uint64
+	scopeMembershipLoading     bool
+	backlog                    BacklogModel
+	backlogLoading             bool
+	backlogPageGeneration      uint64
+	backlogScopeLoaded         bool
+	scopeRefreshBacklogPending bool
 	// Picker application stores the reload command until the overlay dispatch
 	// returns it; the legacy picker handler returns only *Model.
 	backlogReloadCmd tea.Cmd
@@ -3159,6 +3163,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scopeMembershipIDs = make(map[string][]string)
 			}
 			m.scopeMembershipIDs[msg.scopeID] = ids
+			if msg.scopeID == m.scopeMembershipScopeID {
+				m.scopeMembershipLoading = false
+			}
 		}
 		// Generation-less typed responses must populate the member browser too.
 		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
@@ -3166,15 +3173,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case scopeMembershipMsg:
+		if !m.acceptsScopeMembership(msg) {
+			break
+		}
 		if msg.err == nil {
 			if m.scopeMembershipIDs == nil {
 				m.scopeMembershipIDs = make(map[string][]string)
 			}
 			m.scopeMembershipIDs[msg.scopeID] = append([]string(nil), msg.ids...)
+			m.scopeMembershipLoading = false
+		} else if msg.scopeID == m.scopeMembershipScopeID {
+			m.scopeMembershipLoading = false
 		}
 
 	case scopeMembersPageMsg:
-		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation) {
+		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation, msg.cursor) {
 			break
 		}
 		if msg.err != nil {
@@ -3210,7 +3223,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation, msg.requestKey)
 
 	case backlogPageMsg:
-		if msg.generation != m.backlogPageGeneration || (msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) {
+		expectedCursor, hasRequestedPage := m.backlog.pageCursorAt(msg.index)
+		if msg.generation != m.backlogPageGeneration ||
+			(msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) ||
+			!hasRequestedPage || msg.cursor != expectedCursor {
 			break
 		}
 		m.backlog.SetLoading(false)
@@ -5248,6 +5264,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.statusMsg = "Refreshing…"
 			m.statusIsError = false
+			if scopeCmd := m.refreshScopeSession(); scopeCmd != nil {
+				cmds = append(cmds, scopeCmd)
+			}
 
 			if m.backgroundWorker != nil && m.backgroundWorker.State() != WorkerStopped {
 				m.backgroundWorker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
@@ -5264,7 +5283,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.beadsPath == "" && m.watcher == nil {
 				m.statusMsg = "Refresh unavailable"
 				m.statusIsError = true
-				return m, nil
+				return m, tea.Batch(cmds...)
 			}
 
 			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
