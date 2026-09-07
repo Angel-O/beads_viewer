@@ -135,9 +135,14 @@ func TestScopePickerEnterTogglesActiveScopeAndPreservesInactiveActivation(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			activations, deactivations := 0, 0
 			activatedID := ""
+			backlogQueries := 0
 			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 				Activate:   func(_ context.Context, id string) error { activations++; activatedID = id; return nil },
 				Deactivate: func(context.Context) error { deactivations++; return nil },
+				QueryBacklog: func(context.Context, BacklogQuery) (BacklogPage, error) {
+					backlogQueries++
+					return BacklogPage{}, nil
+				},
 			}})
 			m.showScopePicker = true
 			m.scopePickerOrigin = focusList
@@ -154,8 +159,15 @@ func TestScopePickerEnterTogglesActiveScopeAndPreservesInactiveActivation(t *tes
 			if cmd == nil {
 				t.Fatal("enter did not start scope mutation")
 			}
-			updated, _ = m.Update(cmd())
+			updated, refresh := m.Update(cmd())
 			m = updated.(*Model)
+			for _, message := range runUISemanticCommands(refresh) {
+				updated, _ = m.Update(message)
+				m = updated.(*Model)
+			}
+			if backlogQueries != 0 {
+				t.Fatalf("scope toggle issued %d backlog queries", backlogQueries)
+			}
 			if m.showScopePicker || m.focused != focusList {
 				t.Fatalf("scope picker state: shown=%t focus=%s", m.showScopePicker, m.focused)
 			}
@@ -523,6 +535,73 @@ func TestScopeGlobalIssuesUsesCompleteSelectedMembership(t *testing.T) {
 	if issue := m.backlog.CurrentIssue(); issue == nil || issue.ID != "outside" || m.backlog.previewOffset != 1 {
 		t.Fatalf("selection/preview changed while applying complement: issue=%#v preview=%d", issue, m.backlog.previewOffset)
 	}
+}
+
+func TestSelectedCatalogScopeOwnsMembersAndComplementAcrossReopen(t *testing.T) {
+	loadedScopeID := ""
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		LoadDetails: func(_ context.Context, scopeID string) (ScopeDetails, error) {
+			loadedScopeID = scopeID
+			return ScopeDetails{
+				Info:   ScopeInfo{ID: scopeID, Name: strings.TrimPrefix(scopeID, "scope-")},
+				Issues: []model.Issue{{ID: scopeID + "-member", Title: scopeID + " member"}},
+			}, nil
+		},
+	}})
+	m.scopeCatalog = []ScopeInfo{
+		{ID: "scope-a", Name: "A", Active: true},
+		{ID: "scope-b", Name: "B"},
+	}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.scopePicker.Move(1)
+	m.activeScope = &ScopeInfo{ID: "scope-a", Name: "A", Active: true}
+	m.scopeMembershipIDs = map[string][]string{
+		"scope-a": {"scope-a-member"},
+	}
+	m.scopeSessionInitialized = true
+	m.showScopePicker = true
+	m.scopePickerOrigin = focusList
+	m.focused = focusScopePicker
+	m.ready = true
+	m.width, m.height = 160, 32
+	for _, message := range runUISemanticCommands(m.loadSelectedScopeDetails()) {
+		updated, _ := m.Update(message)
+		m = updated.(*Model)
+	}
+	if loadedScopeID != "scope-b" {
+		t.Fatalf("selected scope member load used %q, want scope-b", loadedScopeID)
+	}
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{
+		{ID: "scope-a-member", Title: "A member"},
+		{ID: "scope-b-member", Title: "B member"},
+		{ID: "outside", Title: "Outside"},
+	}}, 0)
+
+	assertComplement := func(stage string) {
+		t.Helper()
+		if selected := m.scopePicker.SelectedScopeID(); selected != "scope-b" {
+			t.Fatalf("%s selected scope=%q, want scope-b", stage, selected)
+		}
+		if len(m.scopePicker.filteredMembers) != 1 || m.scopePicker.filteredMembers[0].Issue.ID != "scope-b-member" {
+			t.Fatalf("%s members=%v, want scope-b-member", stage, m.scopePicker.filteredMembers)
+		}
+		view := ansi.Strip(m.renderScopeScreen())
+		if !strings.Contains(view, "Members · B") || !strings.Contains(view, "Out-of-scope issues") {
+			t.Fatalf("%s scope panels missing B selection:\n%s", stage, view)
+		}
+		got := make([]string, 0, len(m.backlog.filtered))
+		for _, issue := range m.backlog.filtered {
+			got = append(got, issue.ID)
+		}
+		requireIssueIDs(t, got, "scope-a-member", "outside")
+	}
+
+	assertComplement("initial")
+	m.closeScopePicker()
+	if cmd := m.openScopePicker(""); cmd != nil {
+		t.Fatal("reopening Scope issued an unexpected command")
+	}
+	assertComplement("reopen")
 }
 
 func TestScopeGlobalIssuesFallsBackToAllIssuesWithoutSelectedScope(t *testing.T) {
