@@ -281,8 +281,20 @@ func decodeScopeInfos(data []byte) ([]ui.ScopeInfo, error) {
 		for _, key := range []string{"member_count", "count"} {
 			if value, ok := object[key].(float64); ok {
 				info.MemberCount = int(value)
+				info.MemberCountKnown = true
 				break
 			}
+		}
+		for _, key := range []string{"member_limit", "limit"} {
+			if value, ok := object[key].(float64); ok {
+				info.MemberLimit = int(value)
+				info.MemberLimitKnown = true
+				break
+			}
+		}
+		if value, ok := object["completed_count"].(float64); ok {
+			info.CompletedCount = int(value)
+			info.CompletedCountKnown = true
 		}
 		for _, key := range []string{"created_at", "created_on"} {
 			if value, ok := object[key].(string); ok {
@@ -408,6 +420,9 @@ func decodeScopeMembersPage(data []byte, expectedLimit int, scopeID string) (ui.
 		return ui.ScopeMembersPage{}, fmt.Errorf("decoding wbd scope show scope: %w", err)
 	}
 	info.MemberCount = *envelope.MemberCount
+	info.MemberCountKnown = true
+	info.CompletedCount = *envelope.CompletedCount
+	info.CompletedCountKnown = true
 	if info.ID == "" {
 		info.ID = scopeID
 	}
@@ -415,11 +430,38 @@ func decodeScopeMembersPage(data []byte, expectedLimit int, scopeID string) (ui.
 	if err != nil {
 		return ui.ScopeMembersPage{}, fmt.Errorf("decoding wbd scope show pagination: %w", err)
 	}
-	return ui.ScopeMembersPage{Scope: info, Members: members, HasMore: pagination.HasMore, NextCursor: pagination.NextCursor}, nil
+	return ui.ScopeMembersPage{Scope: info, CompletedCount: *envelope.CompletedCount, Members: members, HasMore: pagination.HasMore, NextCursor: pagination.NextCursor}, nil
 }
 
 func decodeScopeInfoObject(object map[string]any) (ui.ScopeInfo, error) {
-	info := ui.ScopeInfo{ID: firstString(object, "id", "scope_id"), Name: firstString(object, "name", "scope_name"), MemberCount: firstInt(object, "member_count", "count")}
+	info := ui.ScopeInfo{ID: firstString(object, "id", "scope_id"), Name: firstString(object, "name", "scope_name")}
+	for _, key := range []string{"member_count", "count"} {
+		if _, ok := object[key]; ok {
+			info.MemberCount = firstInt(object, key)
+			info.MemberCountKnown = true
+			break
+		}
+	}
+	for _, key := range []string{"member_limit", "limit"} {
+		if _, ok := object[key]; ok {
+			info.MemberLimit = firstInt(object, key)
+			info.MemberLimitKnown = true
+			break
+		}
+	}
+	if _, ok := object["completed_count"]; ok {
+		info.CompletedCount = firstInt(object, "completed_count")
+		info.CompletedCountKnown = true
+	}
+	if info.MemberCount < 0 || info.MemberLimit < 0 || info.CompletedCount < 0 {
+		return ui.ScopeInfo{}, fmt.Errorf("scope counts must not be negative")
+	}
+	if info.CompletedCountKnown && info.MemberCountKnown && info.CompletedCount > info.MemberCount {
+		return ui.ScopeInfo{}, fmt.Errorf("completed_count exceeds member_count")
+	}
+	if info.MemberLimitKnown && info.MemberCountKnown && info.MemberCount > info.MemberLimit {
+		return ui.ScopeInfo{}, fmt.Errorf("member_count exceeds member_limit")
+	}
 	if created := firstString(object, "created_at", "created_on"); created != "" {
 		parsed, err := time.Parse(time.RFC3339, created)
 		if err != nil {
@@ -488,6 +530,11 @@ func decodeScopeDetails(data []byte, scopeID string) (ui.ScopeDetails, error) {
 		Name:        firstString(object, "name", "scope_name"),
 		MemberCount: firstInt(object, "member_count", "count"),
 	}
+	info.MemberCountKnown = hasAnyKey(object, "member_count", "count")
+	info.MemberLimit = firstInt(object, "member_limit", "limit")
+	info.MemberLimitKnown = hasAnyKey(object, "member_limit", "limit")
+	info.CompletedCount = firstInt(object, "completed_count")
+	info.CompletedCountKnown = hasAnyKey(object, "completed_count")
 	if info.ID == "" {
 		info.ID = scopeID
 	}
@@ -504,6 +551,15 @@ func decodeScopeDetails(data []byte, scopeID string) (ui.ScopeDetails, error) {
 		info.MemberCount = len(memberIDs)
 	}
 	return ui.ScopeDetails{Info: info, Issues: issues, MemberIDs: memberIDs}, nil
+}
+
+func hasAnyKey(object map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := object[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeScopeDetailIssues(object map[string]any) []model.Issue {

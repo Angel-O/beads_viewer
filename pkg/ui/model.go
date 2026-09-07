@@ -3037,13 +3037,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		previousSelected := m.scopePicker.SelectedScopeID()
 		m.backlogScopeLoaded = true
 		if m.runtimeServices.Scopes.QueryCatalog != nil {
+			previousActive := m.activeScope
+			for _, incoming := range msg.snapshot.Scopes {
+				for i := range m.scopeCatalog {
+					if m.scopeCatalog[i].ID == incoming.ID {
+						m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], incoming)
+					}
+				}
+			}
 			m.activeScope = nil
 			if msg.snapshot.Active != nil {
 				active := *msg.snapshot.Active
+				if previousActive != nil && previousActive.ID == active.ID {
+					active = mergeScopeInfo(*previousActive, active)
+				}
+				for _, catalogScope := range m.scopeCatalog {
+					if catalogScope.ID == active.ID {
+						active = mergeScopeInfo(active, catalogScope)
+					}
+				}
+				active.Active = true
 				m.activeScope = &active
 			}
 			for i := range m.scopeCatalog {
 				m.scopeCatalog[i].Active = m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID
+				if m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID {
+					m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], *m.activeScope)
+					m.scopeCatalog[i].Active = true
+				}
 			}
 			m.scopePicker.SetScopes(m.scopeCatalog)
 			break
@@ -3083,7 +3104,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			activeID = m.activeScope.ID
 		}
 		for i := range page.Scopes {
-			page.Scopes[i].Active = activeID != "" && page.Scopes[i].ID == activeID
+			for _, catalogScope := range m.scopeCatalog {
+				if catalogScope.ID == page.Scopes[i].ID {
+					page.Scopes[i] = mergeScopeInfoPreservingActive(catalogScope, page.Scopes[i])
+					break
+				}
+			}
+			if activeID != "" {
+				page.Scopes[i].Active = page.Scopes[i].ID == activeID
+			}
+			if m.activeScope != nil && page.Scopes[i].ID == activeID {
+				active := mergeScopeInfo(*m.activeScope, page.Scopes[i])
+				active.Active = true
+				m.activeScope = &active
+				page.Scopes[i] = mergeScopeInfo(page.Scopes[i], active)
+				page.Scopes[i].Active = true
+			}
 		}
 		m.scopeCatalog = append([]ScopeInfo(nil), page.Scopes...)
 		m.scopePicker.SetCatalogPage(page, msg.index, msg.generation)
@@ -3135,6 +3171,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.page.Scope.ID == "" {
 			msg.page.Scope.ID = msg.scopeID
+		}
+		if !scopeInfoCountKnown(msg.page.Scope.CompletedCount, msg.page.Scope.CompletedCountKnown) && msg.page.CompletedCount != 0 {
+			msg.page.Scope.CompletedCount = msg.page.CompletedCount
+			msg.page.Scope.CompletedCountKnown = true
+		}
+		for i := range m.scopeCatalog {
+			if m.scopeCatalog[i].ID == msg.page.Scope.ID {
+				m.scopeCatalog[i] = mergeScopeInfoPreservingActive(m.scopeCatalog[i], msg.page.Scope)
+				if m.activeScope != nil && m.activeScope.ID == msg.page.Scope.ID {
+					active := mergeScopeInfo(*m.activeScope, msg.page.Scope)
+					active.Active = true
+					m.activeScope = &active
+				}
+				break
+			}
 		}
 		items := make([]IssueItem, len(msg.page.Members))
 		ready := make(map[string]bool, len(items))

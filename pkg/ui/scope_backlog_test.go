@@ -73,11 +73,54 @@ func TestActiveScopeBadgeIsCompact(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
 	}})
-	m.activeScope = &ScopeInfo{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 7, Active: true}
+	m.activeScope = &ScopeInfo{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 7, MemberLimit: 100, Active: true}
 
 	badge := strings.TrimSpace(ansi.Strip(m.renderScopeBadge()))
 	if badge != "Today · 7/100" {
 		t.Fatalf("active scope badge = %q, want %q", badge, "Today · 7/100")
+	}
+}
+
+func TestScopeCountsSurviveLegacySnapshotAndSyncFromCatalog(t *testing.T) {
+	initial := ScopeInfo{ID: "s1", Name: "Today", MemberCount: 4, MemberLimit: 37, MemberCountKnown: true, MemberLimitKnown: true, Active: true}
+	m := NewModel(nil, nil, "", RuntimeServices{
+		Scopes: ScopeServices{
+			Load:         func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+			QueryCatalog: func(context.Context, ScopeCatalogQuery) (ScopeCatalogPage, error) { return ScopeCatalogPage{}, nil },
+		},
+		InitialScope: &ScopeSnapshot{Scopes: []ScopeInfo{initial}, Active: &initial},
+	})
+	updated, _ := m.Update(scopeSnapshotMsg{snapshot: ScopeSnapshot{
+		Scopes: []ScopeInfo{{ID: "s1", Name: "Today"}},
+		Active: &ScopeInfo{ID: "s1", Name: "Today", Active: true},
+	}})
+	m = updated.(*Model)
+	if m.activeScope == nil || m.activeScope.MemberCount != 4 || m.activeScope.MemberLimit != 37 {
+		t.Fatalf("legacy snapshot erased known scope counts: %#v", m.activeScope)
+	}
+	generation := m.scopePicker.BeginCatalogLoad()
+	updated, _ = m.Update(scopeCatalogPageMsg{
+		page:       ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "s1", Name: "Today", MemberCount: 9, MemberCountKnown: true}}},
+		generation: generation,
+	})
+	m = updated.(*Model)
+	if m.activeScope == nil || m.activeScope.MemberCount != 9 || m.activeScope.MemberLimit != 37 {
+		t.Fatalf("catalog did not update active count while preserving limit: %#v", m.activeScope)
+	}
+	if got := strings.TrimSpace(ansi.Strip(m.renderScopeBadge())); got != "Today · 9/37" {
+		t.Fatalf("capacity badge = %q, want %q", got, "Today · 9/37")
+	}
+}
+
+func TestScopeProgressRendersCompletedAgainstCompleteMemberCount(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetSize(100, 20)
+	picker.SetScopes([]ScopeInfo{
+		{ID: "s1", Name: "Today", MemberCount: 10, CompletedCount: 3, MemberCountKnown: true, CompletedCountKnown: true},
+	})
+	view := ansi.Strip(picker.View())
+	if strings.Count(view, "completed: 3/10") < 2 {
+		t.Fatalf("completed/member progress missing from selector and member panel:\n%s", view)
 	}
 }
 
@@ -455,6 +498,26 @@ func TestScopePickerCatalogUsesCompactRowsWhenPanelIsConstrained(t *testing.T) {
 	}
 	if strings.Contains(view, "created:") || strings.Contains(view, "members:") {
 		t.Fatalf("constrained catalog rendered rich details:\n%s", view)
+	}
+}
+
+func TestScopeScreenKeepsProgressVisibleInNormalSplitWidth(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 120, 30, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{
+		ID: "s1", Name: "A longer scope name", MemberCount: 10, CompletedCount: 3,
+		MemberCountKnown: true, CompletedCountKnown: true,
+	}})
+
+	view := ansi.Strip(m.renderScopeScreen())
+	lines := strings.Split(view, "\n")
+	selectorLines := lines[:min(14, len(lines))]
+	selector := make([]string, len(selectorLines))
+	for i, line := range selectorLines {
+		selector[i] = ansi.Truncate(line, 30, "")
+	}
+	if !strings.Contains(strings.Join(selector, "\n"), "completed: 3/10") {
+		t.Fatalf("normal split scope selector hid progress:\n%s", strings.Join(selector, "\n"))
 	}
 }
 
@@ -846,6 +909,36 @@ func TestScopeMemberTitleAndLabelColumnsAreNaturalAndBounded(t *testing.T) {
 	}
 }
 
+func TestScopeMemberWideRowKeepsTitleAndLabelsVisible(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	const title = "Widest displayed title"
+	const labels = "repository-aware,viewer-scope-counts"
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "member-1", Title: "Visible title", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: strings.Split(labels, ",")}},
+		{Issue: model.Issue{ID: "member-2", Title: title, Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"frontend"}}},
+		{Issue: model.Issue{ID: "member-3", Title: "An offscreen title establishes the existing maximum title allocation", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"backend"}}},
+	})
+	const width = 120
+	maximum := scopeMemberColumnsFor(picker.filteredMembers, width)
+	if maximum.title <= lipgloss.Width(title) {
+		t.Fatalf("test data did not establish a wider existing title maximum: columns=%+v", maximum)
+	}
+	view := ansi.Strip(picker.renderMembers(width, 5))
+	rows := make([]string, 0, 2)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "member-1") || strings.Contains(line, "member-2") {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 2 || !strings.Contains(rows[0], "Visible title") || !strings.Contains(rows[1], title) || !strings.Contains(rows[0], labels) {
+		t.Fatalf("wide member rows clipped fitting title or labels:\n%s", view)
+	}
+	if labelAt := displayOffset(rows[0], labels); labelAt >= displayOffset(rows[0], "Visible title")+maximum.title {
+		t.Fatalf("labels retained the offscreen title gap: maximum=%+v row=%q", maximum, rows[0])
+	}
+}
+
 func TestScopeMemberHeaderCallsContextColumnContext(t *testing.T) {
 	picker := NewScopePickerModel(testTheme())
 	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
@@ -1188,6 +1281,54 @@ func TestPagedScopePickerPreservesActiveScopeAcrossCatalogPages(t *testing.T) {
 	}
 	if m.scopeCatalog[0].Active || !m.scopeCatalog[1].Active {
 		t.Fatalf("catalog active flags = %#v, want only s2 active", m.scopeCatalog)
+	}
+}
+
+func TestPagedMemberCountMergePreservesActiveScopeForDeactivation(t *testing.T) {
+	deactivations := 0
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Deactivate: func(context.Context) error { deactivations++; return nil },
+	}})
+	active := ScopeInfo{ID: "s1", Name: "Today", MemberCount: 4, Active: true}
+	m.activeScope = &active
+	m.scopeCatalog = []ScopeInfo{active}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+	generation := m.scopePicker.BeginMemberLoad("s1")
+	updated, _ := m.Update(scopeMembersPageMsg{
+		page:       ScopeMembersPage{Scope: ScopeInfo{ID: "s1", Name: "Today", MemberCount: 5}},
+		scopeID:    "s1",
+		generation: generation,
+	})
+	m = updated.(*Model)
+	if !m.scopeCatalog[0].Active || m.scopePicker.Selected() == nil || !m.scopePicker.Selected().Active {
+		t.Fatalf("member count merge cleared active scope: catalog=%#v picker=%#v", m.scopeCatalog, m.scopePicker.Selected())
+	}
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter did not start deactivation for preserved active scope")
+	}
+	cmd()
+	if deactivations != 1 {
+		t.Fatalf("deactivations=%d, want 1", deactivations)
+	}
+}
+
+func TestPagedCatalogCountMergePreservesExistingActiveFlag(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	current := ScopeInfo{ID: "s1", Name: "Today", MemberCount: 4, Active: true}
+	m.scopeCatalog = []ScopeInfo{current}
+	m.scopePicker.SetScopes([]ScopeInfo{current})
+	generation := m.scopePicker.BeginCatalogLoad()
+	updated, _ := m.Update(scopeCatalogPageMsg{
+		page:       ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "s1", Name: "Today", MemberCount: 5}}},
+		generation: generation,
+	})
+	m = updated.(*Model)
+	if !m.scopeCatalog[0].Active || m.scopePicker.Selected() == nil || !m.scopePicker.Selected().Active {
+		t.Fatalf("catalog count merge cleared active scope: catalog=%#v picker=%#v", m.scopeCatalog, m.scopePicker.Selected())
 	}
 }
 
