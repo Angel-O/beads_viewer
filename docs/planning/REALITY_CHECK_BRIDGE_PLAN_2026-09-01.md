@@ -6,17 +6,65 @@
   attributes 50/470 sampled CPU milliseconds to issue fingerprints, including
   30 ms constructing per-hash writers. Seeded data-hash reuse is already wired.
   Opportunity: reuse a call-owned writer, impact 2 × confidence 5 / effort 2 = 5.
-- [ ] Freeze aggregate hash goldens and capture old-code allocation/timing costs
+- [x] Freeze aggregate hash goldens and capture old-code allocation/timing costs
   before changing production code; include long-to-empty, nil dependencies,
   duplicate-ID encounter order, concurrent calls and input ownership.
-- [ ] Reuse the fingerprint writer within each aggregate/diff call, preserving
+- [x] Reuse the fingerprint writer within each aggregate/diff call, preserving
   field bytes, SHA-256, ordering, tie breaking and pointer-presence semantics.
   No global pool or shared mutable cache; floating point/RNG are unaffected.
-- [ ] Run unchanged golden/semantic tests, the allocation control, affected race
+- [x] Run unchanged golden/semantic tests, the allocation control, affected race
   tests and required build/vet/format; compare identical baseline/candidate
   benchmarks and fixed-clock CLI outputs. Keep the original P1 matrix intact.
-- [ ] Freeze only a verified improvement, run the original delivery gate, and
+  All five new aggregate literals and three existing per-issue literals pass the
+  old implementation; only its allocation control fails (1,289 versus the fixed
+  1,024 ceiling). The candidate uses 777 allocations with the same assertions.
+  Three samples per each of four benchmark cases show lower time/bytes/allocations.
+  The 10k dependency case is 32.440 → 23.165 ms, 13,365,256 → 5,045,672 B/op,
+  and 130,001 → 90,003 allocations/op. Affected analysis/UI race suites pass
+  3,102 test nodes with 24 existing skips; build/vet pass on Go 1.25.5.
+  Formatting has no first-party drift. UBS reports zero critical and twelve
+  reviewed heuristics (eight cache.Get calls mistaken for HTTP, three immediate
+  cancel calls, selected-file module detection); no suppression was added.
+  The matched default-clock CLI diagnostic is effectively unchanged at median
+  418.837 → 417.809 ms over ten samples per source, with all warm cache bytes
+  stable. No end-to-end latency improvement is claimed. All four fixed-clock
+  cold/warm outputs match the previously frozen `4da499a6bde94ccf…` digest.
+  Root owns these checks; evidence is `/data/tmp/bv-fingerprint-20260907`.
+- [x] Freeze only a verified improvement, run the original delivery gate, and
   update its Bead without granting partial measurements full P1 acceptance.
+  Another workspace actor committed the exact tested two-file runtime as
+  `c48bd53c` and metadata as `6a54bb4a`; hashes match root's candidate. The
+  unchanged full gate completed at 05:28:20 UTC in 793.330 seconds: ten stages
+  pass, none skipped, empty stderr and clean source before/after. All fourteen
+  original four-round benchmark comparisons pass; worst regression is FullTriage
+  +7.4%, below the unchanged 20% limit. Evidence is retained locally and on the
+  worker under `/data/tmp/bv-delivery-c48bd53c-20260907`.
+- [x] Replace only the unstarted `8285b6f6` P1 queue with `c48bd53c` at
+  05:19:38 UTC. Verify the old controller's PID/start/ownership/script hashes,
+  absent source/build/measurement, and the still-live `7f708334` process pair
+  before terminating that waiting controller. Preserve its supersession receipt
+  and all files. New controller PID 2589209/start 100538759 waits once behind
+  7f under `/data/tmp/bv-p1-latency-c48bd53c-launch`. The new bundle's later
+  metadata-only main ref and c48 ancestry are verified before choosing the exact
+  tested c48 tree; all original measurement counts/deadlines/controls remain.
+- [x] Package the eligible c48 source through the unchanged five-target wrapper,
+  seal/copy/hash-check its actual archives, and preserve earlier archive evidence.
+  Packaging passes in 80.261 seconds with the local-only c48 release-candidate
+  tag. All five archives are bound to clean `c48bd53c`, Go 1.25.5 and CGO disabled;
+  copied bytes match sealed receipt `b5ca48a9c07ab57e…`. The archives are under
+  `/data/tmp/bv-delivery-c48bd53c-20260907/archives`. Nothing is published.
+- [x] Run the original actual-archive Linux checks and six native Windows
+  observations at c48, preserving original fixtures, assertion nodes and stderr.
+  Linux passes all 58 smoke commands, 40 scope cases, two partial-source
+  observations and fourteen live-route children plus parent. All seven original
+  input hashes, sixteen scope/four partial assertion nodes and the complete
+  before/after source manifest agree. Windows passes all six original commands
+  in 2.771 seconds; thirteen copied raw/result hashes match native readback.
+  Linux binary `29d6041c072a7533…`, Windows binary `8671115b3b398d91…`.
+  Root owns execution and review. Existing smoke stderr-retention, setup-CLI,
+  isolated-tracker and unavailable-platform limits remain explicit; no new native
+  installer or full P1 proof is claimed. Evidence is
+  `/data/tmp/bv-archive-c48b-root-20260907` locally and on the respective hosts.
 
 - [x] Profile the actual `7f708334` Linux archive on the original realistic 10k
   fixture, on the separate 10-CPU worker: three warmups, ten samples, one CPU
@@ -264,11 +312,11 @@
 - [ ] Finish the separate full P1 matrix and missing native-platform acceptance.
   Original `93b90959` is now complete and failed: four handler overruns and a
   four-hour CLI-stage timeout, with 70/72 timed and 36/36 exact records. The
-  `7f708334` full matrix is running; `8285b6f6` is queued behind it. All failures
+  `7f708334` full matrix is running; `c48bd53c` is queued behind it. All failures
   remain retained. Cross-compilation and available-platform checks do not close
   the unavailable Mac/Linux ARM64 requirements.
-- [ ] Resolve authorized installed tracker repair and missing native Mac/Linux
-  ARM64 access. These remain external prerequisites; the original S5/V5/final
+- [ ] Resolve the shared tracker installation awaiting approval and missing
+  native Mac/Linux ARM64 access. These remain external prerequisites; the original S5/V5/final
   tasks stay open or blocked.
 
 Current rescore for goals changed by this continuation (the September 6 table
@@ -278,9 +326,9 @@ below remains the historical assessment; other rows retain its stated limits):
 |---|---|---|
 | 1: JSONL loading | WORKING | Repaired decoder and bounded reader reuse pass independent old/current controls, full source race suites and extracted Linux/Windows checks at `7f708334`. Full performance acceptance remains goal 41. |
 | 29: Graph navigation | WORKING | Original graph implementation/proof tasks now pass actual key-dispatch and PTY acceptance; background critical-chain preparation preserves selection and visible graph semantics. Goal 41 retains current tail-latency limits. |
-| 37: Checked source produces matching archives | WORKING | The complete ten-stage `8285b6f6` gate and original five-target package/seal/verify pass. Actual extracted Linux and native Windows checks use those bytes. Older archives remain retained under their own revisions; no publication is claimed. |
+| 37: Checked source produces matching archives | WORKING | The complete ten-stage `c48bd53c` gate and original five-target package/seal/verify pass. Actual extracted Linux and native Windows checks use those bytes. Older archives remain retained under their own revisions; no publication is claimed. |
 | 40: Local/remote verification | PARTIAL | Current source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
-| 41: Large-dataset responsiveness | PARTIAL | The unchanged four-round `8285b6f6` benchmark gate passes; worst regression +12.6% is inside the original 20% limit. The cache-expiry fix reduces median warm 10k diagnostic latency from 470 to 419 ms and preserves fixed-clock outputs. Original `93b90959` fails four handler limits and its CLI deadline; 7f is running and 8285 queued. The full final matrix has not passed. |
+| 41: Large-dataset responsiveness | PARTIAL | The unchanged four-round `c48bd53c` benchmark gate passes; worst regression +7.4% is inside the original 20% limit. The 10k dependency-hash benchmark drops from 13.37 to 5.05 MB/op and 32.44 to 23.16 ms with identical hashes; paired whole-CLI medians remain approximately 419/418 ms, so this change has no demonstrated end-to-end latency gain. Fixed-clock outputs remain identical. Original `93b90959` fails four handler limits and its CLI deadline; 7f is running and c48 queued. The full final matrix has not passed. |
 | 43: Recorded blocking time and causal transitions | WORKING | Closed `bv-j74w`/`bv-apal.11` now have independently executed real Git and CLI proof of six blocked hours in a ten-hour lifecycle, overlapping and ongoing waits, historical cutoffs, warm-cache identity and contradictory clocks. Unknown intervals remain unknown; chronology alone is not causal evidence and nonblocked time is not measured work effort. Current full source tests preserve this implementation. |
 
 ## Implementation continuation — 2026-09-06
