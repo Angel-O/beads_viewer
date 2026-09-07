@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -124,7 +125,7 @@ if [ "$1" = "scope" ] && [ "$2" = "show" ]; then
   exit 0
 fi
 printf '%s\n' "$@" > "$WBD_SCOPE_CALLS"
-printf '%s' '{}'
+printf '%s' '{"matched":2,"changed":2}'
 `
 	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -190,6 +191,92 @@ printf '%s' '{}'
 			}
 			if got := splitLines(string(data)); !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("wbd mutation args=%#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestHubScopeServiceMakesGlobalSemanticAddsHubWide(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, ".config", "bv", "hub.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config, err := json.Marshal(map[string]any{
+		"version": 1,
+		"store":   filepath.Join(home, "store"),
+		"ledger":  filepath.Join(home, "ledger"),
+		"repositories": map[string]any{
+			"ctx:foreign": map[string]string{"path": filepath.Join(home, "foreign")},
+			"ctx:local":   map[string]string{"path": filepath.Join(home, "local")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$WBD_SCOPE_CALLS\"\nprintf '%s' '{\"matched\":1,\"changed\":1}'\n"
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+
+	service := newHubScopeServices(root)
+	for _, test := range []struct {
+		mutation ui.ScopeMutation
+		want     []string
+	}{
+		{mutation: ui.ScopeMutation{Kind: ui.ScopeMutationAdd, ScopeID: "today", Label: "team", HubWide: true}, want: []string{"--label", "team"}},
+		{mutation: ui.ScopeMutation{Kind: ui.ScopeMutationAdd, ScopeID: "today", EpicID: "epic-1", HubWide: true}, want: []string{"--epic", "epic-1"}},
+	} {
+		if err := service.MutateMatching(context.Background(), test.mutation); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := splitLines(string(data))
+		want := append(test.want, "--context", "ctx:foreign", "--context", "ctx:local", "--contextless", "--scope", "today", "--json")
+		if !reflect.DeepEqual(args[2:], want) {
+			t.Fatalf("global semantic mutation args=%#v", args)
+		}
+	}
+}
+
+func TestHubScopeServiceRejectsNoOpScopeMutationResult(t *testing.T) {
+	root := t.TempDir()
+	wbd := filepath.Join(root, "wbd")
+	if err := os.WriteFile(wbd, []byte("#!/bin/sh\nprintf '%s' '{\"matched\":0,\"changed\":0}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	service := newHubScopeServices(root)
+	for _, test := range []struct {
+		name     string
+		mutation ui.ScopeMutation
+		matching bool
+	}{
+		{name: "exact", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationAdd, ScopeID: "today", IssueIDs: []string{"missing"}}},
+		{name: "label", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationAdd, ScopeID: "today", Label: "team"}, matching: true},
+		{name: "epic", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationAdd, ScopeID: "today", EpicID: "epic-1"}, matching: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var err error
+			if test.matching {
+				err = service.MutateMatching(context.Background(), test.mutation)
+			} else {
+				err = service.Mutate(context.Background(), test.mutation)
+			}
+			if err == nil || !strings.Contains(err.Error(), "made no changes") {
+				t.Fatalf("no-op error = %v", err)
 			}
 		})
 	}

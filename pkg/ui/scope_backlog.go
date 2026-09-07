@@ -164,6 +164,7 @@ const (
 
 // ScopeMutation is the semantic scope change accepted by the Viewer service.
 // IssueIDs may contain more than one ID for add/remove/move.
+// HubWide is set only for matching initiated from the Global/Unscoped panel.
 type ScopeMutation struct {
 	Kind          ScopeMutationKind
 	Name          string
@@ -171,6 +172,7 @@ type ScopeMutation struct {
 	IssueIDs      []string
 	EpicID        string
 	Label         string
+	HubWide       bool
 	SourceScopeID string
 	TargetScopeID string
 }
@@ -3859,7 +3861,7 @@ func (m *Model) handleScopeMatchKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.scopeMatchInput.Blur()
 		m.showScopeMatchPrompt = false
 		m.focused = m.scopeMatchOrigin
-		mutation := ScopeMutation{Kind: ScopeMutationAdd, ScopeID: m.scopeMatchScopeID, EpicID: epic, Label: label}
+		mutation := ScopeMutation{Kind: ScopeMutationAdd, ScopeID: m.scopeMatchScopeID, EpicID: epic, Label: label, HubWide: m.isBacklogView || m.scopeMatchOrigin == focusGlobalIssues}
 		if m.scopeMatchAction == "remove" {
 			mutation.Kind = ScopeMutationRemove
 		}

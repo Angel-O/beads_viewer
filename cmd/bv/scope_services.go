@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 )
@@ -182,6 +184,13 @@ func runHubScopeMutation(ctx context.Context, workDir string, mutation ui.ScopeM
 			default:
 				return fmt.Errorf("scope mutation requires an epic or label target")
 			}
+			if mutation.HubWide {
+				wideArgs, err := hubWideScopeArguments()
+				if err != nil {
+					return err
+				}
+				args = append(args, wideArgs...)
+			}
 		} else {
 			if len(mutation.IssueIDs) == 0 {
 				return fmt.Errorf("scope mutation requires an issue ID")
@@ -205,8 +214,49 @@ func runHubScopeMutation(ctx context.Context, workDir string, mutation ui.ScopeM
 	default:
 		return fmt.Errorf("unsupported scope mutation %q", mutation.Kind)
 	}
-	_, err := runWBDScopeCommand(ctx, workDir, args[0], args[1:]...)
-	return err
+	data, err := runWBDScopeCommand(ctx, workDir, args[0], args[1:]...)
+	if err != nil {
+		return err
+	}
+	if mutation.Kind == ui.ScopeMutationAdd || mutation.Kind == ui.ScopeMutationRemove {
+		var result struct {
+			Matched *int `json:"matched"`
+			Changed *int `json:"changed"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("decoding wbd scope %s result: %w", mutation.Kind, err)
+		}
+		if result.Matched == nil || result.Changed == nil {
+			return fmt.Errorf("wbd scope %s result omitted mutation counts", mutation.Kind)
+		}
+		if *result.Matched == 0 || *result.Changed == 0 {
+			return fmt.Errorf("wbd scope %s made no changes", mutation.Kind)
+		}
+	}
+	return nil
+}
+
+func hubWideScopeArguments() ([]string, error) {
+	// Use wbd's existing explicit selectors rather than adding a CLI-only flag;
+	// ordinary CLI and non-global Viewer matches keep their current-context default.
+	paths, err := hub.DefaultPaths()
+	if err != nil {
+		return nil, fmt.Errorf("resolving Hub config: %w", err)
+	}
+	config, err := hub.Resolve(paths.Config)
+	if err != nil {
+		return nil, fmt.Errorf("resolving Hub config: %w", err)
+	}
+	contexts := make([]string, 0, len(config.Repositories))
+	for contextID := range config.Repositories {
+		contexts = append(contexts, contextID)
+	}
+	sort.Strings(contexts)
+	args := make([]string, 0, len(contexts)*2+1)
+	for _, contextID := range contexts {
+		args = append(args, "--context", contextID)
+	}
+	return append(args, "--contextless"), nil
 }
 
 // scopeIDFromName supplies the backend ID for the UI's name-only creation

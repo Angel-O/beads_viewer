@@ -207,13 +207,49 @@ func TestScopeExplicitIDResolvesBeforeOneMutation(t *testing.T) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	calls := test.calls()
-	context := contextForTest(t, test.repository)
-	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--label", context, "--id", "bead-1,bead-2"}
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--id", "bead-1,bead-2"}
 	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "scope-a", "bead-1", "bead-2"}
 	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
 		t.Fatalf("calls=%#v", calls)
 	}
 	assertViewerSignal(t, test)
+}
+
+func TestScopeExactIDsResolveMixedContextsWithoutImplicitRepositoryFilter(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"list":      `[{"id":"local","labels":["ctx:current"]},{"id":"foreign","labels":["ctx:other"]},{"id":"global","labels":[]}]`,
+		"scope:add": `{"added":3}`,
+	})
+	code, stdout, stderr := test.run("scope", "add", "local", "foreign", "global", "--scope", "scope-a", "--json")
+	if code != 0 || stdout != `{"operation":"add","matched":3,"changed":3}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--unscoped", "--limit", "0", "--id", "local,foreign,global"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "add", "scope-a", "foreign", "global", "local"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[0].Args, wantList) || !reflect.DeepEqual(calls[1].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeExactRemoveResolvesForeignMembersWithoutImplicitRepositoryFilter(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"scope:show":   `{"issues":[{"id":"foreign"},{"id":"global"}]}`,
+		"list":         `[{"id":"foreign","labels":["ctx:other"]},{"id":"global","labels":[]}]`,
+		"scope:remove": `{"removed":2}`,
+	})
+	code, stdout, stderr := test.run("scope", "remove", "foreign", "global", "--scope", "scope-a", "--json")
+	if code != 0 || stdout != `{"operation":"remove","matched":2,"changed":2}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--id", "foreign,global", "--limit", "0"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "remove", "scope-a", "foreign", "global"}
+	if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "scope:show" || !reflect.DeepEqual(calls[1].Args, wantList) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
 }
 
 func TestScopeSemanticParserRequiresExactlyOneTarget(t *testing.T) {
