@@ -77,13 +77,22 @@
   on exact decision digests; one additional generation lacks a counterpart.
   Delivery counts vary naturally and are not forced to five. Root performed
   this read-only partial check; the full original verifier has not run yet.
-- [ ] Verify all 288 UI records when the remaining baseline cohorts finish.
+- [x] Verify all 288 UI records after the remaining baseline cohorts finish.
+  At 06:41:33 UTC, the unchanged original verifier (`939b66cc…`) reports no UI
+  timing, identity, selection/order, priority, metric-state or paired refresh
+  decision errors. One additional cyclic-dense/1k refresh generation remains
+  unpaired. Its overall exit is still 1: all 72 CLI and 36 exact records are
+  missing at this stage. Preserve that incomplete verdict, not a full pass.
+  Raw stdout/stderr match their remote hashes after copying to
+  `/data/tmp/bv-delivery-7f708334-20260907/ui-stage-readback`.
 - [ ] Verify all 72 timed CLI records / 14,400 samples and all 36 exact records /
   144 outputs, including original order/result/status parity and negative controls.
+  At 06:42:15 UTC, the original `TestPerformanceCLICohorts` process is running
+  with its unchanged four-hour deadline. No measured command was repeated.
 - [ ] Complete the guarded handoff to queued `250a8b98`, then require that final
   revision's original complete matrix and final source/binary identity checks.
-  At 06:34:32 UTC, the 7f run has 272 UI records, no CLI/exact records yet;
-  the 250a queue has no failure or measured start. No measured run was changed.
+  The 7f UI stage is complete; its CLI/exact stages and the 250a handoff remain
+  pending. The 250a queue has no failure or measured start.
 - [ ] Keep bv-apal.1 and its proof/final companions open until their original
   full acceptance succeeds. The 7f subset cannot certify the later 250a source.
 
