@@ -83,8 +83,9 @@ func (a *app) scope(request request) int {
 
 // semanticScopeMutation resolves one selector target to IDs, then preserves the
 // backend's existing multi-ID scope mutation. Exact IDs are resolved without the
-// implicit current-repository filter; label/epic selectors retain their scoped
-// candidate reads and requested status/type filters.
+// implicit current-repository filter; exact remove candidates include closed
+// members, while label/epic selectors retain their scoped candidate reads and
+// requested status/type filters.
 func (a *app) semanticScopeMutation(request request) int {
 	name, err := a.scopeOption(request.args, "--scope")
 	if err != nil {
@@ -119,6 +120,9 @@ func (a *app) semanticScopeMutation(request request) int {
 	}
 
 	args := []string{"--json", "list", "--no-directory-labels"}
+	if request.scopeSubcommand == "remove" && exactIDs {
+		args = append(args, "--all")
+	}
 	if request.scopeSubcommand == "add" {
 		args = append(args, "--unscoped")
 	} else {
