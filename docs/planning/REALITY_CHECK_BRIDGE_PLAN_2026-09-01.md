@@ -2,6 +2,72 @@
 
 ## Delivery continuation — 2026-09-07
 
+- [x] Trace the remaining duplicate CLI dataset hash in the c48 warm 10k CPU
+  profile: 50/560 sampled ms in ComputeDataHash, including 30 ms under source
+  authority construction and another 20 ms in the subsequent dataset hash.
+  The earlier analyzer seed avoids a third hash, but not this second one.
+  Reuse opportunity: impact 2 × confidence 5 / effort 1 = 10.
+- [x] Freeze source/scope hash contract tests on unchanged c48 code, including
+  empty input, tombstones, historical loads, partial parsing, repository/label/
+  recipe filters and one/multiple workspace sources.
+- [x] Reuse the source hash only for a single live or historical source without
+  tombstones or a repository filter. Preserve all subsequent scope invalidation.
+- [x] Run the unchanged source/scope tests, affected race suites and required
+  build/vet/format checks. Compare actual old/new CLI outputs and diagnostics
+  with the original fixture and frozen fixed-clock digest; retain all results.
+  Fifteen cases × two CLI commands pass both actual c48 and candidate code;
+  360 affected command/datasource race test nodes and 42 existing source/route
+  integration nodes pass with no skips. Build/vet pass on actual Go 1.25.5;
+  formatting lists only 49 unchanged vendor files. UBS reports zero critical
+  and two reviewed heuristics (selected-file module detection and an existing
+  timer whose Stop call is present). The paired profile attributes 50 → 30
+  sampled CPU ms to hashing. Ten warm CLI samples have median 366.079 →
+  368.110 ms, effectively unchanged; no end-to-end speedup is claimed. All
+  warm cache bytes remain unchanged, and all four fixed-clock cold/warm outputs
+  match the frozen `4da499a6bde94ccf…` digest. Original counts, deadlines and
+  assertions are unchanged. Root owns verification; evidence is
+  `/data/tmp/bv-source-hash-20260907` locally and on the separate 212 worker.
+- [x] Freeze the verified two-file change at `250a8b98` (tree `f711b638`).
+- [x] Complete the original ten-stage source gate on that exact clean revision.
+  The run began at 05:59:10 UTC under
+  `/data/tmp/bv-delivery-250a8b98-20260907`; no selectors or changed gates.
+  It finished at 06:13:18 UTC in 848.294 seconds: ten passes, zero failures or
+  skips, empty stderr and unchanged clean source. All fourteen original
+  four-round benchmark rows pass the unchanged 20% limit. Input digest is
+  `d3c863fba291902e…`; raw gate/package logs are copied and hash-verified locally.
+- [x] Package all five targets through the original wrapper and verify copied
+  archive bytes against its sealed receipt; preserve all previous artifacts.
+  Packaging passes in 79.770 seconds with local-only tag
+  `v0.23.1-rc.20260907.250a8b98`. All five archives have Go 1.25.5, CGO disabled,
+  the exact revision and unmodified VCS state. Copied bytes match sealed receipt
+  `bfbb74e81a390115…` in the delivery directory's `archives/`. Nothing is published.
+- [x] Execute the original actual-archive Linux smoke, source/scope, partial
+  source and live-route checks, retaining their input hashes and assertions.
+  All 58 smoke commands, 40 scope cases, two partial-source observations and
+  fourteen live-route children plus parent pass. Seven original inputs and
+  sixteen scope/four partial assertions remain intact; all 4,258 source files
+  retain manifest `0b4ca6128eb8161c…`. Copied command and scope-output hashes
+  match. Actual Linux binary is `8c2ffa7948d915f5…`.
+- [x] Execute the original six native Windows archive observations and verify
+  all thirteen copied output/result files against native readback.
+  All six pass once in 2.973 seconds with empty executable stderr, using binary
+  `2f3d4f6701112fed…`. Native JSONL and SQLite retain their expected ready IDs,
+  complete authority and metadata-free claim refusal. All thirteen copied files
+  match native readback. Evidence for both platforms is
+  `/data/tmp/bv-archive-250a-root-20260907`; root owns execution and review.
+  Existing smoke/setup-CLI/isolated-tracker limits and missing native platforms
+  remain explicit; these checks do not establish full P1 or installer acceptance.
+- [x] Replace only the still-unstarted c48 latency queue after its PID/start,
+  ownership, script hashes and absent measurement are verified. The running
+  7f matrix remains untouched; retain the old queue's supersession receipt.
+  At 06:15:32 UTC, the bound waiting PID 2589209/start 100538759 was terminated
+  after all guards passed. Replacement PID 3878341/start 100874186 waits once
+  under `/data/tmp/bv-p1-latency-250a8b98-launch`, with the original source,
+  fixture, verifier, counts and deadline guards. Its bundle names exact 250a.
+- [ ] Keep bv-apal.1 open until its full original latency matrix actually passes.
+  At 06:20:45 UTC the unchanged 7f run has 251/288 UI records (143 current),
+  no CLI/exact records yet; the 250a queue has no failure or measured start.
+
 - [x] Select the next measured P1 hotspot: the repaired warm-cache 10k profile
   attributes 50/470 sampled CPU milliseconds to issue fingerprints, including
   30 ms constructing per-hash writers. Seeded data-hash reuse is already wired.
@@ -312,7 +378,7 @@
 - [ ] Finish the separate full P1 matrix and missing native-platform acceptance.
   Original `93b90959` is now complete and failed: four handler overruns and a
   four-hour CLI-stage timeout, with 70/72 timed and 36/36 exact records. The
-  `7f708334` full matrix is running; `c48bd53c` is queued behind it. All failures
+  `7f708334` full matrix is running; `250a8b98` is queued behind it. All failures
   remain retained. Cross-compilation and available-platform checks do not close
   the unavailable Mac/Linux ARM64 requirements.
 - [ ] Resolve the shared tracker installation awaiting approval and missing
@@ -326,9 +392,9 @@ below remains the historical assessment; other rows retain its stated limits):
 |---|---|---|
 | 1: JSONL loading | WORKING | Repaired decoder and bounded reader reuse pass independent old/current controls, full source race suites and extracted Linux/Windows checks at `7f708334`. Full performance acceptance remains goal 41. |
 | 29: Graph navigation | WORKING | Original graph implementation/proof tasks now pass actual key-dispatch and PTY acceptance; background critical-chain preparation preserves selection and visible graph semantics. Goal 41 retains current tail-latency limits. |
-| 37: Checked source produces matching archives | WORKING | The complete ten-stage `c48bd53c` gate and original five-target package/seal/verify pass. Actual extracted Linux and native Windows checks use those bytes. Older archives remain retained under their own revisions; no publication is claimed. |
+| 37: Checked source produces matching archives | WORKING | The complete ten-stage `250a8b98` gate and original five-target package/seal/verify pass. Actual extracted Linux and native Windows checks use those bytes. Older archives remain retained under their own revisions; no publication is claimed. |
 | 40: Local/remote verification | PARTIAL | Current source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
-| 41: Large-dataset responsiveness | PARTIAL | The unchanged four-round `c48bd53c` benchmark gate passes; worst regression +7.4% is inside the original 20% limit. The 10k dependency-hash benchmark drops from 13.37 to 5.05 MB/op and 32.44 to 23.16 ms with identical hashes; paired whole-CLI medians remain approximately 419/418 ms, so this change has no demonstrated end-to-end latency gain. Fixed-clock outputs remain identical. Original `93b90959` fails four handler limits and its CLI deadline; 7f is running and c48 queued. The full final matrix has not passed. |
+| 41: Large-dataset responsiveness | PARTIAL | All fourteen rows in the unchanged four-round `250a8b98` benchmark gate pass the original 20% limit. The prior writer optimization reduces the 10k dependency hash from 13.37 to 5.05 MB/op; the new CLI wiring removes a second aggregate hash, with sampled hashing CPU 50 → 30 ms. Paired whole-CLI medians remain approximately 366/368 ms, so no end-to-end latency gain is demonstrated. Fixed-clock outputs remain identical. Original `93b90959` fails four handler limits and its CLI deadline; 7f is running and 250a queued. The full final matrix has not passed. |
 | 43: Recorded blocking time and causal transitions | WORKING | Closed `bv-j74w`/`bv-apal.11` now have independently executed real Git and CLI proof of six blocked hours in a ten-hour lifecycle, overlapping and ongoing waits, historical cutoffs, warm-cache identity and contradictory clocks. Unknown intervals remain unknown; chronology alone is not causal evidence and nonblocked time is not measured work effort. Current full source tests preserve this implementation. |
 
 ## Implementation continuation — 2026-09-06
