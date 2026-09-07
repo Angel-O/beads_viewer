@@ -71,22 +71,41 @@
   its eight warnings are an explicitly cancelled test context, a deliberate test
   panic and six recover calls inside deferred functions. Raw findings remain
   intact, with no suppressions or claim of a clean scan.
-- [ ] Freeze the reviewed structural-hash repair and run the unchanged full
-  ten-stage gate before producing packages. The two earlier failed gates remain
-  failed; focused allocation and parity results cannot replace this acceptance.
+- [x] Commit the reviewed structural-hash repair as `fbc41526` (tree `ea824d14`).
+  Complete the unchanged ten-stage gate on its clean vmi1149989 checkout under
+  `/data/tmp/bv-delivery-fbc41526-20260907`, from 02:50:55 to 03:04:40 UTC.
+  Nine stages pass, one fails, none are skipped. FullTriage is 16.741 ms versus
+  18.907 ms reference (-11.5%); the 5k snapshot swap is 0.090 ms versus 11.439 ms.
+  Pooled parsing is the sole failure: 7.926 ms versus 6.046 ms reference (+31.1%),
+  above the unchanged 20% limit. No package is eligible; all prior gate failures
+  remain intact.
+- [ ] Diagnose the pooled-parser failure from all four retained rounds and a
+  bounded CPU/allocation profile. Its deterministic 1,000-issue byte-reader
+  fixture is distinct from the FullTriage medium fixture. Pool code is unchanged
+  from the reference, and both pooled/unpooled timings vary substantially; the
+  failed comparison alone does not identify an intrinsic slowdown. Preserve the
+  benchmark, fixture, limits and failed result. Package only after an eligible gate.
 - [ ] Finish all remaining CLI/exact/control stages of the original `93b90959`
-  latency run, then execute the full original matrix once on `30417526` on hz3.
-  The persistent continuation is queued as PID 1882120 under
-  `/data/tmp/bv-p1-latency-30417526-launch`. It waits for actual completion and
-  process exit before staging or compiling there. At 02:19:28 UTC the original
-  run has 288 UI, 24/72 timed CLI and 0/36 exact records; the replacement source
-  directory is absent. Queued work is not a running or passing result.
+  latency run, then execute the full original matrix once on `fbc41526` on hz3.
+  Only the unstarted `30417526` waiting controller was superseded; its artifacts
+  and explicit process-identity receipt are preserved. The new continuation is
+  PID 3048784 under `/data/tmp/bv-p1-latency-fbc41526-launch`. It waits for actual
+  original completion, source/control verification and process exit before
+  staging or compiling there. At 02:54:23 UTC the original run has 288 UI, 40/72
+  timed CLI and 0/36 exact records; the replacement source directory is absent.
+  Root reviewed the complete queue scripts. Queued work is not a passing result.
 - [x] Replay the unchanged native Windows source-install harness on `30417526`
   in a fresh isolated tagged repository. All 17 operations run: 12 succeed and
   five installer faults preserve the working binary, fixture and user PATH.
   Root reads the actual logs and matches all 17 hashes to native readback.
   Native Go is 1.26.5; this is source installation, not archive execution or
   Unicode console-rendering proof. The earlier `93b90959` logs remain intact.
+- [x] Repeat that unchanged native source-install acceptance on `fbc41526`:
+  17 operations pass their expected outcomes in 172.264 seconds, including all
+  five preservation faults. Root reads the actual readiness/no-claim results,
+  build metadata and failure reasons and matches all 17 copied log hashes to
+  native readback. Source/tree/tag remain exact and clean. Native Go is 1.26.5;
+  PS5 emoji capture remains outside this proof, as do archive and Mac/ARM testing.
 - [ ] After an eligible source gate, package and test extracted binaries from
   that same revision. Packaging preparation does not establish full P1 latency,
   missing native-platform acceptance or publication.
