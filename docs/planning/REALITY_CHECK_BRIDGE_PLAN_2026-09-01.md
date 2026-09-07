@@ -64,9 +64,28 @@
   after all guards passed. Replacement PID 3878341/start 100874186 waits once
   under `/data/tmp/bv-p1-latency-250a8b98-launch`, with the original source,
   fixture, verifier, counts and deadline guards. Its bundle names exact 250a.
-- [ ] Keep bv-apal.1 open until its full original latency matrix actually passes.
-  At 06:20:45 UTC the unchanged 7f run has 251/288 UI records (143 current),
-  no CLI/exact records yet; the 250a queue has no failure or measured start.
+- [x] Read all 144 current UI cohorts from the unchanged `7f708334` run and
+  recompute their quantiles from all 144,000 interactions. Every current p99
+  and delivered SnapshotReady/Phase2Ready handler meets the original 50 ms
+  limits. Worst p99 is 34.331397 ms; worst snapshot handler is 17.178978 ms
+  and worst Phase2 handler is 17.716573 ms. One interaction reaches 73.466233 ms;
+  this is an empirical p99 result, not an every-interaction or paint guarantee.
+- [x] Check available baseline/current UI identities and result parity against
+  the original verifier's fields. At 06:33:24 UTC, all 270 available records
+  agree on fixture/configuration, selected IDs, full list order, priority
+  recommendations and metric states. All 123 paired refresh generations agree
+  on exact decision digests; one additional generation lacks a counterpart.
+  Delivery counts vary naturally and are not forced to five. Root performed
+  this read-only partial check; the full original verifier has not run yet.
+- [ ] Verify all 288 UI records when the remaining baseline cohorts finish.
+- [ ] Verify all 72 timed CLI records / 14,400 samples and all 36 exact records /
+  144 outputs, including original order/result/status parity and negative controls.
+- [ ] Complete the guarded handoff to queued `250a8b98`, then require that final
+  revision's original complete matrix and final source/binary identity checks.
+  At 06:34:32 UTC, the 7f run has 272 UI records, no CLI/exact records yet;
+  the 250a queue has no failure or measured start. No measured run was changed.
+- [ ] Keep bv-apal.1 and its proof/final companions open until their original
+  full acceptance succeeds. The 7f subset cannot certify the later 250a source.
 
 - [x] Select the next measured P1 hotspot: the repaired warm-cache 10k profile
   attributes 50/470 sampled CPU milliseconds to issue fingerprints, including
