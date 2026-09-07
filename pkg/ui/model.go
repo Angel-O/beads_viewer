@@ -3162,7 +3162,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case scopeMembersPageMsg:
-		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.generation) {
+		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation) {
 			break
 		}
 		if msg.err != nil {
@@ -3195,12 +3195,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
 		}
 		m.scopePicker.SetMemberReadyIDs(ready)
-		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation)
+		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation, msg.requestKey)
 
 	case backlogPageMsg:
-		if msg.generation != m.backlogPageGeneration {
+		if msg.generation != m.backlogPageGeneration || (msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) {
 			break
 		}
+		m.backlog.SetLoading(false)
 		m.backlogLoading = false
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)

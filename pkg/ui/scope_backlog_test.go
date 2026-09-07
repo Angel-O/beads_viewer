@@ -1197,11 +1197,11 @@ func TestPagedScopePickerUsesViewportScreensBeforeFetchingNextMemberBatch(t *tes
 	if len(requests) != 3 || requests[2].Cursor != "" || requests[2].Limit != scopePageSize {
 		t.Fatalf("reverse request=%#v, want first-page cursor and limit %d", requests, scopePageSize)
 	}
-	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "member-45" {
-		t.Fatalf("previous screen selected=%#v, want member-45", selected)
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "member-00" {
+		t.Fatalf("previous page selected=%#v, want first incoming member", selected)
 	}
-	if view := ansi.Strip(m.scopePicker.View()); !strings.Contains(view, "screen 10/10+ · result batch 1/2+") {
-		t.Fatalf("previous viewport/batch indicator=%q", view)
+	if view := ansi.Strip(m.scopePicker.View()); !strings.Contains(view, "screen 1/10+ · result batch 1/2+") {
+		t.Fatalf("previous page indicator=%q", view)
 	}
 
 	m.scopePicker.SetMemberFilters("", "open", "")
@@ -1266,6 +1266,26 @@ func TestPagedScopePickerFiltersResetPageAndRejectStaleMembers(t *testing.T) {
 	}
 }
 
+func TestPagedScopePickerRejectsResponseFromChangedMemberFilterTuple(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryMembers: func(_ context.Context, query ScopeMembersQuery) (ScopeMembersPage, error) {
+			return ScopeMembersPage{Scope: ScopeInfo{ID: query.ScopeID}, Members: []model.Issue{{ID: "old-filter-member"}}}, nil
+		},
+	}})
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "One"}}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	oldRequest := m.startScopeMembersPage("", 0)
+	if oldRequest == nil {
+		t.Fatal("initial member request missing")
+	}
+	m.scopePicker.SetMemberFilters("ctx:changed", "", "")
+	updated, _ := m.Update(oldRequest())
+	m = updated.(*Model)
+	if len(m.scopePicker.members) != 0 || m.scopePicker.memberSelectedID != "" {
+		t.Fatalf("old member-filter response was accepted: members=%#v selected=%q", m.scopePicker.members, m.scopePicker.memberSelectedID)
+	}
+}
+
 func TestPagedScopePickerPreservesActiveScopeAcrossCatalogPages(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	active := ScopeInfo{ID: "s2", Name: "Active", Active: true}
@@ -1299,6 +1319,7 @@ func TestPagedMemberCountMergePreservesActiveScopeForDeactivation(t *testing.T) 
 	updated, _ := m.Update(scopeMembersPageMsg{
 		page:       ScopeMembersPage{Scope: ScopeInfo{ID: "s1", Name: "Today", MemberCount: 5}},
 		scopeID:    "s1",
+		requestKey: m.scopePicker.memberRequestKey,
 		generation: generation,
 	})
 	m = updated.(*Model)
@@ -2564,6 +2585,143 @@ func TestBacklogContextColumnUsesFriendlyNameAndExtraCount(t *testing.T) {
 	}
 	if strings.Contains(row, "ctx:api") || strings.Contains(row, "[") {
 		t.Fatalf("backlog context column used special context formatting: %q", row)
+	}
+}
+
+func TestScopePickerReconcilesSelectionsByIdentity(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1"}, {ID: "s2"}, {ID: "s3"}})
+	picker.Move(1)
+	picker.SetScopes([]ScopeInfo{{ID: "s3"}, {ID: "s2"}, {ID: "s1"}})
+	if picker.SelectedScopeID() != "s2" || picker.selected != 1 {
+		t.Fatalf("scope selection=%q index=%d, want s2/index 1", picker.SelectedScopeID(), picker.selected)
+	}
+
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "m1"}}, {Issue: model.Issue{ID: "m2"}}})
+	picker.MoveMember(1)
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "m3"}}, {Issue: model.Issue{ID: "m2"}}})
+	if selected := picker.SelectedMember(); selected == nil || selected.Issue.ID != "m2" {
+		t.Fatalf("member selection=%#v, want m2 after reorder", selected)
+	}
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "m3"}}, {Issue: model.Issue{ID: "m4"}}})
+	if selected := picker.SelectedMember(); selected == nil || selected.Issue.ID != "m3" {
+		t.Fatalf("missing member selection=%#v, want first visible member m3", selected)
+	}
+	picker.SetScopes(nil)
+	if picker.SelectedScopeID() != "" || picker.Selected() != nil {
+		t.Fatalf("empty scope selection=%q/%#v, want none", picker.SelectedScopeID(), picker.Selected())
+	}
+}
+
+func TestBacklogReconciliationKeepsSelectionPreviewAndMarksCoherent(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "a"}, {ID: "b"}, {ID: "c"}}}, 0)
+	b.Move(1)
+	b.ToggleMark()
+	b.ScrollPreview(4)
+	b.setPresentation([]IssueItem{{Issue: model.Issue{ID: "c"}}, {Issue: model.Issue{ID: "b"}}, {Issue: model.Issue{ID: "a"}}})
+	if issue := b.CurrentIssue(); issue == nil || issue.ID != "b" || b.previewOffset != 4 || b.MarkCount() != 1 {
+		t.Fatalf("passive reconciliation issue=%#v preview=%d marks=%d, want b/4/1", issue, b.previewOffset, b.MarkCount())
+	}
+
+	b.SetExcludedIDs([]string{"b"})
+	if issue := b.CurrentIssue(); issue == nil || issue.ID != "c" || b.previewOffset != 0 || b.MarkCount() != 0 {
+		t.Fatalf("excluded selection issue=%#v preview=%d marks=%d, want c/0/0", issue, b.previewOffset, b.MarkCount())
+	}
+	b.SetLoading(true)
+	if b.CurrentIssue() != nil || b.renderBacklogPreview(80) != "" {
+		t.Fatal("loading backlog exposed an actionable selection or preview")
+	}
+}
+
+func TestScopePickerResizeClampsViewportWithoutResettingState(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1"}})
+	items := make([]IssueItem, 12)
+	for i := range items {
+		items[i].Issue.ID = fmt.Sprintf("m-%02d", i)
+		items[i].RepositoryName = "repo"
+	}
+	picker.SetMembers(items)
+	picker.SetMemberFilters("repo", "", "")
+	for i := 0; i < 7; i++ {
+		picker.MoveMember(1)
+	}
+	picker.ToggleMemberMark()
+	selectedID := picker.SelectedMember().Issue.ID
+	picker.SetSize(100, 18)
+	if selected := picker.SelectedMember(); selected == nil || selected.Issue.ID != selectedID || picker.memberSelected == 0 || picker.MemberMarkCount() != 1 {
+		t.Fatalf("resize selection=%#v index=%d marks=%d, want retained identity/index/mark", selected, picker.memberSelected, picker.MemberMarkCount())
+	}
+	if picker.memberViewportStart < 0 || picker.memberViewportStart >= len(picker.filteredMembers) {
+		t.Fatalf("resize viewport start=%d outside members=%d", picker.memberViewportStart, len(picker.filteredMembers))
+	}
+}
+
+func TestScopeScreenClampsWithSplitRowsWithoutMovingRetainedBoundary(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 120, 40, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "One"}})
+	items := make([]IssueItem, 30)
+	for i := range items {
+		items[i].Issue.ID = fmt.Sprintf("member-%02d", i)
+	}
+	m.scopePicker.SetMembers(items)
+	for i := 0; i < 20; i++ {
+		m.scopePicker.MoveMember(1)
+	}
+	m.scopePicker.memberViewportStart = 12
+	m.renderScopeScreen()
+	if m.scopePicker.memberViewportStart != 12 || m.scopePicker.memberSelectedID != "member-20" {
+		t.Fatalf("scope render moved retained split boundary: start=%d selected=%q", m.scopePicker.memberViewportStart, m.scopePicker.memberSelectedID)
+	}
+}
+
+func TestScopeSplitResizeClampsBeforeRenderingMemberIndicator(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "One"}})
+	items := make([]IssueItem, 30)
+	for i := range items {
+		items[i].Issue.ID = fmt.Sprintf("member-%02d", i)
+	}
+	picker.SetMembers(items)
+	picker.MoveMember(20)
+	picker.memberViewportStart = 12
+	if view := ansi.Strip(picker.renderTopSplit(100, 19, true)); !strings.Contains(view, "screen 2/3") {
+		t.Fatalf("initial split indicator=%q, want screen 2/3", view)
+	}
+	view := ansi.Strip(picker.renderTopSplit(100, 13, true))
+	if !strings.Contains(view, "screen 4/5") || !strings.Contains(view, "member-18") || strings.Contains(view, "member-12") {
+		t.Fatalf("shrunk split indicator/rows disagree:\n%s", view)
+	}
+}
+
+func TestBacklogPageCursorHistoryOwnsCompleteFilterTuple(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{HasMore: true, NextCursor: "old"}, 0)
+	if got := b.NextPageCursor(); got != "old" {
+		t.Fatalf("initial next cursor=%q, want old", got)
+	}
+	b.SetLabel("new-label")
+	if got := b.CurrentPageCursor(); got != "" || b.PageIndex() != 0 {
+		t.Fatalf("changed-filter cursor=%q page=%d, want empty/page 0", got, b.PageIndex())
+	}
+	if got := b.NextPageCursor(); got != "" {
+		t.Fatalf("changed-filter next cursor=%q, want no cursor from old tuple", got)
+	}
+}
+
+func TestBacklogPageResponseRejectsAChangedFilterTuple(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "old"}}}, 0)
+	generation := m.backlogPageGeneration
+	oldQuery := m.backlogQuery("")
+	response := loadBacklogPageCmd(ScopeServices{}, oldQuery, 0, generation)()
+	m.backlog.SetLabel("new-label")
+	updated, _ := m.Update(response)
+	m = updated.(*Model)
+	if len(m.backlog.issues) != 1 || m.backlog.issues[0].ID != "old" {
+		t.Fatalf("changed-filter response replaced current page: %#v", m.backlog.issues)
 	}
 }
 

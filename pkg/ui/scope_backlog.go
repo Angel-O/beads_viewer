@@ -223,6 +223,7 @@ type scopeMembersPageMsg struct {
 	page       ScopeMembersPage
 	scopeID    string
 	cursor     string
+	requestKey string
 	index      int
 	generation uint64
 	err        error
@@ -231,6 +232,7 @@ type scopeMembersPageMsg struct {
 type backlogPageMsg struct {
 	page       BacklogPage
 	cursor     string
+	queryKey   string
 	index      int
 	generation uint64
 	err        error
@@ -276,13 +278,13 @@ func loadScopeCatalogPageCmd(service ScopeServices, query ScopeCatalogQuery, ind
 	}
 }
 
-func loadScopeMembersPageCmd(service ScopeServices, query ScopeMembersQuery, index int, generation uint64) tea.Cmd {
+func loadScopeMembersPageCmd(service ScopeServices, query ScopeMembersQuery, index int, generation uint64, requestKey string) tea.Cmd {
 	return func() tea.Msg {
 		if service.QueryMembers == nil {
-			return scopeMembersPageMsg{scopeID: query.ScopeID, cursor: query.Cursor, index: index, generation: generation}
+			return scopeMembersPageMsg{scopeID: query.ScopeID, cursor: query.Cursor, requestKey: requestKey, index: index, generation: generation}
 		}
 		page, err := service.QueryMembers(context.Background(), query)
-		return scopeMembersPageMsg{page: page, scopeID: query.ScopeID, cursor: query.Cursor, index: index, generation: generation, err: err}
+		return scopeMembersPageMsg{page: page, scopeID: query.ScopeID, cursor: query.Cursor, requestKey: requestKey, index: index, generation: generation, err: err}
 	}
 }
 
@@ -320,7 +322,7 @@ func loadScopeMembershipCmd(service ScopeServices, scopeID string) tea.Cmd {
 func loadBacklogPageCmd(service ScopeServices, query BacklogQuery, index int, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		if service.QueryBacklog == nil && service.LoadBacklog == nil {
-			return backlogPageMsg{cursor: query.Cursor, index: index, generation: generation}
+			return backlogPageMsg{cursor: query.Cursor, queryKey: backlogQueryKey(query), index: index, generation: generation}
 		}
 		var page BacklogPage
 		var err error
@@ -329,8 +331,12 @@ func loadBacklogPageCmd(service ScopeServices, query BacklogQuery, index int, ge
 		} else {
 			page, err = service.LoadBacklog(context.Background(), query.Cursor, query.Limit)
 		}
-		return backlogPageMsg{page: page, cursor: query.Cursor, index: index, generation: generation, err: err}
+		return backlogPageMsg{page: page, cursor: query.Cursor, queryKey: backlogQueryKey(query), index: index, generation: generation, err: err}
 	}
+}
+
+func backlogQueryKey(query BacklogQuery) string {
+	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%t", query.Filter, query.Label, query.Status, strings.Join(query.Contexts, "\x00"), query.IncludeContextless)
 }
 
 func runScopeMutationCmd(mutation ScopeMutation, restoreFocus bool, run func(context.Context) error) tea.Cmd {
@@ -383,6 +389,7 @@ type BacklogModel struct {
 	filtered           []model.Issue
 	filteredItems      []IssueItem
 	selected           int
+	selectedIssueID    string
 	filter             string
 	label              string
 	status             string
@@ -393,6 +400,8 @@ type BacklogModel struct {
 	nextCursor         string
 	pageIndex          int
 	pageCursors        []string
+	pageHistoryKey     string
+	loading            bool
 	previewOffset      int
 	contexts           []string
 	contextNames       []string
@@ -407,7 +416,7 @@ type BacklogModel struct {
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
-	return BacklogModel{
+	b := BacklogModel{
 		theme:       theme,
 		status:      backlogStatusAll,
 		pageCursors: []string{""},
@@ -415,6 +424,8 @@ func NewBacklogModel(theme Theme) BacklogModel {
 		labelInput:  newBacklogLabelInput(theme),
 		title:       "Global issues",
 	}
+	b.pageHistoryKey = b.filterTupleKey()
+	return b
 }
 
 func newBacklogLabelInput(theme Theme) textinput.Model {
@@ -434,6 +445,8 @@ func (b *BacklogModel) SetSize(width, height int) {
 }
 
 func (b *BacklogModel) SetPage(page BacklogPage, index int) {
+	b.ensurePageHistory()
+	b.loading = false
 	b.ClearMarks()
 	b.issues = append([]model.Issue(nil), page.Issues...)
 	b.items = make([]IssueItem, len(page.Issues))
@@ -442,9 +455,10 @@ func (b *BacklogModel) SetPage(page BacklogPage, index int) {
 	}
 	b.applyFilter()
 	b.hasMore, b.nextCursor, b.pageIndex = page.HasMore, page.NextCursor, index
-	if b.selected >= len(b.filtered) {
-		b.selected = maxInt(0, len(b.filtered)-1)
-	}
+	b.selectedIssueID = ""
+	b.selected = 0
+	b.previewOffset = 0
+	b.reconcileSelection("", 0)
 }
 
 // setPresentation replaces only backlog display decoration; the page and its
@@ -463,10 +477,13 @@ func (b *BacklogModel) Reset() {
 	b.filtered = nil
 	b.filteredItems = nil
 	b.selected = 0
+	b.selectedIssueID = ""
 	b.pageIndex = 0
 	b.nextCursor = ""
 	b.hasMore = false
 	b.pageCursors = []string{""}
+	b.pageHistoryKey = b.filterTupleKey()
+	b.loading = false
 	b.previewOffset = 0
 	b.labelEditing = false
 	b.labelInput.Blur()
@@ -474,6 +491,10 @@ func (b *BacklogModel) Reset() {
 	b.title = "Global issues"
 	b.excludedIDs = nil
 }
+
+// SetLoading makes an old page non-actionable while its replacement is in
+// flight; the retained page remains available for the next accepted response.
+func (b *BacklogModel) SetLoading(loading bool) { b.loading = loading }
 
 func (b *BacklogModel) SetTitle(title string) {
 	if title == "" {
@@ -501,22 +522,8 @@ func (b *BacklogModel) SetExcludedIDs(ids []string) {
 			return
 		}
 	}
-	selectedID := ""
-	if issue := b.CurrentIssue(); issue != nil {
-		selectedID = issue.ID
-	}
-	previewOffset := b.previewOffset
 	b.excludedIDs = excluded
 	b.applyFilter()
-	if selectedID != "" {
-		for i, item := range b.filteredItems {
-			if item.Issue.ID == selectedID {
-				b.selected = i
-				break
-			}
-		}
-	}
-	b.previewOffset = previewOffset
 }
 
 func (b *BacklogModel) ResetPagination() {
@@ -524,16 +531,33 @@ func (b *BacklogModel) ResetPagination() {
 	b.nextCursor = ""
 	b.hasMore = false
 	b.pageCursors = []string{""}
+	b.pageHistoryKey = b.filterTupleKey()
 }
 
-func (b *BacklogModel) resetCursor() { b.selected, b.previewOffset = 0, 0 }
+func (b *BacklogModel) resetCursor() {
+	b.selected, b.previewOffset, b.selectedIssueID = 0, 0, ""
+}
 
 // SetContextFilter records the backlog-owned Hub context projection. It does
 // not touch the generic Model scope or its active issue list.
 func (b *BacklogModel) SetContextFilter(contexts []string, includeContextless bool, names []string) {
+	changed := includeContextless != b.includeContextless || len(contexts) != len(b.contexts)
+	if !changed {
+		for i := range contexts {
+			if contexts[i] != b.contexts[i] {
+				changed = true
+				break
+			}
+		}
+	}
 	b.contexts = append([]string(nil), contexts...)
 	b.contextNames = append([]string(nil), names...)
 	b.includeContextless = includeContextless
+	if changed {
+		b.ClearMarks()
+		b.resetCursor()
+		b.ResetPagination()
+	}
 }
 
 func (b BacklogModel) Contexts() []string { return append([]string(nil), b.contexts...) }
@@ -582,7 +606,7 @@ func (b BacklogModel) MarkedIDs() []string {
 func (b BacklogModel) MarkCount() int { return len(b.MarkedIDs()) }
 
 func (b BacklogModel) CurrentIssue() *model.Issue {
-	if b.selected < 0 || b.selected >= len(b.filteredItems) {
+	if b.loading || b.selected < 0 || b.selected >= len(b.filteredItems) {
 		return nil
 	}
 	issue := b.filteredItems[b.selected].Issue
@@ -623,7 +647,15 @@ func (b *BacklogModel) UpdateLabelInput(msg tea.Msg) tea.Cmd {
 
 func (b BacklogModel) LabelInputValue() string { return b.labelInput.Value() }
 
-func (b *BacklogModel) SetLabel(value string) { b.label = strings.TrimSpace(value) }
+func (b *BacklogModel) SetLabel(value string) {
+	value = strings.TrimSpace(value)
+	if b.label != value {
+		b.label = value
+		b.ClearMarks()
+		b.resetCursor()
+		b.ResetPagination()
+	}
+}
 
 func (b *BacklogModel) CancelLabelEdit() {
 	b.labelInput.SetValue(b.label)
@@ -635,10 +667,16 @@ func (b *BacklogModel) CycleStatus() {
 	for i, status := range backlogStatuses {
 		if status == current {
 			b.status = backlogStatuses[(i+1)%len(backlogStatuses)]
+			b.ClearMarks()
+			b.resetCursor()
+			b.ResetPagination()
 			return
 		}
 	}
 	b.status = backlogStatusAll
+	b.ClearMarks()
+	b.resetCursor()
+	b.ResetPagination()
 }
 
 func isBacklogOrdinaryLabel(value string) bool {
@@ -647,6 +685,7 @@ func isBacklogOrdinaryLabel(value string) bool {
 }
 
 func (b *BacklogModel) NextPageCursor() string {
+	b.ensurePageHistory()
 	if !b.HasMore() {
 		return ""
 	}
@@ -659,6 +698,7 @@ func (b *BacklogModel) NextPageCursor() string {
 }
 
 func (b *BacklogModel) PreviousPageCursor() string {
+	b.ensurePageHistory()
 	if b.pageIndex <= 0 || b.pageIndex >= len(b.pageCursors) {
 		return ""
 	}
@@ -669,6 +709,9 @@ func (b *BacklogModel) PreviousPageCursor() string {
 // CurrentPageCursor returns the opaque cursor used to load the current page.
 // It is intentionally not interpreted by the page model.
 func (b BacklogModel) CurrentPageCursor() string {
+	if b.pageHistoryKey != b.filterTupleKey() {
+		return ""
+	}
 	if b.pageIndex < 0 || b.pageIndex >= len(b.pageCursors) {
 		return ""
 	}
@@ -677,23 +720,41 @@ func (b BacklogModel) CurrentPageCursor() string {
 
 func (b *BacklogModel) BeginSearch() { b.searching = true }
 func (b *BacklogModel) EndSearch()   { b.searching = false }
-func (b *BacklogModel) ClearFilter() { b.filter = ""; b.applyFilter() }
+func (b *BacklogModel) ClearFilter() {
+	if b.filter != "" {
+		b.filter = ""
+		b.ClearMarks()
+		b.resetCursor()
+		b.ResetPagination()
+		b.applyFilter()
+	}
+}
 func (b *BacklogModel) Backspace() {
 	if b.filter != "" {
 		b.filter = b.filter[:len(b.filter)-1]
+		b.ClearMarks()
+		b.resetCursor()
+		b.ResetPagination()
 		b.applyFilter()
 	}
 }
 func (b *BacklogModel) AddFilter(value string) {
 	b.filter += value
+	b.ClearMarks()
+	b.resetCursor()
+	b.ResetPagination()
 	b.applyFilter()
 }
 func (b *BacklogModel) Move(delta int) {
+	if b.loading {
+		return
+	}
 	items := len(b.filtered)
 	if items == 0 {
 		return
 	}
 	b.selected = (b.selected + delta + items) % items
+	b.selectedIssueID = b.filteredItems[b.selected].Issue.ID
 	b.previewOffset = 0
 }
 
@@ -707,15 +768,65 @@ func (b *BacklogModel) ScrollPreview(delta int) {
 }
 
 func (b *BacklogModel) applyFilter() {
+	selectedID := b.selectedIssueID
+	if selectedID == "" && b.selected >= 0 && b.selected < len(b.filteredItems) {
+		selectedID = b.filteredItems[b.selected].Issue.ID
+	}
+	previewOffset := b.previewOffset
 	b.filteredItems = b.filteredIssueItems()
 	b.filtered = make([]model.Issue, len(b.filteredItems))
 	for i, item := range b.filteredItems {
 		b.filtered[i] = item.Issue
 	}
-	if b.selected >= len(b.filteredItems) {
-		b.selected = maxInt(0, len(b.filteredItems)-1)
+	b.reconcileSelection(selectedID, previewOffset)
+	if len(b.marked) > 0 {
+		visible := make(map[string]bool, len(b.filteredItems))
+		for _, item := range b.filteredItems {
+			visible[item.Issue.ID] = true
+		}
+		for id := range b.marked {
+			if !visible[id] {
+				delete(b.marked, id)
+			}
+		}
 	}
+}
+
+// reconcileSelection derives the row coordinate from the stable issue ID. A
+// missing ID deliberately falls back to the first visible row, never to the
+// old numeric coordinate.
+func (b *BacklogModel) reconcileSelection(selectedID string, previewOffset int) {
+	for i, item := range b.filteredItems {
+		if selectedID != "" && item.Issue.ID == selectedID {
+			b.selected, b.selectedIssueID, b.previewOffset = i, selectedID, previewOffset
+			return
+		}
+	}
+	if len(b.filteredItems) == 0 {
+		b.selected, b.selectedIssueID, b.previewOffset = 0, "", 0
+		return
+	}
+	b.selected = 0
+	b.selectedIssueID = b.filteredItems[0].Issue.ID
 	b.previewOffset = 0
+}
+
+func (b BacklogModel) filterTupleKey() string {
+	status := b.Status()
+	if status == backlogStatusAll {
+		status = ""
+	}
+	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%t", b.filter, b.label, status, strings.Join(b.contexts, "\x00"), b.includeContextless)
+}
+
+func (b *BacklogModel) ensurePageHistory() {
+	key := b.filterTupleKey()
+	if b.pageHistoryKey == key {
+		return
+	}
+	b.pageIndex, b.nextCursor, b.hasMore = 0, "", false
+	b.pageCursors = []string{""}
+	b.pageHistoryKey = key
 }
 
 func (b BacklogModel) filteredIssueItems() []IssueItem {
@@ -987,7 +1098,7 @@ func (b BacklogModel) renderBacklogRow(item IssueItem, selected bool, columns ba
 }
 
 func (b BacklogModel) renderBacklogPreview(width int, heights ...int) string {
-	if b.selected < 0 || b.selected >= len(b.filteredItems) {
+	if b.CurrentIssue() == nil {
 		return ""
 	}
 	item := b.filteredItems[b.selected]
@@ -1063,9 +1174,10 @@ func (b BacklogModel) visibleRangeFor(rows int) (int, int) {
 // batch. Paged mode keeps its backend cursor separate from the terminal-sized
 // member viewport; complete loaders still use the same presentation path.
 type ScopePickerModel struct {
-	scopes     []ScopeInfo
-	selected   int
-	moveTarget string
+	scopes          []ScopeInfo
+	selected        int
+	selectedScopeID string
+	moveTarget      string
 
 	catalogHasMore     bool
 	catalogNextCursor  string
@@ -1078,6 +1190,7 @@ type ScopePickerModel struct {
 	members                    []IssueItem
 	filteredMembers            []IssueItem
 	memberSelected             int
+	memberSelectedID           string
 	memberScopeID              string
 	memberGeneration           uint64
 	memberLoading              bool
@@ -1087,6 +1200,8 @@ type ScopePickerModel struct {
 	memberNextCursor           string
 	memberPageIndex            int
 	memberPageCursors          []string
+	memberPageHistoryKey       string
+	memberRequestKey           string
 	memberViewportStart        int
 	memberViewportPrevious     bool
 	memberViewportRowsOverride int
@@ -1105,7 +1220,9 @@ type ScopePickerModel struct {
 }
 
 func NewScopePickerModel(theme Theme) ScopePickerModel {
-	return ScopePickerModel{theme: theme, catalogPageCursors: []string{""}, memberPageCursors: []string{""}}
+	s := ScopePickerModel{theme: theme, catalogPageCursors: []string{""}, memberPageCursors: []string{""}}
+	s.memberPageHistoryKey = s.memberFilterKey()
+	return s
 }
 
 func newScopeNameInput(theme Theme) textinput.Model {
@@ -1133,42 +1250,54 @@ func newScopeMatchInput(theme Theme) textinput.Model {
 }
 
 func (s *ScopePickerModel) SetSize(width, height int) {
-	if s.width != width || s.height != height {
-		s.memberViewportStart = 0
-		s.memberSelected = 0
-		s.memberViewportPrevious = false
-	}
+	s.memberViewportRowsOverride = 0
+	s.width, s.height = width, height
+	s.clampMemberViewport()
+}
+
+// setScopeScreenSize defers viewport clamping until renderTopSplit has
+// installed the split-specific member row count.
+func (s *ScopePickerModel) setScopeScreenSize(width, height int) {
 	s.memberViewportRowsOverride = 0
 	s.width, s.height = width, height
 }
 func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
-	selectedID := ""
-	if selected := s.Selected(); selected != nil {
-		selectedID = selected.ID
+	selectedID := s.selectedScopeID
+	if selectedID == "" {
+		if selected := s.Selected(); selected != nil {
+			selectedID = selected.ID
+		}
 	}
 	s.scopes = append([]ScopeInfo(nil), scopes...)
 	s.selected = -1
-	selectedFound := false
 	if selectedID != "" {
 		for i := range s.scopes {
 			if s.scopes[i].ID == selectedID {
 				s.selected = i
-				selectedFound = true
 				break
 			}
 		}
 	}
 	if s.selected < 0 {
 		s.selected = 0
-	}
-	for i := range s.scopes {
-		if !selectedFound && s.scopes[i].Active {
-			s.selected = i
-			break
+		// Keep the existing initial picker behavior of preferring the active
+		// scope, but never use it to replace a previously selected identity.
+		if selectedID == "" {
+			for i := range s.scopes {
+				if s.scopes[i].Active {
+					s.selected = i
+					break
+				}
+			}
 		}
 	}
 	if s.selected >= len(s.scopes) {
-		s.selected = maxInt(0, len(s.scopes)-1)
+		s.selected = -1
+	}
+	if s.selected >= 0 {
+		s.selectedScopeID = s.scopes[s.selected].ID
+	} else {
+		s.selectedScopeID = ""
 	}
 }
 
@@ -1263,10 +1392,7 @@ func (s ScopePickerModel) OwnsPagingKey(key string) bool {
 
 // SelectedScopeID returns the catalog identity whose members should be shown.
 func (s ScopePickerModel) SelectedScopeID() string {
-	if selected := s.Selected(); selected != nil {
-		return selected.ID
-	}
-	return ""
+	return s.selectedScopeID
 }
 
 // BeginMemberLoad marks a new exact-scope request. The generation makes a
@@ -1282,21 +1408,28 @@ func (s *ScopePickerModel) BeginMemberLoad(scopeID string) uint64 {
 	s.memberViewportPrevious = false
 	s.memberReadyIDs = nil
 	s.memberSelected = 0
+	s.memberSelectedID = ""
 	s.ClearMemberMarks()
 	s.memberHasMore = false
 	s.memberNextCursor = ""
 	s.memberPageIndex = 0
 	s.memberPageCursors = []string{""}
+	s.memberPageHistoryKey = s.memberFilterKey()
+	s.memberRequestKey = s.memberPageHistoryKey
 	return s.memberGeneration
 }
 
 func (s *ScopePickerModel) BeginMemberPageLoad(scopeID string) uint64 {
+	s.ensureMemberPageHistory()
 	s.memberGeneration++
 	s.memberScopeID = scopeID
 	s.memberLoading = true
 	s.memberError = ""
+	s.memberRequestKey = s.memberFilterKey()
 	s.memberViewportStart = 0
 	s.ClearMemberMarks()
+	s.memberSelected = -1
+	s.memberSelectedID = ""
 	return s.memberGeneration
 }
 
@@ -1331,34 +1464,33 @@ func (s *ScopePickerModel) SetMemberReadyIDs(ids map[string]bool) {
 // reapplies only the display narrowing owned by this picker.
 func (s *ScopePickerModel) SetMembers(items []IssueItem) {
 	s.setMembers(items)
-	s.memberViewportStart = 0
 }
 
 func (s *ScopePickerModel) setMembers(items []IssueItem) {
-	selectedID := ""
-	if selected := s.SelectedMember(); selected != nil {
-		selectedID = selected.Issue.ID
+	selectedID := s.memberSelectedID
+	if selectedID == "" && s.memberSelected >= 0 && s.memberSelected < len(s.filteredMembers) {
+		selectedID = s.filteredMembers[s.memberSelected].Issue.ID
 	}
+	viewportStart := s.memberViewportStart
 	s.members = append([]IssueItem(nil), items...)
 	s.memberLoading = false
 	s.memberError = ""
+	s.memberSelectedID = selectedID
 	s.applyMemberFilters()
-	if selectedID != "" {
-		for i, item := range s.filteredMembers {
-			if item.Issue.ID == selectedID {
-				s.memberSelected = i
-				break
-			}
-		}
+	if s.memberSelectedID == selectedID && selectedID != "" {
+		s.memberViewportStart = viewportStart
+		s.clampMemberViewport()
+	} else {
+		s.memberViewportStart = 0
 	}
 }
 
-func (s ScopePickerModel) acceptsMemberPage(scopeID string, generation uint64) bool {
-	return s.acceptsMemberDetails(scopeID, generation)
+func (s ScopePickerModel) acceptsMemberPage(scopeID, requestKey string, generation uint64) bool {
+	return s.acceptsMemberDetails(scopeID, generation) && requestKey != "" && requestKey == s.memberRequestKey
 }
 
-func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueItem, index int, generation uint64) bool {
-	if !s.acceptsMemberPage(page.Scope.ID, generation) {
+func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueItem, index int, generation uint64, requestKey string) bool {
+	if !s.acceptsMemberPage(page.Scope.ID, requestKey, generation) {
 		return false
 	}
 	if !scopeInfoCountKnown(page.Scope.CompletedCount, page.Scope.CompletedCountKnown) && page.CompletedCount != 0 {
@@ -1383,12 +1515,10 @@ func (s *ScopePickerModel) SetMemberPage(page ScopeMembersPage, items []IssueIte
 	s.memberLoading = false
 	s.memberError = ""
 	s.ClearMemberMarks()
+	s.memberSelected = -1
+	s.memberSelectedID = ""
+	s.memberViewportStart = 0
 	s.setMembers(items)
-	if s.memberViewportPrevious {
-		visible := s.memberViewportRows()
-		s.memberViewportStart = maxInt(0, ((len(s.filteredMembers)-1)/visible)*visible)
-		s.memberSelected = s.memberViewportStart
-	}
 	s.memberViewportPrevious = false
 	return true
 }
@@ -1434,6 +1564,7 @@ func (s ScopePickerModel) MemberContexts() []string {
 }
 
 func (s *ScopePickerModel) NextMemberPage() (string, int, bool) {
+	s.ensureMemberPageHistory()
 	if s.memberLoading || !s.memberHasMore || s.memberNextCursor == "" {
 		return "", 0, false
 	}
@@ -1467,6 +1598,23 @@ func (s ScopePickerModel) memberViewportRows() int {
 	return maxInt(s.memberPanelRows()-3, 1)
 }
 
+// clampMemberViewport keeps the retained member identity visible after a
+// resize or passive page reconciliation. It changes only presentation
+// coordinates; selection, filters, marks, and loaded data remain untouched.
+func (s *ScopePickerModel) clampMemberViewport() {
+	if len(s.filteredMembers) == 0 {
+		s.memberViewportStart = 0
+		return
+	}
+	visible := maxInt(s.memberViewportRows(), 1)
+	maxStart := ((len(s.filteredMembers) - 1) / visible) * visible
+	start := min(maxInt(s.memberViewportStart, 0), maxStart)
+	if s.memberSelected < start || s.memberSelected >= start+visible {
+		start = (maxInt(s.memberSelected, 0) / visible) * visible
+	}
+	s.memberViewportStart = min(start, maxStart)
+}
+
 // MoveMemberScreen moves one terminal-sized viewport without changing the
 // backend result cursor; callers fetch only when this reaches a batch edge.
 func (s *ScopePickerModel) MoveMemberScreen(delta int) bool {
@@ -1491,6 +1639,7 @@ func (s *ScopePickerModel) MoveMemberScreen(delta int) bool {
 	}
 	s.memberViewportStart = start
 	s.memberSelected = start
+	s.memberSelectedID = s.filteredMembers[start].Issue.ID
 	return true
 }
 
@@ -1505,6 +1654,7 @@ func (s ScopePickerModel) CanMoveMemberScreen(delta int) bool {
 }
 
 func (s *ScopePickerModel) PreviousMemberPage() (string, int, bool) {
+	s.ensureMemberPageHistory()
 	if s.memberLoading || s.memberPageIndex <= 0 || s.memberPageIndex >= len(s.memberPageCursors) {
 		return "", 0, false
 	}
@@ -1532,6 +1682,9 @@ func (s *ScopePickerModel) ResetPaging() {
 	s.memberViewportStart = 0
 	s.memberViewportPrevious = false
 	s.memberScopeID = ""
+	s.memberSelected = 0
+	s.memberSelectedID = ""
+	s.memberPageHistoryKey = s.memberFilterKey()
 	s.ClearMemberMarks()
 }
 
@@ -1540,6 +1693,8 @@ func (s *ScopePickerModel) SetMemberFilters(repository, status string, issueType
 	s.memberContextFilter = nil
 	s.memberStatusFilter = status
 	s.memberTypeFilter = issueType
+	s.resetMemberPageHistory()
+	s.memberSelectedID = ""
 	s.ClearMemberMarks()
 	s.applyMemberFilters()
 }
@@ -1551,13 +1706,14 @@ func (s *ScopePickerModel) MoveMember(delta int) {
 		return
 	}
 	s.memberSelected = (s.memberSelected + delta + len(s.filteredMembers)) % len(s.filteredMembers)
+	s.memberSelectedID = s.filteredMembers[s.memberSelected].Issue.ID
 	// Keep row navigation on the same screen model used by the viewport keys.
 	visible := s.memberViewportRows()
 	s.memberViewportStart = (s.memberSelected / visible) * visible
 }
 
 func (s ScopePickerModel) SelectedMember() *IssueItem {
-	if s.memberSelected < 0 || s.memberSelected >= len(s.filteredMembers) {
+	if s.memberLoading || s.memberSelected < 0 || s.memberSelected >= len(s.filteredMembers) {
 		return nil
 	}
 	selected := s.filteredMembers[s.memberSelected]
@@ -1613,6 +1769,8 @@ func (s *ScopePickerModel) CycleMemberRepository() {
 		sort.Strings(s.memberContextFilter)
 	}
 	s.ClearMemberMarks()
+	s.memberSelectedID = ""
+	s.resetMemberPageHistory()
 	s.applyMemberFilters()
 }
 
@@ -1623,6 +1781,8 @@ func (s *ScopePickerModel) ToggleMemberStatus(status string) {
 		s.memberStatusFilter = status
 	}
 	s.ClearMemberMarks()
+	s.memberSelectedID = ""
+	s.resetMemberPageHistory()
 	s.applyMemberFilters()
 }
 
@@ -1647,6 +1807,8 @@ func (s *ScopePickerModel) CycleMemberType() {
 	next := cycleStringFilter(current, values)
 	s.memberTypeFilter = model.IssueType(next)
 	s.ClearMemberMarks()
+	s.memberSelectedID = ""
+	s.resetMemberPageHistory()
 	s.applyMemberFilters()
 }
 
@@ -1715,8 +1877,7 @@ func memberRepositoryValue(item IssueItem) string {
 func (s *ScopePickerModel) applyMemberFilters() {
 	if s.memberServerFiltering {
 		s.filteredMembers = append(s.filteredMembers[:0], s.members...)
-		s.memberSelected = 0
-		s.memberViewportStart = 0
+		s.reconcileMemberSelection()
 		return
 	}
 	s.filteredMembers = s.filteredMembers[:0]
@@ -1747,8 +1908,59 @@ func (s *ScopePickerModel) applyMemberFilters() {
 		}
 		s.filteredMembers = append(s.filteredMembers, item)
 	}
+	s.reconcileMemberSelection()
+}
+
+func (s *ScopePickerModel) reconcileMemberSelection() {
+	if len(s.memberMarkedIDs) > 0 {
+		visible := make(map[string]bool, len(s.filteredMembers))
+		for _, item := range s.filteredMembers {
+			visible[item.Issue.ID] = true
+		}
+		for id := range s.memberMarkedIDs {
+			if !visible[id] {
+				delete(s.memberMarkedIDs, id)
+			}
+		}
+	}
+	selectedID := s.memberSelectedID
+	for i, item := range s.filteredMembers {
+		if selectedID != "" && item.Issue.ID == selectedID {
+			s.memberSelected = i
+			s.memberSelectedID = selectedID
+			s.clampMemberViewport()
+			return
+		}
+	}
+	if len(s.filteredMembers) == 0 {
+		s.memberSelected, s.memberSelectedID, s.memberViewportStart = 0, "", 0
+		return
+	}
 	s.memberSelected = 0
+	s.memberSelectedID = s.filteredMembers[0].Issue.ID
 	s.memberViewportStart = 0
+}
+
+func (s ScopePickerModel) memberFilterKey() string {
+	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%q", s.memberScopeID, s.memberRepositoryFilter, s.memberStatusFilter, s.memberTypeFilter, strings.Join(s.MemberContexts(), "\x00"))
+}
+
+func (s *ScopePickerModel) resetMemberPageHistory() {
+	s.memberPageIndex, s.memberNextCursor, s.memberHasMore = 0, "", false
+	s.memberPageCursors = []string{""}
+	s.memberPageHistoryKey = s.memberFilterKey()
+	s.memberRequestKey = s.memberPageHistoryKey
+}
+
+func (s *ScopePickerModel) ensureMemberPageHistory() {
+	key := s.memberFilterKey()
+	if s.memberPageHistoryKey == key {
+		return
+	}
+	s.memberPageIndex, s.memberNextCursor, s.memberHasMore = 0, "", false
+	s.memberPageCursors = []string{""}
+	s.memberPageHistoryKey = key
+	s.memberRequestKey = key
 }
 
 func (s *ScopePickerModel) SetDetails(details ScopeDetails) {
@@ -1808,6 +2020,7 @@ func (s *ScopePickerModel) Move(delta int) {
 		return
 	}
 	s.selected = (s.selected + delta + len(s.scopes)) % len(s.scopes)
+	s.selectedScopeID = s.scopes[s.selected].ID
 }
 func (s ScopePickerModel) Selected() *ScopeInfo {
 	if s.selected < 0 || s.selected >= len(s.scopes) {
@@ -1890,6 +2103,7 @@ func (s *ScopePickerModel) renderTopSplit(width, height int, scopeFocused bool) 
 	catalogStyle, memberStyle := scopeTopSplitStyles(scopeFocused, s.memberFocused)
 	memberRows := maxInt(panelHeight-4, 1)
 	s.memberViewportRowsOverride = maxInt(memberRows-3, 1)
+	s.clampMemberViewport()
 	panel := func(style lipgloss.Style, content string, panelWidth int) string {
 		return bound(style.Padding(0, 1).Width(maxInt(panelWidth-2, 1)).Height(maxInt(panelHeight-2, 1)).Render(content), panelWidth, panelHeight)
 	}
@@ -2379,7 +2593,7 @@ func (m *Model) renderScopeScreen() string {
 	// renderer; allocate those columns outside the body width so its panels end
 	// at the same right edge as the framed lower panel.
 	topWidth := width + 4
-	m.scopePicker.SetSize(topWidth, topHeight)
+	m.scopePicker.setScopeScreenSize(topWidth, topHeight)
 	top := m.scopePicker.renderTopSplit(topWidth, topHeight, m.focused != focusGlobalIssues)
 	lowerTitle := m.globalIssuesTitle()
 	var excluded []string
@@ -2468,7 +2682,7 @@ func (m *Model) startScopeMembersPage(cursor string, index int) tea.Cmd {
 	return loadScopeMembersPageCmd(m.runtimeServices.Scopes, ScopeMembersQuery{
 		ScopeID: scopeID, Cursor: cursor, Limit: scopePageSize, Status: status,
 		Type: string(issueType), Contexts: m.scopePicker.MemberContexts(),
-	}, index, generation)
+	}, index, generation, m.scopePicker.memberRequestKey)
 }
 
 func (m *Model) startScopeMembersPageAt(cursor string, index int) tea.Cmd {
@@ -2488,7 +2702,7 @@ func (m *Model) startScopeMembersPageAt(cursor string, index int) tea.Cmd {
 	return loadScopeMembersPageCmd(m.runtimeServices.Scopes, ScopeMembersQuery{
 		ScopeID: scopeID, Cursor: cursor, Limit: scopePageSize, Status: status,
 		Type: string(issueType), Contexts: m.scopePicker.MemberContexts(),
-	}, index, generation)
+	}, index, generation, m.scopePicker.memberRequestKey)
 }
 
 func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
@@ -2526,6 +2740,7 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 	}
 	if m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil {
 		m.backlog.Reset()
+		m.backlog.SetLoading(true)
 		m.backlogLoading = true
 		m.backlogPageGeneration++
 		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration))
@@ -2622,6 +2837,7 @@ func (m *Model) backlogQuery(cursor string) BacklogQuery {
 func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {
 	m.backlog.ClearMarks()
 	m.backlog.ResetPagination()
+	m.backlog.SetLoading(true)
 	m.backlogLoading = true
 	m.backlogPageGeneration++
 	return loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(""), 0, m.backlogPageGeneration)
@@ -2630,6 +2846,7 @@ func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {
 func (m *Model) closeBacklog() {
 	m.isBacklogView = false
 	m.backlogLoading = false
+	m.backlog.SetLoading(false)
 	m.focused = focusList
 	m.backlog.ClearMarks()
 }
@@ -2932,6 +3149,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "n", "right":
 		if cursor := m.backlog.NextPageCursor(); cursor != "" {
 			m.backlog.ClearMarks()
+			m.backlog.SetLoading(true)
 			m.backlogLoading = true
 			m.backlogPageGeneration++
 			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(cursor), m.backlog.PageIndex()+1, m.backlogPageGeneration)
@@ -2940,6 +3158,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if m.backlog.PageIndex() > 0 {
 			m.backlog.ClearMarks()
 			cursor := m.backlog.PreviousPageCursor()
+			m.backlog.SetLoading(true)
 			m.backlogLoading = true
 			m.backlogPageGeneration++
 			return m, loadBacklogPageCmd(m.runtimeServices.Scopes, m.backlogQuery(cursor), m.backlog.PageIndex(), m.backlogPageGeneration)
