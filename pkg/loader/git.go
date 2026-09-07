@@ -26,6 +26,9 @@ type revisionCache struct {
 	mu      sync.RWMutex
 	entries map[string]cacheEntry
 	maxAge  time.Duration
+	// now is optional and must remain immutable after cache use begins. A
+	// supplied callback must be safe for concurrent reads; nil uses time.Now.
+	now func() time.Time
 }
 
 // cacheEntry holds cached issues with metadata
@@ -464,6 +467,13 @@ func (g *GitLoader) loadFileFromGitWithReport(sha, path string) (GitLoadReport, 
 
 // Cache methods
 
+func (c *revisionCache) currentTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
 func (c *revisionCache) get(sha string) ([]model.Issue, bool) {
 	report, ok := c.getReport(sha)
 	return report.Issues, ok
@@ -485,13 +495,13 @@ func (c *revisionCache) getReport(sha string) (GitLoadReport, bool) {
 	// Check if entry is still valid. A future timestamp can arise after a wall-
 	// clock correction; treating its negative age as fresh would extend the
 	// entry's lifetime until the clock caught up and then for another full TTL.
-	now := time.Now()
+	now := c.currentTime()
 	if !revisionCacheEntryIsFresh(entry.loadedAt, now, c.maxAge) {
 		c.mu.RUnlock()
 		// Evict expired entry
 		c.mu.Lock()
 		// Re-check under write lock (another goroutine may have already evicted)
-		if e, still := c.entries[sha]; still && !revisionCacheEntryIsFresh(e.loadedAt, time.Now(), c.maxAge) {
+		if e, still := c.entries[sha]; still && !revisionCacheEntryIsFresh(e.loadedAt, c.currentTime(), c.maxAge) {
 			delete(c.entries, sha)
 		}
 		c.mu.Unlock()
@@ -533,7 +543,7 @@ func (c *revisionCache) setReport(report GitLoadReport) {
 		parseStats:   stored.ParseStats,
 		warnings:     stored.Warnings,
 		sourcePath:   stored.SourcePath,
-		loadedAt:     time.Now(),
+		loadedAt:     c.currentTime(),
 		commitSHA:    stored.CommitSHA,
 		commitTime:   stored.CommitTime,
 	}
@@ -574,7 +584,7 @@ func (g *GitLoader) CacheStats() CacheStats {
 	g.cache.mu.RLock()
 	defer g.cache.mu.RUnlock()
 
-	now := time.Now()
+	now := g.cache.currentTime()
 	valid := 0
 	for _, entry := range g.cache.entries {
 		if revisionCacheEntryIsFresh(entry.loadedAt, now, g.cache.maxAge) {

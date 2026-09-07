@@ -1,5 +1,51 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Delivery continuation — 2026-09-07
+
+- [x] Recover normal tracker access after local free space returned. The prior
+  recovery copies remain intact; no files were deleted by this continuation.
+- [x] Independently inspect all 288 UI records from the original `93b90959` run.
+  All 144 current cohorts meet the overall p99 limit, but four fail the separate
+  50 ms event-handler limit: SnapshotReady takes 50.529 and 59.910 ms for mostly
+  closed 10k, 52.166 ms for dense 10k, and Phase2Ready takes 56.903 ms for Unicode
+  10k. The run is not passing. Its CLI, exact-output and final controls continue
+  unchanged; those incomplete stages cannot be inferred from the UI review.
+- [x] Trace the regression to synchronous visible critical-chain traversal in
+  graph snapshot installation. An independent CPU profile attributes 8.71 of
+  8.85 sampled seconds inside Model.Update to GraphModel.SetSnapshot in the
+  existing 5k snapshot-swap benchmark. Its original result is 28.798 ms/op and
+  1,188,630 allocated bytes/op. These focused measurements are not the full
+  reference-host acceptance.
+- [x] Finish and independently verify moving critical-chain preparation into
+  immutable background graph layouts, retaining chain, filter, cycle, selection
+  and Phase 2 semantics. Preserve the original timing gate and the old-code
+  allocation regression failure. The same focused 5k swap benchmark now reports
+  0.101 ms/op and 331,158 allocated bytes/op; graph installation itself allocates
+  nothing. This moves work into snapshot construction, not out of the application.
+  Root's complete combined UI/loader race run passes 2,347 test nodes with 11
+  existing skips; combined build/vet and first-party formatting pass. These checks
+  do not replace the full performance matrix.
+- [x] Execute the unchanged Windows source-install harness against clean
+  `93b90959` in a fresh isolated tagged repository. Actual source-built analysis
+  works; all five source failures preserve the installation. This is the
+  available Windows subset, not native Mac/ARM, publication or a later revision.
+- [x] Complete the original ten-stage gate on clean `93b90959`: eight stages pass,
+  two fail, none are skipped. Its unit stage
+  exposed `TestRevisionCacheExpires`: a 50 ms wall-clock test can expire before
+  its immediate observation under load. The unchanged benchmark stage also finds
+  the 5k snapshot swap 169.3% slower than its reference, above the original 20%
+  limit. Both failures are retained. No package is eligible from this failed run.
+- [x] Make the cache test deterministic through a private cache clock, retaining
+  the actual Git load and refetch. The 50 ms TTL and production freshness predicate
+  remain unchanged; tests now check the exact boundary and one nanosecond on either
+  side, the original 120 ms expiry point, eviction, and future/zero timestamps.
+  Root independently reviews the test changes and runs the full loader/UI race
+  suite on the combined source. No failing assertion or gate limit was removed.
+- [ ] Freeze the reviewed repairs, complete their full gate and original latency
+  matrix, then package and test extracted binaries from that same revision.
+  Installed tracker repair and missing native Mac/Linux ARM64 access remain
+  external prerequisites; the original S5/V5/final tasks stay open or blocked.
+
 ## Implementation continuation — 2026-09-06
 
 The follow-up implements the highest-return gaps identified below. The September 6

@@ -103,7 +103,8 @@ func (g *GraphModel) SetSnapshot(snapshot *DataSnapshot) {
 		g.rankCriticalPath = layout.RankCriticalPath
 		g.rankInDegree = layout.RankInDegree
 		g.rankOutDegree = layout.RankOutDegree
-		g.computeCriticalPath()
+		g.criticalPath = layout.CriticalPath
+		g.criticalNext = layout.CriticalNext
 	} else {
 		g.rebuildGraph()
 	}
@@ -218,26 +219,28 @@ func (g *GraphModel) rebuildGraph() {
 	if g.selectedIdx >= len(g.sortedIDs) {
 		g.selectedIdx = 0
 	}
-	g.computeCriticalPath()
+	g.criticalPath, g.criticalNext = visibleCriticalChain(g.sortedIDs, g.blockers, g.dependents)
 }
 
-// computeCriticalPath highlights one deterministic longest chain in the visible
+// visibleCriticalChain selects one deterministic longest chain in the visible
 // graph. Project-wide scores cannot choose it: filtering can hide an entire long
 // branch. A cycle prevents topological completion, so no chain is invented there.
-func (g *GraphModel) computeCriticalPath() {
-	g.criticalPath = nil
-	g.criticalNext = nil
-	pending := make(map[string]int, len(g.sortedIDs))
-	depth := make(map[string]int, len(g.sortedIDs))
-	previous := make(map[string]string, len(g.sortedIDs))
-	queue := make([]string, 0, len(g.sortedIDs))
-	for _, id := range g.sortedIDs {
-		for _, blocker := range g.blockers[id] {
-			if g.issueMap[blocker] != nil {
+// Snapshot construction does this work off the UI loop; filtered views use the
+// same calculation when their visible graph changes.
+func visibleCriticalChain(ids []string, blockers, dependents map[string][]string) (map[string]bool, map[string]string) {
+	pending := make(map[string]int, len(ids))
+	depth := make(map[string]int, len(ids))
+	previous := make(map[string]string, len(ids))
+	queue := make([]string, 0, len(ids))
+	for _, id := range ids {
+		depth[id] = 1
+	}
+	for _, id := range ids {
+		for _, blocker := range blockers[id] {
+			if _, visible := depth[blocker]; visible {
 				pending[id]++
 			}
 		}
-		depth[id] = 1
 		if pending[id] == 0 {
 			queue = append(queue, id)
 		}
@@ -248,8 +251,8 @@ func (g *GraphModel) computeCriticalPath() {
 		if depth[id] > depth[current] || (depth[id] == depth[current] && id < current) {
 			current = id
 		}
-		for _, dependent := range g.dependents[id] {
-			if g.issueMap[dependent] == nil {
+		for _, dependent := range dependents[id] {
+			if _, visible := depth[dependent]; !visible {
 				continue
 			}
 			if d := depth[id] + 1; d > depth[dependent] || (d == depth[dependent] && id < previous[dependent]) {
@@ -261,19 +264,20 @@ func (g *GraphModel) computeCriticalPath() {
 			}
 		}
 	}
-	if len(queue) != len(g.sortedIDs) || current == "" {
-		return
+	if len(queue) != len(ids) || current == "" {
+		return nil, nil
 	}
-	g.criticalPath = make(map[string]bool)
-	g.criticalNext = make(map[string]string)
+	criticalPath := make(map[string]bool)
+	criticalNext := make(map[string]string)
 	for current != "" {
-		g.criticalPath[current] = true
+		criticalPath[current] = true
 		parent := previous[current]
 		if parent != "" {
-			g.criticalNext[parent] = current
+			criticalNext[parent] = current
 		}
 		current = parent
 	}
+	return criticalPath, criticalNext
 }
 
 // computeRankings precomputes rankings for all metrics

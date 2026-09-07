@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -460,49 +461,115 @@ func TestRevisionCacheExpires(t *testing.T) {
 	repoDir, cleanup := setupTestGitRepo(t)
 	defer cleanup()
 
-	// Use a generous TTL/sleep gap to avoid timing flake on slow clocks.
+	// Keep the real Git load/refetch while advancing only the cache clock.
+	// Scheduler delays between assertions must not consume the 50ms TTL.
 	loader := NewGitLoaderWithCacheTTL(repoDir, 50*time.Millisecond)
+	loadedAt := time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC)
+	now := loadedAt
+	loader.cache.now = func() time.Time { return now }
 
 	// First load populates cache
-	if _, err := loader.LoadAt("HEAD"); err != nil {
+	initialIssues, err := loader.LoadAt("HEAD")
+	if err != nil {
 		t.Fatalf("LoadAt failed: %v", err)
+	}
+	if len(initialIssues) != 3 {
+		t.Fatalf("expected 3 issues from Git, got %d", len(initialIssues))
 	}
 	if stats := loader.CacheStats(); stats.ValidEntries != 1 {
 		t.Fatalf("expected 1 valid cache entry, got %d", stats.ValidEntries)
 	}
+	sha, err := loader.ResolveRevision("HEAD")
+	if err != nil {
+		t.Fatalf("ResolveRevision failed: %v", err)
+	}
+	loader.cache.mu.RLock()
+	initialEntry := loader.cache.entries[sha]
+	loader.cache.mu.RUnlock()
+	if !initialEntry.loadedAt.Equal(loadedAt) {
+		t.Fatalf("cache insertion time = %v, want %v", initialEntry.loadedAt, loadedAt)
+	}
 
-	// Wait long enough for entry to expire
-	time.Sleep(120 * time.Millisecond)
+	for _, age := range []time.Duration{0, 50*time.Millisecond - time.Nanosecond, 50 * time.Millisecond} {
+		now = loadedAt.Add(age)
+		if stats := loader.CacheStats(); stats.ValidEntries != 1 || stats.MaxAge != 50*time.Millisecond {
+			t.Fatalf("cache stats at age %v = %+v, want one valid entry and 50ms TTL", age, stats)
+		}
+		report, ok := loader.cache.getReport(sha)
+		if !ok || !reflect.DeepEqual(report.Issues, initialIssues) {
+			t.Fatalf("cache hit at age %v = (%+v, %v), want original issues", age, report, ok)
+		}
+	}
+
+	for _, age := range []time.Duration{50*time.Millisecond + time.Nanosecond, 120 * time.Millisecond} {
+		now = loadedAt.Add(age)
+		if stats := loader.CacheStats(); stats.ValidEntries != 0 || stats.TotalEntries != 1 {
+			t.Fatalf("cache stats at age %v = %+v, want one expired entry", age, stats)
+		}
+	}
+	if report, ok := loader.cache.getReport(sha); ok {
+		t.Fatalf("expired cache entry was returned: %+v", report)
+	}
+	if stats := loader.CacheStats(); stats.TotalEntries != 0 {
+		t.Fatalf("expired cache entry was not evicted: %+v", stats)
+	}
 
 	// Cache should report zero valid entries, and LoadAt should still succeed (re-fetch)
+	now = loadedAt.Add(120 * time.Millisecond)
 	if stats := loader.CacheStats(); stats.ValidEntries != 0 {
 		t.Fatalf("expected cache entry to expire, got %d valid", stats.ValidEntries)
 	}
-	if _, err := loader.LoadAt("HEAD"); err != nil {
+	refetchedIssues, err := loader.LoadAt("HEAD")
+	if err != nil {
 		t.Fatalf("LoadAt after expiry failed: %v", err)
+	}
+	if !reflect.DeepEqual(refetchedIssues, initialIssues) {
+		t.Fatalf("Git refetch changed issues: got %+v, want %+v", refetchedIssues, initialIssues)
+	}
+	if stats := loader.CacheStats(); stats.ValidEntries != 1 || stats.TotalEntries != 1 {
+		t.Fatalf("Git refetch did not repopulate cache: %+v", stats)
+	}
+	loader.cache.mu.RLock()
+	refetchedEntry := loader.cache.entries[sha]
+	loader.cache.mu.RUnlock()
+	if !refetchedEntry.loadedAt.Equal(now) || refetchedEntry.commitSHA != sha {
+		t.Fatalf("refetched cache identity = (%v, %q), want (%v, %q)", refetchedEntry.loadedAt, refetchedEntry.commitSHA, now, sha)
 	}
 }
 
 func TestRevisionCacheRejectsFutureTimestamp(t *testing.T) {
-	cache := &revisionCache{
-		entries: map[string]cacheEntry{
-			"future": {
-				issues:    []model.Issue{{ID: "stale"}},
-				loadedAt:  time.Now().Add(time.Hour),
-				commitSHA: "future",
-			},
-		},
-		maxAge: 5 * time.Minute,
-	}
-	gitLoader := &GitLoader{cache: cache}
-	if stats := gitLoader.CacheStats(); stats.ValidEntries != 0 {
-		t.Fatalf("future-dated cache entry counted as valid: %+v", stats)
-	}
-	if report, ok := cache.getReport("future"); ok {
-		t.Fatalf("future-dated cache entry was returned: %+v", report)
-	}
-	if stats := gitLoader.CacheStats(); stats.TotalEntries != 0 {
-		t.Fatalf("future-dated cache entry was not evicted: %+v", stats)
+	now := time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC)
+	for _, tc := range []struct {
+		name     string
+		loadedAt time.Time
+	}{
+		{name: "future by 1ns", loadedAt: now.Add(time.Nanosecond)},
+		{name: "future", loadedAt: now.Add(time.Hour)},
+		{name: "zero", loadedAt: time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &revisionCache{
+				entries: map[string]cacheEntry{
+					tc.name: {
+						issues:    []model.Issue{{ID: "stale"}},
+						loadedAt:  tc.loadedAt,
+						commitSHA: tc.name,
+					},
+				},
+				maxAge: 5 * time.Minute,
+				now:    func() time.Time { return now },
+			}
+			gitLoader := &GitLoader{cache: cache}
+			if stats := gitLoader.CacheStats(); stats.ValidEntries != 0 {
+				t.Fatalf("invalid timestamp counted as valid: %+v", stats)
+			}
+			if report, ok := cache.getReport(tc.name); ok {
+				t.Fatalf("invalid timestamp was returned: %+v", report)
+			}
+			if stats := gitLoader.CacheStats(); stats.TotalEntries != 0 {
+				t.Fatalf("invalid timestamp was not evicted: %+v", stats)
+			}
+		})
 	}
 }
 

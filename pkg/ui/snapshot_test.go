@@ -2220,6 +2220,105 @@ func TestSnapshotSwap_UsesSnapshotGraphLayoutWhenUnfiltered(t *testing.T) {
 	}
 }
 
+func TestSnapshotGraphCriticalChain(t *testing.T) {
+	tests := []struct {
+		name   string
+		issues []model.Issue
+		path   map[string]bool
+		next   map[string]string
+	}{
+		{
+			name: "longest chain with lexical tie",
+			issues: []model.Issue{
+				{ID: "leaf", Dependencies: []*model.Dependency{{DependsOnID: "right", Type: model.DepBlocks}, {DependsOnID: "left", Type: model.DepBlocks}}},
+				{ID: "right", Dependencies: []*model.Dependency{{DependsOnID: "root", Type: model.DepBlocks}}},
+				{ID: "isolated"},
+				{ID: "left", Dependencies: []*model.Dependency{{DependsOnID: "root", Type: model.DepBlocks}}},
+				{ID: "root"},
+			},
+			path: map[string]bool{"root": true, "left": true, "leaf": true},
+			next: map[string]string{"root": "left", "left": "leaf"},
+		},
+		{
+			name: "hidden endpoints and nonblocking edges",
+			issues: []model.Issue{
+				{ID: "b", Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DepBlocks}}},
+				{ID: "a", Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},
+				{ID: "c", Dependencies: []*model.Dependency{nil, {DependsOnID: "b", Type: model.DepRelated}}},
+			},
+			path: map[string]bool{"a": true, "b": true},
+			next: map[string]string{"a": "b"},
+		},
+		{
+			name: "cycle has no invented chain",
+			issues: []model.Issue{
+				{ID: "a", Dependencies: []*model.Dependency{{DependsOnID: "b", Type: model.DepBlocks}}},
+				{ID: "b", Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DepBlocks}}},
+				{ID: "isolated"},
+			},
+		},
+		{name: "empty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, reverse := range []bool{false, true} {
+				issues := cloneIssuesForAsync(tc.issues)
+				if reverse {
+					for i, j := 0, len(issues)-1; i < j; i, j = i+1, j-1 {
+						issues[i], issues[j] = issues[j], issues[i]
+					}
+				}
+				snapshot := NewSnapshotBuilder(issues).Build()
+				snapshot.Analysis.WaitForPhase2()
+				completed := snapshot.WithPhase2(snapshot.Analysis, snapshot.Analysis.GenerateInsights(len(issues)), snapshot.Issues, snapshot.Analyzer)
+				for _, state := range []*DataSnapshot{snapshot, completed} {
+					layout := state.GetGraphLayout()
+					if layout == nil || !reflect.DeepEqual(layout.CriticalPath, tc.path) || !reflect.DeepEqual(layout.CriticalNext, tc.next) {
+						t.Fatalf("reverse=%v: prepared chain got %#v, want path=%v next=%v", reverse, layout, tc.path, tc.next)
+					}
+					graph := GraphModel{}
+					graph.SetSnapshot(state)
+					if !reflect.DeepEqual(graph.criticalPath, tc.path) || !reflect.DeepEqual(graph.criticalNext, tc.next) {
+						t.Fatalf("reverse=%v: delivered chain path=%v next=%v, want %v / %v", reverse, graph.criticalPath, graph.criticalNext, tc.path, tc.next)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGraphSnapshotInstallReusesPreparedChain(t *testing.T) {
+	// A long real chain must remain usable without allocating traversal maps on
+	// either snapshot delivery or Phase 2 delivery. The full timing gate covers
+	// the complete handlers; this check isolates the work that regressed there.
+	issues := make([]model.Issue, 1000)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprintf("chain-%04d", i), Status: model.StatusOpen}
+		if i > 0 {
+			issues[i].Dependencies = []*model.Dependency{{DependsOnID: issues[i-1].ID, Type: model.DepBlocks}}
+		}
+	}
+	snapshot := NewSnapshotBuilder(issues).Build()
+	snapshot.Analysis.WaitForPhase2()
+	completed := snapshot.WithPhase2(snapshot.Analysis, snapshot.Analysis.GenerateInsights(len(issues)), snapshot.Issues, snapshot.Analyzer)
+	graph := GraphModel{}
+	for _, state := range []*DataSnapshot{snapshot, completed} {
+		graph.SetSnapshot(state)
+		if len(graph.criticalPath) != len(issues) || len(graph.criticalNext) != len(issues)-1 || graph.criticalNext[issues[0].ID] != issues[1].ID {
+			t.Fatalf("delivery lost the real chain: nodes=%d edges=%d", len(graph.criticalPath), len(graph.criticalNext))
+		}
+		if !graph.SelectByID(issues[500].ID) {
+			t.Fatal("chain midpoint is not navigable")
+		}
+		if allocations := testing.AllocsPerRun(10, func() { graph.SetSnapshot(state) }); allocations != 0 {
+			t.Fatalf("installing prepared graph allocated %g times; graph traversal belongs in snapshot construction", allocations)
+		}
+		if selected := graph.SelectedIssue(); selected == nil || selected.ID != issues[500].ID {
+			t.Fatalf("snapshot install lost midpoint selection: %v", selected)
+		}
+	}
+}
+
 func TestPhase2ReadyMsg_DoesNotRebuildGraphViewWhenSnapshotHasLayout(t *testing.T) {
 	issues := []model.Issue{
 		{

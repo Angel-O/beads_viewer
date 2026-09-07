@@ -321,6 +321,11 @@ type GraphLayout struct {
 	// Navigation order (all IDs in the snapshot)
 	SortedIDs []string
 
+	// One visible dependency chain, independent of project-wide metric ranks.
+	// Prepared with the relationships so UI delivery only installs these maps.
+	CriticalPath map[string]bool
+	CriticalNext map[string]string
+
 	// Metric ranks (1 = best, higher = worse). Missing ranks imply "unknown".
 	RankPageRank     map[string]int
 	RankBetweenness  map[string]int
@@ -944,6 +949,7 @@ func buildGraphLayout(issues []model.Issue, stats *analysis.GraphStats) *GraphLa
 	}
 
 	layout.SortedIDs = orderIssueIDsByRank(ids, layout.RankCriticalPath)
+	layout.CriticalPath, layout.CriticalNext = visibleCriticalChain(ids, blockers, dependents)
 	return layout
 }
 
@@ -1176,6 +1182,8 @@ func graphLayoutWithRanks(old *GraphLayout, stats *analysis.GraphStats) *GraphLa
 			Blockers:         old.Blockers,
 			Dependents:       old.Dependents,
 			SortedIDs:        old.SortedIDs,
+			CriticalPath:     old.CriticalPath,
+			CriticalNext:     old.CriticalNext,
 			RankPageRank:     old.RankPageRank,
 			RankBetweenness:  old.RankBetweenness,
 			RankEigenvector:  old.RankEigenvector,
@@ -1192,6 +1200,8 @@ func graphLayoutWithRanks(old *GraphLayout, stats *analysis.GraphStats) *GraphLa
 		Blockers:         old.Blockers,
 		Dependents:       old.Dependents,
 		SortedIDs:        orderIssueIDsByRank(old.SortedIDs, criticalPathRank),
+		CriticalPath:     old.CriticalPath,
+		CriticalNext:     old.CriticalNext,
 		RankPageRank:     stats.PageRankRank(),
 		RankBetweenness:  stats.BetweennessRank(),
 		RankEigenvector:  stats.EigenvectorRank(),
