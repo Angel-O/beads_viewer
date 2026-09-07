@@ -81,10 +81,10 @@ func (a *app) scope(request request) int {
 	return a.runBD(a.dir, args...)
 }
 
-// semanticScopeMutation resolves one exact selector target to IDs, then preserves the
-// backend's existing multi-ID scope mutation. Reads are intentionally bounded
-// to the selected repository/contextless scope and requested status/type; add
-// starts unscoped, while remove starts with members of the selected scope.
+// semanticScopeMutation resolves one selector target to IDs, then preserves the
+// backend's existing multi-ID scope mutation. Exact IDs are resolved without the
+// implicit current-repository filter; label/epic selectors retain their scoped
+// candidate reads and requested status/type filters.
 func (a *app) semanticScopeMutation(request request) int {
 	name, err := a.scopeOption(request.args, "--scope")
 	if err != nil {
@@ -96,9 +96,15 @@ func (a *app) semanticScopeMutation(request request) int {
 			return a.fail(err)
 		}
 	}
-	contexts, contextless, explicitScope, err := a.scopeContexts(request)
-	if err != nil {
-		return a.fail(err)
+	targetIDs := scopeTargetIDs(request)
+	exactIDs := len(targetIDs) > 0
+	var contexts []string
+	var contextless, explicitScope bool
+	if !exactIDs || len(request.scopeContexts) > 0 || request.scopeContextless {
+		contexts, contextless, explicitScope, err = a.scopeContexts(request)
+		if err != nil {
+			return a.fail(err)
+		}
 	}
 
 	selected := map[string]struct{}(nil)
@@ -131,10 +137,9 @@ func (a *app) semanticScopeMutation(request request) int {
 		if contextless {
 			args = append(args, "--or-no-label-prefix", backlogContextLabelPrefix)
 		}
-	} else {
+	} else if !exactIDs {
 		args = append(args, "--label", contexts[0])
 	}
-	targetIDs := scopeTargetIDs(request)
 	if request.scopeSubcommand == "add" && len(targetIDs) > 0 {
 		args = append(args, "--id", strings.Join(targetIDs, ","))
 	} else if request.scopeLabel != "" {

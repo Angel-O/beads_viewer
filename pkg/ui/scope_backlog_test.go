@@ -4625,7 +4625,7 @@ func TestScopeMatchPromptRoutesEpicOrLabelAndCancelPreservesMarks(t *testing.T) 
 	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
-	if got.Kind != ScopeMutationAdd || got.ScopeID != "today" || got.Label != "team" || got.EpicID != "" {
+	if got.Kind != ScopeMutationAdd || got.ScopeID != "today" || got.Label != "team" || got.EpicID != "" || !got.HubWide {
 		t.Fatalf("semantic mutation=%#v", got)
 	}
 	if m.backlog.MarkCount() != 0 {
