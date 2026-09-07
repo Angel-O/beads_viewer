@@ -399,7 +399,7 @@ func TestEmbeddedOutOfScopeUsesOnlyLowerFramePadding(t *testing.T) {
 	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "outside", Title: "Outside", Status: model.StatusOpen}}}, 0)
 	lines := strings.Split(ansi.Strip(m.renderScopeScreen()), "\n")
 	lowerTop := (m.height - 1) / 2
-	if got := displayOffset(lines[lowerTop+1], "Out-of-scope issues"); got != 2 {
+	if got := displayOffset(lines[lowerTop+1], "Unscoped issues"); got != 2 {
 		t.Fatalf("embedded lower title offset=%d, want one-cell frame padding: %q", got, lines[lowerTop+1])
 	}
 	if got := displayOffset(lines[lowerTop+2], "CONTEXT"); got != 6 {
@@ -529,7 +529,7 @@ func TestScopeGlobalIssuesUsesCompleteSelectedMembership(t *testing.T) {
 	m.backlog.ScrollPreview(1)
 
 	view := ansi.Strip(m.renderScopeScreen())
-	if !strings.Contains(view, "Out-of-scope issues") || !strings.Contains(view, "outside") || len(m.backlog.filtered) != 1 || m.backlog.filtered[0].ID != "outside" {
+	if !strings.Contains(view, "Unscoped issues") || !strings.Contains(view, "outside") || len(m.backlog.filtered) != 1 || m.backlog.filtered[0].ID != "outside" {
 		t.Fatalf("selected-scope complement was not applied:\n%s", view)
 	}
 	if issue := m.backlog.CurrentIssue(); issue == nil || issue.ID != "outside" || m.backlog.previewOffset != 1 {
@@ -586,7 +586,7 @@ func TestSelectedCatalogScopeOwnsMembersAndComplementAcrossReopen(t *testing.T) 
 			t.Fatalf("%s members=%v, want scope-b-member", stage, m.scopePicker.filteredMembers)
 		}
 		view := ansi.Strip(m.renderScopeScreen())
-		if !strings.Contains(view, "Members · B") || !strings.Contains(view, "Out-of-scope issues") {
+		if !strings.Contains(view, "Members · B") || !strings.Contains(view, "Unscoped issues") {
 			t.Fatalf("%s scope panels missing B selection:\n%s", stage, view)
 		}
 		got := make([]string, 0, len(m.backlog.filtered))
@@ -613,7 +613,7 @@ func TestScopeGlobalIssuesFallsBackToAllIssuesWithoutSelectedScope(t *testing.T)
 	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "member", Title: "Member"}, {ID: "outside", Title: "Outside"}}}, 0)
 
 	view := ansi.Strip(m.renderScopeScreen())
-	if !strings.Contains(view, "Global issues") || !strings.Contains(view, "member") || !strings.Contains(view, "outside") || strings.Contains(view, "Out-of-scope issues") {
+	if !strings.Contains(view, "Global issues") || !strings.Contains(view, "member") || !strings.Contains(view, "outside") || strings.Contains(view, "Unscoped issues") {
 		t.Fatalf("no-scope lower panel was not the all-issues fallback:\n%s", view)
 	}
 }
@@ -647,12 +647,12 @@ func TestScopeAddRefreshesCompleteSelectedMembership(t *testing.T) {
 		t.Fatalf("refreshed complete membership=%q, want member-new,member-old", got)
 	}
 	view := ansi.Strip(m.renderScopeScreen())
-	if !strings.Contains(view, "Out-of-scope issues") || len(m.backlog.filtered) != 1 || m.backlog.filtered[0].ID != "outside" {
-		t.Fatalf("added member remained in Out-of-scope issues:\n%s", view)
+	if !strings.Contains(view, "Unscoped issues") || len(m.backlog.filtered) != 1 || m.backlog.filtered[0].ID != "outside" {
+		t.Fatalf("added member remained in Unscoped issues:\n%s", view)
 	}
 }
 
-func TestSelectedScopeChangesHelpAndSidebarToOutOfScopeWording(t *testing.T) {
+func TestScopeTerminologyUsesUnscopedMatchAddAndCtx(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.width, m.height, m.showScopePicker, m.ready = 160, 32, true, true
 	m.focused = focusGlobalIssues
@@ -661,12 +661,34 @@ func TestSelectedScopeChangesHelpAndSidebarToOutOfScopeWording(t *testing.T) {
 	m.showShortcutsSidebar = true
 
 	help := strings.ToLower(ansi.Strip(m.renderHelpOverlay()))
-	if !strings.Contains(help, "out-of-scope issues") || strings.Contains(help, "global issues") {
+	if !strings.Contains(help, "unscoped issues") || !strings.Contains(help, "match-add issues") || strings.Contains(help, "global issues") {
 		t.Fatalf("selected-scope help wording = %q", help)
 	}
 	view := strings.ToLower(ansi.Strip(m.View()))
-	if !strings.Contains(view, "out-of-scope") || strings.Contains(view, "global issues") {
+	if !strings.Contains(view, "unscoped issues") || !strings.Contains(view, "match-add") || strings.Contains(view, "global issues") {
 		t.Fatalf("selected-scope sidebar/view wording = %q", view)
+	}
+	globalFooter := strings.ToLower(ansi.Strip(m.renderFooter()))
+	if !strings.Contains(globalFooter, "m match-add") || strings.Contains(globalFooter, "m add scope") {
+		t.Fatalf("Scope issue-panel footer wording = %q", globalFooter)
+	}
+
+	m.focused = focusScopePicker
+	m.scopePicker.memberFocused = true
+	help = strings.ToLower(ansi.Strip(m.renderHelpOverlay()))
+	footer := strings.ToLower(ansi.Strip(m.renderFooter()))
+	for _, want := range []string{"cycle member ctx filter", "match-remove members"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("scope member help missing %q: %q", want, help)
+		}
+	}
+	for _, want := range []string{"w ctx", "m match-remove", "tab unscoped issues"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("scope member footer missing %q: %q", want, footer)
+		}
+	}
+	if strings.Contains(help, "repository filter") || strings.Contains(help, "epic or label") || strings.Contains(footer, "repository") || strings.Contains(footer, "match-add") || strings.Contains(footer, "epic/label") {
+		t.Fatalf("scope terminology retained stale wording: help=%q footer=%q", help, footer)
 	}
 }
 
@@ -2043,7 +2065,7 @@ func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 		t.Fatalf("repository member filter = %#v", picker.filteredMembers)
 	}
 	selectedView := ansi.Strip(picker.renderMembers(100, 5))
-	if !strings.Contains(selectedView, "context:api") || strings.Contains(selectedView, "repository:api") {
+	if !strings.Contains(selectedView, "ctx:api") || strings.Contains(selectedView, "repository:api") {
 		t.Fatalf("selected member context filter wording = %q", selectedView)
 	}
 	picker.memberRepositoryFilter = ""
@@ -2052,7 +2074,7 @@ func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 		t.Fatalf("type member filter = %#v", picker.filteredMembers)
 	}
 	view := ansi.Strip(picker.View())
-	for _, want := range []string{"Scopes", "Members · Today", "context:all", "type:bug", "web-1"} {
+	for _, want := range []string{"Scopes", "Members · Today", "ctx:all", "type:bug", "web-1"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("member picker missing %q:\n%s", want, view)
 		}
@@ -2447,7 +2469,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	m.focused = focusScopePicker
 	m.scopePicker.memberFocused = true
 	help := ansi.Strip(m.renderHelpOverlay())
-	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member repository filter", "Mark current member", "Remove marked/current members", "Remove members by epic or label"} {
+	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member ctx filter", "Mark current member", "Remove marked/current members", "Match-remove members"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("scope member help missing %q:\n%s", want, help)
 		}
@@ -2459,7 +2481,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"j/k members", "o/c/r status", "I type", "w repository", "space mark", "R remove current", "M epic/label", "tab global issues", "W close"} {
+	for _, want := range []string{"j/k members", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab global issues", "W close"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
@@ -3846,7 +3868,7 @@ func TestSelectedScopeChangeResetsMemberAndComplementUntilMembershipCompletes(t 
 			m = updatedModel.(*Model)
 		}
 	}
-	if _, ok := m.scopeMembershipIDs["s2"]; !ok || m.globalIssuesTitle() != "Out-of-scope issues" {
+	if _, ok := m.scopeMembershipIDs["s2"]; !ok || m.globalIssuesTitle() != "Unscoped issues" {
 		t.Fatalf("complete membership did not enable complement: membership=%#v title=%q", m.scopeMembershipIDs, m.globalIssuesTitle())
 	}
 	if len(memberQueries) < 2 || memberQueries[len(memberQueries)-1].ScopeID != "s2" || len(backlogQueries) == 0 {

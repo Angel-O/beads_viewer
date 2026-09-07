@@ -192,13 +192,16 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			case "l":
 				b.Desc = "Filter by exact label"
 			case "M":
-				b.Desc = "Add matching exact label/epic issues to active scope"
+				b.Desc = "Match-add issues to active scope"
 			}
 		}
 		if s.focusHint == focusScopePicker {
 			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "r" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "R" || b.Key == "M"
 			if memberOnly && !s.scopeMembers {
 				continue
+			}
+			if s.scopeMembers && b.Key == "M" {
+				b.Desc = "Match-remove members"
 			}
 			if s.scopeMembers && (b.Key == "enter" || b.Key == "n") {
 				continue
