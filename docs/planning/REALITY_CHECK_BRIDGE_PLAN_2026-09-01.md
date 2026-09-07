@@ -86,6 +86,29 @@
   locate or explain the current sample's pause. Retained readback is
   `/data/tmp/bv-cache-contention-7y6udeip/delivery/cli-readback-0830.stdout`
   (SHA-256 `a7727aaa…`). Preserve the original limits and remaining matrix.
+- [x] Locate a live long warm-cache pause without attaching to or signaling
+  the measured process. At 08:37:57 UTC, 7f PID 3162778/thread 3162880 is 9.16 s
+  old and blocked in `renameat`: the kernel stack passes through
+  `ext4_evict_inode` to `folio_wait_writeback`, with the 10k deep-chain warm
+  analysis-cache lock open. Existing authorized sudo access permits the scoped
+  `/proc` read. This identifies an actual cache-replacement wait; it does not
+  explain every earlier pause. Kernel evidence digest is `188b8e7f…` under the
+  existing delivery scratch directory.
+- [x] Check whether the already-queued expiry repair removes that unnecessary
+  replacement before adding code. On the separate 212 worker, actual 7f/f719
+  archives each execute one cold and three traced warm calls on the same frozen
+  10k deep-chain fixture (`72fbb5a1…`). Old warm calls each replace the cache;
+  current warm calls perform zero renames and preserve bytes, mtime and inode.
+  All eight commands agree on ordered IDs, readiness and metric states with
+  empty executable stderr. The repair is already included through `8285b6f6`;
+  no additional runtime change is warranted by this observation.
+  Result `d5c21189…` and all eight output pairs/six traces are copied and checked
+  under `/data/tmp/bv-cache-contention-7y6udeip/delivery/rename-followup`.
+  The initial trace classifier matched the directory name in ordinary reads;
+  original records are retained, actual syscall names are now parsed, and only
+  the two unexecuted calls were completed. No measurement was retried. This
+  diagnostic establishes overwrite avoidance, not latency or full P1 acceptance;
+  cold/expired cache writes can still wait on the filesystem.
 
 - [x] Reconcile the concurrent 06:39:53 UTC rebase onto the v0.24.0 release
   metadata. `250a8b98` became `6c8a4474`; `main` is now `4a5a564f`, tree
