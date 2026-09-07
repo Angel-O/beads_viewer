@@ -1066,7 +1066,7 @@ func (b *BacklogModel) renderBacklog(title string, embeddedArgs ...bool) string 
 	if embedded {
 		headerWidth = contentWidth
 	}
-	lines := []string{b.renderBacklogHeader(headerTitle, columns, headerWidth)}
+	lines := []string{b.renderBacklogHeader(headerTitle, columns, headerWidth, listWidth)}
 	listView := b.renderBacklogList(columns, listWidth, listRows, embedded)
 	if wide {
 		previewWidth := maxInt(contentWidth-listWidth-2, 1)
@@ -1083,11 +1083,10 @@ func (b *BacklogModel) renderBacklog(title string, embeddedArgs ...bool) string 
 		lines = append(lines, "")
 		lines = append(lines, page)
 	}
-	style := lipgloss.NewStyle().Width(b.width).Height(b.height)
-	if !embedded {
-		style = style.Padding(1, 2)
+	if embedded {
+		return strings.Join(lines, "\n")
 	}
-	return style.Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Width(b.width).Height(b.height).Padding(1, 2).Render(strings.Join(lines, "\n"))
 }
 
 func backlogListItems(items []IssueItem) []list.Item {
@@ -1202,15 +1201,18 @@ func formatBacklogCreatedAt(createdAt time.Time) string {
 }
 
 func (b BacklogModel) renderBacklogHeader(title string, columns backlogTableColumns, widths ...int) string {
-	width := maxInt(columns.width, 1)
+	titleWidth, tableWidth := maxInt(columns.width, 1), maxInt(columns.width, 1)
 	if len(widths) > 0 {
-		width = maxInt(widths[0], 1)
+		titleWidth = maxInt(widths[0], 1)
 	}
-	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Inline(true).Width(width).MaxWidth(width)
+	if len(widths) > 1 {
+		tableWidth = maxInt(widths[1], 1)
+	}
+	titleStyle := b.theme.Renderer.NewStyle().Foreground(b.theme.Primary).Bold(true).Inline(true).Width(titleWidth).MaxWidth(titleWidth)
 	// Keep the global-backlog column labels bright against the dark header fill.
 	tableStyle := b.theme.Renderer.NewStyle().Background(b.theme.Primary).
 		Foreground(ThemeFg("#FFFFFF")).Bold(true).Inline(true).
-		Width(width).MaxWidth(width)
+		Width(tableWidth).MaxWidth(tableWidth)
 	return titleStyle.Render(title) + "\n" + tableStyle.Render(renderBacklogTableHeader(columns))
 }
 

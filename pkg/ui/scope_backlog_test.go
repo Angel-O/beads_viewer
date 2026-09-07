@@ -409,6 +409,33 @@ func TestEmbeddedOutOfScopeHeaderUsesPanelWidthForLongFilters(t *testing.T) {
 	}
 }
 
+func TestEmbeddedOutOfScopeWidePreviewClipsTableHeaderToTableWidth(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetSize(120, 12)
+	b.SetPage(BacklogPage{Issues: []model.Issue{{
+		ID: "outside", Title: "Outside", Description: "Preview", Status: model.StatusOpen,
+	}}}, 0)
+	columns := backlogTableColumnsFor(b.filteredItems, b.width-2)
+	listWidth := backlogTableWidth(columns)
+	if listWidth > (b.width-2)*2/3 {
+		t.Fatalf("test table width=%d does not leave a wide preview in %d columns", listWidth, b.width)
+	}
+	lines := strings.Split(ansi.Strip(b.renderBacklog(b.displayTitle(), true)), "\n")
+	var tableHeader string
+	for _, line := range lines {
+		if strings.Contains(line, "CONTEXT") && strings.Contains(line, "CREATED_AT") {
+			tableHeader = line
+			break
+		}
+	}
+	if tableHeader == "" || !strings.Contains(strings.Join(lines, "\n"), "TITLE") {
+		t.Fatalf("wide embedded backlog omitted table or preview:\n%s", strings.Join(lines, "\n"))
+	}
+	if got := lipgloss.Width(tableHeader); got != listWidth {
+		t.Fatalf("embedded table header width=%d, want table width %d:\n%s", got, listWidth, tableHeader)
+	}
+}
+
 func TestScopeScreenDispatchesGlobalControlsAfterTopPanes(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.width, m.height, m.showScopePicker, m.ready = 240, 30, true, true
