@@ -2602,6 +2602,7 @@ func main() {
 		var sourceTombstoneIDs []string
 		var singleSourceLoad datasource.LoadResult
 		var sourceAuthority *RobotSourceAuthority
+		var unfilteredDataHash string // Reusable only when the source hash covers exactly issues.
 
 		// Workspace auto-discovery (I2): without --workspace, when no .beads
 		// directory is reachable from the working directory (or BEADS_DIR /
@@ -2649,6 +2650,9 @@ func main() {
 			sourceAuthority = newRobotSourceAuthority([]RobotSourceReport{historicalSource})
 			issues = historical.Issues
 			sourceTombstoneIDs = historical.TombstoneIDs
+			if len(sourceTombstoneIDs) == 0 {
+				unfilteredDataHash = historicalSource.DataHash
+			}
 			asOfResolved = historical.CommitSHA
 			// No live reload for historical view
 			beadsPath = ""
@@ -2708,7 +2712,8 @@ func main() {
 			var err error
 			singleSourceLoad, err = datasource.LoadIssues("")
 			issues = singleSourceLoad.Issues
-			sourceAuthority = newRobotSourceAuthority([]RobotSourceReport{robotSourceFromLoad(singleSourceLoad, err)})
+			source := robotSourceFromLoad(singleSourceLoad, err)
+			sourceAuthority = newRobotSourceAuthority([]RobotSourceReport{source})
 			if err != nil {
 				robotDispatchContext.SourceAuthority = sourceAuthority
 				if envRobot {
@@ -2719,6 +2724,9 @@ func main() {
 				os.Exit(1)
 			}
 			sourceTombstoneIDs = singleSourceLoad.Report.TombstoneIDs
+			if len(sourceTombstoneIDs) == 0 {
+				unfilteredDataHash = source.DataHash
+			}
 			// Get the selected source file for live reload.
 			beadsDir, _ := loader.GetBeadsDir("")
 			beadsPath, _ = resolveSingleRepoWatchFile("")
@@ -2760,7 +2768,14 @@ func main() {
 		}
 
 		// Stable data hash for robot outputs (after repo filter but before recipes/TUI)
-		dataHash := analysis.ComputeDataHash(issues)
+		// Single-source loading already hashed these records. Source hashes with
+		// tombstones and workspace source hashes may cover a different dataset;
+		// those branches leave unfilteredDataHash empty. Origin read-only metadata
+		// set above is excluded from the canonical issue hash.
+		dataHash := unfilteredDataHash
+		if dataHash == "" || *repoFilter != "" {
+			dataHash = analysis.ComputeDataHash(issues)
+		}
 		// dataHash corresponds to the current `issues` slice. Track whether later
 		// reassignments (label-scope subgraph, recipe filtering) change `issues`
 		// out from under it; when unchanged we can seed analyzers with dataHash to

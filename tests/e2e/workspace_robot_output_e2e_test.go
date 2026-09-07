@@ -10,7 +10,150 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
+
+// The envelope hashes the visible dataset after --repo, but before --label
+// and --recipe. Source hashes also include minimal tombstones. Exercise the
+// actual load/dispatch path against the unchanged public hash implementation.
+func TestRobotDataHashSourceAndScope(t *testing.T) {
+	bv := buildBvBinary(t)
+	t.Setenv("BEADS_DIR", "")
+	t.Setenv("BEADS_DB", "")
+	const records = `{"id":"api-a","title":"Alpha","status":"open","priority":1,"issue_type":"task","labels":["backend"]}
+{"id":"web-b","title":"Beta","status":"closed","priority":2,"issue_type":"task","labels":["frontend"]}
+`
+	const tombstone = `{"id":"gone","title":"Deleted record","status":"tombstone","issue_type":"task"}` + "\n"
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		empty      bool
+		tombstone  bool
+		partial    bool
+		historical bool
+		workspace  int
+		want       []int
+	}{
+		{name: "single", want: []int{0, 1}},
+		{name: "empty", empty: true},
+		{name: "tombstone", tombstone: true, want: []int{0, 1}},
+		{name: "partial", partial: true, want: []int{0, 1}},
+		{name: "repo", args: []string{"--repo", "api"}, want: []int{0}},
+		{name: "empty_repo", args: []string{"--repo", "missing"}},
+		{name: "label", args: []string{"--label", "backend"}, want: []int{0, 1}},
+		{name: "recipe", args: []string{"--recipe", "actionable"}, want: []int{0, 1}},
+		{name: "repo_label_recipe", args: []string{"--repo", "api", "--label", "backend", "--recipe", "actionable"}, want: []int{0}},
+		{name: "historical", historical: true, want: []int{0, 1}},
+		{name: "historical_tombstone", historical: true, tombstone: true, want: []int{0, 1}},
+		{name: "historical_repo", historical: true, args: []string{"--repo", "web"}, want: []int{1}},
+		{name: "one_workspace_source", workspace: 1, want: []int{0, 1}},
+		{name: "two_workspace_sources", workspace: 2, want: []int{0, 1, 2}},
+		{name: "workspace_repo", workspace: 2, args: []string{"--repo", "other"}, want: []int{2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			var expected []model.Issue
+			for _, line := range strings.Split(strings.TrimSpace(records), "\n") {
+				var issue model.Issue
+				if err := json.Unmarshal([]byte(line), &issue); err != nil {
+					t.Fatal(err)
+				}
+				expected = append(expected, issue)
+			}
+			content := records
+			if tc.empty {
+				content, expected = "", nil
+			}
+			if tc.tombstone {
+				content += tombstone
+			}
+			if tc.partial {
+				content += "{invalid\n"
+			}
+			args := append([]string(nil), tc.args...)
+			if tc.workspace > 0 {
+				writeIssuesJSONL(t, filepath.Join(root, "first"), content)
+				for i := range expected {
+					expected[i].ID = "first-" + expected[i].ID
+					expected[i].SourceRepo = "first"
+				}
+				config := "name: hash-scope\nrepos:\n  - name: first\n    path: first\n    prefix: first-\n"
+				if tc.workspace == 2 {
+					writeIssuesJSONL(t, filepath.Join(root, "other"), `{"id":"c","title":"Gamma","status":"open","priority":1,"issue_type":"task"}`+"\n")
+					expected = append(expected, model.Issue{ID: "other-c", Title: "Gamma", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, SourceRepo: "other"})
+					config += "  - name: other\n    path: other\n    prefix: other-\n"
+				}
+				config += "discovery:\n  enabled: false\n"
+				path := filepath.Join(root, ".bv", "workspace.yaml")
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(config), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--workspace", path)
+			} else {
+				writeIssuesJSONL(t, root, content)
+			}
+			if tc.historical {
+				for _, gitArgs := range [][]string{{"init", "-b", "main"}, {"add", ".beads/issues.jsonl"}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "hash fixture"}} {
+					cmd := exec.Command("git", gitArgs...)
+					cmd.Dir = root
+					if out, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("git %v: %v\n%s", gitArgs, err, out)
+					}
+				}
+				// A different working tree proves --as-of hashes the Git snapshot.
+				writeIssuesJSONL(t, root, "")
+				args = append(args, "--as-of", "HEAD")
+			}
+			var selected []model.Issue
+			for _, i := range tc.want {
+				selected = append(selected, expected[i])
+			}
+			wantDataHash := analysis.ComputeDataHash(selected)
+			sourceIssues := append([]model.Issue(nil), expected...)
+			if tc.tombstone {
+				sourceIssues = append(sourceIssues, model.Issue{ID: "gone", Status: model.StatusTombstone})
+			}
+			wantSourceHashes := []string{analysis.ComputeDataHash(sourceIssues)}
+			if tc.workspace == 2 {
+				wantSourceHashes = []string{analysis.ComputeDataHash(expected[:2]), analysis.ComputeDataHash(expected[2:])}
+			}
+			for _, flag := range []string{"--robot-plan", "--robot-triage"} {
+				out, stderr, err := runBVCapture(t, bv, root, append([]string{flag}, args...)...)
+				if err != nil || stderr != "" {
+					t.Fatalf("%s failed: %v\nstdout=%s\nstderr=%s", flag, err, out, stderr)
+				}
+				var payload struct {
+					DataHash  string `json:"data_hash"`
+					Authority struct {
+						State   string `json:"state"`
+						Sources []struct {
+							DataHash string `json:"data_hash"`
+						} `json:"sources"`
+					} `json:"source_authority"`
+				}
+				if err := json.Unmarshal([]byte(out), &payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload.DataHash != wantDataHash || len(payload.Authority.Sources) != len(wantSourceHashes) {
+					t.Fatalf("%s data hash=%s want=%s; sources=%+v", flag, payload.DataHash, wantDataHash, payload.Authority.Sources)
+				}
+				for i, want := range wantSourceHashes {
+					if got := payload.Authority.Sources[i].DataHash; got != want {
+						t.Errorf("%s source %d hash=%s want=%s", flag, i, got, want)
+					}
+				}
+				if tc.partial && payload.Authority.State != "partial" {
+					t.Fatalf("parse loss was hidden: %+v", payload.Authority)
+				}
+			}
+		})
+	}
+}
 
 func TestWorkspaceRobotSourceAuthority(t *testing.T) {
 	bv := buildBvBinary(t)
