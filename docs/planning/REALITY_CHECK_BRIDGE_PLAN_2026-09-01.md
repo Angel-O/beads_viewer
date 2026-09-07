@@ -27,11 +27,55 @@
   pairs, a closure that does not capture its loop index, and selected-file module
   detection). No suppressions or gate changes. Root owns these checks and review;
   this is not an independent-agent verification.
-- [ ] Compare the original 10k fixture with the previous archive under the same
-  bounded diagnostic conditions, including scores, order and metric status.
-- [ ] Freeze the cache repair, run the original complete gate on that source,
-  and bind any subsequent packaging/acceptance to the new revision. Preserve the
-  already measured runs and all earlier eligible archives under their own IDs.
+- [x] Compare the original 10k fixture with the previous archive under the same
+  bounded diagnostic conditions. Ten warm samples have median 470.129 ms before
+  and 419.021 ms after; all warm cache bytes stay unchanged after the repair.
+  Default-clock scores differ through activity churn and its derived risk/score
+  fields in both old/old and old/new comparisons. Those raw mismatches remain
+  recorded; all IDs, order, states and other fields agree. A separate fixed-clock
+  cold/warm comparison preserves full scores and status and produces identical
+  canonical bytes in all four old/new runs (SHA-256 `4da499a6bde94ccf…`). Timing
+  fields and version identity alone are excluded. The fixed-clock runs receive
+  no production-timeout latency credit. Evidence: `profile` and `fixed-clock`
+  under `/data/tmp/bv-xfetch-20260907` on the worker and copied locally.
+- [x] Freeze the cache repair at `8285b6f6` (tree `23bc8f2c`) and complete the
+  original ten-stage gate: 868.983 seconds, all ten stages pass, no skipped stage,
+  empty stderr, unchanged clean source before/after. The original four-round
+  benchmark comparison's worst regression is FullTriage +12.6%, inside the
+  unchanged 20% limit. Gate/source evidence is retained on the 212 worker and
+  locally under `/data/tmp/bv-delivery-8285b6f6-20260907`. Its staging annotation
+  corrects copied ancillary labels; actual source/tree/tool/start bindings were
+  correct before execution. Earlier failures and receipts remain unchanged.
+- [x] Package and seal all five targets through the original wrapper in 74.215
+  seconds, using only the local tag `v0.23.1-rc.20260907.8285b6f6`. Every archive
+  matches the clean checked source and Go 1.25.5/CGO-disabled binary metadata.
+  All five archives and the sealed receipt (`88fa1d37fbb28dbe…`) are copied and
+  hash-verified in `/data/tmp/bv-delivery-8285b6f6-20260907/archives`. Nothing was
+  published or installed globally.
+- [x] Execute the actual extracted Linux archive with the original 58 smoke,
+  40 scope, two partial-source and fourteen live-route child checks. All pass;
+  the stale-claim rejection uses the isolated fixed tracker. The original seven
+  inputs and scope/partial assertion nodes remain intact. Preparation first
+  stopped on two missing partial-workspace fixture files before any CLI ran;
+  those original inputs were copied and hash-checked before the one execution.
+  Original smoke stderr-retention and TestMain setup-binary limitations remain.
+- [x] Execute the original six native Windows archive checks once: version,
+  capabilities and JSONL/SQLite plan/next with special-character paths. All six
+  pass with empty executable stderr; all thirteen copied raw/result files match
+  native hash readback. Windows binary SHA-256 `d75caea341cbc34a…`; Linux binary
+  `e560011601f183f2…`. Root owns execution/review, not an independent sub-agent.
+  Evidence is `/data/tmp/bv-archive-8285-root-20260907` locally and on each host.
+- [x] Retain the completed original `93b90959` matrix: 23,540.650 seconds,
+  exit 1, four UI-handler failures and the unchanged four-hour CLI-stage timeout.
+  It writes 70/72 timed CLI records; both Unicode 10k warm records are incomplete.
+  All 36 exact records/144 outputs and the original negative controls pass;
+  the original verifier still rejects the whole run. Source/binary bindings pass.
+- [x] Verify the actual `7f708334` handoff at 04:27:49 UTC, after the old wrapper
+  and owned processes exited. Its full matrix is now running and remains intact.
+  Queue `8285b6f6` once behind it at 04:39:12 UTC with the original guards,
+  sources, samples, deadlines and controls. Controller PID 1632750/start tick
+  100295481 waits for the actual 7f completion under
+  `/data/tmp/bv-p1-latency-8285b6f6-launch`; no new-source P1 measurement has begun.
 
 - [x] Recover normal tracker access after local free space returned. The prior
   recovery copies remain intact; no files were deleted by this continuation.
@@ -202,8 +246,9 @@
   literals in the existing helpers and executed both archive checks, then reviewed
   their raw outputs. This is root verification, not independent archive replay.
 - [ ] Finish the separate full P1 matrix and missing native-platform acceptance.
-  At 04:03:00 UTC, original `93b90959` has 66/72 timed CLI and 0/36 exact records;
-  its wrapper remains active and `7f708334` remains queued. Earlier UI failures
+  Original `93b90959` is now complete and failed: four handler overruns and a
+  four-hour CLI-stage timeout, with 70/72 timed and 36/36 exact records. The
+  `7f708334` full matrix is running; `8285b6f6` is queued behind it. All failures
   remain retained. Cross-compilation and available-platform checks do not close
   the unavailable Mac/Linux ARM64 requirements.
 - [ ] Resolve authorized installed tracker repair and missing native Mac/Linux
@@ -217,9 +262,9 @@ below remains the historical assessment; other rows retain its stated limits):
 |---|---|---|
 | 1: JSONL loading | WORKING | Repaired decoder and bounded reader reuse pass independent old/current controls, full source race suites and extracted Linux/Windows checks at `7f708334`. Full performance acceptance remains goal 41. |
 | 29: Graph navigation | WORKING | Original graph implementation/proof tasks now pass actual key-dispatch and PTY acceptance; background critical-chain preparation preserves selection and visible graph semantics. Goal 41 retains current tail-latency limits. |
-| 37: Checked source produces matching archives | WORKING | The complete ten-stage `7f708334` gate and original five-target package/seal/verify pass. Actual extracted Linux and Windows checks use those bytes. Older affected archives remain retained; no publication is claimed. |
+| 37: Checked source produces matching archives | WORKING | The complete ten-stage `8285b6f6` gate and original five-target package/seal/verify pass. Actual extracted Linux and native Windows checks use those bytes. Older archives remain retained under their own revisions; no publication is claimed. |
 | 40: Local/remote verification | PARTIAL | Current source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
-| 41: Large-dataset responsiveness | PARTIAL | The unchanged four-round benchmark gate passes with a 99.1% faster 5k snapshot swap and 13.1% faster pooled parsing. Original `93b90959` has four UI handler-limit misses and incomplete CLI/exact stages; the full current matrix is queued, not passed. |
+| 41: Large-dataset responsiveness | PARTIAL | The unchanged four-round `8285b6f6` benchmark gate passes; worst regression +12.6% is inside the original 20% limit. The cache-expiry fix reduces median warm 10k diagnostic latency from 470 to 419 ms and preserves fixed-clock outputs. Original `93b90959` fails four handler limits and its CLI deadline; 7f is running and 8285 queued. The full final matrix has not passed. |
 | 43: Recorded blocking time and causal transitions | WORKING | Closed `bv-j74w`/`bv-apal.11` now have independently executed real Git and CLI proof of six blocked hours in a ten-hour lifecycle, overlapping and ongoing waits, historical cutoffs, warm-cache identity and contradictory clocks. Unknown intervals remain unknown; chronology alone is not causal evidence and nonblocked time is not measured work effort. Current full source tests preserve this implementation. |
 
 ## Implementation continuation — 2026-09-06
