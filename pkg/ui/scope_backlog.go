@@ -366,7 +366,7 @@ var backlogStatuses = [...]string{backlogStatusAll, "open", "in_progress", "bloc
 func isScopeBacklogGlobalKey(key string) bool {
 	switch key {
 	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5",
-		"w", "W", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
+		"w", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
 		return true
 	default:
 		return false
@@ -2886,7 +2886,7 @@ func (m Model) renderScopeMatchPrompt() string {
 // content, rather than a full-screen state that hides the current view.
 func (m Model) renderNoActiveScope(width int) string {
 	style := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
-	return style.Width(maxInt(width, 1)).Render("No active scope — press W to choose or create a scope, or B for Global issues.")
+	return style.Width(maxInt(width, 1)).Render("No active scope — press B to choose or create a scope, then Tab for Global issues.")
 }
 
 // renderScopeScreen keeps scope selection, members, and Global issues in one
@@ -3238,6 +3238,37 @@ func (m *Model) closeScopePicker() {
 	m.focused = m.scopePickerOrigin
 }
 
+// closeScopeToList makes the uppercase B Scope toggle independent of the
+// view retained underneath the Scope session. Scope data itself remains in
+// place for the next B entry.
+func (m *Model) closeScopeToList() {
+	if m.showRepoPicker {
+		m.showRepoPicker = false
+		m.focused = m.repoPickerOrigin
+	}
+	if m.showScopeCreatePrompt {
+		m.focused = focusScopePicker
+		m.scopeCreateInput.Blur()
+		m.showScopeCreatePrompt = false
+	}
+	if m.showScopeMatchPrompt {
+		m.focused = m.scopeMatchOrigin
+		m.scopeMatchInput.Blur()
+		m.showScopeMatchPrompt = false
+	}
+	if m.showScopePicker {
+		m.closeScopePicker()
+	}
+	m.isBacklogView = false
+	m.isBoardView = false
+	m.isGraphView = false
+	m.isActionableView = false
+	m.isHistoryView = false
+	m.isSprintView = false
+	m.showDetails = false
+	m.focused = focusList
+}
+
 // openGlobalIssues enters the Scope screen with its lower panel focused. In
 // scope-capable Hub mode this is the replacement for the old standalone view.
 func (m *Model) openGlobalIssues() tea.Cmd {
@@ -3443,7 +3474,7 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		}
 		if m.scopePickerMoveIssue != "" {
 			if m.activeScope == nil {
-				m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
+				m.statusMsg, m.statusIsError = "No active scope; press B to activate one", true
 				return m, nil
 			}
 			if m.runtimeServices.Scopes.Mutate == nil && m.runtimeServices.Scopes.Move == nil {
@@ -3662,7 +3693,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 
 func (m *Model) startScopeMutation(action string) tea.Cmd {
 	if m.activeScope == nil {
-		m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
+		m.statusMsg, m.statusIsError = "No active scope; press B to activate one", true
 		return nil
 	}
 	if (m.isBacklogView || m.focused == focusGlobalIssues) && action == "add" {
@@ -3775,7 +3806,7 @@ func (m *Model) beginScopeMatchMutation(action string) tea.Cmd {
 			return nil
 		}
 	} else if m.activeScope == nil {
-		m.statusMsg, m.statusIsError = "No active scope; press W to activate one", true
+		m.statusMsg, m.statusIsError = "No active scope; press B to activate one", true
 		return nil
 	} else {
 		scopeID = m.activeScope.ID

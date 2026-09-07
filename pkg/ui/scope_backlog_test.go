@@ -36,22 +36,22 @@ func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
 	}})
 	m = updated.(*Model)
 	view := m.View()
-	if !containsText(view, "No active scope — press W to choose or create a scope, or B for Global issues.") {
+	if !containsText(view, "No active scope — press B to choose or create a scope, then Tab for Global issues.") {
 		t.Fatalf("View() = %q, want compact no-active guidance", view)
 	}
 	if containsText(view, "No items") || !containsText(view, "TY") {
 		t.Fatalf("View() = %q, want the underlying List context", view)
 	}
-	if strings.Count(ansi.Strip(view), "No active scope") != 1 || strings.Contains(ansi.Strip(m.renderFooter()), "press W to choose") {
+	if strings.Count(ansi.Strip(view), "No active scope") != 1 || strings.Contains(ansi.Strip(m.renderFooter()), "press B to choose") {
 		t.Fatalf("View() = %q, rendered guidance outside the List content", view)
 	}
-	if containsText(view, "Press W to choose a named scope") {
+	if containsText(view, "Press B to choose a named scope") {
 		t.Fatalf("View() = %q, retained the masking overlay guidance", view)
 	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("W")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("B")})
 	m = updated.(*Model)
 	if !m.showScopePicker || m.focused != focusScopePicker || cmd == nil {
-		t.Fatalf("W opened picker=%t focus=%v cmd=%t", m.showScopePicker, m.focused, cmd != nil)
+		t.Fatalf("B opened picker=%t focus=%v cmd=%t", m.showScopePicker, m.focused, cmd != nil)
 	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
@@ -514,6 +514,12 @@ func TestScopeGlobalIssuesSearchConsumesViewSwitchKeys(t *testing.T) {
 
 			updated, _ := m.Update(keyMsg(key))
 			m = updated.(*Model)
+			if key == "B" {
+				if m.showScopePicker || m.focused != focusList {
+					t.Fatalf("B did not exit Scope during search: picker=%t focus=%s", m.showScopePicker, m.focused)
+				}
+				return
+			}
 			if !m.backlog.Searching() || m.backlog.Filter() != "prefix"+key {
 				t.Fatalf("search key %q was not consumed: searching=%t filter=%q", key, m.backlog.Searching(), m.backlog.Filter())
 			}
@@ -540,6 +546,197 @@ func TestGlobalIssuesBReturnsToList(t *testing.T) {
 	m = updated.(*Model)
 	if cmd != nil || m.showScopePicker || m.focused != focusList || m.isBoardView || m.isGraphView || m.isActionableView || m.isHistoryView || m.isSprintView || m.showDetails {
 		t.Fatalf("Global issues B state: cmd=%t scope=%t focus=%s board=%t graph=%t actionable=%t history=%t sprint=%t details=%t", cmd != nil, m.showScopePicker, m.focused, m.isBoardView, m.isGraphView, m.isActionableView, m.isHistoryView, m.isSprintView, m.showDetails)
+	}
+}
+
+func TestScopeBExitsEveryPanelAndRetainsSessionState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		focus  focus
+		member bool
+	}{
+		{name: "catalog", focus: focusScopePicker},
+		{name: "members", focus: focusScopePicker, member: true},
+		{name: "global issues", focus: focusGlobalIssues},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.showScopePicker = true
+			m.focused = tc.focus
+			m.scopePicker.memberFocused = tc.member
+			m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+			m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1", Title: "Member"}}})
+			m.backlog.SetLabel("team")
+			m.backlog.AddFilter("retained")
+			m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "global-1", Title: "Retained global"}}}, 0)
+			m.backlog.ToggleMark()
+			m.isBoardView, m.isGraphView, m.isActionableView = true, true, true
+			m.isHistoryView, m.isSprintView, m.showDetails = true, true, true
+
+			updated, cmd := m.Update(keyMsg("B"))
+			m = updated.(*Model)
+			if cmd != nil || m.showScopePicker || m.focused != focusList || m.isBoardView || m.isGraphView || m.isActionableView || m.isHistoryView || m.isSprintView || m.showDetails {
+				t.Fatalf("B exit state: cmd=%t scope=%t focus=%s board=%t graph=%t actionable=%t history=%t sprint=%t details=%t", cmd != nil, m.showScopePicker, m.focused, m.isBoardView, m.isGraphView, m.isActionableView, m.isHistoryView, m.isSprintView, m.showDetails)
+			}
+			if m.backlog.Filter() != "retained" || m.backlog.Label() != "team" || m.backlog.MarkCount() != 1 {
+				t.Fatalf("B exit discarded backlog state: filter=%q label=%q marks=%d", m.backlog.Filter(), m.backlog.Label(), m.backlog.MarkCount())
+			}
+
+			updated, _ = m.Update(keyMsg("B"))
+			m = updated.(*Model)
+			if !m.showScopePicker || m.scopePicker.MemberFocused() != tc.member || m.backlog.Filter() != "retained" || m.backlog.Label() != "team" || m.backlog.MarkCount() != 1 {
+				t.Fatalf("Scope reopen lost retained state: scope=%t member=%t filter=%q label=%q marks=%d", m.showScopePicker, m.scopePicker.MemberFocused(), m.backlog.Filter(), m.backlog.Label(), m.backlog.MarkCount())
+			}
+		})
+	}
+}
+
+func TestScopeBHasPriorityOverTransientGlobalInput(t *testing.T) {
+	for _, setup := range []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{name: "search", setup: func(m *Model) {
+			m.focused = focusGlobalIssues
+			m.backlog.BeginSearch()
+			m.backlog.AddFilter("query")
+		}},
+		{name: "label edit", setup: func(m *Model) {
+			m.focused = focusGlobalIssues
+			m.backlog.SetLabel("team")
+			m.backlog.BeginLabelEdit()
+		}},
+		{name: "scope create", setup: func(m *Model) {
+			m.focused = focusScopeCreateInput
+			m.showScopeCreatePrompt = true
+		}},
+		{name: "scope match", setup: func(m *Model) {
+			m.focused = focusScopeCreateInput
+			m.scopeMatchOrigin = focusGlobalIssues
+			m.showScopeMatchPrompt = true
+		}},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.showScopePicker = true
+			setup.setup(m)
+			updated, _ := m.Update(keyMsg("B"))
+			m = updated.(*Model)
+			if m.showScopePicker || m.showScopeCreatePrompt || m.showScopeMatchPrompt || m.focused != focusList {
+				t.Fatalf("B did not preempt %s: scope=%t create=%t match=%t focus=%s", setup.name, m.showScopePicker, m.showScopeCreatePrompt, m.showScopeMatchPrompt, m.focused)
+			}
+		})
+	}
+}
+
+func TestScopeBClosesCoveringHelpAndTutorialOverlays(t *testing.T) {
+	for _, overlay := range []struct {
+		name string
+		set  func(*Model)
+	}{
+		{name: "help", set: func(m *Model) { m.showHelp = true }},
+		{name: "tutorial", set: func(m *Model) { m.showTutorial = true }},
+	} {
+		t.Run(overlay.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.showScopePicker = true
+			m.focused = focusScopePicker
+			m.isBoardView, m.isGraphView = true, true
+			overlay.set(m)
+
+			updated, _ := m.Update(keyMsg("B"))
+			m = updated.(*Model)
+			if m.showScopePicker || m.showHelp || m.showTutorial || m.focused != focusList || m.isBoardView || m.isGraphView {
+				t.Fatalf("B did not close %s and Scope: scope=%t help=%t tutorial=%t focus=%s board=%t graph=%t", overlay.name, m.showScopePicker, m.showHelp, m.showTutorial, m.focused, m.isBoardView, m.isGraphView)
+			}
+		})
+	}
+}
+
+func TestScopeBReopensOnRetainedPanelAfterOverlayExit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []string
+	}{
+		{name: "tutorial help esc", keys: []string{"`", "?", "esc", "B", "B"}},
+		{name: "help space tutorial help", keys: []string{"?", " ", "?", "B", "B"}},
+		{name: "help backtick tutorial", keys: []string{"?", "`", "B", "B"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.showScopePicker = true
+			m.scopeSessionInitialized = true
+			m.scopeSessionFocus = focusScopePicker
+			m.focused = focusGlobalIssues
+			for _, key := range tc.keys {
+				updated, _ := m.Update(keyMsg(key))
+				m = updated.(*Model)
+			}
+			if !m.showScopePicker || m.focused != focusGlobalIssues {
+				t.Fatalf("B reopen lost retained Global issues focus: scope=%t focus=%s", m.showScopePicker, m.focused)
+			}
+		})
+	}
+}
+
+func TestScopeBoardNavigationSurvivesScopeReentry(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+	}})
+
+	for _, key := range []string{"B", "b", "B", "b"} {
+		updated, _ := m.Update(keyMsg(key))
+		m = updated.(*Model)
+	}
+	if m.showScopePicker || !m.isBoardView || m.focused != focusBoard {
+		t.Fatalf("Scope -> Board navigation did not survive reentry: scope=%t board=%t focus=%s", m.showScopePicker, m.isBoardView, m.focused)
+	}
+}
+
+func TestBoardScopeReturnPreservesBoardForEscAndQ(t *testing.T) {
+	for _, key := range []string{"esc", "q"} {
+		t.Run(key, func(t *testing.T) {
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+			}})
+			m.isBoardView = true
+			m.focused = focusBoard
+
+			updated, _ := m.Update(keyMsg("B"))
+			m = updated.(*Model)
+			updated, _ = m.Update(keyMsg(key))
+			m = updated.(*Model)
+			if m.showScopePicker || !m.isBoardView || m.focused != focusBoard {
+				t.Fatalf("Scope %s return lost Board: scope=%t board=%t focus=%s", key, m.showScopePicker, m.isBoardView, m.focused)
+			}
+		})
+	}
+}
+
+func TestUppercaseWDoesNotRouteScope(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+	}})
+	m.focused = focusList
+	updated, cmd := m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if cmd != nil || m.showScopePicker || m.focused != focusList {
+		t.Fatalf("uppercase W changed List state: cmd=%t scope=%t focus=%s", cmd != nil, m.showScopePicker, m.focused)
+	}
+
+	m.showScopePicker = true
+	m.focused = focusGlobalIssues
+	updated, cmd = m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if cmd != nil || !m.showScopePicker || m.focused != focusGlobalIssues {
+		t.Fatalf("uppercase W changed Scope state: cmd=%t scope=%t focus=%s", cmd != nil, m.showScopePicker, m.focused)
+	}
+	m.backlog.BeginSearch()
+	m.backlog.AddFilter("query")
+	updated, cmd = m.Update(keyMsg("W"))
+	m = updated.(*Model)
+	if cmd != nil || !m.showScopePicker || !m.backlog.Searching() || m.backlog.Filter() != "queryW" {
+		t.Fatalf("uppercase W did not remain local search input: cmd=%t scope=%t searching=%t filter=%q", cmd != nil, m.showScopePicker, m.backlog.Searching(), m.backlog.Filter())
 	}
 }
 
@@ -975,10 +1172,15 @@ func TestScopeScreenFromGlobalIssuesReturnsToListAndReopensGlobalIssues(t *testi
 	}})
 	m.isBacklogView, m.focused = true, focusBacklog
 
-	updated, _ := m.Update(keyMsg("W"))
+	updated, _ := m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if !m.showScopePicker || m.isBacklogView || m.scopePickerOrigin != focusList {
-		t.Fatalf("W transition: picker=%t backlog=%t origin=%s", m.showScopePicker, m.isBacklogView, m.scopePickerOrigin)
+	if m.showScopePicker || m.isBacklogView || m.focused != focusList {
+		t.Fatalf("backlog B transition: picker=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.isBacklogView || m.focused != focusScopePicker || m.scopePickerOrigin != focusList {
+		t.Fatalf("Scope B transition: picker=%t backlog=%t focus=%s origin=%s", m.showScopePicker, m.isBacklogView, m.focused, m.scopePickerOrigin)
 	}
 	updated, _ = m.Update(keyMsg("esc"))
 	m = updated.(*Model)
@@ -987,8 +1189,8 @@ func TestScopeScreenFromGlobalIssuesReturnsToListAndReopensGlobalIssues(t *testi
 	}
 	updated, cmd := m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if !m.showScopePicker || m.isBacklogView || m.focused != focusGlobalIssues || cmd != nil {
-		t.Fatalf("B transition: scope=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
+	if !m.showScopePicker || m.isBacklogView || m.focused != focusScopePicker || cmd != nil {
+		t.Fatalf("reopen B transition: scope=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
 	}
 }
 
@@ -1661,7 +1863,6 @@ func TestNormalScopeViewSwitchesSuspendAndResumeWithoutReload(t *testing.T) {
 		wantBoard bool
 		wantGraph bool
 	}{
-		{name: "list", key: "B", focus: focusGlobalIssues},
 		{name: "board", key: "b", focus: focusScopePicker, member: true, wantBoard: true},
 		{name: "graph", key: "g", focus: focusScopePicker, member: true, wantGraph: true},
 	} {
@@ -2198,15 +2399,15 @@ func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
 	m.updateViewportContent()
 
 	view := ansi.Strip(m.View())
-	for _, want := range []string{"No active scope", "press W to choose or create a scope", "B for Global issues"} {
+	for _, want := range []string{"No active scope", "press B to choose or create a scope", "Tab for Global issues"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail view missing %q:\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "No issues selected") || strings.Contains(ansi.Strip(m.renderFooter()), "press W to choose") {
+	if strings.Contains(view, "No issues selected") || strings.Contains(ansi.Strip(m.renderFooter()), "press B to choose") {
 		t.Fatalf("detail view left the old empty string or bottom guidance:\n%s", view)
 	}
-	if strings.Contains(view, "Press W to choose a named scope") {
+	if strings.Contains(view, "Press B to choose a named scope") {
 		t.Fatalf("detail view retained the masking overlay guidance:\n%s", view)
 	}
 
@@ -2222,7 +2423,7 @@ func TestNoActiveScopeKeepsDetailContextVisible(t *testing.T) {
 	if strings.Contains(view, "No items") || strings.Contains(view, "No issues selected") {
 		t.Fatalf("split view retained an old empty string:\n%s", view)
 	}
-	if strings.Count(view, "No active scope") != 2 || strings.Contains(ansi.Strip(m.renderFooter()), "press W to choose") {
+	if strings.Count(view, "No active scope") != 2 || strings.Contains(ansi.Strip(m.renderFooter()), "press B to choose") {
 		t.Fatalf("split view did not keep one message per panel:\n%s", view)
 	}
 
@@ -2311,10 +2512,10 @@ func TestFirstScopeCreationStartsFromNamedScopesWithoutIssueSelection(t *testing
 		Activate: func(context.Context, string) error { activations++; return nil },
 	}})
 
-	updated, cmd := m.Update(keyMsg("W"))
+	updated, cmd := m.Update(keyMsg("B"))
 	m = updated.(*Model)
 	if cmd == nil {
-		t.Fatal("W did not open the named-scopes view")
+		t.Fatal("B did not open the named-scopes view")
 	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
@@ -2375,30 +2576,29 @@ func TestScopeCreationValidationCancelAndFailureKeepPickerUsable(t *testing.T) {
 	}
 }
 
-func TestScopePickerWTogglesToItsPriorView(t *testing.T) {
+func TestScopePickerBTogglesDirectlyToList(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
 	}})
 	m.focused = focusDetail
 
-	updated, _ := m.Update(keyMsg("W"))
+	updated, _ := m.Update(keyMsg("B"))
 	m = updated.(*Model)
 	if !m.showScopePicker || m.focused != focusScopePicker {
-		t.Fatalf("W did not open picker: shown=%t focus=%s", m.showScopePicker, m.focused)
+		t.Fatalf("B did not open picker: shown=%t focus=%s", m.showScopePicker, m.focused)
 	}
-	updated, _ = m.Update(keyMsg("W"))
+	updated, _ = m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if m.showScopePicker || m.focused != focusDetail || m.scopePickerMoveIssue != "" {
-		t.Fatalf("second W left stale picker state: shown=%t focus=%s move=%q", m.showScopePicker, m.focused, m.scopePickerMoveIssue)
+	if m.showScopePicker || m.focused != focusList || m.scopePickerMoveIssue != "" {
+		t.Fatalf("second B left stale picker state: shown=%t focus=%s move=%q", m.showScopePicker, m.focused, m.scopePickerMoveIssue)
 	}
 
 	m.isBacklogView = true
 	m.focused = focusBacklog
-	m.openScopePicker("")
-	updated, _ = m.Update(keyMsg("W"))
+	updated, _ = m.Update(keyMsg("B"))
 	m = updated.(*Model)
 	if m.showScopePicker || m.isBacklogView || m.focused != focusList {
-		t.Fatalf("W did not close backlog before restoring list origin: shown=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+		t.Fatalf("B did not close backlog: shown=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
 	}
 }
 
@@ -2452,7 +2652,7 @@ func TestScopePickerFooterIsIndependentOfEntryView(t *testing.T) {
 		if strings.Contains(footer, "1-4:col") {
 			t.Fatalf("scope footer inherited Board column hint from %s: %q", origin, footer)
 		}
-		if !strings.Contains(footer, "enter toggle") || strings.Contains(footer, "m move") || strings.Contains(footer, "esc back") {
+		if !strings.Contains(footer, "enter toggle") || !strings.Contains(footer, "B list") || strings.Contains(footer, "m move") || strings.Contains(footer, "esc back") {
 			t.Fatalf("scope footer lost scope controls from %s: %q", origin, footer)
 		}
 		if want == "" {
@@ -2519,7 +2719,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"j/k nav", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab unscoped │", "W close"} {
+	for _, want := range []string{"j/k nav", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab unscoped │", "B list"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
@@ -2582,7 +2782,7 @@ func TestBacklogHelpAndFooterDescribePreviewAndBatchControls(t *testing.T) {
 		t.Fatalf("backlog help retains ambiguous match wording:\n%s", help)
 	}
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"pgup/dn preview", "space mark", "n/p page", "/ filter", "A add current", "M add scope", "W scopes", "B list"} {
+	for _, want := range []string{"pgup/dn preview", "space mark", "n/p page", "/ filter", "A add current", "M add scope", "B list"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("backlog footer missing %q: %q", want, footer)
 		}
@@ -2640,8 +2840,8 @@ func TestGenericHelpShowsScopesWorkflowWithAccurateContexts(t *testing.T) {
 	help := ansi.Strip(m.renderHelpOverlay())
 	for _, want := range []string{
 		"Scopes",
-		"Named scopes (List/Detail)",
-		"Global issues (List/Detail; in Scope)",
+		"Scope view (List/Detail)",
+		"Global issues (in Scope)",
 		"New inactive named scope (Scopes)",
 		"Toggle active scope (Scopes)",
 		"Add to active scope (L/D/Global)",
@@ -2665,7 +2865,7 @@ func TestGenericScopesHelpFitsRepresentativeWidths(t *testing.T) {
 			updated, _ := m.Update(keyMsg("?"))
 			m = updated.(*Model)
 			view := ansi.Strip(m.View())
-			for _, want := range []string{"Scopes", "W         Named scopes", "B         Global issues", "n         New inactive"} {
+			for _, want := range []string{"Scopes", "B         Scope view", "Tab       Global issues", "n         New inactive"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("clipped generic help missing %q:\n%s", want, view)
 				}
@@ -2688,8 +2888,8 @@ func TestGenericScopesHelpBalancesWideColumns(t *testing.T) {
 	view := ansi.Strip(m.View())
 
 	for _, entry := range []struct{ key, desc string }{
-		{"W", "Named scopes (List/Detail)"},
-		{"B", "Global issues (List/Detail; in Scope)"},
+		{"B", "Scope view (List/Detail)"},
+		{"Tab", "Global issues (in Scope)"},
 		{"n", "New inactive named scope (Scopes)"},
 		{"Enter", "Toggle active scope (Scopes)"},
 		{"A", "Add to active scope (L/D/Global)"},
@@ -2737,14 +2937,13 @@ func TestGlobalIssuesEntryPointUsesScopeScreen(t *testing.T) {
 			return BacklogPage{}, nil
 		},
 	}})
-	m.showScopePicker = true
-	m.scopePickerOrigin = focusList
-	m.focused = focusScopePicker
+	m.width, m.height = 240, 40
+	m.focused = focusList
 
 	updated, cmd := m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if !m.showScopePicker || m.isBacklogView || m.focused != focusGlobalIssues || cmd == nil {
-		t.Fatalf("B did not open Global issues in Scope: picker=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
+	if !m.showScopePicker || m.focused != focusScopePicker || cmd == nil {
+		t.Fatalf("B did not open Scope: picker=%t focus=%s cmd=%t", m.showScopePicker, m.focused, cmd != nil)
 	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
@@ -2752,19 +2951,21 @@ func TestGlobalIssuesEntryPointUsesScopeScreen(t *testing.T) {
 		t.Fatalf("backlog loads=%d, want 1", loads)
 	}
 
-	updated, _ = m.Update(keyMsg("W"))
+	updated, _ = m.Update(keyMsg("tab"))
 	m = updated.(*Model)
-	if m.showScopePicker || m.isBacklogView || m.focused != focusList {
-		t.Fatalf("Scope W did not close Global issues: picker=%t backlog=%t focus=%s", m.showScopePicker, m.isBacklogView, m.focused)
+	updated, _ = m.Update(keyMsg("tab"))
+	m = updated.(*Model)
+	if m.focused != focusGlobalIssues {
+		t.Fatalf("Tab did not reach Global issues: focus=%s", m.focused)
 	}
-
-	m.isBacklogView = true
-	m.focused = focusBacklog
+	if footer := ansi.Strip(m.renderFooter()); !strings.Contains(footer, "B list") {
+		t.Fatalf("Global issues footer omitted B list hint: %q", footer)
+	}
 	m.backlog.BeginSearch()
 	updated, _ = m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if !m.backlog.Searching() || m.backlog.Filter() != "B" || !m.isBacklogView || m.focused != focusBacklog {
-		t.Fatalf("backlog search lost B ownership: searching=%t filter=%q backlog=%t focus=%s", m.backlog.Searching(), m.backlog.Filter(), m.isBacklogView, m.focused)
+	if m.backlog.Searching() || m.showScopePicker || m.focused != focusList {
+		t.Fatalf("Global issues B did not exit Scope: searching=%t scope=%t focus=%s", m.backlog.Searching(), m.showScopePicker, m.focused)
 	}
 }
 
@@ -2880,6 +3081,10 @@ func TestBacklogUsesOpaqueCursorAndResetsOnFilterChange(t *testing.T) {
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("B")})
 	m = updated.(*Model)
 	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("tab"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("tab"))
 	m = updated.(*Model)
 	if !m.showScopePicker || m.focused != focusGlobalIssues || len(cursors) != 1 || cursors[0] != "" {
 		t.Fatalf("Global issues open state: scope=%t focus=%s cursors=%v", m.showScopePicker, m.focused, cursors)
