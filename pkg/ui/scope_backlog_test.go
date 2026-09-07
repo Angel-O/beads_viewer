@@ -728,12 +728,12 @@ func TestScopeTerminologyUsesUnscopedMatchAddAndCtx(t *testing.T) {
 			t.Fatalf("scope member help missing %q: %q", want, help)
 		}
 	}
-	for _, want := range []string{"w ctx", "m match-remove", "tab unscoped issues"} {
+	for _, want := range []string{"w ctx", "m match-remove", "tab unscoped │"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
 	}
-	if strings.Contains(help, "repository filter") || strings.Contains(help, "epic or label") || strings.Contains(footer, "repository") || strings.Contains(footer, "match-add") || strings.Contains(footer, "epic/label") {
+	if strings.Contains(help, "repository filter") || strings.Contains(help, "epic or label") || strings.Contains(footer, "repository") || strings.Contains(footer, "match-add") || strings.Contains(footer, "epic/label") || strings.Contains(footer, "tab unscoped issues") {
 		t.Fatalf("scope terminology retained stale wording: help=%q footer=%q", help, footer)
 	}
 }
@@ -2519,12 +2519,12 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"j/k members", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab global issues", "W close"} {
+	for _, want := range []string{"j/k nav", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab unscoped │", "W close"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
 	}
-	if strings.Contains(footer, "tab catalog") || strings.Contains(footer, "esc back") {
+	if strings.Contains(footer, "tab unscoped issues") || strings.Contains(footer, "tab catalog") || strings.Contains(footer, "esc back") {
 		t.Fatalf("scope member footer retained stale catalog destination: %q", footer)
 	}
 	if strings.Contains(footer, "enter toggle") || strings.Contains(footer, "n new") {
@@ -2544,7 +2544,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 		}
 	}
 	footer = ansi.Strip(m.renderFooter())
-	for _, want := range []string{"tab global issues", "j/k members", "o/c/r status"} {
+	for _, want := range []string{"tab unscoped │", "j/k nav", "o/c/r status"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("moving scope member footer missing %q: %q", want, footer)
 		}

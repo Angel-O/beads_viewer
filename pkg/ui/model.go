@@ -10259,7 +10259,7 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker && m.focused != focusGlobalIssues {
 		if m.scopePicker.MemberFocused() {
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" members")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav")
 			if m.runtimeServices.Scopes.QueryMembers != nil {
 				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
 			}
@@ -10268,7 +10268,8 @@ func (m *Model) renderFooter() string {
 			if m.scopePicker.MemberMarkCount() > 0 {
 				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match-remove", keyStyle.Render("tab")+" "+strings.ToLower(m.globalIssuesTitle()), keyStyle.Render("W")+" close")
+			// Keep the Tab destination label compact; the action remains unchanged.
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match-remove", keyStyle.Render("tab")+" unscoped", keyStyle.Render("W")+" close")
 		} else if m.scopePickerMoveIssue != "" {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("W")+" close")
 		} else {
