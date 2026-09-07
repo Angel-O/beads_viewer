@@ -2414,7 +2414,7 @@ func TestScopePickerFooterIsIndependentOfEntryView(t *testing.T) {
 		if strings.Contains(footer, "1-4:col") {
 			t.Fatalf("scope footer inherited Board column hint from %s: %q", origin, footer)
 		}
-		if !strings.Contains(footer, "enter toggle") || strings.Contains(footer, "m move") {
+		if !strings.Contains(footer, "enter toggle") || strings.Contains(footer, "m move") || strings.Contains(footer, "esc back") {
 			t.Fatalf("scope footer lost scope controls from %s: %q", origin, footer)
 		}
 		if want == "" {
@@ -2486,7 +2486,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
 	}
-	if strings.Contains(footer, "tab catalog") {
+	if strings.Contains(footer, "tab catalog") || strings.Contains(footer, "esc back") {
 		t.Fatalf("scope member footer retained stale catalog destination: %q", footer)
 	}
 	if strings.Contains(footer, "enter toggle") || strings.Contains(footer, "n new") {
@@ -2511,7 +2511,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 			t.Fatalf("moving scope member footer missing %q: %q", want, footer)
 		}
 	}
-	if strings.Contains(footer, "enter move") || strings.Contains(footer, "destination") {
+	if strings.Contains(footer, "enter move") || strings.Contains(footer, "destination") || strings.Contains(footer, "esc back") {
 		t.Fatalf("moving scope member footer advertises destination control: %q", footer)
 	}
 }

@@ -10268,15 +10268,15 @@ func (m *Model) renderFooter() string {
 			if m.scopePicker.MemberMarkCount() > 0 {
 				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match-remove", keyStyle.Render("tab")+" "+strings.ToLower(m.globalIssuesTitle()), keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match-remove", keyStyle.Render("tab")+" "+strings.ToLower(m.globalIssuesTitle()), keyStyle.Render("W")+" close")
 		} else if m.scopePickerMoveIssue != "" {
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("W")+" close")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes")
 			if m.runtimeServices.Scopes.QueryCatalog != nil {
 				keyHints = append(keyHints, keyStyle.Render("←/→")+" page")
 			}
-			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("W")+" close")
 		}
 	} else if m.focused == focusGlobalIssues {
 		if m.backlog.Searching() {
