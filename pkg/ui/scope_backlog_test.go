@@ -2519,7 +2519,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"j/k members", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab unscoped │", "W close"} {
+	for _, want := range []string{"j/k nav", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab unscoped │", "W close"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
@@ -2544,7 +2544,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 		}
 	}
 	footer = ansi.Strip(m.renderFooter())
-	for _, want := range []string{"tab unscoped │", "j/k members", "o/c/r status"} {
+	for _, want := range []string{"tab unscoped │", "j/k nav", "o/c/r status"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("moving scope member footer missing %q: %q", want, footer)
 		}

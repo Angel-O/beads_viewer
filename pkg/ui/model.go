@@ -10259,7 +10259,7 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel")
 	} else if m.showScopePicker && m.focused != focusGlobalIssues {
 		if m.scopePicker.MemberFocused() {
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" members")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav")
 			if m.runtimeServices.Scopes.QueryMembers != nil {
 				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
 			}
