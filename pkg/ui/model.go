@@ -3167,8 +3167,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scopeMembershipLoading = false
 			}
 		}
-		// Generation-less typed responses must populate the member browser too.
-		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
+		// A hidden picker still owns its retained selection. Mutation refreshes for
+		// another scope may update scopeDetails, but must not replace that pane.
+		pickerScopeID := m.scopePicker.SelectedScopeID()
+		responseScopeID := msg.scopeID
+		if responseScopeID == "" {
+			responseScopeID = details.Info.ID
+		}
+		if pickerScopeID == "" || responseScopeID == pickerScopeID {
 			m.applyScopePickerDetails(details)
 		}
 
@@ -3232,6 +3238,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.backlog.SetLoading(false)
 		m.backlogLoading = false
 		if msg.err != nil {
+			m.backlog.SetError(msg.err)
 			m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)
 			m.statusIsError = true
 			break
@@ -3250,16 +3257,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			break
 		}
-		if msg.restoreFocus {
-			m.closeScopePicker()
-		}
-		m.clearScopeActionMarks()
-		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
-		m.statusIsError = false
 		mutation := msg.mutation
 		if mutation.Kind == "" {
 			mutation.Kind = ScopeMutationKind(msg.action)
 		}
+		if msg.restoreFocus {
+			m.closeScopePicker()
+		}
+		m.clearSubmittedScopeMarks(mutation.IssueIDs)
+		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
+		m.statusIsError = false
 		cmds = append(cmds, m.refreshAfterScopeMutation(mutation))
 
 	case commentAddedMsg:

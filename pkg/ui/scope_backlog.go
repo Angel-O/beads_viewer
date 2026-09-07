@@ -407,6 +407,7 @@ type BacklogModel struct {
 	pageCursors        []string
 	pageHistoryKey     string
 	loading            bool
+	error              string
 	previewOffset      int
 	contexts           []string
 	contextNames       []string
@@ -452,6 +453,7 @@ func (b *BacklogModel) SetSize(width, height int) {
 func (b *BacklogModel) SetPage(page BacklogPage, index int) {
 	b.ensurePageHistory()
 	b.loading = false
+	b.error = ""
 	b.ClearMarks()
 	b.issues = append([]model.Issue(nil), page.Issues...)
 	b.items = make([]IssueItem, len(page.Issues))
@@ -489,6 +491,7 @@ func (b *BacklogModel) Reset() {
 	b.pageCursors = []string{""}
 	b.pageHistoryKey = b.filterTupleKey()
 	b.loading = false
+	b.error = ""
 	b.previewOffset = 0
 	b.labelEditing = false
 	b.labelInput.Blur()
@@ -504,9 +507,46 @@ func (b *BacklogModel) InvalidatePage() {
 	b.items = nil
 	b.filtered = nil
 	b.filteredItems = nil
+	b.error = ""
 	b.resetCursor()
 	b.ClearMarks()
 	b.ResetPagination()
+}
+
+// InvalidateCurrentPage removes only the loaded result page. Filter values and
+// opaque page history stay intact so an affected mutation can reload the same
+// result page without exposing its old selection or preview.
+func (b *BacklogModel) InvalidateCurrentPage() (string, int) {
+	b.ensurePageHistory()
+	cursor, index := b.CurrentPageCursor(), b.pageIndex
+	b.issues = nil
+	b.items = nil
+	b.filtered = nil
+	b.filteredItems = nil
+	b.hasMore = false
+	b.nextCursor = ""
+	b.error = ""
+	b.resetCursor()
+	b.ClearMarks()
+	return cursor, index
+}
+
+// SetError makes a failed result non-actionable while retaining the active
+// filters and page cursor for a later retry.
+func (b *BacklogModel) SetError(err error) {
+	b.loading = false
+	b.error = ""
+	if err != nil {
+		b.error = err.Error()
+	}
+	b.issues = nil
+	b.items = nil
+	b.filtered = nil
+	b.filteredItems = nil
+	b.hasMore = false
+	b.nextCursor = ""
+	b.resetCursor()
+	b.ClearMarks()
 }
 
 // SetLoading makes an old page non-actionable while its replacement is in
@@ -608,7 +648,18 @@ func (b *BacklogModel) ToggleMark() {
 
 func (b *BacklogModel) ClearMarks() { b.marked = nil }
 
+// ClearMarksForIDs removes only marks submitted by a successful mutation when
+// the loaded backlog page itself was not invalidated.
+func (b *BacklogModel) ClearMarksForIDs(ids []string) {
+	for _, id := range ids {
+		delete(b.marked, id)
+	}
+}
+
 func (b BacklogModel) MarkedIDs() []string {
+	if b.loading || b.error != "" {
+		return nil
+	}
 	ids := make([]string, 0, len(b.marked))
 	for _, item := range b.filteredItems {
 		if b.marked[item.Issue.ID] {
@@ -621,7 +672,7 @@ func (b BacklogModel) MarkedIDs() []string {
 func (b BacklogModel) MarkCount() int { return len(b.MarkedIDs()) }
 
 func (b BacklogModel) CurrentIssue() *model.Issue {
-	if b.loading || b.selected < 0 || b.selected >= len(b.filteredItems) {
+	if b.loading || b.error != "" || b.selected < 0 || b.selected >= len(b.filteredItems) {
 		return nil
 	}
 	issue := b.filteredItems[b.selected].Issue
@@ -1073,6 +1124,12 @@ func backlogTableWidth(columns backlogTableColumns) int {
 }
 
 func (b BacklogModel) renderBacklogList(columns backlogTableColumns, width, rows int) string {
+	if b.loading {
+		return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render("Loading issues…")
+	}
+	if b.error != "" {
+		return b.theme.Renderer.NewStyle().Foreground(b.theme.Blocked).Render("Issues unavailable: " + b.error)
+	}
 	if len(b.filteredItems) == 0 {
 		return b.theme.Renderer.NewStyle().Foreground(b.theme.Subtext).Render("No unscoped beads.")
 	}
@@ -1395,7 +1452,7 @@ func (s *ScopePickerModel) SetCatalogError(generation uint64, err error) bool {
 }
 
 func (s *ScopePickerModel) NextCatalogPage() (string, int, bool) {
-	if s.catalogLoading || !s.catalogHasMore || s.catalogNextCursor == "" {
+	if s.catalogLoading || s.catalogError != "" || !s.catalogHasMore || s.catalogNextCursor == "" {
 		return "", 0, false
 	}
 	next := s.catalogPageIndex + 1
@@ -1417,6 +1474,12 @@ func (s *ScopePickerModel) PreviousCatalogPage() (string, int, bool) {
 
 func (s ScopePickerModel) CatalogPageIndex() int { return s.catalogPageIndex }
 func (s ScopePickerModel) CatalogHasMore() bool  { return s.catalogHasMore && s.catalogNextCursor != "" }
+func (s ScopePickerModel) currentCatalogPageCursor() string {
+	if s.catalogPageIndex < 0 || s.catalogPageIndex >= len(s.catalogPageCursors) {
+		return ""
+	}
+	return s.catalogPageCursors[s.catalogPageIndex]
+}
 func (s ScopePickerModel) OwnsPagingKey(key string) bool {
 	switch key {
 	case "[":
@@ -1748,6 +1811,29 @@ func (s *ScopePickerModel) ResetPaging() {
 	s.ClearMemberMarks()
 }
 
+// InvalidateMemberPage removes a successfully changed member result when no
+// member loader is available to replace it. Filters remain usable, but stale
+// rows and their selection cannot be submitted again.
+func (s *ScopePickerModel) InvalidateMemberPage() {
+	s.memberGeneration++
+	s.memberLoading = false
+	s.memberError = ""
+	s.members = nil
+	s.filteredMembers = nil
+	s.memberReadyIDs = nil
+	s.memberSelected = 0
+	s.memberSelectedID = ""
+	s.memberViewportStart = 0
+	s.memberViewportPrevious = false
+	s.memberHasMore = false
+	s.memberNextCursor = ""
+	s.memberPageIndex = 0
+	s.memberPageCursors = []string{""}
+	s.memberPageHistoryKey = s.memberFilterKey()
+	s.memberRequestKey = s.memberPageHistoryKey
+	s.ClearMemberMarks()
+}
+
 // ResetForRefresh retains member filter values but invalidates every paged
 // scope pane. New responses therefore cannot repopulate an old page.
 func (s *ScopePickerModel) ResetForRefresh() {
@@ -1807,7 +1893,7 @@ func (s *ScopePickerModel) MoveMember(delta int) {
 }
 
 func (s ScopePickerModel) SelectedMember() *IssueItem {
-	if s.memberLoading || s.memberSelected < 0 || s.memberSelected >= len(s.filteredMembers) {
+	if s.memberLoading || s.memberError != "" || s.memberSelected < 0 || s.memberSelected >= len(s.filteredMembers) {
 		return nil
 	}
 	selected := s.filteredMembers[s.memberSelected]
@@ -1827,7 +1913,18 @@ func (s *ScopePickerModel) ToggleMemberMark() {
 
 func (s *ScopePickerModel) ClearMemberMarks() { s.memberMarkedIDs = nil }
 
+// ClearMemberMarksForIDs removes only submitted member marks when the member
+// result set remains valid.
+func (s *ScopePickerModel) ClearMemberMarksForIDs(ids []string) {
+	for _, id := range ids {
+		delete(s.memberMarkedIDs, id)
+	}
+}
+
 func (s ScopePickerModel) MarkedMemberIDs() []string {
+	if s.memberLoading || s.memberError != "" {
+		return nil
+	}
 	ids := make([]string, 0, len(s.memberMarkedIDs))
 	for _, item := range s.filteredMembers {
 		if s.memberMarkedIDs[item.Issue.ID] {
@@ -2110,14 +2207,14 @@ func completeScopeMemberIDs(details ScopeDetails) ([]string, bool) {
 // bead. An empty title restores the activation-only picker.
 func (s *ScopePickerModel) SetMoveTarget(title string) { s.moveTarget = title }
 func (s *ScopePickerModel) Move(delta int) {
-	if len(s.scopes) == 0 {
+	if s.catalogLoading || s.catalogError != "" || len(s.scopes) == 0 {
 		return
 	}
 	s.selected = (s.selected + delta + len(s.scopes)) % len(s.scopes)
 	s.selectedScopeID = s.scopes[s.selected].ID
 }
 func (s ScopePickerModel) Selected() *ScopeInfo {
-	if s.selected < 0 || s.selected >= len(s.scopes) {
+	if s.catalogLoading || s.catalogError != "" || s.selected < 0 || s.selected >= len(s.scopes) {
 		return nil
 	}
 	selected := s.scopes[s.selected]
@@ -3623,9 +3720,12 @@ func (m *Model) handleScopeMatchKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	}
 }
 
-func (m *Model) clearScopeActionMarks() {
-	m.backlog.ClearMarks()
-	m.scopePicker.ClearMemberMarks()
+func (m *Model) clearSubmittedScopeMarks(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	m.backlog.ClearMarksForIDs(ids)
+	m.scopePicker.ClearMemberMarksForIDs(ids)
 }
 
 // selectedVisibleScopeIssue accepts only the bead currently represented by a
@@ -3676,15 +3776,40 @@ func (m *Model) scopeMoveTargetTitle(issueID string) string {
 }
 
 func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
-	cmds := []tea.Cmd{m.startScopeCatalogPage("", 0)}
+	cmds := []tea.Cmd{m.startScopeCatalogPage(m.scopePicker.currentCatalogPageCursor(), m.scopePicker.catalogPageIndex)}
 	if m.runtimeServices.Scopes.QueryCatalog != nil && m.runtimeServices.Scopes.Load != nil {
 		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
 	}
-	if (mutation.Kind == ScopeMutationAdd || mutation.Kind == ScopeMutationRemove) && m.runtimeServices.Scopes.LoadDetails != nil && mutation.ScopeID != "" {
+	affectedSelectedScope := func() bool {
+		selected := m.scopePicker.SelectedScopeID()
+		if selected == "" {
+			return false
+		}
+		switch mutation.Kind {
+		case ScopeMutationAdd, ScopeMutationRemove:
+			return mutation.ScopeID == selected
+		case ScopeMutationMove:
+			return mutation.SourceScopeID == selected || mutation.TargetScopeID == selected
+		default:
+			return false
+		}
+	}
+	if (mutation.Kind == ScopeMutationAdd || mutation.Kind == ScopeMutationRemove) && mutation.ScopeID != "" {
 		if m.showScopePicker && m.scopePicker.SelectedScopeID() == mutation.ScopeID {
+			if m.runtimeServices.Scopes.QueryMembers != nil || m.runtimeServices.Scopes.LoadDetails != nil {
+				cmds = append(cmds, m.loadSelectedScopeDetailsWithInvalidation(false))
+			} else {
+				m.scopePicker.InvalidateMemberPage()
+			}
+		} else if m.runtimeServices.Scopes.LoadDetails != nil {
+			cmds = append(cmds, loadScopeDetailsCmd(m.runtimeServices.Scopes, mutation.ScopeID))
+		}
+	}
+	if mutation.Kind == ScopeMutationMove && affectedSelectedScope() {
+		if m.runtimeServices.Scopes.QueryMembers != nil || m.runtimeServices.Scopes.LoadDetails != nil {
 			cmds = append(cmds, m.loadSelectedScopeDetailsWithInvalidation(false))
 		} else {
-			cmds = append(cmds, loadScopeDetailsCmd(m.runtimeServices.Scopes, mutation.ScopeID))
+			m.scopePicker.InvalidateMemberPage()
 		}
 	}
 	if m.backgroundWorker != nil {
@@ -3693,11 +3818,22 @@ func (m *Model) refreshAfterScopeMutation(mutation ScopeMutation) tea.Cmd {
 	} else if m.beadsPath != "" {
 		cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
 	}
-	if m.isBacklogView || m.focused == focusGlobalIssues {
-		m.backlogLoading = true
-		m.backlogPageGeneration++
-		cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes,
-			m.backlogQuery(m.backlog.CurrentPageCursor()), m.backlog.PageIndex(), m.backlogPageGeneration))
+	backlogAffected := mutation.Kind == ScopeMutationAdd || mutation.Kind == ScopeMutationRemove || mutation.Kind == ScopeMutationMove
+	backlogVisible := m.isBacklogView || m.focused == focusGlobalIssues || (m.showScopePicker && affectedSelectedScope())
+	if backlogAffected && backlogVisible {
+		if m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil {
+			cursor, index := m.backlog.InvalidateCurrentPage()
+			m.backlog.SetLoading(true)
+			m.backlogLoading = true
+			m.backlogPageGeneration++
+			cmds = append(cmds, loadBacklogPageCmd(m.runtimeServices.Scopes,
+				m.backlogQuery(cursor), index, m.backlogPageGeneration))
+		} else {
+			// The backend cannot replace this pane, but the mutation still made
+			// its loaded result set stale; remove only that pane's marks.
+			m.backlog.ClearMarks()
+			m.backlogLoading = false
+		}
 	}
 	return tea.Batch(cmds...)
 }

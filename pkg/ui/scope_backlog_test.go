@@ -1015,6 +1015,32 @@ func TestScopePickerLoadsSelectedMembersAndRejectsStaleResponses(t *testing.T) {
 	}
 }
 
+func TestHiddenScopePickerRetainsSelectedMembersAcrossActiveScopeMutation(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryCatalog: func(_ context.Context, _ ScopeCatalogQuery) (ScopeCatalogPage, error) {
+			return ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "scope-a", Name: "A"}, {ID: "scope-b", Name: "B"}}}, nil
+		},
+		LoadDetails: func(_ context.Context, scopeID string) (ScopeDetails, error) {
+			return ScopeDetails{Info: ScopeInfo{ID: scopeID}, Issues: []model.Issue{{ID: scopeID + "-member"}}}, nil
+		},
+	}})
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "scope-a", Name: "A"}, {ID: "scope-b", Name: "B"}})
+	m.scopePicker.Move(1)
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "scope-b-member"}}})
+	m.showScopePicker = false
+
+	for _, message := range runUISemanticCommands(m.refreshAfterScopeMutation(ScopeMutation{Kind: ScopeMutationRemove, ScopeID: "scope-a"})) {
+		updated, _ := m.Update(message)
+		m = updated.(*Model)
+	}
+	if m.scopeDetails == nil || m.scopeDetails.Info.ID != "scope-a" {
+		t.Fatalf("active-scope details were not refreshed: %#v", m.scopeDetails)
+	}
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != "scope-b-member" {
+		t.Fatalf("hidden picker replaced selected scope B members: %#v", selected)
+	}
+}
+
 func TestPagedScopePickerBuildsIndependentCatalogAndMemberRequests(t *testing.T) {
 	var catalogs []ScopeCatalogQuery
 	var members []ScopeMembersQuery
@@ -2619,6 +2645,184 @@ func TestScopeRemoveRefreshLoadsDetailsAndPreservesThemOnFailure(t *testing.T) {
 	}
 	if m.scopeDetails == nil || strings.Join(m.scopeDetails.MemberIDs, ",") != "b-2" {
 		t.Fatalf("failed details load replaced existing details: %#v", m.scopeDetails)
+	}
+}
+
+func TestFailedScopeMutationPreservesFiltersSelectionPreviewAndMarks(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.isBacklogView, m.focused = true, focusBacklog
+	m.backlog.SetLabel("team")
+	m.backlog.AddFilter("needle")
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "global-1", Title: "needle issue"}}}, 0)
+	m.backlog.ScrollPreview(2)
+	m.backlog.ToggleMark()
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today"}})
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1"}}})
+	m.scopePicker.memberFocused = true
+	m.scopePicker.ToggleMemberMark()
+
+	updated, _ := m.Update(runScopeMutationCmd(ScopeMutation{Kind: ScopeMutationRemove, ScopeID: "today"}, false, func(context.Context) error {
+		return errors.New("mutation unavailable")
+	})())
+	m = updated.(*Model)
+	if m.backlog.Filter() != "needle" || m.backlog.Label() != "team" || m.backlog.MarkCount() != 1 || m.scopePicker.MemberMarkCount() != 1 {
+		t.Fatalf("failed mutation changed filters/marks: backlog=%q/%q/%d members=%d", m.backlog.Filter(), m.backlog.Label(), m.backlog.MarkCount(), m.scopePicker.MemberMarkCount())
+	}
+	if issue := m.backlog.CurrentIssue(); issue == nil || issue.ID != "global-1" || m.backlog.previewOffset != 2 {
+		t.Fatalf("failed mutation changed selection/preview: issue=%#v preview=%d", issue, m.backlog.previewOffset)
+	}
+}
+
+func TestSuccessfulScopeMutationInvalidatesOnlyAffectedBacklogPage(t *testing.T) {
+	var queries []BacklogQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+			queries = append(queries, query)
+			return BacklogPage{Issues: []model.Issue{{ID: "fresh"}}}, nil
+		},
+	}})
+	m.isBacklogView, m.focused, m.showScopePicker = true, focusBacklog, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today"}})
+	m.backlog.SetLabel("team")
+	m.backlog.AddFilter("needle")
+	m.backlog.SetPage(BacklogPage{HasMore: true, NextCursor: "cursor-1"}, 0)
+	m.backlog.NextPageCursor()
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "old"}}}, 1)
+	m.backlog.ScrollPreview(2)
+	m.backlog.ToggleMark()
+	m.backlogPageGeneration = 8
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1"}}})
+	m.scopePicker.memberFocused = true
+	m.scopePicker.ToggleMemberMark()
+
+	updated, cmd := m.Update(scopeMutationMsg{mutation: ScopeMutation{Kind: ScopeMutationAdd, ScopeID: "today"}, action: "add"})
+	m = updated.(*Model)
+	if cmd == nil || m.backlog.Filter() != "needle" || m.backlog.Label() != "team" || m.backlog.PageIndex() != 1 || m.backlog.CurrentPageCursor() != "cursor-1" {
+		t.Fatalf("successful mutation lost page/filter state: cmd=%t filter=%q label=%q page=%d cursor=%q", cmd != nil, m.backlog.Filter(), m.backlog.Label(), m.backlog.PageIndex(), m.backlog.CurrentPageCursor())
+	}
+	if len(m.backlog.issues) != 0 || m.backlog.CurrentIssue() != nil || m.backlog.previewOffset != 0 || m.backlog.MarkCount() != 0 || len(m.scopePicker.members) != 0 || m.scopePicker.SelectedMember() != nil || m.scopePicker.MemberMarkCount() != 0 || !m.backlog.loading {
+		t.Fatalf("affected page remained actionable: issues=%#v issue=%#v preview=%d members=%#v selected=%#v backlogMarks=%d memberMarks=%d loading=%t", m.backlog.issues, m.backlog.CurrentIssue(), m.backlog.previewOffset, m.scopePicker.members, m.scopePicker.SelectedMember(), m.backlog.MarkCount(), m.scopePicker.MemberMarkCount(), m.backlog.loading)
+	}
+
+	for _, child := range cmd().(tea.BatchMsg) {
+		if response, ok := child().(backlogPageMsg); ok {
+			updated, _ = m.Update(response)
+			m = updated.(*Model)
+		}
+	}
+	if len(queries) != 1 || queries[0].Cursor != "cursor-1" || len(m.backlog.issues) != 1 || m.backlog.issues[0].ID != "fresh" {
+		t.Fatalf("mutation reloaded wrong backlog page: queries=%#v issues=%#v", queries, m.backlog.issues)
+	}
+}
+
+func TestScopeResultErrorsExposeNoStaleAction(t *testing.T) {
+	b := NewBacklogModel(testTheme())
+	b.SetPage(BacklogPage{Issues: []model.Issue{{ID: "old"}}}, 0)
+	b.ToggleMark()
+	b.ScrollPreview(3)
+	b.SetError(errors.New("backend unavailable"))
+	if b.CurrentIssue() != nil || b.MarkCount() != 0 || b.renderBacklogPreview(80) != "" || strings.Contains(ansi.Strip(b.View()), "old") {
+		t.Fatalf("backlog error exposed stale state: issue=%#v marks=%d view=%q", b.CurrentIssue(), b.MarkCount(), ansi.Strip(b.View()))
+	}
+
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "today"}})
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1"}}})
+	generation := picker.BeginMemberLoad("today")
+	picker.SetMemberError("today", generation, errors.New("members unavailable"))
+	if picker.SelectedMember() != nil || strings.Contains(ansi.Strip(picker.View()), "member-1") {
+		t.Fatalf("member error exposed stale action: member=%#v view=%q", picker.SelectedMember(), ansi.Strip(picker.View()))
+	}
+}
+
+func TestScopeRenderingIsIdempotentForRetainedInteractionState(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height, m.showScopePicker, m.ready = 120, 30, true, true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1"}}, {Issue: model.Issue{ID: "member-2"}}})
+	m.scopePicker.MoveMember(1)
+	m.scopePicker.ToggleMemberMark()
+	selectedID := m.scopePicker.SelectedMember().Issue.ID
+	repositoryFilter, statusFilter, typeFilter := m.scopePicker.MemberFilters()
+
+	first := m.View()
+	second := m.View()
+	if first != second {
+		t.Fatalf("rendering changed output across identical renders")
+	}
+	gotRepository, gotStatus, gotType := m.scopePicker.MemberFilters()
+	if selected := m.scopePicker.SelectedMember(); selected == nil || selected.Issue.ID != selectedID || m.scopePicker.MemberMarkCount() != 1 || gotRepository != repositoryFilter || gotStatus != statusFilter || gotType != typeFilter {
+		t.Fatalf("rendering reset interaction state: selected=%#v marks=%d filters=%q/%q/%q", selected, m.scopePicker.MemberMarkCount(), gotRepository, gotStatus, gotType)
+	}
+}
+
+func TestScopeMutationRefreshKeepsCurrentCatalogPageAndSelection(t *testing.T) {
+	var queries []ScopeCatalogQuery
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryCatalog: func(_ context.Context, query ScopeCatalogQuery) (ScopeCatalogPage, error) {
+			queries = append(queries, query)
+			return ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "s2", Name: "Selected"}, {ID: "s3", Name: "Other"}}}, nil
+		},
+	}})
+	m.showScopePicker = true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Earlier"}, {ID: "s2", Name: "Selected"}})
+	m.scopePicker.Move(1)
+	m.scopePicker.catalogPageCursors = []string{"", "catalog-2"}
+	m.scopePicker.catalogPageIndex = 1
+	m.scopePicker.catalogHasMore = true
+	m.scopePicker.catalogNextCursor = "catalog-3"
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "global"}}}, 0)
+	m.backlog.ToggleMark()
+
+	for _, message := range runUISemanticCommands(m.refreshAfterScopeMutation(ScopeMutation{Kind: ScopeMutationCreate})) {
+		updated, _ := m.Update(message)
+		m = updated.(*Model)
+	}
+	if len(queries) != 1 || queries[0].Cursor != "catalog-2" || m.scopePicker.CatalogPageIndex() != 1 || m.scopePicker.SelectedScopeID() != "s2" {
+		t.Fatalf("mutation refresh moved catalog selection/page: queries=%#v page=%d selected=%q", queries, m.scopePicker.CatalogPageIndex(), m.scopePicker.SelectedScopeID())
+	}
+	if m.backlog.MarkCount() != 1 || m.backlog.CurrentIssue() == nil || m.backlog.CurrentIssue().ID != "global" {
+		t.Fatalf("catalog refresh invalidated unrelated backlog interaction: marks=%d issue=%#v", m.backlog.MarkCount(), m.backlog.CurrentIssue())
+	}
+}
+
+func TestSuccessfulScopeMutationClearsOnlySubmittedMarks(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.focused = focusList
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "submitted"}, {ID: "keep"}}}, 0)
+	m.backlog.ToggleMark()
+	m.backlog.Move(1)
+	m.backlog.ToggleMark()
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "submitted"}}, {Issue: model.Issue{ID: "keep"}}})
+	m.scopePicker.ToggleMemberMark()
+	m.scopePicker.MoveMember(1)
+	m.scopePicker.ToggleMemberMark()
+
+	updated, _ := m.Update(scopeMutationMsg{
+		mutation: ScopeMutation{Kind: ScopeMutationRemove, ScopeID: "today", IssueIDs: []string{"submitted"}},
+		action:   "remove",
+	})
+	m = updated.(*Model)
+	if got := strings.Join(m.backlog.MarkedIDs(), ","); got != "keep" {
+		t.Fatalf("backlog marks=%q, want keep", got)
+	}
+	if got := strings.Join(m.scopePicker.MarkedMemberIDs(), ","); got != "keep" {
+		t.Fatalf("member marks=%q, want keep", got)
+	}
+}
+
+func TestSuccessfulScopeCreationRetainsUnrelatedMarks(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.isBacklogView, m.focused, m.showScopePicker = true, focusBacklog, true
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "global"}}}, 0)
+	m.backlog.ToggleMark()
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member"}}})
+	m.scopePicker.ToggleMemberMark()
+
+	updated, _ := m.Update(scopeMutationMsg{mutation: ScopeMutation{Kind: ScopeMutationCreate}, action: "create"})
+	m = updated.(*Model)
+	if m.backlog.MarkCount() != 1 || m.scopePicker.MemberMarkCount() != 1 {
+		t.Fatalf("scope creation cleared unrelated marks: backlog=%d members=%d", m.backlog.MarkCount(), m.scopePicker.MemberMarkCount())
 	}
 }
 
