@@ -299,7 +299,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"c", "Narrow members to closed", "Filters", "scope"},
 		{"r", "Narrow members to ready", "Filters", "scope"},
 		{"I", "Cycle member type filter", "Filters", "scope"},
-		{"w", "Cycle member repository filter", "Filters", "scope"},
+		{"w", "Cycle member ctx filter", "Filters", "scope"},
 		{"/", "ID/title search", "Filters", "list,global-issues"},
 		{"l", "Edit exact label filter", "Filters", "global-issues"},
 		{"s", "Cycle exact status filter", "Filters", "global-issues"},

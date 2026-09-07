@@ -9094,10 +9094,10 @@ func (m *Model) renderHelpOverlay() string {
 				{"n/p", "Next / previous member page"},
 				{"o/c/r", "Filter members by status"},
 				{"I", "Cycle member type filter"},
-				{"w", "Cycle member repository filter"},
+				{"w", "Cycle member ctx filter"},
 				{"space", "Mark current member"},
 				{"R", "Remove marked/current members"},
-				{"M", "Remove members by epic or label"},
+				{"M", "Match-remove members"},
 				{"W", "Close scope picker"},
 				{"Esc / q", "Return to previous view"},
 			}
@@ -9124,7 +9124,7 @@ func (m *Model) renderHelpOverlay() string {
 			{"l", "Filter by exact label"},
 			{"s", "Cycle status"},
 			{"A", "Add selected issue to scope (or all marked)"},
-			{"M", "Add matching exact label/epic issues to active scope"},
+			{"M", "Match-add issues to active scope"},
 			{"W", "Close Scope screen"},
 			{"Esc / q", "Return to previous view"},
 		}
@@ -10263,20 +10263,20 @@ func (m *Model) renderFooter() string {
 			if m.runtimeServices.Scopes.QueryMembers != nil {
 				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
 			}
-			keyHints = append(keyHints, keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" repository")
+			keyHints = append(keyHints, keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" ctx")
 			removeHint := "R remove current"
 			if m.scopePicker.MemberMarkCount() > 0 {
 				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" epic/label", keyStyle.Render("tab")+" "+strings.ToLower(m.globalIssuesTitle()), keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match-remove", keyStyle.Render("tab")+" "+strings.ToLower(m.globalIssuesTitle()), keyStyle.Render("W")+" close")
 		} else if m.scopePickerMoveIssue != "" {
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("W")+" close")
 		} else {
 			keyHints = append(keyHints, keyStyle.Render("tab")+" members", keyStyle.Render("j/k")+" scopes")
 			if m.runtimeServices.Scopes.QueryCatalog != nil {
 				keyHints = append(keyHints, keyStyle.Render("←/→")+" page")
 			}
-			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("W")+" close", keyStyle.Render("esc")+" back")
+			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("W")+" close")
 		}
 	} else if m.focused == focusGlobalIssues {
 		if m.backlog.Searching() {
@@ -10286,7 +10286,7 @@ func (m *Model) renderFooter() string {
 			if m.backlog.MarkCount() > 0 {
 				addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
 			}
-			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" add scope", keyStyle.Render("tab")+" scopes", keyStyle.Render("W")+" close")
+			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" match-add", keyStyle.Render("tab")+" scopes", keyStyle.Render("W")+" close")
 		}
 	} else if m.isBacklogView {
 		if m.backlog.Searching() {

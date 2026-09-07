@@ -394,7 +394,7 @@ func TestShortcutsSidebarShowsDedicatedScopeAndGlobalIssuesBindings(t *testing.T
 	}
 	for key, expected := range map[string]string{
 		"l":   "Filter by exact label",
-		"M":   "Add matching exact label/epic issues to active scope",
+		"M":   "Match-add issues to active scope",
 		"esc": "Back/close",
 		"q":   "Back/quit",
 		"W":   "Close Scope screen",
@@ -434,15 +434,15 @@ func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
 			t.Fatalf("scope catalog sidebar missing %q: %#v", description, catalog)
 		}
 	}
-	sidebar.SetGlobalIssuesTitle("Out-of-scope issues")
+	sidebar.SetGlobalIssuesTitle("Unscoped issues")
 	catalog = descriptions()
-	if catalog["tab"] != "Switch catalog/members/Out-of-scope issues" {
+	if catalog["tab"] != "Switch catalog/members/Unscoped issues" {
 		t.Fatalf("selected-scope catalog sidebar tab=%q", catalog["tab"])
 	}
 
 	sidebar.SetScopePickerState(true, false)
 	members := descriptions()
-	for key, description := range map[string]string{"tab": "Switch to Out-of-scope issues", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Add/remove by epic or label"} {
+	for key, description := range map[string]string{"tab": "Switch to Unscoped issues", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Match-remove members"} {
 		if members[key] != description {
 			t.Fatalf("scope member sidebar missing %q: %#v", description, members)
 		}
