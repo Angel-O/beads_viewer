@@ -442,7 +442,7 @@ func (c *CachedCorrelator) GenerateReport(beads []BeadInfo, opts CorrelatorOptio
 		if c.shouldRefreshFn != nil {
 			shouldRefresh = c.shouldRefreshFn
 		}
-		if computeDuration > 0 && shouldRefresh(createdAt, computeDuration, 1.0, time.Now()) {
+		if computeDuration > 0 && shouldRefresh(createdAt.Add(c.cache.maxAge), computeDuration, 1.0, time.Now()) {
 			refreshBeads, refreshOpts := cloneCorrelatorInputs(beads, opts)
 			// Trigger background refresh (non-blocking)
 			go func() {

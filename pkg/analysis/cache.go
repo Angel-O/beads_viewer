@@ -1515,6 +1515,12 @@ func pruneAndEvictRobotDiskCacheDir(dir string, now time.Time) {
 // The xfetchRefresh flag uses probabilistic early refresh to prevent cache stampedes:
 // if true, the caller should consider recomputing in the background while still using the cached result.
 func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh bool, cacheHit bool) {
+	return getRobotDiskCachedStatsWithClock(fullKey, time.Now)
+}
+
+// Inject the read-time clock to verify expiry boundaries without sleeps or
+// replacing the real on-disk cache writer, reader and validation path.
+func getRobotDiskCachedStatsWithClock(fullKey string, clock func() time.Time) (stats *GraphStats, xfetchRefresh bool, cacheHit bool) {
 	if !robotDiskCacheEnabled() {
 		return nil, false, false
 	}
@@ -1560,7 +1566,7 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 	if decodeErr == nil {
 		resultErr = entry.Result.validateForCacheHit()
 	}
-	now := time.Now().UTC()
+	now := clock().UTC()
 	if decodeErr != nil ||
 		entry.Version != robotAnalysisDiskCacheVersion ||
 		entry.Key != fullKey ||
@@ -1597,7 +1603,7 @@ func getRobotDiskCachedStats(fullKey string) (stats *GraphStats, xfetchRefresh b
 	shouldXFetchRefresh := !entry.Result.Config.RunToCompletion &&
 		entry.ComputeDuration > 0 &&
 		!now.Before(entry.CreatedAt.Add(entry.ComputeDuration)) &&
-		xfetch.ShouldRefresh(entry.CreatedAt, entry.ComputeDuration, 1.0, now)
+		xfetch.ShouldRefresh(entry.CreatedAt.Add(robotAnalysisDiskCacheMaxAge), entry.ComputeDuration, 1.0, now)
 
 	return entry.Result.toGraphStats(), shouldXFetchRefresh, true
 }

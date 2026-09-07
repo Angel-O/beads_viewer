@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -12,6 +13,82 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
+
+func TestRobotDiskCache_XFetchFreshEntryReused(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	t.Setenv("BV_NO_CACHE", "")
+	t.Setenv("BV_CACHE_DIR", t.TempDir())
+	t.Setenv("BEADS_DB", "")
+	t.Setenv("BEADS_DIR", filepath.Join(t.TempDir(), "missing-beads-dir"))
+	t.Setenv(EnvSourceDateEpoch, "")
+	t.Setenv(EnvSkipPhase2, "")
+	t.Setenv(EnvPhase2TimeoutSeconds, "")
+
+	issues := []model.Issue{
+		{ID: "A", Status: model.StatusOpen},
+		{ID: "B", Status: model.StatusOpen, Dependencies: []*model.Dependency{
+			{DependsOnID: "A", Type: model.DepBlocks},
+		}},
+	}
+	config := ConfigForSize(2, 1)
+	analyzer := NewAnalyzer(issues)
+	stats := analyzer.AnalyzeAsyncWithConfig(context.Background(), config)
+	stats.WaitForPhase2()
+	key := analyzer.DataHash() + "|" + ComputeConfigHash(&config)
+	dir, err := robotAnalysisDiskCacheDir(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, robotAnalysisEntryFileName(key))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read writer-produced entry: %v", err)
+	}
+	var entry robotAnalysisDiskCacheEntry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	// A minute-old entry with a 24-hour TTL and a 1ns regeneration time is
+	// nowhere near expiry. The old creation-time formula always refreshed it.
+	entry.CreatedAt = time.Now().Add(-time.Minute).UTC()
+	entry.ComputeDuration = time.Nanosecond
+	raw, err = json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, refresh, hit := getRobotDiskCachedStats(key)
+	if !hit || got == nil || !got.IsPhase2Ready() {
+		t.Fatalf("writer-produced entry must hit: hit=%v stats=%p", hit, got)
+	}
+	if refresh {
+		t.Error("fresh 24-hour entry requested a refresh after only one minute")
+	}
+	second := NewAnalyzer(issues).AnalyzeAsyncWithConfig(context.Background(), config)
+	second.WaitForPhase2()
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, after) {
+		t.Error("fresh cache entry was recomputed and rewritten")
+	}
+
+	// At exactly the TTL boundary the entry is still a valid hit, but XFetch
+	// must ask for recomputation. One nanosecond later the normal TTL check
+	// rejects it. A fixed read clock exercises both paths without sleeping.
+	expiry := entry.CreatedAt.Add(robotAnalysisDiskCacheMaxAge)
+	got, refresh, hit = getRobotDiskCachedStatsWithClock(key, func() time.Time { return expiry })
+	if !hit || got == nil || !refresh {
+		t.Fatalf("at expiry: hit=%v stats=%p refresh=%v", hit, got, refresh)
+	}
+	got, refresh, hit = getRobotDiskCachedStatsWithClock(key, func() time.Time { return expiry.Add(time.Nanosecond) })
+	if hit || got != nil || refresh {
+		t.Fatalf("after expiry: hit=%v stats=%p refresh=%v", hit, got, refresh)
+	}
+}
 
 // Issue #192: cache validation must stay O(top-level entries). Journals and
 // snapshots under .beads/ subdirectories (.br_history/, .br_recovery/, …) can

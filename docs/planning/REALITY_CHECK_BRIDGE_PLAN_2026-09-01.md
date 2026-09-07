@@ -2,6 +2,37 @@
 
 ## Delivery continuation — 2026-09-07
 
+- [x] Profile the actual `7f708334` Linux archive on the original realistic 10k
+  fixture, on the separate 10-CPU worker: three warmups, ten samples, one CPU
+  profile, no retries. Raw evidence is `/data/tmp/bv-cli-10k-profile-20260907`.
+  Warm requests still execute Brandes; ten wall times range 417–523 ms. This
+  diagnostic does not establish p99 or explain the reference host's long tails.
+- [x] Identify incorrect XFetch expiry semantics in both graph and history
+  caches. The callers pass creation time and the comparison is reversed relative
+  to Figure 3 of [the original paper](https://cseweb.ucsd.edu/~avattani/papers/cache_stampede.pdf).
+  Score: impact 4 × confidence 5 / effort 2 = 10. This is a cache-policy bug fix;
+  refreshed-versus-cached timing intentionally changes, not an isomorphic speedup.
+- [x] Prove old-code failures for refresh at expiry, fresh writer-produced graph
+  cache reuse, and default/custom history-cache expiry metadata. All three test
+  roots fail on the old production code, including both TTL subcases. Preserve
+  `/data/tmp/bv-xfetch-20260907/baseline-checks` on the separate worker.
+- [x] Correct the formula and both callers; cover expiry boundaries, beta
+  direction, finite-number extremes, fresh hits, expired misses and refresh
+  consumption without weakening data/config/mtime validation or exact-run policy.
+- [x] Run affected race suites: 1,694 test nodes pass, 22 existing skips, no
+  failures. Complete `go build ./...` and `go vet ./...` pass under Go 1.25.5.
+  `gofmt -l .` lists only 49 unchanged vendor files; no first-party drift.
+  UBS scans all seven changed Go files: zero critical, 46 heuristic warnings
+  reviewed (cache.Get mistaken for HTTP, immediate cancel calls, balanced lock
+  pairs, a closure that does not capture its loop index, and selected-file module
+  detection). No suppressions or gate changes. Root owns these checks and review;
+  this is not an independent-agent verification.
+- [ ] Compare the original 10k fixture with the previous archive under the same
+  bounded diagnostic conditions, including scores, order and metric status.
+- [ ] Freeze the cache repair, run the original complete gate on that source,
+  and bind any subsequent packaging/acceptance to the new revision. Preserve the
+  already measured runs and all earlier eligible archives under their own IDs.
+
 - [x] Recover normal tracker access after local free space returned. The prior
   recovery copies remain intact; no files were deleted by this continuation.
 - [x] Independently inspect all 288 UI records from the original `93b90959` run.

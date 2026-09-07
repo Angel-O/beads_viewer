@@ -918,7 +918,7 @@ func TestRobotDiskCache_BeadsDBDirectoryUsesChildModTime(t *testing.T) {
 	}
 }
 
-func TestRobotDiskCache_XFetchRefreshRecomputes(t *testing.T) {
+func TestRobotDiskCache_ExpiredEntryRecomputes(t *testing.T) {
 	t.Setenv("BV_ROBOT", "1")
 	cacheDir := t.TempDir()
 	t.Setenv("BV_CACHE_DIR", cacheDir)
@@ -954,10 +954,9 @@ func TestRobotDiskCache_XFetchRefreshRecomputes(t *testing.T) {
 	}
 
 	entry := readEntry()
-	// A year-old CreatedAt would trip the max-age prune, which reaps the entry
-	// instead of serving it; XFetch needs a *served* entry whose refresh window
-	// has certainly elapsed, so age it one hour with a 1ms compute duration.
-	staleCreatedAt := time.Now().Add(-time.Hour).UTC()
+	// The cache TTL is 24 hours. A one-hour-old entry is still fresh; age it
+	// past its actual expiry to require recomputation independently of RNG.
+	staleCreatedAt := time.Now().Add(-25 * time.Hour).UTC()
 	createdAtRaw, err := json.Marshal(staleCreatedAt)
 	if err != nil {
 		t.Fatalf("marshalling stale timestamp: %v", err)
@@ -977,8 +976,6 @@ func TestRobotDiskCache_XFetchRefreshRecomputes(t *testing.T) {
 		t.Fatalf("writing cache entry file: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
-
 	an2 := analysis.NewAnalyzer(issues)
 	stats2 := an2.AnalyzeAsyncWithConfig(context.Background(), config)
 	stats2.WaitForPhase2()
@@ -997,7 +994,7 @@ func TestRobotDiskCache_XFetchRefreshRecomputes(t *testing.T) {
 		t.Fatalf("parsing refreshed cache entry json: %v", err)
 	}
 	if !refreshed.CreatedAt.After(staleCreatedAt) {
-		t.Fatalf("expected xfetch refresh to rewrite CreatedAt, got %v", refreshed.CreatedAt)
+		t.Fatalf("expected expired entry to rewrite CreatedAt, got %v", refreshed.CreatedAt)
 	}
 }
 

@@ -657,6 +657,44 @@ func TestCachedCorrelator_DoesNotCacheWhenHeadChangesDuringGenerate(t *testing.T
 	}
 }
 
+func TestCachedCorrelator_XFetchUsesExpiry(t *testing.T) {
+	for _, maxAge := range []time.Duration{DefaultCacheMaxAge, 37 * time.Minute} {
+		t.Run(maxAge.String(), func(t *testing.T) {
+			correlator := NewCachedCorrelatorWithOptions(initTempGitRepo(t), maxAge, 10)
+			beads := []BeadInfo{{ID: "test-1", Status: "open"}}
+			opts := CorrelatorOptions{Limit: 10}
+			original, err := correlator.GenerateReport(beads, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := correlator.buildKey(beads, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			correlator.cache.PutWithDuration(key, original, time.Millisecond)
+			_, createdAt, _, ok := correlator.cache.GetWithMeta(key)
+			if !ok {
+				t.Fatal("expected writer-produced cache hit")
+			}
+			called := false
+			correlator.shouldRefreshFn = func(expiry time.Time, duration time.Duration, beta float64, now time.Time) bool {
+				called = true
+				if want := createdAt.Add(maxAge); !expiry.Equal(want) {
+					t.Errorf("XFetch expiry = %v, want %v", expiry, want)
+				}
+				if duration != time.Millisecond || beta != 1 || now.Before(createdAt) {
+					t.Errorf("invalid refresh metadata: duration=%v beta=%v now=%v", duration, beta, now)
+				}
+				return false
+			}
+			got, err := correlator.GenerateReport(beads, opts)
+			if err != nil || got != original || !called {
+				t.Fatalf("expected cached report and refresh decision: err=%v same=%v called=%v", err, got == original, called)
+			}
+		})
+	}
+}
+
 func TestCachedCorrelator_XFetchUsesClonedInputs(t *testing.T) {
 	repoPath := initTempGitRepo(t)
 	correlator := NewCachedCorrelator(repoPath)
