@@ -273,7 +273,7 @@ func TestScopeTopSplitUsesDisplayedMemberRowsForPagingAndMoveHeading(t *testing.
 	m.focused = focusScopePicker
 	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
 	m.scopePicker.SetMoveTarget("Visible issue")
-	items := make([]IssueItem, 15)
+	items := make([]IssueItem, 27)
 	for i := range items {
 		items[i].Issue.ID = fmt.Sprintf("member-%02d", i)
 		items[i].Issue.Title = fmt.Sprintf("Member %02d", i)
@@ -284,15 +284,15 @@ func TestScopeTopSplitUsesDisplayedMemberRowsForPagingAndMoveHeading(t *testing.
 	if !strings.Contains(view, "Move: Visible issue") {
 		t.Fatalf("top split lost move heading:\n%s", view)
 	}
-	if got, want := m.scopePicker.memberViewportRows(), 7; got != want {
+	if got, want := m.scopePicker.memberViewportRows(), 9; got != want {
 		t.Fatalf("displayed member rows=%d, want %d", got, want)
 	}
 	updated, _ := m.Update(keyMsg("tab"))
 	m = updated.(*Model)
 	updated, _ = m.Update(keyMsg("right"))
 	m = updated.(*Model)
-	if got := m.scopePicker.memberViewportStart; got != 7 {
-		t.Fatalf("right moved member viewport by %d rows, want 7", got)
+	if got := m.scopePicker.memberViewportStart; got != 9 {
+		t.Fatalf("right moved member viewport by %d rows, want 9", got)
 	}
 	if !strings.Contains(ansi.Strip(m.renderScopeScreen()), "screen 2/3") {
 		t.Fatalf("member indicator disagrees after right:\n%s", ansi.Strip(m.renderScopeScreen()))
@@ -301,6 +301,31 @@ func TestScopeTopSplitUsesDisplayedMemberRowsForPagingAndMoveHeading(t *testing.
 	m = updated.(*Model)
 	if m.scopePicker.memberViewportStart != 0 || !strings.Contains(ansi.Strip(m.renderScopeScreen()), "screen 1/3") {
 		t.Fatalf("left did not return to first displayed member screen: start=%d", m.scopePicker.memberViewportStart)
+	}
+}
+
+func TestScopeTopSplitMemberViewportUsesAvailablePanelHeight(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	items := make([]IssueItem, 20)
+	for i := range items {
+		items[i].Issue.ID = fmt.Sprintf("member-%02d", i)
+	}
+	picker.SetMembers(items)
+
+	const height = 19
+	view := ansi.Strip(picker.renderTopSplit(100, height, true))
+	if got, want := picker.memberViewportRows(), height-5; got != want {
+		t.Fatalf("member viewport rows=%d, want all available panel rows=%d", got, want)
+	}
+	shown := 0
+	for _, item := range items {
+		if strings.Contains(view, item.Issue.ID) {
+			shown++
+		}
+	}
+	if shown != height-5 {
+		t.Fatalf("rendered member rows=%d, want %d without a blank band below the table", shown, height-5)
 	}
 }
 
@@ -3567,12 +3592,14 @@ func TestScopeSplitResizeClampsBeforeRenderingMemberIndicator(t *testing.T) {
 	}
 	picker.SetMembers(items)
 	picker.MoveMember(20)
-	picker.memberViewportStart = 12
+	picker.memberViewportStart = 14
+	picker.memberSelected = 25
+	picker.memberSelectedID = "member-25"
 	if view := ansi.Strip(picker.renderTopSplit(100, 19, true)); !strings.Contains(view, "screen 2/3") {
 		t.Fatalf("initial split indicator=%q, want screen 2/3", view)
 	}
 	view := ansi.Strip(picker.renderTopSplit(100, 13, true))
-	if !strings.Contains(view, "screen 4/5") || !strings.Contains(view, "member-18") || strings.Contains(view, "member-12") {
+	if !strings.Contains(view, "screen 4/4") || !strings.Contains(view, "member-24") || strings.Contains(view, "member-14") {
 		t.Fatalf("shrunk split indicator/rows disagree:\n%s", view)
 	}
 }
