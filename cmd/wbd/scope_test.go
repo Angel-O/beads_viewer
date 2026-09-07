@@ -245,8 +245,27 @@ func TestScopeExactRemoveResolvesForeignMembersWithoutImplicitRepositoryFilter(t
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	calls := test.calls()
-	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--id", "foreign,global", "--limit", "0"}
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--id", "foreign,global", "--limit", "0"}
 	wantMutation := []string{"--db", test.store, "--json", "scope", "remove", "scope-a", "foreign", "global"}
+	if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "scope:show" || !reflect.DeepEqual(calls[1].Args, wantList) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
+		t.Fatalf("calls=%#v", calls)
+	}
+}
+
+func TestScopeExactRemoveIncludesClosedNonTombstoneMember(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"scope:show":   `{"issues":[{"id":"closed-member"}]}`,
+		"list":         `[{"id":"closed-member","status":"closed","closed_at":"2026-09-08T00:00:00Z"}]`,
+		"scope:remove": `{}`,
+	})
+	code, stdout, stderr := test.run("scope", "remove", "closed-member", "--scope", "scope-a", "--json")
+	if code != 0 || stdout != `{"operation":"remove","matched":1,"changed":1}`+"\n" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	wantList := []string{"--db", test.store, "--json", "list", "--no-directory-labels", "--all", "--id", "closed-member", "--limit", "0"}
+	wantMutation := []string{"--db", test.store, "--json", "scope", "remove", "scope-a", "closed-member"}
 	if len(calls) != 3 || fakeCommandKey(calls[0].Args) != "scope:show" || !reflect.DeepEqual(calls[1].Args, wantList) || !reflect.DeepEqual(calls[2].Args, wantMutation) {
 		t.Fatalf("calls=%#v", calls)
 	}
