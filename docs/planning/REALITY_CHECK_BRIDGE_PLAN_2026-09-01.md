@@ -2,6 +2,22 @@
 
 ## Delivery continuation — 2026-09-07
 
+- [x] Select the next measured P1 hotspot: the repaired warm-cache 10k profile
+  attributes 50/470 sampled CPU milliseconds to issue fingerprints, including
+  30 ms constructing per-hash writers. Seeded data-hash reuse is already wired.
+  Opportunity: reuse a call-owned writer, impact 2 × confidence 5 / effort 2 = 5.
+- [ ] Freeze aggregate hash goldens and capture old-code allocation/timing costs
+  before changing production code; include long-to-empty, nil dependencies,
+  duplicate-ID encounter order, concurrent calls and input ownership.
+- [ ] Reuse the fingerprint writer within each aggregate/diff call, preserving
+  field bytes, SHA-256, ordering, tie breaking and pointer-presence semantics.
+  No global pool or shared mutable cache; floating point/RNG are unaffected.
+- [ ] Run unchanged golden/semantic tests, the allocation control, affected race
+  tests and required build/vet/format; compare identical baseline/candidate
+  benchmarks and fixed-clock CLI outputs. Keep the original P1 matrix intact.
+- [ ] Freeze only a verified improvement, run the original delivery gate, and
+  update its Bead without granting partial measurements full P1 acceptance.
+
 - [x] Profile the actual `7f708334` Linux archive on the original realistic 10k
   fixture, on the separate 10-CPU worker: three warmups, ten samples, one CPU
   profile, no retries. Raw evidence is `/data/tmp/bv-cli-10k-profile-20260907`.
