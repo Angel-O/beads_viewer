@@ -478,6 +478,27 @@ func TestScopeScreenDispatchesGlobalControlsAfterTopPanes(t *testing.T) {
 	}
 }
 
+func TestScopeGlobalIssuesSearchConsumesViewSwitchKeys(t *testing.T) {
+	for _, key := range []string{"b", "B", "g"} {
+		t.Run(key, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.showScopePicker = true
+			m.focused = focusGlobalIssues
+			m.backlog.BeginSearch()
+			m.backlog.AddFilter("prefix")
+
+			updated, _ := m.Update(keyMsg(key))
+			m = updated.(*Model)
+			if !m.backlog.Searching() || m.backlog.Filter() != "prefix"+key {
+				t.Fatalf("search key %q was not consumed: searching=%t filter=%q", key, m.backlog.Searching(), m.backlog.Filter())
+			}
+			if !m.showScopePicker || m.focused != focusGlobalIssues || m.isBoardView || m.isGraphView {
+				t.Fatalf("search key %q changed Scope view: picker=%t focus=%s board=%t graph=%t", key, m.showScopePicker, m.focused, m.isBoardView, m.isGraphView)
+			}
+		})
+	}
+}
+
 func TestGlobalIssuesBReturnsToList(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.showScopePicker = true
@@ -1685,27 +1706,19 @@ func TestNormalScopeViewSwitchesSuspendAndResumeWithoutReload(t *testing.T) {
 	}
 }
 
-func TestScopeViewSwitchEndsFilterEditorsWithoutDroppingValues(t *testing.T) {
+func TestScopeFilterEditorCleanupRetainsValues(t *testing.T) {
 	m := NewModel(nil, nil, "")
-	m.showScopePicker = true
-	m.scopeSessionInitialized = true
-	m.scopePickerOrigin = focusList
-	m.focused = focusGlobalIssues
 	m.backlog.BeginSearch()
 	m.backlog.AddFilter("search-value")
 	m.backlog.BeginLabelEdit()
 	m.backlog.UpdateLabelInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("label-value")})
 
-	updated, cmd := m.Update(keyMsg("g"))
-	m = updated.(*Model)
-	if cmd != nil || m.backlog.Searching() || m.backlog.LabelEditing() {
-		t.Fatalf("graph switch left filter editor active: cmd=%t search=%t label=%t", cmd != nil, m.backlog.Searching(), m.backlog.LabelEditing())
+	m.endScopeFilterEditing()
+	if m.backlog.Searching() || m.backlog.LabelEditing() {
+		t.Fatalf("filter cleanup left editor active: search=%t label=%t", m.backlog.Searching(), m.backlog.LabelEditing())
 	}
 	if m.backlog.Filter() != "search-value" || m.backlog.LabelInputValue() != "label-value" {
 		t.Fatalf("filter values changed while ending editors: filter=%q label=%q", m.backlog.Filter(), m.backlog.LabelInputValue())
-	}
-	if cmd = m.openScopePicker(""); cmd != nil || m.backlog.Filter() != "search-value" || m.backlog.LabelInputValue() != "label-value" {
-		t.Fatalf("re-entry changed retained filter values: cmd=%t filter=%q label=%q", cmd != nil, m.backlog.Filter(), m.backlog.LabelInputValue())
 	}
 }
 
