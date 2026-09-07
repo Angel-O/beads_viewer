@@ -1224,16 +1224,32 @@ type Model struct {
 	scopeMatchScopeID     string
 	scopePickerOrigin     focus
 	scopePickerMoveIssue  string
-	scopeCatalog          []ScopeInfo
-	activeScope           *ScopeInfo
+	// scopeSessionFocus is the last focused pane in the retained Scope screen.
+	// Normal view switches suspend this session; they do not reload it.
+	scopeSessionFocus       focus
+	scopeSessionInitialized bool
+	scopeMoveOriginFocus    focus
+	scopeMovePicker         ScopePickerModel
+	scopeMoveCatalog        []ScopeInfo
+	scopeMoveActiveScope    *ScopeInfo
+	scopeMoveDetails        *ScopeDetails
+	scopeMoveMembershipIDs  map[string][]string
+	scopeMoveBacklogLoaded  bool
+	scopeMoveStateSaved     bool
+	scopeCatalog            []ScopeInfo
+	activeScope             *ScopeInfo
 	// scopeDetails retains the last successful selected-scope detail load;
 	// failed reloads must not replace it with an empty result.
-	scopeDetails          *ScopeDetails
-	scopeMembershipIDs    map[string][]string
-	backlog               BacklogModel
-	backlogLoading        bool
-	backlogPageGeneration uint64
-	backlogScopeLoaded    bool
+	scopeDetails               *ScopeDetails
+	scopeMembershipIDs         map[string][]string
+	scopeMembershipScopeID     string
+	scopeMembershipGeneration  uint64
+	scopeMembershipLoading     bool
+	backlog                    BacklogModel
+	backlogLoading             bool
+	backlogPageGeneration      uint64
+	backlogScopeLoaded         bool
+	scopeRefreshBacklogPending bool
 	// Picker application stores the reload command until the overlay dispatch
 	// returns it; the legacy picker handler returns only *Model.
 	backlogReloadCmd tea.Cmd
@@ -3147,22 +3163,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scopeMembershipIDs = make(map[string][]string)
 			}
 			m.scopeMembershipIDs[msg.scopeID] = ids
+			if msg.scopeID == m.scopeMembershipScopeID {
+				m.scopeMembershipLoading = false
+			}
 		}
-		// Generation-less typed responses must populate the member browser too.
-		if msg.generation > 0 || !m.showScopePicker || msg.scopeID == "" || msg.scopeID == m.scopePicker.SelectedScopeID() {
+		// A hidden picker still owns its retained selection. Mutation refreshes for
+		// another scope may update scopeDetails, but must not replace that pane.
+		pickerScopeID := m.scopePicker.SelectedScopeID()
+		responseScopeID := msg.scopeID
+		if responseScopeID == "" {
+			responseScopeID = details.Info.ID
+		}
+		if pickerScopeID == "" || responseScopeID == pickerScopeID {
 			m.applyScopePickerDetails(details)
 		}
 
 	case scopeMembershipMsg:
+		if !m.acceptsScopeMembership(msg) {
+			break
+		}
 		if msg.err == nil {
 			if m.scopeMembershipIDs == nil {
 				m.scopeMembershipIDs = make(map[string][]string)
 			}
 			m.scopeMembershipIDs[msg.scopeID] = append([]string(nil), msg.ids...)
+			m.scopeMembershipLoading = false
+		} else if msg.scopeID == m.scopeMembershipScopeID {
+			m.scopeMembershipLoading = false
 		}
 
 	case scopeMembersPageMsg:
-		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.generation) {
+		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation, msg.cursor) {
 			break
 		}
 		if msg.err != nil {
@@ -3195,14 +3226,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
 		}
 		m.scopePicker.SetMemberReadyIDs(ready)
-		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation)
+		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation, msg.requestKey)
 
 	case backlogPageMsg:
-		if msg.generation != m.backlogPageGeneration {
+		expectedCursor, hasRequestedPage := m.backlog.pageCursorAt(msg.index)
+		if msg.generation != m.backlogPageGeneration ||
+			(msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) ||
+			!hasRequestedPage || msg.cursor != expectedCursor {
 			break
 		}
+		m.backlog.SetLoading(false)
 		m.backlogLoading = false
 		if msg.err != nil {
+			m.backlog.SetError(msg.err)
 			m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)
 			m.statusIsError = true
 			break
@@ -3221,16 +3257,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			break
 		}
-		if msg.restoreFocus {
-			m.closeScopePicker()
-		}
-		m.clearScopeActionMarks()
-		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
-		m.statusIsError = false
 		mutation := msg.mutation
 		if mutation.Kind == "" {
 			mutation.Kind = ScopeMutationKind(msg.action)
 		}
+		if msg.restoreFocus {
+			m.closeScopePicker()
+		}
+		m.clearSubmittedScopeMarks(mutation.IssueIDs)
+		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
+		m.statusIsError = false
 		cmds = append(cmds, m.refreshAfterScopeMutation(mutation))
 
 	case commentAddedMsg:
@@ -4875,6 +4911,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
 		}
+		if m.showScopePicker && (msg.String() == "b" || msg.String() == "g" || msg.String() == "B") {
+			// View switches suspend the Scope session; they are not filter input.
+			m.endScopeFilterEditing()
+		}
 		if m.showScopePicker && m.focused == focusGlobalIssues && !m.showRepoPicker && msg.String() != "ctrl+c" &&
 			(m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
 			return m.handleBacklogKey(msg)
@@ -5231,6 +5271,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.statusMsg = "Refreshing…"
 			m.statusIsError = false
+			if scopeCmd := m.refreshScopeSession(); scopeCmd != nil {
+				cmds = append(cmds, scopeCmd)
+			}
 
 			if m.backgroundWorker != nil && m.backgroundWorker.State() != WorkerStopped {
 				m.backgroundWorker.HandleRefreshRequest(RefreshRequestMsg{Force: true})
@@ -5247,7 +5290,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.beadsPath == "" && m.watcher == nil {
 				m.statusMsg = "Refresh unavailable"
 				m.statusIsError = true
-				return m, nil
+				return m, tea.Batch(cmds...)
 			}
 
 			cmds = append(cmds, func() tea.Msg { return FileChangedMsg{refreshBDExport: true} })
