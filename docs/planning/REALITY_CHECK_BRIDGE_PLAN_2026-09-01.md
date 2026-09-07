@@ -2,6 +2,44 @@
 
 ## Delivery continuation — 2026-09-07
 
+- [x] Reconcile the concurrent 06:39:53 UTC rebase onto the v0.24.0 release
+  metadata. `250a8b98` became `6c8a4474`; `main` is now `4a5a564f`, tree
+  `bc83f8b0`. Full content comparison confirms unchanged hash-reuse code/tests
+  and original gates; release prose, version fallback, Nix version and installer
+  default tags changed. Another workspace operation also committed the UI
+  readback. Preserve old evidence under its original revision identities.
+- [x] Run the original complete source gate on exact clean `4a5a564f` using
+  the existing separate worker and unchanged tools/counts/deadlines/assertions.
+  The one run under `/data/tmp/bv-delivery-4a5a564f-20260907` finishes at
+  07:03:41 UTC in 793.667 seconds: ten passes, no failures/skips, empty stderr,
+  clean source before/after with input digest `9ffac977…`. All fourteen original
+  four-round benchmark rows pass; worst regression 6.9% is below the unchanged 20%.
+- [x] Package the eligible revision through the original five-target wrapper.
+  It passes in 76.034 seconds with local-only `v0.24.1-rc.20260907.4a5a564f`.
+  All copied archives match sealed receipt `20db2be4…`; each binary binds clean 4a,
+  Go 1.25.5 and CGO disabled. Package stderr, including its deprecation notice,
+  is retained and hash-verified. Archives are in the delivery directory above.
+- [x] Repeat original actual-archive Linux smoke, scope, partial-source and live
+  routes: 58 smoke commands, 40 scope cases, two partial observations and 14 route
+  children plus parent pass. Original 16 scope/four partial assertions remain;
+  all 4,258 source files retain manifest `d28b6cf2…`. Binary is `a8f0bf23…`.
+- [x] Repeat original six native Windows archive commands once in 3.022 seconds.
+  All exit 0 with empty executable stderr; 13 copied raw files match native
+  readback. Binary `57d0c9ce…` preserves JSONL/SQLite ready IDs and source
+  authority while withholding metadata-free claims. Native result `d498abdc…`.
+  Linux/Windows raw evidence is `/data/tmp/bv-archive-4a5a-root-20260907`.
+  Root owns execution/review; no new installer, shared tracker or Mac/ARM proof.
+- [x] After confirming it remains unstarted, replace only the waiting 250a
+  latency queue with the verified rebased revision. Keep the measured 7f run,
+  its original acceptance and every prior artifact intact.
+  At 07:06:06 UTC only bound PID 3878341/start 100874186 was terminated, after its
+  identity/scripts/absent measurement and the successful source gate were checked.
+  Its supersession receipt remains in the old launch directory. New PID 889059/
+  start 101177584 queues exact 4a once, with original counts/deadlines/controls.
+- [ ] Complete that queued 4a matrix and its original final acceptance. At
+  07:10:35 UTC measured 7f has 288 UI/six CLI/zero exact records, and 4a remains queued
+  without a failed precondition or measured start. No full P1 pass is claimed.
+
 - [x] Trace the remaining duplicate CLI dataset hash in the c48 warm 10k CPU
   profile: 50/560 sampled ms in ComputeDataHash, including 30 ms under source
   authority construction and another 20 ms in the subsequent dataset hash.
@@ -89,12 +127,12 @@
   144 outputs, including original order/result/status parity and negative controls.
   At 06:42:15 UTC, the original `TestPerformanceCLICohorts` process is running
   with its unchanged four-hour deadline. No measured command was repeated.
-- [ ] Complete the guarded handoff to queued `250a8b98`, then require that final
-  revision's original complete matrix and final source/binary identity checks.
-  The 7f UI stage is complete; its CLI/exact stages and the 250a handoff remain
-  pending. The 250a queue has no failure or measured start.
+- [ ] Complete the guarded handoff to the final queued revision, then require
+  its original complete matrix and final source/binary identity checks. The
+  concurrent rebase superseded only the unstarted 250a queue with 4a, as recorded
+  above. The measured 7f CLI/exact stages remain pending.
 - [ ] Keep bv-apal.1 and its proof/final companions open until their original
-  full acceptance succeeds. The 7f subset cannot certify the later 250a source.
+  full acceptance succeeds. The 7f subset cannot certify the final rebased source.
 
 - [x] Select the next measured P1 hotspot: the repaired warm-cache 10k profile
   attributes 50/470 sampled CPU milliseconds to issue fingerprints, including
@@ -406,7 +444,8 @@
 - [ ] Finish the separate full P1 matrix and missing native-platform acceptance.
   Original `93b90959` is now complete and failed: four handler overruns and a
   four-hour CLI-stage timeout, with 70/72 timed and 36/36 exact records. The
-  `7f708334` full matrix is running; `250a8b98` is queued behind it. All failures
+  `7f708334` full matrix is running; verified `4a5a564f` is queued behind it,
+  superseding only the unstarted 250a queue after the concurrent rebase. All failures
   remain retained. Cross-compilation and available-platform checks do not close
   the unavailable Mac/Linux ARM64 requirements.
 - [ ] Resolve the shared tracker installation awaiting approval and missing
@@ -420,9 +459,9 @@ below remains the historical assessment; other rows retain its stated limits):
 |---|---|---|
 | 1: JSONL loading | WORKING | Repaired decoder and bounded reader reuse pass independent old/current controls, full source race suites and extracted Linux/Windows checks at `7f708334`. Full performance acceptance remains goal 41. |
 | 29: Graph navigation | WORKING | Original graph implementation/proof tasks now pass actual key-dispatch and PTY acceptance; background critical-chain preparation preserves selection and visible graph semantics. Goal 41 retains current tail-latency limits. |
-| 37: Checked source produces matching archives | WORKING | The complete ten-stage `250a8b98` gate and original five-target package/seal/verify pass. Actual extracted Linux and native Windows checks use those bytes. Older archives remain retained under their own revisions; no publication is claimed. |
-| 40: Local/remote verification | PARTIAL | Current source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
-| 41: Large-dataset responsiveness | PARTIAL | All fourteen rows in the unchanged four-round `250a8b98` benchmark gate pass the original 20% limit. The prior writer optimization reduces the 10k dependency hash from 13.37 to 5.05 MB/op; the new CLI wiring removes a second aggregate hash, with sampled hashing CPU 50 → 30 ms. Paired whole-CLI medians remain approximately 366/368 ms, so no end-to-end latency gain is demonstrated. Fixed-clock outputs remain identical. Original `93b90959` fails four handler limits and its CLI deadline; 7f is running and 250a queued. The full final matrix has not passed. |
+| 37: Checked source produces matching archives | WORKING | Rebased `4a5a564f` passes the complete ten-stage gate and original five-target package/seal/verify, including actual extracted Linux and native Windows checks. Copied archives match sealed receipt `20db2be4…`, Go1.25.5/CGO-disabled/clean4a. Older evidence retains its original revision scope. |
+| 40: Local/remote verification | PARTIAL | Rebased 4a source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
+| 41: Large-dataset responsiveness | PARTIAL | All fourteen rows in the unchanged four-round 4a benchmark gate pass the original 20% limit (worst +6.9%). The hash writer reduces 10k dependency hashing 13.37→5.05 MB/op; CLI hash reuse cuts sampled hashing 50→30 ms, but paired whole-CLI medians 366/368 ms establish no end-to-end gain. Fixed-clock outputs remain identical. Original `93b90959` fails four handler limits and its CLI deadline. All 288 UI records on 7f now pass original timing/parity checks, with worst current p99 34.331 ms and individual maximum 73.466 ms; its CLI/exact stages remain pending. Final 4a is queued. No full current matrix, terminal-paint or universal frame-rate guarantee. |
 | 43: Recorded blocking time and causal transitions | WORKING | Closed `bv-j74w`/`bv-apal.11` now have independently executed real Git and CLI proof of six blocked hours in a ten-hour lifecycle, overlapping and ongoing waits, historical cutoffs, warm-cache identity and contradictory clocks. Unknown intervals remain unknown; chronology alone is not causal evidence and nonblocked time is not measured work effort. Current full source tests preserve this implementation. |
 
 ## Implementation continuation — 2026-09-06
