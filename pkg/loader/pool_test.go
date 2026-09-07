@@ -1,14 +1,19 @@
 package loader
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"unsafe"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -440,4 +445,161 @@ func TestDeepCopyIssueSlices_NilSlices(t *testing.T) {
 func TestDeepCopyIssueSlices_NilIssue(t *testing.T) {
 	// Should not panic
 	DeepCopyIssueSlices(nil)
+}
+
+// Use literal JSON and independent decoded values so retaining a decoder buffer
+// cannot silently change both the result and its expected value.
+func readerOwnershipFixture(marker string) (string, model.Issue) {
+	input := fmt.Sprintf(`{"id":"%[1]s","title":"%[1]s title 漢🙂","description":"%[1]s first\nsecond\u0000end","status":"open","priority":2,"issue_type":"task","labels":["%[1]s label","é\u0000"],"dependencies":[{"depends_on_id":"%[1]s-parent","type":"blocks","created_by":"%[1]s author"}],"comments":[{"id":"%[1]s-comment","issue_id":"%[1]s","author":"%[1]s writer","text":"%[1]s says \"hello\"\n漢🙂"}]}`, marker)
+	want := model.Issue{
+		ID: marker, Title: marker + " title 漢🙂", Description: marker + " first\nsecond\x00end",
+		Status: model.StatusOpen, Priority: 2, IssueType: model.TypeTask,
+		Labels:       []string{marker + " label", "é\x00"},
+		Dependencies: []*model.Dependency{{IssueID: marker, DependsOnID: marker + "-parent", Type: model.DepBlocks, CreatedBy: marker + " author"}},
+		Comments:     []*model.Comment{{ID: marker + "-comment", IssueID: marker, Author: marker + " writer", Text: marker + " says \"hello\"\n漢🙂"}},
+	}
+	return input, want
+}
+
+func parseReaderFixture(r io.Reader, opts ParseOptions, pooled bool) ([]model.Issue, error) {
+	if !pooled {
+		return ParseIssuesWithOptions(r, opts)
+	}
+	result, err := ParseIssuesWithOptionsPooled(r, opts)
+	ReturnIssuePtrsToPool(result.PoolRefs)
+	return result.Issues, err
+}
+
+func TestParseReaderWarmAllocationBound(t *testing.T) {
+	input, want := readerOwnershipFixture("allocation")
+	for _, pooled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pooled=%v", pooled), func(t *testing.T) {
+			parse := func() {
+				issues, err := parseReaderFixture(strings.NewReader(input), ParseOptions{}, pooled)
+				if err != nil || len(issues) != 1 || !reflect.DeepEqual(issues[0], want) {
+					t.Fatalf("allocation fixture changed: issues=%d error=%v", len(issues), err)
+				}
+			}
+			parse() // Warm the decoder and any reusable reader before measuring.
+			const parses = 8
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for i := 0; i < parses; i++ {
+				parse()
+			}
+			runtime.ReadMemStats(&after)
+			bytesPerParse := (after.TotalAlloc - before.TotalAlloc) / parses
+			t.Logf("parses=%d bytes/parse=%d", parses, bytesPerParse)
+			// A small decoded record may allocate normally, but a warmed parse
+			// must not allocate another 10 MiB default line buffer each time.
+			if bytesPerParse > 1024*1024 {
+				t.Fatalf("warmed parse allocated %d bytes; want at most 1 MiB", bytesPerParse)
+			}
+		})
+	}
+}
+
+func TestParseReaderRetainsValuesAcrossReuseAndConcurrency(t *testing.T) {
+	for _, pooled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pooled=%v", pooled), func(t *testing.T) {
+			input, want := readerOwnershipFixture("retained")
+			retained, err := parseReaderFixture(strings.NewReader(input), ParseOptions{}, pooled)
+			if err != nil || len(retained) != 1 || !reflect.DeepEqual(retained[0], want) {
+				t.Fatalf("initial decoded value differs: issues=%d error=%v", len(retained), err)
+			}
+			largeDescription := strings.Repeat("different bytes 漢🙂", 16384)
+			large := `{"id":"large","title":"Large","status":"open","issue_type":"task","description":"` + largeDescription + `"}`
+			later, err := parseReaderFixture(strings.NewReader(large), ParseOptions{}, pooled)
+			if err != nil || len(later) != 1 || later[0].Description != largeDescription {
+				t.Fatalf("later large parse differs: issues=%d error=%v", len(later), err)
+			}
+			if !reflect.DeepEqual(retained[0], want) {
+				t.Fatal("later parse changed retained issue/dependency/comment/label values")
+			}
+
+			const workers = 4
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for worker := 0; worker < workers; worker++ {
+				wg.Add(1)
+				go func(worker int) {
+					defer wg.Done()
+					<-start
+					for iteration := 0; iteration < 2; iteration++ {
+						text, expected := readerOwnershipFixture(fmt.Sprintf("worker-%d-%d", worker, iteration))
+						issues, err := parseReaderFixture(strings.NewReader(text), ParseOptions{}, pooled)
+						if err != nil || len(issues) != 1 || !reflect.DeepEqual(issues[0], expected) {
+							t.Errorf("concurrent worker=%d iteration=%d result differs: issues=%d error=%v", worker, iteration, len(issues), err)
+						}
+						if !reflect.DeepEqual(retained[0], want) {
+							t.Errorf("concurrent parse changed the retained value in worker %d", worker)
+						}
+					}
+				}(worker)
+			}
+			close(start)
+			wg.Wait()
+
+			// A synchronous filter can parse another stream while the outer
+			// reader still holds unread lines. Both readers must remain owned.
+			second, secondWant := readerOwnershipFixture("second")
+			calls := 0
+			outer, err := parseReaderFixture(strings.NewReader(input+"\r\n"+second), ParseOptions{
+				IssueFilter: func(issue *model.Issue) bool {
+					calls++
+					innerText, innerWant := readerOwnershipFixture("nested")
+					inner, innerErr := parseReaderFixture(strings.NewReader(innerText), ParseOptions{}, pooled)
+					if innerErr != nil || len(inner) != 1 || !reflect.DeepEqual(inner[0], innerWant) {
+						t.Errorf("nested parse changed values: issues=%d error=%v", len(inner), innerErr)
+					}
+					return true
+				},
+			}, pooled)
+			if err != nil || calls != 2 || !reflect.DeepEqual(outer, []model.Issue{want, secondWant}) || !reflect.DeepEqual(retained[0], want) {
+				t.Fatalf("reentrant parse changed output/order/retained values: calls=%d issues=%d error=%v", calls, len(outer), err)
+			}
+		})
+	}
+}
+
+func TestParseReaderCallerOwnershipAndErrorRecovery(t *testing.T) {
+	input, want := readerOwnershipFixture("caller")
+	for _, size := range []int{64, DefaultMaxBufferSize, DefaultMaxBufferSize + 16} {
+		t.Run(fmt.Sprintf("caller-buffer=%d", size), func(t *testing.T) {
+			source := bytes.NewBufferString(input + "\r\n")
+			reader := bufio.NewReaderSize(source, size)
+			issues, err := ParseIssues(reader)
+			if err != nil || len(issues) != 1 || !reflect.DeepEqual(issues[0], want) {
+				t.Fatalf("caller reader parse differs: issues=%d error=%v", len(issues), err)
+			}
+			// Reading more data through the same caller-owned reader must work
+			// without a Reset: returning a borrowed reader must not detach it.
+			source.WriteString("caller still owns this stream")
+			remaining, err := io.ReadAll(reader)
+			if err != nil || string(remaining) != "caller still owns this stream" || reader.Size() != size {
+				t.Fatalf("caller reader was reset/replaced: remaining=%q size=%d error=%v", remaining, reader.Size(), err)
+			}
+		})
+	}
+	for _, pooled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("error-recovery-pooled=%v", pooled), func(t *testing.T) {
+			var stats ParseStats
+			// Deliberate read failure after one complete CRLF record; this is
+			// an I/O error control, not evidence about a live filesystem.
+			reader := io.MultiReader(strings.NewReader(input+"\r\n"), iotest.ErrReader(io.ErrUnexpectedEOF))
+			issues, err := parseReaderFixture(reader, ParseOptions{Stats: &stats}, pooled)
+			if !errors.Is(err, io.ErrUnexpectedEOF) || err.Error() != "error reading issues stream at line 2: unexpected EOF" || issues != nil || stats != (ParseStats{Valid: 1}) {
+				t.Fatalf("read failure lost error/line/accounting: issues=%d stats=%+v error=%v", len(issues), stats, err)
+			}
+			empty, err := parseReaderFixture(strings.NewReader(""), ParseOptions{}, pooled)
+			if err != nil || empty != nil {
+				t.Fatalf("empty parse after error = %#v, %v; want nil result", empty, err)
+			}
+			stats = ParseStats{}
+			issues, err = parseReaderFixture(strings.NewReader(input), ParseOptions{Stats: &stats}, pooled)
+			if err != nil || len(issues) != 1 || !reflect.DeepEqual(issues[0], want) || stats != (ParseStats{Valid: 1}) {
+				t.Fatalf("read error poisoned later parse: issues=%d stats=%+v error=%v", len(issues), stats, err)
+			}
+		})
+	}
 }

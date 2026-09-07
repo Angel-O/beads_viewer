@@ -79,12 +79,30 @@
   Pooled parsing is the sole failure: 7.926 ms versus 6.046 ms reference (+31.1%),
   above the unchanged 20% limit. No package is eligible; all prior gate failures
   remain intact.
-- [ ] Diagnose the pooled-parser failure from all four retained rounds and a
+- [x] Diagnose the pooled-parser failure from all four retained rounds and a
   bounded CPU/allocation profile. Its deterministic 1,000-issue byte-reader
   fixture is distinct from the FullTriage medium fixture. Pool code is unchanged
   from the reference, and both pooled/unpooled timings vary substantially; the
-  failed comparison alone does not identify an intrinsic slowdown. Preserve the
-  benchmark, fixture, limits and failed result. Package only after an eligible gate.
+  diagnostic timing reverses the failed comparison (6.320 ms reference versus
+  5.615 ms current), so it does not establish an intrinsic slowdown or replace
+  the failed gate. The exact fixture is 795,853 bytes with 4,990 dependencies.
+  Default read-buffer creation accounts for 68.45% of current allocation bytes
+  and 6.62% of sampled CPU; background GC accounts for 25.44% of CPU.
+- [x] Finish the bounded reader-cache repair and independent tests. Keep at most
+  one idle default 10 MiB buffer, preserve caller-owned readers and custom sizes,
+  and release input references. Independent old-code tests fail at about 10.49 MB
+  per small warmed parse; current tests pass at 3,400 bytes plain and 3,024 bytes
+  pooled. Ownership, concurrent/nested parsing, decoded-data isolation, read errors
+  and existing line/CRLF boundaries pass both versions. The paired 1k diagnostic
+  reports pooled 15.411 to 4.911 MB/op and 6.412 to 4.911 ms/op. Root's full
+  loader/UI race suite passes 2,359 test nodes with 11 existing skips, alongside
+  build/vet/first-party formatting and UBS (zero critical/warning findings).
+  Cold parsing still allocates one 10 MiB buffer; the cache retains at most one
+  idle buffer. These results do not replace the original failed gate or P1 matrix.
+- [ ] Commit the verified reader repair, run the original full gate on that clean
+  freeze, and update only an unstarted latency continuation to the same revision.
+  Preserve every earlier failure and all original fixtures, limits and counts.
+  Package only after an eligible gate, then execute the actual extracted binaries.
 - [ ] Finish all remaining CLI/exact/control stages of the original `93b90959`
   latency run, then execute the full original matrix once on `fbc41526` on hz3.
   Only the unstarted `30417526` waiting controller was superseded; its artifacts

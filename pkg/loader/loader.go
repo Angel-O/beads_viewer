@@ -1,7 +1,6 @@
 package loader
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	stdjson "encoding/json"
@@ -1024,7 +1023,10 @@ func parseIssuesWithOptions(r io.Reader, opts ParseOptions, usePool bool) ([]mod
 		}
 	}
 
-	reader := bufio.NewReaderSize(r, maxCapacity)
+	reader, cacheReader := acquireParseReader(r, maxCapacity)
+	if cacheReader {
+		defer releaseParseReader(reader)
+	}
 
 	warn := resolveWarnHandler(opts.WarningHandler, opts.WarningCount)
 	decodeOpts := opts
