@@ -397,7 +397,7 @@ func TestShortcutsSidebarShowsDedicatedScopeAndGlobalIssuesBindings(t *testing.T
 		"M":   "Match-add issues to active scope",
 		"esc": "Back/close",
 		"q":   "Back/quit",
-		"W":   "Close Scope screen",
+		"B":   "Return to List",
 	} {
 		if descriptions[key] != expected {
 			t.Fatalf("backlog sidebar %s description=%q, want %q", key, descriptions[key], expected)

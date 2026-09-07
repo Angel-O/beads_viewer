@@ -110,12 +110,12 @@ func TestScopesShortcutsSidebarCompositionFitsBeforeFinalClamp(t *testing.T) {
 					m.scopeCatalog = []ScopeInfo{{ID: "today", Name: "Today", Active: true}}
 				}
 
-				updated, _ := m.Update(keyMsg("W"))
+				updated, _ := m.Update(keyMsg("B"))
 				m = updated.(*Model)
 				updated, _ = m.Update(keyMsg(";"))
 				m = updated.(*Model)
 				if !m.showScopePicker || !m.showShortcutsSidebar {
-					t.Fatalf("W plus ; did not open Scopes with sidebar: picker=%t sidebar=%t", m.showScopePicker, m.showShortcutsSidebar)
+					t.Fatalf("B plus ; did not open Scopes with sidebar: picker=%t sidebar=%t", m.showScopePicker, m.showShortcutsSidebar)
 				}
 
 				var body string
