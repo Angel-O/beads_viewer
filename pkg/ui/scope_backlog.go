@@ -2115,6 +2115,7 @@ func scopeMemberColumnsFor(items []IssueItem, width int) scopeMemberColumns {
 	columns.repository = min(columns.repository, 16)
 	columns.issueType = min(columns.issueType, 10)
 	columns.id = min(maxInt(columns.id, len("ID")), 24)
+	naturalLabelsWidth := columns.labels
 	columns.labels = min(columns.labels, 20)
 	if columns.labels > 0 {
 		titleWidth = min(titleWidth, maxInt(width-columns.mark-columns.repository-columns.issueType-columns.priority-columns.status-columns.id-columns.age-columns.labels-8, 1))
@@ -2149,6 +2150,28 @@ func scopeMemberColumnsFor(items []IssueItem, width int) scopeMemberColumns {
 		default:
 			return columns
 		}
+	}
+	// Keep the existing title allocation, then give labels any unused terminal
+	// width instead of truncating them at the old fixed cap.
+	availableLabelsWidth := width - columns.mark - columns.repository - columns.issueType - columns.priority - columns.status - columns.id - columns.age - columns.title - separators
+	if availableLabelsWidth > columns.labels {
+		columns.labels = min(naturalLabelsWidth, availableLabelsWidth)
+	}
+	return columns
+}
+
+func scopeMemberColumnsForDisplayed(items []IssueItem, columns scopeMemberColumns, width int) scopeMemberColumns {
+	if len(items) == 0 {
+		return columns
+	}
+	displayedTitleWidth := 1
+	for _, item := range items {
+		displayedTitleWidth = maxInt(displayedTitleWidth, min(lipgloss.Width(item.Issue.Title), columns.title))
+	}
+	columns.title = displayedTitleWidth
+	if columns.labels > 0 {
+		separators := 8
+		columns.labels = maxInt(width-columns.mark-columns.repository-columns.issueType-columns.priority-columns.status-columns.id-columns.age-columns.title-separators, 1)
 	}
 	return columns
 }
@@ -2247,6 +2270,12 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 		items[i].Marked = s.memberMarkedIDs[items[i].Issue.ID]
 	}
 	columns := scopeMemberColumnsFor(items, width)
+	start := min(maxInt(s.memberViewportStart, 0), maxInt(len(items)-1, 0))
+	if s.memberSelected < start || s.memberSelected >= start+visible {
+		start = (s.memberSelected / visible) * visible
+	}
+	end := min(len(items), start+visible)
+	columns = scopeMemberColumnsForDisplayed(items[start:end], columns, width)
 	headerCells := []string{
 		scopeMemberCell("", columns.mark),
 		scopeMemberCell("CONTEXT", columns.repository),
@@ -2262,11 +2291,6 @@ func (s ScopePickerModel) renderMembers(width, rows int) string {
 	}
 	headerLine := truncateRunesHelper(strings.Join(headerCells, " "), maxInt(width, 1), "…")
 	lines := []string{header, filterLine, headerLine}
-	start := min(maxInt(s.memberViewportStart, 0), maxInt(len(items)-1, 0))
-	if s.memberSelected < start || s.memberSelected >= start+visible {
-		start = (s.memberSelected / visible) * visible
-	}
-	end := min(len(items), start+visible)
 	for i := start; i < end; i++ {
 		lines = append(lines, s.renderMemberRow(items[i], i == s.memberSelected, columns, width))
 	}

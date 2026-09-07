@@ -909,6 +909,36 @@ func TestScopeMemberTitleAndLabelColumnsAreNaturalAndBounded(t *testing.T) {
 	}
 }
 
+func TestScopeMemberWideRowKeepsTitleAndLabelsVisible(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
+	const title = "Widest displayed title"
+	const labels = "repository-aware,viewer-scope-counts"
+	picker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "member-1", Title: "Visible title", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: strings.Split(labels, ",")}},
+		{Issue: model.Issue{ID: "member-2", Title: title, Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"frontend"}}},
+		{Issue: model.Issue{ID: "member-3", Title: "An offscreen title establishes the existing maximum title allocation", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"backend"}}},
+	})
+	const width = 120
+	maximum := scopeMemberColumnsFor(picker.filteredMembers, width)
+	if maximum.title <= lipgloss.Width(title) {
+		t.Fatalf("test data did not establish a wider existing title maximum: columns=%+v", maximum)
+	}
+	view := ansi.Strip(picker.renderMembers(width, 5))
+	rows := make([]string, 0, 2)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "member-1") || strings.Contains(line, "member-2") {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 2 || !strings.Contains(rows[0], "Visible title") || !strings.Contains(rows[1], title) || !strings.Contains(rows[0], labels) {
+		t.Fatalf("wide member rows clipped fitting title or labels:\n%s", view)
+	}
+	if labelAt := displayOffset(rows[0], labels); labelAt >= displayOffset(rows[0], "Visible title")+maximum.title {
+		t.Fatalf("labels retained the offscreen title gap: maximum=%+v row=%q", maximum, rows[0])
+	}
+}
+
 func TestScopeMemberHeaderCallsContextColumnContext(t *testing.T) {
 	picker := NewScopePickerModel(testTheme())
 	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
