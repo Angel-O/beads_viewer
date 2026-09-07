@@ -49,6 +49,79 @@ func TestComputeIssueFingerprintFrozenEncoding(t *testing.T) {
 			}
 		})
 	}
+
+	// Freeze the aggregate encoding too, including transitions from a long
+	// content/dependency digest to an empty issue and duplicate-ID ordering.
+	for _, tc := range []struct {
+		name   string
+		issues []model.Issue
+		want   string
+	}{
+		{"full", []model.Issue{cases[0].issue}, "353b785cb4435228d2432679d2ab999a79986b3faae1967919af4471fb8cbdc3"},
+		{"empty", []model.Issue{cases[1].issue}, "3468cdfcfb0298da8c7f4a442f2312449c131fdb822f11d2c50bb952fbede552"},
+		{"present-empty", []model.Issue{cases[2].issue}, "bc2a77f2da5867067daa54ae8ac7bfdcfa7e71fb48716464b14950a2f9418127"},
+		{"mixed", []model.Issue{cases[0].issue, cases[1].issue, cases[2].issue}, "a03a3dd4735909b3cd7f8deaac5324d1bb1ffd442a73d3b2225db9f0dd4a99b5"},
+		{"reversed-duplicates", []model.Issue{cases[2].issue, cases[0].issue, cases[1].issue}, "922ad9f2ae582c8638c34d7d64eb327c0867962894d07cd264a4642bf66c6954"},
+	} {
+		t.Run("aggregate/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			before, err := json.Marshal(tc.issues)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := analysis.ComputeDataHash(tc.issues); got != tc.want {
+				t.Fatalf("canonical aggregate changed: got %s want %s", got, tc.want)
+			}
+			after, err := json.Marshal(tc.issues)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("fingerprinting changed caller-owned issue data")
+			}
+		})
+	}
+}
+
+func TestComputeDataHashAllocationBound(t *testing.T) {
+	issues := make([]model.Issue, 256)
+	for i := range issues {
+		issues[i] = model.Issue{ID: fmt.Sprint(i), Title: "allocation bound", Description: strings.Repeat("日本語\x00", 128)}
+	}
+	want := analysis.ComputeDataHash(issues)
+	allocs := testing.AllocsPerRun(5, func() {
+		if got := analysis.ComputeDataHash(issues); got != want {
+			t.Fatalf("repeated hash changed: got %s want %s", got, want)
+		}
+	})
+	t.Logf("256-issue aggregate: %.0f allocations", allocs)
+	// Allow four allocations per issue, including the aggregate's overhead.
+	// Recreating both the buffered writer and SHA state for every issue exceeds
+	// this bound even when the content itself is streamed without allocations.
+	if allocs > 4*float64(len(issues)) {
+		t.Fatalf("aggregate hashing allocated %.0f times; want at most %d", allocs, 4*len(issues))
+	}
+}
+
+func BenchmarkComputeDataHash(b *testing.B) {
+	for _, count := range []int{100, 10000} {
+		for _, dependencies := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%d/dependencies=%t", count, dependencies), func(b *testing.B) {
+				issues := make([]model.Issue, count)
+				for i := range issues {
+					issues[i] = model.Issue{ID: fmt.Sprint(i), Title: "fingerprint benchmark", Description: strings.Repeat("日本語\x00", 128), Status: model.StatusOpen}
+					if dependencies && i > 0 {
+						issues[i].Dependencies = []*model.Dependency{{IssueID: issues[i].ID, DependsOnID: issues[i-1].ID, Type: model.DepBlocks}}
+					}
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					analysis.ComputeDataHash(issues)
+				}
+			})
+		}
+	}
 }
 
 func BenchmarkComputeIssueFingerprintText(b *testing.B) {

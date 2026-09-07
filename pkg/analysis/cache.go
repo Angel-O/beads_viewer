@@ -173,10 +173,11 @@ func ComputeDataHash(issues []model.Issue) string {
 		IssueFingerprint
 		position int
 	}
+	h := newFingerprintWriter()
 	fingerprints := make([]orderedFingerprint, len(issues))
 	for i := range issues {
 		fingerprints[i] = orderedFingerprint{
-			IssueFingerprint: ComputeIssueFingerprint(issues[i]),
+			IssueFingerprint: h.fingerprint(issues[i]),
 			position:         i,
 		}
 	}
@@ -190,7 +191,7 @@ func ComputeDataHash(issues []model.Issue) string {
 		return fingerprints[i].position < fingerprints[j].position
 	})
 
-	h := newFingerprintWriter()
+	h.reset()
 	writeUintHash(h, uint64(len(fingerprints)))
 	for _, fingerprint := range fingerprints {
 		writeStringHash(h, fingerprint.ID)
@@ -222,26 +223,33 @@ type IssueDiff struct {
 
 // ComputeIssueFingerprint returns the fingerprint for a single issue.
 func ComputeIssueFingerprint(issue model.Issue) IssueFingerprint {
+	return newFingerprintWriter().fingerprint(issue)
+}
+
+// fingerprint reuses call-owned scratch space. Each returned hash is an owned
+// string, so resetting the writer cannot change an earlier fingerprint.
+func (h *fingerprintWriter) fingerprint(issue model.Issue) IssueFingerprint {
 	return IssueFingerprint{
 		ID:             issue.ID,
-		ContentHash:    computeIssueContentHash(issue),
-		DependencyHash: computeIssueDependencyHash(issue),
+		ContentHash:    computeIssueContentHash(h, issue),
+		DependencyHash: computeIssueDependencyHash(h, issue),
 	}
 }
 
 // ComputeIssueDiff compares old and new issue slices and returns an IssueDiff.
 func ComputeIssueDiff(oldIssues, newIssues []model.Issue) IssueDiff {
+	h := newFingerprintWriter()
 	oldFP := make(map[string]IssueFingerprint, len(oldIssues))
 	oldCounts := make(map[string]int, len(oldIssues))
 	for i := range oldIssues {
-		fp := ComputeIssueFingerprint(oldIssues[i])
+		fp := h.fingerprint(oldIssues[i])
 		oldFP[fp.ID] = fp
 		oldCounts[fp.ID]++
 	}
 	newFP := make(map[string]IssueFingerprint, len(newIssues))
 	newCounts := make(map[string]int, len(newIssues))
 	for i := range newIssues {
-		fp := ComputeIssueFingerprint(newIssues[i])
+		fp := h.fingerprint(newIssues[i])
 		newFP[fp.ID] = fp
 		newCounts[fp.ID]++
 	}
@@ -294,8 +302,8 @@ func ComputeIssueDiff(oldIssues, newIssues []model.Issue) IssueDiff {
 	return diff
 }
 
-func computeIssueContentHash(issue model.Issue) string {
-	h := newFingerprintWriter()
+func computeIssueContentHash(h *fingerprintWriter, issue model.Issue) string {
+	h.reset()
 
 	writeStringHash(h, issue.Title)
 	writeStringHash(h, issue.Description)
@@ -367,7 +375,7 @@ func computeIssueContentHash(issue model.Issue) string {
 	return h.sumHex()
 }
 
-func computeIssueDependencyHash(issue model.Issue) string {
+func computeIssueDependencyHash(h *fingerprintWriter, issue model.Issue) string {
 	if len(issue.Dependencies) == 0 {
 		return "none"
 	}
@@ -410,7 +418,7 @@ func computeIssueDependencyHash(issue model.Issue) string {
 		return deps[i].createdBy < deps[j].createdBy
 	})
 
-	h := newFingerprintWriter()
+	h.reset()
 	writeUintHash(h, uint64(len(deps)))
 	for _, dep := range deps {
 		writeStringHash(h, dep.issueID)
@@ -434,6 +442,11 @@ type fingerprintWriter struct {
 
 func newFingerprintWriter() *fingerprintWriter {
 	return &fingerprintWriter{hash: sha256.New()}
+}
+
+func (w *fingerprintWriter) reset() {
+	w.hash.Reset()
+	w.used = 0
 }
 
 func (w *fingerprintWriter) flush() {
