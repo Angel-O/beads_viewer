@@ -143,12 +143,53 @@
   write failure occurred before native execution and is retained separately;
   the native harness executed once. Native Go remains 1.26.5. This does not prove
   packaged archives, missing platforms, publication or PS5 emoji rendering.
-- [ ] After an eligible source gate, package and test extracted binaries from
-  that same revision. Packaging preparation does not establish full P1 latency,
-  missing native-platform acceptance or publication.
+- [x] Package all five targets from eligible clean `7f708334` using the original
+  package/seal/verify commands and local-only tag `v0.23.1-rc.20260907.7f708334`.
+  Packaging passes in 75.938 seconds at 03:49:37 UTC. Every binary records the
+  exact revision, Go 1.25.5 and CGO disabled; the sealed receipt hash is `58d0be74`.
+  All five archives and checksums are copied and hash-verified locally under
+  `/data/tmp/bv-delivery-7f708334-20260907/archives`. Nothing was published.
+- [x] Execute the extracted Linux amd64 archive: 58 smoke cases, all 40 scope
+  cases, the original broken partial-workspace control plus repaired observation,
+  and all 14 live tracker-route children plus parent pass. All 4,258 source-file
+  hashes, seven original inputs, archive/binary and sealed receipt remain unchanged.
+  The existing helper's 16 scope and four partial assertions are unchanged. Raw
+  evidence is on vmi1149989 under `/data/tmp/bv-archive-7f-root-20260907`.
+  The route tests use isolated fixed br; TestMain also builds a setup CLI, and the
+  original smoke helper retains only final per-command stderr, not every stream.
+- [x] Execute the actual Windows amd64 archive with the unchanged six-command
+  acceptance and original 180-second bound. JSONL readiness is `ops-1,web-9`;
+  SQLite readiness is `native-sqlite-ready`; both metadata-free inputs withhold
+  claims and retain complete source authority. All six commands pass with empty
+  stderr, and 13 copied result/stream hashes match native readback. Archive,
+  executable and original fixtures remain unchanged. Local evidence is under
+  `/data/tmp/bv-archive-7f-root-20260907/windows-raw`, with matching Windows TEMP
+  storage. Initial stdin-based PowerShell staging created only the directory;
+  file-based staging copied the original fixtures before the one acceptance run.
+- [x] Record verification ownership accurately: the independent agents reached
+  their usage limit before archive execution. Root adapted only path/revision/hash
+  literals in the existing helpers and executed both archive checks, then reviewed
+  their raw outputs. This is root verification, not independent archive replay.
+- [ ] Finish the separate full P1 matrix and missing native-platform acceptance.
+  At 04:03:00 UTC, original `93b90959` has 66/72 timed CLI and 0/36 exact records;
+  its wrapper remains active and `7f708334` remains queued. Earlier UI failures
+  remain retained. Cross-compilation and available-platform checks do not close
+  the unavailable Mac/Linux ARM64 requirements.
 - [ ] Resolve authorized installed tracker repair and missing native Mac/Linux
   ARM64 access. These remain external prerequisites; the original S5/V5/final
   tasks stay open or blocked.
+
+Current rescore for goals changed by this continuation (the September 6 table
+below remains the historical assessment; other rows retain its stated limits):
+
+| Goal | Current state | Evidence and remaining scope |
+|---|---|---|
+| 1: JSONL loading | WORKING | Repaired decoder and bounded reader reuse pass independent old/current controls, full source race suites and extracted Linux/Windows checks at `7f708334`. Full performance acceptance remains goal 41. |
+| 29: Graph navigation | WORKING | Original graph implementation/proof tasks now pass actual key-dispatch and PTY acceptance; background critical-chain preparation preserves selection and visible graph semantics. Goal 41 retains current tail-latency limits. |
+| 37: Checked source produces matching archives | WORKING | The complete ten-stage `7f708334` gate and original five-target package/seal/verify pass. Actual extracted Linux and Windows checks use those bytes. Older affected archives remain retained; no publication is claimed. |
+| 40: Local/remote verification | PARTIAL | Current source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
+| 41: Large-dataset responsiveness | PARTIAL | The unchanged four-round benchmark gate passes with a 99.1% faster 5k snapshot swap and 13.1% faster pooled parsing. Original `93b90959` has four UI handler-limit misses and incomplete CLI/exact stages; the full current matrix is queued, not passed. |
+| 43: Recorded blocking time and causal transitions | WORKING | Closed `bv-j74w`/`bv-apal.11` now have independently executed real Git and CLI proof of six blocked hours in a ten-hour lifecycle, overlapping and ongoing waits, historical cutoffs, warm-cache identity and contradictory clocks. Unknown intervals remain unknown; chronology alone is not causal evidence and nonblocked time is not measured work effort. Current full source tests preserve this implementation. |
 
 ## Implementation continuation — 2026-09-06
 
