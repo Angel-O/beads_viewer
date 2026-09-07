@@ -9,6 +9,7 @@ retained below.
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
+| [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
 | [`v0.22.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.22.0) | 2026-08-25 | GitHub Release | Makes snapshot delivery pointer-based and incrementally rebuilds safe list changes, with measured UI latency and allocation reductions. |
 | [`v0.21.2`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.21.2) | 2026-08-24 | GitHub Release | Publishes the 50-pass performance campaign, verified binaries, checksums, SBOM, and corrected Nix guidance. |
@@ -18,6 +19,39 @@ retained below.
 ---
 
 ## [Unreleased]
+
+---
+
+## [v0.24.0] -- 2026-09-07 (Release)
+
+### Performance (latency campaign `bv-apal.1`)
+
+- **Analysis:** canonical graph hashing streams through successors instead of boxing and sorting every edge, so allocations scale with nodes (`fbc41526`); `ComputeDataHash` / `ComputeIssueDiff` reuse one fingerprint writer per call, 1,289 -> 777 allocations per 256-issue aggregate (`c48bd53c`); the ready set is reused across parallel-gain candidates and marginal unlock IDs are selected without copying issues (`9a72543d`, `187f7525`); blocker IDs sort without reflection (`347134f1`); the regenerable analysis cache no longer forces durable flushes (`4b018e1b`); the drift `Calculator` gains `ReuseAnalyzer` to share precomputed readiness and topology across runs (`1713989c`); Phase 2 analysis is size-tiered with a deterministic betweenness approximation that reduces in sample order (`341a0005`).
+- **TUI:** the visible critical chain is computed once, at snapshot construction, instead of on the event loop (`735f246a`, `30417526`); full list rows are initialised in place and incremental row copies are avoided (`934da756`, `e3dcc7ce`); owned readiness data is compacted (`84cf799b`); background Phase 2 preparation no longer mutates the active model (`1c5d55f9`); snapshot diffing and markdown element layout allocate less (`f2bad78d`).
+- **Loader / search:** one default 10 MiB JSONL reader is retained between parses while caller-owned buffers keep their semantics (`7f708334`); streaming readers and concurrency pooling in `internal/datasource` and `pkg/loader` (`3b4df94d`); metrics vector-search caching layers (`19323918`).
+- **Vendored renderers:** `strings.Builder` replaces quadratic concatenation in chroma `coalesce.go` and glamour `ansi/elements.go`, and reflow `padding.go` uses `runewidth.RuneWidth` (`5e16bff3`). These are hand patches under `vendor/`; a bare `go mod vendor` reverts them.
+
+### Fixed
+
+- Graph navigation and historical causality restored: pan, scroll and expansion follow bounded visible dependency paths with a deterministic highlighted chain; historical transition and dependency authority survive extraction and caching, observed waits carry explicit uncertainty, and causal history is bound to the selected revision and source path (`93b90959`).
+- Decoder cache synchronised and pseudo-versions filtered (`40644bd9`); XFetch cache refresh keyed on the actual expiry (`8285b6f6`).
+- SQLite export creates its schema atomically (`a4f8245b`).
+- Robot parallel-gain output omits elapsed timing when the clock is pinned, keeping envelopes reproducible (`5814bed8`).
+- Graph WASM build remaps compiler source paths (`8cd63299`); the frozen 1,000-issue benchmark input is tracked so a clean checkout can run the release gate (`09fed4e9`).
+
+### Changed
+
+- Robot registry outputs, `defer_until` flags and CLI fixtures harmonised (`54db481b`); the interactive HTML graph export embeds the robot envelope (`19323918`); readiness scopes modelled with projection and authority boundaries, richer triage recommendations, cycle detection and ETA prediction (`341a0005`); graph-analysis invariants, vector indexing and SQLite export schema validation hardened (`3db9dd04`); ingestion pipelines, `defer_until` parsing and workspace path resolution hardened (`3b4df94d`).
+- Release engineering: goreleaser dist output isolated to `/tmp/bv-dist` with `CGO_ENABLED=0` and `GOWORK=off` (`a90029b8`, `0aca294f`); `install.sh` / `install.ps1` handle native packaging with checksum verification and isolated release verification; `scripts/release_gate.sh` writes logs and receipts outside the checkout; the `bv-graph-wasm` Rust toolchain is pinned; installer, gate, WASM and dashboard smoke tests live under `tests/scripts` (`0aca294f`); smoke and installer artifacts are retained as evidence (`8a6386e9`).
+- Tests: end-to-end coverage for robot scoping, search relevance, recipe execution, export flows and board/swimlane interaction, plus benchmark workloads isolated from tree state and a frozen real correlation history (`087a847f`, `1a400830`, `257427df`, `f9d950a0`).
+
+### Dependencies
+
+- `golang.org/x/text` v0.38.0 -> v0.41.0 (fixes GO-2026-5970, reachable through `norm.Form.Properties`), `golang.org/x/image` v0.42.0 -> v0.45.0, `golang.org/x/net` -> v0.58.0; `vendor/` regenerated with the three hand-patched files above preserved (`1e8acace`, #200).
+
+### Housekeeping
+
+- Version metadata bumped to v0.24.0 (`flake.nix`, `pkg/version` fallback, README install examples, installer test defaults).
 
 ---
 
@@ -1130,7 +1164,8 @@ Initial release of Beads Viewer -- a keyboard-driven terminal interface for the 
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.24.0...HEAD
+[v0.24.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.23.0...v0.24.0
 [v0.23.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.22.0...v0.23.0
 [v0.22.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.2...v0.22.0
 [v0.21.2]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.1...v0.21.2

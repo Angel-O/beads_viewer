@@ -156,8 +156,8 @@ bash tests/scripts/install_sh_test.sh \
   /path/to/previous-platform.tar.gz PREVIOUS_ARCHIVE_SHA256
 ```
 
-Set `CURRENT_TAG` and `PREVIOUS_TAG` when testing versions other than v0.23.0
-and v0.22.0. Obtain the archive hashes independently from the release's verified
+Set `CURRENT_TAG` and `PREVIOUS_TAG` when testing versions other than v0.24.0
+and v0.23.0. Obtain the archive hashes independently from the release's verified
 checksum manifest. This harness executes the native binaries and the shell
 installer's entry point; local file transport controls its negative fixtures.
 It rejects wrong-version, corrupt, and missing-binary archives, and verifies
