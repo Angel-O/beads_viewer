@@ -1707,17 +1707,18 @@ func putRobotDiskCachedStats(fullKey, dataHash, configHash string, stats *GraphS
 		return
 	}
 
-	// Serialize writers and evictions across processes with a directory-level
-	// lock file; readers stay lock-free (atomic rename gives them a complete
-	// entry either way). This bounds the cost of a store to this one entry —
-	// under v2 every store rewrote and fsynced the entire multi-entry file.
+	// Serialize writers and evictions across processes without waiting for a
+	// busy writer: this regenerable cache must not delay Phase 2 completion or
+	// a robot response. Readers stay lock-free; atomic rename gives them a
+	// complete entry even when another caller skips publication under contention.
 	lockPath := filepath.Join(dir, ".lock")
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return
 	}
 	defer lf.Close()
-	if err := lockFile(lf); err != nil {
+	locked, err := tryLockFile(lf)
+	if err != nil || !locked {
 		return
 	}
 	defer func() { _ = unlockFile(lf) }()

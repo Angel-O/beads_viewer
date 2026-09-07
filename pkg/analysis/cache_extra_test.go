@@ -609,15 +609,108 @@ func TestRobotDiskCacheRunToCompletionSuppressesXFetch(t *testing.T) {
 	}
 }
 
+func TestPutRobotDiskCacheSkipsContendedWriter(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1")
+	t.Setenv("BV_NO_CACHE", "")
+	t.Setenv("BV_CACHE_DIR", t.TempDir())
+	t.Setenv("BEADS_DB", "")
+	t.Setenv("BEADS_DIR", filepath.Join(t.TempDir(), "missing-beads-dir"))
+	t.Setenv(EnvSourceDateEpoch, "")
+	t.Setenv(EnvSkipPhase2, "")
+	t.Setenv(EnvPhase2TimeoutSeconds, "")
+
+	issues := []model.Issue{
+		{ID: "cache-lock-A", Status: model.StatusOpen},
+		{ID: "cache-lock-B", Status: model.StatusOpen, Dependencies: []*model.Dependency{
+			{DependsOnID: "cache-lock-A", Type: model.DepBlocks},
+		}},
+	}
+	config := ConfigForSize(len(issues), 1)
+	analyzer := NewAnalyzer(issues)
+	stats := analyzer.AnalyzeAsyncWithConfig(context.Background(), config)
+	stats.WaitForPhase2()
+	dataHash, configHash := analyzer.DataHash(), ComputeConfigHash(&config)
+	key := dataHash + "|" + configHash
+	dir, err := robotAnalysisDiskCacheDir(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, robotAnalysisEntryFileName(key))
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read initial writer-produced entry: %v", err)
+	}
+
+	lock, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := lockFile(lock); err != nil {
+		t.Fatal(err)
+	}
+	locked := true
+	done := make(chan struct{})
+	defer func() {
+		if locked {
+			_ = unlockFile(lock)
+		}
+		<-done
+	}()
+	const duration = 42 * time.Millisecond
+	go func() {
+		putRobotDiskCachedStats(key, dataHash, configHash, stats, duration)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("best-effort cache publication blocked behind an active writer")
+	}
+	if after, err := os.ReadFile(path); err != nil || string(after) != string(before) {
+		t.Fatalf("contended publication modified the existing entry: err=%v", err)
+	}
+	if err := unlockFile(lock); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+
+	// Contention drops only this optional write; a later writer must still
+	// publish a complete entry that the real cache reader accepts.
+	putRobotDiskCachedStats(key, dataHash, configHash, stats, duration)
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry robotAnalysisDiskCacheEntry
+	if err := json.Unmarshal(after, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.ComputeDuration != duration {
+		t.Fatalf("later publication duration=%v, want %v", entry.ComputeDuration, duration)
+	}
+	if got, _, hit := getRobotDiskCachedStats(key); !hit || got == nil || got.NodeCount != 2 || got.EdgeCount != 1 {
+		t.Fatalf("later publication is not a complete cache hit: hit=%v stats=%v", hit, got)
+	}
+}
+
 func TestRemoveRobotDiskCacheEntryIfSamePreservesConcurrentReplacement(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "entry.json")
 	if err := os.WriteFile(path, []byte("old corrupt entry"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	oldInfo, err := os.Stat(path)
+	// The reader captures identity from its open handle. On Windows, os.Stat
+	// defers fetching file IDs until SameFile, which would inspect the later
+	// replacement at this path instead of remembering the original file.
+	opened, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	oldInfo, statErr := opened.Stat()
+	closeErr := opened.Close()
+	if statErr != nil || closeErr != nil {
+		t.Fatalf("capture original reader identity: stat=%v close=%v", statErr, closeErr)
 	}
 
 	lock, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o644)

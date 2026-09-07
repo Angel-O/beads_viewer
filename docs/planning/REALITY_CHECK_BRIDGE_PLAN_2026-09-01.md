@@ -2,6 +2,45 @@
 
 ## Delivery continuation — 2026-09-07
 
+- [x] Reproduce cache-writer contention using the actual 4a Linux archive on
+  the separate 212 worker. Three warmups plus ten samples per condition give
+  median 65.293 ms without contention and 1,020.625 ms with a one-second lock
+  hold. A separate syscall profile spends 2.915112 s in blocking `flock` during
+  a three-second hold. This controlled reproduction does not explain the
+  measured host's journal stalls. Evidence: `/data/tmp/bv-cache-contention-7y6udeip`.
+- [x] Freeze all 27 original complete fixed-clock outputs before the change;
+  they agree after excluding only the original named duration fields, with
+  canonical digest `245301c118240f87c6f4d9a0e93000dee2d92559b4330c0b5e3ecd2199b4a7ac`.
+  Opportunity score: impact 4 × confidence 5 / effort 1 = 20.
+- [x] Prove the new contention regression fails on old code, then reuse the
+  existing nonblocking lock for best-effort cache publication. Preserve the
+  existing entry under contention and prove later successful publication.
+- [x] Run unchanged regression, affected race tests, build/vet/format and the
+  same actual CLI comparison. Preserve output/ranking/metric parity and prove
+  the busy lock no longer delays the response. Keep full P1 acceptance open.
+  The Linux old regression fails at 2.01 s; the repaired code passes. Affected
+  race suites pass 3,343 test nodes with 28 existing environment/opt-in skips;
+  all 14 original CLI parity-control nodes pass. Build/vet pass on Go 1.25.5,
+  and formatting lists only 49 unchanged vendor files. UBS finds zero critical
+  and three reviewed heuristics (cache.Get, deferred recover, selected-file
+  module detection), with no suppression. With matching version metadata, all
+  27 complete CLI outputs retain the frozen digest. Contended median becomes
+  64.826 ms, max 65.608 ms, versus 1,020.625 ms before; uncontended median is
+  64.855 ms. These ten-sample diagnostics include harness wait overhead and
+  fixed-clock analysis, not production p99. The trace now returns EAGAIN from
+  nonblocking flock in 27 microseconds.
+  Native Windows exercises the same frozen test assertions:
+  old publication fails after 2.03 s; the repaired publication passes in 0.03 s.
+  The existing replacement-cleanup fixture initially failed because Windows
+  os.Stat loads file identity lazily. It now captures identity from an open
+  handle, as production does; all assertions remain and pass with both old
+  and new production code. Original failures and the initial CLI version-only
+  mismatch remain preserved. Root owns all verification; no independent-agent
+  or full P1 completion is claimed.
+- [ ] Freeze the verified repair and run the original complete source gate.
+  Only then update the waiting latency revision; preserve the measured 7f run
+  and all earlier evidence. Current 4a delivery remains evidence for that source.
+
 - [x] Reconcile the concurrent 06:39:53 UTC rebase onto the v0.24.0 release
   metadata. `250a8b98` became `6c8a4474`; `main` is now `4a5a564f`, tree
   `bc83f8b0`. Full content comparison confirms unchanged hash-reuse code/tests
@@ -37,8 +76,18 @@
   Its supersession receipt remains in the old launch directory. New PID 889059/
   start 101177584 queues exact 4a once, with original counts/deadlines/controls.
 - [ ] Complete that queued 4a matrix and its original final acceptance. At
-  07:10:35 UTC measured 7f has 288 UI/six CLI/zero exact records, and 4a remains queued
+  07:25:03 UTC measured 7f has 288 UI/eight CLI/zero exact records, and 4a remains queued
   without a failed precondition or measured start. No full P1 pass is claimed.
+- [x] Inspect all eight completed CLI records (four baseline/current pairs,
+  200 samples per record) without repeating measured commands. Quantiles
+  recompute correctly; fixture, runtime and decision projections agree, with
+  zero recorded parity mismatches. Both binaries have long 5k pauses: warm
+  current p99 13.299 s/max 24.540 s; baseline p99 53.616 s/max 77.203 s.
+  Two live baseline snapshots at 07:23–07:24 UTC show `jbd2_log_wait_commit`.
+  Host I/O full pressure averages 77.67% over 60 seconds, with 180 GiB free.
+  Reading the waiting thread's syscall is denied, so its exact call/file and
+  the cause of current-binary pauses remain unproven. Preserve the original
+  run and deadline; this diagnosis gives no full-matrix or latest-4a credit.
 
 - [x] Trace the remaining duplicate CLI dataset hash in the c48 warm 10k CPU
   profile: 50/560 sampled ms in ComputeDataHash, including 30 ms under source
