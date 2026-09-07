@@ -715,7 +715,7 @@ func TestScopeScreenFromGlobalIssuesReturnsToListAndReopensGlobalIssues(t *testi
 	}
 	updated, cmd := m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if !m.showScopePicker || m.isBacklogView || m.focused != focusGlobalIssues || cmd == nil {
+	if !m.showScopePicker || m.isBacklogView || m.focused != focusGlobalIssues || cmd != nil {
 		t.Fatalf("B transition: scope=%t backlog=%t focus=%s cmd=%t", m.showScopePicker, m.isBacklogView, m.focused, cmd != nil)
 	}
 }
@@ -1261,8 +1261,203 @@ func TestPagedScopePickerFiltersResetPageAndRejectStaleMembers(t *testing.T) {
 		t.Fatalf("mark count=%d, want 1", m.scopePicker.MemberMarkCount())
 	}
 	m.closeScopePicker()
-	if m.scopePicker.MemberPageIndex() != 0 || m.scopePicker.CatalogPageIndex() != 0 || m.scopePicker.MemberMarkCount() != 0 {
-		t.Fatalf("return did not reset picker paging/marks: member=%d catalog=%d marks=%d", m.scopePicker.MemberPageIndex(), m.scopePicker.CatalogPageIndex(), m.scopePicker.MemberMarkCount())
+	if m.scopePicker.MemberPageIndex() != 0 || m.scopePicker.CatalogPageIndex() != 0 || m.scopePicker.MemberMarkCount() != 1 {
+		t.Fatalf("normal return reset retained picker state: member=%d catalog=%d marks=%d", m.scopePicker.MemberPageIndex(), m.scopePicker.CatalogPageIndex(), m.scopePicker.MemberMarkCount())
+	}
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "reset-me"}}}, 0)
+	m.backlog.ToggleMark()
+	m.backlog.Reset()
+	m.scopePicker.ResetPaging()
+	if m.backlog.CurrentIssue() != nil || m.backlog.MarkCount() != 0 || m.scopePicker.MemberMarkCount() != 0 {
+		t.Fatal("explicit reset did not clear destructive session state")
+	}
+}
+
+func TestNormalScopeViewSwitchesSuspendAndResumeWithoutReload(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		key       string
+		focus     focus
+		member    bool
+		wantBoard bool
+		wantGraph bool
+	}{
+		{name: "list", key: "B", focus: focusGlobalIssues},
+		{name: "board", key: "b", focus: focusScopePicker, member: true, wantBoard: true},
+		{name: "graph", key: "g", focus: focusScopePicker, member: true, wantGraph: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalogLoads, memberLoads, backlogLoads := 0, 0, 0
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				QueryCatalog: func(context.Context, ScopeCatalogQuery) (ScopeCatalogPage, error) {
+					catalogLoads++
+					return ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "s1", Name: "Today"}}}, nil
+				},
+				QueryMembers: func(_ context.Context, query ScopeMembersQuery) (ScopeMembersPage, error) {
+					memberLoads++
+					return ScopeMembersPage{Scope: ScopeInfo{ID: query.ScopeID}, Members: []model.Issue{{ID: "member-1"}}}, nil
+				},
+				QueryBacklog: func(context.Context, BacklogQuery) (BacklogPage, error) {
+					backlogLoads++
+					return BacklogPage{Issues: []model.Issue{{ID: "global-1", Title: "keep me"}, {ID: "global-2", Title: "keep me too"}}}, nil
+				},
+			}})
+			for _, message := range runUISemanticCommands(m.openScopePicker("")) {
+				updated, _ := m.Update(message)
+				m = updated.(*Model)
+			}
+			m.scopePicker.memberFocused = tc.member
+			m.focused = tc.focus
+			m.backlog.AddFilter("keep")
+			m.backlog.Move(1)
+			m.backlog.ToggleMark()
+			before := [3]int{catalogLoads, memberLoads, backlogLoads}
+
+			updated, cmd := m.Update(keyMsg(tc.key))
+			m = updated.(*Model)
+			if cmd != nil || m.showScopePicker || m.isBoardView != tc.wantBoard || m.isGraphView != tc.wantGraph {
+				t.Fatalf("switch key=%q: cmd=%t scope=%t board=%t graph=%t", tc.key, cmd != nil, m.showScopePicker, m.isBoardView, m.isGraphView)
+			}
+
+			if cmd = m.openScopePicker(""); cmd != nil {
+				t.Fatalf("resume key=%q reloaded Scope", tc.key)
+			}
+			if !m.showScopePicker || m.focused != tc.focus || m.scopePicker.memberFocused != tc.member {
+				t.Fatalf("resume key=%q lost pane focus: shown=%t focus=%s member=%t", tc.key, m.showScopePicker, m.focused, m.scopePicker.memberFocused)
+			}
+			if m.backlog.Filter() != "keep" || m.backlog.MarkCount() != 1 || m.backlog.CurrentIssue() == nil || m.backlog.CurrentIssue().ID != "global-2" {
+				t.Fatalf("resume key=%q lost backlog values: filter=%q marks=%d current=%#v", tc.key, m.backlog.Filter(), m.backlog.MarkCount(), m.backlog.CurrentIssue())
+			}
+			if got := [3]int{catalogLoads, memberLoads, backlogLoads}; got != before {
+				t.Fatalf("resume key=%q reloaded services: before=%v after=%v", tc.key, before, got)
+			}
+		})
+	}
+}
+
+func TestScopeViewSwitchEndsFilterEditorsWithoutDroppingValues(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.showScopePicker = true
+	m.scopeSessionInitialized = true
+	m.scopePickerOrigin = focusList
+	m.focused = focusGlobalIssues
+	m.backlog.BeginSearch()
+	m.backlog.AddFilter("search-value")
+	m.backlog.BeginLabelEdit()
+	m.backlog.UpdateLabelInput(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("label-value")})
+
+	updated, cmd := m.Update(keyMsg("g"))
+	m = updated.(*Model)
+	if cmd != nil || m.backlog.Searching() || m.backlog.LabelEditing() {
+		t.Fatalf("graph switch left filter editor active: cmd=%t search=%t label=%t", cmd != nil, m.backlog.Searching(), m.backlog.LabelEditing())
+	}
+	if m.backlog.Filter() != "search-value" || m.backlog.LabelInputValue() != "label-value" {
+		t.Fatalf("filter values changed while ending editors: filter=%q label=%q", m.backlog.Filter(), m.backlog.LabelInputValue())
+	}
+	if cmd = m.openScopePicker(""); cmd != nil || m.backlog.Filter() != "search-value" || m.backlog.LabelInputValue() != "label-value" {
+		t.Fatalf("re-entry changed retained filter values: cmd=%t filter=%q label=%q", cmd != nil, m.backlog.Filter(), m.backlog.LabelInputValue())
+	}
+}
+
+func TestMoveDestinationSetupAndCleanupLeaveRetainedScopeSessionIntact(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "move-me", Title: "Move me"}}, nil, "")
+	m.scopeSessionInitialized = true
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}, {ID: "s2", Name: "Later"}})
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1"}}})
+	m.scopePicker.memberFocused = true
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "global-1", Title: "keep me"}}}, 0)
+	m.backlog.AddFilter("keep")
+	m.backlog.ToggleMark()
+	m.focused = focusDetail
+
+	if cmd := m.openScopePicker("move-me"); cmd != nil {
+		t.Fatal("move destination unexpectedly loaded the normal session")
+	}
+	if !m.showScopePicker || m.scopePickerMoveIssue != "move-me" || m.scopePicker.memberFocused {
+		t.Fatalf("move setup=%t issue=%q member=%t", m.showScopePicker, m.scopePickerMoveIssue, m.scopePicker.memberFocused)
+	}
+	m.closeScopePicker()
+	if m.showScopePicker || m.scopePickerMoveIssue != "" || m.focused != focusDetail || !m.scopePicker.memberFocused {
+		t.Fatalf("move cleanup did not restore normal session boundary: shown=%t issue=%q focus=%s member=%t", m.showScopePicker, m.scopePickerMoveIssue, m.focused, m.scopePicker.memberFocused)
+	}
+	if m.backlog.Filter() != "keep" || m.backlog.MarkCount() != 1 {
+		t.Fatalf("move cleanup lost normal backlog state: filter=%q marks=%d", m.backlog.Filter(), m.backlog.MarkCount())
+	}
+}
+
+func TestCancelledMoveRestoresExactRetainedPickerAfterScopeReentry(t *testing.T) {
+	catalogLoads := 0
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryCatalog: func(context.Context, ScopeCatalogQuery) (ScopeCatalogPage, error) {
+			catalogLoads++
+			return ScopeCatalogPage{Scopes: []ScopeInfo{{ID: "destination-1", Name: "Destination one"}, {ID: "destination-2", Name: "Destination two"}}}, nil
+		},
+	}})
+	normalCatalog := []ScopeInfo{{ID: "normal-1", Name: "Normal one"}, {ID: "normal-2", Name: "Normal two"}}
+	m.scopeCatalog = append([]ScopeInfo(nil), normalCatalog...)
+	m.scopePicker.SetScopes(normalCatalog)
+	m.scopePicker.Move(1)
+	m.scopePicker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "normal-member-1", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryName: "repo"},
+		{Issue: model.Issue{ID: "normal-member-2", Status: model.StatusOpen, IssueType: model.TypeTask}, RepositoryName: "repo"},
+	})
+	m.scopePicker.SetMemberFilters("repo", "open", model.TypeTask)
+	m.scopePicker.MoveMember(1)
+	m.scopePicker.ToggleMemberMark()
+	m.scopePicker.memberFocused = true
+	m.scopePicker.catalogPageIndex = 2
+	m.scopePicker.catalogPageCursors = []string{"", "catalog-1", "catalog-2"}
+	m.scopePicker.catalogHasMore = true
+	m.scopePicker.catalogNextCursor = "catalog-3"
+	m.scopePicker.memberPageIndex = 3
+	m.scopePicker.memberPageCursors = []string{"", "member-1", "member-2", "member-3"}
+	m.scopePicker.memberHasMore = true
+	m.scopePicker.memberNextCursor = "member-4"
+	m.scopePicker.memberViewportStart = 1
+	m.scopePicker.memberContextFilter = []string{"ctx:normal"}
+	m.scopePicker.memberMarkedIDs = map[string]bool{"normal-member-2": true}
+	m.scopePicker.memberSelectedID = "normal-member-2"
+	m.scopeSessionInitialized = true
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+
+	wantPicker := cloneScopePicker(m.scopePicker)
+	wantCatalog := append([]ScopeInfo(nil), m.scopeCatalog...)
+
+	updated, _ := m.Update(keyMsg("g"))
+	m = updated.(*Model)
+	if m.showScopePicker || !m.isGraphView {
+		t.Fatalf("leaving Scope did not enter Graph: scope=%t graph=%t", m.showScopePicker, m.isGraphView)
+	}
+
+	move := m.openScopePicker("move-me")
+	if move == nil {
+		t.Fatal("move destination did not start its catalog request")
+	}
+	updated, _ = m.Update(move())
+	m = updated.(*Model)
+	// Simulate browsing the destination's member pane as well as its catalog.
+	m.scopePicker.memberFocused = true
+	m.scopePicker.SetMemberFilters("destination", "closed", model.TypeBug)
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "destination-member", IssueType: model.TypeBug}, RepositoryName: "destination"}})
+	m.scopePicker.ToggleMemberMark()
+	updated, cmd := m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("cancelling move returned an unexpected command")
+	}
+
+	if !reflect.DeepEqual(m.scopePicker, wantPicker) || !reflect.DeepEqual(m.scopeCatalog, wantCatalog) {
+		t.Fatalf("cancelled move changed retained picker state:\n got picker=%#v catalog=%#v\nwant picker=%#v catalog=%#v", m.scopePicker, m.scopeCatalog, wantPicker, wantCatalog)
+	}
+	if catalogLoads != 1 {
+		t.Fatalf("move catalog loads=%d, want one destination load", catalogLoads)
+	}
+	if cmd := m.openScopePicker(""); cmd != nil {
+		t.Fatal("Scope re-entry reloaded after cancelled move")
+	}
+	if !reflect.DeepEqual(m.scopePicker, wantPicker) || !reflect.DeepEqual(m.scopeCatalog, wantCatalog) {
+		t.Fatal("Scope re-entry did not restore the exact retained picker state")
 	}
 }
 

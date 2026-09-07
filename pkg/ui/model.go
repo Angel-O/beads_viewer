@@ -1224,8 +1224,20 @@ type Model struct {
 	scopeMatchScopeID     string
 	scopePickerOrigin     focus
 	scopePickerMoveIssue  string
-	scopeCatalog          []ScopeInfo
-	activeScope           *ScopeInfo
+	// scopeSessionFocus is the last focused pane in the retained Scope screen.
+	// Normal view switches suspend this session; they do not reload it.
+	scopeSessionFocus       focus
+	scopeSessionInitialized bool
+	scopeMoveOriginFocus    focus
+	scopeMovePicker         ScopePickerModel
+	scopeMoveCatalog        []ScopeInfo
+	scopeMoveActiveScope    *ScopeInfo
+	scopeMoveDetails        *ScopeDetails
+	scopeMoveMembershipIDs  map[string][]string
+	scopeMoveBacklogLoaded  bool
+	scopeMoveStateSaved     bool
+	scopeCatalog            []ScopeInfo
+	activeScope             *ScopeInfo
 	// scopeDetails retains the last successful selected-scope detail load;
 	// failed reloads must not replace it with an empty result.
 	scopeDetails          *ScopeDetails
@@ -4875,6 +4887,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
+		}
+		if m.showScopePicker && (msg.String() == "b" || msg.String() == "g" || msg.String() == "B") {
+			// View switches suspend the Scope session; they are not filter input.
+			m.endScopeFilterEditing()
 		}
 		if m.showScopePicker && m.focused == focusGlobalIssues && !m.showRepoPicker && msg.String() != "ctrl+c" &&
 			(m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {

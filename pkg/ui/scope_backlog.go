@@ -662,6 +662,13 @@ func (b *BacklogModel) CancelLabelEdit() {
 	b.EndLabelEdit()
 }
 
+// EndFilterEditing blurs transient filter editors without changing their
+// values. Scope view switches use this to suspend an ordinary session safely.
+func (b *BacklogModel) EndFilterEditing() {
+	b.EndSearch()
+	b.EndLabelEdit()
+}
+
 func (b *BacklogModel) CycleStatus() {
 	current := b.Status()
 	for i, status := range backlogStatuses {
@@ -1223,6 +1230,33 @@ func NewScopePickerModel(theme Theme) ScopePickerModel {
 	s := ScopePickerModel{theme: theme, catalogPageCursors: []string{""}, memberPageCursors: []string{""}}
 	s.memberPageHistoryKey = s.memberFilterKey()
 	return s
+}
+
+// cloneScopePicker preserves the mutable paging, filtering, selection, mark,
+// and viewport slices/maps when move mode temporarily borrows the picker.
+func cloneScopePicker(s ScopePickerModel) ScopePickerModel {
+	c := s
+	c.scopes = append([]ScopeInfo(nil), s.scopes...)
+	c.catalogPageCursors = append([]string(nil), s.catalogPageCursors...)
+	c.members = append([]IssueItem(nil), s.members...)
+	c.filteredMembers = append([]IssueItem(nil), s.filteredMembers...)
+	c.memberPageCursors = append([]string(nil), s.memberPageCursors...)
+	c.memberContextFilter = append([]string(nil), s.memberContextFilter...)
+	c.memberContextCatalog = append(repositorypkg.Catalog(nil), s.memberContextCatalog...)
+	c.memberReadyIDs = cloneBoolSet(s.memberReadyIDs)
+	c.memberMarkedIDs = cloneBoolSet(s.memberMarkedIDs)
+	return c
+}
+
+func cloneBoolSet(values map[string]bool) map[string]bool {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string]bool, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 func newScopeNameInput(theme Theme) textinput.Model {
@@ -2706,26 +2740,29 @@ func (m *Model) startScopeMembersPageAt(cursor string, index int) tea.Cmd {
 }
 
 func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
+	if moveIssue != "" {
+		return m.openMoveDestinationPicker(moveIssue)
+	}
 	if m.isBacklogView {
 		m.closeBacklog()
 	}
 	m.showScopePicker = true
 	m.scopePickerOrigin = m.focused
-	m.scopePickerMoveIssue = moveIssue
-	m.scopePicker.SetMoveTarget(m.scopeMoveTargetTitle(moveIssue))
-	m.scopePicker.memberFocused = false
+	if m.scopeSessionInitialized {
+		m.focused = m.scopeSessionFocus
+		return nil
+	}
+	m.scopeSessionInitialized = true
 	m.focused = focusScopePicker
 	m.scopePicker.SetScopes(m.scopeCatalog)
-	if moveIssue == "" {
-		status := m.activeStatusFilter()
-		issueType := model.IssueType("")
-		if len(m.activeIssueTypes) == 1 {
-			for value := range m.activeIssueTypes {
-				issueType = value
-			}
+	status := m.activeStatusFilter()
+	issueType := model.IssueType("")
+	if len(m.activeIssueTypes) == 1 {
+		for value := range m.activeIssueTypes {
+			issueType = value
 		}
-		m.scopePicker.SetMemberFilters("", status, issueType)
 	}
+	m.scopePicker.SetMemberFilters("", status, issueType)
 	var cmds []tea.Cmd
 	if m.runtimeServices.Scopes.QueryCatalog != nil {
 		cmds = append(cmds, m.startScopeCatalogPage("", 0))
@@ -2752,6 +2789,64 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	return nil
+}
+
+// openMoveDestinationPicker is intentionally separate from normal Scope
+// session entry. Move setup may load the destination catalog, but must not
+// reset the retained member or backlog panes.
+func (m *Model) openMoveDestinationPicker(moveIssue string) tea.Cmd {
+	if !m.scopeMoveStateSaved {
+		m.scopeMovePicker = cloneScopePicker(m.scopePicker)
+		m.scopeMoveCatalog = append([]ScopeInfo(nil), m.scopeCatalog...)
+		if m.activeScope != nil {
+			active := *m.activeScope
+			m.scopeMoveActiveScope = &active
+		}
+		if m.scopeDetails != nil {
+			details := *m.scopeDetails
+			details.Issues = append([]model.Issue(nil), details.Issues...)
+			details.MemberIDs = append([]string(nil), details.MemberIDs...)
+			m.scopeMoveDetails = &details
+		}
+		m.scopeMoveMembershipIDs = cloneScopeMembershipIDs(m.scopeMembershipIDs)
+		m.scopeMoveBacklogLoaded = m.backlogScopeLoaded
+		m.scopeMoveStateSaved = true
+	}
+	m.scopeMoveOriginFocus = m.focused
+	m.scopePickerOrigin = m.focused
+	m.scopePickerMoveIssue = moveIssue
+	m.scopePicker.SetMoveTarget(m.scopeMoveTargetTitle(moveIssue))
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.scopePicker.memberFocused = false
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+	var cmds []tea.Cmd
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		cmds = append(cmds, m.startScopeCatalogPage("", 0))
+		if m.runtimeServices.Scopes.Load != nil && !m.scopeSessionInitialized {
+			cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+		}
+	} else if m.runtimeServices.Scopes.Load != nil && len(m.scopeCatalog) == 0 {
+		cmds = append(cmds, loadScopeSnapshotCmd(m.runtimeServices.Scopes))
+	}
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	if len(cmds) > 1 {
+		return tea.Batch(cmds...)
+	}
+	return nil
+}
+
+func cloneScopeMembershipIDs(values map[string][]string) map[string][]string {
+	if values == nil {
+		return nil
+	}
+	clone := make(map[string][]string, len(values))
+	for scopeID, ids := range values {
+		clone[scopeID] = append([]string(nil), ids...)
+	}
+	return clone
 }
 
 func (m *Model) loadSelectedScopeDetails() tea.Cmd {
@@ -2795,11 +2890,32 @@ func (m *Model) applyScopePickerDetails(details ScopeDetails) {
 }
 
 func (m *Model) closeScopePicker() {
+	if m.scopePickerMoveIssue != "" {
+		if m.scopeMoveStateSaved {
+			m.scopePicker = m.scopeMovePicker
+			m.scopeCatalog = m.scopeMoveCatalog
+			m.activeScope = m.scopeMoveActiveScope
+			m.scopeDetails = m.scopeMoveDetails
+			m.scopeMembershipIDs = m.scopeMoveMembershipIDs
+			m.backlogScopeLoaded = m.scopeMoveBacklogLoaded
+			m.scopeMovePicker = ScopePickerModel{}
+			m.scopeMoveCatalog = nil
+			m.scopeMoveActiveScope = nil
+			m.scopeMoveDetails = nil
+			m.scopeMoveMembershipIDs = nil
+			m.scopeMoveBacklogLoaded = false
+			m.scopeMoveStateSaved = false
+		}
+		m.showScopePicker = false
+		m.scopePickerMoveIssue = ""
+		m.scopePicker.SetMoveTarget("")
+		m.focused = m.scopeMoveOriginFocus
+		return
+	}
+	m.endScopeFilterEditing()
+	m.scopeSessionInitialized = true
+	m.scopeSessionFocus = m.focused
 	m.showScopePicker = false
-	m.scopePickerMoveIssue = ""
-	m.scopePicker.SetMoveTarget("")
-	m.scopePicker.memberFocused = false
-	m.scopePicker.ResetPaging()
 	m.focused = m.scopePickerOrigin
 }
 
@@ -2808,10 +2924,11 @@ func (m *Model) closeScopePicker() {
 func (m *Model) openGlobalIssues() tea.Cmd {
 	if m.showScopePicker {
 		m.focused = focusGlobalIssues
-		if m.runtimeServices.Scopes.QueryBacklog == nil && m.runtimeServices.Scopes.LoadBacklog == nil {
-			return nil
+		if !m.scopeSessionInitialized && (m.runtimeServices.Scopes.QueryBacklog != nil || m.runtimeServices.Scopes.LoadBacklog != nil) {
+			m.scopeSessionInitialized = true
+			return m.reloadBacklogFromFirstPage()
 		}
-		return m.reloadBacklogFromFirstPage()
+		return nil
 	}
 	cmd := m.openScopePicker("")
 	m.focused = focusGlobalIssues
@@ -2844,11 +2961,16 @@ func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {
 }
 
 func (m *Model) closeBacklog() {
+	m.endScopeFilterEditing()
 	m.isBacklogView = false
 	m.backlogLoading = false
 	m.backlog.SetLoading(false)
 	m.focused = focusList
 	m.backlog.ClearMarks()
+}
+
+func (m *Model) endScopeFilterEditing() {
+	m.backlog.EndFilterEditing()
 }
 
 func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
