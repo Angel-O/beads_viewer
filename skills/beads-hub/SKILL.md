@@ -21,7 +21,33 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 - **Task, bug, feature, or chore:** Track concrete executable work in exactly one context. Link verified implementation commits to these records.
 - **Decision:** Record a decision in the current context.
 
-Omitted targeting uses the current repository context. Repeat `--context <ctx-id>` to provide the complete explicit context set for a todo or epic; it does not add the current context. Only a todo may use `--contextless`.
+For creation, omit selectors only for implicit current-context creation. Repeat
+`--context <ctx-id>` for every explicitly targeted context; explicit targeting
+replaces rather than adds the current context. Use `--contextless` only for
+intentional contextless creation, and only for a todo.
+
+## Active Scope Membership
+
+Before creating a Bead, require a currently active scope. Never create or
+activate a scope. After every successful `wbd create`, parse its JSON and
+validate one exact canonical Bead ID, then validate that ID with `wbd show
+<id> --json` before mutating it. Add it to the active scope, matching the
+creation targeting:
+
+```sh
+# Implicit current-context creation:
+wbd scope add <exact-id> --json
+# Explicit creation: repeat every selector used by the creation.
+wbd scope add <exact-id> --context <ctx-a> --context <ctx-b> --json
+# Contextless creation:
+wbd scope add <exact-id> --contextless --json
+```
+
+The add result must be JSON with `operation` equal to `add`, `matched` equal to
+`1`, and `changed` equal to `1`; this is the required membership confirmation.
+If no active scope exists, the ID is not exact and valid, or the add result
+does not meet all three checks, stop and report the blocker. Do not retry by
+creating or activating a scope.
 
 ## Common Flows
 
