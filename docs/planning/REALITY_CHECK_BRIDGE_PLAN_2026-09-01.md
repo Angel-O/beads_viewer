@@ -99,17 +99,27 @@
   build/vet/first-party formatting and UBS (zero critical/warning findings).
   Cold parsing still allocates one 10 MiB buffer; the cache retains at most one
   idle buffer. These results do not replace the original failed gate or P1 matrix.
-- [ ] Commit the verified reader repair, run the original full gate on that clean
-  freeze, and update only an unstarted latency continuation to the same revision.
-  Preserve every earlier failure and all original fixtures, limits and counts.
-  Package only after an eligible gate, then execute the actual extracted binaries.
+- [x] Commit the verified reader repair as `7f708334` (tree `a32b4022`). The first
+  remote staging fetch refuses the clone's checked-out branch before any build or
+  measurement; its stderr remains intact. Fetching only FETCH_HEAD and checking
+  out the exact detached revision resolves staging without replacing any result.
+- [x] Complete the original full gate on clean `7f708334`, from 03:33:54 to
+  03:47:15 UTC under `/data/tmp/bv-delivery-7f708334-20260907` on vmi1149989.
+  All ten stages pass in 800.518 seconds; no stage is skipped. The original
+  four-round comparison reports pooled parsing 6.451 to 5.605 ms (-13.1%), 5k
+  snapshot swap 10.395 to 0.092 ms (-99.1%), and FullTriage 19.476 to 20.866 ms
+  (+7.1%). The largest regression is FullAnalysis at 10.5%, below the unchanged
+  20% limit. Source inputs remain clean and identical; the receipt is eligible.
+  Earlier failed gates remain intact. This isolated fixed-tracker environment
+  does not repair the shared tracker or replace the separate full P1 matrix.
 - [ ] Finish all remaining CLI/exact/control stages of the original `93b90959`
-  latency run, then execute the full original matrix once on `fbc41526` on hz3.
-  Only the unstarted `30417526` waiting controller was superseded; its artifacts
-  and explicit process-identity receipt are preserved. The new continuation is
-  PID 3048784 under `/data/tmp/bv-p1-latency-fbc41526-launch`. It waits for actual
+  latency run, then execute the full original matrix once on `7f708334` on hz3.
+  Only the unstarted `30417526` and `fbc41526` waiting controllers were superseded;
+  their artifacts and explicit process-identity receipts are preserved. The new
+  continuation is PID 3882167 (start ticks 99873233), queued at 03:28:43 UTC under
+  `/data/tmp/bv-p1-latency-7f708334-launch`. It waits for actual
   original completion, source/control verification and process exit before
-  staging or compiling there. At 02:54:23 UTC the original run has 288 UI, 40/72
+  staging or compiling there. At 03:28:49 UTC the original run has 288 UI, 44/72
   timed CLI and 0/36 exact records; the replacement source directory is absent.
   Root reviewed the complete queue scripts. Queued work is not a passing result.
 - [x] Replay the unchanged native Windows source-install harness on `30417526`
@@ -124,6 +134,15 @@
   build metadata and failure reasons and matches all 17 copied log hashes to
   native readback. Source/tree/tag remain exact and clean. Native Go is 1.26.5;
   PS5 emoji capture remains outside this proof, as do archive and Mac/ARM testing.
+- [x] Complete the same native Windows source-install acceptance on `7f708334`
+  in 172.195 seconds: 17 expected outcomes, including five failures that preserve
+  the installation. Root reads the actual build/readiness/no-claim outputs and
+  fault reasons and matches all 17 raw logs to native hash readback. The source,
+  tree and isolated tag stay exact and clean; the executable hash is `ba1a460a`.
+  Evidence is in `/data/tmp/bv-native-final-7f708334-depxdz_j`. A local launcher
+  write failure occurred before native execution and is retained separately;
+  the native harness executed once. Native Go remains 1.26.5. This does not prove
+  packaged archives, missing platforms, publication or PS5 emoji rendering.
 - [ ] After an eligible source gate, package and test extracted binaries from
   that same revision. Packaging preparation does not establish full P1 latency,
   missing native-platform acceptance or publication.
