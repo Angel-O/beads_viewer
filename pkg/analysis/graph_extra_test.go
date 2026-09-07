@@ -2,12 +2,16 @@ package analysis
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"gonum.org/v1/gonum/graph/simple"
 )
 
 // Cover getter and configured analysis pathways that were previously untested.
@@ -644,5 +648,207 @@ func TestMetricStatusClaimUnsafeReasonsFailsClosedOnUnknownStates(t *testing.T) 
 	}
 	if reasons := safe.ClaimUnsafeReasons(); len(reasons) != 0 {
 		t.Fatalf("computed metric states reported unsafe: %v", reasons)
+	}
+}
+
+// originalGraphStructureHash preserves the algorithm from 30417526 for a
+// differential check of the canonical bytes, independently of successor order.
+func originalGraphStructureHash(a *Analyzer) string {
+	if a == nil || a.g == nil {
+		return "none"
+	}
+	nodesIt := a.g.Nodes()
+	ids := make([]string, 0, nodesIt.Len())
+	for nodesIt.Next() {
+		if id, ok := a.nodeToID[nodesIt.Node().ID()]; ok {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	type edgeKey struct{ from, to string }
+	edgesIt := a.g.Edges()
+	edges := make([]edgeKey, 0, edgesIt.Len())
+	for edgesIt.Next() {
+		e := edgesIt.Edge()
+		from, to := a.nodeToID[e.From().ID()], a.nodeToID[e.To().ID()]
+		if from != "" && to != "" {
+			edges = append(edges, edgeKey{from: from, to: to})
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].from != edges[j].from {
+			return edges[i].from < edges[j].from
+		}
+		return edges[i].to < edges[j].to
+	})
+	edgesDedup := edges[:0]
+	for i := range edges {
+		if i == 0 || edges[i] != edges[i-1] {
+			edgesDedup = append(edgesDedup, edges[i])
+		}
+	}
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte{1})
+	for _, edge := range edgesDedup {
+		h.Write([]byte(edge.from))
+		h.Write([]byte{0})
+		h.Write([]byte(edge.to))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func TestGraphStructureHashFrozenParity(t *testing.T) {
+	chain := []model.Issue{
+		{ID: "A", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}}},
+		{ID: "B", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "C", Type: model.DepBlocks}}},
+		{ID: "C", Status: model.StatusOpen},
+	}
+	changedContent := make([]model.Issue, len(chain))
+	for i := range chain {
+		changedContent[i] = chain[i].Clone()
+		changedContent[i].Title = "changed title"
+		changedContent[i].Description = "changed description"
+		changedContent[i].Labels = []string{"changed label"}
+		changedContent[i].Status = []model.Status{model.StatusClosed, model.StatusTombstone, model.StatusDeferred}[i]
+	}
+	if ComputeDataHash(chain) == ComputeDataHash(changedContent) {
+		t.Fatal("content/status fixture did not change the issue data hash")
+	}
+	branch := []model.Issue{chain[0].Clone(), chain[1].Clone(), chain[2].Clone()}
+	branch[0].Dependencies = append(branch[0].Dependencies, &model.Dependency{DependsOnID: "C", Type: model.DepBlocks})
+	permuted := []model.Issue{branch[2].Clone(), branch[1].Clone(), branch[0].Clone(), branch[0].Clone()}
+	for i := range permuted {
+		deps := permuted[i].Dependencies
+		for left, right := 0, len(deps)-1; left < right; left, right = left+1, right-1 {
+			deps[left], deps[right] = deps[right], deps[left]
+		}
+		if len(deps) != 0 {
+			permuted[i].Dependencies = append(deps, deps[0])
+		}
+	}
+	mixed := []model.Issue{chain[0].Clone(), chain[1].Clone(), chain[2].Clone()}
+	mixed[0].Dependencies = append(mixed[0].Dependencies, nil,
+		&model.Dependency{DependsOnID: "missing", Type: model.DepBlocks},
+		&model.Dependency{DependsOnID: "C", Type: model.DepParentChild},
+		&model.Dependency{DependsOnID: "C", Type: model.DepRelated},
+		&model.Dependency{DependsOnID: "C", Type: model.DepDiscoveredFrom})
+	mixed[1].Dependencies[0].Type = ""                       // Legacy untyped blocking edge.
+	mixed[1].Dependencies[0].IssueID = "absent-record-owner" // The containing issue owns the edge.
+	lastRecordWins := []model.Issue{{ID: "A", Dependencies: []*model.Dependency{{DependsOnID: "C", Type: model.DepBlocks}}}, chain[2], chain[1], chain[0]}
+
+	// Numeric node IDs, insertion order, and mapped IDs deliberately disagree.
+	// Two physical nodes share A; their successor union must deduplicate A->z.
+	// The empty and unmapped nodes participate in edges that the hash excludes.
+	generic := simple.NewDirectedGraph()
+	for _, id := range []int64{60, 40, 10, 50, 30, 20} {
+		generic.AddNode(simple.Node(id))
+	}
+	for _, edge := range [][2]int64{{30, 40}, {10, 20}, {30, 20}, {20, 10}, {40, 30}, {40, 20}, {50, 20}, {20, 50}, {60, 20}, {10, 60}} {
+		generic.SetEdge(simple.Edge{F: simple.Node(edge[0]), T: simple.Node(edge[1])})
+	}
+	genericAnalyzer := &Analyzer{g: generic, nodeToID: map[int64]string{10: "A", 30: "A", 20: "z", 40: "中", 50: ""}}
+
+	compact := newCompactDirectedGraph(4)
+	for _, edge := range [][2]int64{{1, 0}, {1, 2}, {1, 2}, {2, 0}, {0, 1}, {3, 1}, {1, 3}} {
+		compact.addEdge(edge[0], edge[1])
+	}
+	compactAnalyzer := &Analyzer{g: compact, nodeToID: map[int64]string{0: "C", 1: "A", 2: "B", 3: ""}}
+	cloneAdjacency := func(rows [][]int64) [][]int64 {
+		clone := make([][]int64, len(rows))
+		for i := range rows {
+			clone[i] = append([]int64(nil), rows[i]...)
+		}
+		return clone
+	}
+	wantOut, wantIn := cloneAdjacency(compact.out), cloneAdjacency(compact.in)
+
+	// Digests are frozen against the original 30417526 algorithm and explicit
+	// node-NUL/edge-NUL byte streams; never regenerate them from the optimized path.
+	cases := []struct {
+		name     string
+		analyzer *Analyzer
+		want     string
+	}{
+		{"nil analyzer", nil, "none"},
+		{"nil graph", &Analyzer{}, "none"},
+		{"nil issues", NewAnalyzer(nil), "4bf5122f344554c5"},
+		{"empty issues", NewAnalyzer([]model.Issue{}), "4bf5122f344554c5"},
+		{"empty ID", NewAnalyzer([]model.Issue{{ID: ""}}), "b413f47d13ee2fe6"},
+		{"isolated nodes", NewAnalyzer([]model.Issue{{ID: "C"}, {ID: "A"}, {ID: "B"}}), "64c95a2e88566478"},
+		{"chain", NewAnalyzer(chain), "7787aa859aa8a2d7"},
+		{"changed content and statuses", NewAnalyzer(changedContent), "7787aa859aa8a2d7"},
+		{"branch", NewAnalyzer(branch), "647a8d23cecda430"},
+		{"duplicate and reordered rows and dependencies", NewAnalyzer(permuted), "647a8d23cecda430"},
+		{"missing and nonblocking endpoints", NewAnalyzer(mixed), "7787aa859aa8a2d7"},
+		{"duplicate ID last record wins", NewAnalyzer(lastRecordWins), "7787aa859aa8a2d7"},
+		{"changed edge", NewAnalyzer([]model.Issue{{ID: "A", Dependencies: []*model.Dependency{{DependsOnID: "C", Type: model.DepBlocks}}}, chain[1], chain[2]}), "acf03b4a885264ea"},
+		{"self edge", NewAnalyzer([]model.Issue{{ID: "A", Dependencies: []*model.Dependency{{DependsOnID: "A", Type: model.DepBlocks}}}}), "e0de5902812b881c"},
+		{"cycle and self edge", NewAnalyzer([]model.Issue{
+			{ID: "A", Dependencies: []*model.Dependency{{DependsOnID: "B", Type: model.DepBlocks}, {DependsOnID: "A", Type: model.DepBlocks}}},
+			{ID: "B", Dependencies: []*model.Dependency{{DependsOnID: "A", Type: model.DepBlocks}}},
+		}), "4b692b7d6bc5b32b"},
+		{"Unicode NUL and empty IDs", NewAnalyzer([]model.Issue{
+			{ID: "漢🙂", Dependencies: []*model.Dependency{{DependsOnID: "é", Type: model.DepBlocks}}},
+			{ID: "", Dependencies: []*model.Dependency{{DependsOnID: "A\x00Z", Type: model.DepBlocks}}},
+			{ID: "é", Dependencies: []*model.Dependency{{DependsOnID: "A\x00Z", Type: model.DepBlocks}}},
+			{ID: "A\x00Z", Dependencies: []*model.Dependency{{DependsOnID: "漢🙂", Type: model.DepBlocks}, {DependsOnID: "", Type: model.DepBlocks}}},
+		}), "074814ceda30226f"},
+		{"generic unordered graph with aliases and missing mappings", genericAnalyzer, "b801f0a546e968f3"},
+		{"compact unsorted duplicate adjacency", compactAnalyzer, "bab6fd33e625ca91"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if reference := originalGraphStructureHash(tc.analyzer); reference != tc.want {
+				t.Fatalf("original hash = %q, want frozen %q", reference, tc.want)
+			}
+			for repeat := 0; repeat < 3; repeat++ {
+				got := tc.analyzer.graphStructureHash()
+				if got != tc.want {
+					t.Fatalf("hash on repeat %d = %q, want %q", repeat, got, tc.want)
+				}
+			}
+			t.Logf("frozen graph hash=%s", tc.want)
+		})
+	}
+	if !reflect.DeepEqual(compact.out, wantOut) || !reflect.DeepEqual(compact.in, wantIn) {
+		t.Fatal("hashing mutated graph adjacency order or duplicate edges")
+	}
+}
+
+func TestGraphStructureHashAllocationsDoNotScaleWithEdges(t *testing.T) {
+	const nodeCount = 256
+	measure := func(successors int) float64 {
+		issues := make([]model.Issue, nodeCount)
+		for i := range issues {
+			issues[i].ID = fmt.Sprintf("node-%03d", i)
+			for offset := 1; offset <= successors; offset++ {
+				issues[i].Dependencies = append(issues[i].Dependencies, &model.Dependency{
+					DependsOnID: fmt.Sprintf("node-%03d", (i+offset)%nodeCount), Type: model.DepBlocks,
+				})
+			}
+		}
+		analyzer := NewAnalyzer(issues)
+		if edges := analyzer.g.Edges().Len(); edges != nodeCount*successors {
+			t.Fatalf("fixture has %d edges, want %d", edges, nodeCount*successors)
+		}
+		want := originalGraphStructureHash(analyzer)
+		var got string
+		allocations := testing.AllocsPerRun(10, func() { got = analyzer.graphStructureHash() })
+		if got != want {
+			t.Fatalf("measured hash = %q, want original %q", got, want)
+		}
+		t.Logf("nodes=%d edges=%d hash=%s allocations=%g", nodeCount, nodeCount*successors, got, allocations)
+		return allocations
+	}
+	sparse, dense := measure(1), measure(64)
+	// Node count and nonempty successor lists are identical. Allow bounded
+	// growth of the one reusable successor slice, not one allocation per edge.
+	if dense > sparse+16 {
+		t.Fatalf("hash allocations grew with edges: sparse=%g dense=%g; want at most 16 additional allocations", sparse, dense)
 	}
 }

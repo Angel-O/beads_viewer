@@ -1443,56 +1443,60 @@ func (a *Analyzer) graphStructureHash() string {
 		return "none"
 	}
 
+	type nodeKey struct {
+		id   string
+		node int64
+	}
 	nodesIt := a.g.Nodes()
-	ids := make([]string, 0, nodesIt.Len())
+	nodes := make([]nodeKey, 0, nodesIt.Len())
 	for nodesIt.Next() {
-		id, ok := a.nodeToID[nodesIt.Node().ID()]
+		node := nodesIt.Node().ID()
+		id, ok := a.nodeToID[node]
 		if ok {
-			ids = append(ids, id)
+			nodes = append(nodes, nodeKey{id: id, node: node})
 		}
 	}
-	sort.Strings(ids)
-
-	type edgeKey struct {
-		from string
-		to   string
-	}
-	edgesIt := a.g.Edges()
-	edges := make([]edgeKey, 0, edgesIt.Len())
-	for edgesIt.Next() {
-		e := edgesIt.Edge()
-		from := a.nodeToID[e.From().ID()]
-		to := a.nodeToID[e.To().ID()]
-		if from == "" || to == "" {
-			continue
-		}
-		edges = append(edges, edgeKey{from: from, to: to})
-	}
-	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].from != edges[j].from {
-			return edges[i].from < edges[j].from
-		}
-		return edges[i].to < edges[j].to
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].id < nodes[j].id
 	})
 
-	edgesDedup := edges[:0]
-	for i := range edges {
-		if i == 0 || edges[i] != edges[i-1] {
-			edgesDedup = append(edgesDedup, edges[i])
-		}
-	}
-
 	h := sha256.New()
-	for _, id := range ids {
-		h.Write([]byte(id))
+	for _, node := range nodes {
+		h.Write([]byte(node.id))
 		h.Write([]byte{0})
 	}
 	h.Write([]byte{1}) // nodes/edges separator
-	for _, e := range edgesDedup {
-		h.Write([]byte(e.from))
-		h.Write([]byte{0})
-		h.Write([]byte(e.to))
-		h.Write([]byte{0})
+
+	// Emit the same globally sorted, unique edge pairs without materializing
+	// an edge object and tuple for every dependency. Reuse one successor buffer
+	// across source nodes; generic graph iteration order does not affect the hash.
+	var targets []string
+	for first := 0; first < len(nodes); {
+		from := nodes[first].id
+		targets = targets[:0]
+		last := first
+		for last < len(nodes) && nodes[last].id == from {
+			if from != "" {
+				successors := a.g.From(nodes[last].node)
+				for successors.Next() {
+					if to := a.nodeToID[successors.Node().ID()]; to != "" {
+						targets = append(targets, to)
+					}
+				}
+			}
+			last++
+		}
+		sort.Strings(targets)
+		for i, to := range targets {
+			if i > 0 && to == targets[i-1] {
+				continue
+			}
+			h.Write([]byte(from))
+			h.Write([]byte{0})
+			h.Write([]byte(to))
+			h.Write([]byte{0})
+		}
+		first = last
 	}
 
 	return hex.EncodeToString(h.Sum(nil))[:16]

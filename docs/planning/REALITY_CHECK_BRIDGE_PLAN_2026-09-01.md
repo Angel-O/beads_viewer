@@ -41,10 +41,58 @@
   side, the original 120 ms expiry point, eviction, and future/zero timestamps.
   Root independently reviews the test changes and runs the full loader/UI race
   suite on the combined source. No failing assertion or gate limit was removed.
-- [ ] Freeze the reviewed repairs, complete their full gate and original latency
-  matrix, then package and test extracted binaries from that same revision.
-  Installed tracker repair and missing native Mac/Linux ARM64 access remain
-  external prerequisites; the original S5/V5/final tasks stay open or blocked.
+- [x] Freeze the reviewed repairs at `30417526` (tree `98a1ed6b`). Another workspace
+  actor committed the implementation as `735f246a` at 02:04:21 UTC, immediately
+  before the root commit at 02:04:49 UTC. Despite its performance title, `30417526`
+  changes only a tracker comment. Both commits remain intact, and the five tested
+  Go file hashes match this freeze. Implementation credit belongs to the actual
+  diff in `735f246a`; the later commit provides no additional runtime capability.
+- [x] Run the unchanged ten-stage gate on clean `30417526` under
+  `/data/tmp/bv-delivery-30417526-20260907` on vmi1149989. Nine stages pass, one
+  fails, none are skipped. The original 5k snapshot-swap benchmark improves from
+  11.372 ms to 0.112 ms, and the complete unit/E2E race stages pass. FullTriage
+  instead fails the unchanged 20% limit: 20.520 ms reference versus 25.240 ms
+  current, +23.0%. Both this failed gate and the prior `93b90959` gate remain
+  intact; neither permits packaging.
+- [x] Inspect all four original triage pairs and profile the identical frozen
+  1,000-issue, 25,261-dependency workload. The triage memory difference predates
+  the graph-snapshot repair; short profiled timings reverse the earlier order,
+  so they do not establish an intrinsic 23% slowdown. Structural hashing uses
+  9.90% of sampled CPU and allocates a full edge tuple list plus boxed edges.
+- [x] Stream the same sorted structural-hash bytes through ordered successor
+  lists, preserving generic graphs, duplicate mapped IDs and empty endpoints.
+  All 18 independent frozen cases match the original algorithm. The original
+  dense allocation control fails at 16,394 allocations; the repair passes at
+  269. A matched diagnostic FullTriage profile saves 1,546,209 bytes (12.87%) and
+  24,274 allocations (26.92%) per operation. Profile timings are not acceptance.
+  Root's complete analysis/model race run passes 1,229 test nodes with 16 existing
+  skips; build, vet and first-party formatting pass. UBS exits 1: all 21 secret
+  comparison findings are ordinary graph identifiers, enum/rank values or indices;
+  its eight warnings are an explicitly cancelled test context, a deliberate test
+  panic and six recover calls inside deferred functions. Raw findings remain
+  intact, with no suppressions or claim of a clean scan.
+- [ ] Freeze the reviewed structural-hash repair and run the unchanged full
+  ten-stage gate before producing packages. The two earlier failed gates remain
+  failed; focused allocation and parity results cannot replace this acceptance.
+- [ ] Finish all remaining CLI/exact/control stages of the original `93b90959`
+  latency run, then execute the full original matrix once on `30417526` on hz3.
+  The persistent continuation is queued as PID 1882120 under
+  `/data/tmp/bv-p1-latency-30417526-launch`. It waits for actual completion and
+  process exit before staging or compiling there. At 02:19:28 UTC the original
+  run has 288 UI, 24/72 timed CLI and 0/36 exact records; the replacement source
+  directory is absent. Queued work is not a running or passing result.
+- [x] Replay the unchanged native Windows source-install harness on `30417526`
+  in a fresh isolated tagged repository. All 17 operations run: 12 succeed and
+  five installer faults preserve the working binary, fixture and user PATH.
+  Root reads the actual logs and matches all 17 hashes to native readback.
+  Native Go is 1.26.5; this is source installation, not archive execution or
+  Unicode console-rendering proof. The earlier `93b90959` logs remain intact.
+- [ ] After an eligible source gate, package and test extracted binaries from
+  that same revision. Packaging preparation does not establish full P1 latency,
+  missing native-platform acceptance or publication.
+- [ ] Resolve authorized installed tracker repair and missing native Mac/Linux
+  ARM64 access. These remain external prerequisites; the original S5/V5/final
+  tasks stay open or blocked.
 
 ## Implementation continuation — 2026-09-06
 
