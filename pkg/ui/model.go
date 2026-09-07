@@ -4911,13 +4911,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showTutorial && msg.String() != "`" && msg.String() != "?" && msg.String() != "f1" {
 			return m.handleTutorialOverlayKey(msg)
 		}
-		if m.showScopePicker && (msg.String() == "b" || msg.String() == "g" || msg.String() == "B") {
-			// View switches suspend the Scope session; they are not filter input.
-			m.endScopeFilterEditing()
-		}
 		if m.showScopePicker && m.focused == focusGlobalIssues && !m.showRepoPicker && msg.String() != "ctrl+c" &&
 			(m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
 			return m.handleBacklogKey(msg)
+		}
+		if m.showScopePicker && (msg.String() == "b" || msg.String() == "g" || msg.String() == "B") {
+			// View switches suspend the Scope session; they are not filter input.
+			m.endScopeFilterEditing()
 		}
 		if m.showScopePicker && !m.showRepoPicker &&
 			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused() || isScopePickerPagingKey(msg.String()) && m.scopePicker.OwnsPagingKey(msg.String())) {
