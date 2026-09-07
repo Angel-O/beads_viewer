@@ -37,9 +37,43 @@
   and new production code. Original failures and the initial CLI version-only
   mismatch remain preserved. Root owns all verification; no independent-agent
   or full P1 completion is claimed.
-- [ ] Freeze the verified repair and run the original complete source gate.
-  Only then update the waiting latency revision; preserve the measured 7f run
-  and all earlier evidence. Current 4a delivery remains evidence for that source.
+- [x] Freeze the verified repair at `f719c41a` (tree `65a6d40c`) and run the
+  original complete source gate once. All ten stages pass without gate skips
+  in 801.448 seconds, finishing at 08:06:14 UTC. The source remains clean with
+  input digest `ff01c5bf…`; receipt `e602aefe…` binds the exact revision.
+  All fourteen original four-round benchmark rows pass the unchanged 20% limit;
+  worst regression is FullAnalysis at 13.5%. These results do not establish a
+  whole-CLI speedup or replace the full P1 matrix.
+- [x] Package that eligible source with the original five-target wrapper.
+  Packaging passes in 78.677 seconds at 08:07:52 UTC. All five copied archives
+  match sealed receipt `5c66ce55…`, with Go 1.25.5, CGO disabled, exact f719
+  revision and `vcs.modified=false`. Retain the deprecation notice and all
+  package streams. Evidence: `/data/tmp/bv-delivery-f719c41a-20260907`.
+- [x] Execute and review the actual Linux archive: 58 smoke commands, all
+  40 scope cases, both partial-source observations and 14 live-route children
+  plus parent pass. Original 16 scope/four partial assertions are unchanged.
+  All command/output hashes match copied raw evidence; the 4,258-file source
+  manifest remains `b318cb82…`. Actual binary SHA-256 is `b4edf5da…`.
+- [x] Execute and review the actual native Windows archive once: six commands
+  pass in 2.972 seconds, with empty executable stderr and 13 copied raw files
+  matching native readback. JSONL readiness remains `ops-1,web-9`; SQLite
+  readiness remains `native-sqlite-ready`. Both retain complete source authority
+  and withhold metadata-free claims. Binary is `acad540e…`, result `54d6228e…`.
+  Linux/Windows evidence: `/data/tmp/bv-archive-f719-root-20260907`.
+  Root owns verification; no new installer, shared tracker or native Mac/ARM proof.
+- [x] Replace only the unstarted 4a latency queue after the exact f719 source
+  gate passed. At 08:09:26 UTC, bound PID 889059/start 101177584 receives SIGTERM
+  after ownership, script hashes, absent measurement and live 7f guards pass.
+  Preserve its supersession receipt and every measured run. New PID 2375917/
+  start 101557733 queues f719 once at 08:09:28 UTC with original controls,
+  counts, deadlines and source/binary guards. Queue evidence is retained under
+  `hz3:/data/tmp/bv-p1-latency-f719c41a-launch`.
+- [ ] Complete queued f719's original full P1 matrix and final acceptance:
+  288 UI records (144 current), 72 timed CLI records/14,400 samples, 36 exact
+  records/144 outputs and the original slowdown/parity controls. At 08:17:49 UTC
+  the measured 7f wrapper has not completed; f719 remains queued without a
+  measured start or failed precondition. Keep `bv-apal.1` in progress and final
+  proof open. Earlier 4a delivery retains only its original revision scope.
 
 - [x] Reconcile the concurrent 06:39:53 UTC rebase onto the v0.24.0 release
   metadata. `250a8b98` became `6c8a4474`; `main` is now `4a5a564f`, tree
@@ -75,9 +109,9 @@
   identity/scripts/absent measurement and the successful source gate were checked.
   Its supersession receipt remains in the old launch directory. New PID 889059/
   start 101177584 queues exact 4a once, with original counts/deadlines/controls.
-- [ ] Complete that queued 4a matrix and its original final acceptance. At
-  07:25:03 UTC measured 7f has 288 UI/eight CLI/zero exact records, and 4a remains queued
-  without a failed precondition or measured start. No full P1 pass is claimed.
+- [x] Retain the unstarted 4a queue's disposition: superseded by verified f719
+  above, with no 4a measurements or performance credit. The final matrix
+  requirement remains unchecked on f719; it was not waived by supersession.
 - [x] Inspect all eight completed CLI records (four baseline/current pairs,
   200 samples per record) without repeating measured commands. Quantiles
   recompute correctly; fixture, runtime and decision projections agree, with
@@ -493,8 +527,8 @@
 - [ ] Finish the separate full P1 matrix and missing native-platform acceptance.
   Original `93b90959` is now complete and failed: four handler overruns and a
   four-hour CLI-stage timeout, with 70/72 timed and 36/36 exact records. The
-  `7f708334` full matrix is running; verified `4a5a564f` is queued behind it,
-  superseding only the unstarted 250a queue after the concurrent rebase. All failures
+  `7f708334` full matrix is running; verified `f719c41a` is queued behind it,
+  superseding only the unstarted 4a queue after the cache contention repair. All failures
   remain retained. Cross-compilation and available-platform checks do not close
   the unavailable Mac/Linux ARM64 requirements.
 - [ ] Resolve the shared tracker installation awaiting approval and missing
@@ -508,9 +542,9 @@ below remains the historical assessment; other rows retain its stated limits):
 |---|---|---|
 | 1: JSONL loading | WORKING | Repaired decoder and bounded reader reuse pass independent old/current controls, full source race suites and extracted Linux/Windows checks at `7f708334`. Full performance acceptance remains goal 41. |
 | 29: Graph navigation | WORKING | Original graph implementation/proof tasks now pass actual key-dispatch and PTY acceptance; background critical-chain preparation preserves selection and visible graph semantics. Goal 41 retains current tail-latency limits. |
-| 37: Checked source produces matching archives | WORKING | Rebased `4a5a564f` passes the complete ten-stage gate and original five-target package/seal/verify, including actual extracted Linux and native Windows checks. Copied archives match sealed receipt `20db2be4…`, Go1.25.5/CGO-disabled/clean4a. Older evidence retains its original revision scope. |
-| 40: Local/remote verification | PARTIAL | Rebased 4a source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
-| 41: Large-dataset responsiveness | PARTIAL | All fourteen rows in the unchanged four-round 4a benchmark gate pass the original 20% limit (worst +6.9%). The hash writer reduces 10k dependency hashing 13.37→5.05 MB/op; CLI hash reuse cuts sampled hashing 50→30 ms, but paired whole-CLI medians 366/368 ms establish no end-to-end gain. Fixed-clock outputs remain identical. Original `93b90959` fails four handler limits and its CLI deadline. All 288 UI records on 7f now pass original timing/parity checks, with worst current p99 34.331 ms and individual maximum 73.466 ms; its CLI/exact stages remain pending. Final 4a is queued. No full current matrix, terminal-paint or universal frame-rate guarantee. |
+| 37: Checked source produces matching archives | WORKING | `f719c41a` passes the complete ten-stage gate and original five-target package/seal/verify, including actual extracted Linux and native Windows checks. Copied archives match sealed receipt `5c66ce55…`, Go1.25.5/CGO-disabled/cleanf719. Older evidence retains its original revision scope. |
+| 40: Local/remote verification | PARTIAL | f719 source gate and archive subsets pass with the isolated fixed tracker. The shared installed tracker remains unrepaired; earlier local/RCH proof retains its original scope and skips. |
+| 41: Large-dataset responsiveness | PARTIAL | All fourteen rows in the unchanged four-round f719 benchmark gate pass the original 20% limit (worst +13.5%). Under a controlled one-second writer lock, robot median improves 1,020.625→64.826 ms; all 27 complete fixed-clock outputs match, and identical Linux/Windows regression assertions fail old code and pass the repair. This is a ten-sample diagnostic, not production p99. Earlier hash reuse demonstrates lower hashing cost but no whole-CLI median gain. Original `93b90959` fails four handler limits and its CLI deadline. All 288 UI records on 7f pass original timing/parity checks, with worst current p99 34.331 ms and individual maximum 73.466 ms; its CLI/exact stages remain pending. Final f719 is queued. No full current matrix, terminal-paint or universal frame-rate guarantee. |
 | 43: Recorded blocking time and causal transitions | WORKING | Closed `bv-j74w`/`bv-apal.11` now have independently executed real Git and CLI proof of six blocked hours in a ten-hour lifecycle, overlapping and ongoing waits, historical cutoffs, warm-cache identity and contradictory clocks. Unknown intervals remain unknown; chronology alone is not causal evidence and nonblocked time is not measured work effort. Current full source tests preserve this implementation. |
 
 ## Implementation continuation — 2026-09-06
