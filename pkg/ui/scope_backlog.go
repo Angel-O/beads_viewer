@@ -3368,6 +3368,10 @@ func (m *Model) endScopeFilterEditing() {
 }
 
 func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	// Scope navigation dismisses reload feedback just like backlog navigation.
+	if !m.statusIsError && isBacklogReloadNotice(m.statusMsg) {
+		m.statusMsg = ""
+	}
 	switch msg.String() {
 	case "esc", "q":
 		m.closeScopePicker()

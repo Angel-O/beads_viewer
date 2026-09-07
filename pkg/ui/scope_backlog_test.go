@@ -3049,6 +3049,31 @@ func TestBacklogLocalNavigationDismissesReloadStatusButPreservesErrors(t *testin
 	}
 }
 
+func TestScopeNavigationDismissesReloadStatusButPreservesActionResults(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.showScopePicker, m.focused = true, focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today"}})
+	m.scopePicker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "member-1"}},
+		{Issue: model.Issue{ID: "member-2"}},
+	})
+	m.scopePicker.memberFocused = true
+
+	m.statusMsg = "Reloaded 2 issues"
+	updated, _ := m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	if m.statusMsg != "" || m.statusIsError || m.scopePicker.SelectedMember().Issue.ID != "member-2" {
+		t.Fatalf("scope navigation retained reload status=%q error=%v member=%#v", m.statusMsg, m.statusIsError, m.scopePicker.SelectedMember())
+	}
+
+	m.statusMsg = "Scope add succeeded"
+	updated, _ = m.Update(keyMsg("k"))
+	m = updated.(*Model)
+	if m.statusMsg != "Scope add succeeded" || m.statusIsError {
+		t.Fatalf("scope navigation changed successful action=%q error=%v", m.statusMsg, m.statusIsError)
+	}
+}
+
 func TestBacklogFooterOmitsSnapshotStatsButOrdinaryFooterShowsThem(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.width = 240
