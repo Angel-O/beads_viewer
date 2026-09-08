@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`7983ee3f`](https://github.com/Dicklesworthstone/beads_viewer/commit/7983ee3f9a4d5d2cf615dbb9a919256a3e74c2fc).
+commits through [`b6e21d22`](https://github.com/Dicklesworthstone/beads_viewer/commit/b6e21d22f6098a78553aed2a365526bf98730fd6).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -14,7 +14,7 @@ the latest tag, including installer changes usable with already released binarie
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
-| [Unreleased] | — | Commits after v0.24.1 | Windows PowerShell download-progress fix and updated installer guidance. |
+| [Unreleased] | — | Commits after v0.24.1 | Directed Flow drilldowns with live endpoint details, documentation corrections, and the Windows PowerShell download-progress fix. |
 | [`v0.24.1`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1) | 2026-09-08 | GitHub Release | Reuse loaded source hashes and avoid waiting for a busy analysis-cache writer. |
 | [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
@@ -26,6 +26,25 @@ the latest tag, including installer changes usable with already released binarie
 ---
 
 ## [Unreleased]
+
+### Dependency inspection and documentation
+
+- Flow Matrix drilldowns now show the actual blocker and dependent for each
+  relationship, exclude unrelated issues sharing a label, and deduplicate pairs
+  spanning multiple labels. Enter inspects either endpoint without changing the
+  active recipe or selected work; Escape returns to the relationship.
+- Open relationships and endpoint details update after snapshots and file
+  reloads, retain surviving selection by ID, and remove obsolete relationships.
+  Unicode and long IDs fit narrow drilldown rows. The implementation and Linux
+  terminal journey are tracked by `bv-apal.12`/`bv-apal.13`
+  ([implementation and regression tests](https://github.com/Dicklesworthstone/beads_viewer/commit/b6e21d22f6098a78553aed2a365526bf98730fd6)).
+- README now matches the recipe-picker key, cass health/count indicators and
+  separate history modal, plan/history JSON fields and duration units, dependency
+  direction, and binary versus source requirements. `BV_INSIGHTS_MAP_LIMIT`
+  documentation now gives its existing default of 200; zero and invalid values
+  use that default. A real CLI regression checks all five documented limit cases.
+  These corrections are part of the still-open `bv-apal.3`/`bv-apal.4` workstream;
+  they do not establish the remaining performance or native-platform claims.
 
 ### Windows installation
 

@@ -1,6 +1,6 @@
-# Changelog research: v0.24.1 and its installer follow-up
+# Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..7983ee3f` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..b6e21d22` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -9,6 +9,30 @@ Evidence order: Git diffs and tag identities, live GitHub Release metadata,
 checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
+
+## September 8 Flow follow-up
+
+Small-update window `7983ee3f..b6e21d22`, researched from all four commits:
+`84c3774e` updates the previous changelog; `eb2a7c86` records the assessment and
+Flow counterexamples; `ce982942` records tracker comments only; `b6e21d22`
+implements directed relationship drilldowns, live endpoint inspection and the
+identified documentation repairs. The complete runtime/test diff was reviewed,
+then original acceptance replayed on exact `b6e21d22f6098a78553aed2a365526bf98730fd6`.
+Beads `bv-apal.12` and `.13` are closed after solo verification; `.3` and `.4`
+remain unfinished. No new release or tag was created. Fresh GitHub metadata
+still identifies v0.24.1 as published at `2026-09-08T00:28:07Z`, neither draft
+nor prerelease. Repository Actions are disabled.
+
+The original rendered-model counterexample now passes unchanged. Complete
+UI/analysis race and focused internal/docs/PT​​Y execution produced 1,862
+top-level passes and 19 explicitly retained pre-existing skips. A separate
+post-claim P6 replay passes 27 top-level tests with no skips. These are solo
+source and Linux terminal fixture checks, not independent-agent, full performance
+matrix or native-target proof. Raw streams and failed setup attempts remain in
+`/data/tmp/bv-reality-20260908-1umcHa`; the detailed honesty inventory is in `.12`.
+The selected-file UBS scan exits 1 on reviewed heuristic findings; no clean
+scanner result or suppressed rule is claimed. This existing memo records the
+requested changelog provenance and retires as an active checklist with the update.
 
 ## Coverage and completion
 
