@@ -183,8 +183,78 @@ func sortIssuesByPriorityAndDate(issues []model.Issue) {
 		if issues[i].Priority != issues[j].Priority {
 			return issues[i].Priority < issues[j].Priority
 		}
-		return issues[i].CreatedAt.After(issues[j].CreatedAt)
+		if !issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
+			return issues[i].CreatedAt.After(issues[j].CreatedAt)
+		}
+		return issues[i].ID < issues[j].ID
 	})
+}
+
+// orderParentChildGroups keeps each visible epic at its baseline position and
+// moves its visible direct children immediately after it. A child with several
+// visible epic parents uses the lexicographically smallest parent; malformed
+// and missing relationships are ignored, while cycles remain safe and deterministic.
+func orderParentChildGroups(issues []model.Issue) {
+	if len(issues) < 2 {
+		return
+	}
+
+	indexByID := make(map[string]int, len(issues))
+	for i := range issues {
+		if _, exists := indexByID[issues[i].ID]; !exists {
+			indexByID[issues[i].ID] = i
+		}
+	}
+
+	parentOf := make([]int, len(issues))
+	for i := range parentOf {
+		parentOf[i] = -1
+	}
+	for i := range issues {
+		for _, dependency := range issues[i].Dependencies {
+			if dependency == nil || dependency.Type != model.DepParentChild || dependency.DependsOnID == "" || dependency.DependsOnID == issues[i].ID {
+				continue
+			}
+			parentIndex, exists := indexByID[dependency.DependsOnID]
+			if !exists || issues[parentIndex].IssueType != model.TypeEpic {
+				continue
+			}
+			if parentOf[i] == -1 || dependency.DependsOnID < issues[parentOf[i]].ID {
+				parentOf[i] = parentIndex
+			}
+		}
+	}
+
+	childrenOf := make(map[int][]int)
+	for child, parent := range parentOf {
+		if parent >= 0 {
+			childrenOf[parent] = append(childrenOf[parent], child)
+		}
+	}
+
+	ordered := make([]model.Issue, 0, len(issues))
+	emitted := make([]bool, len(issues))
+	for i := range issues {
+		// Children are emitted with their parent. Nested epic relationships are
+		// intentionally not traversed; the fallback pass keeps them safe.
+		if parentOf[i] >= 0 || emitted[i] {
+			continue
+		}
+		emitted[i] = true
+		ordered = append(ordered, issues[i])
+		for _, child := range childrenOf[i] {
+			if !emitted[child] {
+				emitted[child] = true
+				ordered = append(ordered, issues[child])
+			}
+		}
+	}
+	for i := range issues {
+		if !emitted[i] {
+			ordered = append(ordered, issues[i])
+		}
+	}
+	copy(issues, ordered)
 }
 
 // updateActiveColumns rebuilds the list of non-empty column indices (bv-tf6j)
@@ -361,6 +431,7 @@ func groupIssuesByMode(issues []model.Issue, mode SwimLaneMode) [4][]model.Issue
 	// Sort each column
 	for i := 0; i < 4; i++ {
 		sortIssuesByPriorityAndDate(cols[i])
+		orderParentChildGroups(cols[i])
 	}
 
 	return cols
@@ -1369,10 +1440,81 @@ func formatPriority(p int) string {
 	return fmt.Sprintf("P%d", p)
 }
 
+func boardVisibleEpicParentID(issue model.Issue, column []model.Issue) string {
+	parentID := ""
+	for _, dependency := range issue.Dependencies {
+		if dependency == nil || dependency.Type != model.DepParentChild || dependency.DependsOnID == "" || dependency.DependsOnID == issue.ID {
+			continue
+		}
+		for _, candidate := range column {
+			if candidate.ID == dependency.DependsOnID && candidate.IssueType == model.TypeEpic && (parentID == "" || candidate.ID < parentID) {
+				parentID = candidate.ID
+			}
+		}
+	}
+	return parentID
+}
+
+func boardHasVisibleDirectChild(parent model.Issue, column []model.Issue) bool {
+	if parent.IssueType != model.TypeEpic {
+		return false
+	}
+	for _, child := range column {
+		if boardVisibleEpicParentID(child, column) == parent.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// boardCardGroupRole describes the supported flat epic/direct-child treatment.
+// Nested epic relationships are deliberately left unstyled.
+func boardCardGroupRole(issue model.Issue, column []model.Issue, row int) (groupParent, groupChild, lastChild bool) {
+	parentID := boardVisibleEpicParentID(issue, column)
+	if issue.IssueType == model.TypeEpic && parentID == "" && boardHasVisibleDirectChild(issue, column) {
+		groupParent = true
+	}
+	if parentID == "" {
+		return groupParent, false, false
+	}
+
+	var parent model.Issue
+	for _, candidate := range column {
+		if candidate.ID == parentID {
+			parent = candidate
+			break
+		}
+	}
+	if parent.ID == "" || !boardHasVisibleDirectChild(parent, column) || boardVisibleEpicParentID(parent, column) != "" {
+		return groupParent, false, false
+	}
+
+	groupChild = true
+	lastChild = true
+	for next := row + 1; next < len(column); next++ {
+		if boardVisibleEpicParentID(column[next], column) == parentID {
+			lastChild = false
+			break
+		}
+	}
+	return groupParent, groupChild, lastChild
+}
+
 // renderCard creates a visually rich card for an issue (bv-1daf: 4-line format)
 func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colIdx, rowIdx int) string {
 	t := b.theme
 	presentation := b.issuePresentation(issue)
+	var column []model.Issue
+	if colIdx >= 0 && colIdx < len(b.columns) {
+		column = b.columns[colIdx]
+	}
+	groupParent, groupChild, lastChild := boardCardGroupRole(issue, column, rowIdx)
+	if groupChild {
+		width -= 2
+		if width < 1 {
+			width = 1
+		}
+	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (bv-kklp)
@@ -1389,10 +1531,19 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// ══════════════════════════════════════════════════════════════════════════
 	// CARD STYLING - Fixed 4-line height (bv-1daf) with blocking colors (bv-kklp)
 	// ══════════════════════════════════════════════════════════════════════════
+	marginBottom := 1
+	if groupParent || (groupChild && !lastChild) {
+		marginBottom = 0
+	} else if lastChild {
+		marginBottom = 2
+	}
 	cardStyle := t.Renderer.NewStyle().
 		Width(width).
 		Padding(0, 1).
-		MarginBottom(1)
+		MarginBottom(marginBottom)
+	if groupChild {
+		cardStyle = cardStyle.MarginLeft(2)
+	}
 
 	// Border color based on blocking status (bv-kklp):
 	// - Red: Blocked (has blocking dependencies)
@@ -1411,6 +1562,8 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 		borderColor = lipgloss.AdaptiveColor{Light: "#c62828", Dark: "#ef5350"} // Red - blocked
 	} else if blocksOthers {
 		borderColor = lipgloss.AdaptiveColor{Light: "#f57c00", Dark: "#ffb74d"} // Yellow/orange - high impact
+	} else if groupParent || groupChild {
+		borderColor = t.Epic
 	} else if issue.Status == model.StatusOpen {
 		borderColor = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Green - ready
 	} else {
@@ -1496,8 +1649,19 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// ══════════════════════════════════════════════════════════════════════════
 	// LINE 2: Title with full available width (bv-1daf)
 	// ══════════════════════════════════════════════════════════════════════════
+	titlePrefix := ""
+	if groupParent {
+		titlePrefix = "◆ "
+	} else if groupChild {
+		titlePrefix = "↳ "
+	}
 	titleWidth := width - 2
-	if titleWidth < 10 {
+	if titlePrefix != "" {
+		titleWidth -= lipgloss.Width(titlePrefix)
+		if titleWidth < 1 {
+			titleWidth = 1
+		}
+	} else if titleWidth < 10 {
 		titleWidth = 10
 	}
 	truncatedTitle := truncateRunesHelper(issue.Title, titleWidth, "…")
@@ -1505,10 +1669,12 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	titleStyle := t.Renderer.NewStyle()
 	if selected {
 		titleStyle = titleStyle.Foreground(t.Primary).Bold(true)
+	} else if groupParent {
+		titleStyle = titleStyle.Foreground(t.Epic).Bold(true)
 	} else {
 		titleStyle = titleStyle.Foreground(t.Base.GetForeground())
 	}
-	line2 := titleStyle.Render(truncatedTitle)
+	line2 := titleStyle.Render(titlePrefix + truncatedTitle)
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// LINE 3: Blocked-by + Blocks count + Labels (bv-1daf)
@@ -1580,9 +1746,20 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 // Shows full description, dependencies with titles, and all labels
 // Note: colIdx, rowIdx kept for API consistency with renderCard but unused since
 // expanded card is always the selected card (no separate search highlighting needed)
-func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) string {
+func (b BoardModel) renderExpandedCard(issue model.Issue, width int, colIdx, rowIdx int) string {
 	t := b.theme
 	presentation := b.issuePresentation(issue)
+	var column []model.Issue
+	if colIdx >= 0 && colIdx < len(b.columns) {
+		column = b.columns[colIdx]
+	}
+	groupParent, groupChild, lastChild := boardCardGroupRole(issue, column, rowIdx)
+	if groupChild {
+		width -= 2
+		if width < 1 {
+			width = 1
+		}
+	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (same as renderCard)
@@ -1593,10 +1770,19 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 	// ══════════════════════════════════════════════════════════════════════════
 	// CARD STYLING - Expanded card is always selected (since we expand selected)
 	// ══════════════════════════════════════════════════════════════════════════
+	marginBottom := 1
+	if groupParent || (groupChild && !lastChild) {
+		marginBottom = 0
+	} else if lastChild {
+		marginBottom = 2
+	}
 	cardStyle := t.Renderer.NewStyle().
 		Width(width).
 		Padding(0, 1).
-		MarginBottom(1)
+		MarginBottom(marginBottom)
+	if groupChild {
+		cardStyle = cardStyle.MarginLeft(2)
+	}
 
 	// Border color based on blocking status
 	var borderColor lipgloss.TerminalColor
@@ -1604,6 +1790,8 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 		borderColor = lipgloss.AdaptiveColor{Light: "#c62828", Dark: "#ef5350"} // Red - blocked
 	} else if blocksOthers {
 		borderColor = lipgloss.AdaptiveColor{Light: "#f57c00", Dark: "#ffb74d"} // Yellow - high impact
+	} else if groupParent || groupChild {
+		borderColor = t.Epic
 	} else if issue.Status == model.StatusOpen {
 		borderColor = lipgloss.AdaptiveColor{Light: "#2e7d32", Dark: "#81c784"} // Green - ready
 	} else {
@@ -1637,7 +1825,13 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, _, _ int) s
 	// TITLE: Full title (not truncated)
 	// ══════════════════════════════════════════════════════════════════════════
 	titleStyle := t.Renderer.NewStyle().Foreground(t.Primary).Bold(true)
-	title := titleStyle.Render(issue.Title)
+	titlePrefix := ""
+	if groupParent {
+		titlePrefix = "◆ "
+	} else if groupChild {
+		titlePrefix = "↳ "
+	}
+	title := titleStyle.Render(titlePrefix + issue.Title)
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// SEPARATOR
