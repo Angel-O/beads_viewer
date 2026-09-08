@@ -1,5 +1,373 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Post-release reality check — 2026-09-08
+
+This assessment supersedes the status of older dated sections below, while
+preserving their original failures and evidence. Baseline: `84c3774e7240a795`,
+clean `main`; production Go, vendored dependencies and graph WASM are unchanged
+from v0.24.1 (`3e4e61c91a74dafe`, tree `6cc10e3c940e4119`). The later Windows
+installer follow-up is separate. Audit owner: `bv-ydlp`.
+
+### The five answers
+
+1. **What works?** The robot-first graph triage engine is real: JSONL/SQLite
+   loading, scoped readiness, graph metrics, ranking, recipes, search, history,
+   exports and interactive navigation have implemented consumers and substantial
+   execution evidence. The installed v0.24.1 binary passes all 58 fresh robot
+   smoke cases. Published release metadata, its sealed receipt and all five
+   Homebrew/Scoop archive references agree. This is a useful shipped product.
+2. **What does not?** A captured claim command can reopen an issue closed after
+   recommendation. Flow Matrix drilldown shows unrelated label members instead
+   of the actual blocker/dependent pairs already computed by analysis. Public
+   documentation still contradicts dispatched keys, cass behavior and defaults.
+   Final performance, several native targets and Windows source first-start
+   acceptance remain incomplete; cross-compilation does not settle them.
+3. **What blocks completion?** S5 needs an installed tracker with atomic stale
+   claim rejection, plus the existing positive route tests. Flow needs a small
+   consumer integration and actual navigation/reload proof. P2 needs corrections
+   to existing prose and meaningful copied-example checks. P1 needs the original
+   full comparison at a final runtime freeze with comparable version metadata.
+   V5 needs actual native execution on the missing targets and first-start
+   diagnosis. Another general audit or release alone resolves none of these.
+4. **Would the previous backlog close every gap?** No. It covered S5/P1/P2/V5
+   and final delivery, but had no open owner for the Flow Matrix drilldown.
+   Several checked P2 acceptance items were contradicted by current code and
+   README. Completing tasks by status alone would still miss the user's goal.
+5. **Which accepted goal lacked coverage?** Goal 27's promised cross-label
+   dependency drilldown. Historical closed `bv-111` describes the matrix;
+   `bv-w4l0`/`bv-qcgs` describe test coverage. None proves this rendered journey.
+   Add one implementation/proof pair; reuse existing owners for every other
+   finding. Earlier brainstorms (LSP, Ghost Beads, embedded chat, Monte Carlo)
+   retain their recorded scope dispositions; they are not silently counted as
+   implemented or expanded into a new product mandate.
+
+### Current evidence and limits
+
+Fresh artifacts: `/data/tmp/bv-reality-20260908-1umcHa`. Installed `bv` is
+v0.24.1, SHA-256 `a469135a0f8a84d4fdeb0052405b91accf80860f9d66cc4332d626bbc67c30ec`;
+installed `br` is 0.5.11, SHA-256
+`0a10ca91ed2f7f35609291f0192806717be0a818d3ddb7bcdfbf1cb378e435b1`.
+
+- **Live S5 counterexample:** initialize an isolated repo whose path contains
+  spaces, quote and dollar characters; import open `same-1` with `br show`;
+  capture `bv --robot-next` typed `claim_command`; close the issue; execute the
+  captured argv in its stated directory. At 19:23 UTC it exits 0 and changes
+  closed to `in_progress`, assignee `ubuntu`. The command uses the verified
+  local ID, explicit database and `--no-auto-import`; those correct boundaries
+  do not supply atomic eligibility. All command streams/readback are retained
+  in `live-claim/`. The initial fixture omitted automatic import and produced
+  no route; that setup failure is retained and is not a second product defect.
+- **Flow counterexample:** `flow_probe.go` calls real `ComputeCrossLabelFlow`
+  and `FlowMatrixModel.Update/View` with database issue `blocker`, unrelated
+  database issue `unrelated`, and API issue `dependent` blocked by `blocker`.
+  Analysis returns exactly `blocker -> dependent`; pressing Enter renders
+  `blocker` and `unrelated`, omitting `dependent`. Probe exits 1 under Go 1.25.5.
+  Producer: `pkg/analysis/label_health.go`; unwired consumer:
+  `pkg/ui/flow_matrix.go:openDrilldown`. This is rendered-model execution, not
+  physical terminal or independent-agent proof. The matrix direction itself is
+  correct. Empty `critical_paths` does not establish the illustrated critical
+  path claim and should be documented honestly, not filled with invented data.
+- **P2 contradictions:** README recipe prose says `R`, dispatched key is `'`;
+  cass footer table promises Active/Idle agents although only health/count are
+  rendered; history opens a separate scoped cass modal rather than a combined
+  searchable commit/session timeline. `BV_INSIGHTS_MAP_LIMIT` defaults to 200
+  in `robot_registry.go`, but environment metadata says `(all)`; zero does not
+  mean unlimited. Existing parity checks cover a generated key-table row and
+  therefore miss the contradictory prose. Audit remaining plan/history JSON
+  examples, topological work-order explanation and binary/source requirements
+  in the same existing P2 task. Correct checked criteria rather than claiming
+  this was already fully verified.
+- **Published evidence:** current public v0.24.1 is neither draft nor prerelease,
+  with 14 assets. Downloaded sealed receipt SHA-256
+  `9d81f7a6cd94f195f060fc42131a7fb90b8136aaaa32c41cf2775b765d70914b`
+  matches public metadata and records all ten original source-gate stages
+  passed. This is verification of a published record, not a new full-suite run.
+  All five public Homebrew/Scoop URLs and hashes match release assets. No new
+  release, Actions, dispatch, native Mac/ARM run or Nix build occurred here.
+- **Retained earlier evidence:** the release scratch directory cited below is
+  unavailable on this host now. Earlier native/performance results are read
+  from the committed project record, not claimed as newly inspected raw files.
+  In particular the final f719 P1 matrix remains exit 1, with 72 version-field
+  mismatches despite otherwise equal exact outputs. Its recorded quantiles and
+  passing earlier cohorts do not make the original failed gate pass. Native
+  Windows optional source first-start exceeded 10 seconds; the later successful
+  second invocation is diagnostic only. Human search judgments, physical-phone
+  paint and universal 60fps remain unproven.
+
+### Rescore of all 43 accepted goals
+
+`Working` means the bounded implemented behavior has supporting evidence;
+it does not mean every platform or input was freshly retested. Prior detailed
+goal definitions and scope decisions remain below. Fresh negative evidence
+overrides an earlier working classification.
+
+| # | Goal | Current result / remaining owner |
+|---|---|---|
+| 1 | Current and legacy issue loading | Working; vendored decoder repair shipped; source installs must retain vendor |
+| 2 | Robust JSONL parsing | Working; incomplete-source diagnostics retained |
+| 3 | Source/DB/worktree selection | Working within tested targets; V5 covers missing native runs |
+| 4 | Namespaced workspace aggregation | Working; partial authority remains explicit |
+| 5 | Two-phase graph analysis | Working; size-tiered status, not a universal deadline |
+| 6 | Centrality and critical path metrics | Working within exact/approximate status contract |
+| 7 | Cycles/core/articulation/slack | Working; representative SCC cycles, not all cycles |
+| 8 | Repeatability and computation status | Partial; timeout-boundary/full-cohort proof, P1 |
+| 9 | Ranked triage and reasons | Working; heuristic scores |
+| 10 | Readiness, tracks and unblock counts | Working; external claim safety is row 11 |
+| 11 | Justified next actions | Partial; fresh stale-claim failure, S5 |
+| 12 | Feedback and reset | Working within existing tested behavior |
+| 13 | Shared robot source/scope metadata | Working; shape smoke alone is insufficient proof |
+| 14 | Composed scopes | Working within existing positive and empty-intersection controls |
+| 15 | Historical analysis and diffs | Working with declared historical exceptions |
+| 16 | Help/schema/formats | Working; defaults/prose corrections remain row 42 |
+| 17 | TOON | Working when actual encoder available; no universal token saving |
+| 18 | Recipe loading/filtering/sort | Working |
+| 19 | Recipe presentation/navigation | Working within recorded rendered/PTY checks |
+| 20 | Recipe exports/templates | Working |
+| 21 | Hash retrieval and graph ranking | Working; not learned semantic embeddings |
+| 22 | Search quality at scale | Partial; frozen agent-authored corpus is not human generalization, P5 scope retained |
+| 23 | Git correlation | Working; heuristic evidence and recorded host timing limit |
+| 24 | Orphans/file relations/impact | Working within existing tests |
+| 25 | Sprint/burndown/risk | Working with historical limits |
+| 26 | Forecast/capacity | Working as duration/velocity heuristics, not a scheduler |
+| 27 | Label health/flow/attention | Partial; newly reproduced drilldown integration gap |
+| 28 | Alerts/baselines/hygiene | Working; claims retain S5 limitation |
+| 29 | List/detail/board/tree/graph/insights | Working; original graph repair now shipped; timing is row 41 |
+| 30 | Reload/snapshot/stale-result handling | Partial for Flow Matrix lifecycle; other existing consumers retain prior proof |
+| 31 | Tutorial/help/sidebar/cass | Working for health/count and separate session modal; false prose is P2 |
+| 32 | Report and graph exports | Working within recorded formats and source authority |
+| 33 | SQLite dashboard/assets | Working; browser fallback differs from native FTS5 |
+| 34 | Offline/mobile dashboard | Working in recorded Chromium desktop/mobile viewport; other browsers/physical phones unproven |
+| 35 | Hooks/browser opt-out | Working |
+| 36 | Verified update/download | Working in recorded Linux/Windows journeys |
+| 37 | Source-bound release bytes | Working; fresh public receipt identity verified, runtime may still contain defects |
+| 38 | Vendored asset provenance | Working; version-suffixed go install bypasses vendor repairs |
+| 39 | Native installs/upgrades | Partial; Mac/ARM/current Nix and Windows source first-start, V5 |
+| 40 | Local/remote verification | Partial; isolated fixed tracker evidence differs from installed tracker, S5/final |
+| 41 | Large-project responsiveness | Partial; original final P1 gate still red; no terminal-paint guarantee |
+| 42 | Accurate executable documentation | Partial; fresh contradictions, P2 |
+| 43 | Recorded waits and evidenced causal links | Working within original repaired four-commit producer/CLI acceptance |
+
+### Bridge and granular TODO
+
+Order by dependency and user benefit: S5 is the highest correctness risk;
+Flow is the best bounded integration improvement. P2 corrections can proceed
+while external prerequisites remain open. Final P1/native/source-package proof
+comes after the relevant implementation freeze, not after each plan edit.
+
+- [x] Read full root instructions/README and the plan/spec corpus; map goals
+  to producer, consumer, tests, previous acceptance and released runtime.
+- [x] Inventory all unfinished Beads and distinguish historical records from
+  fresh source/rendered/installed/public-release evidence.
+- [x] Run 58 installed robot smoke cases and both concrete negative probes.
+- [x] Finish focused RCH documentation/live-route run; count executed tests,
+  failures and skips separately and identify the tracker actually exercised.
+- [x] Phase 3a: use the frozen template below; create only the uncovered Flow
+  implementation/proof pair and correct existing P2/S5/V5/final acceptance.
+- [x] Ambition round 1: review Flow selection, endpoint direction, deduplication,
+  empty/closed/nonblocking cases and open-view reload; revise in place.
+- [x] Ambition round 2: reconcile exact final source/dependency/version identity,
+  native first-start and documentation consumers; revise the same plan/tasks.
+- [x] Phase 5: four or five actual refinement passes with the frozen template;
+  record each change and stop only on a pass finding no material improvement.
+- [x] Phase 6: validate `br` dependency cycles and `bv --robot-triage`, plan and
+  metric status; close only this completed assessment and flush task state.
+- [ ] S5: preserve positive ready claims, reject stale/closed/deferred/claimed
+  races atomically with the installed tracker; rerun existing real route suite.
+- [ ] Flow: consume existing `BlockingPairs`, show actual directed relationships
+  and endpoint details, preserve navigation, refresh safely, then prove the
+  original three-issue negative fails before and passes after the repair.
+- [ ] P2: correct all identified prose/default/example contradictions in place;
+  verify copied examples and actual key/modal/default behavior, then settle
+  final capability claims only when their existing dependencies pass.
+- [ ] P1: verify comparable version labels plus distinct exact source/binary
+  identities before the original complete final matrix; preserve all failures,
+  original thresholds, sample counts, parity and slowdown controls.
+- [ ] V5: run missing native targets and diagnose Windows first invocation
+  without replacing it with warm-start success or raising the original bound.
+- [ ] Final: inspect all original and new acceptance on one final source/package
+  cohort; preserve unproven populations/platforms and do not force-close.
+
+### Ambition round 1 — complete the flow journey
+
+```text
+That's a decent start but it barely scratches the surface and is light years away from being
+OPTIMAL. Please try again and revise your existing plan document in-place to make it MUCH, MUCH,
+MUCH better in EVERY WAY.
+```
+
+Reviewing the first P6 pair against the actual parent revealed a lifecycle
+omission: `SetData` refreshes label statistics but retains an open drilldown's
+old issue copies; the parent's only `flowMatrix.SetData` call is on entry.
+Expand the same pair (`bv-apal.12`, `bv-apal.13`) to refresh both levels from
+the latest authoritative snapshot, preserve a surviving selection by identity,
+and clear or safely clamp vanished labels/endpoints. Test the real parent reload
+path as well as component refresh; neither a closed endpoint nor an unrelated
+same-label item may remain as a blocking relationship after refresh.
+
+Use the existing producer's blocking/lifecycle semantics. Multiple labels must
+not fabricate duplicate issue pairs; nonblocking and closed/tombstone cases
+must not become blockers. Preserve dependency context when a recipe hides an
+endpoint, while distinguishing that context from actionable selected candidates.
+Long IDs, Unicode, narrow views and empty results must remain navigable. This
+adds acceptance to the same bounded integration, not a new graph framework.
+
+The extended real-producer probe confirms the component refresh failure:
+changing the blocker's title to `REFRESHED database migration` and calling
+`SetData` while drilldown remains open still renders the old title. Both
+original and refresh failures are retained in `flow-lifecycle.stdout/stderr`.
+The parent's reload omission is a source finding; its full message-path
+reproduction remains an explicit P6 proof requirement.
+
+### Ambition round 2 — verify the delivered combination once
+
+```text
+That's a lot better than before but STILL is a far cry from being OPTIMAL. Please try yet again
+and revise your existing plan document in-place to make it MUCH, MUCH, MUCH better in EVERY WAY.
+I believe in you, you can do this!!! Show me how brilliant you really are.
+```
+
+The first revision still risked expensive verification on successive obsolete
+freezes. Finish bounded runtime integration first, then verify the exact final
+combination. P1 must check comparable version metadata before launching its
+unchanged complete matrix, while recording distinct original source commits,
+vendor/configuration inputs and executable digests. Never strip version fields
+from the comparator after seeing a failure or replace the full gate with a
+favorable subset. The prior f719 exit 1 stays exit 1.
+
+V5 must explicitly retain the failed first invocation of the source-built
+Windows executable, preserve the 10-second limit and test failure preservation.
+Public manifest parity is useful but does not certify native package-manager
+execution or a current Nix build. P2 can fix deterministic prose now; remaining
+capability guarantees depend on original proofs. The final task now depends
+on P6 proof as well as its existing prerequisites and must rescore all 43 goals
+and 18 pairs. This is a dependency correction, not a claim that more tracker
+rows constitute progress. No new release is needed to finish this assessment.
+
+### Focused execution and refinement
+
+The existing focused RCH suite on worker hz4 finishes exit 1 at 19:31:47 UTC.
+Go reports 8.728 seconds of test execution, with compilation/transport outside
+that figure. It runs 32 test nodes: 30 pass, two fail (the stale-claim child and
+its parent), zero skip. Documentation accounts for 17 passing nodes across 12
+top-level tests. Routing accounts for 13 passing children and the failing stale
+claim child plus parent. A later remote identity read reports br 0.5.11; the
+actual failing argv names `/home/ubuntu/.local/bin/br`. RCH forwards test JSON
+into the retained `focused-e2e.stderr`; `focused-e2e.jsonl` is empty. Empty
+stdout was not a zero-test pass. This is a focused source suite, not the full
+release suite, and its green documentation subset misses the proven prose gaps.
+The remote br digest matches the installed local digest above. A subsequent
+remote shell reports Go 1.26.0; the exact compiler identity for the completed
+focused run was not retained, so it is not credited as Go 1.25.5 release proof.
+The local rendered-model probes explicitly used the cached Go 1.25.5 toolchain.
+
+Phase 3a was applied again to synchronize the same pair and existing owners
+after both ambition rounds, using the exact frozen template retained below.
+Each following pass applies the exact frozen Phase 5 template retained below.
+
+1. **Behavior and scope:** compare each new acceptance criterion against the
+   original README journey and producer data. Add explicit source-context and
+   missing-endpoint handling: context visibility must not imply eligibility or
+   fabricate a relationship. Preserve both endpoint navigation and matrix
+   semantics; do not expand empty critical-path metadata into a new algorithm.
+2. **Dependency and ownership:** inspect all remaining implementation/proof
+   pairs and final dependencies, including P6. Keep proof dependent on its
+   implementation and final dependent on proof; do not block independent P2
+   corrections on a new administrative task. `br ready` selects P6 implementation
+   as the sole currently ready non-epic task. Original P1/S5/V5/P2 prerequisites
+   and original acceptance remain; P6 does not replace an unmet old task.
+3. **Evidence and test adequacy:** the fresh docs subset proves the existing
+   checks pass, not that all prose is correct. Extend P2 proof to dispatched
+   key/modal/default behavior, representative JSON values, direction and
+   installer requirements; preserve its prior valid examples. Bind S5 to the
+   original now-failing installed-tracker test as well as the scratch probe.
+4. **Proof identity and scope:** read the actual sealed receipt and remaining
+   native/performance checklists again. It is eligible, clean and source-bound;
+   all ten stages passed, but stage summaries do not enumerate individual test
+   skips. Record the remote compiler-identity limit above. Retain the original
+   full P1 gate and Windows first-start failure. Clarify that P6 reuses current
+   model/source behavior; it does not need a new authority framework or mutation
+   subsystem. Human search generalization and untested browser populations
+   remain explicit limits of the previously accepted bounded scope.
+5. **Convergence:** reread the current goal mapping, original pending acceptance,
+   new pair and dependency graph against the retained probes. No further material
+   task or acceptance change was found. All 18 proof dependencies are present;
+   the new pair is self-contained and its acceptance remains unchecked. Stop
+   refining and preserve the remaining work as work.
+
+Final graph validation: `br dep cycles` reports zero active cycles; insights
+also reports zero cycles with cycle analysis computed. All reported metric
+states are computed; betweenness is explicitly approximate with sample 100.
+`bv --robot-triage` selects `bv-apal.12` as top pick; `br ready` agrees on this
+sole ready non-epic task. Plan's highest-impact summary names already-running
+P1, which remains a separate prerequisite rather than a reason to redo audits.
+Source authority is complete; its `claim_safe` metadata does not override the
+fresh external tracker failure. Validation used read-only robot commands.
+Before audit closure, the full tracker comparison is 652 -> 655 records:
+three additions (audit plus P6 pair), zero removals and no existing status
+changes. Original 640 closed tasks remain closed; corrected P2 checkboxes and
+all incomplete implementation/proof tasks remain visible. After closing only
+the finished audit, 14 tasks/epics remain unfinished.
+`bv-ydlp` is now closed and `br sync --flush-only` is current. Only this
+existing plan and br-managed JSONL changed. `git diff --check` passes. UBS was
+invoked on both changed files and exits 3 because Markdown/JSONL have no
+supported scanner; nothing was scanned and no bypass was enabled. No Go build
+or race result is claimed for this documentation-only change.
+
+### Anti-ceremony and honesty review
+
+Creation worksheet: consumer is the user requesting this full assessment and
+the next implementer of P6/S5/P2. Decision is which real defect to fix next;
+concrete defects are the reproduced stale claim and wrong/stale Flow contents.
+Reuse this existing plan and Beads; no new repository report or framework.
+This assessment stops being the current decision aid when a later implemented
+cohort is rescored; it is retained as history, not automatically deleted.
+
+Real-work window is this audit, checked against `git status`, `git diff` and
+`bv-ydlp`: one PROCESS work item, zero USER/ENABLER items shipped. No runtime
+repair was made in this window. The two-minute demo is the isolated stale claim
+and incorrect rendered Flow view; those demonstrate defects, not improvements.
+Without the report, shipped behavior would be identical. The useful output is
+corrected priorities and acceptance. Verdict: **DRIFTING** if further general
+auditing displaces implementation. Correction: finish the requested bounded
+phases, then direct the next implementation block to P6 while advancing S5's
+existing installed-tracker prerequisite. No new audit infrastructure.
+
+Honesty inventory (current audit; question numbers from the skill worksheet):
+
+- 1–5: No (checked: current diff has only this plan and br-managed issue data;
+  no tests, validators, goldens, thresholds, fixtures in production code or
+  workflows changed). Scratch fixtures exercise production behavior; their
+  failures remain failures. No bypass was introduced.
+- 6: No zero-run success claim (checked: RCH JSON events show 32 run nodes,
+  30 pass, two fail, zero skip; smoke log records 58 commands). Empty stdout
+  was investigated and the actual stderr JSON inspected.
+- 7–8: No (checked: claims above distinguish installed binary, real rendered
+  model, remote source suite, public receipt and historical recorded results).
+  No independent-agent, full fresh-suite, native Mac/ARM or paint claim.
+- 9: Yes, existing checked P2 acceptance overstated coverage. Corrected in
+  place by unchecking `.3` items 3/5 and `.4` item 3, disclosed to the user,
+  and strengthened existing proof around observed behavior. Countermeasure:
+  RH-9/RH-10—checked task/plan prose cannot substitute for the positive journey.
+- 10: No (checked: both probe streams and RCH stderr are retained; no result is
+  inferred from discarded output). The initial non-followed receipt download
+  is empty and excluded; the followed download is hashed against public metadata.
+- 11–12: No (checked: only the assessment may close; all incomplete original
+  tasks and new P6 remain open/blocked. No requirement was weakened to fit code).
+- 13–17: Not applicable (solo execution; no subagents or agreement-as-proof).
+- 18: No (checked: 58 smoke cases and the existing focused-test filter were
+  fixed before execution; failures and parent/child counting remain explicit).
+- Older sessions: six bounded cass queries were run. Returned offsets did not
+  resolve to matching source text; read-only fallback found four malformed
+  records and no matching text messages. This limited check is inconclusive,
+  not an assertion that past sessions were free of test weakening.
+- 19: The audit consumed substantial reading time without shipping a fix.
+  Also, initial fixture import was missing, the first direct SSH probe lacked
+  RCH's configured key, and a `br ready` parser expected the wrong envelope.
+  These setup failures were corrected without changing acceptance. The RCH
+  test result is still red; no successful retry replaced it.
+- 20: Strongest evidence is the reproducible installed claim/close/readback
+  sequence plus the unchanged existing E2E failure and real rendered Flow probe.
+
 ## Authorized v0.24.1 release — 2026-09-07
 
 Release scope and granular completion are tracked in `bv-l76l`. The user
