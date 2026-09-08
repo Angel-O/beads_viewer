@@ -2281,6 +2281,23 @@ func TestPagedScopePickerUsesCanonicalFilterChoicesAndBackendClosedStatus(t *tes
 	}
 }
 
+func TestScopePickerMemberTypeCycleIncludesSupportedTypes(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "custom", IssueType: "incident"}}})
+	picker.SetMemberServerFiltering(true)
+
+	for _, want := range []model.IssueType{
+		model.TypeBug, model.TypeChore, "decision", model.TypeEpic,
+		model.TypeFeature, model.TypeTask, "todo", "",
+	} {
+		picker.CycleMemberType()
+		_, _, got := picker.MemberFilters()
+		if got != want {
+			t.Fatalf("member type cycle = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestScopePickerMemberNavigationFiltersAndRegions(t *testing.T) {
 	picker := NewScopePickerModel(testTheme())
 	picker.SetSize(100, 24)
