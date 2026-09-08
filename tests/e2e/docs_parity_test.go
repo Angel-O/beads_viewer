@@ -298,7 +298,10 @@ func TestDocsParity_InsightsMapDefaultMatchesRuntime(t *testing.T) {
 		t.Run("value="+tc.value, func(t *testing.T) {
 			cmd := exec.Command(bv, "--robot-insights")
 			cmd.Dir = dir
-			cmd.Env = append(environment, "BV_INSIGHTS_MAP_LIMIT="+tc.value)
+			cmd.Env = environment
+			if tc.value != "" {
+				cmd.Env = append(cmd.Env, "BV_INSIGHTS_MAP_LIMIT="+tc.value)
+			}
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			out, err := cmd.Output()
