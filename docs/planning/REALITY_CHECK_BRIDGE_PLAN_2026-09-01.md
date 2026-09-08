@@ -7,8 +7,8 @@ directed `BlockingPairs`, excludes unrelated label members, deduplicates pairs,
 and inspects either endpoint without changing recipe or candidate selection.
 Open relationships and details refresh on snapshots and file reloads; surviving
 selection follows IDs and obsolete relationships disappear. Goals 27 and 30 now
-have repaired Flow consumers, pending the revision-bound final replay recorded
-in `bv-apal.12`/`.13`.
+have repaired Flow consumers, verified at `b6e21d22`; `bv-apal.12`/`.13` are
+closed after a fresh solo acceptance replay.
 
 - [x] Reproduce the original relationship and stale-content failures.
 - [x] Connect producer pairs to the rendered drilldown and both endpoint details.
@@ -22,7 +22,7 @@ in `bv-apal.12`/`.13`.
   Flow documentation and Windows binary/source requirements.
 - [x] Check unset/positive/zero/negative/invalid insight limits through the real
   CLI; run existing copied-example and documentation parity tests.
-- [ ] Freeze the implementation, replay original P6 acceptance on that revision,
+- [x] Freeze the implementation, replay original P6 acceptance on that revision,
   record the solo verification limit and close only verified P6 items.
 - [ ] Finish P2's remaining live/native/performance-dependent claims under its
   existing acceptance criteria; these documentation repairs do not close P2.
@@ -40,6 +40,20 @@ labels, statuses and UI selections, and both stored context cancellations have
 explicit lifecycle cleanup. These findings were inspected; no scanner rules were
 suppressed. No native-platform, published-release or independent-agent proof is
 claimed by this work.
+
+Final replay: 1,838 top-level UI/analysis race tests plus 24 internal/docs/PTY
+tests passed, with 19 existing skips explicitly retained; none is a skipped P6
+criterion. After claiming the proof, a separate 27-test Flow/PTY replay passed
+without skips. Original probe and complete command streams are prefixed
+`b6e21d22-` in the same evidence directory. Source inspection of current
+`beads_rust` (`97013a75`) finds a newer CLI closed-claim precheck, but the atomic
+storage guard and compare-and-set predicate still check assignment only. A
+simple installed-tracker upgrade therefore does not settle S5's race contract.
+No tracker executable or external repository was changed. P1's original runner
+and verifier remain byte-identical (`896d7e25`/`939b66cc`); the earlier baseline
+executables and full raw run directory were not found in this host's scratch
+storage or the bounded original-worker search. Recover their exact identity
+before the next full matrix; do not silently choose a different baseline.
 
 ## Post-release reality check — 2026-09-08
 

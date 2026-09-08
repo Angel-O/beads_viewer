@@ -24,7 +24,7 @@ still identifies v0.24.1 as published at `2026-09-08T00:28:07Z`, neither draft
 nor prerelease. Repository Actions are disabled.
 
 The original rendered-model counterexample now passes unchanged. Complete
-UI/analysis race and focused internal/docs/PT​​Y execution produced 1,862
+UI/analysis race and focused internal/docs/PTY execution produced 1,862
 top-level passes and 19 explicitly retained pre-existing skips. A separate
 post-claim P6 replay passes 27 top-level tests with no skips. These are solo
 source and Linux terminal fixture checks, not independent-agent, full performance
