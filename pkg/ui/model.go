@@ -7442,7 +7442,8 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 	if m.repoPickerOrigin == focusBacklog || m.repoPickerOrigin == focusGlobalIssues {
 		return m.applyBacklogPickerSelection(selected)
 	}
-	focusAfterApply := focusList
+	// Successful apply, like cancel, returns to the view that opened the picker.
+	focusAfterApply := m.repoPickerOrigin
 	if m.repoPickerOrigin == focusScopePicker {
 		focusAfterApply = focusScopePicker
 	}
