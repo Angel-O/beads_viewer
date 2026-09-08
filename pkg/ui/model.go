@@ -1207,6 +1207,7 @@ type Model struct {
 	// Exact issue-type filter picker
 	showTypePicker   bool
 	typePicker       TypePickerModel
+	typePickerOrigin focus
 	activeIssueTypes map[model.IssueType]bool
 
 	// Repository scope picker (Hub or workspace mode)
@@ -1347,7 +1348,7 @@ type labelFlowSummary struct {
 // getCrossFlowsForLabel returns outgoing cross-label dependency counts for a label
 func (m Model) getCrossFlowsForLabel(label string) labelFlowSummary {
 	cfg := analysis.DefaultLabelHealthConfig()
-	flow := analysis.ComputeCrossLabelFlow(m.repositoryIssues, cfg, m.labelPredicate())
+	flow := analysis.ComputeCrossLabelFlow((&m).typeFilteredIssues(m.repositoryIssues), cfg, m.labelPredicate())
 	out := labelFlowSummary{}
 	inCounts := make(map[string]int)
 	outCounts := make(map[string]int)
@@ -1388,14 +1389,14 @@ func (m Model) getCrossFlowsForLabel(label string) labelFlowSummary {
 func (m Model) filterIssuesByLabel(label string) []model.Issue {
 	if m.labelDrilldownCache != nil {
 		if cached, ok := m.labelDrilldownCache[label]; ok {
-			return cached
+			return (&m).typeFilteredIssues(cached)
 		}
 	}
 
 	var out []model.Issue
 	for _, iss := range m.repositoryIssues {
 		for _, l := range iss.Labels {
-			if l == label {
+			if l == label && m.matchesIssueType(iss) {
 				out = append(out, iss)
 				break
 			}
@@ -3742,7 +3743,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.labelHealthCached = false
 		if m.focused == focusLabelDashboard {
 			cfg := analysis.DefaultLabelHealthConfig()
-			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
+			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
 			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -5494,7 +5495,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.focused == focusHistory && m.historyReportIsCurrent() &&
-			(m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus()) {
+			(m.historyView.IsSearchActive() || (m.historyView.FileTreeHasFocus() && msg.String() != "I")) {
 			if msg.String() == "ctrl+c" {
 				return m, m.quitCommand()
 			}
@@ -5875,7 +5876,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case focusAttention:
 				// Attention has its own controls; unclaimed keys must not fall
 				// through to List filters or actions.
-				return m, nil
+				if keyStr != "I" {
+					return m, nil
+				}
 
 			case focusGraph:
 				// Graph uses h/l for nav and owns its local search keys.
@@ -5940,12 +5943,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.historyReportIsCurrent() {
 					// Keep stale report state untouched so identity can be restored when
 					// the current generation arrives, but never navigate or act on it.
-					if keyStr != "h" && keyStr != "]" && keyStr != "f4" {
+					if keyStr != "h" && keyStr != "]" && keyStr != "f4" && keyStr != "I" {
 						viewToggleHandled = true
 					}
 					break
 				}
-				if m.historyView.IsSearchActive() || m.historyView.FileTreeHasFocus() {
+				if m.historyView.IsSearchActive() || (m.historyView.FileTreeHasFocus() && keyStr != "I") {
 					m, cmd = m.handleHistoryKeys(msg)
 					cmds = append(cmds, cmd)
 					viewToggleHandled = true
@@ -6138,7 +6141,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isHistoryView = false
 				if m.isActionableView {
 					// Build from the full analyzer, then project candidate rows.
-					plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.repositoryIssueIDs, m.repositoryIssues)
+					plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.activeTypeIssueIDs(), m.typeFilteredIssues(m.repositoryIssues))
 					m.actionableView = NewActionableModel(plan, m.theme)
 					m.actionableView.SetSize(m.width, m.height-2)
 					m.focused = focusActionable
@@ -6231,7 +6234,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Compute label health (fast; phase1 metrics only needed) with caching
 				if !m.labelHealthCached {
 					cfg := analysis.DefaultLabelHealthConfig()
-					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
+					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
 					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 					m.labelHealthCached = true
 				}
@@ -6299,9 +6302,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "I":
-				if m.focused != focusList {
+				switch m.focused {
+				case focusList, focusBoard, focusGraph, focusTree,
+					focusInsights, focusActionable, focusHistory, focusSprint,
+					focusFlowMatrix, focusLabelDashboard, focusAttention:
+				default:
 					return m, nil
 				}
+				m.typePickerOrigin = m.focused
 				m.typePicker = NewTypePickerModel(issueTypesFromIssues(m.issues, m.activeIssueTypes), m.activeIssueTypes, m.theme)
 				m.typePicker.SetSize(m.width, m.height-1)
 				m.showTypePicker = true
@@ -7396,8 +7404,11 @@ func (m *Model) handleTypePickerKeys(msg tea.KeyMsg) *Model {
 		m.typePicker.ToggleAll()
 	case "esc", "q", "I":
 		m.showTypePicker = false
-		m.focused = focusList
+		m.focused = m.typePickerOrigin
 	case "enter":
+		m.focused = m.typePickerOrigin
+		m.labelHealthCached = false
+		m.labelDrilldownCache = make(map[string][]model.Issue)
 		selected := m.typePicker.SelectedTypes()
 		if len(selected) == 0 || m.typePicker.AllSelected() {
 			m.activeIssueTypes = nil
@@ -7412,8 +7423,8 @@ func (m *Model) handleTypePickerKeys(msg tea.KeyMsg) *Model {
 		} else {
 			m.applyFilter()
 		}
+		m.refreshRepositoryDerivedViews()
 		m.showTypePicker = false
-		m.focused = focusList
 	}
 	return m
 }
@@ -10613,6 +10624,8 @@ func (m *Model) clearAllFilters() {
 	m.activeIssueTypes = nil
 	// Reset the fuzzy search filter by resetting the filter state
 	m.list.ResetFilter()
+	m.labelHealthCached = false
+	m.labelDrilldownCache = make(map[string][]model.Issue)
 	m.applyFilter()
 }
 
@@ -10687,6 +10700,27 @@ func (m *Model) toggleStatusFilter(filter string) {
 
 func (m *Model) matchesIssueType(issue model.Issue) bool {
 	return len(m.activeIssueTypes) == 0 || m.activeIssueTypes[issue.IssueType]
+}
+
+// typeFilteredIssues applies the shared issue-type predicate to a view's data.
+func (m *Model) typeFilteredIssues(issues []model.Issue) []model.Issue {
+	if len(m.activeIssueTypes) == 0 {
+		return issues
+	}
+	filtered := make([]model.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if m.matchesIssueType(issue) {
+			filtered = append(filtered, issue)
+		}
+	}
+	return filtered
+}
+
+func (m *Model) activeTypeIssueIDs() map[string]bool {
+	if len(m.activeIssueTypes) == 0 {
+		return m.repositoryIssueIDs
+	}
+	return issueIDSet(m.typeFilteredIssues(m.repositoryIssues))
 }
 
 func (m *Model) activeIssueTypeNames() []string {

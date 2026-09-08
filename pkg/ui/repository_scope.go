@@ -931,6 +931,9 @@ func (m *Model) insightsIssueIDs() map[string]bool {
 		if m.repositoryIssueIDs != nil && !m.repositoryIssueIDs[issue.ID] {
 			continue
 		}
+		if !m.matchesIssueType(issue) {
+			continue
+		}
 		if isClosedLikeStatus(issue.Status) {
 			continue
 		}
@@ -1142,7 +1145,7 @@ func (m *Model) refreshRepositoryDerivedViews() {
 	}
 	m.revalidateInsightsDetail(m.insightsIssueIDs())
 	if m.isActionableView {
-		plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.repositoryIssueIDs, m.repositoryIssues)
+		plan := projectExecutionPlan(m.analyzer.GetExecutionPlan(), m.activeTypeIssueIDs(), m.typeFilteredIssues(m.repositoryIssues))
 		m.actionableView = NewActionableModel(plan, m.theme)
 		m.actionableView.SetSize(m.width, m.height-2)
 	}
@@ -1157,7 +1160,7 @@ func (m *Model) refreshRepositoryDerivedViews() {
 	}
 	if m.focused == focusLabelDashboard {
 		cfg := analysis.DefaultLabelHealthConfig()
-		m.labelHealthCache = analysis.ComputeAllLabelHealth(m.repositoryIssues, cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
+		m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
 		m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
 		m.labelHealthCached = true
 		m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -1219,24 +1222,29 @@ func (m *Model) rebuildRepositoryTree() {
 }
 
 func (m Model) repositoryHistoryReport(report *correlation.HistoryReport) *correlation.HistoryReport {
-	if m.usesHubScope() && m.hubScope.Mode == hub.HubScopeAllItems {
+	typeFilterActive := len(m.activeIssueTypes) > 0
+	if m.usesHubScope() && m.hubScope.Mode == hub.HubScopeAllItems && !typeFilterActive {
 		return report
 	}
 	repositories := m.activeRepos
 	if m.usesHubScope() && m.hubScope.Mode == hub.HubScopeContextless {
 		repositories = map[string]bool{}
 	}
-	if !m.usesHubScope() && repositories == nil {
+	if !m.usesHubScope() && repositories == nil && !typeFilterActive {
 		return report
 	}
-	return projectHistoryReport(report, m.repositoryIssueIDs, repositories)
+	ids := m.repositoryIssueIDs
+	if typeFilterActive {
+		ids = issueIDSet(m.typeFilteredIssues(m.repositoryIssues))
+	}
+	return projectHistoryReport(report, ids, repositories)
 }
 
 // refreshAttentionView recomputes scoped label attention and updates both the
 // navigable attention view and the insights presentation.
 func (m *Model) refreshAttentionView() {
 	cfg := analysis.DefaultLabelHealthConfig()
-	m.attentionCache = analysis.ComputeLabelAttentionScores(m.repositoryIssues, cfg, time.Now().UTC(), m.labelPredicate())
+	m.attentionCache = analysis.ComputeLabelAttentionScores(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.labelPredicate())
 	m.attentionCached = true
 	m.attentionView.SetData(m.attentionCache)
 	height := m.height - 1
@@ -1252,9 +1260,10 @@ func (m *Model) refreshAttentionView() {
 
 func (m *Model) refreshFlowMatrix() {
 	cfg := analysis.DefaultLabelHealthConfig()
-	flow := analysis.ComputeCrossLabelFlow(m.repositoryIssues, cfg, m.labelPredicate())
+	issues := m.typeFilteredIssues(m.repositoryIssues)
+	flow := analysis.ComputeCrossLabelFlow(issues, cfg, m.labelPredicate())
 	m.flowMatrix = NewFlowMatrixModel(m.theme)
-	m.flowMatrix.SetData(&flow, m.repositoryIssues)
+	m.flowMatrix.SetData(&flow, issues)
 	panelHeight := m.height - 2
 	if panelHeight < 3 {
 		panelHeight = 3
@@ -1271,7 +1280,7 @@ func projectHistoryReport(report *correlation.HistoryReport, ids map[string]bool
 	projected.CommitIndex = make(correlation.CommitIndex)
 	projected.Warnings = nil
 	for _, warning := range report.Warnings {
-		if warning.Context == "" || repositories[warning.Context] {
+		if warning.Context == "" || repositories == nil || repositories[warning.Context] {
 			projected.Warnings = append(projected.Warnings, warning)
 		}
 	}

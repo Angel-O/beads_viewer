@@ -87,6 +87,7 @@ func (m Model) renderSprintDashboard() string {
 	if m.repositoryIssueIDs == nil {
 		issues = m.issues
 	}
+	issues = m.typeFilteredIssues(issues)
 	for _, iss := range issues {
 		if beadIDSet[iss.ID] {
 			totalBeads++
@@ -181,6 +182,15 @@ func (m Model) renderSprintDashboard() string {
 	sb.WriteString(labelStyle.Render("At Risk:"))
 	sb.WriteString("\n")
 	atRisk := analysis.DetectAtRisk(m.issues, sprint, now, analysis.DefaultAtRiskThresholds())
+	if len(m.activeIssueTypes) > 0 {
+		filteredAtRisk := atRisk[:0]
+		for _, item := range atRisk {
+			if issue, ok := m.issueMap[item.ID]; ok && m.matchesIssueType(*issue) {
+				filteredAtRisk = append(filteredAtRisk, item)
+			}
+		}
+		atRisk = filteredAtRisk
+	}
 	if len(atRisk) == 0 {
 		sb.WriteString(t.Renderer.NewStyle().Foreground(t.Open).Render("  ✓ No at-risk items"))
 		sb.WriteString("\n")

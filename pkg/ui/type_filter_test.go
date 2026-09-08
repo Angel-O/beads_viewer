@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 )
@@ -667,5 +668,288 @@ func TestEmptyTypePickerFitsAtMinimumFullModalSize(t *testing.T) {
 	}
 	if got := lipgloss.Height(view); got > 12 {
 		t.Fatalf("empty picker rendered height = %d:\n%s", got, view)
+	}
+}
+
+func TestTypePickerUsesSupportedViewOrigins(t *testing.T) {
+	tests := []struct {
+		name  string
+		focus focus
+		setup func(*Model)
+	}{
+		{name: "list", focus: focusList},
+		{name: "board", focus: focusBoard, setup: func(m *Model) { m.isBoardView = true }},
+		{name: "graph", focus: focusGraph, setup: func(m *Model) { m.isGraphView = true }},
+		{name: "tree", focus: focusTree},
+		{name: "insights", focus: focusInsights},
+		{name: "actionable", focus: focusActionable, setup: func(m *Model) { m.isActionableView = true }},
+		{name: "history", focus: focusHistory, setup: func(m *Model) { m.isHistoryView = true }},
+		{name: "sprint", focus: focusSprint, setup: func(m *Model) { m.isSprintView = true }},
+		{name: "flow matrix", focus: focusFlowMatrix},
+		{name: "label dashboard", focus: focusLabelDashboard},
+		{name: "attention", focus: focusAttention, setup: func(m *Model) { m.showAttentionView = true }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(typeFilterIssues(), nil, "")
+			m.focused = tt.focus
+			if tt.setup != nil {
+				tt.setup(m)
+			}
+
+			updated, _ := m.Update(keyMsg("I"))
+			m = updated.(*Model)
+			if !m.showTypePicker || m.focused != focusTypePicker || m.typePickerOrigin != tt.focus {
+				t.Fatalf("picker open state: shown=%v focus=%v origin=%v, want origin=%v", m.showTypePicker, m.focused, m.typePickerOrigin, tt.focus)
+			}
+
+			m.handleTypePickerKeys(keyMsg("esc"))
+			if m.showTypePicker || m.focused != tt.focus {
+				t.Fatalf("cancel focus=%v shown=%v, want focus=%v", m.focused, m.showTypePicker, tt.focus)
+			}
+
+			updated, _ = m.Update(keyMsg("I"))
+			m = updated.(*Model)
+			m.typePicker.ClearSelection()
+			m.typePicker.ToggleSelected()
+			m.handleTypePickerKeys(keyMsg("enter"))
+			if m.showTypePicker || m.focused != tt.focus || len(m.activeIssueTypes) != 1 || !m.activeIssueTypes[model.TypeBug] {
+				t.Fatalf("apply state: shown=%v focus=%v types=%v", m.showTypePicker, m.focused, m.activeIssueTypes)
+			}
+		})
+	}
+}
+
+func TestTypePickerDoesNotStealSearchInput(t *testing.T) {
+	t.Run("list", func(t *testing.T) {
+		m := NewModel(typeFilterIssues(), nil, "")
+		m.Update(keyMsg("/"))
+		updated, _ := m.Update(keyMsg("I"))
+		m = updated.(*Model)
+		if m.showTypePicker || m.list.FilterValue() != "I" {
+			t.Fatalf("list search: picker=%v filter=%q", m.showTypePicker, m.list.FilterValue())
+		}
+	})
+
+	t.Run("board", func(t *testing.T) {
+		m := NewModel(typeFilterIssues(), nil, "")
+		m.focused = focusBoard
+		m.isBoardView = true
+		m.board.StartSearch()
+		updated, _ := m.Update(keyMsg("I"))
+		m = updated.(*Model)
+		if m.showTypePicker || m.board.SearchQuery() != "I" {
+			t.Fatalf("board search: picker=%v query=%q", m.showTypePicker, m.board.SearchQuery())
+		}
+	})
+}
+
+func TestTypeFilterRefreshesSupportedViewData(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bug", Title: "Bug", Status: model.StatusOpen, IssueType: model.TypeBug, Labels: []string{"work"}},
+		{ID: "epic", Title: "Epic", Status: model.StatusOpen, IssueType: model.TypeEpic, Labels: []string{"work"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.applyFilter()
+
+	if got := visibleIssueIDs(m); !equalStrings(got, []string{"bug"}) {
+		t.Fatalf("list IDs = %v, want [bug]", got)
+	}
+	boardCount := 0
+	for _, column := range m.board.columns {
+		boardCount += len(column)
+	}
+	if boardCount != 1 || m.board.columns[ColOpen][0].ID != "bug" {
+		t.Fatalf("board data = %#v, want only bug", m.board.columns)
+	}
+	if !equalStrings(m.graphView.sortedIDs, []string{"bug"}) {
+		t.Fatalf("graph IDs = %v, want [bug]", m.graphView.sortedIDs)
+	}
+
+	m.focused = focusTree
+	m.rebuildRepositoryTree()
+	if got := treeRowIDs(&m.tree); !equalStrings(got, []string{"bug"}) {
+		t.Fatalf("tree IDs = %v, want [bug]", got)
+	}
+
+	m.focused = focusInsights
+	m.refreshRepositoryDerivedViews()
+	if !m.insightsPanel.activeIssueIDs["bug"] || m.insightsPanel.activeIssueIDs["epic"] {
+		t.Fatalf("insights IDs = %v, want only bug", m.insightsPanel.activeIssueIDs)
+	}
+
+	m.focused = focusLabelDashboard
+	m.refreshRepositoryDerivedViews()
+	if len(m.labelHealthCache.Labels) != 1 || m.labelHealthCache.Labels[0].IssueCount != 1 {
+		t.Fatalf("label health = %#v, want one issue", m.labelHealthCache.Labels)
+	}
+
+	m.focused = focusAttention
+	m.showAttentionView = true
+	m.refreshRepositoryDerivedViews()
+	if len(m.attentionCache.Labels) != 1 || m.attentionCache.Labels[0].OpenCount != 1 {
+		t.Fatalf("attention data = %#v, want one open issue", m.attentionCache.Labels)
+	}
+
+	m.focused = focusFlowMatrix
+	m.refreshRepositoryDerivedViews()
+	if len(m.flowMatrix.issues) != 1 || m.flowMatrix.issues[0].ID != "bug" {
+		t.Fatalf("flow issues = %#v, want only bug", m.flowMatrix.issues)
+	}
+
+	m.selectedSprint = &model.Sprint{ID: "sprint", Name: "Sprint", BeadIDs: []string{"bug", "epic"}}
+	if sprint := m.renderSprintDashboard(); strings.Contains(sprint, "epic") || !strings.Contains(sprint, "bug") {
+		t.Fatalf("sprint rendering did not apply type filter: %q", sprint)
+	}
+
+	history := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{
+		"bug":  {},
+		"epic": {},
+	}}
+	filteredHistory := m.repositoryHistoryReport(history)
+	if len(filteredHistory.Histories) != 1 {
+		t.Fatalf("history data = %#v, want only bug", filteredHistory.Histories)
+	}
+	if _, ok := filteredHistory.Histories["bug"]; !ok {
+		t.Fatalf("history data = %#v, missing bug", filteredHistory.Histories)
+	}
+	if _, ok := filteredHistory.Histories["epic"]; ok {
+		t.Fatalf("history data = %#v, epic was not filtered", filteredHistory.Histories)
+	}
+}
+
+func TestTypePickerAppliesBeforeRefreshingDerivedOrigin(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bug", Title: "Bug", Status: model.StatusOpen, IssueType: model.TypeBug, Labels: []string{"work"}},
+		{ID: "epic", Title: "Epic", Status: model.StatusOpen, IssueType: model.TypeEpic, Labels: []string{"work"}},
+	}
+	for _, tt := range []struct {
+		name  string
+		focus focus
+		check func(*Model) bool
+	}{
+		{name: "tree", focus: focusTree, check: func(m *Model) bool {
+			return equalStrings(treeRowIDs(&m.tree), []string{"bug"})
+		}},
+		{name: "label dashboard", focus: focusLabelDashboard, check: func(m *Model) bool {
+			return len(m.labelHealthCache.Labels) == 1 && m.labelHealthCache.Labels[0].IssueCount == 1
+		}},
+		{name: "flow matrix", focus: focusFlowMatrix, check: func(m *Model) bool {
+			return len(m.flowMatrix.issues) == 1 && m.flowMatrix.issues[0].ID == "bug"
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(issues, nil, "")
+			m.focused = tt.focus
+			updated, _ := m.Update(keyMsg("I"))
+			m = updated.(*Model)
+			m.typePicker.ClearSelection()
+			m.typePicker.ToggleSelected()
+			m.handleTypePickerKeys(keyMsg("enter"))
+			if m.focused != tt.focus || !tt.check(m) {
+				t.Fatalf("apply left focus=%v with stale derived data", m.focused)
+			}
+		})
+	}
+}
+
+func TestTypePickerInvalidatesLabelCacheAndFiltersDrilldownCache(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bug", Title: "Bug", Status: model.StatusOpen, IssueType: model.TypeBug, Labels: []string{"work"}},
+		{ID: "epic", Title: "Epic", Status: model.StatusOpen, IssueType: model.TypeEpic, Labels: []string{"work"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.focused = focusLabelDashboard
+	updated, _ := m.Update(keyMsg("I"))
+	m = updated.(*Model)
+	m.typePicker.ClearSelection()
+	m.typePicker.ToggleSelected()
+	m.handleTypePickerKeys(keyMsg("enter"))
+	if len(m.labelHealthCache.Labels) != 1 || m.labelHealthCache.Labels[0].IssueCount != 1 {
+		t.Fatalf("filtered label cache = %#v, want only bug", m.labelHealthCache.Labels)
+	}
+
+	m.labelDrilldownCache["work"] = issues
+	if got := m.filterIssuesByLabel("work"); len(got) != 1 || got[0].ID != "bug" {
+		t.Fatalf("cached label drilldown = %#v, want only bug", got)
+	}
+	m.labelDrilldownCache = make(map[string][]model.Issue)
+	if got := m.filterIssuesByLabel("work"); len(got) != 1 || got[0].ID != "bug" {
+		t.Fatalf("fresh label drilldown = %#v, want only bug", got)
+	}
+
+	m.focused = focusList
+	updated, _ = m.Update(keyMsg("I"))
+	m = updated.(*Model)
+	m.typePicker.SelectAll()
+	m.handleTypePickerKeys(keyMsg("enter"))
+	if m.activeIssueTypes != nil || m.labelHealthCached {
+		t.Fatalf("clear-all did not invalidate label cache: cached=%v types=%v", m.labelHealthCached, m.activeIssueTypes)
+	}
+	m.focused = focusLabelDashboard
+	m.refreshRepositoryDerivedViews()
+	if len(m.labelHealthCache.Labels) != 1 || m.labelHealthCache.Labels[0].IssueCount != 2 {
+		t.Fatalf("clear-all label cache = %#v, want both issues", m.labelHealthCache.Labels)
+	}
+}
+
+func TestHistoryFileTreeCapitalIOpensTypePickerButSearchOwnsIt(t *testing.T) {
+	newHistoryModel := func() *Model {
+		m := NewModel(typeFilterIssues(), nil, "")
+		makeHistoryReportCurrent(m, &correlation.HistoryReport{})
+		m.focused = focusHistory
+		m.isHistoryView = true
+		m.historyView.SetFileTreeFocus(true)
+		return m
+	}
+
+	m := newHistoryModel()
+	updated, _ := m.Update(keyMsg("I"))
+	m = updated.(*Model)
+	if !m.showTypePicker || m.typePickerOrigin != focusHistory {
+		t.Fatalf("file-tree I state: shown=%v origin=%v", m.showTypePicker, m.typePickerOrigin)
+	}
+
+	m = newHistoryModel()
+	m.historyView.StartSearch()
+	updated, _ = m.Update(keyMsg("I"))
+	m = updated.(*Model)
+	if m.showTypePicker || m.historyView.SearchQuery() != "I" {
+		t.Fatalf("history search I state: shown=%v query=%q", m.showTypePicker, m.historyView.SearchQuery())
+	}
+}
+
+func TestEscClearInvalidatesTypeFilteredLabelDashboardCaches(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "bug", Title: "Bug", Status: model.StatusOpen, IssueType: model.TypeBug, Labels: []string{"work"}},
+		{ID: "epic", Title: "Epic", Status: model.StatusOpen, IssueType: model.TypeEpic, Labels: []string{"work"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.focused = focusLabelDashboard
+	m.refreshRepositoryDerivedViews()
+	if len(m.labelHealthCache.Labels) != 1 {
+		t.Fatalf("initial filtered label cache = %#v, want one label", m.labelHealthCache.Labels)
+	}
+	if got := m.filterIssuesByLabel("work"); len(got) != 1 || got[0].ID != "bug" {
+		t.Fatalf("initial filtered drilldown = %#v, want only bug", got)
+	}
+
+	m.focused = focusList
+	updated, _ := m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.activeIssueTypes != nil || m.labelHealthCached || len(m.labelDrilldownCache) != 0 {
+		t.Fatalf("Esc did not invalidate caches: types=%v health=%v drilldown=%#v", m.activeIssueTypes, m.labelHealthCached, m.labelDrilldownCache)
+	}
+
+	m.focused = focusLabelDashboard
+	m.refreshRepositoryDerivedViews()
+	if len(m.labelHealthCache.Labels) != 1 || m.labelHealthCache.Labels[0].IssueCount != 2 {
+		t.Fatalf("cleared label cache = %#v, want both issues", m.labelHealthCache.Labels)
+	}
+	if got := m.filterIssuesByLabel("work"); len(got) != 2 {
+		t.Fatalf("cleared drilldown = %#v, want both issues", got)
 	}
 }
