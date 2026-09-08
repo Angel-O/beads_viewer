@@ -7,17 +7,55 @@ authorized all established publication venues, all five supported targets, and
 DSR with no GitHub Actions or repository dispatch.
 
 - [x] Recover the prior release commands with cass. The indexed v0.23.0 session
-  used GoReleaser and GitHub publication but skipped Homebrew/Scoop. Live checks
-  still find both stores on v0.22.0; updating them belongs to this release.
+  used GoReleaser and GitHub publication but skipped Homebrew/Scoop. Preflight
+  found both stores on v0.22.0; updating them belongs to this release.
 - [x] Read the completed performance runs. 7f finished green at 10:21 UTC.
   f719 completed at 13:03 UTC with exit 1. All 36 exact comparison records
   contain 144 outputs; a recursive readback finds only 72 `/version` differences
   (baseline v0.23.0, current v0.24.0). Preserve that original failure. Final P1
-  acceptance remains open pending complete timing review; this is not evidence
-  of changed decisions, rankings, source authority or metric states.
-- [ ] Commit release metadata, run the complete source gate, package and seal.
-- [ ] Publish verified GitHub archives through DSR; update Homebrew/Scoop and
-  verify the Go module/Nix source tag. Exercise live installers and updates.
+  acceptance remains open; this is not evidence of changed decisions, rankings,
+  source authority or metric states. All 144 current UI records and 72 timed
+  CLI records/14,400 samples were reviewed: quantiles recompute correctly,
+  decision mismatches are zero, worst current UI p99 is 32.348973 ms and worst
+  current CLI p99 is 680.103082 ms. This readback does not turn the original
+  failed run into a pass or establish a population-tail guarantee.
+- [x] Commit release metadata at `3e4e61c9` (tree `6cc10e3c`), then run the
+  original complete source gate: ten stages pass without skips in 835.838 s.
+  Package and seal all five targets with Go 1.25.5, CGO disabled, exact tagged
+  revision and `vcs.modified=false`. Original benchmark thresholds unchanged.
+- [x] Run the actual Linux archive through all 58 robot smoke commands and
+  execute the actual Windows archive natively. Record unavailable native
+  macOS/ARM and Nix build coverage instead of treating cross-builds as execution.
+- [x] Publish [v0.24.1](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1)
+  through DSR at 00:28:07 UTC on 2026-09-08. Download and hash-check all 14
+  assets before publication, then verify public metadata. External-artifact
+  mode uses the original sealed gate receipt, not a DSR build manifest.
+  Publish the actual binary SPDX SBOM; no signing key was available.
+- [x] Publish Homebrew `cae0685` and Scoop `4fddb86`, verify their public bytes
+  and all five sealed hashes, and synchronize their existing branch mirrors.
+  Verify Go proxy revision and tagged Nix flake identity. No Actions/dispatch.
+- [x] Exercise live Linux installation, readiness, update/no-update and six
+  archive/preservation scenarios on a separate native host. Installed binary
+  SHA-256 `a469135a…` matches the sealed archive.
+- [ ] Complete native Windows live installation, source build, update/no-update
+  and failure preservation. The original harness fails at its obsolete `.id`
+  assertion after a correct metadata-free diagnostic recommendation. Preserve
+  that failure; the revised assertion checks the recommendation, complete
+  authority and claim refusal. Rerun in a fresh directory with the same binary.
+- [ ] Finish the installer follow-up discovered during native verification.
+  The corrected harness passes live install, readiness, update/no-update and a
+  real Go 1.26.5 source build, then stalls on the loopback wrong-version ZIP.
+  Its incomplete transfer is retained, and only its three bound processes are
+  stopped. A fresh complete run tests function-local suppression of Windows
+  PowerShell download progress. Build/vet and the existing PowerShell archive
+  fixtures pass. Verify every native rejection's reason before crediting it;
+  keep this installer follow-up separate from the immutable release tag.
+- [ ] Record final native results, commit the test/documentation follow-up,
+  synchronize source branches and close only the release bead `bv-l76l`.
+
+Release evidence: `/data/tmp/bv-release-v0.24.1-20260908`. Root owns execution
+and review; no independent-agent verification is claimed. Broader P1, shared
+tracker and unavailable native-platform prerequisites remain open.
 
 ## Delivery continuation — 2026-09-07
 

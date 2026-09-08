@@ -94,8 +94,10 @@ conditions. A failed comparison is never a licence to raise the threshold.
 
 The current release route uses the local/SSH gate and GoReleaser packaging,
 then DSR publication. Do not enable or dispatch GitHub Actions. For this route,
-register `bv` in DSR with all five targets, use the sealed archives as the
-artifact inputs, and bind its manifest to the gate's commit and measured hashes.
+register `bv` in DSR with all five targets and use the sealed archives as the
+artifact inputs. DSR's external-artifact mode does not create a DSR build
+manifest; the original gate receipt and downloaded-asset hash checks establish
+source identity and completeness for this route.
 Publish with `dsr release bv X.Y.Z --artifacts <verified-directory> --draft
 --verify-tag --no-dispatch`; verify the uploaded draft assets before publishing
 it. Update Homebrew and Scoop directly from the same checksum manifest.
@@ -132,15 +134,16 @@ do not ask again when it already does.
    `bv --robot-capabilities | jq .version`.
 
 `.goreleaser.yaml` emits five archives and `checksums.txt`. The gate adds the
-sealed receipt; no SBOM or additional release manifest is currently emitted.
+sealed receipt. Generate any additional SBOM from the actual packaged binary
+before uploading it; a scan of the working directory is not an archive SBOM.
 The receipt is an audit record, not a cryptographic attestation against a
 malicious host. Retire it when its revision, toolchain, or artifacts change,
 or when that release is superseded; retention/deletion follows maintainer policy.
 
 ## Native installation and package stores
 
-Run `tests/scripts/install_native_test.ps1` on native Windows x64 before a
-release. It installs two real published releases into fresh temporary
+Run `tests/scripts/install_native_test.ps1` on native Windows x64 as part of
+release verification. It installs two real published releases into fresh temporary
 directories containing spaces, checks version/capabilities and a tiny Beads
 project, exercises the released self-updater and no-update path, then serves
 deliberately broken archives over loopback. A wrong-version executable, corrupt
@@ -195,6 +198,25 @@ Publish those changes to the respective repositories' `main` branches,
 then fetch the public manifests again and verify their version and hashes.
 Until that separate step completes, do not describe the package-store install
 as installing the latest GitHub release.
+
+On 2026-09-08, [v0.24.1](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1)
+was published through DSR after all ten original gate stages passed without
+skips on commit `3e4e61c91a74dafe211d3f6a62f3c2919969657c`. All five archives
+identify Go 1.25.5, that exact revision, and `vcs.modified=false`. The 14
+uploaded assets were downloaded and matched by SHA-256 and size before the
+draft was published. They include the sealed receipt and an SPDX SBOM of the
+actual Linux amd64 binary; no minisign signature was produced because the
+signing key was unavailable. GitHub Actions and repository dispatch were not
+used.
+
+Homebrew commit `cae0685` and Scoop commit `4fddb86` publish v0.24.1 with all
+five archive hashes verified against the sealed manifest. Public readback
+matches both commits; the existing legacy branch mirrors are synchronized.
+The Go proxy identifies the same tagged revision, and the public Nix flake
+matches the tagged source. Ruby syntax and the existing formula validator
+pass (the validator retains one warning about the existing platform DSL).
+These checks do not establish native Homebrew or Nix installation. Native
+macOS amd64/arm64, Linux arm64, and a supported Nix build remain unverified.
 
 ## What is not covered
 
