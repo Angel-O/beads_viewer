@@ -1,5 +1,46 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Implementation follow-through — 2026-09-08
+
+The assessment below is the pre-fix baseline. P6 now consumes the existing
+directed `BlockingPairs`, excludes unrelated label members, deduplicates pairs,
+and inspects either endpoint without changing recipe or candidate selection.
+Open relationships and details refresh on snapshots and file reloads; surviving
+selection follows IDs and obsolete relationships disappear. Goals 27 and 30 now
+have repaired Flow consumers, pending the revision-bound final replay recorded
+in `bv-apal.12`/`.13`.
+
+- [x] Reproduce the original relationship and stale-content failures.
+- [x] Connect producer pairs to the rendered drilldown and both endpoint details.
+- [x] Preserve direction, selection, recipe scope, reload and back navigation.
+- [x] Cover multilabel deduplication, missing records, closed/tombstone and
+  nonblocking edges, Unicode, long IDs and narrow display widths.
+- [x] Run the actual CLI in a PTY through matrix, relationships, both details
+  and Escape; run the complete UI and analysis race suites.
+- [x] Correct recipe-key prose, cass health/count and separate-modal behavior,
+  insight-map defaults, plan envelope, history fields/units, dependency direction,
+  Flow documentation and Windows binary/source requirements.
+- [x] Check unset/positive/zero/negative/invalid insight limits through the real
+  CLI; run existing copied-example and documentation parity tests.
+- [ ] Freeze the implementation, replay original P6 acceptance on that revision,
+  record the solo verification limit and close only verified P6 items.
+- [ ] Finish P2's remaining live/native/performance-dependent claims under its
+  existing acceptance criteria; these documentation repairs do not close P2.
+- [ ] Resume S5 installed-tracker atomic claim proof, P1's unchanged full matrix,
+  V5 native/Windows first-start proof and the final cohort gate in that order
+  when their concrete prerequisites are available.
+
+Evidence remains under `/data/tmp/bv-reality-20260908-1umcHa`. The first remote
+race run used an earlier invalid reload fixture and failed; the corrected local
+full race passes (UI 49.312s, analysis 3.400s). PTY setup failures and a missing
+test-local environment helper were corrected without relaxing assertions or
+timeouts. Build/vet pass. Formatting reports 49 pre-existing vendor files and no
+first-party files. UBS is not clean: its 55 secret-comparison hits are issue IDs,
+labels, statuses and UI selections, and both stored context cancellations have
+explicit lifecycle cleanup. These findings were inspected; no scanner rules were
+suppressed. No native-platform, published-release or independent-agent proof is
+claimed by this work.
+
 ## Post-release reality check — 2026-09-08
 
 This assessment supersedes the status of older dated sections below, while

@@ -130,8 +130,8 @@ var (
 
 	InsightsMapLimit = register(Var{
 		Name:        "BV_INSIGHTS_MAP_LIMIT",
-		Description: "Cap on the number of entries in each `--robot-insights` metric map.",
-		Default:     "(all)",
+		Description: "Positive entry limit for each `--robot-insights` metric map; zero or invalid values use the default.",
+		Default:     "`200`",
 	})
 
 	MaxLineSizeMB = register(Var{

@@ -755,6 +755,7 @@ type Model struct {
 	tree                   TreeModel // Hierarchical tree view (bv-gllx)
 	insightsPanel          InsightsModel
 	flowMatrix             FlowMatrixModel // Cross-label flow matrix
+	flowDetailID           string          // Read-only endpoint detail inside the flow view.
 	theme                  Theme
 	keyRegistry            *KeyRegistry // Centralized key dispatch (bv-3bsx)
 
@@ -3143,6 +3144,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tree.BuildFromSnapshot(m.snapshot)
 			m.tree.SetSize(m.width, m.height-2)
 		}
+		if underlyingFocus == focusFlowMatrix {
+			m.refreshFlowMatrix()
+		}
 
 		// Refresh detail pane if visible
 		if m.isSplitView || m.showDetails {
@@ -3512,6 +3516,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if profileRefresh {
 				recordTiming("attention_view", time.Since(attentionStart))
 			}
+		}
+		if m.focused == focusFlowMatrix || (m.focused == focusHelp && m.focusBeforeHelp == focusFlowMatrix) {
+			m.refreshFlowMatrix()
 		}
 		if needsGraph || m.isBoardView {
 			var graphStart time.Time
@@ -4196,6 +4203,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle keys when not filtering
+		if m.focused == focusFlowMatrix && m.flowDetailID != "" {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, m.quitCommand()
+			case "esc", "q", "f":
+				m.flowDetailID = ""
+				m.applyContentSizing()
+			case "g", "home":
+				m.viewport.GotoTop()
+			case "G", "end":
+				m.viewport.GotoBottom()
+			default:
+				m.viewport, cmd = m.viewport.Update(msg)
+			}
+			return m, cmd
+		}
 		if m.list.FilterState() != list.Filtering {
 			// ═══════════════════════════════════════════════════════════════
 			// Truly global keys: ctrl+c, q, esc, tab, split-pane resize
@@ -4790,6 +4813,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isActionableView = false
 				m.isHistoryView = false
 				m.focused = focusFlowMatrix
+				m.flowDetailID = ""
 				m.flowMatrix = NewFlowMatrixModel(m.theme)
 				m.flowMatrix.SetData(&flow, m.issues)
 				panelHeight := m.height - 2
@@ -5755,7 +5779,22 @@ func openBrowserURL(url string) error {
 	return cmd.Start()
 }
 
-// handleFlowMatrixKeys handles keyboard input when flow matrix view is focused
+// refreshFlowMatrix installs current relationship data without losing navigation.
+func (m *Model) refreshFlowMatrix() {
+	flow := analysis.ComputeCrossLabelFlow(m.issues, analysis.DefaultLabelHealthConfig())
+	m.flowMatrix.SetData(&flow, m.issues)
+	if m.flowDetailID != "" {
+		selected := m.flowMatrix.SelectedDrilldownIssue()
+		if selected == nil || selected.ID != m.flowDetailID || m.issueMap[m.flowDetailID] == nil {
+			m.flowDetailID = ""
+			m.applyContentSizing()
+		} else {
+			m.updateViewportContent()
+		}
+	}
+}
+
+// handleFlowMatrixKeys handles keyboard input when flow matrix view is focused.
 func (m *Model) handleFlowMatrixKeys(msg tea.KeyMsg) *Model {
 	switch msg.String() {
 	case "f", "q", "esc":
@@ -5775,24 +5814,10 @@ func (m *Model) handleFlowMatrixKeys(msg tea.KeyMsg) *Model {
 	case "enter":
 		// Open drilldown or jump to issue
 		if m.flowMatrix.showDrilldown {
-			// Jump to selected issue from drilldown
+			// Inspect either endpoint without changing recipe/candidate selection.
 			if selectedIssue := m.flowMatrix.SelectedDrilldownIssue(); selectedIssue != nil {
-				m.revealRecipeIssue(selectedIssue.ID)
-				for i, item := range m.list.Items() {
-					if issueItem, ok := item.(IssueItem); ok && issueItem.Issue.ID == selectedIssue.ID {
-						m.list.Select(i)
-						break
-					}
-				}
-				m.focused = focusList
-				if m.isSplitView {
-					m.focused = focusDetail
-				} else {
-					m.showDetails = true
-					m.focused = focusDetail
-					m.viewport.GotoTop()
-				}
-				m.updateViewportContent()
+				m.flowDetailID = selectedIssue.ID
+				m.applyContentSizing()
 			}
 		} else {
 			// Open drilldown for selected label
@@ -6225,7 +6250,11 @@ func (m *Model) View() string {
 		body = m.insightsPanel.View()
 	} else if m.focused == focusFlowMatrix {
 		m.flowMatrix.SetSize(m.width, m.height-1)
-		body = m.flowMatrix.View()
+		if m.flowDetailID != "" {
+			body = m.viewport.View()
+		} else {
+			body = m.flowMatrix.View()
+		}
 	} else if m.focused == focusTree {
 		// Hierarchical tree view (bv-gllx)
 		m.tree.SetSize(m.width, m.height-1)
@@ -7699,6 +7728,9 @@ func (m *Model) renderFooter() string {
 		keyHints = append(keyHints, keyStyle.Render("A")+" attention", keyStyle.Render("F")+" flow")
 	} else if m.focused == focusFlowMatrix {
 		keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("tab")+" panel", keyStyle.Render("⏎")+" drill", keyStyle.Render("esc")+" back", keyStyle.Render("f")+" close")
+		if m.flowDetailID != "" {
+			keyHints = []string{keyStyle.Render("j/k") + " scroll", keyStyle.Render("esc") + " relationships"}
+		}
 	} else if m.isGraphView {
 		keyHints = append(keyHints, keyStyle.Render("hjkl")+" nav", keyStyle.Render("H/L")+" scroll", keyStyle.Render("⏎")+" view", keyStyle.Render("g")+" list")
 	} else if m.isBoardView {
@@ -8514,7 +8546,10 @@ func (m *Model) applyContentSizing() {
 	// appended in View().
 	contentWidth := m.mainContentWidth()
 
-	if m.isSplitView {
+	if m.focused == focusFlowMatrix && m.flowDetailID != "" {
+		m.viewport = viewport.New(m.width, bodyHeight)
+		m.renderer.SetWidthWithTheme(m.width, m.theme)
+	} else if m.isSplitView {
 		// Calculate dimensions accounting for 2 panels with borders(2)+padding(2) = 4 overhead each
 		// Total overhead = 8
 		availWidth := contentWidth - 8
@@ -8733,6 +8768,14 @@ func (m *Model) handleLeftClick(x, y int) *Model {
 
 func (m *Model) updateViewportContent() {
 	selectedItem := m.list.SelectedItem()
+	if m.flowDetailID != "" && (m.focused == focusFlowMatrix || (m.focused == focusHelp && m.focusBeforeHelp == focusFlowMatrix)) {
+		issue := m.issueMap[m.flowDetailID]
+		if issue == nil {
+			m.viewport.SetContent("Issue no longer available")
+			return
+		}
+		selectedItem = m.itemWithTriage(IssueItem{Issue: *issue})
+	}
 	if selectedItem == nil {
 		m.viewport.SetContent("No issues selected")
 		return

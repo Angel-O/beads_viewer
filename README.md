@@ -478,9 +478,9 @@ Where $|E|$ is the edge count and $|V|$ is the node count. For a directed graph,
 ### 9. Topological Sort (Execution Order)
 **The Math:** A topological ordering of a DAG is a linear sequence of all vertices such that for every edge u → v, vertex u appears before v in the sequence. Only acyclic graphs have valid topological orderings.
 
-**The Intuition:** If you must complete tasks in dependency order, topological sort gives you *a* valid order (there may be many).
+**The Intuition:** Edge direction matters. In bv's stored graph, A → B means A depends on B. A topological ordering of those edges puts A before B; prerequisite-first work order reverses it. The cross-label Flow Matrix presents the opposite direction, from blocker to dependent.
 
-**Pragmatic Meaning:** **Work Queue.** The topological order is the foundation of `bv`'s execution planning. Combined with priority weights, it generates the "what to work on next" recommendations that power `--robot-plan`.
+**Pragmatic Meaning:** **Work Queue.** `--robot-plan` checks dependency eligibility and groups actionable work into tracks. Raw topological order alone does not establish readiness: lifecycle status, unresolved blockers and deferral also matter.
 
 ---
 
@@ -1160,7 +1160,7 @@ and rendered output to 16 MiB.
 
 ### Using Recipes
 ```bash
-# Interactive picker (press 'R' in TUI)
+# Open bv, then press the apostrophe key (') for the recipe picker
 bv
 
 # Direct recipe invocation
@@ -1287,30 +1287,33 @@ graph TD
 ```
 
 ### Plan Output (`--robot-plan`)
+Abbreviated example; the response also includes source identity and metric status.
 ```json
 {
-  "tracks": [
-    {
-      "track_id": "track-A",
-      "reason": "Independent work stream",
-      "items": [
-        { "id": "AUTH-001", "priority": 1, "unblocks": ["AUTH-002", "AUTH-003", "API-005"] }
-      ]
-    },
-    {
-      "track_id": "track-B",
-      "reason": "Independent work stream",
-      "items": [
-        { "id": "UI-101", "priority": 2, "unblocks": ["UI-102"] }
-      ]
+  "plan": {
+    "tracks": [
+      {
+        "track_id": "track-A",
+        "reason": "Independent work stream",
+        "items": [
+          { "id": "AUTH-001", "priority": 1, "unblocks": ["AUTH-002", "AUTH-003", "API-005"] }
+        ]
+      },
+      {
+        "track_id": "track-B",
+        "reason": "Independent work stream",
+        "items": [
+          { "id": "UI-101", "priority": 2, "unblocks": ["UI-102"] }
+        ]
+      }
+    ],
+    "total_actionable": 2,
+    "total_blocked": 5,
+    "summary": {
+      "highest_impact": "AUTH-001",
+      "impact_reason": "Unblocks 3 tasks",
+      "unblocks_count": 3
     }
-  ],
-  "total_actionable": 3,
-  "total_blocked": 5,
-  "summary": {
-    "highest_impact": "AUTH-001",
-    "impact_reason": "Unblocks 3 tasks",
-    "unblocks_count": 3
   }
 }
 ```
@@ -1761,7 +1764,7 @@ In large projects, work is often organized by labels: `frontend`, `backend`, `ap
 │    🟢 db       ━━━       0.22            │    ← frontend (2 issues)         │
 │       outgoing: 0                        │    ← mobile (1 issue)            │
 │       incoming: 7 ← [api, auth]          │                                  │
-│                                           │  Critical Path: YES              │
+│                                           │                                  │
 └───────────────────────────────────────────┴─────────────────────────────────┘
 ```
 
@@ -1781,16 +1784,19 @@ $$
 
 ### Drilldown Mode
 
-Press `Enter` on a label to drill down into the specific issues creating cross-label dependencies:
+Press `Enter` on a label to see its actual cross-label blocking relationships. Each relationship shows the blocker followed by the dependent; unrelated issues sharing the label are excluded. Multiple labels do not duplicate the same issue pair.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  🔀 FLOW MATRIX > api → auth                                    3 issues    │
+│  Dependencies involving: api (3 relationships)                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│    🐛 P1 API-123   Auth endpoint returns 500         blocks AUTH-456       │
-│    ✨ P2 API-456   Add OAuth scope validation        blocks AUTH-789       │
-│    📝 P2 API-789   Token refresh rate limiting       blocks AUTH-101       │
+│    ● API-123 Auth endpoint returns 500                                      │
+│    ●   blocks AUTH-456 Authentication rollout                              │
+│    ● API-456 Add OAuth scope validation                                    │
+│    ●   blocks AUTH-789 Scoped access rollout                               │
+│    ● API-789 Token refresh rate limiting                                   │
+│    ●   blocks AUTH-101 Token rollout                                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1799,11 +1805,13 @@ Press `Enter` on a label to drill down into the specific issues creating cross-l
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Move between labels |
+| `j` / `k` | Move between labels or relationship endpoints; scroll endpoint details |
 | `Tab` | Toggle focus between labels list and detail panel |
-| `Enter` | Drill down into cross-label issues |
-| `Esc` | Exit drilldown / Exit view |
-| `f` / `q` | Exit flow matrix view |
+| `Enter` | Open relationships, then inspect the selected endpoint |
+| `Esc` | Return from endpoint details to the relationship, then the label view |
+| `f` / `q` | Step back from details or relationships; exit from the label view |
+
+Endpoint inspection preserves the active recipe and work-selection scope. Open relationships and details refresh when issue data changes; closed or removed relationships disappear. The view does not currently display critical-path annotations for labels.
 
 ### Robot Command
 
@@ -2190,26 +2198,24 @@ bv --robot-history --history-since '30 days ago'
 bv --robot-history --min-confidence 0.7     # High-confidence only
 ```
 
-**Output Schema:**
+**Abbreviated output example:** lifecycle events, commits and additional metadata are omitted here. `milestones` is an object keyed by lifecycle event; `cycle_time` durations are nanoseconds, while the aggregate average uses days.
 ```json
 {
   "stats": {
     "total_beads": 58,
     "beads_with_commits": 42,
     "total_commits": 156,
-    "avg_cycle_time_hours": 72.5,
+    "avg_cycle_time_days": 3.0,
     "method_distribution": {
-      "explicit": 89,
-      "temporal": 45,
-      "cocommit": 22
+      "explicit_id": 89,
+      "temporal_author": 45,
+      "co_committed": 22
     }
   },
   "histories": {
     "BV-123": {
-      "events": [...],
-      "commits": [...],
-      "milestones": [...],
-      "cycle_time_hours": 48.2
+      "milestones": {},
+      "cycle_time": { "claim_to_close": 173520000000000 }
     }
   },
   "commit_index": {
@@ -2571,8 +2577,9 @@ The footer carries two cass indicators: the health badge from the startup check 
 
 | State | Display | Meaning |
 |-------|---------|---------|
-| **Active** | 🤖 agent-name | Session in progress within last 15 minutes |
-| **Idle** | 💤 | No recent sessions |
+| **Available** | 🤖 cass | Startup health check found a usable cass index |
+| **Index needs attention** | ⚠ cass index | Startup check reported an unhealthy or stale index |
+| **Correlated sessions** | 📎N | Session count for the selected bead after lookup; counts above nine display as 9+ |
 
 ### Installing Cass
 
@@ -2591,11 +2598,7 @@ bv  # Look for 🤖 in status bar
 
 ### Cass-Enhanced History View
 
-When cass is available, the History View gains additional capabilities:
-
-- **Session Timeline**: `V` key shows sessions alongside commits
-- **Agent Attribution**: See which AI assistant contributed to changes
-- **Enhanced Search**: Search across both commits and sessions
+When cass is available, press `V` in History to open the separate session modal for the selected bead. It shows correlated sessions and their agent information. Commit history and session results have separate views; this is not a combined searchable timeline.
 
 ---
 
@@ -3946,7 +3949,7 @@ irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/3ca2176f11
 ```
 
 **Requirements:**
-- Go 1.25+ installed and in your PATH ([download](https://go.dev/dl/))
+- PowerShell and network access for the prebuilt binary installer; Go is needed only for a source build.
 - For best display, use [Windows Terminal](https://aka.ms/terminal) with a [Nerd Font](https://www.nerdfonts.com/)
 
 ### Build from Source
@@ -4116,7 +4119,7 @@ bv has a comprehensive built-in help system:
 | `BV_FRESHNESS_STALE_S` | Snapshot staleness critical threshold (seconds). | `120` |
 | `BV_FRESHNESS_WARN_S` | Snapshot staleness warning threshold (seconds). | `30` |
 | `BV_HEARTBEAT_INTERVAL_S` | Background worker heartbeat interval (seconds). | `5` |
-| `BV_INSIGHTS_MAP_LIMIT` | Cap on the number of entries in each `--robot-insights` metric map. | (all) |
+| `BV_INSIGHTS_MAP_LIMIT` | Positive entry limit for each `--robot-insights` metric map; zero or invalid values use the default. | `200` |
 | `BV_MAX_LINE_SIZE_MB` | Max JSONL line size in MB (lines larger than this are skipped with a warning). Applies to the TUI, the background worker, and robot loads. | `10` |
 | `BV_METRICS` | Set to `0` to disable internal timing metrics collection (`--robot-metrics`). | (enabled) |
 | `BV_NO_BROWSER` | Any value: never open a browser after exports or deployments. | (unset) |

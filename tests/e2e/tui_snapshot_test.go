@@ -11,7 +11,110 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestTUIFlowDependencyJourney(t *testing.T) {
+	skipIfNoScript(t)
+	dir := t.TempDir()
+	writeIssuesJSONL(t, dir, `{"id":"blocker","title":"Database migration","status":"open","priority":1,"issue_type":"task","labels":["database"]}
+{"id":"unrelated","title":"Unrelated database task","status":"open","priority":1,"issue_type":"task","labels":["database"]}
+{"id":"dependent","title":"API rollout","status":"open","priority":1,"issue_type":"task","labels":["api"],"dependencies":[{"depends_on_id":"blocker","type":"blocks"}]}
+`)
+	writeRecipeFile(t, dir, "api-only.yaml", "filters:\n  tags: [api]\nview:\n  columns: [id, title]\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	bv := buildBvBinary(t)
+	cmd := scriptTUICommand(ctx, bv, "--recipe", "api-only")
+	if runtime.GOOS == "linux" {
+		for i, arg := range cmd.Args {
+			if arg == "-c" && i+1 < len(cmd.Args) {
+				cmd.Args[i+1] = "stty columns 110 rows 35 && " + cmd.Args[i+1]
+				break
+			}
+		}
+	} else if runtime.GOOS == "darwin" {
+		cmd = exec.CommandContext(ctx, "script", "-q", "/dev/null", "sh", "-c", "stty columns 110 rows 35 && exec \"$@\"", "sh", bv, "--recipe", "api-only")
+	}
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLUMNS=110", "LINES=35", "BV_TUI_AUTOCLOSE_MS=23000")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	path := filepath.Join(t.TempDir(), "flow-pty.log")
+	output, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	cmd.Stdout, cmd.Stderr = output, output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	defer func() { cancel(); stdin.Close(); <-wait }()
+	offset := 0
+	waitFor := func(marker string) string {
+		t.Helper()
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			frame := ansi.Strip(string(raw[offset:]))
+			if strings.Contains(frame, marker) {
+				t.Logf("bv=%s argv=%q cwd=%s marker=%q bytes=%d..%d\n%s", bv, cmd.Args, dir, marker, offset, len(raw), frame)
+				offset = len(raw)
+				return frame
+			}
+			select {
+			case <-deadline.C:
+				t.Fatalf("flow did not render %q after byte %d:\n%s", marker, offset, raw)
+			case <-ctx.Done():
+				t.Fatalf("flow PTY timed out: %v\n%s", ctx.Err(), raw)
+			case <-tick.C:
+			}
+		}
+	}
+	press := func(key string) {
+		t.Helper()
+		if _, err := io.WriteString(stdin, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor("API rollout")
+	press("f")
+	waitFor("DEPENDENCY FLOW")
+	press("\r")
+	frame := waitFor("Dependencies involving:")
+	for _, want := range []string{"blocker", "blocks dependent", "Database migration", "API rollout"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("missing %q in real relationship frame:\n%s", want, frame)
+		}
+	}
+	if strings.Contains(frame, "Unrelated database task") {
+		t.Fatalf("unrelated label member leaked into relationship frame:\n%s", frame)
+	}
+	press("\r")
+	waitFor("Database migration")
+	press("\x1b")
+	waitFor("Dependencies involving:")
+	press("j")
+	// Wait for the endpoint selection to render before entering its details.
+	time.Sleep(50 * time.Millisecond)
+	press("\r")
+	waitFor("API rollout")
+	press("\x1b")
+	waitFor("Dependencies involving:")
+}
 
 func TestTUIGraphPanAndExpand(t *testing.T) {
 	skipIfNoScript(t)

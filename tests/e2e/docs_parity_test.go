@@ -267,6 +267,57 @@ func TestDocsParity_RecipeKeyDispatchesPicker(t *testing.T) {
 	}
 }
 
+func TestDocsParity_InsightsMapDefaultMatchesRuntime(t *testing.T) {
+	readme := repoFile(t, "README.md")
+	row := regexp.MustCompile("(?m)^\\| `BV_INSIGHTS_MAP_LIMIT` \\|.*\\| `([0-9]+)` \\|$").FindStringSubmatch(readme)
+	if len(row) != 2 {
+		t.Fatal("README must give the actual numeric insights-map default")
+	}
+	defaultLimit, err := strconv.Atoi(row[1])
+	if err != nil || defaultLimit != 200 {
+		t.Fatalf("documented default=%q, want 200", row[1])
+	}
+	dir := t.TempDir()
+	var fixture strings.Builder
+	for i := 0; i < 230; i++ {
+		fmt.Fprintf(&fixture, "{\"id\":\"map-%03d\",\"title\":\"Issue %d\",\"status\":\"open\",\"issue_type\":\"task\",\"priority\":2}\n", i, i)
+	}
+	writeIssuesJSONL(t, dir, fixture.String())
+	bv := buildBvBinary(t)
+	var environment []string
+	for _, item := range os.Environ() {
+		key := strings.SplitN(item, "=", 2)[0]
+		if key != "BEADS_DIR" && key != "BEADS_DB" && key != "BD_DB" && key != "BV_INSIGHTS_MAP_LIMIT" {
+			environment = append(environment, item)
+		}
+	}
+	for _, tc := range []struct {
+		value string
+		want  int
+	}{{"", defaultLimit}, {"17", 17}, {"0", defaultLimit}, {"-1", defaultLimit}, {"invalid", defaultLimit}} {
+		t.Run("value="+tc.value, func(t *testing.T) {
+			cmd := exec.Command(bv, "--robot-insights")
+			cmd.Dir = dir
+			cmd.Env = append(environment, "BV_INSIGHTS_MAP_LIMIT="+tc.value)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("argv=%q env limit=%q exit=%v stderr=%s stdout=%s", cmd.Args, tc.value, err, stderr.String(), out)
+			}
+			var result struct {
+				FullStats struct {
+					PageRank map[string]float64 `json:"pagerank"`
+				} `json:"full_stats"`
+			}
+			if err := json.Unmarshal(out, &result); err != nil || len(result.FullStats.PageRank) != tc.want {
+				t.Fatalf("limit=%q expected=%d observed=%d decode=%v stderr=%s stdout=%s", tc.value, tc.want, len(result.FullStats.PageRank), err, stderr.String(), out)
+			}
+			t.Logf("argv=%q fixture=230 independent issues limit=%q expected=%d observed=%d stderr=%q", cmd.Args, tc.value, tc.want, len(result.FullStats.PageRank), stderr.String())
+		})
+	}
+}
+
 func TestDocsParity_ConfiguredCoverageThresholds(t *testing.T) {
 	workflow := repoFile(t, ".github/workflows/ci.yml")
 	document := repoFile(t, "docs/testing.md")

@@ -1,12 +1,15 @@
 package ui
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
@@ -15,6 +18,101 @@ import (
 )
 
 // White-box testing of UI model logic
+
+func TestFlowMatrixParentRefreshAndDetails(t *testing.T) {
+	t.Chdir(t.TempDir())
+	issues := []model.Issue{
+		{ID: "blocker", Title: "Database migration", Status: model.StatusOpen, Labels: []string{"database"}},
+		{ID: "unrelated", Title: "Unrelated database task", Status: model.StatusOpen, Labels: []string{"database"}},
+		{ID: "dependent", Title: "API rollout", Status: model.StatusOpen, Labels: []string{"api"}, Dependencies: []*model.Dependency{{DependsOnID: "blocker", Type: model.DepBlocks}}},
+	}
+	m := NewModel(copyIssues(issues), nil, "", ReadinessScope{Authority: model.NewReadinessIndex(issues), CandidateIDs: map[string]bool{"dependent": true}})
+	defer m.Stop()
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	r := &recipe.Recipe{Name: "api-only", Filters: recipe.FilterConfig{Tags: []string{"api"}}}
+	m.activeRecipe = r
+	m.applyRecipe(r)
+	press := func(key tea.KeyMsg) { t.Helper(); m.Update(key) }
+	press(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	press(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.focused != focusFlowMatrix || !strings.Contains(m.View(), "blocks") || strings.Contains(m.flowMatrix.View(), "unrelated") {
+		t.Fatalf("flow key journey lost real relationship:\n%s", m.View())
+	}
+	press(tea.KeyMsg{Type: tea.KeyEnter}) // The blocker is hidden by the recipe.
+	view := ansi.Strip(m.viewport.View())
+	if m.focused != focusFlowMatrix || m.flowDetailID != "blocker" || !strings.Contains(view, "Database migration") ||
+		(strings.Contains(view, "API rollout") && strings.Index(view, "Database migration") > strings.Index(view, "API rollout")) {
+		t.Fatalf("wrong endpoint detail, focus=%v:\n%s", m.focused, m.viewport.View())
+	}
+	if got := m.FilteredIssues(); len(got) != 1 || got[0].ID != "dependent" || m.analyzer.IsCandidate("blocker") {
+		t.Fatalf("context navigation changed selected work: %v", got)
+	}
+	press(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.focused != focusFlowMatrix || !m.flowMatrix.showDrilldown {
+		t.Fatal("Escape did not return to selected relationship")
+	}
+	press(tea.KeyMsg{Type: tea.KeyDown})
+	issues[2].Title = "REFRESHED API rollout"
+	m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(copyIssues(issues)).Build(), SnapshotVer: 1})
+	if got := m.flowMatrix.SelectedDrilldownIssue(); got == nil || got.ID != "dependent" || got.Title != issues[2].Title {
+		t.Fatalf("parent snapshot kept stale/wrong endpoint: %+v\n%s", got, m.flowMatrix.View())
+	}
+	press(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(ansi.Strip(m.viewport.View()), "REFRESHED API rollout") {
+		t.Fatalf("dependent detail is stale:\n%s", m.viewport.View())
+	}
+	press(tea.KeyMsg{Type: tea.KeyEsc})
+	issues[0].Status = model.StatusClosed
+	m.Update(SnapshotReadyMsg{Snapshot: NewSnapshotBuilder(copyIssues(issues)).Build(), SnapshotVer: 2})
+	if m.flowMatrix.SelectedDrilldownIssue() != nil || strings.Contains(m.flowMatrix.View(), "API rollout") {
+		t.Fatalf("parent retained closed relationship:\n%s", m.flowMatrix.View())
+	}
+}
+
+func TestFlowMatrixFileReloadWhileInspectingEndpoint(t *testing.T) {
+	t.Setenv("BV_BACKGROUND_MODE", "0")
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, "issues.jsonl")
+	issues := []model.Issue{
+		{ID: "blocker", Title: "Original blocker", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"database"}},
+		{ID: "dependent", Title: "API rollout", Status: model.StatusOpen, IssueType: model.TypeTask, Labels: []string{"api"}, Dependencies: []*model.Dependency{{DependsOnID: "blocker", Type: model.DepBlocks}}},
+	}
+	write := func() {
+		t.Helper()
+		var data []byte
+		for _, issue := range issues {
+			line, err := json.Marshal(issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = append(data, line...)
+			data = append(data, '\n')
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+	m := NewModel(copyIssues(issues), nil, path)
+	defer m.Stop()
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 35})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	issues[0].Title = "Reloaded blocker title"
+	write()
+	m.Update(FileChangedMsg{})
+	if m.flowDetailID != "blocker" || !strings.Contains(ansi.Strip(m.View()), "Reloaded blocker title") {
+		t.Fatalf("file reload did not refresh open endpoint detail:\n%s", ansi.Strip(m.View()))
+	}
+	issues[0].Status = model.StatusClosed
+	write()
+	m.Update(FileChangedMsg{})
+	if m.flowDetailID != "" || m.flowMatrix.SelectedDrilldownIssue() != nil || strings.Contains(m.flowMatrix.View(), "Reloaded blocker title") {
+		t.Fatalf("closed relationship remained inspectable:\n%s", ansi.Strip(m.View()))
+	}
+}
 
 func TestComputeAlertsPreservesSourceAuthorityScopeAndClock(t *testing.T) {
 	t.Chdir(t.TempDir())
