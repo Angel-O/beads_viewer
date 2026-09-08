@@ -812,3 +812,155 @@ func TestWorkspaceRepositoryPickerWCancelRestoresInsights(t *testing.T) {
 		t.Fatalf("w cancel changed Insights selection: panel=%v index=%d", m.insightsPanel.focusedPanel, m.insightsPanel.selectedIndex[PanelKeystones])
 	}
 }
+
+func TestRepositoryPickerApplyFromBoardRestoresBoardLifecycle(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		workspace bool
+		change    string
+	}{
+		{name: "hub unchanged", change: "unchanged"},
+		{name: "hub removal", change: "removal"},
+		{name: "hub addition", change: "addition"},
+		{name: "workspace unchanged", workspace: true, change: "unchanged"},
+		{name: "workspace removal", workspace: true, change: "removal"},
+		{name: "workspace addition", workspace: true, change: "addition"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var m *Model
+			if tt.workspace {
+				m = NewModel([]model.Issue{
+					{ID: "api-1", SourceRepo: "api", Status: model.StatusOpen},
+					{ID: "api-2", SourceRepo: "api", Status: model.StatusOpen},
+					{ID: "web-1", SourceRepo: "web", Status: model.StatusOpen},
+					{ID: "web-2", SourceRepo: "web", Status: model.StatusOpen},
+				}, nil, "")
+				m.width, m.height = 120, 30
+				m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{"api", "web"}})
+				if tt.change == "addition" {
+					m.SetRepositoryScope(map[string]bool{"api": true})
+				}
+			} else {
+				m = NewModel([]model.Issue{
+					{ID: "alpha-1", Labels: []string{"ctx:alpha"}, Status: model.StatusOpen},
+					{ID: "alpha-2", Labels: []string{"ctx:alpha"}, Status: model.StatusOpen},
+					{ID: "beta-1", Labels: []string{"ctx:beta"}, Status: model.StatusOpen},
+					{ID: "gamma-1", Labels: []string{"ctx:gamma"}, Status: model.StatusOpen},
+				}, nil, "")
+				m.width, m.height = 120, 30
+				m.hubRepositoryMode = true
+				m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma")
+				var scope hub.HubScope
+				var err error
+				if tt.change == "addition" {
+					scope, err = hub.NewSelectedContextsHubScope([]string{"ctx:alpha"})
+				} else {
+					scope = hub.NewAllItemsHubScope()
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := m.SetHubScope(scope); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			update := func(key string) {
+				updated, _ := m.Update(keyMsg(key))
+				m = updated.(*Model)
+			}
+			update("b")
+			if !m.isBoardView || m.focused != focusBoard {
+				t.Fatalf("board setup: board=%v focus=%v", m.isBoardView, m.focused)
+			}
+			update("w")
+			if !m.showRepoPicker || m.repoPickerOrigin != focusBoard {
+				t.Fatalf("picker setup: shown=%v origin=%v", m.showRepoPicker, m.repoPickerOrigin)
+			}
+			switch tt.change {
+			case "removal":
+				if !tt.workspace {
+					update("down")
+				}
+				update("space")
+			case "addition":
+				update("down")
+				if !tt.workspace {
+					update("down")
+				}
+				update("space")
+			}
+			update("enter")
+
+			if m.showRepoPicker || !m.isBoardView || m.focused != focusBoard {
+				t.Fatalf("apply lost Board: picker=%v board=%v focus=%v", m.showRepoPicker, m.isBoardView, m.focused)
+			}
+			if tt.workspace {
+				scope := m.RepositoryScope()
+				switch tt.change {
+				case "unchanged":
+					if scope != nil {
+						t.Fatalf("unchanged workspace scope = %#v, want all", scope)
+					}
+				case "removal":
+					if len(scope) != 1 || !scope["web"] {
+						t.Fatalf("workspace removal scope = %#v", scope)
+					}
+				case "addition":
+					if scope != nil {
+						t.Fatalf("workspace addition scope = %#v, want all", scope)
+					}
+				}
+			} else {
+				scope := m.HubScope()
+				switch tt.change {
+				case "unchanged":
+					if scope.Mode != hub.HubScopeAllItems {
+						t.Fatalf("unchanged Hub scope = %#v, want all", scope)
+					}
+				case "removal":
+					if scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 2 || !scope.IncludeContextless {
+						t.Fatalf("Hub removal scope = %#v", scope)
+					}
+				case "addition":
+					if scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 2 || scope.IncludeContextless {
+						t.Fatalf("Hub addition scope = %#v", scope)
+					}
+				}
+			}
+
+			m.board.JumpToFirstColumn()
+			m.board.MoveToTop()
+			startRow := m.board.selectedRow[ColOpen]
+			update("d")
+			if !m.board.HasExpandedCard() {
+				t.Fatal("d was not dispatched to Board after apply")
+			}
+			update("down")
+			if m.board.selectedRow[ColOpen] != startRow+1 || m.board.HasExpandedCard() {
+				t.Fatalf("down was not dispatched to Board: row=%d expanded=%v", m.board.selectedRow[ColOpen], m.board.HasExpandedCard())
+			}
+			update("up")
+			if m.board.selectedRow[ColOpen] != startRow {
+				t.Fatalf("up was not dispatched to Board: row=%d", m.board.selectedRow[ColOpen])
+			}
+			startColumn := m.board.focusedCol
+			update("right")
+			if m.board.focusedCol != startColumn+1 {
+				t.Fatalf("right was not dispatched to Board: column=%d", m.board.focusedCol)
+			}
+			update("left")
+			if m.board.focusedCol != startColumn {
+				t.Fatalf("left was not dispatched to Board: column=%d", m.board.focusedCol)
+			}
+			update("tab")
+			if !m.board.IsDetailShown() {
+				t.Fatal("Tab was not dispatched to Board detail preview")
+			}
+			update("b")
+			if m.isBoardView || m.focused != focusList {
+				t.Fatalf("b did not exit Board: board=%v focus=%v", m.isBoardView, m.focused)
+			}
+		})
+	}
+}
