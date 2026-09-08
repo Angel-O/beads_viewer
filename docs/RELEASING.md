@@ -218,6 +218,17 @@ pass (the validator retains one warning about the existing platform DSL).
 These checks do not establish native Homebrew or Nix installation. Native
 macOS amd64/arm64, Linux arm64, and a supported Nix build remain unverified.
 
+The Windows installer follow-up in `3ca2176f` suppresses download progress
+inside `Install-FromRelease` and repairs the native harness's obsolete
+top-level `--robot-next` ID assertion. It follows the immutable release tag;
+the archives still identify `3e4e61c9`. The original native test failure and
+the later incomplete loopback transfer are retained. An initial native source
+installation using Go 1.26.5 passed. A subsequent optional source run compiled
+successfully but exceeded the existing 10-second first-start guard; a second
+diagnostic invocation of that retained executable returned the correct version
+with empty stderr in 1,742 ms. The original failure remains unresolved, and
+the timeout is unchanged. Broader native-platform acceptance stays open.
+
 ## What is not covered
 
 - The gate does not run the native installation checks above. Its
