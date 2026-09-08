@@ -722,6 +722,34 @@ func TestAgentIntentArgRewrite(t *testing.T) {
 	}
 }
 
+func TestForkBuildRejectsMutatingUpdateCommands(t *testing.T) {
+	exe := buildTestBinary(t)
+	for _, args := range [][]string{
+		{"--update"},
+		{"--update", "--yes"},
+		{"upgrade"},
+		{"upgrade", "--force"},
+		{"upgrade", "rollback"},
+		{"self-update"},
+		{"selfupdate"},
+		{"--rollback"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			stdout, stderr, err := runCommandWithTimeout(t, t.TempDir(), exe, args...)
+			if err == nil {
+				t.Fatalf("%v unexpectedly succeeded\nstdout:\n%s\nstderr:\n%s", args, stdout, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("%v wrote stdout before rejection:\n%s", args, stdout)
+			}
+			if !strings.Contains(stderr, "self-update is disabled in this fork") ||
+				!strings.Contains(stderr, "externally managed dotfiles installation path") {
+				t.Fatalf("%v missing actionable rejection:\n%s", args, stderr)
+			}
+		})
+	}
+}
+
 func TestReadUpdateConfirmation(t *testing.T) {
 	tests := []struct {
 		name      string

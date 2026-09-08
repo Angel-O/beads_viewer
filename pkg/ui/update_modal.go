@@ -98,10 +98,19 @@ func validateConfirmedRelease(release *updater.Release, expectedVersion string) 
 	return nil
 }
 
+var getLatestRelease = updater.GetLatestRelease
+
 // PerformUpdateCmd returns a command that performs the update in the background.
 func PerformUpdateCmd(expectedVersion string) tea.Cmd {
 	return func() tea.Msg {
-		release, err := updater.GetLatestRelease()
+		if err := updater.RejectMutatingUpdate(); err != nil {
+			return UpdateCompleteMsg{
+				Success: false,
+				Message: fmt.Sprintf("Update failed: %v", err),
+			}
+		}
+
+		release, err := getLatestRelease()
 		if err != nil {
 			return UpdateCompleteMsg{
 				Success: false,

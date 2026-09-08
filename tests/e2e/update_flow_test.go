@@ -66,16 +66,16 @@ func TestRollbackFlag_FailsWithoutBackup(t *testing.T) {
 	cmd.Dir = tmpDir
 	out, err := cmd.CombinedOutput()
 
-	// Should fail because there's no backup
+	// The managed fork rejects rollback before consulting the filesystem.
 	if err == nil {
-		t.Fatalf("expected --rollback to fail without backup, but succeeded: %s", out)
+		t.Fatalf("expected --rollback to be rejected, but succeeded: %s", out)
 	}
 
 	output := string(out)
 
-	// Error message should mention backup
-	if !strings.Contains(strings.ToLower(output), "backup") && !strings.Contains(strings.ToLower(output), "no backup") {
-		t.Errorf("expected error message about missing backup, got: %s", output)
+	if !strings.Contains(output, "self-update is disabled in this fork") ||
+		!strings.Contains(output, "externally managed dotfiles installation path") {
+		t.Errorf("expected managed-fork rejection, got: %s", output)
 	}
 }
 

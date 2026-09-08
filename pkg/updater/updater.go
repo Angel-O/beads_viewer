@@ -1273,6 +1273,9 @@ func checkBinaryDirectoryWritable(binaryDir string) error {
 // progress is written to progress; pass nil to suppress output (for example,
 // while Bubble Tea owns the terminal).
 func PerformUpdate(release *Release, progress io.Writer) (*UpdateResult, error) {
+	if err := RejectMutatingUpdate(); err != nil {
+		return nil, err
+	}
 	if release == nil {
 		return nil, fmt.Errorf("release metadata is nil")
 	}
@@ -1520,6 +1523,9 @@ func verifyBinaryVersion(binaryPath, expectedVersion string) error {
 
 // Rollback restores the previous version from backup
 func Rollback() error {
+	if err := RejectMutatingUpdate(); err != nil {
+		return err
+	}
 	binaryPath, err := GetCurrentBinaryPath()
 	if err != nil {
 		return fmt.Errorf("cannot determine binary path: %w", err)
