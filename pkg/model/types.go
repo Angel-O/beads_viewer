@@ -298,14 +298,10 @@ const (
 	StatusTombstone  Status = "tombstone" // Soft-deleted issue
 )
 
-// IsValid returns true if the status is a recognized value
+// IsValid accepts nonblank statuses, including br's custom workflow states.
+// Loading a custom state does not make it open, closed, or claimable.
 func (s Status) IsValid() bool {
-	switch s {
-	case StatusOpen, StatusInProgress, StatusBlocked, StatusDeferred, StatusDraft,
-		StatusPinned, StatusHooked, StatusReview, StatusClosed, StatusTombstone:
-		return true
-	}
-	return false
+	return strings.TrimSpace(string(s)) != ""
 }
 
 // IsClosed returns true if the status represents a closed state
@@ -422,19 +418,18 @@ type IssueMetrics struct {
 type DependencyType string
 
 const (
-	DepBlocks         DependencyType = "blocks"
-	DepRelated        DependencyType = "related"
-	DepParentChild    DependencyType = "parent-child"
-	DepDiscoveredFrom DependencyType = "discovered-from"
+	DepBlocks            DependencyType = "blocks"
+	DepConditionalBlocks DependencyType = "conditional-blocks"
+	DepWaitsFor          DependencyType = "waits-for"
+	DepRelated           DependencyType = "related"
+	DepParentChild       DependencyType = "parent-child"
+	DepDiscoveredFrom    DependencyType = "discovered-from"
 )
 
-// IsValid returns true if the dependency type is a recognized value
+// IsValid accepts nonblank dependency types so both SQLite and JSONL retain
+// br's informational/custom relationships. IsBlocking defines readiness effects.
 func (d DependencyType) IsValid() bool {
-	switch d {
-	case DepBlocks, DepRelated, DepParentChild, DepDiscoveredFrom:
-		return true
-	}
-	return false
+	return strings.TrimSpace(string(d)) != ""
 }
 
 // IsBlocking returns true if this dependency type represents a blocking relationship.
@@ -442,7 +437,7 @@ func (d DependencyType) IsValid() bool {
 // legacy beads data that predates the typed dependency system. This means dependencies
 // created without an explicit type will block by default.
 func (d DependencyType) IsBlocking() bool {
-	return d == "" || d == DepBlocks
+	return d == "" || d == DepBlocks || d == DepConditionalBlocks || d == DepWaitsFor
 }
 
 // Comment represents a comment on an issue.

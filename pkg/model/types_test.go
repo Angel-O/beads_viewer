@@ -340,7 +340,9 @@ func TestStatus_IsValid(t *testing.T) {
 		{"Review", StatusReview, true},
 		{"Closed", StatusClosed, true},
 		{"Tombstone", StatusTombstone, true},
-		{"Invalid", "unknown", false},
+		{"Custom", "qa-review", true},
+		{"HistoricalCustom", "invalid", true},
+		{"Whitespace", " \t", false},
 		{"Empty", "", false},
 	}
 	for _, tt := range tests {
@@ -455,7 +457,11 @@ func TestDependencyType_IsValid(t *testing.T) {
 		{"Related", DepRelated, true},
 		{"ParentChild", DepParentChild, true},
 		{"DiscoveredFrom", DepDiscoveredFrom, true},
-		{"Invalid", "causes", false},
+		{"ConditionalBlocks", DepConditionalBlocks, true},
+		{"WaitsFor", DepWaitsFor, true},
+		{"RelatesTo", "relates-to", true},
+		{"Custom", "causes", true},
+		{"Whitespace", " \t", false},
 		{"Empty", "", false},
 	}
 	for _, tt := range tests {
@@ -474,7 +480,11 @@ func TestDependencyType_IsBlocking(t *testing.T) {
 		want    bool
 	}{
 		{"Blocks", DepBlocks, true},
+		{"ConditionalBlocks", DepConditionalBlocks, true},
+		{"WaitsFor", DepWaitsFor, true},
 		{"Related", DepRelated, false},
+		{"RelatesTo", "relates-to", false},
+		{"Custom", "team-reference", false},
 		{"ParentChild", DepParentChild, false},
 		{"Legacy (Empty)", "", true},
 	}
@@ -789,11 +799,11 @@ func TestIssue_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "Invalid Status",
+			name: "Empty Status",
 			issue: Issue{
 				ID:        "TEST-1",
 				Title:     "Valid Issue",
-				Status:    "invalid",
+				Status:    "",
 				IssueType: TypeBug,
 			},
 			wantErr: true,

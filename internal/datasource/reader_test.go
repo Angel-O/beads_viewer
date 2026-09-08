@@ -30,12 +30,12 @@ func TestSQLiteLoadReportAccountsForReadLoss(t *testing.T) {
 	}{
 		{"minimal_valid_without_optional_tables", "", 0, 0},
 		{"malformed_issue_row", `INSERT INTO issues VALUES ('bad', 'Unreadable priority', 'open', 'bad', NULL);`, 1, 0},
-		{"invalid_issue_row", `INSERT INTO issues VALUES ('bad', 'Invalid status', 'unsupported', 2, NULL);`, 1, 0},
+		{"invalid_issue_row", `INSERT INTO issues VALUES ('bad', 'Empty status', '', 2, NULL);`, 1, 0},
 		{"malformed_dependency_row", `CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT); INSERT INTO dependencies VALUES ('safe', NULL, 'blocks');`, 0, 1},
 		{"malformed_dependency_table", `CREATE TABLE dependencies (issue_id TEXT, type TEXT);`, 0, 1},
 		{"legacy_dependency_without_type", `CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT); INSERT INTO dependencies VALUES ('safe', 'missing');`, 0, 0},
 		{"legacy_empty_dependency_type", `CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT); INSERT INTO dependencies VALUES ('safe', 'missing', '');`, 0, 0},
-		{"unsupported_dependency_type", `CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT); INSERT INTO dependencies VALUES ('safe', 'missing', 'unsupported');`, 0, 1},
+		{"blank_dependency_type", `CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT); INSERT INTO dependencies VALUES ('safe', 'missing', '   ');`, 0, 1},
 		{"invalid_deferral", `UPDATE issues SET defer_until = 'not-a-time';`, 0, 1},
 		{"invalid_creation_time", `ALTER TABLE issues ADD COLUMN created_at TEXT; UPDATE issues SET created_at = 'not-a-time';`, 0, 1},
 		{"invalid_update_time", `ALTER TABLE issues ADD COLUMN updated_at TEXT; UPDATE issues SET updated_at = 'not-a-time';`, 0, 1},
@@ -79,6 +79,92 @@ INSERT INTO issues VALUES ('safe', 'Readable issue', 'open', 2, NULL);` + tc.ext
 				}
 				if model.NewReadinessIndex(loaded.Issues).Ready("safe", time.Now()) {
 					t.Fatal("missing legacy blocker must withhold readiness")
+				}
+			}
+		})
+	}
+}
+
+// br permits custom workflow vocabulary. Loading it must preserve the source,
+// without treating a custom status as actionable or a blocking edge as related.
+func TestReaderPreservesBrWorkflowVocabulary(t *testing.T) {
+	for _, backend := range []string{"jsonl", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			dir := t.TempDir()
+			source := DataSource{Type: SourceTypeJSONLLocal, Path: filepath.Join(dir, "issues.jsonl")}
+			if backend == "jsonl" {
+				contents := `{"id":"custom","title":"Custom workflow","status":"qa-review","issue_type":"task"}
+{"id":"ready","title":"Ready work","status":"open","issue_type":"task","dependencies":[{"depends_on_id":"custom","type":"relates-to"},{"depends_on_id":"absent","type":"team-reference"}]}
+{"id":"blocked","title":"Blocked work","status":"open","issue_type":"task","dependencies":[{"depends_on_id":"custom","type":"conditional-blocks"}]}
+{"id":"waiting","title":"Waiting work","status":"open","issue_type":"task","dependencies":[{"depends_on_id":"custom","type":"waits-for"}]}
+`
+				if err := os.WriteFile(source.Path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				source = DataSource{Type: SourceTypeSQLite, Path: filepath.Join(dir, "beads.db")}
+				db, err := sql.Open("sqlite", sqliteFileDSN(source.Path, ""))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { db.Close() })
+				if _, err := db.Exec(`CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT, issue_type TEXT);
+CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT);
+INSERT INTO issues VALUES ('custom', 'Custom workflow', 'qa-review', 'task'), ('ready', 'Ready work', 'open', 'task'), ('blocked', 'Blocked work', 'open', 'task'), ('waiting', 'Waiting work', 'open', 'task');
+INSERT INTO dependencies VALUES ('ready', 'custom', 'relates-to'), ('ready', 'absent', 'team-reference'), ('blocked', 'custom', 'conditional-blocks'), ('waiting', 'custom', 'waits-for');`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded, err := LoadFromSource(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(loaded.Issues) != 4 || loaded.Report.Valid != 4 || loaded.Report.Errors != 0 || loaded.Report.ReadErrors != 0 || loaded.Report.WarningCount != 0 {
+				t.Fatalf("valid br vocabulary lost source authority: issues=%+v report=%+v", loaded.Issues, loaded.Report)
+			}
+			byID := make(map[string]model.Issue)
+			for _, issue := range loaded.Issues {
+				byID[issue.ID] = issue
+			}
+			if byID["custom"].Status != "qa-review" {
+				t.Fatalf("custom status changed: %+v", byID["custom"])
+			}
+			wantEdges := map[string]map[string]model.DependencyType{
+				"ready":   {"custom": "relates-to", "absent": "team-reference"},
+				"blocked": {"custom": "conditional-blocks"},
+				"waiting": {"custom": "waits-for"},
+			}
+			for id, want := range wantEdges {
+				deps := byID[id].Dependencies
+				if len(deps) != len(want) {
+					t.Fatalf("%s lost edges: %+v", id, deps)
+				}
+				for _, dep := range deps {
+					if dep == nil || want[dep.DependsOnID] != dep.Type {
+						t.Fatalf("%s changed an edge: %+v", id, dep)
+					}
+				}
+			}
+			now := time.Now()
+			readiness := model.NewReadinessIndex(loaded.Issues)
+			if !readiness.Claimable("ready", now) {
+				t.Fatal("nonblocking references must allow the known ready issue")
+			}
+			for _, id := range []string{"custom", "blocked", "waiting"} {
+				if readiness.Ready(id, now) || readiness.Claimable(id, now) {
+					t.Fatalf("%s must not be offered as ready work", id)
+				}
+			}
+			// Completing the actual blocker must release both blocking variants.
+			for i := range loaded.Issues {
+				if loaded.Issues[i].ID == "custom" {
+					loaded.Issues[i].Status = model.StatusClosed
+				}
+			}
+			readiness = model.NewReadinessIndex(loaded.Issues)
+			for _, id := range []string{"blocked", "waiting"} {
+				if !readiness.Claimable(id, now) {
+					t.Fatalf("%s must become claimable after its blocker closes", id)
 				}
 			}
 		})
