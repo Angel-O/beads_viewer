@@ -51,6 +51,30 @@ func TestValidateConfirmedRelease(t *testing.T) {
 	}
 }
 
+func TestPerformUpdateCmdRejectsBeforeReleaseRetrieval(t *testing.T) {
+	called := false
+	original := getLatestRelease
+	getLatestRelease = func() (*updater.Release, error) {
+		called = true
+		return nil, nil
+	}
+	t.Cleanup(func() { getLatestRelease = original })
+
+	message, ok := PerformUpdateCmd("v9.9.9")().(UpdateCompleteMsg)
+	if !ok {
+		t.Fatalf("PerformUpdateCmd returned %T, want UpdateCompleteMsg", message)
+	}
+	if message.Success {
+		t.Fatal("rejected update reported success")
+	}
+	if called {
+		t.Fatal("release retrieval was called before fork rejection")
+	}
+	if !strings.Contains(message.Message, "self-update is disabled in this fork") {
+		t.Fatalf("rejection message = %q", message.Message)
+	}
+}
+
 // ============================================================================
 // State helper tests
 // ============================================================================

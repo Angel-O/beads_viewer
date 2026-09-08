@@ -341,13 +341,3 @@ func TestExtractBinary_SkipsZipDirectoryNamedBinary(t *testing.T) {
 		t.Fatalf("payload mismatch: got %q want %q", got, payload)
 	}
 }
-
-func TestRollback_NoBackup(t *testing.T) {
-	err := Rollback()
-	if err == nil {
-		t.Fatalf("expected rollback to fail when no backup exists")
-	}
-	if !strings.Contains(err.Error(), "no backup found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}

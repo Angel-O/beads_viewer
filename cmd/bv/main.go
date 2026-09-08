@@ -1744,6 +1744,9 @@ func main() {
 		NotReadyLabels:          robotNotReadyLabels,
 	})
 	rootCmd := newRootCommand(func() error {
+		if *updateFlag || *rollbackFlag {
+			return updater.RejectMutatingUpdate()
+		}
 		resolvedMode, resolvedConfig, err := resolveHistoryConfiguration(*historyMode, *hubConfig)
 		if err != nil {
 			return err
