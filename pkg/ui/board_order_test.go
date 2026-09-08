@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func boardOrderTime(day int) time.Time {
@@ -134,6 +137,77 @@ func TestBoardOrderMatchesPrecomputedSnapshotForAllModes(t *testing.T) {
 		if !reflect.DeepEqual(snapshotPath.columns, filteredPath.columns) {
 			t.Fatalf("mode %s snapshot columns differ from filtered path:\n got %#v\nwant %#v", modeName(mode), snapshotPath.columns, filteredPath.columns)
 		}
+	}
+}
+
+func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
+	for _, mode := range []SwimLaneMode{SwimByStatus, SwimByPriority, SwimByType} {
+		t.Run(modeName(mode), func(t *testing.T) {
+			issues := boardOrderFixture(mode)
+			issues[0].Title = "Child new"
+			issues[1].Title = "Child old"
+			issues[2].Title = "Other"
+			issues[3].Title = "Parent"
+			b := NewBoardModel(issues, DefaultTheme(lipgloss.NewRenderer(io.Discard)))
+			for current := SwimByStatus; current < mode; current++ {
+				b.CycleSwimLaneMode()
+			}
+
+			var renderedCards string
+			var sawParent, sawFirstChild, sawLastChild bool
+			for col := range b.columns {
+				for row, issue := range b.columns[col] {
+					renderedCards += b.renderCard(issue, 20, false, col, row)
+					parent, child, last := boardCardGroupRole(issue, b.columns[col], row)
+					sawParent = sawParent || issue.ID == "epic" && parent
+					sawFirstChild = sawFirstChild || issue.ID == "child-new" && child && !last
+					sawLastChild = sawLastChild || issue.ID == "child-old" && child && last
+				}
+			}
+			if !sawParent || !sawFirstChild || !sawLastChild {
+				t.Fatal("flat group roles did not preserve parent, child, and final-child separation")
+			}
+			view := b.View(40, 24)
+			if strings.Count(renderedCards, "◆") != 1 || strings.Count(renderedCards, "↳") != 2 {
+				t.Fatalf("group markers missing from rendered cards:\n%s", renderedCards)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if lipgloss.Width(line) > 40 {
+					t.Fatalf("board line overflows constrained width: %d > 40: %q", lipgloss.Width(line), line)
+				}
+			}
+
+			solo := model.Issue{ID: "solo", Title: "Solo", Status: model.StatusOpen, IssueType: model.TypeEpic}
+			soloBoard := NewBoardModel([]model.Issue{solo}, DefaultTheme(lipgloss.NewRenderer(io.Discard)))
+			soloCard := soloBoard.renderCard(solo, 20, false, ColOpen, 0)
+			if strings.Contains(soloCard, "◆") || strings.Contains(soloCard, "↳") {
+				t.Fatalf("epic without visible children received group markers: %s", soloCard)
+			}
+		})
+	}
+}
+
+func TestBoardGroupVisualTreatmentLeavesNestedRelationshipsFlat(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "grandchild", Title: "Grandchild", Status: model.StatusOpen, Priority: 0, Dependencies: []*model.Dependency{{DependsOnID: "nested-epic", Type: model.DepParentChild}}},
+		{ID: "nested-epic", Title: "Nested", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeEpic, Dependencies: []*model.Dependency{{DependsOnID: "outer-epic", Type: model.DepParentChild}}},
+		{ID: "outer-epic", Title: "Outer", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeEpic},
+	}
+	b := NewBoardModel(issues, DefaultTheme(lipgloss.NewRenderer(io.Discard)))
+	view := b.View(80, 24)
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 80 {
+			t.Fatalf("nested board line overflows constrained width: %d > 80: %q", lipgloss.Width(line), line)
+		}
+	}
+	var renderedCards string
+	for col := range b.columns {
+		for row, issue := range b.columns[col] {
+			renderedCards += b.renderCard(issue, 20, false, col, row)
+		}
+	}
+	if strings.Count(renderedCards, "◆") != 1 || strings.Count(renderedCards, "↳") != 1 {
+		t.Fatalf("nested relationship received special presentation:\n%s", renderedCards)
 	}
 }
 
