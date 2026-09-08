@@ -1532,7 +1532,9 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 	// CARD STYLING - Fixed 4-line height (bv-1daf) with blocking colors (bv-kklp)
 	// ══════════════════════════════════════════════════════════════════════════
 	marginBottom := 1
-	if lastChild {
+	if groupParent || (groupChild && !lastChild) {
+		marginBottom = 0
+	} else if lastChild {
 		marginBottom = 2
 	}
 	cardStyle := t.Renderer.NewStyle().
@@ -1769,7 +1771,9 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, colIdx, row
 	// CARD STYLING - Expanded card is always selected (since we expand selected)
 	// ══════════════════════════════════════════════════════════════════════════
 	marginBottom := 1
-	if lastChild {
+	if groupParent || (groupChild && !lastChild) {
+		marginBottom = 0
+	} else if lastChild {
 		marginBottom = 2
 	}
 	cardStyle := t.Renderer.NewStyle().

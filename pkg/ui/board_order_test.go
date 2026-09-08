@@ -32,6 +32,16 @@ func boardCardLeadingIndent(card string) int {
 	return -1
 }
 
+func boardCardTopRows(composed string) []int {
+	var rows []int
+	for row, line := range strings.Split(composed, "\n") {
+		if strings.Contains(line, "╭") || strings.Contains(line, "╔") {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
 func boardOrderFixture(mode SwimLaneMode) []model.Issue {
 	childType := model.TypeTask
 	if mode == SwimByType {
@@ -164,7 +174,7 @@ func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 
 			var renderedCards string
 			var sawParent, sawFirstChild, sawLastChild bool
-			var parentCard, childCard, ordinaryCard string
+			var parentCard, firstChildCard, childCard, ordinaryCard string
 			var parentIssue, childIssue model.Issue
 			var parentCol, parentRow, childCol, childRow int
 			for col := range b.columns {
@@ -174,6 +184,8 @@ func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 					switch issue.ID {
 					case "epic":
 						parentCard, parentIssue, parentCol, parentRow = card, issue, col, row
+					case "child-new":
+						firstChildCard = card
 					case "child-old":
 						childCard, childIssue, childCol, childRow = card, issue, col, row
 					case "other":
@@ -195,6 +207,19 @@ func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 			childExpanded := b.renderExpandedCard(childIssue, 20, childCol, childRow)
 			if got, want := boardCardLeadingIndent(childExpanded), boardCardLeadingIndent(parentExpanded)+2; got != want {
 				t.Fatalf("expanded child indentation = %d, want %d", got, want)
+			}
+			rows := boardCardTopRows(lipgloss.JoinVertical(lipgloss.Left, parentCard, firstChildCard, childCard, ordinaryCard))
+			if len(rows) != 4 {
+				t.Fatalf("composed card top rows = %v, want four cards", rows)
+			}
+			if got, want := rows[1]-rows[0], rows[2]-rows[1]; got != want {
+				t.Fatalf("composed intra-group gaps differ: parent-child=%d sibling=%d", got, want)
+			}
+			if got, want := rows[1]-rows[0], lipgloss.Height(parentCard); got != want {
+				t.Fatalf("parent-to-first-child gap = %d, want touching cards at %d", got, want)
+			}
+			if got, want := rows[3]-rows[2], rows[2]-rows[1]+2; got != want {
+				t.Fatalf("final-child separation = %d, want %d", got, want)
 			}
 			view := b.View(40, 24)
 			if strings.Count(renderedCards, "◆") != 1 || strings.Count(renderedCards, "↳") != 2 {
