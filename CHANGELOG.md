@@ -1,14 +1,20 @@
 # Changelog
 
-All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first. Each entry links to the tagged commit on GitHub. Where a version was published as a GitHub Release (with binaries), it is marked accordingly; tag-only versions are noted as such.
+All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
-Scope window: this update reconstructs `v0.21.0` through `v0.21.2`; the earlier version history is
-retained below.
+Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
+commits through [`7983ee3f`](https://github.com/Dicklesworthstone/beads_viewer/commit/7983ee3f9a4d5d2cf615dbb9a919256a3e74c2fc).
+Earlier entries are retained without a fresh historical audit. The recent entries
+are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
+and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
+Release dates use UTC publication dates. `Unreleased` describes changes after
+the latest tag, including installer changes usable with already released binaries.
 
 ## Release Timeline
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
+| [Unreleased] | — | Commits after v0.24.1 | Windows PowerShell download-progress fix and updated installer guidance. |
 | [`v0.24.1`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1) | 2026-09-08 | GitHub Release | Reuse loaded source hashes and avoid waiting for a busy analysis-cache writer. |
 | [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
@@ -21,31 +27,99 @@ retained below.
 
 ## [Unreleased]
 
+### Windows installation
+
+- Suppress download progress locally inside `Install-FromRelease`, avoiding
+  the redirected-download stalls observed with Windows PowerShell 5.1 without
+  changing the caller's preference. The native harness now checks the existing
+  `diagnostic_top_pick` and metadata-free claim refusal instead of an obsolete
+  top-level ID ([`3ca2176f`](https://github.com/Dicklesworthstone/beads_viewer/commit/3ca2176f11cc6106be452815e03fc4164b581761)).
+  This fixes installer behavior and its test; it does not change robot output.
+- README's Windows commands pin that installer revision
+  ([`87756815`](https://github.com/Dicklesworthstone/beads_viewer/commit/87756815cb55e8450cc559a74b29677327f830b6)).
+  The pinned source option uses a verified tagged checkout and vendored
+  dependencies; the stale reference to its older `go install` path is corrected.
+  The installer fix follows v0.24.1's immutable tag and is already usable with
+  its published binaries.
+
+### Verification and remaining limits
+
+- With the repaired installer, the complete default native Windows suite
+  passes against public release archives: installation, readiness,
+  update/no-update, and preservation of the installed executable and user PATH
+  on failure. Readback covers 28 command logs, eight capability results, and
+  five specific rejection cases; it does not count a transport timeout as a
+  successful rejection.
+- An initial native Windows source installation passed, but a later optional
+  source run exceeded the unchanged 10-second first-start guard. Its retained
+  executable succeeded on a second diagnostic invocation; the original failure
+  remains unresolved. Native macOS amd64/arm64 and Linux arm64 execution,
+  native Homebrew installation, and a supported Nix build remain unverified.
+  The broader installation workstream
+  [bv-oonu.10](https://github.com/Dicklesworthstone/beads_viewer/blob/7983ee3f9a4d5d2cf615dbb9a919256a3e74c2fc/.beads/issues.jsonl#L454)
+  stays open. See the
+  [retained release findings](https://github.com/Dicklesworthstone/beads_viewer/commit/7983ee3f9a4d5d2cf615dbb9a919256a3e74c2fc).
+
 ---
 
-## [v0.24.1] -- 2026-09-08
+## [v0.24.1] -- 2026-09-08 (Release)
+
+This patch removes avoidable hashing and cache-lock waiting from robot commands
+while preserving their data-hash scope and computed analysis results.
 
 ### Fixed
 
 - Optional analysis-cache publication no longer waits for another process's
   writer lock. A contended writer leaves the existing cache entry intact and
   returns the computed result; a later request can publish successfully
-  (`f719c41a`). Linux and native Windows regression tests exercise the real lock.
+  ([`f719c41a`](https://github.com/Dicklesworthstone/beads_viewer/commit/f719c41a95d3565c736e4c20267d7568990b09ba)).
+  Linux and native Windows regression tests exercise the real lock, preservation
+  of the existing entry, and a successful later publication.
 
 ### Performance
 
-- Robot commands reuse the hash computed while loading an unchanged source,
-  avoiding a second fingerprint pass. Filtered or transformed issue sets still
-  compute their own hash (`6c8a4474`).
+- Robot commands reuse the hash computed while loading an unchanged single
+  source, including historical snapshots, avoiding a second fingerprint pass.
+  Workspace aggregates, tombstone-bearing sources, and `--repo` filtering still
+  trigger recomputation. The envelope hash remains scoped after `--repo` and
+  before `--label` or `--recipe`; 15 scenarios exercise both robot plan and
+  triage ([`6c8a4474`](https://github.com/Dicklesworthstone/beads_viewer/commit/6c8a4474)).
+
+### Distribution
+
+- Published through DSR using locally packaged GoReleaser artifacts, without
+  GitHub Actions or repository dispatch. Linux amd64/arm64, macOS amd64/arm64,
+  and Windows amd64 archives identify the clean tagged revision
+  [`3e4e61c9`](https://github.com/Dicklesworthstone/beads_viewer/commit/3e4e61c91a74dafe211d3f6a62f3c2919969657c),
+  Go 1.25.5, and disabled CGO. The 14 assets include checksums, a
+  [sealed gate receipt](https://github.com/Dicklesworthstone/beads_viewer/releases/download/v0.24.1/release-gate-receipt.json),
+  and an SPDX SBOM for the Linux amd64 binary. No minisign signature was produced.
+- [Homebrew](https://github.com/Dicklesworthstone/homebrew-tap/commit/cae0685b4c703d5e4ba22e7c093511ffdf72d9d6)
+  and [Scoop](https://github.com/Dicklesworthstone/scoop-bucket/commit/4fddb86e07486cd1bf1d2ad9e76c7a120ac14779)
+  were advanced from v0.22.0 to v0.24.1 using the verified archive hashes.
+  Go module publication and the tagged Nix flake were checked against the same
+  source revision. These publication checks do not establish native Homebrew
+  installation or a supported Nix build.
 
 ### Verification
 
-- The full pre-release performance run retained 288 UI records, 72 timed CLI
+- All ten release-gate stages passed on the clean tagged commit; no gate stage
+  was skipped. All 14 uploaded assets were downloaded and matched by size and
+  SHA-256 before publication. Native Linux installation, readiness,
+  update/no-update, and failed-install preservation checks passed. Windows
+  installer results and remaining native-platform limits are recorded under
+  Unreleased because the installer repair followed the tag.
+- The separate pre-release performance campaign retained 288 UI records, 72 timed CLI
   records and 36 fixed-clock comparisons. Its original exact-output check
   failed because the baseline reports v0.23.0 and the candidate v0.24.0;
   readback of all 144 outputs found only those 72 version-field differences.
   This accounts for the failure without changing the original result or
-  claiming the broader performance campaign complete.
+  claiming the broader performance campaign complete. The latency workstream
+  [bv-apal.1](https://github.com/Dicklesworthstone/beads_viewer/blob/7983ee3f9a4d5d2cf615dbb9a919256a3e74c2fc/.beads/issues.jsonl#L283)
+  remains in progress; the distribution workstream
+  [bv-l76l](https://github.com/Dicklesworthstone/beads_viewer/blob/7983ee3f9a4d5d2cf615dbb9a919256a3e74c2fc/.beads/issues.jsonl#L422)
+  is complete. [Release verification details](docs/RELEASING.md#native-installation-and-package-stores)
+  preserve the original failures and execution limits.
 
 ---
 

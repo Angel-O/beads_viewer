@@ -1,0 +1,123 @@
+# Changelog research: v0.24.1 and its installer follow-up
+
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..7983ee3f` commit
+windows. Earlier changelog entries are preserved, not re-audited by this update.
+This is a bounded application of `changelog-md-workmanship`, requested after
+publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
+
+Evidence order: Git diffs and tag identities, live GitHub Release metadata,
+checked-in Beads history, retained release receipts, then existing release
+documentation. Public source links belong in the changelog; local execution
+evidence supplements them here.
+
+## Coverage and completion
+
+- [x] Read the skill and its research, linking, and quality guidance; review
+  project instructions, installation guidance, and existing changelog.
+- [x] Verify the v0.24.0 and v0.24.1 tags and live publication dates.
+- [x] Research every commit in the v0.24.1 release window, inspect runtime
+  diffs and regressions, and connect the changes to Beads workstreams.
+- [x] Distill that window into the live changelog with representative links.
+- [x] Research all five post-tag commits through `7983ee3f`; distinguish
+  installer delivery from the immutable tagged binaries and test evidence.
+- [x] Distill the follow-up under Unreleased, including material limits.
+- [x] Correct the README sentence that still described the newly pinned
+  Windows installer's source option as the older `go install` implementation.
+- [x] Check scope, dates, links, tracker references, and unchanged older history.
+- [x] Run the skill validator, whitespace validation, and the required UBS
+  attempt; record results. Delivery is tracked in documentation bead `bv-ie9m`.
+
+## Findings
+
+### Release window: 11 commits, distilled
+
+Live GitHub metadata identifies v0.24.0 as published at
+`2026-09-07T06:29:55Z` and v0.24.1 at `2026-09-08T00:28:07Z`; neither is a
+draft or prerelease. Annotated tags resolve respectively to
+`8c1f0011a78b4f291ff175af7276ae450f772cd2` and
+`3e4e61c91a74dafe211d3f6a62f3c2919969657c`. GitHub's v0.24.1
+`target_commitish` says `main`; the tag and binary receipts establish the
+immutable revision, not that mutable field.
+
+All commits in `v0.24.0..v0.24.1` are accounted for:
+
+- `6c8a4474`: loaded source-hash reuse; inspected the full runtime diff and
+  all 15 source/scope cases exercised by two robot commands.
+- `f719c41a`: optional cache writes use the existing nonblocking lock;
+  inspected real contention, entry preservation, later-publication tests,
+  and the Windows test-fixture correction to capture open-handle identity.
+- `3e4e61c9`: version, Nix, installation examples, release documentation,
+  changelog, and release-tracking metadata.
+- `59d98598`, `43c6cc62`, `cf7850d5`, `4a5a564f`, `f8fd09c0`, `578e34bf`,
+  `51a15788`, `ce0d64ee`: Beads and bridge-plan evidence updates for the
+  latency campaign. These do not add runtime behavior or close that campaign.
+
+The resulting themes are preserved hash semantics, bounded optional-cache
+publication, and verified release distribution. Homebrew commit `cae0685b`
+and Scoop commit `4fddb86e` publish the five matching archive hashes.
+The release bead was still in progress at the tag; its later closure is
+linked to the checked-in record at `7983ee3f` (line 422). The latency bead
+remains in progress at line 283.
+
+Evidence retained in `/data/tmp/bv-release-v0.24.1-20260908`:
+
+- `gate-result.json`: exit 0 on the clean tagged revision, 835.838 seconds.
+- `publish/release-gate-receipt.json`: all five archives identify that revision,
+  Go 1.25.5, CGO disabled, and unmodified source.
+- Live release API: 14 published assets, including the receipt and Linux amd64
+  SBOM, with no minisign asset.
+- `performance-readback.json`: original campaign exit 1 retained; 144 outputs
+  have only 72 `/version` differences (v0.23.0 baseline, v0.24.0 candidate).
+  No new performance measurement or full acceptance is implied.
+
+The changelog now corrects the stale scope and links the runtime commits,
+published receipt, package-store commits, and precise tracker records.
+
+### Post-tag window: five commits, distilled
+
+- `3ca2176f`: function-local PowerShell progress suppression and correction of
+  the native harness's obsolete top-level ID assertion. The robot binary's
+  output schema did not change in this commit.
+- `8bdfc079`: distribution and native-test evidence in Beads/release docs.
+- `99d2066d`: despite its subject naming graph WASM, the actual diff appends
+  comment 418 to **bv-oonu.10**, recording release distribution and remaining
+  Windows/native-platform limits. No WASM implementation changed.
+- `87756815`: four README installer URLs pin `3ca2176f`; native follow-up
+  findings added to release documentation.
+- `7983ee3f`: release closure and the complete default Windows suite's evidence;
+  the optional source first-start failure and broader acceptance stay open.
+
+The full installer and harness diffs establish that progress suppression is
+post-tag. No Go runtime file differs between v0.24.1 and the research endpoint.
+`windows-download-readback.json` records the default suite pass (28 logs,
+eight capability results, five rejection reasons). `retained-source-startup.json`
+explicitly labels the successful 1,742 ms invocation as a second diagnostic
+attempt, not a replacement for the failed first-start result.
+
+README still claimed the newly pinned installer used `go install`. Inspection
+of `Install-FromSource` confirms a tagged checkout, `go build -mod=vendor`,
+version checks, and revision checks; the installer is unchanged since
+`3ca2176f`. Correcting that one sentence accompanies this changelog update.
+The older XFetch expiry repair (`8285b6f6`) is an ancestor of v0.24.0 and is
+not credited to v0.24.1.
+
+All runtime and publication findings from both windows are distilled in
+CHANGELOG.md. Older entries remain outside this audit. No additional runtime
+change, new benchmark measurement, or new release publication is part of it.
+
+## Validation
+
+- The skill's `validate-changelog-md.py CHANGELOG.md` passes structural checks.
+  Its sole warning concerns bare hashes in retained v0.24.0/older entries;
+  those entries are outside this bounded historical audit.
+- All 19 inline HTTP links in the updated introduction, timeline, Unreleased,
+  and v0.24.1 sections returned HTTP 200. Checked with the repository-required
+  User-Agent rather than the validator's hard-coded network User-Agent.
+  Results: `/data/tmp/bv-release-v0.24.1-20260908/changelog-link-check.json`.
+- All three pinned Beads line references resolve to the named records and
+  stated statuses. Local research/release-documentation links resolve.
+- A byte comparison confirms the v0.24.0 heading's following content through
+  the reference footer is unchanged. `git diff --check` passes.
+- UBS does not support Markdown/JSONL and exits 3 without scanning; this is
+  not reported as a passing code scan. No Go code changed, so no Go test rerun
+  was needed for this documentation update.

@@ -90,7 +90,7 @@ For a source build, use `install.ps1` from this checkout (requires Git and Go 1.
 .\install.ps1 -FromSource -Version v0.24.1
 ```
 
-This source path builds a verified checkout of the requested tag with that tag's vendored dependencies, checks the executable's version and Git revision before installation, and retains diagnostics on failure. The older pinned installer above uses `go install` for its source option. Selecting an older release tag does not include later, unreleased fixes from this checkout.
+This source path builds a verified checkout of the requested tag with that tag's vendored dependencies, checks the executable's version and Git revision before installation, and retains diagnostics on failure. The pinned installer above uses the same verified source-build path. Selecting an older release tag does not include later, unreleased fixes from this checkout.
 
 ---
 
