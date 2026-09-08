@@ -23,6 +23,15 @@ func boardOrderIDs(issues []model.Issue) []string {
 	return ids
 }
 
+func boardCardLeadingIndent(card string) int {
+	for _, line := range strings.Split(card, "\n") {
+		if strings.Contains(line, "╭") || strings.Contains(line, "╔") {
+			return len(line) - len(strings.TrimLeft(line, " "))
+		}
+	}
+	return -1
+}
+
 func boardOrderFixture(mode SwimLaneMode) []model.Issue {
 	childType := model.TypeTask
 	if mode == SwimByType {
@@ -155,9 +164,21 @@ func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 
 			var renderedCards string
 			var sawParent, sawFirstChild, sawLastChild bool
+			var parentCard, childCard, ordinaryCard string
+			var parentIssue, childIssue model.Issue
+			var parentCol, parentRow, childCol, childRow int
 			for col := range b.columns {
 				for row, issue := range b.columns[col] {
-					renderedCards += b.renderCard(issue, 20, false, col, row)
+					card := b.renderCard(issue, 20, false, col, row)
+					renderedCards += card
+					switch issue.ID {
+					case "epic":
+						parentCard, parentIssue, parentCol, parentRow = card, issue, col, row
+					case "child-old":
+						childCard, childIssue, childCol, childRow = card, issue, col, row
+					case "other":
+						ordinaryCard = card
+					}
 					parent, child, last := boardCardGroupRole(issue, b.columns[col], row)
 					sawParent = sawParent || issue.ID == "epic" && parent
 					sawFirstChild = sawFirstChild || issue.ID == "child-new" && child && !last
@@ -167,6 +188,14 @@ func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 			if !sawParent || !sawFirstChild || !sawLastChild {
 				t.Fatal("flat group roles did not preserve parent, child, and final-child separation")
 			}
+			if got, want := boardCardLeadingIndent(childCard), boardCardLeadingIndent(parentCard)+2; got != want || boardCardLeadingIndent(ordinaryCard) != boardCardLeadingIndent(parentCard) {
+				t.Fatalf("normal card indentation = child:%d parent:%d ordinary:%d", got, boardCardLeadingIndent(parentCard), boardCardLeadingIndent(ordinaryCard))
+			}
+			parentExpanded := b.renderExpandedCard(parentIssue, 20, parentCol, parentRow)
+			childExpanded := b.renderExpandedCard(childIssue, 20, childCol, childRow)
+			if got, want := boardCardLeadingIndent(childExpanded), boardCardLeadingIndent(parentExpanded)+2; got != want {
+				t.Fatalf("expanded child indentation = %d, want %d", got, want)
+			}
 			view := b.View(40, 24)
 			if strings.Count(renderedCards, "◆") != 1 || strings.Count(renderedCards, "↳") != 2 {
 				t.Fatalf("group markers missing from rendered cards:\n%s", renderedCards)
@@ -174,6 +203,15 @@ func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 			for _, line := range strings.Split(view, "\n") {
 				if lipgloss.Width(line) > 40 {
 					t.Fatalf("board line overflows constrained width: %d > 40: %q", lipgloss.Width(line), line)
+				}
+			}
+			if !b.SelectIssueByID("child-old") {
+				t.Fatal("could not select direct child for expanded rendering")
+			}
+			b.ToggleExpand()
+			for _, line := range strings.Split(b.View(40, 24), "\n") {
+				if lipgloss.Width(line) > 40 {
+					t.Fatalf("expanded board line overflows constrained width: %d > 40: %q", lipgloss.Width(line), line)
 				}
 			}
 

@@ -1509,6 +1509,12 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 		column = b.columns[colIdx]
 	}
 	groupParent, groupChild, lastChild := boardCardGroupRole(issue, column, rowIdx)
+	if groupChild {
+		width -= 2
+		if width < 1 {
+			width = 1
+		}
+	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (bv-kklp)
@@ -1533,6 +1539,9 @@ func (b BoardModel) renderCard(issue model.Issue, width int, selected bool, colI
 		Width(width).
 		Padding(0, 1).
 		MarginBottom(marginBottom)
+	if groupChild {
+		cardStyle = cardStyle.MarginLeft(2)
+	}
 
 	// Border color based on blocking status (bv-kklp):
 	// - Red: Blocked (has blocking dependencies)
@@ -1743,6 +1752,12 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, colIdx, row
 		column = b.columns[colIdx]
 	}
 	groupParent, groupChild, lastChild := boardCardGroupRole(issue, column, rowIdx)
+	if groupChild {
+		width -= 2
+		if width < 1 {
+			width = 1
+		}
+	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// DETERMINE BLOCKING STATUS for color coding (same as renderCard)
@@ -1761,6 +1776,9 @@ func (b BoardModel) renderExpandedCard(issue model.Issue, width int, colIdx, row
 		Width(width).
 		Padding(0, 1).
 		MarginBottom(marginBottom)
+	if groupChild {
+		cardStyle = cardStyle.MarginLeft(2)
+	}
 
 	// Border color based on blocking status
 	var borderColor lipgloss.TerminalColor
