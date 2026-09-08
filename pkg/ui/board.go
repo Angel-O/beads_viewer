@@ -183,8 +183,78 @@ func sortIssuesByPriorityAndDate(issues []model.Issue) {
 		if issues[i].Priority != issues[j].Priority {
 			return issues[i].Priority < issues[j].Priority
 		}
-		return issues[i].CreatedAt.After(issues[j].CreatedAt)
+		if !issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
+			return issues[i].CreatedAt.After(issues[j].CreatedAt)
+		}
+		return issues[i].ID < issues[j].ID
 	})
+}
+
+// orderParentChildGroups keeps each visible epic at its baseline position and
+// moves its visible direct children immediately after it. A child with several
+// visible epic parents uses the lexicographically smallest parent; malformed
+// and missing relationships are ignored, while cycles remain safe and deterministic.
+func orderParentChildGroups(issues []model.Issue) {
+	if len(issues) < 2 {
+		return
+	}
+
+	indexByID := make(map[string]int, len(issues))
+	for i := range issues {
+		if _, exists := indexByID[issues[i].ID]; !exists {
+			indexByID[issues[i].ID] = i
+		}
+	}
+
+	parentOf := make([]int, len(issues))
+	for i := range parentOf {
+		parentOf[i] = -1
+	}
+	for i := range issues {
+		for _, dependency := range issues[i].Dependencies {
+			if dependency == nil || dependency.Type != model.DepParentChild || dependency.DependsOnID == "" || dependency.DependsOnID == issues[i].ID {
+				continue
+			}
+			parentIndex, exists := indexByID[dependency.DependsOnID]
+			if !exists || issues[parentIndex].IssueType != model.TypeEpic {
+				continue
+			}
+			if parentOf[i] == -1 || dependency.DependsOnID < issues[parentOf[i]].ID {
+				parentOf[i] = parentIndex
+			}
+		}
+	}
+
+	childrenOf := make(map[int][]int)
+	for child, parent := range parentOf {
+		if parent >= 0 {
+			childrenOf[parent] = append(childrenOf[parent], child)
+		}
+	}
+
+	ordered := make([]model.Issue, 0, len(issues))
+	emitted := make([]bool, len(issues))
+	for i := range issues {
+		// Children are emitted with their parent. Nested epic relationships are
+		// intentionally not traversed; the fallback pass keeps them safe.
+		if parentOf[i] >= 0 || emitted[i] {
+			continue
+		}
+		emitted[i] = true
+		ordered = append(ordered, issues[i])
+		for _, child := range childrenOf[i] {
+			if !emitted[child] {
+				emitted[child] = true
+				ordered = append(ordered, issues[child])
+			}
+		}
+	}
+	for i := range issues {
+		if !emitted[i] {
+			ordered = append(ordered, issues[i])
+		}
+	}
+	copy(issues, ordered)
 }
 
 // updateActiveColumns rebuilds the list of non-empty column indices (bv-tf6j)
@@ -361,6 +431,7 @@ func groupIssuesByMode(issues []model.Issue, mode SwimLaneMode) [4][]model.Issue
 	// Sort each column
 	for i := 0; i < 4; i++ {
 		sortIssuesByPriorityAndDate(cols[i])
+		orderParentChildGroups(cols[i])
 	}
 
 	return cols

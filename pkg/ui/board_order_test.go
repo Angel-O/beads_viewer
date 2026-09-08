@@ -1,0 +1,176 @@
+package ui
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+)
+
+func boardOrderTime(day int) time.Time {
+	return time.Date(2026, time.January, day, 0, 0, 0, 0, time.UTC)
+}
+
+func boardOrderIDs(issues []model.Issue) []string {
+	ids := make([]string, len(issues))
+	for i := range issues {
+		ids[i] = issues[i].ID
+	}
+	return ids
+}
+
+func boardOrderFixture(mode SwimLaneMode) []model.Issue {
+	childType := model.TypeTask
+	if mode == SwimByType {
+		childType = model.TypeEpic
+	}
+	priority := 1
+	if mode != SwimByPriority {
+		priority = 2
+	}
+	childPriority := 0
+	if mode == SwimByPriority {
+		childPriority = priority
+	}
+	return []model.Issue{
+		{ID: "child-new", Status: model.StatusOpen, Priority: childPriority, IssueType: childType, CreatedAt: boardOrderTime(3), Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+		{ID: "child-old", Status: model.StatusOpen, Priority: childPriority, IssueType: childType, CreatedAt: boardOrderTime(1), Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+		{ID: "other", Status: model.StatusOpen, Priority: priority, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(4)},
+		{ID: "epic", Status: model.StatusOpen, Priority: priority, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(2)},
+	}
+}
+
+func TestGroupIssuesByModeOrdersDirectChildrenAfterEpic(t *testing.T) {
+	for _, mode := range []SwimLaneMode{SwimByStatus, SwimByPriority, SwimByType} {
+		t.Run(modeName(mode), func(t *testing.T) {
+			columns := groupIssuesByMode(boardOrderFixture(mode), mode)
+			var got []string
+			for _, column := range columns {
+				if len(column) > 0 {
+					got = boardOrderIDs(column)
+					break
+				}
+			}
+			want := []string{"other", "epic", "child-new", "child-old"}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("order = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestBoardOrderKeepsBaselineWhenParentIsFiltered(t *testing.T) {
+	issues := boardOrderFixture(SwimByStatus)
+	filtered := []model.Issue{issues[0], issues[1], issues[2]}
+	b := NewBoardModel(filtered, Theme{})
+	if got, want := boardOrderIDs(b.columns[ColOpen]), []string{"child-new", "child-old", "other"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("filtered order = %v, want %v", got, want)
+	}
+}
+
+func TestOrderParentChildGroupsSingleChild(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "child", Status: model.StatusOpen, Priority: 0, CreatedAt: boardOrderTime(3), Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+		{ID: "other", Status: model.StatusOpen, Priority: 1, CreatedAt: boardOrderTime(4)},
+		{ID: "epic", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(2)},
+	}
+	got := groupIssuesByMode(issues, SwimByStatus)[ColOpen]
+	if want := []string{"other", "epic", "child"}; !reflect.DeepEqual(boardOrderIDs(got), want) {
+		t.Fatalf("single-child order = %v, want %v", boardOrderIDs(got), want)
+	}
+}
+
+func TestOrderParentChildGroupsDoesNotGroupTransitiveDescendants(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "grandchild", Status: model.StatusOpen, Priority: 0, CreatedAt: boardOrderTime(4), Dependencies: []*model.Dependency{{DependsOnID: "child", Type: model.DepParentChild}}},
+		{ID: "child", Status: model.StatusOpen, Priority: 1, CreatedAt: boardOrderTime(1), Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+		{ID: "other", Status: model.StatusOpen, Priority: 2, CreatedAt: boardOrderTime(3)},
+		{ID: "epic", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(2)},
+	}
+	got := groupIssuesByMode(issues, SwimByStatus)[ColOpen]
+	if want := []string{"grandchild", "other", "epic", "child"}; !reflect.DeepEqual(boardOrderIDs(got), want) {
+		t.Fatalf("transitive-descendant order = %v, want %v", boardOrderIDs(got), want)
+	}
+}
+
+func TestOrderParentChildGroupsNestedEpicIsUnsupported(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "grandchild", Status: model.StatusOpen, Priority: 0, CreatedAt: boardOrderTime(4), Dependencies: []*model.Dependency{{DependsOnID: "nested-epic", Type: model.DepParentChild}}},
+		{ID: "nested-epic", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(1), Dependencies: []*model.Dependency{{DependsOnID: "outer-epic", Type: model.DepParentChild}}},
+		{ID: "other", Status: model.StatusOpen, Priority: 2, CreatedAt: boardOrderTime(3)},
+		{ID: "outer-epic", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(2)},
+		{ID: "later", Status: model.StatusOpen, Priority: 4, CreatedAt: boardOrderTime(5)},
+	}
+	first := groupIssuesByMode(append([]model.Issue(nil), issues...), SwimByStatus)[ColOpen]
+	second := groupIssuesByMode(append([]model.Issue(nil), issues...), SwimByStatus)[ColOpen]
+	got := boardOrderIDs(first)
+	if !reflect.DeepEqual(got, boardOrderIDs(second)) {
+		t.Fatalf("unsupported nested relationship is not deterministic: %v vs %v", got, boardOrderIDs(second))
+	}
+	if len(got) != len(issues) {
+		t.Fatalf("unsupported nested relationship dropped cards: got %d, want %d", len(got), len(issues))
+	}
+	if want := []string{"other", "outer-epic", "nested-epic"}; !reflect.DeepEqual(got[:3], want) {
+		t.Fatalf("top-level epic group = %v, want %v", got[:3], want)
+	}
+	if got[3] == "grandchild" {
+		t.Fatal("nested epic's child was recursively grouped")
+	}
+}
+
+func TestBoardOrderMatchesPrecomputedSnapshotForAllModes(t *testing.T) {
+	for _, mode := range []SwimLaneMode{SwimByStatus, SwimByPriority, SwimByType} {
+		issues := boardOrderFixture(mode)
+		snapshot := NewSnapshotBuilder(append([]model.Issue(nil), issues...)).Build()
+		filteredPath := NewBoardModel(nil, Theme{})
+		snapshotPath := NewBoardModel(nil, Theme{})
+		for current := SwimByStatus; current < mode; current++ {
+			filteredPath.CycleSwimLaneMode()
+			snapshotPath.CycleSwimLaneMode()
+		}
+		filteredPath.SetIssues(append([]model.Issue(nil), issues...))
+		snapshotPath.SetSnapshot(snapshot)
+		if !reflect.DeepEqual(snapshotPath.columns, filteredPath.columns) {
+			t.Fatalf("mode %s snapshot columns differ from filtered path:\n got %#v\nwant %#v", modeName(mode), snapshotPath.columns, filteredPath.columns)
+		}
+	}
+}
+
+func TestOrderParentChildGroupsHandlesMalformedRelationships(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "multi", Status: model.StatusOpen, Priority: 0, CreatedAt: boardOrderTime(1), Dependencies: []*model.Dependency{
+			{DependsOnID: "epic-z", Type: model.DepParentChild},
+			{DependsOnID: "epic-a", Type: model.DepParentChild},
+			{DependsOnID: "missing", Type: model.DepParentChild},
+			nil,
+		}},
+		{ID: "epic-z", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(2)},
+		{ID: "epic-a", Status: model.StatusOpen, Priority: 2, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(3)},
+		{ID: "cycle-a", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(4), Dependencies: []*model.Dependency{{DependsOnID: "cycle-b", Type: model.DepParentChild}}},
+		{ID: "cycle-b", Status: model.StatusOpen, Priority: 4, IssueType: model.TypeEpic, CreatedAt: boardOrderTime(5), Dependencies: []*model.Dependency{{DependsOnID: "cycle-a", Type: model.DepParentChild}}},
+	}
+
+	first := groupIssuesByMode(append([]model.Issue(nil), issues...), SwimByStatus)[ColOpen]
+	second := groupIssuesByMode(append([]model.Issue(nil), issues...), SwimByStatus)[ColOpen]
+	if !reflect.DeepEqual(boardOrderIDs(first), boardOrderIDs(second)) {
+		t.Fatalf("malformed relationship ordering is not deterministic: %v vs %v", boardOrderIDs(first), boardOrderIDs(second))
+	}
+	if len(first) != len(issues) {
+		t.Fatalf("malformed relationship ordering dropped cards: got %d, want %d", len(first), len(issues))
+	}
+	if got, want := boardOrderIDs(first), []string{"epic-z", "epic-a", "multi", "cycle-a", "cycle-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("malformed relationship order = %v, want %v", got, want)
+	}
+}
+
+func modeName(mode SwimLaneMode) string {
+	switch mode {
+	case SwimByPriority:
+		return "priority"
+	case SwimByType:
+		return "type"
+	default:
+		return "status"
+	}
+}
