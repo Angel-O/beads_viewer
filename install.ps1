@@ -174,6 +174,9 @@ function Assert-BinaryVersion {
 function Install-FromRelease {
     param([string]$Tag, [string]$TargetDir)
 
+    # Windows PowerShell 5.1 progress rendering can stall redirected downloads.
+    # Keep this preference local to the download function, not the caller's shell.
+    $ProgressPreference = 'SilentlyContinue'
     $assetNames = Get-ReleaseAssetNames $Tag
     $assetName = Select-ArchiveName $Tag $assetNames
     if ($assetNames -notcontains "checksums.txt") { Fail "Release $Tag publishes no checksums.txt; refusing an unverified install" }

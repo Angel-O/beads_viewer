@@ -235,7 +235,15 @@ exit $LASTEXITCODE
     Push-Location $project
     try {
         $next = Invoke-Logged 'tiny-project-next' $liveBinary @('--robot-next')
-        if (($next.Output | ConvertFrom-Json).id -cne 'native-ready') { throw 'Tiny project selected an unexpected issue' }
+        $nextResult = $next.Output | ConvertFrom-Json
+        # JSONL establishes readiness, but this fixture has no tracker metadata
+        # from which to construct a runnable claim command.
+        if ($nextResult.diagnostic_top_pick.id -cne 'native-ready' -or $nextResult.actionable -ne $false -or
+            $nextResult.source_authority.state -cne 'complete' -or
+            $nextResult.PSObject.Properties.Name -contains 'claim_command' -or
+            $nextResult.actions.unavailable_reason -cne 'source has no readable tracker metadata') {
+            throw 'Tiny project did not preserve the ready diagnostic and metadata-free claim refusal'
+        }
     } finally { Pop-Location }
 
     # Exercise the real released self-updater, then the no-update path, without
