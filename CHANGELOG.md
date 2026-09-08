@@ -9,6 +9,7 @@ retained below.
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
+| [`v0.24.1`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1) | 2026-09-08 | GitHub Release | Reuse loaded source hashes and avoid waiting for a busy analysis-cache writer. |
 | [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
 | [`v0.22.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.22.0) | 2026-08-25 | GitHub Release | Makes snapshot delivery pointer-based and incrementally rebuilds safe list changes, with measured UI latency and allocation reductions. |
@@ -19,6 +20,32 @@ retained below.
 ---
 
 ## [Unreleased]
+
+---
+
+## [v0.24.1] -- 2026-09-08
+
+### Fixed
+
+- Optional analysis-cache publication no longer waits for another process's
+  writer lock. A contended writer leaves the existing cache entry intact and
+  returns the computed result; a later request can publish successfully
+  (`f719c41a`). Linux and native Windows regression tests exercise the real lock.
+
+### Performance
+
+- Robot commands reuse the hash computed while loading an unchanged source,
+  avoiding a second fingerprint pass. Filtered or transformed issue sets still
+  compute their own hash (`6c8a4474`).
+
+### Verification
+
+- The full pre-release performance run retained 288 UI records, 72 timed CLI
+  records and 36 fixed-clock comparisons. Its original exact-output check
+  failed because the baseline reports v0.23.0 and the candidate v0.24.0;
+  readback of all 144 outputs found only those 72 version-field differences.
+  This accounts for the failure without changing the original result or
+  claiming the broader performance campaign complete.
 
 ---
 
@@ -1164,7 +1191,8 @@ Initial release of Beads Viewer -- a keyboard-driven terminal interface for the 
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.24.1...HEAD
+[v0.24.1]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.24.0...v0.24.1
 [v0.24.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.23.0...v0.24.0
 [v0.23.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.22.0...v0.23.0
 [v0.22.0]: https://github.com/Dicklesworthstone/beads_viewer/compare/v0.21.2...v0.22.0

@@ -1,5 +1,24 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Authorized v0.24.1 release — 2026-09-07
+
+Release scope and granular completion are tracked in `bv-l76l`. The user
+authorized all established publication venues, all five supported targets, and
+DSR with no GitHub Actions or repository dispatch.
+
+- [x] Recover the prior release commands with cass. The indexed v0.23.0 session
+  used GoReleaser and GitHub publication but skipped Homebrew/Scoop. Live checks
+  still find both stores on v0.22.0; updating them belongs to this release.
+- [x] Read the completed performance runs. 7f finished green at 10:21 UTC.
+  f719 completed at 13:03 UTC with exit 1. All 36 exact comparison records
+  contain 144 outputs; a recursive readback finds only 72 `/version` differences
+  (baseline v0.23.0, current v0.24.0). Preserve that original failure. Final P1
+  acceptance remains open pending complete timing review; this is not evidence
+  of changed decisions, rankings, source authority or metric states.
+- [ ] Commit release metadata, run the complete source gate, package and seal.
+- [ ] Publish verified GitHub archives through DSR; update Homebrew/Scoop and
+  verify the Go module/Nix source tag. Exercise live installers and updates.
+
 ## Delivery continuation — 2026-09-07
 
 - [x] Reproduce cache-writer contention using the actual 4a Linux archive on

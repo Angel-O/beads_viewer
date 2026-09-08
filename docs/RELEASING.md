@@ -92,6 +92,16 @@ conditions. A failed comparison is never a licence to raise the threshold.
 
 ## Release steps
 
+The current release route uses the local/SSH gate and GoReleaser packaging,
+then DSR publication. Do not enable or dispatch GitHub Actions. For this route,
+register `bv` in DSR with all five targets, use the sealed archives as the
+artifact inputs, and bind its manifest to the gate's commit and measured hashes.
+Publish with `dsr release bv X.Y.Z --artifacts <verified-directory> --draft
+--verify-tag --no-dispatch`; verify the uploaded draft assets before publishing
+it. Update Homebrew and Scoop directly from the same checksum manifest.
+The release request can authorize this entire sequence, including both stores;
+do not ask again when it already does.
+
 1. Update the version, `CHANGELOG.md`, and release documentation; commit
    those changes on `main` **before** the final gate. Confirm the tree is clean.
 2. Run `scripts/release_gate.sh`; retain the printed `receipt.json` and log.

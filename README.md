@@ -52,8 +52,8 @@ scoop bucket add dicklesworthstone https://github.com/Dicklesworthstone/scoop-bu
 scoop install dicklesworthstone/bv
 ```
 
-As of September 7, 2026, Homebrew and Scoop list v0.22.0. To install v0.24.0,
-use a verified release archive below. See the [distribution checks](docs/RELEASING.md#native-installation-and-package-stores) for version and checksum details.
+Homebrew and Scoop select the version in their published manifests. To pin
+v0.24.1, use a verified release archive below. See the [distribution checks](docs/RELEASING.md#native-installation-and-package-stores) for version and checksum details.
 
 ### Alternative: Direct Download
 
@@ -82,12 +82,12 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/03f
 # Pinned to a reviewed commit; read it first: https://github.com/Dicklesworthstone/beads_viewer/blob/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1
 irm "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/d0d9f331ff4d46dc1063fda6a3fb4695c75b3ce3/install.ps1" | iex
 ```
-> **Note:** The pinned installer above downloads the Windows release zip, verifies it against the release `checksums.txt` with `Get-FileHash`, and refuses anything that does not verify; no Go toolchain is needed. Pass `-Version v0.24.0` to pin a release or `-InstallDir` to choose the folder (default `%LOCALAPPDATA%\Programs\bv`). Scoop installs the archive selected by its manifest. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
+> **Note:** The pinned installer above downloads the Windows release zip, verifies it against the release `checksums.txt` with `Get-FileHash`, and refuses anything that does not verify; no Go toolchain is needed. Pass `-Version v0.24.1` to pin a release or `-InstallDir` to choose the folder (default `%LOCALAPPDATA%\Programs\bv`). Scoop installs the archive selected by its manifest. For best display, use Windows Terminal with a [Nerd Font](https://www.nerdfonts.com/).
 
 For a source build, use `install.ps1` from this checkout (requires Git and Go 1.25+):
 
 ```powershell
-.\install.ps1 -FromSource -Version v0.24.0
+.\install.ps1 -FromSource -Version v0.24.1
 ```
 
 This source path builds a verified checkout of the requested tag with that tag's vendored dependencies, checks the executable's version and Git revision before installation, and retains diagnostics on failure. The older pinned installer above uses `go install` for its source option. Selecting an older release tag does not include later, unreleased fixes from this checkout.
