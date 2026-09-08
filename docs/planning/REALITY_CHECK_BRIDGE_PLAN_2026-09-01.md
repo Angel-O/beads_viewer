@@ -37,21 +37,31 @@ DSR with no GitHub Actions or repository dispatch.
 - [x] Exercise live Linux installation, readiness, update/no-update and six
   archive/preservation scenarios on a separate native host. Installed binary
   SHA-256 `a469135a…` matches the sealed archive.
-- [ ] Complete native Windows live installation, source build, update/no-update
-  and failure preservation. The original harness fails at its obsolete `.id`
-  assertion after a correct metadata-free diagnostic recommendation. Preserve
-  that failure; the revised assertion checks the recommendation, complete
-  authority and claim refusal. Rerun in a fresh directory with the same binary.
-- [ ] Finish the installer follow-up discovered during native verification.
-  The corrected harness passes live install, readiness, update/no-update and a
-  real Go 1.26.5 source build, then stalls on the loopback wrong-version ZIP.
-  Its incomplete transfer is retained, and only its three bound processes are
-  stopped. A fresh complete run tests function-local suppression of Windows
-  PowerShell download progress. Build/vet and the existing PowerShell archive
-  fixtures pass. Verify every native rejection's reason before crediting it;
-  keep this installer follow-up separate from the immutable release tag.
-- [ ] Record final native results, commit the test/documentation follow-up,
+- [x] Complete native Windows live installation, source build, update/no-update
+  and failure-preservation verification, recording each run's limits. An initial
+  real Go 1.26.5 source installation passes. The default native suite passes
+  against the published archives with installer follow-up `3ca2176f`:
+  28 retained command logs, eight capability results and all five specific
+  rejection reasons verified. Installed binary SHA-256 `cbd9e13f…` matches
+  the sealed archive. User PATH is unchanged. The original obsolete `.id`
+  assertion failure is retained; the revised check verifies the ready
+  diagnostic, complete authority and metadata-free claim refusal.
+- [x] Finish the installer follow-up discovered during native verification.
+  The corrected original-installer run stalls on the loopback wrong-version
+  ZIP. Its incomplete transfer is retained; only its three bound processes
+  are stopped at 00:58:38 UTC. Function-local suppression of Windows PowerShell
+  download progress then passes the complete default native suite, including
+  actual wrong-version, checksum, extraction and missing-manifest refusals.
+  Build/vet and the existing PowerShell archive fixtures pass. Public installer
+  bytes match `3ca2176f`, and README pins that commit. A concurrent workspace
+  actor committed these exact tested changes; that is not independent proof.
+- [x] Record final native results, commit the test/documentation follow-up,
   synchronize source branches and close only the release bead `bv-l76l`.
+- [ ] Resolve the optional Windows source first-start failure under the existing
+  broader native-platform task `bv-oonu.10`. A later source build completed but
+  its first `--version` exceeded the unchanged 10-second guard. A second
+  diagnostic invocation of the retained `d58f0330…` executable succeeds in
+  1,742 ms. Preserve the original failure; its cause and full V5 remain open.
 
 Release evidence: `/data/tmp/bv-release-v0.24.1-20260908`. Root owns execution
 and review; no independent-agent verification is claimed. Broader P1, shared

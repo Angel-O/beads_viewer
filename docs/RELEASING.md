@@ -229,6 +229,16 @@ diagnostic invocation of that retained executable returned the correct version
 with empty stderr in 1,742 ms. The original failure remains unresolved, and
 the timeout is unchanged. Broader native-platform acceptance stays open.
 
+The complete default native Windows suite passes with installer `3ca2176f`
+against the public v0.24.0/v0.24.1 archives. Readback verifies all 28 command
+logs, eight capability results, the tagged binary identity and each of the
+five intended rejection reasons. Both the working executable and user PATH
+are preserved. Linux live installation, readiness, update/no-update and all
+six archive/preservation scenarios also pass on a separate native host.
+The Windows optional-source rerun above is a separate failed result, not part
+of that default-suite pass. Raw release and verification evidence is retained
+under `/data/tmp/bv-release-v0.24.1-20260908`.
+
 ## What is not covered
 
 - The gate does not run the native installation checks above. Its
