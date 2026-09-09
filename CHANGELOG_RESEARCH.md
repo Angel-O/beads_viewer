@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..3a56b922` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..75be8362` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,32 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`75be8362` connects HTML/SVG/PNG graph exports to the existing recipe scope
+pipeline (`bv-oonu.18`). The original actionable export included blocked and
+closed rows; 18 of 24 new format cases fail before the repair. The fixed
+artifacts honor custom recipes, sort limits, label/repository intersections,
+full-source readiness and empty-selection refusal. PNG checks decode the image
+and compare its dimensions with a separately checked SVG; they are not an OCR
+or pixel-perfect rendering claim. Both retained PNGs were also visually read.
+
+Fresh solo replay uses unchanged runtime/test source at `75be8362`; the clean
+Go 1.25.5 binary has SHA-256 `e23585425a9920279411f7b103f85bfd3bdda384c5b4069860ff6aacce605333`
+and `vcs.modified=false`. All 24 graph recipe cases pass remotely. That remote
+replay also exposed a robot-alias timeout, a watched-export deadline failure
+and a TUI environment skip. Those tests passed three unchanged local runs;
+one full local replay passes 490 command/export/recipe tests and 34 selected
+CLI tests, with the two existing live-Pages/Windows-only unit skips. The remote
+failures remain recorded, not replaced by a claim that both environments pass.
+Post-failure worker telemetry does not establish the timeouts' root cause.
+
+Required remote build/vet pass; first-party formatting is clean. UBS exits 0
+with two inspected warnings: selected-file staging lacks go.mod, and an
+existing timer's Stop/Reset calls are missed by its heuristic. Evidence is
+retained at `/data/tmp/bv-graph-recipe-20260909-1wkluyri`. `0d6b24ca` recorded
+the preceding ranking proof. No runtime change followed the verification;
+only changelog, bridge-plan and Beads notes changed. Latest release metadata
+still reports v0.24.1; Actions remain disabled. Broader acceptance stays open.
 
 `3a56b922` repairs WASM metric consumers that limited graph indices before
 resolving exported issue rows (`bv-oonu.17`). Six real issues with eleven

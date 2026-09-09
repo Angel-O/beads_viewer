@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`3a56b922`](https://github.com/Dicklesworthstone/beads_viewer/commit/3a56b9224ab621f2b178caf2453c4c1685efa62c).
+commits through [`75be8362`](https://github.com/Dicklesworthstone/beads_viewer/commit/75be8362f67709e74266f709644b7b4465b706c7).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -72,6 +72,11 @@ the latest tag, including installer changes usable with already released binarie
   apply their limits to exported issue rows while preserving full-graph scores
   (`bv-oonu.17`;
   [ranking limit repair](https://github.com/Dicklesworthstone/beads_viewer/commit/3a56b9224ab621f2b178caf2453c4c1685efa62c)).
+- Interactive HTML and static SVG/PNG graph exports now honor recipes,
+  including custom files, sorted limits and label/repository intersections.
+  Actionable selection retains full-source prerequisite checks; an empty
+  recipe selection reports an error without creating a graph (`bv-oonu.18`;
+  [graph recipe repair](https://github.com/Dicklesworthstone/beads_viewer/commit/75be8362f67709e74266f709644b7b4465b706c7)).
 
 ### Dependency inspection and documentation
 

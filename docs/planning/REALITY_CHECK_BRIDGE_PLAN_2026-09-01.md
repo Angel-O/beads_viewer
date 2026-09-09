@@ -1,5 +1,27 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Recipe-scoped graph exports — 2026-09-09
+
+`bv-oonu.18` connects HTML/SVG/PNG graph export to existing recipe selection
+at `75be8362`, preserving full-source readiness and repository/label scope.
+
+- [x] Retain original artifacts and 18 failing cases out of 24 format cases.
+- [x] Connect recipes, custom files, sorted limits and empty-selection refusal.
+- [x] Verify actual HTML nodes, SVG labels and decoded PNG/layout dimensions;
+  make PNG subtests independently runnable and visually inspect before/after.
+- [x] Fresh solo replay: all 24 graph cases pass remotely; the complete local
+  selection passes 490 unit and 34 CLI tests, with two existing unit skips.
+- [x] Retain the remote alias timeout, watched-export deadline failure and TUI
+  skip. Each affected test passes three local runs with unchanged deadlines;
+  post-failure telemetry does not establish a root cause for the remote failures.
+- [x] Build/vet, first-party formatting and UBS pass with two inspected warnings.
+- [x] Update README/changelog and the granular Beads execution record.
+- [ ] Final verification remains open, including a complete passing remote
+  suite, original performance baseline, transactional claims and native routes.
+
+Evidence: `/data/tmp/bv-graph-recipe-20260909-1wkluyri`; the clean Go 1.25.5
+binary has SHA-256 `e2358542…`, `vcs.modified=false`. No browser was opened.
+
 ## Complete visible metric rankings — 2026-09-09
 
 `bv-oonu.17` fixes ranking limits consumed by missing or filtered graph
