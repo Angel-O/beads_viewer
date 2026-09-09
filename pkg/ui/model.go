@@ -2547,6 +2547,11 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	if initial := runtimeServices.InitialScope; initial != nil {
 		m.backlogScopeLoaded = true
 		m.scopeCatalog = append([]ScopeInfo(nil), initial.Scopes...)
+		if initial.Active != nil {
+			for i := range m.scopeCatalog {
+				m.scopeCatalog[i].Active = m.scopeCatalog[i].ID == initial.Active.ID
+			}
+		}
 		m.scopePicker.SetScopes(m.scopeCatalog)
 		if initial.Active != nil {
 			active := *initial.Active
@@ -9115,8 +9120,8 @@ func (m *Model) renderHelpOverlay() string {
 				{"I", "Cycle member type filter"},
 				{"w", "Cycle member ctx filter"},
 				{"space", "Mark current member"},
-				{"R", "Remove marked/current members"},
-				{"M", "Match-remove members"},
+				{"D", "Descope marked/current members"},
+				{"M", "Match-descope members"},
 				{"B", "Return to List"},
 				{"Esc / q", "Return to previous view"},
 			}
@@ -10283,12 +10288,12 @@ func (m *Model) renderFooter() string {
 				keyHints = append(keyHints, keyStyle.Render("n/p")+" page")
 			}
 			keyHints = append(keyHints, keyStyle.Render("o/c/r")+" status", keyStyle.Render("I")+" type", keyStyle.Render("w")+" ctx")
-			removeHint := "R remove current"
+			descopeHint := "D descope"
 			if m.scopePicker.MemberMarkCount() > 0 {
-				removeHint = fmt.Sprintf("R remove %d marked", m.scopePicker.MemberMarkCount())
+				descopeHint = fmt.Sprintf("D descope %d", m.scopePicker.MemberMarkCount())
 			}
 			// Keep the Tab destination label compact; the action remains unchanged.
-			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("R")+" "+removeHint[2:], keyStyle.Render("M")+" match-remove", keyStyle.Render("tab")+" unscoped", keyStyle.Render("B")+" list")
+			keyHints = append(keyHints, keyStyle.Render("space")+" mark", keyStyle.Render("D")+" "+descopeHint[2:], keyStyle.Render("M")+" match-descope", keyStyle.Render("tab")+" unscoped", keyStyle.Render("B")+" list")
 		} else if m.scopePickerMoveIssue != "" {
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" destination", keyStyle.Render("enter")+" move", keyStyle.Render("tab")+" members", keyStyle.Render("B")+" list")
 		} else {
@@ -10302,9 +10307,9 @@ func (m *Model) renderFooter() string {
 		if m.backlog.Searching() {
 			keyHints = append(keyHints, keyStyle.Render("type")+" filter", keyStyle.Render("backspace")+" delete", keyStyle.Render("enter/esc")+" done", keyStyle.Render("B")+" list")
 		} else {
-			addHint := "add current"
+			addHint := "add"
 			if m.backlog.MarkCount() > 0 {
-				addHint = fmt.Sprintf("add %d marked", m.backlog.MarkCount())
+				addHint = fmt.Sprintf("add %d", m.backlog.MarkCount())
 			}
 			keyHints = append(keyHints, keyStyle.Render("j/k")+" nav", keyStyle.Render("pgup/dn")+" preview", keyStyle.Render("space")+" mark", keyStyle.Render("n/p")+" page", keyStyle.Render("/")+" filter", keyStyle.Render("A")+" "+addHint, keyStyle.Render("M")+" match-add", keyStyle.Render("tab")+" scopes", keyStyle.Render("B")+" list")
 		}

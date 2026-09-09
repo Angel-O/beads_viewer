@@ -920,12 +920,12 @@ func TestScopeTerminologyUsesUnscopedMatchAddAndCtx(t *testing.T) {
 	m.scopePicker.memberFocused = true
 	help = strings.ToLower(ansi.Strip(m.renderHelpOverlay()))
 	footer := strings.ToLower(ansi.Strip(m.renderFooter()))
-	for _, want := range []string{"cycle member ctx filter", "match-remove members"} {
+	for _, want := range []string{"cycle member ctx filter", "match-descope members"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("scope member help missing %q: %q", want, help)
 		}
 	}
-	for _, want := range []string{"w ctx", "m match-remove", "tab unscoped │"} {
+	for _, want := range []string{"w ctx", "d descope", "m match-descope", "tab unscoped │"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
@@ -2186,8 +2186,60 @@ func TestPagedScopePickerPreservesActiveScopeAcrossCatalogPages(t *testing.T) {
 	if m.activeScope == nil || m.activeScope.ID != "s2" {
 		t.Fatalf("active scope = %#v, want s2", m.activeScope)
 	}
+	if got := []string{m.scopeCatalog[0].ID, m.scopeCatalog[1].ID}; !reflect.DeepEqual(got, []string{"s1", "s2"}) {
+		t.Fatalf("base catalog order = %#v, want s1 before s2", got)
+	}
 	if m.scopeCatalog[0].Active || !m.scopeCatalog[1].Active {
 		t.Fatalf("catalog active flags = %#v, want only s2 active", m.scopeCatalog)
+	}
+	if got := []string{m.scopePicker.scopes[0].ID, m.scopePicker.scopes[1].ID}; !reflect.DeepEqual(got, []string{"s2", "s1"}) {
+		t.Fatalf("presented catalog order = %#v, want active s2 before s1", got)
+	}
+}
+
+func TestScopePickerPlacesActiveScopeFirstAndPreservesOtherOrder(t *testing.T) {
+	picker := NewScopePickerModel(testTheme())
+	picker.SetScopes([]ScopeInfo{
+		{ID: "before", Name: "Before"},
+		{ID: "active", Name: "Active", Active: true},
+		{ID: "after", Name: "After"},
+	})
+
+	got := make([]string, len(picker.scopes))
+	for i, scope := range picker.scopes {
+		got[i] = scope.ID
+	}
+	if !reflect.DeepEqual(got, []string{"active", "before", "after"}) {
+		t.Fatalf("catalog order = %#v, want active first with remaining order preserved", got)
+	}
+}
+
+func TestScopeCatalogActivationChangesKeepBaseOrder(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		QueryCatalog: func(context.Context, ScopeCatalogQuery) (ScopeCatalogPage, error) {
+			return ScopeCatalogPage{}, nil
+		},
+	}})
+	base := []ScopeInfo{{ID: "s1", Name: "One"}, {ID: "s2", Name: "Two"}, {ID: "s3", Name: "Three"}}
+	m.scopeCatalog = append([]ScopeInfo(nil), base...)
+	m.scopePicker.SetScopes(m.scopeCatalog)
+
+	apply := func(activeID string) {
+		t.Helper()
+		active := ScopeInfo{ID: activeID, Name: activeID, Active: true}
+		updated, _ := m.Update(scopeSnapshotMsg{snapshot: ScopeSnapshot{Scopes: append([]ScopeInfo(nil), base...), Active: &active}})
+		m = updated.(*Model)
+	}
+
+	apply("s2")
+	apply("s3")
+	gotBase := []string{m.scopeCatalog[0].ID, m.scopeCatalog[1].ID, m.scopeCatalog[2].ID}
+	if !reflect.DeepEqual(gotBase, []string{"s1", "s2", "s3"}) {
+		t.Fatalf("base catalog order after activation changes = %#v, want original order", gotBase)
+	}
+	gotPresented := []string{m.scopePicker.scopes[0].ID, m.scopePicker.scopes[1].ID, m.scopePicker.scopes[2].ID}
+	if !reflect.DeepEqual(gotPresented, []string{"s3", "s1", "s2"}) {
+		t.Fatalf("presented catalog order after s3 activation = %#v, want s3,s1,s2", gotPresented)
 	}
 }
 
@@ -2400,7 +2452,7 @@ func TestGenerationlessScopeDetailsPopulateMemberBrowser(t *testing.T) {
 	updated, _ = m.Update(keyMsg("tab"))
 	m = updated.(*Model)
 	footer := ansi.Strip(m.renderFooter())
-	if !m.scopePicker.MemberFocused() || !strings.Contains(footer, "space mark") || !strings.Contains(footer, "R re") {
+	if !m.scopePicker.MemberFocused() || !strings.Contains(footer, "space mark") || !strings.Contains(footer, "D descope") {
 		t.Fatalf("member browser did not expose usable focus controls: focused=%t footer=%q", m.scopePicker.MemberFocused(), footer)
 	}
 }
@@ -2724,7 +2776,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	m.focused = focusScopePicker
 	m.scopePicker.memberFocused = true
 	help := ansi.Strip(m.renderHelpOverlay())
-	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member ctx filter", "Mark current member", "Remove marked/current members", "Match-remove members"} {
+	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member ctx filter", "Mark current member", "Descope marked/current members", "Match-descope members"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("scope member help missing %q:\n%s", want, help)
 		}
@@ -2736,10 +2788,16 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 
 	footer := ansi.Strip(m.renderFooter())
-	for _, want := range []string{"j/k nav", "o/c/r status", "I type", "w ctx", "space mark", "R remove current", "M match-remove", "tab unscoped │", "B list"} {
+	for _, want := range []string{"j/k nav", "o/c/r status", "I type", "w ctx", "space mark", "D descope", "M match-descope", "tab unscoped │", "B list"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("scope member footer missing %q: %q", want, footer)
 		}
+	}
+	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "member-1"}}})
+	m.scopePicker.ToggleMemberMark()
+	footer = ansi.Strip(m.renderFooter())
+	if !strings.Contains(footer, "D descope 1") || strings.Contains(footer, "D descope │") {
+		t.Fatalf("marked scope member footer = %q, want counted descope", footer)
 	}
 	if strings.Contains(footer, "tab unscoped issues") || strings.Contains(footer, "tab catalog") || strings.Contains(footer, "esc back") {
 		t.Fatalf("scope member footer retained stale catalog destination: %q", footer)
@@ -2768,6 +2826,24 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	}
 	if strings.Contains(footer, "enter move") || strings.Contains(footer, "destination") || strings.Contains(footer, "esc back") {
 		t.Fatalf("moving scope member footer advertises destination control: %q", footer)
+	}
+}
+
+func TestScopeOutOfScopeFooterShortensOnlyAddLabel(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width, m.height = 240, 40
+	m.showScopePicker = true
+	m.focused = focusGlobalIssues
+	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "outside-1"}, {ID: "outside-2"}}}, 0)
+
+	footer := ansi.Strip(m.renderFooter())
+	if !strings.Contains(footer, "A add") || strings.Contains(footer, "A add current") {
+		t.Fatalf("unmarked out-of-scope footer = %q, want shortened add label", footer)
+	}
+	m.backlog.ToggleMark()
+	footer = ansi.Strip(m.renderFooter())
+	if !strings.Contains(footer, "A add 1") || strings.Contains(footer, "A add 1 marked") {
+		t.Fatalf("marked out-of-scope footer = %q, want shortened count label", footer)
 	}
 }
 
@@ -2838,7 +2914,7 @@ func TestScopeMatchPromptNamesRemovalFromSelectedScope(t *testing.T) {
 	m.width, m.height = 100, 30
 	m.scopeMatchAction = "remove"
 	prompt := ansi.Strip(m.renderScopeMatchPrompt())
-	if !strings.Contains(prompt, "Remove matching exact label/epic issues from selected scope") {
+	if !strings.Contains(prompt, "Descope matching exact label/epic issues from selected scope") {
 		t.Fatalf("removal scope match prompt is inaccurate: %q", prompt)
 	}
 	if strings.Contains(prompt, "Add matching exact label/epic issues to active scope") {
@@ -4574,12 +4650,12 @@ func TestScopeMemberMarksSubmitOneBatchRemoveAndClearOnFilter(t *testing.T) {
 	m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today"}})
 	m.scopePicker.memberFocused = true
 	m.scopePicker.SetMembers([]IssueItem{{Issue: model.Issue{ID: "b-1"}}, {Issue: model.Issue{ID: "b-2"}}})
-	for _, key := range []string{"space", "j", "space", "R"} {
+	for _, key := range []string{"space", "j", "space", "D"} {
 		updated, cmd := m.Update(keyMsg(key))
 		m = updated.(*Model)
-		if key == "R" {
+		if key == "D" {
 			if cmd == nil {
-				t.Fatal("marked remove did not start")
+				t.Fatal("marked descope did not start")
 			}
 			updated, _ = m.Update(cmd())
 			m = updated.(*Model)
@@ -4622,10 +4698,10 @@ func TestScopeMemberMarksAcceptPhysicalSpaceInputsAndSubmitBatch(t *testing.T) {
 				updated, _ := m.Update(key)
 				m = updated.(*Model)
 			}
-			updated, cmd := m.Update(keyMsg("R"))
+			updated, cmd := m.Update(keyMsg("D"))
 			m = updated.(*Model)
 			if cmd == nil {
-				t.Fatal("marked remove did not start")
+				t.Fatal("marked descope did not start")
 			}
 			updated, _ = m.Update(cmd())
 			m = updated.(*Model)

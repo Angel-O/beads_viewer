@@ -196,12 +196,12 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			}
 		}
 		if s.focusHint == focusScopePicker {
-			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "r" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "R" || b.Key == "M" || b.Key == "m"
+			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "r" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "D" || b.Key == "M" || b.Key == "m"
 			if memberOnly && !s.scopeMembers {
 				continue
 			}
 			if s.scopeMembers && b.Key == "M" {
-				b.Desc = "Match-remove members"
+				b.Desc = "Match-descope members"
 			}
 			if s.scopeMembers && (b.Key == "enter" || b.Key == "n") {
 				continue
