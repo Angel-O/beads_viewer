@@ -424,7 +424,7 @@ func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
 	}
 
 	catalog := descriptions()
-	for _, unavailable := range []string{"space", "R", "M", "o", "c", "r", "I", "w"} {
+	for _, unavailable := range []string{"space", "R", "M", "m", "o", "c", "r", "I", "w"} {
 		if _, ok := catalog[unavailable]; ok {
 			t.Fatalf("scope catalog sidebar advertises member-only control %q: %#v", unavailable, catalog)
 		}
@@ -442,7 +442,7 @@ func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
 
 	sidebar.SetScopePickerState(true, false)
 	members := descriptions()
-	for key, description := range map[string]string{"tab": "Switch to Unscoped issues", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Match-remove members"} {
+	for key, description := range map[string]string{"tab": "Switch to Unscoped issues", "o": "Narrow members to open", "space": "Mark current row/member", "R": "Remove marked/current member", "M": "Match-remove members", "m": "Move marked members to another scope"} {
 		if members[key] != description {
 			t.Fatalf("scope member sidebar missing %q: %#v", description, members)
 		}
@@ -472,7 +472,7 @@ func TestShortcutsSidebarTracksScopePickerRegion(t *testing.T) {
 	if destination["esc"] != "Back/close" {
 		t.Fatalf("scope destination sidebar missing close action: %#v", destination)
 	}
-	for _, unavailable := range []string{"n", "space", "M"} {
+	for _, unavailable := range []string{"n", "space", "M", "m"} {
 		if _, ok := destination[unavailable]; ok {
 			t.Fatalf("scope destination sidebar advertises unavailable control %q: %#v", unavailable, destination)
 		}
