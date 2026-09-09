@@ -632,6 +632,11 @@ async function initWasm() {
     return false;
 }
 
+// Keep graph construction and rendered links aligned with the Go loader.
+function isBlockingDependency(dependency) {
+    return !dependency.type || ['blocks', 'conditional-blocks', 'waits-for'].includes(dependency.type);
+}
+
 function buildWasmGraph() {
     if (!store.wasmReady) return;
 
@@ -652,7 +657,7 @@ function buildWasmGraph() {
 
         // Add blocking edges
         store.dependencies
-            .filter(d => d.type === 'blocks' || !d.type)
+            .filter(isBlockingDependency)
             .forEach(d => {
                 const fromIdx = store.wasmGraph.nodeIdx(d.issue_id);
                 const toIdx = store.wasmGraph.nodeIdx(d.depends_on_id);
@@ -994,7 +999,7 @@ function prepareGraphData(layout = null) {
 
     // Filter links
     let links = dependencies
-        .filter(d => (d.type === 'blocks' || !d.type))
+        .filter(isBlockingDependency)
         .filter(d => nodeIds.has(d.issue_id) && nodeIds.has(d.depends_on_id))
         .map(d => ({
             source: d.issue_id,

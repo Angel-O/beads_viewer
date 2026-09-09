@@ -1,5 +1,10 @@
 // Explicit opt-in real Chromium journeys. No DOM substitutes or browser packages.
 // Artifacts are consumed by the failing assertion/reviewer and retained externally.
+// Usage: node tests/scripts/dashboard_browser_test.mjs CHROMIUM BUNDLE ARTIFACTS blocking-types
+// Export a seven-task fixture: workflow-root is qa-review; workflow-{blocks,
+// conditional,legacy,waits,related,closed} depend on it with types {blocks,
+// conditional-blocks,"",waits-for,team-reference,waits-for}, respectively.
+// The dependent statuses are open except workflow-closed, which is closed.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +13,7 @@ import { spawn } from 'node:child_process';
 
 const [browser, bundle, artifacts, mode = 'journeys', updatedBundle, projectBundle] = process.argv.slice(2);
 assert.ok(browser && bundle && artifacts, 'browser, bundle, artifacts required');
-assert.ok(['journeys', 'offline-only'].includes(mode), 'unknown browser test mode');
+assert.ok(['journeys', 'offline-only', 'blocking-types'].includes(mode), 'unknown browser test mode');
 fs.mkdirSync(artifacts, { recursive: true });
 const records = [];
 let brokenAsset = '', changedAsset = '', workerRevision = 0, chrome, server, socket;
@@ -165,6 +170,53 @@ function clean(page) {
 async function resultIDs(page, expected) {
   await waitFor(page, `JSON.stringify([...document.querySelectorAll('[aria-label^="View issue "]')].filter(${visible}).map(e => e.getAttribute('aria-label').split(':')[0].slice(11)).sort()) === ${JSON.stringify(JSON.stringify([...expected].sort()))}`, `visible issue IDs ${expected}`);
 }
+async function blockingTypesJourney(page) {
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === 7 && ${app}.graphReady`, 'seven workflow issues and actual graph WASM');
+  await waitFor(page, '!!navigator.serviceWorker.controller', 'workflow bundle worker controls page');
+  await delay(500);
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.graphReady`, 'workflow app after worker activation');
+  const active = ['workflow-blocks', 'workflow-conditional', 'workflow-legacy', 'workflow-waits'];
+  const all = [...active, 'workflow-closed'].sort();
+  const overview = await evaluate(page, `execQuery("SELECT dependent_count, blocks_ids, status FROM issue_overview_mv WHERE id = 'workflow-root'")[0]`);
+  assert.equal(overview.status, 'qa-review', 'custom workflow status is retained');
+  assert.equal(overview.dependent_count, 4);
+  assert.deepEqual(overview.blocks_ids.split(',').sort(), active, 'active ID list matches exported count');
+  assert.deepEqual(await evaluate(page, '({blocked: getStats().blocked, actionable: getStats().actionable})'), { blocked: 4, actionable: 1 }, 'typed prerequisites keep dependents out of ready work');
+  assert.deepEqual(await evaluate(page, 'getQuickWins().map(i=>i.id)'), ['workflow-related'], 'informational reference is the only ready issue');
+  const closed = await evaluate(page, `execQuery("SELECT blocker_count, blocked_by_ids FROM issue_overview_mv WHERE id = 'workflow-closed'")[0]`);
+  assert.equal(closed.blocker_count, 0);
+  assert.ok(!closed.blocked_by_ids, 'closed endpoint has no active blockers');
+  for (const id of active) {
+    const row = await evaluate(page, `execQuery("SELECT blocker_count, blocked_by_ids FROM issue_overview_mv WHERE id = ?", [${JSON.stringify(id)}])[0]`);
+    assert.equal(row.blocker_count, 1);
+    assert.equal(row.blocked_by_ids, 'workflow-root');
+    assert.deepEqual(await evaluate(page, `getIssueDependencies(${JSON.stringify(id)}).blockedBy.map(i=>i.id)`), ['workflow-root'], `${id}: correctly directed blocker lookup`);
+  }
+  assert.deepEqual(await evaluate(page, `getIssueDependencies('workflow-root').blocks.map(i=>i.id).sort()`), all, 'detail navigation retains historical relationships');
+  assert.deepEqual(await evaluate(page, `getIssueDependencies('workflow-related')`), { blocks: [], blockedBy: [] }, 'custom informational relation remains nonblocking');
+  const expected = [
+    ['workflow-blocks', 'blocks'], ['workflow-closed', 'waits-for'],
+    ['workflow-conditional', 'conditional-blocks'], ['workflow-legacy', ''], ['workflow-waits', 'waits-for'],
+  ];
+  assert.deepEqual(await evaluate(page, `getGraphViewData().dependencies.map(d=>[d.issue_id,d.type]).sort((a,b)=>a[0].localeCompare(b[0]))`), expected, 'graph query retains all blocking variants and original types');
+  assert.deepEqual(await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]'), [7, 5]);
+  await send('Page.navigate', { url: origin + '/#/issue/workflow-conditional' }, page.session);
+  await waitFor(page, `typeof Alpine !== 'undefined' && ${app}.selectedIssue?.id === 'workflow-conditional'`, 'conditional dependent details');
+  await key(page, 'h', 'KeyH');
+  await waitFor(page, `${app}.selectedIssue?.id === 'workflow-root'`, 'h navigates to prerequisite');
+  await key(page, 'l', 'KeyL');
+  await waitFor(page, `${app}.selectedIssue?.id === 'workflow-blocks'`, 'l navigates to first dependent');
+  await capture(page, 'dependency-navigation');
+  await key(page, 'Escape');
+  await click(page, 'a[href="#/graph"]');
+  await waitFor(page, `${app}.forceGraphReady && !${app}.forceGraphLoading && !!document.querySelector('#graph-container canvas')`, 'force graph draws blocking variants');
+  assert.equal(await evaluate(page, `${app}.forceGraphModule.getWasmGraph().edgeCount()`), 5, 'force graph WASM uses same edges');
+  assert.deepEqual(await evaluate(page, `${app}.forceGraphModule.getGraph().graphData().links.map(e=>[e.source.id,e.target.id,e.type]).sort((a,b)=>a[0].localeCompare(b[0]))`), expected.map(([id, type])=>[id, 'workflow-root', type || 'blocks']), 'rendered links preserve endpoint direction');
+  await capture(page, 'blocking-graph');
+  clean(page);
+  console.log('PASS: real exported SQLite, blocking ID lists, issue h/l navigation, graph WASM and force-graph links');
+}
+
 async function journey(page, mobile) {
   await ready(page);
   await waitFor(page, '!!navigator.serviceWorker.controller', 'installed offline service worker controls page');
@@ -340,7 +392,9 @@ try {
     activeBundle = bundle;
   }
   const desktop = await openPage('desktop');
-  if (mode === 'offline-only') {
+  if (mode === 'blocking-types') {
+    await blockingTypesJourney(desktop);
+  } else if (mode === 'offline-only') {
     await ready(desktop);
     await capture(desktop, 'first-load');
     await setOffline(desktop, true);

@@ -262,7 +262,8 @@ func CreateMaterializedViews(db *sql.DB) error {
 					FROM dependencies d
 					JOIN issues i2 ON d.issue_id = i2.id
 					WHERE d.depends_on_id = i.id
-					  AND (d.type = 'blocks' OR d.type = '')
+					  AND d.type IN ('', 'blocks', 'conditional-blocks', 'waits-for')
+					  AND i.status NOT IN ('closed', 'tombstone')
 					  AND i2.status NOT IN ('closed', 'tombstone')
 					ORDER BY d.issue_id
 				)) as blocks_ids,
@@ -271,7 +272,8 @@ func CreateMaterializedViews(db *sql.DB) error {
 					FROM dependencies d
 					JOIN issues i2 ON d.depends_on_id = i2.id
 					WHERE d.issue_id = i.id
-					  AND (d.type = 'blocks' OR d.type = '')
+					  AND d.type IN ('', 'blocks', 'conditional-blocks', 'waits-for')
+					  AND i.status NOT IN ('closed', 'tombstone')
 					  AND i2.status NOT IN ('closed', 'tombstone')
 					ORDER BY d.depends_on_id
 				)) as blocked_by_ids

@@ -731,6 +731,9 @@ function execScalar(sql, params = []) {
 // WASM Graph Engine - Live graph calculations
 // ============================================================================
 
+// Match model.DependencyType.IsBlocking, including legacy empty types.
+const BLOCKING_DEPENDENCY_TYPES_SQL = "('', 'blocks', 'conditional-blocks', 'waits-for')";
+
 /**
  * Initialize the WASM graph engine
  */
@@ -776,7 +779,7 @@ async function initGraphEngine() {
     const deps = execQuery(`
       SELECT issue_id, depends_on_id
       FROM dependencies
-      WHERE type = 'blocks'
+      WHERE type IN ${BLOCKING_DEPENDENCY_TYPES_SQL}
       ORDER BY issue_id, depends_on_id
     `);
 
@@ -1184,7 +1187,7 @@ function getGraphViewData() {
   const dependencies = execQuery(`
     SELECT issue_id, depends_on_id, type
     FROM dependencies
-    WHERE type = 'blocks'
+    WHERE type IN ${BLOCKING_DEPENDENCY_TYPES_SQL}
   `);
 
   return { issues, dependencies };
@@ -1864,16 +1867,18 @@ function getMeta() {
  * Get dependencies for an issue
  */
 function getIssueDependencies(id) {
-  const blocks = execQuery(`
-    SELECT i.* FROM issue_overview_mv i
-    JOIN dependencies d ON i.id = d.depends_on_id
-    WHERE d.issue_id = ? AND d.type = 'blocks'
-  `, [id]);
-
   const blockedBy = execQuery(`
     SELECT i.* FROM issue_overview_mv i
+    JOIN dependencies d ON i.id = d.depends_on_id
+    WHERE d.issue_id = ? AND d.type IN ${BLOCKING_DEPENDENCY_TYPES_SQL}
+    ORDER BY i.id
+  `, [id]);
+
+  const blocks = execQuery(`
+    SELECT i.* FROM issue_overview_mv i
     JOIN dependencies d ON i.id = d.issue_id
-    WHERE d.depends_on_id = ? AND d.type = 'blocks'
+    WHERE d.depends_on_id = ? AND d.type IN ${BLOCKING_DEPENDENCY_TYPES_SQL}
+    ORDER BY i.id
   `, [id]);
 
   return { blocks, blockedBy };
