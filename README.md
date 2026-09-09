@@ -3361,6 +3361,12 @@ These are heuristics, not a scheduler. For `--robot-forecast`, choose a base fro
 
 Velocity is estimated minutes closed in the last 30 days divided by 30, using the slowest nonzero matching-label velocity, then global velocity, then median/5 (with 60 min/day as a final fallback). ETA days = work minutes / (velocity × agents). Its confidence band is rule-based and has not been calibrated as a statistical probability. `--robot-capacity` sums serial work on the critical path with remaining parallel work divided by `--agents`; it does not assign issues to agents or account for their availability. Payloads expose the factors behind these estimates.
 
+Forecast output applies the global issue selection and intersects it with
+`--forecast-label` and `--forecast-sprint`, when supplied. These filters also
+apply to a single requested issue; an excluded or missing ID returns an error.
+Estimates retain the loaded graph and closure context, and can include selected
+blocked or deferred work. A forecast does not establish readiness to start.
+
 Capacity reports apply the global issue selection and intersect it with
 `--capacity-label`, when supplied. The backlog includes selected unresolved work;
 `actionable` uses the same full-source readiness rules as planning, including

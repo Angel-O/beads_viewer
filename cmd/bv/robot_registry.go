@@ -1464,6 +1464,9 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 			}
 
 			for _, issue := range ctx.Issues {
+				if !analyzer.IsCandidate(issue.ID) {
+					continue
+				}
 				if cfg.ForecastLabel != nil && strings.TrimSpace(*cfg.ForecastLabel) != "" {
 					hasLabel := false
 					for _, label := range issue.Labels {
@@ -1522,6 +1525,17 @@ func registerPhaseTwoRobotHandlers(registry *RobotRegistry, cfg phaseTwoRobotHan
 					forecasts = append(forecasts, eta)
 				}
 			} else {
+				selected := false
+				for _, issue := range targetIssues {
+					if issue.ID == forecastTarget {
+						selected = true
+						break
+					}
+				}
+				if !selected {
+					fmt.Fprintf(ctx.StderrOrDefault(), "Issue not found in selected forecast scope: %s\n", forecastTarget)
+					return newReportedRobotHandlerExit(1)
+				}
 				eta, err := analysis.EstimateETAForIssue(ctx.Issues, &graphStats, forecastTarget, agents, now)
 				if err != nil {
 					fmt.Fprintf(ctx.StderrOrDefault(), "Error: %v\n", err)

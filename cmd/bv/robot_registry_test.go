@@ -145,6 +145,69 @@ func TestRobotCapacity_BlockingEdgesAndOrder(t *testing.T) {
 	}
 }
 
+func TestRobotForecast_CandidateScope(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1788912000")
+	issues := []model.Issue{
+		{ID: "focus", Status: model.StatusOpen, Labels: []string{"focus"}, Dependencies: []*model.Dependency{{DependsOnID: "outer", Type: model.DepBlocks}}},
+		{ID: "outer", Status: model.StatusOpen, Labels: []string{"other"}},
+		{ID: "done", Status: model.StatusClosed, Labels: []string{"focus"}},
+	}
+	for _, tc := range []struct {
+		name       string
+		candidates map[string]bool
+		label      string
+		target     string
+		want       []string
+		wantError  bool
+	}{
+		{"unscoped", nil, "", "all", []string{"focus", "outer"}, false},
+		{"selected", map[string]bool{"focus": true}, "", "all", []string{"focus"}, false},
+		{"empty", map[string]bool{}, "", "all", nil, false},
+		{"false_entry", map[string]bool{"focus": true, "outer": false}, "", "all", []string{"focus"}, false},
+		{"intersection", map[string]bool{"focus": true}, "other", "all", nil, false},
+		{"selected_single", map[string]bool{"focus": true}, "focus", "focus", []string{"focus"}, false},
+		{"outside_single", map[string]bool{"focus": true}, "", "outer", nil, true},
+		{"label_excluded_single", nil, "focus", "outer", nil, true},
+		{"empty_single", map[string]bool{}, "", "focus", nil, true},
+		{"missing_single", nil, "", "missing", nil, true},
+		{"selected_closed_single", map[string]bool{"done": true}, "focus", "done", []string{"done"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := newRobotRegistry()
+			registerPhaseTwoRobotHandlers(&registry, phaseTwoRobotHandlerConfig{RobotForecastFlag: &tc.target, ForecastLabel: &tc.label})
+			var out, stderr bytes.Buffer
+			ctx := RobotContext{Issues: issues, CandidateIDs: tc.candidates, Encoder: json.NewEncoder(&out), Stderr: &stderr}
+			result := dispatchRobotFlagResult(&registry, "robot-forecast", ctx)
+			if !result.Handled {
+				t.Fatal("forecast handler not dispatched")
+			}
+			if tc.wantError {
+				if result.ExitCode == 0 || out.Len() != 0 || !strings.Contains(stderr.String(), tc.target) {
+					t.Fatalf("excluded target should fail without forecast JSON: result=%+v stdout=%s stderr=%s", result, out.String(), stderr.String())
+				}
+				return
+			}
+			if result.ExitCode != 0 || result.Err != nil {
+				t.Fatalf("forecast failed: %+v stderr=%s", result, stderr.String())
+			}
+			var got struct {
+				Count     int                    `json:"forecast_count"`
+				Forecasts []analysis.ETAEstimate `json:"forecasts"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, forecast := range got.Forecasts {
+				ids = append(ids, forecast.IssueID)
+			}
+			if !slices.Equal(ids, tc.want) || got.Count != len(tc.want) {
+				t.Fatalf("forecast IDs=%v count=%d, want %v; output=%s", ids, got.Count, tc.want, out.String())
+			}
+		})
+	}
+}
+
 func TestRobotHistoryTimeoutFromMillisecondsChecked(t *testing.T) {
 	tests := []struct {
 		name string
