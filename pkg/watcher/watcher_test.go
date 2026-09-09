@@ -136,6 +136,10 @@ func TestWatcher_SQLiteWALCommits(t *testing.T) {
 				PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;`); err != nil {
 				t.Fatal(err)
 			}
+			var journalMode string
+			if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil || journalMode != "wal" {
+				t.Fatalf("SQLite journal mode=%q, want wal: %v", journalMode, err)
+			}
 			if _, err := os.Stat(path + "-wal"); !os.IsNotExist(err) {
 				t.Fatalf("expected WAL to be created by the first watched commit: %v", err)
 			}
@@ -150,6 +154,9 @@ func TestWatcher_SQLiteWALCommits(t *testing.T) {
 			}
 			defer w.Stop()
 			t.Logf("polling=%v", w.IsPolling())
+			if w.IsPolling() != tc.poll {
+				t.Fatalf("watcher backend polling=%v, want %v", w.IsPolling(), tc.poll)
+			}
 			// Similar sibling names must not refresh this selected database.
 			for _, sibling := range []string{path + ".other-wal", path + "-wal.other"} {
 				if err := os.WriteFile(sibling, []byte("unrelated"), 0o644); err != nil {
@@ -168,6 +175,9 @@ func TestWatcher_SQLiteWALCommits(t *testing.T) {
 			for _, title := range []string{"after", "again"} {
 				if _, err := db.Exec("UPDATE issues SET title=?", title); err != nil {
 					t.Fatal(err)
+				}
+				if wal, err := os.Stat(path + "-wal"); err != nil || wal.Size() == 0 {
+					t.Fatalf("committed update %q did not create a nonempty WAL: %v", title, err)
 				}
 				after, err := os.Stat(path)
 				if err != nil {
@@ -220,6 +230,10 @@ func TestWatcher_JSONLIgnoresWALSidecar(t *testing.T) {
 		}
 		if err := w.Start(); err != nil {
 			t.Fatal(err)
+		}
+		if w.IsPolling() != poll {
+			w.Stop()
+			t.Fatalf("JSONL watcher backend polling=%v, want %v", w.IsPolling(), poll)
 		}
 		if err := os.WriteFile(path+"-wal", []byte("unrelated"), 0o644); err != nil {
 			w.Stop()

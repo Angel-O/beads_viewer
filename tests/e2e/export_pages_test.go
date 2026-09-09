@@ -78,16 +78,25 @@ func TestExportPagesWatchUsesLoadedSource(t *testing.T) {
 		rejected string
 		explicit bool
 		sqlite   bool
+		wal      bool
+		poll     bool
 	}{
-		{"invalid-jsonl", "beads.jsonl", false, false},
-		{"invalid-sqlite", "beads.db", false, false},
-		{"explicit-jsonl", "beads.jsonl", true, false},
-		{"explicit-sqlite", "beads.jsonl", true, true},
+		{"invalid-jsonl", "beads.jsonl", false, false, false, false},
+		{"invalid-sqlite", "beads.db", false, false, false, false},
+		{"explicit-jsonl", "beads.jsonl", true, false, false, false},
+		{"explicit-sqlite", "beads.jsonl", true, true, false, false},
+		{"explicit-sqlite-wal", "beads.jsonl", true, true, true, false},
+		{"explicit-sqlite-wal-polling", "beads.jsonl", true, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("BEADS_DIR", "")
 			t.Setenv("BEADS_DB", "")
+			t.Setenv("BV_FORCE_POLL", "")
+			t.Setenv("BV_FORCE_POLLING", "0")
+			if tc.poll {
+				t.Setenv("BV_FORCE_POLLING", "1")
+			}
 			writeIssuesJSONL(t, root, `{"id":"before","title":"Before refresh","status":"open","issue_type":"task"}`+"\n")
 			selected := filepath.Join(root, ".beads", "issues.jsonl")
 			var sourceDB *sql.DB
@@ -99,6 +108,12 @@ func TestExportPagesWatchUsesLoadedSource(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer sourceDB.Close()
+				sourceDB.SetMaxOpenConns(1)
+				if tc.wal {
+					if _, err := sourceDB.Exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;`); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if _, err := sourceDB.Exec(`CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL);
 					INSERT INTO issues VALUES ('before', 'Before refresh', 'open')`); err != nil {
 					t.Fatal(err)
@@ -179,12 +194,45 @@ func TestExportPagesWatchUsesLoadedSource(t *testing.T) {
 				t.Fatalf("watch did not publish %s from %s\n%s", id, selected, logs)
 			}
 			waitForPublication("before", tc.explicit)
+			var siblingDB *sql.DB
+			if tc.wal {
+				var err error
+				siblingDB, err = sql.Open("sqlite", filepath.Join(root, ".beads", "sibling.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer siblingDB.Close()
+				siblingDB.SetMaxOpenConns(1)
+				if _, err := siblingDB.Exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+					CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL);
+					INSERT INTO issues VALUES ('sibling', 'Unrelated issue', 'open')`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mainBefore, err := os.Stat(selected)
+			if err != nil {
+				t.Fatal(err)
+			}
 			// The second mutation must arrive through the watcher after the
 			// startup settle recheck has already published the first mutation.
 			for _, id := range []string{"after", "again"} {
 				if sourceDB != nil {
+					if siblingDB != nil {
+						if _, err := siblingDB.Exec(`UPDATE issues SET title=?`, "Sibling "+id); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if _, err := sourceDB.Exec(`UPDATE issues SET id=?, title=?`, id, id); err != nil {
 						t.Fatal(err)
+					}
+					if tc.wal {
+						mainAfter, err := os.Stat(selected)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !mainBefore.ModTime().Equal(mainAfter.ModTime()) || mainBefore.Size() != mainAfter.Size() {
+							t.Fatal("WAL test changed the main database; watcher must observe the held writer's WAL")
+						}
 					}
 				} else {
 					writeIssuesJSONL(t, root, fmt.Sprintf("{\"id\":%q,\"title\":%q,\"status\":\"open\",\"issue_type\":\"task\"}\n", id, id))

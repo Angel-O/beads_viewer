@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -17,8 +18,18 @@ import (
 
 func TestTUIReloadUsesLoadedFallbackSource(t *testing.T) {
 	skipIfNoScript(t)
-	for _, background := range []string{"0", "1"} {
-		t.Run("background="+background, func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		background string
+		wal        bool
+	}{
+		{"background=0", "0", false},
+		{"background=1", "1", false},
+		{"wal/background=0", "0", true},
+		{"wal/background=1", "1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			background := tc.background
 			dir := t.TempDir()
 			t.Setenv("BEADS_DIR", "")
 			t.Setenv("BEADS_DB", "")
@@ -26,6 +37,24 @@ func TestTUIReloadUsesLoadedFallbackSource(t *testing.T) {
 			t.Setenv("BV_NO_UPDATE_CHECK", "1")
 			writeIssuesJSONL(t, dir, `{"id":"before","title":"Before refresh","status":"open","issue_type":"task"}`+"\n")
 			selected := filepath.Join(dir, ".beads", "issues.jsonl")
+			var sourceDB *sql.DB
+			var args []string
+			if tc.wal {
+				selected = filepath.Join(dir, ".beads", "selected.db")
+				var err error
+				sourceDB, err = sql.Open("sqlite", selected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer sourceDB.Close()
+				sourceDB.SetMaxOpenConns(1)
+				if _, err := sourceDB.Exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+					CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL);
+					INSERT INTO issues VALUES ('before', 'Before refresh', 'open')`); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"--db", selected}
+			}
 			rejected := filepath.Join(dir, ".beads", "beads.jsonl")
 			if err := os.WriteFile(rejected, []byte("{invalid\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -41,7 +70,7 @@ func TestTUIReloadUsesLoadedFallbackSource(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			bv := buildBvBinary(t)
-			cmd := scriptTUICommand(ctx, bv)
+			cmd := scriptTUICommand(ctx, bv, args...)
 			if runtime.GOOS == "linux" {
 				for i, arg := range cmd.Args {
 					if arg == "-c" && i+1 < len(cmd.Args) {
@@ -50,7 +79,7 @@ func TestTUIReloadUsesLoadedFallbackSource(t *testing.T) {
 					}
 				}
 			} else if runtime.GOOS == "darwin" {
-				cmd = exec.CommandContext(ctx, "script", "-q", "/dev/null", "sh", "-c", "stty columns 110 rows 35 && exec \"$@\"", "sh", bv)
+				cmd = exec.CommandContext(ctx, "script", append([]string{"-q", "/dev/null", "sh", "-c", "stty columns 110 rows 35 && exec \"$@\"", "sh", bv}, args...)...)
 			}
 			cmd.Dir = dir
 			cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLUMNS=110", "LINES=35", "BV_TUI_AUTOCLOSE_MS=13000")
@@ -92,7 +121,24 @@ func TestTUIReloadUsesLoadedFallbackSource(t *testing.T) {
 				t.Fatalf("TUI failed to render %q after selected source changed; selected=%s rejected=%s:\n%s", title, selected, rejected, raw)
 			}
 			waitForTitle("Before refresh")
-			writeIssuesJSONL(t, dir, `{"id":"after","title":"After refresh","status":"open","issue_type":"task"}`+"\n")
+			if sourceDB != nil {
+				before, err := os.Stat(selected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sourceDB.Exec(`UPDATE issues SET id='after', title='After refresh'`); err != nil {
+					t.Fatal(err)
+				}
+				after, err := os.Stat(selected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
+					t.Fatal("WAL test changed the main database; writer must stay open")
+				}
+			} else {
+				writeIssuesJSONL(t, dir, `{"id":"after","title":"After refresh","status":"open","issue_type":"task"}`+"\n")
+			}
 			waitForTitle("After refresh")
 		})
 	}
