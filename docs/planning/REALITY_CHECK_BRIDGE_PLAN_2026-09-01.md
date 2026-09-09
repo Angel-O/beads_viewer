@@ -1,5 +1,26 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Committed SQLite WAL updates refresh the viewer — 2026-09-09
+
+`bv-oonu.21` connects live refresh to the selected SQLite WAL companion.
+
+- [x] Reproduce stale Pages output while a fresh read sees the committed row;
+  retain unchanged main-file metadata and an open writer.
+- [x] Run unchanged-runtime regressions through RCH: fsnotify and polling both
+  miss the first WAL update; the JSONL sidecar control passes.
+- [x] Implement exact companion matching and polling state with the existing
+  stop/start generation guard; treat checkpoint removal as a source change.
+- [ ] Verify real WAL creation, repeated commits, sibling isolation, checkpoint
+  removal, Pages publication and foreground/background TUI refresh.
+- [ ] Complete affected race tests, RCH build/vet and first-party formatting;
+  record scanner limitations and all failures/skips.
+- [ ] Independent exact-commit replay and verifier closure.
+
+Evidence: `/data/tmp/bv-wal-refresh-20260909-wwqn2zz5`. Native prerequisite
+recheck finds OldSurface SSH reachable, but RCH rejects native Go with an OS
+admission mismatch. Original native, performance, tracker and final gates stay
+open; no source-built Windows first-start pass is claimed.
+
 ## Live watchers use the loaded source — 2026-09-09
 
 `bv-oonu.20` repairs startup/watch source drift at `ccc166e9`.

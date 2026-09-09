@@ -159,7 +159,7 @@ Browse your issue backlog in the terminal using standard Vim keys (`j`/`k`). Sta
 *   **Split-View Dashboard:** On wider screens, see your list on the left and full details on the right.
 *   **Markdown Rendering:** Issue descriptions, comments, and notes are beautifully rendered with syntax highlighting, headers, and lists.
 *   **Keyboard Filtering:** Press `o` for Open, `c` for Closed, or `r` for Ready (unblocked) tasks.
-*   **Live Reload:** Watches the active Beads JSONL file and refreshes lists, details, and insights automatically when the file changes—no restart needed.
+*   **Live Reload:** Watches the active Beads JSONL or SQLite source and refreshes lists, details, and insights automatically. SQLite updates are detected even while committed changes remain in its write-ahead log (WAL).
 
 ### 🔎 Rich Context
 Don't just read the title. `bv` gives you the full picture:
@@ -3859,6 +3859,10 @@ The loader (`pkg/loader/loader.go`, `internal/datasource`) doesn't blindly open 
 2.  **Redirect:** If `.beads/redirect` exists, its target directory is followed (up to 10 hops, loops and missing targets are errors) so bv reads the same store `br where` reports.
 3.  **Allowlist:** Only three file names are ever considered: `issues.jsonl` (preferred), `beads.jsonl` (legacy), and `beads.base.jsonl` (`loader.PreferredJSONLNames`). Sidecars that sit beside them (`sync_base.jsonl`, `sprints.jsonl`, `correlation_feedback.jsonl`, `deletions.jsonl`, backups, merge artifacts) never load as issues.
 4.  **Freshness gate:** Robot and TUI startup share the smart loader: it tries candidates in freshness order and falls through when validation rejects a source. The TUI and single-repository watched Pages export watch the source that successfully loaded, including a valid fallback or an explicitly selected database. Historical exports with `--as-of` are fixed snapshots and cannot use `--watch-export`.
+
+SQLite watchers also observe the selected database's `-wal` companion in event
+and polling modes, so a writer can remain open between committed updates.
+Checkpointing does not need to finish before those changes become visible.
 
 ### 2. Robust Parsing
 The JSONL parser is designed to be **Lossy-Tolerant**.

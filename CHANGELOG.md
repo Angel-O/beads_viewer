@@ -29,6 +29,10 @@ the latest tag, including installer changes usable with already released binarie
 
 ### Workflow data and static dashboards
 
+- SQLite live refresh now detects committed WAL updates in event and polling
+  modes. TUI and watched Pages exports update while the writer remains open;
+  checkpoint removal of the WAL is handled without reporting the database
+  itself as removed (`bv-oonu.21`).
 - Live TUI refreshes and single-repository watched exports now use the source
   that successfully loaded at startup. A corrupt newer file can no longer
   redirect the watcher away from its valid fallback. Explicit JSONL and SQLite
