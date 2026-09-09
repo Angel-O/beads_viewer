@@ -3,10 +3,91 @@ package main_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestRobotCapacity_ReadinessScope(t *testing.T) {
+	bv := buildBvBinary(t)
+	if control := os.Getenv("BV_CAPACITY_TEST_BINARY"); control != "" {
+		bv = control
+	}
+	t.Setenv("SOURCE_DATE_EPOCH", "1788912000")
+	dir := t.TempDir()
+	writeIssuesJSONL(t, dir, strings.Join([]string{
+		`{"id":"outer","title":"Outside blocker","status":"open","issue_type":"task","priority":1,"labels":["other"]}`,
+		`{"id":"related","title":"Related work","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"outer","type":"related"}]}`,
+		`{"id":"missing","title":"Missing gate","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"absent","type":"blocks"}]}`,
+		`{"id":"deferred","title":"Future work","status":"open","issue_type":"task","priority":1,"labels":["focus"],"defer_until":"2099-01-01T00:00:00Z"}`,
+		`{"id":"parked","title":"Parked work","status":"blocked","issue_type":"task","priority":1,"labels":["focus"]}`,
+		`{"id":"parent","title":"Blocked parent","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"outer","type":"blocks"}]}`,
+		`{"id":"child","title":"Inherited gate","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"parent","type":"parent-child"}]}`,
+		`{"id":"resolved","title":"Resolved gates","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"done","type":"blocks"},{"depends_on_id":"gone","type":"conditional-blocks"}]}`,
+		`{"id":"done","title":"Done","status":"closed","issue_type":"task","priority":1,"labels":["other"]}`,
+		`{"id":"gone","title":"Deleted","status":"tombstone","issue_type":"task","priority":1,"labels":["other"]}`,
+	}, "\n")+"\n")
+	for _, tc := range []struct {
+		name      string
+		flags     []string
+		planFlags []string
+		want      []string
+		open      int
+	}{
+		{"unscoped", nil, nil, []string{"outer", "related", "resolved"}, 8},
+		{"capacity_label", []string{"--capacity-label", "focus"}, []string{"--label", "focus"}, []string{"related", "resolved"}, 7},
+		{"global_label", []string{"--label", "focus"}, []string{"--label", "focus"}, []string{"related", "resolved"}, 7},
+		{"matching_intersection", []string{"--label", "focus", "--capacity-label", "focus"}, []string{"--label", "focus"}, []string{"related", "resolved"}, 7},
+		{"disjoint_intersection", []string{"--label", "focus", "--capacity-label", "other"}, []string{"--label", "absent"}, nil, 0},
+		{"recipe", []string{"--label", "focus", "--recipe", "actionable"}, []string{"--label", "focus", "--recipe", "actionable"}, []string{"related", "resolved"}, 2},
+		{"empty", []string{"--label", "absent"}, []string{"--label", "absent"}, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"--robot-capacity"}, tc.flags...)
+			r := runScoped(t, bv, dir, args...)
+			t.Logf("binary=%q argv=%q exit=%v stderr=%s stdout=%s", bv, args, r.exit, r.stderr, r.stdout)
+			if r.exit != nil {
+				t.Fatal(r.exit)
+			}
+			var got struct {
+				Actionable []string `json:"actionable"`
+				Count      int      `json:"actionable_count"`
+				Open       int      `json:"open_issue_count"`
+			}
+			if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got.Actionable, tc.want) || got.Count != len(tc.want) || got.Open != tc.open {
+				t.Errorf("capacity=%+v, want ready=%v open=%d", got, tc.want, tc.open)
+			}
+			plan := runScoped(t, bv, dir, append([]string{"--robot-plan"}, tc.planFlags...)...)
+			var canonical struct {
+				Plan struct {
+					Total  int `json:"total_actionable"`
+					Tracks []struct {
+						Items []struct{ ID string } `json:"items"`
+					} `json:"tracks"`
+				} `json:"plan"`
+			}
+			if plan.exit != nil || json.Unmarshal([]byte(plan.stdout), &canonical) != nil {
+				t.Fatalf("plan failed: %v stdout=%s stderr=%s", plan.exit, plan.stdout, plan.stderr)
+			}
+			var ready []string
+			for _, track := range canonical.Plan.Tracks {
+				for _, item := range track.Items {
+					ready = append(ready, item.ID)
+				}
+			}
+			slices.Sort(ready)
+			if !slices.Equal(got.Actionable, ready) || got.Count != canonical.Plan.Total {
+				t.Errorf("capacity readiness differs from plan: capacity=%+v plan=%s", got, plan.stdout)
+			}
+		})
+	}
+}
 
 func TestRobotCapacity_EstimatedDaysDropsWithMoreAgents(t *testing.T) {
 	bv := buildBvBinary(t)

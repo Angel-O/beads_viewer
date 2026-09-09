@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,7 +13,137 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 )
+
+func TestRobotCapacity_FullSourceReadiness(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1788912000")
+	now := time.Unix(1788912000, 0).UTC()
+	future := now.Add(time.Second)
+	issues := []model.Issue{
+		{ID: "outer", Status: model.StatusOpen, Labels: []string{"other"}},
+		{ID: "ready", Status: model.StatusInProgress},
+		{ID: "related", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "outer", Type: model.DepRelated}}},
+		{ID: "missing", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "absent", Type: model.DepBlocks}}},
+		{ID: "future", Status: model.StatusOpen, DeferUntil: &future},
+		{ID: "due", Status: model.StatusOpen, DeferUntil: &now},
+		{ID: "parked", Status: model.StatusBlocked},
+		{ID: "review", Status: model.Status("qa-review")},
+		{ID: "parent", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "outer", Type: model.DepBlocks}}},
+		{ID: "child", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "parent", Type: model.DepParentChild}}},
+		{ID: "resolved", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "done", Type: model.DepBlocks}, {DependsOnID: "gone", Type: model.DepConditionalBlocks}}},
+		{ID: "done", Status: model.StatusClosed, Labels: []string{"other"}},
+		{ID: "gone", Status: model.StatusTombstone, Labels: []string{"other"}},
+	}
+	selected := make(map[string]bool)
+	var visible []model.Issue
+	for i := range issues {
+		if len(issues[i].Labels) == 0 {
+			issues[i].Labels = []string{"focus"}
+			selected[issues[i].ID] = true
+			visible = append(visible, issues[i])
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		issues     []model.Issue
+		candidates map[string]bool
+		label      string
+		want       []string
+		open       int
+	}{
+		{"unscoped", issues, nil, "", []string{"due", "outer", "ready", "related", "resolved"}, 11},
+		{"global_candidates", issues, selected, "", []string{"due", "ready", "related", "resolved"}, 10},
+		{"capacity_label", issues, nil, "focus", []string{"due", "ready", "related", "resolved"}, 10},
+		{"authority_outside_graph", visible, nil, "", []string{"due", "ready", "related", "resolved"}, 10},
+		{"empty_candidates", issues, map[string]bool{}, "", nil, 0},
+		{"explicit_false", issues, map[string]bool{"related": true, "outer": false}, "focus", []string{"related"}, 1},
+		{"disjoint_intersection", issues, map[string]bool{"outer": true}, "focus", nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			ctx := RobotContext{Issues: tc.issues, CandidateIDs: tc.candidates, Readiness: model.NewReadinessIndex(issues), Encoder: json.NewEncoder(&out)}
+			if err := handleRobotCapacity(ctx, phaseThreeRobotHandlerConfig{CapacityLabel: &tc.label}); err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Actionable      []string `json:"actionable"`
+				ActionableCount int      `json:"actionable_count"`
+				Open            int      `json:"open_issue_count"`
+				Total           int      `json:"total_minutes"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got.Actionable, tc.want) || got.ActionableCount != len(tc.want) || got.Open != tc.open {
+				t.Errorf("capacity=%+v, want ready=%v open=%d; output=%s", got, tc.want, tc.open, out.String())
+			}
+			if tc.open == 0 && got.Total != 0 || tc.open > 0 && got.Total <= 0 {
+				t.Errorf("backlog duration does not match selected work: %+v", got)
+			}
+		})
+	}
+	writeErr := errors.New("capacity output unavailable")
+	err := handleRobotCapacity(RobotContext{Encoder: json.NewEncoder(failingWriter{err: writeErr})}, phaseThreeRobotHandlerConfig{})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("output failure lost: %v", err)
+	}
+}
+
+func TestRobotCapacity_BlockingEdgesAndOrder(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1788912000")
+	issues := []model.Issue{
+		{ID: "z", Status: model.StatusOpen},
+		{ID: "a", Status: model.StatusOpen},
+		{ID: "b", Status: model.StatusOpen, Dependencies: []*model.Dependency{nil, {DependsOnID: "a", Type: model.DepBlocks}, {DependsOnID: "a", Type: model.DepBlocks}, {DependsOnID: "a", Type: model.DepConditionalBlocks}}},
+		{ID: "c", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DependencyType("")}}},
+		{ID: "d", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "z", Type: model.DepConditionalBlocks}}},
+		{ID: "e", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "z", Type: model.DepWaitsFor}}},
+		{ID: "related", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DepRelated}}},
+		{ID: "child", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DepParentChild}}},
+		{ID: "closed", Status: model.StatusClosed, Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DepBlocks}}},
+		{ID: "gone", Status: model.StatusTombstone, Dependencies: []*model.Dependency{{DependsOnID: "z", Type: model.DepBlocks}}},
+	}
+	var previous string
+	for _, reverse := range []bool{false, true} {
+		if reverse {
+			slices.Reverse(issues)
+		}
+		var out bytes.Buffer
+		if err := handleRobotCapacity(RobotContext{Issues: issues, Encoder: json.NewEncoder(&out)}, phaseThreeRobotHandlerConfig{}); err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Actionable   []string `json:"actionable"`
+			CriticalPath []string `json:"critical_path"`
+			Bottlenecks  []struct {
+				ID     string   `json:"id"`
+				Count  int      `json:"blocks_count"`
+				Blocks []string `json:"blocks"`
+			} `json:"bottlenecks"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(got.Actionable, []string{"a", "child", "related", "z"}) || !slices.Equal(got.CriticalPath, []string{"a", "b"}) {
+			t.Errorf("reverse=%v: wrong readiness or deterministic blocking path: %+v", reverse, got)
+		}
+		if len(got.Bottlenecks) != 2 {
+			t.Errorf("reverse=%v: wrong bottleneck count: %+v", reverse, got.Bottlenecks)
+		} else {
+			for i, want := range [][]string{{"a", "b", "c"}, {"z", "d", "e"}} {
+				b := got.Bottlenecks[i]
+				if b.ID != want[0] || b.Count != 2 || !slices.Equal(b.Blocks, want[1:]) {
+					t.Errorf("reverse=%v: bottleneck=%+v, want %v", reverse, b, want)
+				}
+			}
+		}
+		if reverse && out.String() != previous {
+			t.Error("capacity JSON changed with input ordering")
+		}
+		previous = out.String()
+	}
+}
 
 func TestRobotHistoryTimeoutFromMillisecondsChecked(t *testing.T) {
 	tests := []struct {

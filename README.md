@@ -3361,6 +3361,15 @@ These are heuristics, not a scheduler. For `--robot-forecast`, choose a base fro
 
 Velocity is estimated minutes closed in the last 30 days divided by 30, using the slowest nonzero matching-label velocity, then global velocity, then median/5 (with 60 min/day as a final fallback). ETA days = work minutes / (velocity × agents). Its confidence band is rule-based and has not been calibrated as a statistical probability. `--robot-capacity` sums serial work on the critical path with remaining parallel work divided by `--agents`; it does not assign issues to agents or account for their availability. Payloads expose the factors behind these estimates.
 
+Capacity reports apply the global issue selection and intersect it with
+`--capacity-label`, when supplied. The backlog includes selected unresolved work;
+`actionable` uses the same full-source readiness rules as planning, including
+missing prerequisites, inherited parent gates, lifecycle status and deferral.
+Direct bottlenecks count distinct blocking dependencies between selected
+unresolved issues. The reported critical path is the longest chain by issue count
+reachable from currently actionable work in that selected graph. Outside blockers
+still govern readiness, but their work is not included in the duration estimate.
+
 For a worked example, take two feature issues with depth 2 and descriptions of
 1,000 Unicode characters. One has an explicit 120-minute estimate; the other
 has none. The only other positive estimate is a 240-minute issue closed within

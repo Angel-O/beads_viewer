@@ -3521,25 +3521,32 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 	analyzer.SetNow(robotNow())
 	graphStats := analyzer.Analyze()
 
-	targetIssues := ctx.Issues
-	if cfg.CapacityLabel != nil && strings.TrimSpace(*cfg.CapacityLabel) != "" {
-		filtered := make([]model.Issue, 0)
-		for _, issue := range ctx.Issues {
+	targetIssues := make([]model.Issue, 0, len(ctx.Issues))
+	for _, issue := range ctx.Issues {
+		if !analyzer.IsCandidate(issue.ID) {
+			continue
+		}
+		if cfg.CapacityLabel != nil && strings.TrimSpace(*cfg.CapacityLabel) != "" {
+			matches := false
 			for _, label := range issue.Labels {
 				if label == *cfg.CapacityLabel {
-					filtered = append(filtered, issue)
+					matches = true
 					break
 				}
 			}
+			if !matches {
+				continue
+			}
 		}
-		targetIssues = filtered
+		targetIssues = append(targetIssues, issue)
 	}
+	sort.Slice(targetIssues, func(i, j int) bool { return targetIssues[i].ID < targetIssues[j].ID })
 
 	openIssues := make([]model.Issue, 0)
 	issueMap := make(map[string]model.Issue, len(targetIssues))
 	for _, issue := range targetIssues {
-		issueMap[issue.ID] = issue
-		if issue.Status != model.StatusClosed {
+		if !issue.Status.IsClosed() && !issue.Status.IsTombstone() {
+			issueMap[issue.ID] = issue
 			openIssues = append(openIssues, issue)
 		}
 	}
@@ -3558,15 +3565,18 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 	}
 
-	blockedBy := make(map[string][]string)
+	// Readiness retains full-source gates; the duration heuristic below uses
+	// only distinct blocking edges within the selected unresolved backlog.
+	readiness := analyzer.Readiness()
 	blocks := make(map[string][]string)
 	for _, issue := range openIssues {
+		seen := make(map[string]bool)
 		for _, dep := range issue.Dependencies {
-			if dep == nil {
+			if dep == nil || !dep.Type.IsBlocking() || seen[dep.DependsOnID] {
 				continue
 			}
 			if _, exists := issueMap[dep.DependsOnID]; exists {
-				blockedBy[issue.ID] = append(blockedBy[issue.ID], dep.DependsOnID)
+				seen[dep.DependsOnID] = true
 				blocks[dep.DependsOnID] = append(blocks[dep.DependsOnID], issue.ID)
 			}
 		}
@@ -3574,14 +3584,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 
 	actionable := make([]string, 0)
 	for _, issue := range openIssues {
-		hasOpenBlocker := false
-		for _, depID := range blockedBy[issue.ID] {
-			if dep, ok := issueMap[depID]; ok && dep.Status != model.StatusClosed {
-				hasOpenBlocker = true
-				break
-			}
-		}
-		if !hasOpenBlocker {
+		if readiness.Ready(issue.ID, now) {
 			actionable = append(actionable, issue.ID)
 		}
 	}
@@ -3599,9 +3602,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 			longestChain = append([]string(nil), path...)
 		}
 		for _, nextID := range blocks[id] {
-			if dep, ok := issueMap[nextID]; ok && dep.Status != model.StatusClosed {
-				dfs(nextID, path)
-			}
+			dfs(nextID, path)
 		}
 		visited[id] = false
 	}
@@ -3643,6 +3644,9 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 	}
 	sort.Slice(bottlenecks, func(i, j int) bool {
+		if bottlenecks[i].BlocksCount == bottlenecks[j].BlocksCount {
+			return bottlenecks[i].ID < bottlenecks[j].ID
+		}
 		return bottlenecks[i].BlocksCount > bottlenecks[j].BlocksCount
 	})
 	if len(bottlenecks) > 5 {
