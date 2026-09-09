@@ -10,8 +10,9 @@
   miss the first WAL update; the JSONL sidecar control passes.
 - [x] Implement exact companion matching and polling state with the existing
   stop/start generation guard; treat checkpoint removal as a source change.
-- [ ] Verify real WAL creation, repeated commits, sibling isolation, checkpoint
-  removal, Pages publication and foreground/background TUI refresh.
+- [x] Verify real WAL creation, repeated commits, sibling isolation, checkpoint
+  removal, Pages publication and foreground/background TUI refresh: five
+  focused tests and twelve subcases pass, with no skips.
 - [ ] Complete affected race tests, RCH build/vet and first-party formatting;
   record scanner limitations and all failures/skips.
 - [ ] Independent exact-commit replay and verifier closure.

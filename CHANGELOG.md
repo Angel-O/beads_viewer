@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`ccc166e9`](https://github.com/Dicklesworthstone/beads_viewer/commit/ccc166e9c43f200e3c8d5b26136a4c25a2c0ebe8).
+commits through [`cd100c66`](https://github.com/Dicklesworthstone/beads_viewer/commit/cd100c661a5bb7ce751b6e10a45c5af16af34ce5).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -32,7 +32,8 @@ the latest tag, including installer changes usable with already released binarie
 - SQLite live refresh now detects committed WAL updates in event and polling
   modes. TUI and watched Pages exports update while the writer remains open;
   checkpoint removal of the WAL is handled without reporting the database
-  itself as removed (`bv-oonu.21`).
+  itself as removed (`bv-oonu.21`;
+  [WAL refresh](https://github.com/Dicklesworthstone/beads_viewer/commit/cd100c661a5bb7ce751b6e10a45c5af16af34ce5)).
 - Live TUI refreshes and single-repository watched exports now use the source
   that successfully loaded at startup. A corrupt newer file can no longer
   redirect the watcher away from its valid fallback. Explicit JSONL and SQLite

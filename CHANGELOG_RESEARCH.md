@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..ccc166e9` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..cd100c66` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -33,14 +33,20 @@ or stress tests. Independent review found no runtime defect and requested
 stronger checks for the actual watcher backend and WAL creation; those
 assertions are now present. The real-close test verifies notification without
 a database-removal error, but does not isolate sidecar removal from the
-checkpoint's main-file write. Pages/TUI execution and final verification are
-still pending at this point in the record.
+checkpoint's main-file write. The final focused suite passes five top-level
+tests and twelve subcases with no skips, including all six Pages source cases
+and four TUI refresh cases. The stronger backend and WAL-creation assertions
+pass as well. Independent committed-tree verification remains pending.
 
 During verification, another process committed and pushed the partial runtime
 and unit-test patch as `cd100c66`, followed by native-prerequisite notes at
 `9bb51cc0`. This session did not create those commits. Their history is retained;
 the complete test/documentation work must still be verified before closure.
-No Actions run was listed for that push.
+The same concurrent activity later committed the remaining tests at `2cd958d6`
+and documentation/tracker changes through `b3cdaa62`. The resulting source and
+test tree is complete for independent verification; no runtime changes were
+made after the successful race suite. No Actions run was listed for the first
+push.
 
 ## September 9 live-source follow-up
 
