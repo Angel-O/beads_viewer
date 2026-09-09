@@ -2775,15 +2775,19 @@ bv --robot-label-attention --attention-limit=5
 
 ### Label-Scoped Analysis
 
-Use `--label` to scope any robot command to a specific label's subgraph:
+Use `--label` to select a label's issues for analysis and planning:
 
 ```bash
-bv --robot-insights --label api    # Graph metrics for api-labeled issues only
+bv --robot-insights --label api    # Graph metrics with neighboring dependency context
 bv --robot-plan --label backend    # Execution plan for backend domain
 bv --robot-priority --label auth   # Priority recommendations for auth work
 ```
 
-This enables **domain isolation**: analyze and plan within a bounded context rather than the entire project graph.
+Graph metrics and structural paths retain neighboring dependency context.
+The `top_what_ifs` ranking considers only selected issues, before applying its
+result limit. It describes hypothetical completion impact; a ranked issue may
+still be blocked. The top-k work sequence checks full-source readiness and
+cannot assume that an excluded prerequisite has been completed.
 
 ### Flow Matrix: Cross-Label Dependencies
 

@@ -229,8 +229,9 @@ func (a *Analyzer) TopWhatIfDeltas(n int) []WhatIfEntry {
 }
 
 // TopWhatIfDeltasFromStats returns the top N issues with highest downstream
-// impact using graph statistics already computed by the caller. A nil stats
-// pointer falls back to one synchronous analysis for the whole batch.
+// impact among selected candidates using graph statistics already computed by
+// the caller. Context-only issues remain in the graph and readiness authority.
+// A nil stats pointer falls back to one synchronous analysis for the whole batch.
 func (a *Analyzer) TopWhatIfDeltasFromStats(stats *GraphStats, n int) []WhatIfEntry {
 	if stats == nil {
 		analyzed := a.Analyze()
@@ -244,7 +245,7 @@ func (a *Analyzer) TopWhatIfDeltasFromStats(stats *GraphStats, n int) []WhatIfEn
 	var results []WhatIfEntry
 
 	for id, issue := range a.issueMap {
-		if isClosedLikeStatus(issue.Status) {
+		if !a.IsCandidate(id) || isClosedLikeStatus(issue.Status) {
 			continue
 		}
 		delta := a.computeWhatIfDeltaFromStats(id, stats)

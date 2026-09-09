@@ -425,6 +425,63 @@ func TestTopWhatIfDeltas_SkipsTombstone(t *testing.T) {
 	}
 }
 
+func TestTopWhatIfDeltas_CandidateScope(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "outer", Status: model.StatusOpen},
+		{ID: "a", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "outer", Type: model.DepBlocks}}},
+		{ID: "b", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "outer", Type: model.DepBlocks}}},
+		{ID: "a-leaf", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "a", Type: model.DepBlocks}}},
+		{ID: "b-leaf", Status: model.StatusOpen, Dependencies: []*model.Dependency{{DependsOnID: "b", Type: model.DepBlocks}}},
+	}
+	selected := map[string]bool{"outer": false, "a": true, "b": true, "a-leaf": true, "b-leaf": true}
+	for _, tc := range []struct {
+		name       string
+		candidates map[string]bool
+		limit      int
+		want       []string
+		potential  int
+	}{
+		{"unrestricted", nil, 10, []string{"outer", "a", "b"}, 5},
+		{"all", map[string]bool{"outer": true, "a": true, "b": true, "a-leaf": true, "b-leaf": true}, 10, []string{"outer", "a", "b"}, 5},
+		{"selected", selected, 10, []string{"a", "b"}, 4},
+		{"before_limit", selected, 1, []string{"a"}, 4},
+		{"default_limit", selected, 0, []string{"a", "b"}, 4},
+		{"negative_limit", selected, -1, []string{"a", "b"}, 4},
+		{"oversized_limit", selected, 100, []string{"a", "b"}, 4},
+		{"empty", map[string]bool{}, 10, nil, 0},
+		{"no_positive_gain", map[string]bool{"a-leaf": true}, 10, nil, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			analyzer := NewAnalyzer(issues)
+			analyzer.SetReadinessScope(model.NewReadinessIndex(issues), tc.candidates)
+			stats := analyzer.Analyze()
+			results := analyzer.TopWhatIfDeltasFromStats(&stats, tc.limit)
+			var ids []string
+			for _, result := range results {
+				ids = append(ids, result.IssueID)
+				if result.IssueID == "a" || result.IssueID == "b" {
+					if result.Delta.DirectUnblocks != 1 || result.Delta.TransitiveUnblocks != 1 || !reflect.DeepEqual(result.Delta.UnblockedIssueIDs, []string{result.IssueID + "-leaf"}) {
+						t.Errorf("hypothetical completion lost its real gain: %+v", result)
+					}
+				}
+			}
+			if !reflect.DeepEqual(ids, tc.want) {
+				t.Errorf("ranked candidates=%v, want %v", ids, tc.want)
+			}
+			topK := analyzer.generateTopKSet(5)
+			if topK.Status.Limited != tc.potential {
+				t.Errorf("potential candidates=%d, want %d", topK.Status.Limited, tc.potential)
+			}
+			if tc.candidates != nil && !tc.candidates["outer"] && len(topK.Items) != 0 {
+				t.Errorf("outside prerequisite was implicitly completed: %+v", topK)
+			}
+			if depth, ok := stats.CriticalPathValue("outer"); !ok || depth != 3 {
+				t.Errorf("candidate filtering changed graph context: outer depth=%v present=%v", depth, ok)
+			}
+		})
+	}
+}
+
 func TestWhatIfDeltaExcludesDeferredAndParentGatedCascade(t *testing.T) {
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	future := now.Add(time.Hour)

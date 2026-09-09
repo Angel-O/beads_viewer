@@ -458,12 +458,12 @@ func (a *Analyzer) generateTopKSet(k int) *TopKSetResult {
 		k = 5 // default
 	}
 
-	// Count the non-closed, non-deferred universe for status metadata. Candidate
-	// selection below is stricter: every pick must be actionable after the picks
-	// before it have been simulated as complete.
+	// Count the selected non-closed, non-deferred universe for status metadata.
+	// Selection below is stricter: every pick must be actionable after the picks
+	// before it have been simulated as complete. Graph context is not a candidate.
 	potentialCandidates := 0
 	for _, issue := range a.issueMap {
-		if !isClosedLikeStatus(issue.Status) && !issue.IsDeferredAt(a.now) {
+		if a.IsCandidate(issue.ID) && !isClosedLikeStatus(issue.Status) && !issue.IsDeferredAt(a.now) {
 			potentialCandidates++
 		}
 	}

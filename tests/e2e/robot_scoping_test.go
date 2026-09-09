@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 
 	_ "modernc.org/sqlite"
@@ -739,6 +740,91 @@ func TestRobotScoping_DependencyAuthority(t *testing.T) {
 	r := runScoped(t, bv, dir, "--robot-graph", "--label", "backend")
 	if r.exit != nil || !strings.Contains(r.stdout, `"web-1"`) {
 		t.Fatalf("exploratory graph lost dependency context: %v\n%s%s", r.exit, r.stdout, r.stderr)
+	}
+}
+
+func TestRobotScoping_InsightsCandidates(t *testing.T) {
+	bv := buildBvBinary(t)
+	if control := os.Getenv("BV_INSIGHTS_TEST_BINARY"); control != "" {
+		bv = control // Run the same assertions against a retained original binary.
+	}
+	dir := t.TempDir()
+	writeIssuesJSONL(t, dir, strings.Join([]string{
+		`{"id":"outer","title":"Outside prerequisite","status":"open","issue_type":"task","priority":0,"labels":["other"]}`,
+		`{"id":"a","title":"Selected A","status":"open","issue_type":"task","priority":0,"labels":["focus"],"dependencies":[{"depends_on_id":"outer","type":"blocks"}]}`,
+		`{"id":"b","title":"Selected B","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"outer","type":"blocks"}]}`,
+		`{"id":"a-leaf","title":"A follow-up","status":"open","issue_type":"task","priority":0,"labels":["focus"],"dependencies":[{"depends_on_id":"a","type":"blocks"}]}`,
+		`{"id":"b-leaf","title":"B follow-up","status":"open","issue_type":"task","priority":1,"labels":["focus"],"dependencies":[{"depends_on_id":"b","type":"blocks"}]}`,
+	}, "\n")+"\n")
+	recipe := filepath.Join(dir, "selected.yaml")
+	if err := os.WriteFile(recipe, []byte("name: selected\nfilters:\n  priority: [0]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		flags      []string
+		want       []string
+		potential  int
+		graphNodes int
+	}{
+		{"unscoped", nil, []string{"outer", "a", "b"}, 5, 5},
+		{"label", []string{"--label", "focus"}, []string{"a", "b"}, 4, 5},
+		{"label_recipe", []string{"--label", "focus", "--recipe", recipe}, []string{"a"}, 2, 2},
+		{"unmatched", []string{"--label", "absent"}, nil, 0, 0},
+		{"actionable_intersection", []string{"--label", "focus", "--recipe", "actionable"}, nil, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"--robot-insights", "--force-full-analysis"}, tc.flags...)
+			r := runScoped(t, bv, dir, args...)
+			t.Logf("binary=%q argv=%q exit=%v stderr=%s stdout=%s", bv, args, r.exit, r.stderr, r.stdout)
+			if r.exit != nil {
+				t.Fatalf("insights failed: %v", r.exit)
+			}
+			var payload struct {
+				TopWhatIfs []analysis.WhatIfEntry    `json:"top_what_ifs"`
+				Advanced   analysis.AdvancedInsights `json:"advanced_insights"`
+				FullStats  struct {
+					PageRank map[string]float64 `json:"pagerank"`
+				} `json:"full_stats"`
+			}
+			if err := json.Unmarshal([]byte(r.stdout), &payload); err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, item := range payload.TopWhatIfs {
+				ids = append(ids, item.IssueID)
+				if item.IssueID == "a" || item.IssueID == "b" {
+					if item.Delta.DirectUnblocks != 1 || item.Delta.TransitiveUnblocks != 1 || !slices.Equal(item.Delta.UnblockedIssueIDs, []string{item.IssueID + "-leaf"}) {
+						t.Errorf("incorrect hypothetical gain: %+v", item)
+					}
+				}
+			}
+			if !slices.Equal(ids, tc.want) {
+				t.Errorf("hypothetical candidates=%v, want %v", ids, tc.want)
+			}
+			topK := payload.Advanced.TopKSet
+			if topK == nil {
+				t.Fatal("missing top-k result")
+			}
+			if topK.Status.Limited != tc.potential {
+				t.Errorf("potential candidates=%d, want %d", topK.Status.Limited, tc.potential)
+			}
+			if tc.name != "unscoped" && len(topK.Items) != 0 {
+				t.Errorf("outside prerequisite lost from readiness authority: %+v", topK)
+			}
+			if len(payload.FullStats.PageRank) != tc.graphNodes {
+				t.Errorf("metric nodes=%d, want %d", len(payload.FullStats.PageRank), tc.graphNodes)
+			}
+			if tc.name == "label" {
+				if payload.FullStats.PageRank["outer"] <= 0 {
+					t.Error("label metrics lost outside prerequisite")
+				}
+				paths := payload.Advanced.KPaths
+				if paths == nil || len(paths.Paths) == 0 || !slices.Contains(paths.Paths[0].IssueIDs, "outer") {
+					t.Errorf("label paths lost dependency context: %+v", paths)
+				}
+			}
+		})
 	}
 }
 
