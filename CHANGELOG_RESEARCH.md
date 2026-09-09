@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..ab144521` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..4abf4bec` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,37 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`9de473f4` applies candidate selection to forecast output and requires a single
+target to pass the same label/sprint filters (`bv-xbvo.13`). Estimate calculation
+still uses the loaded graph, median and closure context. Blocked work remains
+forecastable. Seven of eleven new handler cases and five of twelve new CLI cases
+fail before the repair; after it, all 125 command-package tests and eleven
+forecast/capacity/scoping CLI tests pass, with 142 and 80 subcases respectively
+and zero skips. Build/vet and first-party formatting pass. UBS exits 1 with the
+same existing cancellation/invariant-panic findings and scanner-workspace
+warning described below; no suppression was added.
+
+A full disk interrupted the Beads JSONL export after its database mutations
+succeeded. `4abf4bec` records the successful export after relocating this session's
+reproducible capacity binary to runtime storage, preserving its SHA-256 and an
+original-path symlink. No source, logs or original f24e2df7 evidence were removed.
+The relocated capacity binary and new forecast binary are on volatile runtime
+storage; their exact source revisions and durable logs remain available for
+rebuilding after reboot. Disk pressure is not fully resolved.
+
+Fresh solo replay at clean `4abf4bec` passes all eleven handler cases and all
+eleven CLI tests; the original binary still fails five of twelve CLI cases.
+Four complete JSON responses (all, single, agent-scaled and forecast-label)
+remain identical. The global-label reproduction removes only the excluded
+forecast and its aggregate summary, preserving the selected issue's estimate.
+The Go 1.25.5 binary has SHA-256
+`efdb1d0cbd5d6bccc9ce3b0dcfeb82b29d4f3dde93ce0d2d127addf610f49742`
+and `vcs.modified=false`. Durable evidence is in
+`/data/tmp/bv-forecast-scope-20260909-ps070jwk`; the binary is
+`/run/user/1000/bv-preserved-builds-20260909/bv-forecast`.
+This is bounded fixture verification by the author, not independent review
+or completion of the original performance, tracker, native or final gates.
 
 `ab144521` repairs the capacity handler's separate readiness calculation
 (`bv-xbvo.12`). Global candidate scope now intersects the capacity label, while

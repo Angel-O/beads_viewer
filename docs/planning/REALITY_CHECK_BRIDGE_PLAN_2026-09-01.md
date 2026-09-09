@@ -1,5 +1,24 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Forecast selection and filter intersections — 2026-09-09
+
+`bv-xbvo.13` repairs forecast scope at `9de473f4`; `4abf4bec` records the
+recovered Beads export after a full-disk failure.
+
+- [x] Retain seven original handler failures and five original CLI failures.
+- [x] Apply candidate, label and sprint intersections to all/single outputs;
+  retain dependency/closure inputs and forecast selected blocked work.
+- [x] Pass 125 command-package and eleven forecast/capacity/scoping CLI tests,
+  zero skips; build/vet and first-party formatting pass, UBS findings retained.
+- [x] Fresh solo clean-revision replay passes; original negative remains.
+  Four complete JSON controls preserve estimates, output and agent scaling.
+- [x] Recover and commit Beads export, update user documentation and evidence.
+- [ ] Original performance/tracker/native/final proofs remain open. Disk pressure
+  remains; reproducible executables moved to runtime storage are volatile.
+
+Evidence: `/data/tmp/bv-forecast-scope-20260909-ps070jwk`; clean Go 1.25.5
+binary SHA-256 `efdb1d0c…`, revision `4abf4bec`, `vcs.modified=false`.
+
 ## Capacity readiness and selected backlog — 2026-09-09
 
 `bv-xbvo.12` connects capacity to the shared readiness authority and global

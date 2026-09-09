@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`ab144521`](https://github.com/Dicklesworthstone/beads_viewer/commit/ab144521b77114c45341733d5179009962cfb193).
+commits through [`4abf4bec`](https://github.com/Dicklesworthstone/beads_viewer/commit/4abf4bec7fac76dc0d9abb3443bd1c2a122b2a64).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -95,6 +95,11 @@ the latest tag, including installer changes usable with already released binarie
   duplicate pairs; result ordering is stable. The duration calculation remains
   a heuristic (`bv-xbvo.12`;
   [capacity repair](https://github.com/Dicklesworthstone/beads_viewer/commit/ab144521b77114c45341733d5179009962cfb193)).
+- Forecasts now honor global selection intersected with the forecast label
+  and sprint. A single requested issue must also pass these filters; an
+  excluded ID returns an error. Selected estimates retain their loaded
+  dependency and closure context (`bv-xbvo.13`;
+  [forecast scope repair](https://github.com/Dicklesworthstone/beads_viewer/commit/9de473f47d66ec36c2103af928915f9fef5204b2)).
 
 ### Dependency inspection and documentation
 
