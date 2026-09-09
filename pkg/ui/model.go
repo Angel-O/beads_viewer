@@ -1225,6 +1225,8 @@ type Model struct {
 	scopeMatchScopeID     string
 	scopePickerOrigin     focus
 	scopePickerMoveIssue  string
+	// scopePickerMoveIssues retains marked Scope members while choosing a destination.
+	scopePickerMoveIssues []string
 	// scopeSessionFocus is the last focused pane in the retained Scope screen.
 	// Normal view switches suspend this session; they do not reload it.
 	scopeSessionFocus       focus

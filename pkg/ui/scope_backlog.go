@@ -3110,7 +3110,11 @@ func (m *Model) openScopePicker(moveIssue string) tea.Cmd {
 // openMoveDestinationPicker is intentionally separate from normal Scope
 // session entry. Move setup may load the destination catalog, but must not
 // reset the retained member or backlog panes.
-func (m *Model) openMoveDestinationPicker(moveIssue string) tea.Cmd {
+func (m *Model) openMoveDestinationPicker(moveIssue string, moveIssues ...[]string) tea.Cmd {
+	m.scopePickerMoveIssues = nil
+	if len(moveIssues) > 0 {
+		m.scopePickerMoveIssues = append([]string(nil), moveIssues[0]...)
+	}
 	if !m.scopeMoveStateSaved {
 		m.scopeMovePicker = cloneScopePicker(m.scopePicker)
 		m.scopeMoveCatalog = append([]ScopeInfo(nil), m.scopeCatalog...)
@@ -3129,7 +3133,9 @@ func (m *Model) openMoveDestinationPicker(moveIssue string) tea.Cmd {
 		m.scopeMoveStateSaved = true
 	}
 	m.scopeMoveOriginFocus = m.focused
-	m.scopePickerOrigin = m.focused
+	if len(moveIssues) == 0 {
+		m.scopePickerOrigin = m.focused
+	}
 	m.scopePickerMoveIssue = moveIssue
 	m.scopePicker.SetMoveTarget(m.scopeMoveTargetTitle(moveIssue))
 	m.scopePicker.SetScopes(m.scopeCatalog)
@@ -3214,6 +3220,7 @@ func (m *Model) applyScopePickerDetails(details ScopeDetails) {
 
 func (m *Model) closeScopePicker() {
 	if m.scopePickerMoveIssue != "" {
+		restoreScopeSession := len(m.scopePickerMoveIssues) > 0 && m.scopeMoveOriginFocus == focusScopePicker
 		if m.scopeMoveStateSaved {
 			m.scopePicker = m.scopeMovePicker
 			m.scopeCatalog = m.scopeMoveCatalog
@@ -3229,10 +3236,15 @@ func (m *Model) closeScopePicker() {
 			m.scopeMoveBacklogLoaded = false
 			m.scopeMoveStateSaved = false
 		}
-		m.showScopePicker = false
+		m.showScopePicker = restoreScopeSession
 		m.scopePickerMoveIssue = ""
+		m.scopePickerMoveIssues = nil
 		m.scopePicker.SetMoveTarget("")
-		m.focused = m.scopeMoveOriginFocus
+		if restoreScopeSession {
+			m.focused = focusScopePicker
+		} else {
+			m.focused = m.scopeMoveOriginFocus
+		}
 		return
 	}
 	m.endScopeFilterEditing()
@@ -3469,6 +3481,10 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if m.scopePicker.MemberFocused() {
 			return m, m.beginScopeMatchMutation("remove")
 		}
+	case "m":
+		if m.scopePicker.MemberFocused() {
+			return m, m.startScopeMutation("move")
+		}
 	case "enter":
 		if m.scopePicker.MemberFocused() {
 			return m, nil
@@ -3485,17 +3501,21 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 				m.statusMsg, m.statusIsError = "No active scope; press B to activate one", true
 				return m, nil
 			}
-			if m.runtimeServices.Scopes.Mutate == nil && m.runtimeServices.Scopes.Move == nil {
+			moveIDs := []string{m.scopePickerMoveIssue}
+			if len(m.scopePickerMoveIssues) > 0 {
+				moveIDs = append([]string(nil), m.scopePickerMoveIssues...)
+			}
+			if m.runtimeServices.Scopes.Mutate == nil && (len(moveIDs) > 1 || m.runtimeServices.Scopes.Move == nil) {
 				m.statusMsg, m.statusIsError = "Scope move is unavailable", true
 				return m, nil
 			}
-			issueID, target, source := m.scopePickerMoveIssue, selected.ID, m.activeScope.ID
-			mutation := ScopeMutation{Kind: ScopeMutationMove, IssueIDs: []string{issueID}, SourceScopeID: source, TargetScopeID: target}
+			target, source := selected.ID, m.activeScope.ID
+			mutation := ScopeMutation{Kind: ScopeMutationMove, IssueIDs: moveIDs, SourceScopeID: source, TargetScopeID: target}
 			return m, runScopeMutationCmd(mutation, true, func(ctx context.Context) error {
 				if m.runtimeServices.Scopes.Mutate != nil {
 					return m.runtimeServices.Scopes.Mutate(ctx, mutation)
 				}
-				return m.runtimeServices.Scopes.Move(ctx, issueID, source, target)
+				return m.runtimeServices.Scopes.Move(ctx, moveIDs[0], source, target)
 			})
 		}
 		if selected.Active {
@@ -3703,6 +3723,14 @@ func (m *Model) startScopeMutation(action string) tea.Cmd {
 	if m.activeScope == nil {
 		m.statusMsg, m.statusIsError = "No active scope; press B to activate one", true
 		return nil
+	}
+	if action == "move" && m.focused == focusScopePicker && m.scopePicker.MemberFocused() {
+		ids := m.scopePicker.MarkedMemberIDs()
+		if len(ids) == 0 {
+			m.statusMsg, m.statusIsError = "No marked members", true
+			return nil
+		}
+		return m.openMoveDestinationPicker(fmt.Sprintf("%d marked beads", len(ids)), ids)
 	}
 	if (m.isBacklogView || m.focused == focusGlobalIssues) && action == "add" {
 		if ids := m.backlog.MarkedIDs(); len(ids) > 0 {
