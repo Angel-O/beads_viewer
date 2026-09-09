@@ -1,5 +1,41 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Dashboard follow-through — 2026-09-09
+
+`bv-oonu.12` repairs a concrete downstream gap after `55ec82b8` expanded valid
+workflow vocabulary: SQL overview lists and browser graphs omitted conditional
+and wait dependencies despite correct Go-derived counts. At `1c768eac`, both
+consumers retain all four blocking forms, active lists exclude either resolved
+endpoint, and h/l navigate prerequisite/dependent in the correct direction.
+
+- [x] Reproduce the four-count/two-ID mismatch in the original real Chromium
+  bundle; preserve that negative result and the seven-issue JSONL fixture.
+- [x] Cover eight dependency types across five endpoint lifecycle pairs through
+  actual analyzer results and exported SQLite, including informational controls.
+- [x] Connect existing SQL, detail navigation and both browser graph consumers.
+- [x] Run build/vet, first-party formatting, 328 full export-package tests and
+  all 35 page-export CLI tests. Retain the two existing export-suite skips.
+- [x] Review UBS findings without suppression. Its critical findings confuse
+  HITS authority/browser session checks with secrets and miss variables declared
+  in comma-separated declarations; the complete scanner is not clean.
+- [x] Complete the fresh solo acceptance replay at exact `1c768eac`: clean
+  binary export, all 40 SQL cases and real Chromium positive pass; the original
+  bundle still fails the unchanged ID-list assertion. Close only `bv-oonu.12`.
+- [ ] S5: prove transactional lifecycle eligibility, beyond the isolated
+  released br 0.5.12 routing suite that now passes. Global br remains 0.5.11;
+  no external tracker working tree or installation was changed.
+- [ ] P1: recover the original baseline bytes/source, then execute the unchanged
+  full alternating matrix. Cass recovered CLI hash `f7b66ad5…` and UI hash
+  `8de273b3…`, not the executables or their complete source tree.
+- [ ] Finish existing native-platform/Windows first-start and final acceptance
+  tasks. The dashboard repair does not establish those results.
+
+Evidence: `/data/tmp/bv-continuation-20260908-o5jLRf`. The first SQL test setup
+omitted analyzer metrics and produced zero counts; supplying the real analysis
+fixed that setup without weakening any assertion. Its failed runs remain
+separate from the valid original-browser counterexample. Beads retain the
+granular execution record; no additional reporting framework was introduced.
+
 ## Implementation follow-through — 2026-09-08
 
 The assessment below is the pre-fix baseline. P6 now consumes the existing

@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..b6e21d22` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..1c768eac` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -9,6 +9,40 @@ Evidence order: Git diffs and tag identities, live GitHub Release metadata,
 checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
+
+## September 9 dashboard follow-up
+
+The nine-commit window `b6e21d22..1c768eac` contains two runtime changes:
+`55ec82b8` preserves producer workflow vocabulary and classifies blocking types;
+`1c768eac` connects those types to the static dashboard's SQL and JavaScript
+consumers and fixes reversed dependency keyboard navigation. `8ab18310` corrects
+the test setup for the documented unset insight limit. The other six commits
+(`953c831d`, `8477a01f`, `5003be9d`, `768a1db9`, `cf6fe649`, `3dc66c65`)
+record earlier delivery, research and remaining proof. They add no runtime
+capability. Source diffs and the existing Beads evidence establish these scopes.
+
+The dashboard counterexample exports seven real JSONL issues into SQLite:
+four active blocking dependents, one closed dependent and one informational
+reference to a custom-status prerequisite. Original `55ec82b8` reports four
+dependents but lists only two; Chromium fails the exact expected-ID assertion.
+The repaired bundle includes all four, keeps only the informational reference
+ready, preserves historical graph edges, and executes h/l navigation correctly.
+The SQL regression covers eight relationship types and five endpoint lifecycle
+pairs. Its first setup omitted analyzer metrics; that setup error and the first
+failed full suite are retained, not counted as product counterexamples.
+
+The final full export package has 328 top-level passes and two existing skips
+(live GitHub Pages deployment and a Windows-specific path test). All 35 selected
+page-export CLI tests pass. Build/vet and first-party formatting pass; UBS exits
+1 on reviewed heuristics, so this is not a clean scanner claim. Evidence is in
+`/data/tmp/bv-continuation-20260908-o5jLRf`; `bv-oonu.12` records the fresh solo
+acceptance replay and its limits. No release, native-platform or complete
+performance-matrix result follows from this repair. Fresh GitHub metadata still
+reports published v0.24.1 at `2026-09-08T00:28:07Z`, neither draft nor prerelease;
+Actions remain disabled. This extends the existing research memo only.
+The changelog validator passes structural checks with the existing older-history
+bare-hash warning. The documentation-only UBS attempt exits 3 because Markdown
+is unsupported; it checks nothing and is not counted as a pass.
 
 ## September 8 Flow follow-up
 

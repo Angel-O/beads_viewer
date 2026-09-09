@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`b6e21d22`](https://github.com/Dicklesworthstone/beads_viewer/commit/b6e21d22f6098a78553aed2a365526bf98730fd6).
+commits through [`1c768eac`](https://github.com/Dicklesworthstone/beads_viewer/commit/1c768eacdfcec4937c018b3c1e5febb7091cfc7c).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -14,7 +14,7 @@ the latest tag, including installer changes usable with already released binarie
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
-| [Unreleased] | — | Commits after v0.24.1 | Directed Flow drilldowns with live endpoint details, documentation corrections, and the Windows PowerShell download-progress fix. |
+| [Unreleased] | — | Commits after v0.24.1 | Workflow status and dependency support, directed Flow inspection, and installer/documentation repairs. |
 | [`v0.24.1`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1) | 2026-09-08 | GitHub Release | Reuse loaded source hashes and avoid waiting for a busy analysis-cache writer. |
 | [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
@@ -26,6 +26,21 @@ the latest tag, including installer changes usable with already released binarie
 ---
 
 ## [Unreleased]
+
+### Workflow data and static dashboards
+
+- SQLite and JSONL loading now retain nonblank custom workflow statuses and
+  relationship types. `conditional-blocks` and `waits-for` affect blocking
+  analysis; custom statuses do not automatically become claimable
+  ([loader change](https://github.com/Dicklesworthstone/beads_viewer/commit/55ec82b8ceb099222de99e2fdbe23329c91e9bd1)).
+- Static dashboards now include both blocking variants and legacy untyped
+  dependencies in their relationship lists and browser graphs. Active ID lists
+  agree with blocker counts, including after either endpoint closes, so blocked
+  work no longer appears ready because its relationship type was omitted.
+- In issue details, `h` now navigates to a prerequisite and `l` to a dependent,
+  with stable ordering. The export and real Chromium regressions are tracked by
+  `bv-oonu.12`
+  ([dashboard repair](https://github.com/Dicklesworthstone/beads_viewer/commit/1c768eacdfcec4937c018b3c1e5febb7091cfc7c)).
 
 ### Dependency inspection and documentation
 
