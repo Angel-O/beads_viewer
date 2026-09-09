@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..75be8362` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..5efb1daf` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,46 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`5efb1daf` fixes dashboard candidate selection before graph optimization
+(`bv-oonu.19`). The original six-issue browser fixture chooses a missing
+prerequisite, then inflates the real root's gain from one to two. Optional
+candidate masks in the Rust algorithms preserve unresolved dependency context;
+the dashboard supplies visible issues for greedy picks and full-source ready
+issues for cascade suggestions. Actionable lookup now reads the same exported
+readiness predicate as the Ready filter. The README distinguishes potential
+graph unblocks from live tracker claims.
+
+Fresh solo replay of the clean Go 1.25.5 binary at this revision passes eleven
+real browser journeys and still rejects both original suggestion/readiness
+exports. All 231 Rust and 452 command/export Go tests pass; the two established
+live-Pages/Windows-only Go skips remain. Two isolated WASM builds agree, and a
+third build at the committed revision verifies both shipped assets against the
+manifest. The installed Rust compiler is shared by these builds; this is not
+a fresh run of the two-physical-Rust-home shell suite. The unchanged Node block
+from that suite verifies five graph fixtures and twelve metrics across all
+three modules. Another 240 exact comparisons with the original engine preserve
+unrestricted and all-candidate top-k/what-if behavior. No golden was regenerated.
+
+Initial concurrent browser runs had cache, navigation and CDP failures under
+disk pressure. A subsequent scratch directory on `/dev/shm` hit a user quota;
+global free space did not imply writable quota. Sequential runs in the user's
+runtime directory pass with unchanged assertions and deadlines. Navigation/CDP
+root causes are not established by those passes. The first readiness-negative
+attempt also used a nonexistent bundle path; the corrected run demonstrates
+the semantic failure. All these failures remain recorded. UBS remains nonzero
+with 63 critical heuristic findings and 336 warnings, including generated
+null-prototype literals, browser comparisons and declaration parsing. No
+suppression or clean-scanner claim is made.
+
+Persistent evidence: `/data/tmp/bv-pick-scope-20260909-q49x1l5x`, including six
+replayed bundles, browser captures and `replay-wasm-proof/receipt.json`.
+The clean binary's SHA-256 is `4e791f0285aa98ed63dbdb7567aaaea3291cc53cbb88c78df3c8e95931e005a4`.
+Build/vet, syntax, first-party formatting and vendor checks pass. `b0d5f189`
+and `80a2d47c` recorded the preceding graph-export evidence and corrected its
+tracker checklist formatting. Latest release metadata remains v0.24.1; no new
+release, complete remote-suite, original-baseline, transactional-claim or native
+platform proof is implied.
 
 `75be8362` connects HTML/SVG/PNG graph exports to the existing recipe scope
 pipeline (`bv-oonu.18`). The original actionable export included blocked and

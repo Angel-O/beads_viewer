@@ -1,5 +1,29 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Actual-issue graph suggestions — 2026-09-09
+
+`bv-oonu.19` fixes missing prerequisites selected as dashboard work and the
+inflated gains caused by assuming their completion (`5efb1daf`).
+
+- [x] Preserve original real-browser suggestion and readiness failures.
+- [x] Restrict direct choices before optimization while retaining dependency
+  context; use full-source readiness for cascade suggestions/actionable lookup.
+- [x] Verify mask/limit boundaries, deterministic choices and unresolved gates.
+- [x] Rebuild actual shipped WASM/glue reproducibly; verify five metric fixtures
+  and 240 exact unrestricted/all-candidate comparisons with the original engine.
+- [x] Fresh solo replay: eleven browser journeys, 231 Rust tests and 452 Go
+  passes; two existing Go skips. Original exports still fail new assertions.
+- [x] Preserve concurrent browser failures, the incorrect initial fixture path
+  and the `/dev/shm` quota error; sequential runtime-directory checks pass with
+  unchanged assertions/deadlines. Persist final captures and bundles on disk.
+- [x] Build/vet, first-party formatting, JS syntax and vendor hashes pass;
+  UBS findings remain unsuppressed. README/changelog and Beads TODO updated.
+- [ ] Full final, original-baseline, transactional-claim and native proofs remain
+  open. This repair does not close them or establish browser timeout root causes.
+
+Evidence: `/data/tmp/bv-pick-scope-20260909-q49x1l5x`; clean binary SHA-256
+`4e791f02…`, Go 1.25.5, `vcs.modified=false`. Shipped WASM SHA-256 `f4038539…`.
+
 ## Recipe-scoped graph exports — 2026-09-09
 
 `bv-oonu.18` connects HTML/SVG/PNG graph export to existing recipe selection

@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`75be8362`](https://github.com/Dicklesworthstone/beads_viewer/commit/75be8362f67709e74266f709644b7b4465b706c7).
+commits through [`5efb1daf`](https://github.com/Dicklesworthstone/beads_viewer/commit/5efb1daf3f3f61fe2122ba4c5033deb438b4db2f).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -77,6 +77,12 @@ the latest tag, including installer changes usable with already released binarie
   Actionable selection retains full-source prerequisite checks; an empty
   recipe selection reports an error without creating a graph (`bv-oonu.18`;
   [graph recipe repair](https://github.com/Dicklesworthstone/beads_viewer/commit/75be8362f67709e74266f709644b7b4465b706c7)).
+- Dashboard Priority Picks now restrict candidates before optimizing gains.
+  Missing issue IDs cannot be selected or implicitly completed to inflate
+  another issue's gain. Cascade suggestions and actionable lookup use the
+  exported full-source readiness snapshot. The rebuilt WASM preserves results
+  for callers without candidate restrictions (`bv-oonu.19`;
+  [candidate selection repair](https://github.com/Dicklesworthstone/beads_viewer/commit/5efb1daf3f3f61fe2122ba4c5033deb438b4db2f)).
 
 ### Dependency inspection and documentation
 
