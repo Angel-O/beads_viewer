@@ -45,9 +45,17 @@ checks are necessary to exercise the repaired path. See the upstream
 [race build](https://github.com/goccy/go-json/blob/v0.10.6/internal/decoder/compile_race.go)
 and [concurrent-decoding crash report](https://github.com/goccy/go-json/issues/474).
 
+Each patched module is kept as a complete Go module under `third_party/`
+(`chroma`, `glamour`, `reflow`, `go-json`: the upstream `go.mod` plus the
+package set this repository imports, with the patches applied), and `go.mod`
+carries a `replace` directive from the upstream module path to that directory.
+`go mod vendor` therefore copies the patched sources and cannot revert them;
+`tests/e2e/third_party_vendor_test.go` fails when `vendor/` and `third_party/`
+disagree. Edit the `third_party/` copy, never `vendor/`, then run
+`go mod vendor`. `docs/RELEASING.md` describes upgrading a patched module.
+
 These patches apply to builds using this checkout's vendor directory,
-including the Nix build. `go mod vendor` replaces them, so review and reapply
-them until upstream versions include the fixes. Version-suffixed
+including the Nix build. Version-suffixed
 [`go install`](https://go.dev/ref/mod#go-install) ignores vendored dependencies;
 those installations include neither these optimizations nor the decoder-cache
 safety repair. Build from this checkout with vendoring to include the repair.

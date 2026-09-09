@@ -83,3 +83,11 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/alecthomas/chroma/v2 => ./third_party/chroma
+
+replace github.com/charmbracelet/glamour => ./third_party/glamour
+
+replace github.com/muesli/reflow => ./third_party/reflow
+
+replace github.com/goccy/go-json => ./third_party/go-json

@@ -434,6 +434,11 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		t.Logf("stale claim argv%q exit%v out%s", command.Argv, err, out)
 		if err == nil {
+			// br refuses `--claim` on a closed issue from 0.5.12 (beads_rust#497);
+			// older releases reopen it. Only the current contract is a failure.
+			if version := trackerVersion(t, br); !versionAtLeast(version, 0, 5, 12) {
+				t.Skipf("installed br %s predates the closed-claim refusal (beads_rust#497, v0.5.12); fixture reopened, not a bv defect", version)
+			}
 			t.Fatal("installed tracker accepted claim of now-closed issue")
 		}
 		var issues []model.Issue
@@ -441,6 +446,62 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 			t.Fatal("stale claim changed closed fixture")
 		}
 	})
+}
+
+// trackerVersion returns the installed tracker's version string ("0.5.12") from
+// `br --version` ("br 0.5.12").
+func trackerVersion(t *testing.T, br string) string {
+	t.Helper()
+	out, err := exec.Command(br, "--version").Output()
+	if err != nil {
+		t.Fatalf("br --version: %v", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		t.Fatalf("br --version printed nothing")
+	}
+	return fields[len(fields)-1]
+}
+
+// versionAtLeast reports whether a dotted "major.minor.patch" version (an
+// optional leading "v" and any "-pre" suffix are ignored) is at least the
+// given one. Unparseable components count as zero, so a malformed version is
+// treated as old and produces a skip rather than a false failure.
+func versionAtLeast(version string, major, minor, patch int) bool {
+	var got [3]int
+	version = strings.TrimPrefix(strings.SplitN(version, "-", 2)[0], "v")
+	for i, part := range strings.SplitN(version, ".", 3) {
+		fmt.Sscanf(part, "%d", &got[i])
+	}
+	want := [3]int{major, minor, patch}
+	for i := range want {
+		if got[i] != want[i] {
+			return got[i] > want[i]
+		}
+	}
+	return true
+}
+
+func TestVersionAtLeast(t *testing.T) {
+	cases := []struct {
+		version string
+		want    bool
+	}{
+		{"0.5.12", true}, {"0.5.13", true}, {"0.6.0", true}, {"1.0.0", true},
+		{"0.5.12-rc1", true}, {"v0.5.12", true}, {"v1.0.0", true},
+		{"0.5.11", false}, {"v0.5.11", false}, {"0.5.2", false}, {"0.4.99", false}, {"", false}, {"garbage", false},
+	}
+	for _, tc := range cases {
+		if got := versionAtLeast(tc.version, 0, 5, 12); got != tc.want {
+			t.Errorf("versionAtLeast(%q, 0.5.12) = %v, want %v", tc.version, got, tc.want)
+		}
+	}
+	if br, err := exec.LookPath("br"); err == nil {
+		version := trackerVersion(t, br)
+		if !regexp.MustCompile(`^v?\d+\.\d+\.\d+`).MatchString(version) {
+			t.Fatalf("trackerVersion(%s) = %q, want major.minor.patch", br, version)
+		}
+	}
 }
 
 // Scoping flags (--label, --recipe, --repo, --as-of) must be honoured by every
