@@ -597,6 +597,74 @@ func TestRepositoryScopeProjectsDerivedViews(t *testing.T) {
 	}
 }
 
+func TestRepositoryPickerApplyFromTreeRefreshesProjection(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		workspace bool
+		firstID   string
+		secondID  string
+	}{
+		{name: "Hub", firstID: "ctx:first", secondID: "ctx:second"},
+		{name: "workspace", workspace: true, firstID: "first", secondID: "second"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := []model.Issue{
+				{ID: "first-issue", Title: "First context issue", Status: model.StatusOpen},
+				{ID: "second-issue", Title: "Second context issue", Status: model.StatusOpen},
+			}
+			if tt.workspace {
+				issues[0].SourceRepo = tt.firstID
+				issues[1].SourceRepo = tt.secondID
+			} else {
+				issues[0].Labels = []string{tt.firstID}
+				issues[1].Labels = []string{tt.secondID}
+			}
+			m := NewModel(issues, nil, "")
+			m.width, m.height = 120, 30
+			if tt.workspace {
+				m.EnableWorkspaceMode(WorkspaceInfo{Enabled: true, RepoCount: 2, RepoPrefixes: []string{tt.firstID, tt.secondID}})
+			} else {
+				m.hubRepositoryMode = true
+				m.repositoryCatalog = hubScopeCatalog(tt.firstID, tt.secondID)
+			}
+
+			update := func(key string) {
+				updated, _ := m.Update(keyMsg(key))
+				m = updated.(*Model)
+			}
+			update("w")
+			if tt.workspace {
+				m.repoPicker.SetActiveRepos(map[string]bool{tt.firstID: true})
+			} else {
+				m.repoPicker.SetHubScope(mustSelectedContextsScope(t, tt.firstID))
+			}
+			update("enter")
+			update("E")
+			if m.focused != focusTree || !strings.Contains(m.tree.View(), "First context issue") || strings.Contains(m.tree.View(), "Second context issue") {
+				t.Fatalf("initial tree projection: focus=%v view=\n%s", m.focused, m.tree.View())
+			}
+
+			update("w")
+			if !m.showRepoPicker || m.repoPickerOrigin != focusTree {
+				t.Fatalf("tree picker setup: shown=%v origin=%v", m.showRepoPicker, m.repoPickerOrigin)
+			}
+			if tt.workspace {
+				m.repoPicker.SetActiveRepos(map[string]bool{tt.firstID: true, tt.secondID: true})
+			} else {
+				m.repoPicker.SetHubScope(mustSelectedContextsScope(t, tt.firstID, tt.secondID))
+			}
+			update("enter")
+
+			if m.showRepoPicker || m.focused != focusTree {
+				t.Fatalf("tree picker apply: shown=%v focus=%v", m.showRepoPicker, m.focused)
+			}
+			if view := m.tree.View(); !strings.Contains(view, "First context issue") || !strings.Contains(view, "Second context issue") {
+				t.Fatalf("tree projection was not refreshed after apply:\n%s", view)
+			}
+		})
+	}
+}
+
 func containsAll(value string, needles ...string) bool {
 	for _, needle := range needles {
 		if !strings.Contains(value, needle) {

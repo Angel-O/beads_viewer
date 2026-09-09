@@ -7479,19 +7479,21 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 		}
 		m.statusIsError = false
 		m.setHubRepositoryScope(selected, includeContextless)
-		m.showRepoPicker = false
-		m.focused = focusAfterApply
-		return m
-	}
-	if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
-		m.statusMsg = "Context: all"
 	} else {
-		m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+		if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
+			m.statusMsg = "Context: all"
+		} else {
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+		}
+		m.statusIsError = false
+		m.SetRepositoryScope(selected)
 	}
-	m.statusIsError = false
-	m.SetRepositoryScope(selected)
 	m.showRepoPicker = false
 	m.focused = focusAfterApply
+	// The scope refresh ran while the picker had focus; refresh tree-origin pickers now.
+	if focusAfterApply == focusTree {
+		m.rebuildRepositoryTree()
+	}
 	return m
 }
 
