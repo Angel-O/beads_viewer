@@ -239,6 +239,30 @@ The Windows optional-source rerun above is a separate failed result, not part
 of that default-suite pass. Raw release and verification evidence is retained
 under `/data/tmp/bv-release-v0.24.1-20260908`.
 
+## Vendored dependency patches
+
+Four dependencies carry local patches (listed in `docs/PROVENANCE.md`):
+`github.com/alecthomas/chroma/v2`, `github.com/charmbracelet/glamour`,
+`github.com/muesli/reflow` and `github.com/goccy/go-json`. Each lives under
+`third_party/<name>/` as a complete Go module (the upstream `go.mod` plus the
+imported package set, patches applied), and `go.mod` replaces the upstream
+module path with that directory. `go mod vendor` copies from `third_party/`,
+so running it is safe and never reverts a patch; `go build`, `go test` and
+the Nix build keep reading `vendor/` as before.
+
+- Change a patch: edit the file under `third_party/`, run `go mod vendor`,
+  and commit both. `tests/e2e/third_party_vendor_test.go` fails when
+  `vendor/` and `third_party/` disagree, so editing `vendor/` directly is
+  caught by the gate.
+- Upgrade a patched module: bump the version in `go.mod`, run
+  `go mod download -json <module>@<version>` to locate the pristine source in
+  the module cache, copy its `go.mod` and the packages listed for that module
+  in `vendor/modules.txt` into `third_party/<name>/` (no `_test.go` files or
+  `testdata/`), reapply the patch, then `go mod tidy && go mod vendor`.
+  `go.sum` carries no entry for a replaced module.
+- Drop a patch once upstream ships it: remove the `replace` line and the
+  `third_party/<name>/` directory, then `go mod tidy && go mod vendor`.
+
 ## What is not covered
 
 - The gate does not run the native installation checks above. Its

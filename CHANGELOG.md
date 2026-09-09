@@ -101,6 +101,20 @@ the latest tag, including installer changes usable with already released binarie
   dependency and closure context (`bv-xbvo.13`;
   [forecast scope repair](https://github.com/Dicklesworthstone/beads_viewer/commit/9de473f47d66ec36c2103af928915f9fef5204b2)).
 
+### Vendored dependency patches
+
+- The four locally patched dependencies (`chroma`, `glamour`, `reflow`,
+  `go-json`; see `docs/PROVENANCE.md`) now live under `third_party/` as
+  complete Go modules reached through `replace` directives in `go.mod`, so
+  `go mod vendor` copies the patched sources instead of silently reverting
+  them. Previously the patches existed only as hand edits inside `vendor/`,
+  and a routine `go mod vendor` reverted all four, including the go-json
+  decoder-cache race repair that no `-race` test exercises. A new e2e
+  check fails when `vendor/` and `third_party/` disagree, and
+  `docs/RELEASING.md` documents editing, upgrading and retiring a patch.
+  Built binaries are unchanged: the vendored bytes are byte-identical to the
+  previously committed patched files.
+
 ### Dependency inspection and documentation
 
 - Flow Matrix drilldowns now show the actual blocker and dependent for each

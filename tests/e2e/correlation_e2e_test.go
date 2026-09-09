@@ -705,7 +705,10 @@ func TestCorrelationOnThisRepository_StrategyCounts(t *testing.T) {
 	// The default window walks 500 commits. Advancing HEAD must not age known
 	// explicit-ID matches out of this fixture and silently change its oracle.
 	// Build the current CLI above, then run it over the original passing input.
-	const historyRef = "f46d62a22441dbf863c611e3820cf3b60b9ee359"
+	// historyRef must be reachable from origin/main (a local, later-rewritten
+	// commit turns this test into a checkout failure on every other clone); it
+	// is a commit whose `git log --no-merges -n500` window ends at boundarySHA.
+	const historyRef = "347134f1f5e2b63183a90934deda5c88fe9e41c3"
 	const boundarySHA = "be8adac10bd28922249fec8e7eb1d2f4371d1b80"
 	const boundaryBead = "bv-142"
 	fixture := t.TempDir()
