@@ -4832,6 +4832,82 @@ func TestMoveFromListOpensTargetedPickerAndMovesExactVisibleBead(t *testing.T) {
 	}
 }
 
+func TestBulkMoveFromScopeMembersMovesAllMarkedBeads(t *testing.T) {
+	var moved ScopeMutation
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Mutate: func(_ context.Context, mutation ScopeMutation) error {
+			moved = mutation
+			return nil
+		},
+	}})
+	active := ScopeInfo{ID: "s1", Name: "Today", Active: true}
+	m.activeScope = &active
+	m.scopeCatalog = []ScopeInfo{{ID: "s1", Name: "Today", Active: true}, {ID: "s2", Name: "Later"}}
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.scopePicker.SetMembers([]IssueItem{
+		{Issue: model.Issue{ID: "b-1", Title: "First"}},
+		{Issue: model.Issue{ID: "b-2", Title: "Second"}},
+	})
+	m.scopePicker.memberFocused = true
+	m.scopePicker.ToggleMemberMark()
+	m.scopePicker.MoveMember(1)
+	m.scopePicker.ToggleMemberMark()
+	m.scopeSessionInitialized = true
+	m.scopeSessionFocus = focusScopePicker
+	m.scopePickerOrigin = focusDetail
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+
+	updated, cmd := m.Update(keyMsg("m"))
+	m = updated.(*Model)
+	if cmd != nil || !m.showScopePicker || m.focused != focusScopePicker || m.scopePicker.MemberFocused() ||
+		!strings.Contains(ansi.Strip(m.scopePicker.View()), "Move: 2 marked beads") {
+		t.Fatalf("bulk move destination state: cmd=%t shown=%t focus=%s members=%t view=%q", cmd != nil, m.showScopePicker, m.focused, m.scopePicker.MemberFocused(), m.scopePicker.View())
+	}
+
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.focused != focusScopePicker || !m.scopePicker.MemberFocused() {
+		t.Fatalf("bulk move cancellation did not restore Scope members: shown=%t focus=%s members=%t", m.showScopePicker, m.focused, m.scopePicker.MemberFocused())
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showScopePicker || m.focused != focusDetail {
+		t.Fatalf("leaving cancelled bulk move did not restore origin: shown=%t focus=%s", m.showScopePicker, m.focused)
+	}
+	updated, _ = m.Update(keyMsg("B"))
+	m = updated.(*Model)
+	if !m.showScopePicker || m.focused != focusScopePicker || !m.scopePicker.MemberFocused() {
+		t.Fatalf("Scope re-entry after cancelled bulk move: shown=%t focus=%s members=%t", m.showScopePicker, m.focused, m.scopePicker.MemberFocused())
+	}
+	updated, cmd = m.Update(keyMsg("m"))
+	m = updated.(*Model)
+	if cmd != nil || !m.showScopePicker || m.scopePicker.MemberFocused() {
+		t.Fatalf("bulk move re-entry state: cmd=%t shown=%t members=%t", cmd != nil, m.showScopePicker, m.scopePicker.MemberFocused())
+	}
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	updated, cmd = m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("bulk destination confirmation did not start mutation")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if moved.Kind != ScopeMutationMove || moved.SourceScopeID != "s1" || moved.TargetScopeID != "s2" ||
+		!reflect.DeepEqual(moved.IssueIDs, []string{"b-1", "b-2"}) {
+		t.Fatalf("bulk move mutation = %#v, want move s1->s2 for b-1,b-2", moved)
+	}
+	if !m.showScopePicker || m.focused != focusScopePicker || !m.scopePicker.MemberFocused() {
+		t.Fatalf("bulk move confirmation did not restore Scope members: shown=%t focus=%s members=%t", m.showScopePicker, m.focused, m.scopePicker.MemberFocused())
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showScopePicker || m.focused != focusDetail {
+		t.Fatalf("leaving confirmed bulk move did not restore origin: shown=%t focus=%s", m.showScopePicker, m.focused)
+	}
+}
+
 func TestMoveFromDetailUsesCurrentVisibleBead(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "b-1", Title: "Detail bead", Status: model.StatusOpen}}, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Move: func(context.Context, string, string, string) error { return nil },

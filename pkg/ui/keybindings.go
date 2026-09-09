@@ -327,6 +327,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"space", "Mark current row/member", "Actions", "global-issues,scope"},
 		{"M", "Add/remove by epic or label", "Actions", "global-issues,scope"},
 		{"R", "Remove marked/current member", "Actions", "scope"},
+		{"m", "Move marked members to another scope", "Actions", "scope"},
 		{"m", "Move to scope", "Actions", "list,detail"},
 		{"!", "Alerts panel", "Actions", "list,board,graph,tree,insights,history,actionable,flow,sprint"},
 		{"Ctrl+R/F5", "Force refresh", "Actions", "list,detail,board,graph,tree,insights,history,actionable,label-dashboard,flow,sprint,scope,global-issues"},
