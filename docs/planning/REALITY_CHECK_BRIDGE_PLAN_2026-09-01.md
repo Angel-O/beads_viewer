@@ -1,5 +1,26 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Filtered dashboard exports — 2026-09-09
+
+`bv-oonu.16` connects recipes to direct exports and preserves repository,
+label and recipe selection on every watched reload (`d10d341d`).
+
+- [x] Retain original direct-recipe and watched-repository failures.
+- [x] Share selection logic while retaining full-source readiness and ranking.
+- [x] Verify sort/limit selection, empty scopes, new candidates, label/repository
+  changes, hidden prerequisite changes, JSON/SQLite agreement and coalescing.
+- [x] Correct the obsolete custom-status rejection test against the documented
+  workflow contract; verify custom selection without granting actionability.
+- [x] Fresh solo replay of the clean binary passes both original failure
+  scenarios, the three-ready-issue fixture, 160 unit tests and 64 CLI tests.
+  Build/vet and first-party formatting pass; UBS has seven inspected warnings.
+- [x] Update README/changelog and the granular Beads execution record.
+- [ ] Existing P1 baseline, S5 transactional claim, native-platform and final
+  acceptance gates remain open; this repair supplies none of those proofs.
+
+Evidence: `/data/tmp/bv-export-scope-20260909-9q38zb`; binary SHA-256
+`11af8f5e…`, Go 1.25.5, `vcs.modified=false`. Original failures are retained.
+
 ## Dashboard rankings and readiness — 2026-09-09
 
 `bv-oonu.14` connects HITS panels to the scores already computed by the bundled

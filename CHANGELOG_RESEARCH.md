@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..51d25a80` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..d10d341d` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,27 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`d10d341d` connects direct Pages exports and watched reloads to the existing
+recipe, repository and label selection pipeline (`bv-oonu.16`). The original
+binary ignores `actionable` during export and expands a watched repository
+selection after its initial attachment recheck. The same retained CLI/SQLite
+replay rejects both original results and accepts the clean Go 1.25.5 binary
+at that revision (`vcs.modified=false`, SHA-256 `11af8f5e…`). Fresh solo
+verification passes all 160 command/recipe unit tests and all 64 selected
+Pages/recipe/scoped-robot CLI tests, with zero skips in that final run. The
+earlier remote CLI run skipped one hybrid-WASM test, subsequently run locally.
+Build/vet and first-party formatting pass. UBS exits 0 with seven inspected
+warnings and zero critical findings; this is not a warning-free scan.
+The first checks caught a leftover local variable and an obsolete recipe test
+rejecting custom statuses allowed since `55ec82b8`. Its replacement verifies
+blank-status rejection, custom-status selection and their non-actionability.
+No acceptance assertion, timeout or snapshot was relaxed to accommodate the
+export repair. Evidence: `/data/tmp/bv-export-scope-20260909-9q38zb`.
+The final notes also correct a test comment; its assertions remain unchanged.
+Live release metadata still reports v0.24.1 published September 8 at
+00:28:07 UTC. Actions remain disabled. No release or P1/S5/native proof is
+claimed. `cf2b6782` recorded the preceding dashboard verification.
 
 The next bounded repair covers `bv-oonu.14` and `bv-oonu.15`. HITS data already
 exists in the shipped WASM; the dashboard read singular names instead of its

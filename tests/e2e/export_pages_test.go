@@ -204,8 +204,8 @@ view:
 	if first.DataHash != second.DataHash || first.ScopeHash == second.ScopeHash {
 		t.Fatalf("hidden gate change lost authority/candidate distinction: first=%+v second=%+v", first, second)
 	}
-	// A new matching candidate must replace a row whose label changed, even
-	// though neither ID was a candidate in the initial exported selection.
+	// A new matching candidate must replace a row whose label changed. New
+	// IDs must not be excluded by the candidate map captured at startup.
 	changed := strings.Replace(closedGate, `"id":"c","title":"Alpha","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]`, `"id":"c","title":"Alpha","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["other"]`, 1)
 	changed += `{"id":"new","title":"Aaron","status":"in_progress","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]}` + "\n"
 	writeIssuesJSONL(t, root, changed)

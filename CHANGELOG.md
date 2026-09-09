@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`51d25a80`](https://github.com/Dicklesworthstone/beads_viewer/commit/51d25a80991e2488f85eb030ceb7d8d126d8f9ba).
+commits through [`d10d341d`](https://github.com/Dicklesworthstone/beads_viewer/commit/d10d341dfb46412cffdcee7641b3f67a3b53b015).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -61,6 +61,12 @@ the latest tag, including installer changes usable with already released binarie
   each unresolved issue once and remain numeric when a status group is absent
   (`bv-oonu.15`;
   [rankings and readiness repair](https://github.com/Dicklesworthstone/beads_viewer/commit/51d25a80991e2488f85eb030ceb7d8d126d8f9ba)).
+- Direct dashboard exports now apply recipes, including sorted `max_items`
+  selection. Watched exports reapply repository, label and recipe filters to
+  each reload instead of expanding to the full dataset. Hidden prerequisites
+  still govern readiness, newly matching issues enter the selection, and an
+  empty selection clears old rows (`bv-oonu.16`;
+  [export scope repair](https://github.com/Dicklesworthstone/beads_viewer/commit/d10d341dfb46412cffdcee7641b3f67a3b53b015)).
 
 ### Dependency inspection and documentation
 
