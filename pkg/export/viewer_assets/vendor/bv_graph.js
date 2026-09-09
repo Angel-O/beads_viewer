@@ -584,15 +584,20 @@ export class DiGraph {
     /**
      * Top N issues by cascade impact.
      * Only considers currently actionable nodes.
+     * An optional candidate mask further restricts selection, without resolving
+     * excluded prerequisites. Missing mask entries are ineligible.
      * Returns JSON array of {node, result} sorted by transitive_unblocks.
      * @param {Uint8Array} closed_set
      * @param {number} limit
+     * @param {Uint8Array | null} [candidate_set]
      * @returns {any}
      */
-    topWhatIf(closed_set, limit) {
+    topWhatIf(closed_set, limit, candidate_set) {
         const ptr0 = passArray8ToWasm0(closed_set, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.digraph_topWhatIf(this.__wbg_ptr, ptr0, len0, limit);
+        var ptr1 = isLikeNone(candidate_set) ? 0 : passArray8ToWasm0(candidate_set, wasm.__wbindgen_malloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.digraph_topWhatIf(this.__wbg_ptr, ptr0, len0, limit, ptr1, len1);
         return ret;
     }
     /**
@@ -600,14 +605,19 @@ export class DiGraph {
      * Finds k issues that, when completed, maximize total downstream unlocks.
      * Returns JSON: { items: [{node, marginal_gain, unblocked_ids}], total_gain, open_nodes }
      * closed_set is an array of bytes where non-zero means closed.
+     * Optional candidate_set restricts direct choices, not dependency context.
+     * Non-zero entries are eligible; missing entries are ineligible.
      * @param {Uint8Array} closed_set
      * @param {number} k
+     * @param {Uint8Array | null} [candidate_set]
      * @returns {any}
      */
-    topkSet(closed_set, k) {
+    topkSet(closed_set, k, candidate_set) {
         const ptr0 = passArray8ToWasm0(closed_set, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.digraph_topkSet(this.__wbg_ptr, ptr0, len0, k);
+        var ptr1 = isLikeNone(candidate_set) ? 0 : passArray8ToWasm0(candidate_set, wasm.__wbindgen_malloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.digraph_topkSet(this.__wbg_ptr, ptr0, len0, k, ptr1, len1);
         return ret;
     }
     /**
@@ -848,6 +858,10 @@ function handleError(f, args) {
         const idx = addToExternrefTable0(e);
         wasm.__wbindgen_exn_store(idx);
     }
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 function passArray32ToWasm0(arg, malloc) {

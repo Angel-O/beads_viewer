@@ -609,12 +609,19 @@ impl DiGraph {
 
     /// Top N issues by cascade impact.
     /// Only considers currently actionable nodes.
+    /// An optional candidate mask further restricts selection, without resolving
+    /// excluded prerequisites. Missing mask entries are ineligible.
     /// Returns JSON array of {node, result} sorted by transitive_unblocks.
     #[wasm_bindgen(js_name = topWhatIf)]
-    pub fn top_what_if(&self, closed_set: &[u8], limit: usize) -> JsValue {
+    pub fn top_what_if(
+        &self,
+        closed_set: &[u8],
+        limit: usize,
+        candidate_set: Option<Vec<u8>>,
+    ) -> JsValue {
         use crate::whatif::top_what_if;
         let closed: Vec<bool> = closed_set.iter().map(|&b| b != 0).collect();
-        let results = top_what_if(self, &closed, limit);
+        let results = top_what_if(self, &closed, limit, candidate_set.as_deref());
         serde_wasm_bindgen::to_value(&results).unwrap_or(JsValue::NULL)
     }
 
@@ -637,11 +644,13 @@ impl DiGraph {
     /// Finds k issues that, when completed, maximize total downstream unlocks.
     /// Returns JSON: { items: [{node, marginal_gain, unblocked_ids}], total_gain, open_nodes }
     /// closed_set is an array of bytes where non-zero means closed.
+    /// Optional candidate_set restricts direct choices, not dependency context.
+    /// Non-zero entries are eligible; missing entries are ineligible.
     #[wasm_bindgen(js_name = topkSet)]
-    pub fn topk_set(&self, closed_set: &[u8], k: usize) -> JsValue {
+    pub fn topk_set(&self, closed_set: &[u8], k: usize, candidate_set: Option<Vec<u8>>) -> JsValue {
         use crate::algorithms::topk_set::topk_set;
         let closed: Vec<bool> = closed_set.iter().map(|&b| b != 0).collect();
-        let result = topk_set(self, &closed, k);
+        let result = topk_set(self, &closed, k, candidate_set.as_deref());
         serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
     }
 

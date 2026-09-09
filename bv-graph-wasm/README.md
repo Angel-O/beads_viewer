@@ -87,6 +87,13 @@ main();
 | `fromJson(json)` | Import from JSON |
 | `free()` | Release memory |
 
+`topkSet(closedSet, k, candidateSet?)` selects a greedy set of issues;
+`topWhatIf(closedSet, limit, candidateSet?)` ranks currently actionable nodes
+by cascade impact. The optional `Uint8Array` mask restricts direct choices:
+nonzero entries are eligible, missing entries are ineligible, and omitting
+the mask considers all nodes. Excluded nodes remain in dependency checks and
+are not marked closed. The mask does not truncate downstream cascades.
+
 ## Size
 
 ### Current Measurements
@@ -94,8 +101,8 @@ main();
 | Component | Raw | Gzipped | Budget |
 |-----------|-----|---------|--------|
 | WASM binary | 221 KiB | 95 KiB | <80 KiB |
-| JS glue | 33 KiB | 7 KiB | <25 KiB |
-| **Total** | **254 KiB** | **102 KiB** | **<120 KiB** |
+| JS glue | 34 KiB | 7 KiB | <25 KiB |
+| **Total** | **255 KiB** | **102 KiB** | **<120 KiB** |
 
 Measured with `gzip -n -9` on the reviewed pair. The total compressed size is
 within budget; the separate WASM size target remains unmet.

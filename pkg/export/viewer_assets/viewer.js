@@ -848,6 +848,17 @@ function buildClosedSet() {
   return closed;
 }
 
+/** Restrict selectable issues without marking excluded prerequisites closed. */
+function buildCandidateSet(actionableOnly = false) {
+  const candidates = new Uint8Array(GRAPH_STATE.graph.nodeCount());
+  const rows = execQuery(`SELECT id FROM issue_overview_mv${actionableOnly ? ' WHERE is_actionable = 1' : ''} ORDER BY id`);
+  for (const { id } of rows) {
+    const idx = GRAPH_STATE.nodeMap.get(id);
+    if (idx !== undefined) candidates[idx] = 1;
+  }
+  return candidates;
+}
+
 /**
  * Recalculate graph metrics for a filtered set of issues
  */
@@ -903,10 +914,10 @@ function whatIfClose(issueId) {
  * Get top issues by cascade impact
  */
 function topWhatIf(limit = 10) {
-  if (!GRAPH_STATE.ready) return [];
+  if (!GRAPH_STATE.ready || limit <= 0) return [];
 
   const closedSet = buildClosedSet();
-  const results = GRAPH_STATE.graph.topWhatIf(closedSet, limit);
+  const results = GRAPH_STATE.graph.topWhatIf(closedSet, limit, buildCandidateSet(true));
 
   // Enrich with issue IDs
   return (results || []).map(item => ({
@@ -917,17 +928,13 @@ function topWhatIf(limit = 10) {
 }
 
 /**
- * Get actionable issues (all blockers closed)
+ * Get actual issues eligible under the exported full-source readiness policy.
  */
 function getActionableIssues() {
   if (!GRAPH_STATE.ready) return [];
 
-  const closedSet = buildClosedSet();
-  const indices = GRAPH_STATE.graph.actionableNodes(closedSet);
-
-  return (indices || [])
-    .map(idx => GRAPH_STATE.graph.nodeId(idx))
-    .filter(Boolean);
+  return execQuery('SELECT id FROM issue_overview_mv WHERE is_actionable = 1 ORDER BY id')
+    .map(row => row.id);
 }
 
 /**
@@ -947,7 +954,7 @@ function getTopKSet(k = 5) {
   if (!GRAPH_STATE.ready) return null;
 
   const closedSet = buildClosedSet();
-  const result = GRAPH_STATE.graph.topkSet(closedSet, k);
+  const result = GRAPH_STATE.graph.topkSet(closedSet, k, buildCandidateSet());
 
   // Enrich with issue IDs
   if (result && result.items) {

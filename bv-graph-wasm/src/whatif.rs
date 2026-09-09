@@ -162,10 +162,17 @@ pub struct TopWhatIfEntry {
 /// * `graph` - The dependency graph
 /// * `closed_set` - Boolean array indicating which nodes are already closed
 /// * `limit` - Maximum number of results to return
+/// * `candidate_set` - Optional direct-selection eligibility mask. Excluded
+///   nodes still participate in dependency checks; missing entries are false.
 ///
 /// # Returns
 /// Vector of (node, WhatIfResult) sorted by transitive_unblocks descending.
-pub fn top_what_if(graph: &DiGraph, closed_set: &[bool], limit: usize) -> Vec<TopWhatIfEntry> {
+pub fn top_what_if(
+    graph: &DiGraph,
+    closed_set: &[bool],
+    limit: usize,
+    candidate_set: Option<&[u8]>,
+) -> Vec<TopWhatIfEntry> {
     let n = graph.len();
     if n == 0 {
         return Vec::new();
@@ -176,6 +183,7 @@ pub fn top_what_if(graph: &DiGraph, closed_set: &[bool], limit: usize) -> Vec<To
 
     let mut results: Vec<TopWhatIfEntry> = candidates
         .into_iter()
+        .filter(|&node| candidate_set.is_none_or(|set| set.get(node).is_some_and(|&b| b != 0)))
         .map(|node| {
             let result = what_if_close(graph, node, closed_set);
             TopWhatIfEntry { node, result }
@@ -471,7 +479,7 @@ mod tests {
         graph.add_edge(f, e);
 
         let closed = vec![false; 6];
-        let top = top_what_if(&graph, &closed, 10);
+        let top = top_what_if(&graph, &closed, 10, None);
 
         assert_eq!(top.len(), 2);
         // a should be first (unblocks 3)
@@ -493,9 +501,37 @@ mod tests {
         }
 
         let closed = vec![false; 20];
-        let top = top_what_if(&graph, &closed, 3);
+        let top = top_what_if(&graph, &closed, 3, None);
 
         assert_eq!(top.len(), 3);
+    }
+
+    #[test]
+    fn top_what_if_candidate_mask_preserves_unresolved_context() {
+        let mut graph = DiGraph::new();
+        for i in 0..7 {
+            graph.add_node(&format!("n{i}"));
+        }
+        for (from, to) in [(1, 0), (2, 6), (3, 6), (4, 6), (5, 0), (5, 6)] {
+            graph.add_edge(from, to);
+        }
+        assert_eq!(top_what_if(&graph, &[], 1, None)[0].node, 6);
+        for mask in [&[1][..], &[1, 1, 1, 1, 1, 1, 0][..]] {
+            let top = top_what_if(&graph, &[], 1, Some(mask));
+            assert_eq!(top.len(), 1);
+            assert_eq!(top[0].node, 0);
+            assert_eq!(top[0].result.cascade_ids, vec![1]);
+            assert_eq!(top[0].result.transitive_unblocks, 1);
+        }
+        for mask in [&[][..], &[0; 7][..]] {
+            assert!(top_what_if(&graph, &[], 5, Some(mask)).is_empty());
+        }
+        assert!(top_what_if(&graph, &[], 0, Some(&[1; 7])).is_empty());
+        assert!(top_what_if(&graph, &[true], 5, Some(&[1])).is_empty());
+        assert_eq!(
+            serde_json::to_value(top_what_if(&graph, &[], 5, None)).unwrap(),
+            serde_json::to_value(top_what_if(&graph, &[], 5, Some(&[2; 9]))).unwrap()
+        );
     }
 
     #[test]
@@ -571,7 +607,7 @@ mod tests {
 
         // No candidate is initially actionable, but explicitly closing a
         // breaks this cycle and allows the remaining work to cascade.
-        assert!(top_what_if(&graph, &closed, 10).is_empty());
+        assert!(top_what_if(&graph, &closed, 10, None).is_empty());
         let result = what_if_close(&graph, a, &closed);
         assert_eq!(result.direct_unblocks, 1);
         assert_eq!(result.unblocked_ids, vec![c]);

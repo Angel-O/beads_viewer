@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 
 const [browser, bundle, artifacts, mode = 'journeys', updatedBundle, projectBundle] = process.argv.slice(2);
 assert.ok(browser && bundle && artifacts, 'browser, bundle, artifacts required');
-assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if', 'hits', 'readiness', 'metric-visibility'].includes(mode), 'unknown browser test mode');
+assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if', 'hits', 'readiness', 'metric-visibility', 'suggestion-visibility'].includes(mode), 'unknown browser test mode');
 fs.mkdirSync(artifacts, { recursive: true });
 const records = [];
 let brokenAsset = '', changedAsset = '', workerRevision = 0, chrome, server, socket;
@@ -236,6 +236,8 @@ async function readinessJourney(page) {
   assert.equal(stats.active, 9, 'active count includes unresolved lifecycles exactly once');
   assert.equal(stats.closed, 0, 'absent lifecycle count is zero');
   assert.deepEqual(await evaluate(page, 'getQuickWins(20).map(i=>i.id).sort()'), readyIDs, 'quick wins exclude deferred, unknown, inherited and nonready lifecycle tasks');
+  assert.deepEqual(await evaluate(page, 'getActionableIssues().sort()'), readyIDs, 'actionable lookup uses full-source readiness rather than synthetic graph roots');
+  assert.ok((await evaluate(page, 'topWhatIf(100).map(i=>i.issueId)')).every(id=>readyIDs.includes(id)), 'cascade recommendations consider only proven ready issues');
   assert.deepEqual(await evaluate(page, 'queryIssues({hasBlockers:false}).map(i=>i.id).sort()'), readyIDs, 'Ready filter uses the same readiness policy');
   const readyCard = '[\\@click*="filters.hasBlockers = false"][\\@click*="view ="]';
   await click(page, readyCard);
@@ -343,6 +345,46 @@ async function metricVisibilityJourney(page) {
   await capture(page, 'authority-detail');
   clean(page);
   console.log(`PASS: ${page.name} visible ranking limits, raw scores, rendered cards and issue navigation`);
+}
+
+// Six visible issues: root->child, three children of absent, and joint which
+// requires both root and absent. Completing absent would fabricate root's gain.
+async function suggestionVisibilityJourney(page) {
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === 6 && ${app}.graphReady`, 'six suggestion issues and actual WASM');
+  await waitFor(page, '!!navigator.serviceWorker.controller', 'suggestion worker controls page');
+  await delay(500);
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.graphReady`, 'suggestion app after worker activation');
+  await click(page, 'a[href="#/insights"]');
+  const before = await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]');
+  assert.deepEqual(before, [7, 6], 'missing prerequisite stays in the graph');
+  const initial = await evaluate(page, `JSON.parse(JSON.stringify(${app}.topKSet))`);
+  console.log(`${page.name} priority picks:`, JSON.stringify(initial));
+  assert.deepEqual(initial.items.map(i=>i.issueId), ['pick-root'], 'priority cards select only an actual issue before computing gains');
+  for (const limit of [1, 5, 100]) {
+    const picks = await evaluate(page, `getTopKSet(${limit})`);
+    assert.deepEqual(picks.items.map(i=>[i.issueId,i.marginal_gain,i.unblocked_issue_ids]), [['pick-root',1,['pick-child']]], 'missing prerequisite neither selected nor presumed completed');
+    assert.equal(picks.total_gain, 1);
+    assert.equal(picks.open_nodes, 6, 'candidate count excludes the synthetic endpoint');
+    const impact = await evaluate(page, `topWhatIf(${limit})`);
+    assert.deepEqual(impact.map(i=>[i.issueId,i.result.transitive_unblocks]), [['pick-root',1]], 'top cascade limit is applied after candidate eligibility');
+  }
+  assert.deepEqual(await evaluate(page, 'getTopKSet(0).items'), []);
+  assert.deepEqual(await evaluate(page, 'topWhatIf(0)'), []);
+  assert.deepEqual(await evaluate(page, 'getActionableIssues()'), ['pick-root']);
+  const raw = await evaluate(page, `(() => {const r=GRAPH_STATE.graph.topkSet(buildClosedSet(),5);return r.items.map(i=>[GRAPH_STATE.graph.nodeId(i.node),i.marginal_gain]);})()`);
+  assert.deepEqual(raw, [['absent',3],['pick-root',2]], 'unconstrained engine still sees the full graph, exposing the negative control');
+  assert.equal(await evaluate(page, `buildClosedSet()[GRAPH_STATE.nodeMap.get('absent')]`), 0, 'excluded prerequisite is still unresolved');
+  for (const selector of ['template[x-for*="topKSet?.items"] + div', 'template[x-for*="topImpactIssues.slice"] + div']) {
+    await click(page, selector);
+    await waitFor(page, `${app}.selectedIssue?.id === 'pick-root'`, 'suggestion card opens its actual issue');
+    await capture(page, 'suggestion-detail');
+    await key(page, 'Escape');
+    await click(page, 'a[href="#/insights"]');
+  }
+  assert.deepEqual(await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]'), before, 'selection and navigation preserve graph topology');
+  await capture(page, 'suggestion-cards');
+  clean(page);
+  console.log(`PASS: ${page.name} visible candidate selection, true gains, readiness and card navigation`);
 }
 
 // The seven-task fixture has root<-child<-leaf, child also depending on closed
@@ -601,6 +643,9 @@ try {
   } else if (mode === 'hits') {
     await hitsJourney(desktop);
     await hitsJourney(await openPage('mobile-360', 360));
+  } else if (mode === 'suggestion-visibility') {
+    await suggestionVisibilityJourney(desktop);
+    await suggestionVisibilityJourney(await openPage('mobile-360', 360));
   } else if (mode === 'metric-visibility') {
     await metricVisibilityJourney(desktop);
     await metricVisibilityJourney(await openPage('mobile-360', 360));
@@ -611,6 +656,9 @@ try {
       for (const fn of ['getTopByHITSAuth', 'getTopByHITSHub', 'getTopByKCore', 'getTopByBetweenness', 'getTopByCriticalPath', 'getIssuesBySlack']) {
         assert.deepEqual(await evaluate(empty, `${fn}(10)`), [], `${fn}: actual empty export has no ranked issues`);
       }
+      assert.deepEqual(await evaluate(empty, 'getActionableIssues()'), []);
+      assert.deepEqual(await evaluate(empty, 'topWhatIf(10)'), []);
+      assert.deepEqual(await evaluate(empty, 'getTopKSet(5).items'), []);
       clean(empty);
       console.log('PASS: empty export metric queries');
     }

@@ -2842,6 +2842,12 @@ WASM-backed issue rankings count exported issues toward their display limits.
 Missing or filtered dependency endpoints still contribute to graph metrics,
 but do not take the place of issue cards in the ranking panels.
 
+Priority Picks select actual exported issues before computing their marginal
+gains. Missing prerequisites stay unresolved throughout the simulation; excluding
+them from the cards does not imply completing them. These picks describe potential
+graph unblocks, while cascade recommendations consider only work ready at export
+time. Neither panel performs a live tracker claim.
+
 The dashboard's Actionable count, Ready filter and quick wins use readiness at
 export time: open or in-progress work whose deferral has elapsed and whose
 direct and inherited parent gates are satisfied in the full source. Missing
