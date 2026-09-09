@@ -36,17 +36,35 @@ a database-removal error, but does not isolate sidecar removal from the
 checkpoint's main-file write. The final focused suite passes five top-level
 tests and twelve subcases with no skips, including all six Pages source cases
 and four TUI refresh cases. The stronger backend and WAL-creation assertions
-pass as well. Independent committed-tree verification remains pending.
+pass as well. The independent verifier repeats all five tests and twelve
+subcases at `2cd958d6630170976fedd54415e2dda360645d25`, using RCH's clean
+committed tree with no overlay on vmi1153651 and Go 1.25.5. The run exits 0
+with no failures or skips; existing deadlines stay unchanged. The retained
+`independent.stderr` has SHA-256
+`5922514ecbbf8c556ff3557b91899833396ea61b7f35d27a5d5e1f50688c6bac`.
+This establishes the selected-source Linux fixture behavior, not automatic
+source switching, native-platform acceptance or the original performance and
+tracker gates.
+
+Build and vet pass through RCH; first-party formatting is clean, with 49
+unchanged vendor files listed. UBS 7.1.2 exits 0 with no critical findings,
+18 warnings and 178 informational findings, using regex fallback because
+ast-grep is unavailable. Its lock heuristic flags all 17 lock calls: seven
+production calls have immediate deferred unlocks, and ten existing test calls
+use short explicit pairs. The remaining warning is a missing module file in
+the scanner's temporary shadow. No missing unlock was found and no finding
+was suppressed. An initially overbroad description of those 17 sites as
+existing was corrected in the Beads record; one belongs to the new WAL poller.
 
 During verification, another process committed and pushed the partial runtime
 and unit-test patch as `cd100c66`, followed by native-prerequisite notes at
 `9bb51cc0`. This session did not create those commits. Their history is retained;
-the complete test/documentation work must still be verified before closure.
+closure waited for verification of the complete source and test tree.
 The same concurrent activity later committed the remaining tests at `2cd958d6`
 and documentation/tracker changes through `b3cdaa62`. The resulting source and
-test tree is complete for independent verification; no runtime changes were
+test tree is the one independently verified above; no runtime changes were
 made after the successful race suite. No Actions run was listed for the first
-push.
+push or the later push through `b3cdaa62`.
 
 ## September 9 live-source follow-up
 

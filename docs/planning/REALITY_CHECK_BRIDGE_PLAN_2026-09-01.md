@@ -13,9 +13,12 @@
 - [x] Verify real WAL creation, repeated commits, sibling isolation, checkpoint
   removal, Pages publication and foreground/background TUI refresh: five
   focused tests and twelve subcases pass, with no skips.
-- [ ] Complete affected race tests, RCH build/vet and first-party formatting;
-  record scanner limitations and all failures/skips.
-- [ ] Independent exact-commit replay and verifier closure.
+- [x] Complete affected race tests: 1,143 pass with eight existing UI skips.
+  RCH build/vet and first-party formatting pass. UBS exits 0 with zero critical
+  findings and 18 reviewed warnings; scanner limitations remain explicit.
+- [x] Independent exact-commit replay at `2cd958d6`: five tests and twelve
+  subcases pass on RCH with no overlay, failures or skips. The independent
+  verifier closes `bv-oonu.21`; original deadlines remain unchanged.
 
 Evidence: `/data/tmp/bv-wal-refresh-20260909-wwqn2zz5`. Native prerequisite
 recheck finds OldSurface SSH reachable, but RCH rejects native Go with an OS
