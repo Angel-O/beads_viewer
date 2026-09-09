@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +11,61 @@ import (
 	"testing"
 	"time"
 )
+
+func TestRobotCapacity_DenseDAG(t *testing.T) {
+	bv := buildBvBinary(t)
+	if control := os.Getenv("BV_CAPACITY_TEST_BINARY"); control != "" {
+		bv = control
+	}
+	t.Setenv("SOURCE_DATE_EPOCH", "1788912000")
+	dir := t.TempDir()
+	var lines []string
+	var wantPath []string
+	for i := 0; i < 64; i++ {
+		id := fmt.Sprintf("n%02d", i)
+		var deps []map[string]string
+		for j := 0; j < i; j++ {
+			deps = append(deps, map[string]string{"depends_on_id": wantPath[j], "type": "blocks"})
+		}
+		row, err := json.Marshal(map[string]any{"id": id, "title": id, "status": "open", "issue_type": "task", "priority": 1, "estimated_minutes": 60, "dependencies": deps})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(row))
+		wantPath = append(wantPath, id)
+	}
+	writeIssuesJSONL(t, dir, strings.Join(lines, "\n")+"\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bv, "--robot-capacity", "--agents=3")
+	cmd.Dir = dir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	start := time.Now()
+	out, err := cmd.Output()
+	t.Logf("binary=%q nodes=64 edges=2016 elapsed=%s exit=%v stderr=%s stdout=%s", bv, time.Since(start), err, stderr.String(), out)
+	if err != nil {
+		t.Fatalf("dense acyclic capacity must complete within five seconds: %v context=%v", err, ctx.Err())
+	}
+	var got struct {
+		Path       []string `json:"critical_path"`
+		Length     int      `json:"critical_path_length"`
+		Open       int      `json:"open_issue_count"`
+		Actionable []string `json:"actionable"`
+		Total      int      `json:"total_minutes"`
+		Serial     int      `json:"serial_minutes"`
+		Parallel   int      `json:"parallel_minutes"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Path, wantPath) || got.Length != 64 || got.Open != 64 || !slices.Equal(got.Actionable, wantPath[:1]) {
+		t.Fatalf("wrong complete serial path/readiness: %+v", got)
+	}
+	if got.Total <= 0 || got.Serial != got.Total || got.Parallel != 0 {
+		t.Fatalf("complete chain must retain entirely serial work: %+v", got)
+	}
+}
 
 func TestRobotCapacity_ReadinessScope(t *testing.T) {
 	bv := buildBvBinary(t)

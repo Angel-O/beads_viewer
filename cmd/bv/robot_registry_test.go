@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"math/rand"
 	"slices"
 	"strconv"
 	"strings"
@@ -142,6 +143,74 @@ func TestRobotCapacity_BlockingEdgesAndOrder(t *testing.T) {
 			t.Error("capacity JSON changed with input ordering")
 		}
 		previous = out.String()
+	}
+}
+
+func TestLongestCapacityChain(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		starts []string
+		blocks map[string][]string
+		want   []string
+	}{
+		{"empty", nil, nil, nil},
+		{"isolated", []string{"b", "a"}, nil, []string{"b"}},
+		{"neighbor_tie", []string{"a"}, map[string][]string{"a": {"c", "b"}}, []string{"a", "c"}},
+		{"root_tie", []string{"c", "a"}, map[string][]string{"a": {"b"}, "c": {"d"}}, []string{"c", "d"}},
+		{"shared_suffix", []string{"a"}, map[string][]string{"a": {"c", "b"}, "b": {"d"}, "c": {"d"}, "d": {"e"}}, []string{"a", "c", "d", "e"}},
+		{"longer_later", []string{"a"}, map[string][]string{"a": {"b", "c"}, "c": {"d"}}, []string{"a", "c", "d"}},
+		{"reachable_cycle", []string{"a"}, map[string][]string{"a": {"b"}, "b": {"c"}, "c": {"b", "d"}}, []string{"a", "b", "c", "d"}},
+		{"self_cycle", []string{"a"}, map[string][]string{"a": {"a", "b"}}, []string{"a", "b"}},
+		{"unreachable_cycle", []string{"a"}, map[string][]string{"a": {"b"}, "c": {"d"}, "d": {"c"}}, []string{"a", "b"}},
+		{"empty_id", []string{"a"}, map[string][]string{"a": {""}, "": {"b"}}, []string{"a", "", "b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := longestCapacityChain(tc.starts, tc.blocks); !slices.Equal(got, tc.want) {
+				t.Fatalf("path=%v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// Keep the original exhaustive traversal as a small-graph oracle. The new
+	// recurrence must preserve its exact choice, including input-order ties.
+	rng := rand.New(rand.NewSource(20260909))
+	for trial := 0; trial < 200; trial++ {
+		blocks := make(map[string][]string)
+		for i := 0; i < 7; i++ {
+			for _, j := range rng.Perm(7) {
+				if (trial%2 == 0 && j <= i) || rng.Intn(4) != 0 {
+					continue
+				}
+				blocks[strconv.Itoa(i)] = append(blocks[strconv.Itoa(i)], strconv.Itoa(j))
+			}
+		}
+		var starts []string
+		for _, i := range rng.Perm(7)[:3] {
+			starts = append(starts, strconv.Itoa(i))
+		}
+		var want []string
+		visited := make(map[string]bool)
+		var walk func(string, []string)
+		walk = func(id string, path []string) {
+			if visited[id] {
+				return
+			}
+			visited[id] = true
+			path = append(path, id)
+			if len(path) > len(want) {
+				want = append([]string(nil), path...)
+			}
+			for _, next := range blocks[id] {
+				walk(next, path)
+			}
+			visited[id] = false
+		}
+		for _, start := range starts {
+			walk(start, nil)
+		}
+		if got := longestCapacityChain(starts, blocks); !slices.Equal(got, want) {
+			t.Fatalf("trial=%d starts=%v blocks=%v path=%v, want %v", trial, starts, blocks, got, want)
+		}
 	}
 }
 

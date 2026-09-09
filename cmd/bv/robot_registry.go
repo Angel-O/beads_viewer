@@ -3603,26 +3603,7 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		}
 	}
 
-	var longestChain []string
-	visited := make(map[string]bool)
-	var dfs func(string, []string)
-	dfs = func(id string, path []string) {
-		if visited[id] {
-			return
-		}
-		visited[id] = true
-		path = append(path, id)
-		if len(path) > len(longestChain) {
-			longestChain = append([]string(nil), path...)
-		}
-		for _, nextID := range blocks[id] {
-			dfs(nextID, path)
-		}
-		visited[id] = false
-	}
-	for _, startID := range actionable {
-		dfs(startID, nil)
-	}
+	longestChain := longestCapacityChain(actionable, blocks)
 
 	serialMinutes := 0
 	for _, id := range longestChain {
@@ -3707,6 +3688,83 @@ func handleRobotCapacity(ctx RobotContext, cfg phaseThreeRobotHandlerConfig) err
 		return fmt.Errorf("encoding capacity: %w", err)
 	}
 	return nil
+}
+
+// longestCapacityChain preserves the first longest path in seed/neighbor order.
+// Acyclic reachable graphs share suffix lengths instead of enumerating paths.
+// Reachable cycles retain the exhaustive simple-path behavior of this heuristic.
+func longestCapacityChain(starts []string, blocks map[string][]string) []string {
+	if len(starts) == 0 {
+		return nil
+	}
+	state := make(map[string]uint8)
+	var postorder []string
+	hasCycle := false
+	var visit func(string)
+	visit = func(id string) {
+		if state[id] == 1 {
+			hasCycle = true
+			return
+		}
+		if state[id] == 2 {
+			return
+		}
+		state[id] = 1
+		for _, nextID := range blocks[id] {
+			visit(nextID)
+		}
+		state[id] = 2
+		postorder = append(postorder, id)
+	}
+	for _, id := range starts {
+		visit(id)
+	}
+	if !hasCycle {
+		length := make(map[string]int, len(postorder))
+		next := make(map[string]string, len(postorder))
+		for _, id := range postorder {
+			length[id] = 1
+			for _, nextID := range blocks[id] {
+				if candidate := 1 + length[nextID]; candidate > length[id] {
+					length[id] = candidate
+					next[id] = nextID
+				}
+			}
+		}
+		start := starts[0]
+		for _, id := range starts[1:] {
+			if length[id] > length[start] {
+				start = id
+			}
+		}
+		path := make([]string, 0, length[start])
+		for id, remaining := start, length[start]; remaining > 0; id, remaining = next[id], remaining-1 {
+			path = append(path, id)
+		}
+		return path
+	}
+
+	var longest []string
+	visited := make(map[string]bool)
+	var dfs func(string, []string)
+	dfs = func(id string, path []string) {
+		if visited[id] {
+			return
+		}
+		visited[id] = true
+		path = append(path, id)
+		if len(path) > len(longest) {
+			longest = append([]string(nil), path...)
+		}
+		for _, nextID := range blocks[id] {
+			dfs(nextID, path)
+		}
+		visited[id] = false
+	}
+	for _, id := range starts {
+		dfs(id, nil)
+	}
+	return longest
 }
 
 func (r *RobotRegistry) Validate() error {

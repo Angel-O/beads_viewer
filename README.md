@@ -3375,6 +3375,8 @@ Direct bottlenecks count distinct blocking dependencies between selected
 unresolved issues. The reported critical path is the longest chain by issue count
 reachable from currently actionable work in that selected graph. Outside blockers
 still govern readiness, but their work is not included in the duration estimate.
+The path search reuses shared suffixes on acyclic graphs. Reachable cycles retain
+an exhaustive simple-path search, which can be expensive on dense cyclic graphs.
 
 For a worked example, take two feature issues with depth 2 and descriptions of
 1,000 Unicode characters. One has an explicit 120-minute estimate; the other
