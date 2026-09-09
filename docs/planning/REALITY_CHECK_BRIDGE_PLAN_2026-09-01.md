@@ -1,5 +1,24 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Scoped hypothetical rankings — 2026-09-09
+
+`bv-xbvo.11` applies the existing candidate scope before ranking hypothetical
+completions and counting top-k candidates (`f24e2df7`).
+
+- [x] Reproduce context-only issues outranking selected work; original analyzer
+  fails seven of nine cases and CLI fails one of five cases.
+- [x] Preserve selected hypothetical gains, outside dependency gates and graph
+  context; cover empty selection, limits, ties and label/recipe intersections.
+- [x] Affected packages: 924 top-level passes, twelve existing skips; all six
+  CLI scoping tests and 61 subcases pass. Build/vet and first-party format pass.
+- [x] Fresh solo committed-revision replay and complete JSON comparison confirm
+  the bounded change. UBS findings remain recorded without suppression.
+- [ ] Complete the original performance, tracker, native and final proof gates;
+  this repair does not replace their missing evidence.
+
+Evidence: `/data/tmp/bv-insights-scope-20260909-gfypkwh8`; clean Go 1.25.5 binary
+SHA-256 `a86aa57a…`, revision `f24e2df7`, `vcs.modified=false`.
+
 ## Actual-issue graph suggestions — 2026-09-09
 
 `bv-oonu.19` fixes missing prerequisites selected as dashboard work and the

@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..5efb1daf` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..f24e2df7` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,37 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`f24e2df7` fixes a related CLI scope leak (`bv-xbvo.11`): label-scoped
+`top_what_ifs` ranked an outside prerequisite ahead of selected issues, and
+top-k metadata counted that neighbor as a candidate. Two predicates now apply
+the existing candidate scope. Hypothetical impact still includes blocked
+selected issues; the feasible top-k sequence retains full-source readiness.
+The README corrects its assertion that label-scoped metrics contain only
+matching issues: metrics and structural paths intentionally retain neighbors.
+
+Before the repair, seven of nine new analyzer cases and one of five new CLI
+cases fail on candidate IDs/counts. Afterward, the complete analysis and CLI
+packages pass 924 top-level tests with twelve existing skips: ten opt-in
+performance tests, the golden generator, and an explicitly skipped
+self-reference test. Six CLI scoping tests with 61 subcases pass without skips.
+Build/vet and first-party formatting pass. UBS exits 1 with two critical
+matches for unchanged intentional shell-execution tests and three warnings;
+the warnings concern existing loop/cancellation heuristics and the scanner's
+four-file workspace lacking `go.mod`. Findings remain unsuppressed.
+
+Fresh solo replay at the committed revision passes all nine analyzer cases and
+all six scoping tests. A clean Go 1.25.5 binary has SHA-256
+`a86aa57a36e86bbcb4587aca749b6588919cf74bef786117d2bbf942405c00aa`.
+The same committed CLI regression still fails its label case against the
+retained original binary, with the other four cases passing.
+Comparing actual original/fixed CLI output on the retained reproduction gives
+identical complete unscoped JSON; scoped JSON differs only in the outside
+ranking entry and candidate count. This is bounded fixture evidence, not an
+independent review or the missing full performance/native/tracker proof.
+Logs and binaries are retained in
+`/data/tmp/bv-insights-scope-20260909-gfypkwh8`. `75f70440` recorded the preceding
+dashboard verification and tracker closure; neither commit creates a release.
 
 `5efb1daf` fixes dashboard candidate selection before graph optimization
 (`bv-oonu.19`). The original six-issue browser fixture chooses a missing

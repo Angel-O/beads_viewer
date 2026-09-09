@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`5efb1daf`](https://github.com/Dicklesworthstone/beads_viewer/commit/5efb1daf3f3f61fe2122ba4c5033deb438b4db2f).
+commits through [`f24e2df7`](https://github.com/Dicklesworthstone/beads_viewer/commit/f24e2df76c0af757f0a0322bccd78f1d62ed63c5).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -83,6 +83,11 @@ the latest tag, including installer changes usable with already released binarie
   exported full-source readiness snapshot. The rebuilt WASM preserves results
   for callers without candidate restrictions (`bv-oonu.19`;
   [candidate selection repair](https://github.com/Dicklesworthstone/beads_viewer/commit/5efb1daf3f3f61fe2122ba4c5033deb438b4db2f)).
+- Label-scoped insights rank hypothetical completions only for selected issues;
+  neighboring context can no longer take a result slot. Top-k candidate counts
+  use the same selection, while graph metrics and unresolved prerequisites
+  retain their context (`bv-xbvo.11`;
+  [scoped ranking repair](https://github.com/Dicklesworthstone/beads_viewer/commit/f24e2df76c0af757f0a0322bccd78f1d62ed63c5)).
 
 ### Dependency inspection and documentation
 
