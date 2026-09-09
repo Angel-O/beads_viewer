@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,148 @@ func TestExportPagesRecipeScope(t *testing.T) {
 				t.Fatalf("exported IDs=%v want=%v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExportPagesWatchUsesLoadedSource(t *testing.T) {
+	bv := buildBvBinary(t)
+	stageViewerAssets(t, bv)
+	for _, tc := range []struct {
+		name     string
+		rejected string
+		explicit bool
+		sqlite   bool
+	}{
+		{"invalid-jsonl", "beads.jsonl", false, false},
+		{"invalid-sqlite", "beads.db", false, false},
+		{"explicit-jsonl", "beads.jsonl", true, false},
+		{"explicit-sqlite", "beads.jsonl", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("BEADS_DIR", "")
+			t.Setenv("BEADS_DB", "")
+			writeIssuesJSONL(t, root, `{"id":"before","title":"Before refresh","status":"open","issue_type":"task"}`+"\n")
+			selected := filepath.Join(root, ".beads", "issues.jsonl")
+			var sourceDB *sql.DB
+			if tc.sqlite {
+				selected = filepath.Join(root, ".beads", "selected.db")
+				var err error
+				sourceDB, err = sql.Open("sqlite", selected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer sourceDB.Close()
+				if _, err := sourceDB.Exec(`CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL);
+					INSERT INTO issues VALUES ('before', 'Before refresh', 'open')`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rejected := filepath.Join(root, ".beads", tc.rejected)
+			if err := os.WriteFile(rejected, []byte("{invalid\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// A deterministic freshness ordering, independent of filesystem clock resolution.
+			older := time.Unix(1_700_000_000, 0)
+			if err := os.Chtimes(selected, older, older); err != nil {
+				t.Fatal(err)
+			}
+			newer := older.Add(time.Hour)
+			if err := os.Chtimes(rejected, newer, newer); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(root, "export")
+			args := []string{"--export-pages", output, "--watch-export", "--pages-include-history=false", "--no-hooks"}
+			if tc.explicit {
+				args = append(args, "--db", selected)
+			}
+			logPath := filepath.Join(root, "watch.log")
+			log, err := os.Create(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer log.Close()
+			cmd := exec.Command(bv, args...)
+			cmd.Dir = root
+			cmd.Stdout, cmd.Stderr = log, log
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait(); close(done) }()
+			t.Cleanup(func() {
+				_ = cmd.Process.Signal(os.Interrupt)
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					_ = cmd.Process.Kill()
+					<-done
+				}
+			})
+			waitForPublication := func(id string, claimSafe bool) {
+				t.Helper()
+				deadline := time.Now().Add(15 * time.Second)
+				for time.Now().Before(deadline) {
+					data, err := os.ReadFile(filepath.Join(output, "data", "triage.json"))
+					var got struct {
+						SourcePath string `json:"source_path"`
+						Authority  struct {
+							ClaimSafe bool `json:"claim_safe"`
+						} `json:"source_authority"`
+						Recommendations []struct{ ID string } `json:"recommendations"`
+					}
+					logs, _ := os.ReadFile(logPath)
+					if err == nil && json.Unmarshal(data, &got) == nil && len(got.Recommendations) == 1 && got.Recommendations[0].ID == id && strings.Contains(string(logs), "To preview with auto-refresh") {
+						if got.SourcePath != selected || got.Authority.ClaimSafe != claimSafe {
+							t.Fatalf("source/authority mismatch: %s\n%s", data, logs)
+						}
+						if !strings.Contains(string(logs), "Watching: "+selected) || strings.Contains(string(logs), "Watching: "+rejected) {
+							t.Fatalf("watch source differs from loaded source %s:\n%s", selected, logs)
+						}
+						t.Logf("published %s from %s, claim_safe=%v", id, selected, claimSafe)
+						return
+					}
+					select {
+					case err := <-done:
+						t.Fatalf("watch exited before publishing %s: %v\n%s", id, err, logs)
+					default:
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+				logs, _ := os.ReadFile(logPath)
+				t.Fatalf("watch did not publish %s from %s\n%s", id, selected, logs)
+			}
+			waitForPublication("before", tc.explicit)
+			// The second mutation must arrive through the watcher after the
+			// startup settle recheck has already published the first mutation.
+			for _, id := range []string{"after", "again"} {
+				if sourceDB != nil {
+					if _, err := sourceDB.Exec(`UPDATE issues SET id=?, title=?`, id, id); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					writeIssuesJSONL(t, root, fmt.Sprintf("{\"id\":%q,\"title\":%q,\"status\":\"open\",\"issue_type\":\"task\"}\n", id, id))
+				}
+				waitForPublication(id, true)
+			}
+		})
+	}
+}
+
+func TestExportPagesHistoricalCannotWatch(t *testing.T) {
+	bv := buildBvBinary(t)
+	root := t.TempDir()
+	output := filepath.Join(root, "historical-export")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bv, "--as-of", "HEAD", "--export-pages", output, "--watch-export")
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err == nil || ctx.Err() != nil || !strings.Contains(string(out), "--watch-export cannot be combined with --as-of") {
+		t.Fatalf("expected early historical watch refusal, got err=%v timeout=%v\n%s", err, ctx.Err(), out)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("invalid historical watch created an export: %v", err)
 	}
 }
 

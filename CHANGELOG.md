@@ -29,6 +29,11 @@ the latest tag, including installer changes usable with already released binarie
 
 ### Workflow data and static dashboards
 
+- Live TUI refreshes and single-repository watched exports now use the source
+  that successfully loaded at startup. A corrupt newer file can no longer
+  redirect the watcher away from its valid fallback. Explicit JSONL and SQLite
+  selection remains supported. Historical `--as-of` exports reject
+  `--watch-export` before writing files (`bv-oonu.20`).
 - SQLite and JSONL loading now retain nonblank custom workflow statuses and
   relationship types. `conditional-blocks` and `waits-for` affect blocking
   analysis; custom statuses do not automatically become claimable

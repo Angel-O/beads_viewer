@@ -10,6 +10,38 @@ checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
+## September 9 live-source follow-up
+
+`bv-oonu.20` binds TUI and single-repository Pages watchers to the successful
+startup `LoadResult.Source.Path`. It removes a second, unvalidated discovery
+pass that could choose a corrupt newer source instead of the loaded fallback.
+Historical `--as-of` exports reject live watch mode before loading or writing.
+The version stays unreleased; live GitHub metadata still identifies v0.24.1
+as published on September 8 at 00:28:07 UTC.
+
+Evidence is retained in `/data/tmp/bv-watch-source-20260909-n5wgm1md`.
+The old clean binary renders initial fallback data but misses its TUI update.
+The old-source RCH test identifies the wrong SQLite watch path; its JSONL case
+separately times out during export. One old-binary Pages mutation is consumed
+by the startup settle recheck, so it does not prove notification delivery.
+The new test requires two successive edits, including a real explicit SQLite
+source, and verifies source authority as well as the published issue IDs.
+
+The complete export cohort passes 40 tests and nine subcases. Package checks
+pass 225 tests; four existing TOON tests skip because this worker lacks `tru`.
+Build and vet pass through RCH. The initial hz3 run was cancelled during severe
+disk I/O pressure; verification moved to vmi1153651 with unchanged deadlines.
+The new TUI test initially lacked real terminal sizing; explicit 110-by-35
+PTY sizing makes both foreground and background refresh cases pass. Independent
+review also caught an ambiguous title match in the existing Flow journey;
+its waits now require the detail heading before sending Escape. The original
+failures remain recorded. The final five-journey cohort passes all three
+repetitions: 15 top-level runs, 18 subcases, no failures or skips. UBS remains
+nonzero: its worker-side regex scan classifies console/help output as XSS,
+reports a missing module in its temporary shadow, and misses the existing
+timer Stop/Reset. The source review records these limitations without
+suppressing findings. Exact-commit behavioral verification is pending.
+
 ## September 9 dashboard follow-up
 
 `06cc108f` repairs exponential capacity path enumeration on acyclic graphs

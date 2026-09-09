@@ -1900,6 +1900,11 @@ func main() {
 			os.Exit(1)
 		}
 
+		if *watchExport && *asOf != "" {
+			fmt.Fprintln(os.Stderr, "Error: --watch-export cannot be combined with --as-of; omit --watch-export to export a fixed historical snapshot.")
+			os.Exit(1)
+		}
+
 		// CPU profiling support
 		var stopCPUProfile func()
 		if *cpuProfile != "" {
@@ -2727,9 +2732,10 @@ func main() {
 			if len(sourceTombstoneIDs) == 0 {
 				unfilteredDataHash = source.DataHash
 			}
-			// Get the selected source file for live reload.
+			// Bind live reload to the source that actually loaded. Rediscovery
+			// could select a fresher candidate that validation already rejected.
+			beadsPath = singleSourceLoad.Source.Path
 			beadsDir, _ := loader.GetBeadsDir("")
-			beadsPath, _ = resolveSingleRepoWatchFile("")
 
 			// Automatically ensure .bv/ is git-ignored to prevent polluting git
 			// with search indexes, baselines, and other bv-specific files.
@@ -3246,13 +3252,8 @@ func main() {
 						os.Exit(1)
 					}
 				} else {
-					// Single-repo mode: watch the same JSONL file that was selected for loading.
-					watchFile, err := resolveSingleRepoWatchFile(projectDir)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						os.Exit(1)
-					}
-					watchFiles = append(watchFiles, watchFile)
+					// Share the successful startup source with the TUI watcher.
+					watchFiles = append(watchFiles, beadsPath)
 				}
 
 				// Print watched files
@@ -8075,45 +8076,6 @@ func robotFlagExampleForm(flag string) string {
 		flag = strings.ReplaceAll(flag, replacement.old, replacement.new)
 	}
 	return flag
-}
-
-func resolveSingleRepoWatchFile(projectDir string) (string, error) {
-	if source, ok, err := datasource.ExplicitBeadsDBSource(); err != nil {
-		return "", err
-	} else if ok {
-		return source.Path, nil
-	}
-
-	beadsDir, err := loader.GetBeadsDir(projectDir)
-	if err != nil {
-		return "", fmt.Errorf("getting beads directory: %w", err)
-	}
-
-	// Watch whatever source the smart loader actually selected so file events
-	// match the source bv reads from. For br repos this is typically the
-	// SQLite beads.db; without this, the watcher fires only on JSONL writes
-	// even though br updates land in SQLite first.
-	//
-	// We only need the selected source's PATH here, not a content validation:
-	// DiscoverSources already returns sources sorted freshest-first (ties broken
-	// by priority), which is exactly what SelectBestSource picks among valid
-	// candidates. Skipping ValidateAfterDiscovery avoids a redundant full parse
-	// of the 1.9MB issues.jsonl on the robot path (it is parsed once by the
-	// loader for the actual data load).
-	sources, discoverErr := datasource.DiscoverSources(datasource.DiscoveryOptions{
-		BeadsDir:               beadsDir,
-		RepoPath:               projectDir,
-		ValidateAfterDiscovery: false,
-	})
-	if discoverErr == nil && len(sources) > 0 && sources[0].Path != "" {
-		return sources[0].Path, nil
-	}
-
-	beadsPath, err := loader.FindJSONLPath(beadsDir)
-	if err != nil {
-		return "", fmt.Errorf("finding Beads JSONL file: %w", err)
-	}
-	return beadsPath, nil
 }
 
 func agentIntentAliasDocs() []map[string]string {

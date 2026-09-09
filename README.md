@@ -3858,7 +3858,7 @@ The loader (`pkg/loader/loader.go`, `internal/datasource`) doesn't blindly open 
 1.  **Explicit override:** `--db <file-or-dir>`, then `BEADS_DB`, then `BEADS_DIR` bypass discovery entirely. `--db` accepts a database file or a `.beads` directory.
 2.  **Redirect:** If `.beads/redirect` exists, its target directory is followed (up to 10 hops, loops and missing targets are errors) so bv reads the same store `br where` reports.
 3.  **Allowlist:** Only three file names are ever considered: `issues.jsonl` (preferred), `beads.jsonl` (legacy), and `beads.base.jsonl` (`loader.PreferredJSONLNames`). Sidecars that sit beside them (`sync_base.jsonl`, `sprints.jsonl`, `correlation_feedback.jsonl`, `deletions.jsonl`, backups, merge artifacts) never load as issues.
-4.  **Freshness gate:** Robot loads pick the most recently modified candidate and fall through to the next name when a file fails the malformed-line rate check; the TUI loader takes the first non-empty name in preference order.
+4.  **Freshness gate:** Robot and TUI startup share the smart loader: it tries candidates in freshness order and falls through when validation rejects a source. The TUI and single-repository watched Pages export watch the source that successfully loaded, including a valid fallback or an explicitly selected database. Historical exports with `--as-of` are fixed snapshots and cannot use `--watch-export`.
 
 ### 2. Robust Parsing
 The JSONL parser is designed to be **Lossy-Tolerant**.

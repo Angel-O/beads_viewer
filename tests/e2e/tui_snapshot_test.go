@@ -15,6 +15,89 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestTUIReloadUsesLoadedFallbackSource(t *testing.T) {
+	skipIfNoScript(t)
+	for _, background := range []string{"0", "1"} {
+		t.Run("background="+background, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("BEADS_DIR", "")
+			t.Setenv("BEADS_DB", "")
+			t.Setenv("BV_BACKGROUND_MODE", background)
+			t.Setenv("BV_NO_UPDATE_CHECK", "1")
+			writeIssuesJSONL(t, dir, `{"id":"before","title":"Before refresh","status":"open","issue_type":"task"}`+"\n")
+			selected := filepath.Join(dir, ".beads", "issues.jsonl")
+			rejected := filepath.Join(dir, ".beads", "beads.jsonl")
+			if err := os.WriteFile(rejected, []byte("{invalid\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			older := time.Unix(1_700_000_000, 0)
+			if err := os.Chtimes(selected, older, older); err != nil {
+				t.Fatal(err)
+			}
+			newer := older.Add(time.Hour)
+			if err := os.Chtimes(rejected, newer, newer); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			bv := buildBvBinary(t)
+			cmd := scriptTUICommand(ctx, bv)
+			if runtime.GOOS == "linux" {
+				for i, arg := range cmd.Args {
+					if arg == "-c" && i+1 < len(cmd.Args) {
+						cmd.Args[i+1] = "stty columns 110 rows 35 && " + cmd.Args[i+1]
+						break
+					}
+				}
+			} else if runtime.GOOS == "darwin" {
+				cmd = exec.CommandContext(ctx, "script", "-q", "/dev/null", "sh", "-c", "stty columns 110 rows 35 && exec \"$@\"", "sh", bv)
+			}
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLUMNS=110", "LINES=35", "BV_TUI_AUTOCLOSE_MS=13000")
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			path := filepath.Join(dir, "reload-pty.log")
+			output, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+			cmd.Stdout, cmd.Stderr = output, output
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			wait := make(chan error, 1)
+			go func() { wait <- cmd.Wait() }()
+			defer func() { cancel(); stdin.Close(); <-wait }()
+			offset := 0
+			waitForTitle := func(title string) {
+				t.Helper()
+				deadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) && ctx.Err() == nil {
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(ansi.Strip(string(raw[offset:])), title) {
+						t.Logf("background=%s rendered %q after byte %d", background, title, offset)
+						offset = len(raw)
+						return
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+				raw, _ := os.ReadFile(path)
+				t.Fatalf("TUI failed to render %q after selected source changed; selected=%s rejected=%s:\n%s", title, selected, rejected, raw)
+			}
+			waitForTitle("Before refresh")
+			writeIssuesJSONL(t, dir, `{"id":"after","title":"After refresh","status":"open","issue_type":"task"}`+"\n")
+			waitForTitle("After refresh")
+		})
+	}
+}
+
 func TestTUIFlowDependencyJourney(t *testing.T) {
 	skipIfNoScript(t)
 	dir := t.TempDir()
@@ -104,14 +187,16 @@ func TestTUIFlowDependencyJourney(t *testing.T) {
 		t.Fatalf("unrelated label member leaked into relationship frame:\n%s", frame)
 	}
 	press("\r")
-	waitFor("Database migration")
+	// Titles also appear in relationship rows. Require the detail-only heading
+	// before Escape so a selection redraw cannot satisfy the navigation check.
+	waitFor("📋 Database migration")
 	press("\x1b")
 	waitFor("Dependencies involving:")
 	press("j")
 	// Wait for the endpoint selection to render before entering its details.
 	time.Sleep(50 * time.Millisecond)
 	press("\r")
-	waitFor("API rollout")
+	waitFor("📋 API rollout")
 	press("\x1b")
 	waitFor("Dependencies involving:")
 }

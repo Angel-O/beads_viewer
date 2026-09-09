@@ -303,20 +303,6 @@ func TestUnknownFlagErrorSuggestsNearestFlag(t *testing.T) {
 	}
 }
 
-func TestResolveSingleRepoWatchFile_RespectsExplicitBeadsDBFile(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "selected.db")
-	if err := os.WriteFile(dbPath, []byte("placeholder"), 0644); err != nil {
-		t.Fatalf("write selected db: %v", err)
-	}
-	t.Setenv(loader.BeadsDBEnvVar, dbPath)
-
-	got, err := resolveSingleRepoWatchFile(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolveSingleRepoWatchFile: %v", err)
-	}
-	requireString(t, got, dbPath)
-}
-
 func TestResolvePagesSource_RespectsExplicitBeadsDBFile(t *testing.T) {
 	beadsDir := t.TempDir()
 	selectedPath := filepath.Join(beadsDir, "selected.jsonl")
@@ -804,26 +790,6 @@ func TestEnumFlagErrorSuggestsNearestValue(t *testing.T) {
 	if !strings.Contains(err.Error(), `did you mean "json"?`) {
 		t.Fatalf("missing did-you-mean hint: %v", err)
 	}
-}
-
-func TestResolveSingleRepoWatchFileUsesDiscoveredBeadsJSONL(t *testing.T) {
-	tmpDir := t.TempDir()
-	beadsDir := filepath.Join(tmpDir, ".beads")
-	if err := os.MkdirAll(beadsDir, 0755); err != nil {
-		t.Fatalf("mkdir .beads: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(`{"id":"legacy"}`+"\n"), 0644); err != nil {
-		t.Fatalf("write issues.jsonl: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "beads.jsonl"), []byte(`{"id":"canonical"}`+"\n"), 0644); err != nil {
-		t.Fatalf("write beads.jsonl: %v", err)
-	}
-
-	watchFile, err := resolveSingleRepoWatchFile(tmpDir)
-	if err != nil {
-		t.Fatalf("resolveSingleRepoWatchFile: %v", err)
-	}
-	requireString(t, filepath.Base(watchFile), "beads.jsonl")
 }
 
 func TestRobotCapabilitiesManifest(t *testing.T) {
