@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`4abf4bec`](https://github.com/Dicklesworthstone/beads_viewer/commit/4abf4bec7fac76dc0d9abb3443bd1c2a122b2a64).
+commits through [`c06fbfee`](https://github.com/Dicklesworthstone/beads_viewer/commit/c06fbfee8d4b494d2d35afc28baf6df94efe48ab).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -112,8 +112,8 @@ the latest tag, including installer changes usable with already released binarie
   decoder-cache race repair that no `-race` test exercises. A new e2e
   check fails when `vendor/` and `third_party/` disagree, and
   `docs/RELEASING.md` documents editing, upgrading and retiring a patch.
-  Built binaries are unchanged: the vendored bytes are byte-identical to the
-  previously committed patched files.
+  The vendored package sources remain byte-identical to the previously
+  committed patched files.
 
 ### Dependency inspection and documentation
 

@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..4abf4bec` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..c06fbfee` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -42,6 +42,23 @@ and `vcs.modified=false`. Durable evidence is in
 `/run/user/1000/bv-preserved-builds-20260909/bv-forecast`.
 This is bounded fixture verification by the author, not independent review
 or completion of the original performance, tracker, native or final gates.
+
+Publication encountered a concurrent upstream commit, `d76172b6`, which preserves
+patched modules under `third_party/` and updates two tests. Merge `c06fbfee`
+retains both workstreams. Its 125 command tests and fourteen of fifteen selected
+CLI/integration tests pass, including the new replacement/vendor comparison;
+all 94 subcases pass. The repository-history test skips remotely because the
+worker lacks `.beads/issues.jsonl`. Build/vet and first-party formatting pass.
+The incoming stale-claim test conditionally skips old tracker versions; that
+condition did not trigger on this worker, but does not replace the still-open
+transactional-claim proof. UBS on the three incoming test files exits 1 with
+two existing intentional shell-execution matches and the missing-module warning.
+The unchanged repository-history test passes locally against the merged tree:
+all three correlation strategies contribute, the frozen 500-commit window and
+boundary pair are preserved, and the existing 15-second deadline passes. The
+remote skip remains a separate result. The integration review also narrows the
+incoming changelog's binary-equivalence wording to the verified unchanged
+vendored package sources; build metadata can change executable bytes.
 
 `ab144521` repairs the capacity handler's separate readiness calculation
 (`bv-xbvo.12`). Global candidate scope now intersects the capacity label, while
