@@ -1544,6 +1544,25 @@ function getTopBlockers(limit = 10) {
 }
 
 /**
+ * Rank exported issue rows by full-graph scores. Missing or filtered dependency
+ * endpoints remain in the graph, but do not consume the visible issue limit.
+ */
+function getRankedGraphIssues(values, field, limit, include = () => true) {
+  if (!GRAPH_STATE.ready || !values?.length || limit <= 0) return [];
+
+  const ranked = execQuery('SELECT id FROM issue_overview_mv ORDER BY id')
+    .map(({ id }) => ({ id, value: values[GRAPH_STATE.nodeMap.get(id)] }))
+    .filter(row => row.value !== undefined && include(row.value));
+  ranked.sort((a, b) => b.value - a.value);
+
+  return ranked.slice(0, limit).map(row => {
+    const issue = getIssue(row.id);
+    issue[field] = row.value;
+    return issue;
+  });
+}
+
+/**
  * Get top issues by betweenness centrality (bottlenecks)
  */
 function getTopByBetweenness(limit = 10) {
@@ -1564,19 +1583,7 @@ function getTopByBetweenness(limit = 10) {
   if (GRAPH_STATE.ready) {
     const betweenness = GRAPH_STATE.graph.betweenness();
     if (betweenness && betweenness.length > 0) {
-      // Get top N by betweenness value
-      const indexed = Array.from(betweenness).map((val, idx) => ({ idx, val }));
-      indexed.sort((a, b) => b.val - a.val);
-      const topNodes = indexed.slice(0, limit);
-
-      return topNodes.map(node => {
-        const id = GRAPH_STATE.graph.nodeId(node.idx);
-        const issue = getIssue(id);
-        if (issue) {
-          issue.betweenness = node.val;
-        }
-        return issue;
-      }).filter(Boolean);
+      return getRankedGraphIssues(betweenness, 'betweenness', limit);
     }
   }
 
@@ -1604,18 +1611,7 @@ function getTopByCriticalPath(limit = 10) {
   if (GRAPH_STATE.ready) {
     const heights = GRAPH_STATE.graph.criticalPathHeights();
     if (heights && heights.length > 0) {
-      const indexed = Array.from(heights).map((val, idx) => ({ idx, val }));
-      indexed.sort((a, b) => b.val - a.val);
-      const topNodes = indexed.slice(0, limit);
-
-      return topNodes.map(node => {
-        const id = GRAPH_STATE.graph.nodeId(node.idx);
-        const issue = getIssue(id);
-        if (issue) {
-          issue.critical_path_depth = node.val;
-        }
-        return issue;
-      }).filter(Boolean);
+      return getRankedGraphIssues(heights, 'critical_path_depth', limit);
     }
   }
 
@@ -1633,19 +1629,7 @@ function getTopByHITSHub(limit = 10) {
     const hitsResult = GRAPH_STATE.graph.hitsDefault();
     if (!hitsResult || !hitsResult.hubs) return [];
 
-    const hubScores = Array.from(hitsResult.hubs);
-    const indexed = hubScores.map((val, idx) => ({ idx, val }));
-    indexed.sort((a, b) => b.val - a.val);
-    const topNodes = indexed.slice(0, limit);
-
-    return topNodes.map(node => {
-      const id = GRAPH_STATE.graph.nodeId(node.idx);
-      const issue = getIssue(id);
-      if (issue) {
-        issue.hits_hub = node.val;
-      }
-      return issue;
-    }).filter(Boolean);
+    return getRankedGraphIssues(hitsResult.hubs, 'hits_hub', limit);
   } catch (e) {
     console.warn('[viewer] getTopByHITSHub failed:', e);
     return [];
@@ -1663,19 +1647,7 @@ function getTopByHITSAuth(limit = 10) {
     const hitsResult = GRAPH_STATE.graph.hitsDefault();
     if (!hitsResult || !hitsResult.authorities) return [];
 
-    const authScores = Array.from(hitsResult.authorities);
-    const indexed = authScores.map((val, idx) => ({ idx, val }));
-    indexed.sort((a, b) => b.val - a.val);
-    const topNodes = indexed.slice(0, limit);
-
-    return topNodes.map(node => {
-      const id = GRAPH_STATE.graph.nodeId(node.idx);
-      const issue = getIssue(id);
-      if (issue) {
-        issue.hits_auth = node.val;
-      }
-      return issue;
-    }).filter(Boolean);
+    return getRankedGraphIssues(hitsResult.authorities, 'hits_auth', limit);
   } catch (e) {
     console.warn('[viewer] getTopByHITSAuth failed:', e);
     return [];
@@ -1693,18 +1665,7 @@ function getTopByKCore(limit = 10) {
     const kcoreValues = GRAPH_STATE.graph.kcore();
     if (!kcoreValues || kcoreValues.length === 0) return [];
 
-    const indexed = Array.from(kcoreValues).map((val, idx) => ({ idx, val }));
-    indexed.sort((a, b) => b.val - a.val);
-    const topNodes = indexed.slice(0, limit);
-
-    return topNodes.map(node => {
-      const id = GRAPH_STATE.graph.nodeId(node.idx);
-      const issue = getIssue(id);
-      if (issue) {
-        issue.kcore = node.val;
-      }
-      return issue;
-    }).filter(Boolean);
+    return getRankedGraphIssues(kcoreValues, 'kcore', limit);
   } catch (e) {
     console.warn('[viewer] getTopByKCore failed:', e);
     return [];
@@ -1747,33 +1708,12 @@ function getIssuesBySlack(limit = 10, showZeroSlack = true) {
     const slackValues = GRAPH_STATE.graph.slack();
     if (!slackValues || slackValues.length === 0) return [];
 
-    const indexed = Array.from(slackValues).map((val, idx) => ({ idx, val }));
-
-    if (showZeroSlack) {
-      // Show critical path items (zero slack)
-      const criticalPath = indexed.filter(item => item.val === 0);
-      return criticalPath.slice(0, limit).map(node => {
-        const id = GRAPH_STATE.graph.nodeId(node.idx);
-        const issue = getIssue(id);
-        if (issue) {
-          issue.slack = 0;
-          issue.on_critical_path = true;
-        }
-        return issue;
-      }).filter(Boolean);
-    } else {
-      // Show items with most slack (most flexible scheduling)
-      indexed.sort((a, b) => b.val - a.val);
-      return indexed.slice(0, limit).map(node => {
-        const id = GRAPH_STATE.graph.nodeId(node.idx);
-        const issue = getIssue(id);
-        if (issue) {
-          issue.slack = node.val;
-          issue.on_critical_path = node.val === 0;
-        }
-        return issue;
-      }).filter(Boolean);
+    const issues = getRankedGraphIssues(slackValues, 'slack', limit,
+      value => !showZeroSlack || value === 0);
+    for (const issue of issues) {
+      issue.on_critical_path = issue.slack === 0;
     }
+    return issues;
   } catch (e) {
     console.warn('[viewer] getIssuesBySlack failed:', e);
     return [];

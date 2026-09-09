@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 
 const [browser, bundle, artifacts, mode = 'journeys', updatedBundle, projectBundle] = process.argv.slice(2);
 assert.ok(browser && bundle && artifacts, 'browser, bundle, artifacts required');
-assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if', 'hits', 'readiness'].includes(mode), 'unknown browser test mode');
+assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if', 'hits', 'readiness', 'metric-visibility'].includes(mode), 'unknown browser test mode');
 fs.mkdirSync(artifacts, { recursive: true });
 const records = [];
 let brokenAsset = '', changedAsset = '', workerRevision = 0, chrome, server, socket;
@@ -286,9 +286,63 @@ async function hitsJourney(page) {
   }
   await click(page, 'a[href="#/insights"]');
   assert.deepEqual(await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]'), before, 'ranking and navigation do not mutate graph');
+  const slack = await evaluate(page, 'Array.from(GRAPH_STATE.graph.slack()).map((value,idx)=>({id:GRAPH_STATE.graph.nodeId(idx),value})).filter(row=>getIssue(row.id))');
+  assert.ok(slack.some(row=>row.value > 0), 'asymmetric fixture includes flexible work');
+  assert.deepEqual(await evaluate(page, 'getIssuesBySlack(100,true).map(i=>i.id).sort()'), slack.filter(row=>row.value===0).map(row=>row.id).sort(), 'zero-slack filter excludes flexible work');
+  assert.deepEqual(await evaluate(page, 'getIssuesBySlack(100,false).map(i=>i.slack)'), slack.map(row=>row.value).sort((a,b)=>b-a), 'flexible-work list preserves all actual slack scores');
   await capture(page, 'hits-panels');
   clean(page);
   console.log(`PASS: ${page.name} actual HITS hub/authority rankings, rendered scores and issue navigation`);
+}
+
+// Six actual issues: rank-root and five rank-branch-N dependents. Every branch
+// also depends on eleven missing-NN endpoints. Those endpoints remain in the
+// graph, but must not crowd actual issues out of a limited ranking panel.
+async function metricVisibilityJourney(page) {
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === 6 && ${app}.graphReady`, 'six visible issues and actual graph WASM');
+  await waitFor(page, '!!navigator.serviceWorker.controller', 'ranking worker controls page');
+  await delay(500);
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.graphReady`, 'ranking app after worker activation');
+  await click(page, 'a[href="#/insights"]');
+  const before = await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]');
+  assert.deepEqual(before, [17, 60], 'missing endpoints participate in real graph analysis');
+  const visibleIDs = ['rank-branch-1', 'rank-branch-2', 'rank-branch-3', 'rank-branch-4', 'rank-branch-5', 'rank-root'];
+  const initial = await evaluate(page, `JSON.parse(JSON.stringify(${app}.topByHITSAuth.map(i=>({id:i.id,score:i.hits_auth}))))`);
+  console.log(`${page.name} authority ranking:`, JSON.stringify(initial));
+  assert.equal(initial.length, 6, 'authority ranking retains all six actual issues despite eleven missing endpoints');
+  assert.equal(initial[0].id, 'rank-root', 'real prerequisite leads authorities');
+  assert.ok(initial[0].score > 0, 'real prerequisite has positive authority');
+  for (const [fn, field, vector, suffix] of [
+    ['getTopByHITSAuth', 'hits_auth', 'GRAPH_STATE.graph.hitsDefault().authorities', ''],
+    ['getTopByHITSHub', 'hits_hub', 'GRAPH_STATE.graph.hitsDefault().hubs', ''],
+    ['getTopByKCore', 'kcore', 'GRAPH_STATE.graph.kcore()', ''],
+    ['getTopByBetweenness', 'betweenness', 'GRAPH_STATE.graph.betweenness()', ''],
+    ['getIssuesBySlack', 'slack', 'GRAPH_STATE.graph.slack()', ',true'],
+    ['getIssuesBySlack', 'slack', 'GRAPH_STATE.graph.slack()', ',false'],
+  ]) {
+    const all = await evaluate(page, `${fn}(100${suffix}).map(i=>({id:i.id,score:i.${field}}))`);
+    assert.deepEqual(all.map(i=>i.id).sort(), visibleIDs, `${fn}${suffix}: each actual issue appears once`);
+    const raw = await evaluate(page, `Array.from(${vector}).map((score,idx)=>({id:GRAPH_STATE.graph.nodeId(idx),score}))`);
+    for (const row of all) {
+      assert.equal(row.score, raw.find(r=>r.id===row.id).score, `${fn}: preserves actual WASM score for ${row.id}`);
+      assert.ok(Number.isFinite(row.score), `${fn}: finite score`);
+    }
+    assert.ok(all.every((r,i)=>i===0 || all[i-1].score>=r.score), `${fn}: descending order`);
+    for (const limit of [0, 1, 3, 10]) {
+      assert.deepEqual(await evaluate(page, `${fn}(${limit}${suffix}).map(i=>i.id)`), all.slice(0,limit).map(i=>i.id), `${fn}${suffix}: limit counts actual issue rows`);
+    }
+  }
+  const panel = `[...document.querySelectorAll('.metric-panel-premium')].find(e=>e.querySelector('h3')?.textContent.trim()==='HITS Authorities')`;
+  await waitFor(page, `${panel} && [...${panel}.querySelectorAll('.metric-item')].filter(${visible}).length === 5`, 'five rendered authority cards');
+  const cards = await evaluate(page, `[...${panel}.querySelectorAll('.metric-item')].filter(${visible}).map(e=>e.querySelector('.metric-item-title').textContent)`);
+  assert.deepEqual(cards, ['Real prerequisite', 'Visible branch 1', 'Visible branch 2', 'Visible branch 3', 'Visible branch 4']);
+  await capture(page, 'authority-ranking');
+  await click(page, 'template[x-for*="topByHITSAuth.slice"] + .metric-item');
+  await waitFor(page, `${app}.selectedIssue?.id === 'rank-root'`, 'authority card opens actual issue');
+  assert.deepEqual(await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]'), before, 'ranking does not remove missing graph context');
+  await capture(page, 'authority-detail');
+  clean(page);
+  console.log(`PASS: ${page.name} visible ranking limits, raw scores, rendered cards and issue navigation`);
 }
 
 // The seven-task fixture has root<-child<-leaf, child also depending on closed
@@ -547,6 +601,19 @@ try {
   } else if (mode === 'hits') {
     await hitsJourney(desktop);
     await hitsJourney(await openPage('mobile-360', 360));
+  } else if (mode === 'metric-visibility') {
+    await metricVisibilityJourney(desktop);
+    await metricVisibilityJourney(await openPage('mobile-360', 360));
+    if (updatedBundle) {
+      activeBundle = updatedBundle;
+      const empty = await openPage('empty-ranking');
+      await waitFor(empty, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === 0 && ${app}.graphReady`, 'empty graph initialized');
+      for (const fn of ['getTopByHITSAuth', 'getTopByHITSHub', 'getTopByKCore', 'getTopByBetweenness', 'getTopByCriticalPath', 'getIssuesBySlack']) {
+        assert.deepEqual(await evaluate(empty, `${fn}(10)`), [], `${fn}: actual empty export has no ranked issues`);
+      }
+      clean(empty);
+      console.log('PASS: empty export metric queries');
+    }
   } else if (mode === 'what-if') {
     await whatIfJourney(desktop);
     if (updatedBundle) {

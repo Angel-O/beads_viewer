@@ -2832,6 +2832,10 @@ full loaded source. Watch mode reapplies these selections after each source
 reload, including newly matching issues and empty selections. The dashboard
 then uses its own display sort for those exported rows.
 
+WASM-backed issue rankings count exported issues toward their display limits.
+Missing or filtered dependency endpoints still contribute to graph metrics,
+but do not take the place of issue cards in the ranking panels.
+
 The dashboard's Actionable count, Ready filter and quick wins use readiness at
 export time: open or in-progress work whose deferral has elapsed and whose
 direct and inherited parent gates are satisfied in the full source. Missing
