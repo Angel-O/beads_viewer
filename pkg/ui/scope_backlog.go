@@ -3436,6 +3436,13 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		} else {
 			m.scopePicker.memberFocused = true
 		}
+	case "shift+tab":
+		if m.scopePicker.memberFocused {
+			m.scopePicker.memberFocused = false
+		} else {
+			m.focused = focusGlobalIssues
+			m.scopePicker.memberFocused = false
+		}
 	case "right", "]":
 		if m.scopePicker.MemberFocused() {
 			if m.scopePicker.MoveMemberScreen(1) {
@@ -3673,6 +3680,11 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if global {
 			m.focused = focusScopePicker
 			m.scopePicker.memberFocused = false
+		}
+	case "shift+tab":
+		if global {
+			m.focused = focusScopePicker
+			m.scopePicker.memberFocused = true
 		}
 	case "esc", "q":
 		if global {
