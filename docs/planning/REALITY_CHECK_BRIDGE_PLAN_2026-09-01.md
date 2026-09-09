@@ -1,5 +1,26 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Capacity readiness and selected backlog — 2026-09-09
+
+`bv-xbvo.12` connects capacity to the shared readiness authority and global
+candidate scope (`ab144521`). It also removes duplicate and non-blocking edges
+from direct bottlenecks and makes result ordering stable.
+
+- [x] Preserve original handler failures and five failing CLI scope cases.
+- [x] Verify source authority, lifecycle/deferral boundaries, resolved/missing
+  prerequisites, parent gates, label intersections, recipes and empty scope.
+- [x] Pass 124 command-package and eight capacity/scoping CLI tests, zero skips;
+  build/vet and first-party formatting pass. UBS findings remain unsuppressed.
+- [x] Fresh solo committed-revision replay passes; retained original still
+  fails. Three simple complete capacity JSON responses remain identical.
+- [x] Document the existing duration heuristic and what its selected graph
+  includes; update changelog and the granular Beads record.
+- [ ] Complete the original performance, tracker, native and final proof gates.
+  Capacity readiness does not establish those claims or provide a scheduler.
+
+Evidence: `/data/tmp/bv-capacity-readiness-20260909-9ydryzod`; clean Go 1.25.5
+binary SHA-256 `ae2a73f6…`, revision `ab144521`, `vcs.modified=false`.
+
 ## Scoped hypothetical rankings — 2026-09-09
 
 `bv-xbvo.11` applies the existing candidate scope before ranking hypothetical

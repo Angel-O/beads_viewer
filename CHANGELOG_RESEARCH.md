@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..f24e2df7` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..ab144521` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,35 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`ab144521` repairs the capacity handler's separate readiness calculation
+(`bv-xbvo.12`). Global candidate scope now intersects the capacity label, while
+the shared readiness index retains full-source prerequisite and lifecycle gates.
+Only distinct blocking edges between selected unresolved issues contribute to
+direct bottlenecks and the existing longest-chain duration heuristic. Sorted
+seeds, neighbors and bottleneck ties give stable output.
+
+Both new handler tests fail before the repair, including all seven readiness
+subcases; the real CLI fails five of seven new scope cases. Afterward, all 124
+command-package tests and eight capacity/scoping CLI tests pass, with 131 and
+68 subcases respectively and zero skips. Build/vet and first-party formatting
+pass; 49 existing vendor files remain listed by gofmt. UBS exits 1 with one
+critical and ten warnings: its cancellation checks miss the existing deferred
+cancel outside the conditional assignment; eight registration-invariant panics
+are intentional, and the three-file scanner workspace lacks `go.mod`.
+These findings remain recorded without suppressions or a clean-scanner claim.
+
+Fresh solo replay at the committed revision passes both handler tests and all
+eight CLI tests. The same CLI regression still fails five of seven cases against
+the retained original binary. In the original seven-row reproduction, both label
+forms now select six backlog items and exactly one actionable item. Three simple
+capacity outputs (one agent, three agents, and a capacity label) retain identical
+complete JSON against the original binary. This is bounded fixture evidence,
+not an independent review, a scheduler, or the missing performance/native/tracker
+proof. The clean Go 1.25.5 binary has SHA-256
+`ae2a73f69677ef8c05f6579abb0811f42636c7d117c17f49c0630bddb6d400ee`
+and `vcs.modified=false`. Logs and binaries are retained in
+`/data/tmp/bv-capacity-readiness-20260909-9ydryzod`.
 
 `f24e2df7` fixes a related CLI scope leak (`bv-xbvo.11`): label-scoped
 `top_what_ifs` ranked an outside prerequisite ahead of selected issues, and

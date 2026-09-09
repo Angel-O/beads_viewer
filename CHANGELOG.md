@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`f24e2df7`](https://github.com/Dicklesworthstone/beads_viewer/commit/f24e2df76c0af757f0a0322bccd78f1d62ed63c5).
+commits through [`ab144521`](https://github.com/Dicklesworthstone/beads_viewer/commit/ab144521b77114c45341733d5179009962cfb193).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -88,6 +88,13 @@ the latest tag, including installer changes usable with already released binarie
   use the same selection, while graph metrics and unresolved prerequisites
   retain their context (`bv-xbvo.11`;
   [scoped ranking repair](https://github.com/Dicklesworthstone/beads_viewer/commit/f24e2df76c0af757f0a0322bccd78f1d62ed63c5)).
+- Capacity reports now use full-source readiness and intersect global selection
+  with `--capacity-label`. Missing prerequisites, inherited parent gates and
+  parked/deferred work no longer produce false actionable counts. Direct
+  bottlenecks exclude non-blocking relationships, resolved endpoints and
+  duplicate pairs; result ordering is stable. The duration calculation remains
+  a heuristic (`bv-xbvo.12`;
+  [capacity repair](https://github.com/Dicklesworthstone/beads_viewer/commit/ab144521b77114c45341733d5179009962cfb193)).
 
 ### Dependency inspection and documentation
 
