@@ -72,6 +72,7 @@ func WithForcePoll(force bool) WatcherOption {
 // Watcher monitors a file for changes using fsnotify with polling fallback.
 type Watcher struct {
 	path             string
+	walPath          string
 	debounceDuration time.Duration
 	pollInterval     time.Duration
 	onChange         func()
@@ -86,6 +87,7 @@ type Watcher struct {
 	lastExists  bool
 	lastMtime   time.Time
 	lastSize    int64
+	lastWALInfo os.FileInfo
 
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -114,6 +116,13 @@ func NewWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 		onChange:         func() {},
 		onError:          func(error) {},
 		changeCh:         make(chan struct{}, 1),
+	}
+	// Match the SQLite extensions supported by the source loader. Committed
+	// changes can live only in this companion until a checkpoint updates path:
+	// https://www.sqlite.org/wal.html
+	switch strings.ToLower(filepath.Ext(absPath)) {
+	case ".db", ".sqlite", ".sqlite3":
+		w.walPath = absPath + "-wal"
 	}
 
 	for _, opt := range opts {
@@ -167,6 +176,17 @@ func (w *Watcher) Start() error {
 		w.lastExists = true
 		w.lastMtime = info.ModTime()
 		w.lastSize = info.Size()
+	}
+	w.lastWALInfo = nil
+	if w.walPath != "" {
+		info, err := os.Stat(w.walPath)
+		if err != nil && !os.IsNotExist(err) {
+			if os.IsPermission(err) {
+				return ErrPermission
+			}
+			return err
+		}
+		w.lastWALInfo = info
 	}
 
 	w.ctx, w.cancel = newRunContext()
@@ -332,8 +352,16 @@ func (w *Watcher) watchFsnotify(
 				return
 			}
 
-			// Only care about events for our specific file
 			eventFile := filepath.Base(event.Name)
+			if w.walPath != "" && eventFile == targetFile+"-wal" {
+				// WAL removal/rename is a normal checkpoint lifecycle event, not
+				// removal of the selected database. Ignore -shm: readers update it.
+				if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
+					w.scheduleChange(runGeneration)
+				}
+				continue
+			}
+			// Only care about this source and its exact WAL companion.
 			if eventFile != targetFile {
 				continue
 			}
@@ -411,12 +439,42 @@ func (w *Watcher) watchPolling(ctx context.Context, runGeneration uint64) {
 			}
 
 			changed, active := w.recordStat(runGeneration, info.ModTime(), info.Size())
+			walChanged := w.pollWAL(runGeneration)
 
-			if active && changed {
+			if active && (changed || walChanged) {
 				w.scheduleChange(runGeneration)
 			}
 		}
 	}
+}
+
+// pollWAL includes creation, replacement and checkpoint removal in the change
+// fingerprint while preserving the selected database path and run generation.
+func (w *Watcher) pollWAL(runGeneration uint64) bool {
+	if w.walPath == "" {
+		return false
+	}
+	info, err := os.Stat(w.walPath)
+	if err != nil && !os.IsNotExist(err) {
+		if os.IsPermission(err) {
+			w.reportError(runGeneration, ErrPermission)
+		} else {
+			w.reportError(runGeneration, err)
+		}
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.runIsActiveLocked(runGeneration) {
+		return false
+	}
+	previous := w.lastWALInfo
+	changed := (previous == nil) != (info == nil)
+	if previous != nil && info != nil {
+		changed = !previous.ModTime().Equal(info.ModTime()) || previous.Size() != info.Size() || !os.SameFile(previous, info)
+	}
+	w.lastWALInfo = info
+	return changed
 }
 
 // scheduleChange serializes access to the shared debouncer with Stop and

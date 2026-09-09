@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	_ "modernc.org/sqlite"
 )
 
 func TestDebouncer_CoalescesRapidTriggers(t *testing.T) {
@@ -107,6 +109,129 @@ func TestWatcher_DetectsFileChange(t *testing.T) {
 
 	if !wasChanged {
 		t.Error("expected change to be detected")
+	}
+}
+
+func TestWatcher_SQLiteWALCommits(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+		poll bool
+	}{
+		{"fsnotify", "selected.sqlite3", false},
+		{"polling", "selected.SQLITE", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BV_FORCE_POLL", "")
+			t.Setenv("BV_FORCE_POLLING", "")
+			path := filepath.Join(t.TempDir(), tc.file)
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			if _, err := db.Exec(`CREATE TABLE issues (title TEXT);
+				INSERT INTO issues VALUES ('before');
+				PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path + "-wal"); !os.IsNotExist(err) {
+				t.Fatalf("expected WAL to be created by the first watched commit: %v", err)
+			}
+			errors := make(chan error, 10)
+			w, err := NewWatcher(path, WithForcePoll(tc.poll), WithPollInterval(20*time.Millisecond),
+				WithDebounceDuration(10*time.Millisecond), WithOnError(func(err error) { errors <- err }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer w.Stop()
+			t.Logf("polling=%v", w.IsPolling())
+			// Similar sibling names must not refresh this selected database.
+			for _, sibling := range []string{path + ".other-wal", path + "-wal.other"} {
+				if err := os.WriteFile(sibling, []byte("unrelated"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-w.Changed():
+				t.Fatal("unrelated sidecar triggered a refresh")
+			case <-time.After(100 * time.Millisecond):
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, title := range []string{"after", "again"} {
+				if _, err := db.Exec("UPDATE issues SET title=?", title); err != nil {
+					t.Fatal(err)
+				}
+				after, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
+					t.Fatal("commit changed main database; test must exercise WAL-only updates")
+				}
+				select {
+				case <-w.Changed():
+				case err := <-errors:
+					t.Fatalf("watch error: %v", err)
+				case <-time.After(3 * time.Second):
+					t.Fatalf("missed committed WAL update %q with writer still open", title)
+				}
+			}
+			// Closing the last SQLite connection checkpoints and removes its WAL.
+			// That is a content change, not removal of the selected database.
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path + "-wal"); !os.IsNotExist(err) {
+				t.Fatalf("SQLite did not remove WAL after checkpoint: %v", err)
+			}
+			select {
+			case <-w.Changed():
+			case err := <-errors:
+				t.Fatalf("checkpoint was reported as a database error: %v", err)
+			case <-time.After(3 * time.Second):
+				t.Fatal("checkpoint did not notify")
+			}
+			select {
+			case err := <-errors:
+				t.Fatalf("checkpoint reported an error: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+func TestWatcher_JSONLIgnoresWALSidecar(t *testing.T) {
+	for _, poll := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "issues.jsonl")
+		if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		w, err := NewWatcher(path, WithForcePoll(poll), WithPollInterval(20*time.Millisecond), WithDebounceDuration(10*time.Millisecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+"-wal", []byte("unrelated"), 0o644); err != nil {
+			w.Stop()
+			t.Fatal(err)
+		}
+		select {
+		case <-w.Changed():
+			w.Stop()
+			t.Fatalf("JSONL watcher treated a sibling as SQLite WAL (polling=%v)", poll)
+		case <-time.After(100 * time.Millisecond):
+		}
+		w.Stop()
 	}
 }
 
