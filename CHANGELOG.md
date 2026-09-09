@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`d10d341d`](https://github.com/Dicklesworthstone/beads_viewer/commit/d10d341dfb46412cffdcee7641b3f67a3b53b015).
+commits through [`3a56b922`](https://github.com/Dicklesworthstone/beads_viewer/commit/3a56b9224ab621f2b178caf2453c4c1685efa62c).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -67,6 +67,11 @@ the latest tag, including installer changes usable with already released binarie
   still govern readiness, newly matching issues enter the selection, and an
   empty selection clears old rows (`bv-oonu.16`;
   [export scope repair](https://github.com/Dicklesworthstone/beads_viewer/commit/d10d341dfb46412cffdcee7641b3f67a3b53b015)).
+- Missing or filtered dependency endpoints no longer crowd real issues out of
+  WASM-backed ranking panels. HITS, k-core, slack and metric fallback lists
+  apply their limits to exported issue rows while preserving full-graph scores
+  (`bv-oonu.17`;
+  [ranking limit repair](https://github.com/Dicklesworthstone/beads_viewer/commit/3a56b9224ab621f2b178caf2453c4c1685efa62c)).
 
 ### Dependency inspection and documentation
 

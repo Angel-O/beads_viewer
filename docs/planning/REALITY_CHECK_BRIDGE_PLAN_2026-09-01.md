@@ -1,5 +1,24 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Complete visible metric rankings — 2026-09-09
+
+`bv-oonu.17` fixes ranking limits consumed by missing or filtered graph
+endpoints. At `3a56b922`, panels select exported issue rows before limiting
+their full-graph scores; no graph engine or topology change is needed.
+
+- [x] Preserve original real-browser failure: one authority row instead of six.
+- [x] Share visible-row selection across six metric consumers, including slack.
+- [x] Verify zero/small/oversized limits, real scores, empty output, positive
+  versus zero slack, rendered desktop/mobile cards and navigation.
+- [x] Fresh solo replay: nine browser journeys, 452 Go passes, two existing
+  skips, build/vet, JS syntax and first-party formatting. UBS findings retained.
+- [x] Update README, changelog and granular Beads TODO/acceptance evidence.
+- [ ] Original baseline/performance, transactional claim, native-platform and
+  final vision gates remain open. This repair does not establish those proofs.
+
+Evidence: `/data/tmp/bv-ranking-scope-20260909-PAYK1U`. The clean Go 1.25.5
+binary has SHA-256 `36b8c865…`; the original bundle still fails the final test.
+
 ## Filtered dashboard exports — 2026-09-09
 
 `bv-oonu.16` connects recipes to direct exports and preserves repository,

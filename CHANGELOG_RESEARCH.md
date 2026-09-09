@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..d10d341d` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..3a56b922` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,24 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`3a56b922` repairs WASM metric consumers that limited graph indices before
+resolving exported issue rows (`bv-oonu.17`). Six real issues with eleven
+missing prerequisites produced only one authority card. The browser now selects
+actual issue IDs before limiting results, preserving raw graph scores and
+zero-slack filtering. Rust and shipped WASM/glue bytes are unchanged.
+Fresh solo replay at this revision passes desktop/mobile ranking boundaries,
+navigation, an empty export and existing HITS/readiness/what-if variants: nine
+browser journeys. All 452 command/export Go tests pass with two existing skips
+(live Pages deployment and Windows-only path handling). Build/vet, JS syntax
+and first-party formatting pass. UBS remains nonzero: 56 critical heuristic
+findings (secret-comparison and global-assignment rules), 162 warnings, no
+suppression or clean-scanner claim. Original and final browser outputs are
+retained at `/data/tmp/bv-ranking-scope-20260909-PAYK1U`; the original still
+fails the unchanged expected-six assertion. Clean Go 1.25.5 binary SHA-256:
+`36b8c865…`, `vcs.modified=false`. `9fa49931` recorded the preceding export-scope
+repair. Latest live release metadata remains v0.24.1, published September 8 at
+00:28:07 UTC; Actions are disabled. No new release or broader proof is claimed.
 
 `d10d341d` connects direct Pages exports and watched reloads to the existing
 recipe, repository and label selection pipeline (`bv-oonu.16`). The original
