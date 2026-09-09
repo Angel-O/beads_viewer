@@ -2754,112 +2754,34 @@ func main() {
 			authorityIssues = append(authorityIssues, model.Issue{ID: id, Status: model.StatusTombstone})
 		}
 		readiness := model.NewReadinessIndex(authorityIssues)
-		var candidateIDs map[string]bool
 		issuesForSearch := issues
-
-		// Apply --repo filter if specified
-		if *repoFilter != "" {
-			issues = filterByRepo(issues, *repoFilter)
-			// Retain selected work when the TUI reloads the complete source.
-			candidateIDs = make(map[string]bool, len(issues))
-			for _, issue := range issues {
-				candidateIDs[issue.ID] = true
-			}
-		}
-
-		// Stable data hash for robot outputs (after repo filter but before recipes/TUI)
-		// Single-source loading already hashed these records. Source hashes with
-		// tombstones and workspace source hashes may cover a different dataset;
-		// those branches leave unfilteredDataHash empty. Origin read-only metadata
-		// set above is excluded from the canonical issue hash.
-		dataHash := unfilteredDataHash
-		if dataHash == "" || *repoFilter != "" {
-			dataHash = analysis.ComputeDataHash(issues)
-		}
-		// dataHash corresponds to the current `issues` slice. Track whether later
-		// reassignments (label-scope subgraph, recipe filtering) change `issues`
-		// out from under it; when unchanged we can seed analyzers with dataHash to
-		// avoid recomputing the identical SHA256 for their disk-cache key.
-		dataHashMatchesIssues := true
-
-		// Label subgraph scoping (bv-122)
-		// When --label is specified, extract the label's subgraph and use it for all robot analysis.
-		// This includes label health context in the output.
-		var labelScopeContext *analysis.LabelHealth
-		if *labelScope != "" {
-			sg := analysis.ComputeLabelSubgraph(issues, *labelScope)
-			candidateIDs = make(map[string]bool, len(sg.CoreIssues))
-			for _, id := range sg.CoreIssues {
-				candidateIDs[id] = true
-			}
-			// An unmatched label selects the empty set, just like an empty
-			// intersection of any other filters. Keep its source envelope.
-			subgraphIssues := make([]model.Issue, 0, len(sg.AllIssues))
-			for _, id := range sg.AllIssues {
-				if iss, ok := sg.IssueMap[id]; ok {
-					subgraphIssues = append(subgraphIssues, iss)
-				}
-			}
-			issues = subgraphIssues
-			dataHashMatchesIssues = false
-			if sg.IssueCount == 0 {
-				if !envRobot {
-					fmt.Fprintf(os.Stderr, "Warning: No issues found with label %q\n", *labelScope)
-				}
-			}
-		}
-
-		// Apply recipe filtering early for robot modes (bv-93)
-		// This ensures --recipe filters are applied before robot modes exit.
-		// dataHash uses pre-filtered issues for stability.
-		// --recipe scopes EVERY robot command, not just the triage family:
-		// a recipe is a declarative filter and an agent asking any robot
-		// question under it expects the same issue set (reality check
-		// 2026-09-01, gap 2). The envelope reports the active recipe.
-		if activeRecipe != nil && (envRobot || *exportFile != "" || *exportReport != "") {
-			metrics := recipeMetrics(issuesForSearch, activeRecipe)
-			metrics.Readiness = readiness
-			recipeIssues := issues
-			if candidateIDs != nil {
-				recipeIssues = make([]model.Issue, 0, len(candidateIDs))
-				for _, issue := range issues {
-					if candidateIDs[issue.ID] {
-						recipeIssues = append(recipeIssues, issue)
-					}
-				}
-			}
-			applied, err := recipe.Apply(recipeIssues, metrics, activeRecipe, robotNow())
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: recipe %s: %v\n", activeRecipe.Name, err)
-				os.Exit(1)
-			}
-			issues = applied
-			dataHashMatchesIssues = false
-		}
-		// Derive label health from the final intersection, so a recipe cannot
-		// leave excluded issues or stale counts in the context metadata.
-		if *labelScope != "" {
-			cfg := analysis.DefaultLabelHealthConfig()
-			allHealth := analysis.ComputeAllLabelHealth(issues, cfg, robotNow(), nil)
-			for i := range allHealth.Labels {
-				if allHealth.Labels[i].Label == *labelScope {
-					labelScopeContext = &allHealth.Labels[i]
-					break
-				}
-			}
-		}
 		robotDispatchContext.Issues = issues
 		robotDispatchContext.SourceAuthority = sourceAuthority
 		robotDispatchContext.Readiness = readiness
-		robotDispatchContext.CandidateIDs = candidateIDs
-		robotDispatchContext.DataHash = dataHash
-		robotDispatchContext.DataHashMatchesIssues = dataHashMatchesIssues
+		robotDispatchContext.DataHash = unfilteredDataHash
 		robotDispatchContext.AsOf = *asOf
 		robotDispatchContext.AsOfCommit = asOfResolved
 		robotDispatchContext.LabelScope = *labelScope
-		robotDispatchContext.LabelContext = labelScopeContext
 		robotDispatchContext.Recipe = *recipeName
 		robotDispatchContext.Repo = *repoFilter
+		// The TUI retains source rows for its recipe picker. Robot and export
+		// consumers apply the recipe before producing their output.
+		recipeForScope := activeRecipe
+		if !(envRobot || *exportFile != "" || *exportReport != "" || *exportPages != "") {
+			recipeForScope = nil
+		}
+		scopedContext, scopeErr := scopeLoadedIssues(robotDispatchContext, recipeForScope)
+		if scopeErr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", scopeErr)
+			os.Exit(1)
+		}
+		robotDispatchContext = scopedContext
+		issues = scopedContext.Issues
+		candidateIDs := scopedContext.CandidateIDs
+		dataHash := scopedContext.DataHash
+		if *labelScope != "" && len(candidateIDs) == 0 && !envRobot {
+			fmt.Fprintf(os.Stderr, "Warning: No issues found with label %q\n", *labelScope)
+		}
 		// Name the source every payload was computed from (reality check
 		// 2026-09-01: a fresher sidecar could be loaded with nothing in the
 		// output revealing it).
@@ -3426,7 +3348,9 @@ func main() {
 						tombstoneIDs = loaded.Report.TombstoneIDs
 					}
 					reloaded.Readiness = model.NewReadinessIndex(issuesWithTombstones(reloaded.Issues, tombstoneIDs))
-					reloaded.DataHash = analysis.ComputeDataHash(reloaded.Issues)
+					// The previous hash and candidate IDs describe the old source.
+					// Scope the fresh rows with the same pipeline as startup below.
+					reloaded.DataHash = ""
 					return reloaded, loadErr
 				}
 
@@ -3472,6 +3396,11 @@ func main() {
 						freshContext, err := reload()
 						if err != nil {
 							fmt.Printf("  → Error reloading issues: %v\n", err)
+						}
+						freshContext, err = scopeLoadedIssues(freshContext, activeRecipe)
+						if err != nil {
+							fmt.Printf("  → Error applying export scope: %v\n", err)
+							continue
 						}
 						// Skip the (expensive) export when nothing meaningful
 						// changed — a file can be rewritten with identical content.
@@ -4925,7 +4854,77 @@ func formatCycle(cycle []string) string {
 	return result
 }
 
-// applyRecipe is the CLI's single entry point into the shared recipe engine
+// scopeLoadedIssues applies display filters to a newly loaded source. Startup
+// and watched exports share this path so every reload recomputes candidates,
+// recipe membership and label context against the current dependency authority.
+// ctx.Readiness must describe the full source, including tombstones; ctx.DataHash
+// may seed its unfiltered hash only when it describes exactly ctx.Issues.
+func scopeLoadedIssues(ctx RobotContext, r *recipe.Recipe) (RobotContext, error) {
+	fullSource := ctx.Issues
+	ctx.CandidateIDs = nil
+	ctx.LabelContext = nil
+	if ctx.Repo != "" {
+		ctx.Issues = filterByRepo(ctx.Issues, ctx.Repo)
+		ctx.CandidateIDs = make(map[string]bool, len(ctx.Issues))
+		for _, issue := range ctx.Issues {
+			ctx.CandidateIDs[issue.ID] = true
+		}
+	}
+	// Robot data hashes cover the repo-filtered source before label/recipe
+	// selection. Preserve reuse of the loader's hash for an unscoped source.
+	if ctx.DataHash == "" || ctx.Repo != "" {
+		ctx.DataHash = analysis.ComputeDataHash(ctx.Issues)
+	}
+	ctx.DataHashMatchesIssues = true
+	if ctx.LabelScope != "" {
+		sg := analysis.ComputeLabelSubgraph(ctx.Issues, ctx.LabelScope)
+		ctx.CandidateIDs = make(map[string]bool, len(sg.CoreIssues))
+		for _, id := range sg.CoreIssues {
+			ctx.CandidateIDs[id] = true
+		}
+		// Label neighbors remain analysis context, not work candidates. An
+		// unmatched label is an empty selection with its source envelope intact.
+		ctx.Issues = make([]model.Issue, 0, len(sg.AllIssues))
+		for _, id := range sg.AllIssues {
+			if issue, ok := sg.IssueMap[id]; ok {
+				ctx.Issues = append(ctx.Issues, issue)
+			}
+		}
+		ctx.DataHashMatchesIssues = false
+	}
+	if r != nil {
+		metrics := recipeMetrics(fullSource, r)
+		metrics.Readiness = ctx.Readiness
+		recipeIssues := ctx.Issues
+		if ctx.CandidateIDs != nil {
+			recipeIssues = make([]model.Issue, 0, len(ctx.CandidateIDs))
+			for _, issue := range ctx.Issues {
+				if ctx.CandidateIDs[issue.ID] {
+					recipeIssues = append(recipeIssues, issue)
+				}
+			}
+		}
+		applied, err := recipe.Apply(recipeIssues, metrics, r, robotNow())
+		if err != nil {
+			return RobotContext{}, fmt.Errorf("recipe %s: %w", r.Name, err)
+		}
+		ctx.Issues = applied
+		ctx.DataHashMatchesIssues = false
+	}
+	// Label health describes the final intersection, including an empty one.
+	if ctx.LabelScope != "" {
+		allHealth := analysis.ComputeAllLabelHealth(ctx.Issues, analysis.DefaultLabelHealthConfig(), robotNow(), nil)
+		for i := range allHealth.Labels {
+			if allHealth.Labels[i].Label == ctx.LabelScope {
+				ctx.LabelContext = &allHealth.Labels[i]
+				break
+			}
+		}
+	}
+	return ctx, nil
+}
+
+// applyRecipe is the CLI's entry point into the shared recipe engine
 // (recipe.Apply): it narrows and orders issues with r, computing graph metrics
 // and triage scores only when r's sort chain reads them. The result is a new
 // slice; the caller's issues are untouched.

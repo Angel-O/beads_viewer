@@ -2818,11 +2818,19 @@ bv --export-pages ./bv-pages --pages-title "Sprint 42 Status"
 bv --export-pages ./bv-pages --pages-include-closed=false   # Omit closed issues (default: true)
 bv --export-pages ./bv-pages --pages-include-history=false  # Omit git history (default: true)
 bv --export-pages ./bv-pages --watch-export                 # Re-export whenever the beads file changes
+bv --recipe actionable --label backend --export-pages ./bv-pages --watch-export
 bv --export-pages ./bv-pages --no-hooks                     # Skip .bv/hooks.yaml hooks for this export
 
 # Preview an existing bundle without regenerating
 bv --preview-pages ./bv-pages                   # Serve at localhost:9000 (or next available port)
 ```
+
+Direct exports apply recipe filters and their complete sort chain before
+`view.max_items` chooses the exported issues. Recipe membership intersects
+`--repo` and `--label`; dependency readiness and recipe ranking still use the
+full loaded source. Watch mode reapplies these selections after each source
+reload, including newly matching issues and empty selections. The dashboard
+then uses its own display sort for those exported rows.
 
 The dashboard's Actionable count, Ready filter and quick wins use readiness at
 export time: open or in-progress work whose deferral has elapsed and whose

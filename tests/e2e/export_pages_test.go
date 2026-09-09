@@ -10,12 +10,215 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestExportPagesRecipeScope(t *testing.T) {
+	bv := buildBvBinary(t)
+	stageViewerAssets(t, bv)
+	root := recipeProject(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"actionable", []string{"--recipe", "actionable"}, []string{"BL-1", "SP-1"}},
+		{"label-intersection", []string{"--recipe", "actionable", "--label", "sprint"}, []string{"SP-1"}},
+		{"file-recipe", []string{"--recipe", ".beads/recipes/sprint.yaml"}, []string{"SP-1", "SP-2"}},
+		{"empty-repo", []string{"--recipe", "actionable", "--repo", "absent"}, nil},
+		{"empty-label", []string{"--recipe", "actionable", "--label", "absent"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := filepath.Join(root, tc.name)
+			args := append([]string{"--export-pages", output, "--pages-include-history=false", "--no-hooks"}, tc.args...)
+			cmd := exec.Command(bv, args...)
+			cmd.Dir = root
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("scoped export: %v\n%s", err, out)
+			}
+			db, err := sql.Open("sqlite", filepath.Join(output, "beads.sqlite3"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			rows, err := db.Query(`SELECT id FROM issues ORDER BY id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var got []string
+			for rows.Next() {
+				var id string
+				if err := rows.Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, id)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("exported IDs=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExportPagesRecipeScopeAndWatchReload(t *testing.T) {
+	bv := buildBvBinary(t)
+	stageViewerAssets(t, bv)
+	root := t.TempDir()
+	const initial = `{"id":"a","title":"Zulu","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]}
+{"id":"b","title":"Aardvark","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"],"dependencies":[{"issue_id":"b","depends_on_id":"gate","type":"blocks"}]}
+{"id":"c","title":"Alpha","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]}
+{"id":"d","title":"Bravo","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]}
+{"id":"gate","title":"External gate","status":"open","issue_type":"task","source_repo":"other"}
+{"id":"other-repo","title":"Wrong repository","status":"open","priority":0,"issue_type":"task","source_repo":"other","labels":["focus"]}
+{"id":"other-label","title":"Wrong label","status":"open","priority":0,"issue_type":"task","source_repo":"selected","labels":["other"]}
+{"id":"missing","title":"Missing gate","status":"open","priority":0,"issue_type":"task","source_repo":"selected","labels":["focus"],"dependencies":[{"issue_id":"missing","depends_on_id":"absent","type":"blocks"}]}
+{"id":"deferred","title":"Future work","status":"open","priority":0,"issue_type":"task","source_repo":"selected","labels":["focus"],"defer_until":"2099-01-01T00:00:00Z"}
+`
+	writeIssuesJSONL(t, root, initial)
+	writeRecipeFile(t, root, "picks.yaml", `filters:
+  actionable: true
+sort:
+  field: priority
+  secondary:
+    field: title
+view:
+  max_items: 2
+`)
+	output := filepath.Join(root, "export")
+	logPath := filepath.Join(root, "watch.log")
+	log, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	cmd := exec.Command(bv, "--export-pages", output, "--watch-export", "--recipe", "picks", "--repo", "selected", "--label", "focus", "--pages-include-history=false", "--no-hooks")
+	cmd.Dir = root
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+	})
+	type payload struct {
+		DataHash        string                               `json:"data_hash"`
+		AuthorityHash   string                               `json:"authority_hash"`
+		ScopeHash       string                               `json:"scope_hash"`
+		IssueCount      int                                  `json:"issue_count"`
+		Scope           struct{ Label, Recipe, Repo string } `json:"scope"`
+		Authority       struct{ State string }               `json:"source_authority"`
+		Recommendations []struct{ ID string }                `json:"recommendations"`
+	}
+	// Observe a complete publication: all JSON envelopes agree, SQLite holds
+	// exactly the expected ready rows, and triage names those same candidates.
+	waitForSelection := func(previousAuthority string, want ...string) payload {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			data, err := os.ReadFile(filepath.Join(output, "data", "meta.json"))
+			var meta payload
+			complete := err == nil && json.Unmarshal(data, &meta) == nil && meta.AuthorityHash != "" && meta.AuthorityHash != previousAuthority && meta.IssueCount == len(want)
+			for _, name := range []string{"triage.json", "project_health.json", "graph_layout.json"} {
+				if !complete {
+					break
+				}
+				data, err := os.ReadFile(filepath.Join(output, "data", name))
+				var other payload
+				complete = err == nil && json.Unmarshal(data, &other) == nil && other.AuthorityHash == meta.AuthorityHash && other.DataHash == meta.DataHash && other.ScopeHash == meta.ScopeHash
+				if complete && name == "triage.json" {
+					var ids []string
+					for _, rec := range other.Recommendations {
+						ids = append(ids, rec.ID)
+					}
+					slices.Sort(ids)
+					complete = slices.Equal(ids, want)
+				}
+			}
+			if complete {
+				db, err := sql.Open("sqlite", filepath.Join(output, "beads.sqlite3"))
+				if err == nil {
+					rows, queryErr := db.Query(`SELECT id, is_actionable FROM issue_overview_mv ORDER BY id`)
+					var ids []string
+					if queryErr == nil {
+						for rows.Next() {
+							var id string
+							var ready bool
+							if err := rows.Scan(&id, &ready); err != nil || !ready {
+								complete = false
+								break
+							}
+							ids = append(ids, id)
+						}
+						complete = complete && rows.Err() == nil && slices.Equal(ids, want)
+						rows.Close()
+					}
+					db.Close()
+					if queryErr == nil && complete {
+						if meta.Scope.Label != "focus" || meta.Scope.Recipe != "picks" || meta.Scope.Repo != "selected" || meta.Authority.State != "complete" {
+							t.Fatalf("scope/authority metadata drift: %+v", meta)
+						}
+						return meta
+					}
+				}
+			}
+			select {
+			case err := <-done:
+				logs, _ := os.ReadFile(logPath)
+				t.Fatalf("watch exited before selection %v: %v\n%s", want, err, logs)
+			default:
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		logs, _ := os.ReadFile(logPath)
+		t.Fatalf("watch did not publish selection %v\n%s", want, logs)
+		return payload{}
+	}
+	first := waitForSelection("", "c", "d")
+	// Rewriting identical source must not undo scope or cause an export loop.
+	writeIssuesJSONL(t, root, initial)
+	time.Sleep(2 * time.Second)
+	logs, err := os.ReadFile(logPath)
+	if err != nil || strings.Count(string(logs), "Export complete") != 1 {
+		t.Fatalf("unchanged source re-exported: %v\n%s", err, logs)
+	}
+	closedGate := strings.Replace(initial, `"id":"gate","title":"External gate","status":"open"`, `"id":"gate","title":"External gate","status":"closed"`, 1)
+	writeIssuesJSONL(t, root, closedGate)
+	second := waitForSelection(first.AuthorityHash, "b", "c")
+	if first.DataHash != second.DataHash || first.ScopeHash == second.ScopeHash {
+		t.Fatalf("hidden gate change lost authority/candidate distinction: first=%+v second=%+v", first, second)
+	}
+	// A new matching candidate must replace a row whose label changed, even
+	// though neither ID was a candidate in the initial exported selection.
+	changed := strings.Replace(closedGate, `"id":"c","title":"Alpha","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]`, `"id":"c","title":"Alpha","status":"open","priority":1,"issue_type":"task","source_repo":"selected","labels":["other"]`, 1)
+	changed += `{"id":"new","title":"Aaron","status":"in_progress","priority":1,"issue_type":"task","source_repo":"selected","labels":["focus"]}` + "\n"
+	writeIssuesJSONL(t, root, changed)
+	third := waitForSelection(second.AuthorityHash, "b", "new")
+	// Move every potentially ready row out of the intersection, preserving
+	// other-repo/other-label negatives and the missing/deferred source rows.
+	empty := strings.ReplaceAll(changed, `"priority":1,"issue_type":"task","source_repo":"selected"`, `"priority":1,"issue_type":"task","source_repo":"other"`)
+	writeIssuesJSONL(t, root, empty)
+	final := waitForSelection(third.AuthorityHash)
+	if final.DataHash == third.DataHash || final.ScopeHash == third.ScopeHash {
+		t.Fatalf("empty selection retained stale hashes: before=%+v after=%+v", third, final)
+	}
+}
 
 func TestExportPagesFullSourceReadiness(t *testing.T) {
 	bv := buildBvBinary(t)

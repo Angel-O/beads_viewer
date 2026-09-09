@@ -2492,6 +2492,44 @@ func issueIDs(issues []model.Issue) []string {
 	return ids
 }
 
+func TestScopeLoadedIssuesKeepsFullSourceMetricContext(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "a", Status: model.StatusOpen, SourceRepo: "selected", Labels: []string{"focus"}},
+		{ID: "z", Status: model.StatusOpen, SourceRepo: "selected", Labels: []string{"focus"}},
+		{ID: "outside", Status: model.StatusOpen, SourceRepo: "other", Dependencies: []*model.Dependency{
+			{IssueID: "outside", DependsOnID: "z", Type: model.DepBlocks},
+		}},
+	}
+	r := &recipe.Recipe{Name: "impact", Sort: recipe.SortConfig{Field: "pagerank"}, View: recipe.ViewConfig{MaxItems: 1}}
+	ctx := RobotContext{Issues: issues, Repo: "selected", LabelScope: "focus", Readiness: model.NewReadinessIndex(issues)}
+	got, err := scopeLoadedIssues(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With the hidden dependent dropped before ranking, a and z tie and the
+	// ID tie-break incorrectly keeps a. Real full-source PageRank keeps z.
+	requireIssueIDs(t, got.Issues, "z")
+	if got.DataHash != analysis.ComputeDataHash(issues[:2]) || got.DataHashMatchesIssues {
+		t.Fatalf("scope lost its pre-recipe hash: %+v", got)
+	}
+	if got.LabelContext == nil || got.LabelContext.Label != "focus" {
+		t.Fatal("missing label context")
+	}
+	requireIssueIDs(t, ctx.Issues, "a", "z", "outside")
+	// Reuse the prior dispatch context with a newly loaded source. Old
+	// candidate membership and label health must not survive an empty scope.
+	got.Issues = issues[2:]
+	got.Readiness = model.NewReadinessIndex(got.Issues)
+	got.DataHash = ""
+	empty, err := scopeLoadedIssues(got, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Issues) != 0 || len(empty.CandidateIDs) != 0 || empty.LabelContext != nil {
+		t.Fatalf("empty reload retained old scope: %+v", empty)
+	}
+}
+
 func TestFormatCycle(t *testing.T) {
 	requireString(t, formatCycle(nil), "(empty)")
 	c := []string{"X", "Y", "Z"}
