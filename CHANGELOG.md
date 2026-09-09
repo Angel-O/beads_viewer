@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`40a7cd07`](https://github.com/Dicklesworthstone/beads_viewer/commit/40a7cd07d0dab2d8a2a7a8c0ee1874b120fe3d9a).
+commits through [`51d25a80`](https://github.com/Dicklesworthstone/beads_viewer/commit/51d25a80991e2488f85eb030ceb7d8d126d8f9ba).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -14,7 +14,7 @@ the latest tag, including installer changes usable with already released binarie
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
-| [Unreleased] | — | Commits after v0.24.1 | Workflow dependency support, working dashboard simulations, directed Flow inspection, and installer/documentation repairs. |
+| [Unreleased] | — | Commits after v0.24.1 | Workflow dependency support, dashboard readiness/rankings/simulations, directed Flow inspection, and installer/documentation repairs. |
 | [`v0.24.1`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1) | 2026-09-08 | GitHub Release | Reuse loaded source hashes and avoid waiting for a busy analysis-cache writer. |
 | [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
@@ -59,7 +59,8 @@ the latest tag, including installer changes usable with already released binarie
   resolved prerequisites still satisfy them when omitted from the display.
   Ready cards include eligible in-progress work. Active-node counts include
   each unresolved issue once and remain numeric when a status group is absent
-  (`bv-oonu.15`).
+  (`bv-oonu.15`;
+  [rankings and readiness repair](https://github.com/Dicklesworthstone/beads_viewer/commit/51d25a80991e2488f85eb030ceb7d8d126d8f9ba)).
 
 ### Dependency inspection and documentation
 

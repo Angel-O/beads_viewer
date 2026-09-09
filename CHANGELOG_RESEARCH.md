@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..40a7cd07` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..51d25a80` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -29,8 +29,22 @@ repository filter preserves the original six expected IDs and every readiness
 assertion. Local CLI execution also runs the two tests skipped by that worker's
 environment. Browser setup corrections wait for visible cards and revisit
 Insights after issue navigation; no scores, thresholds or timeouts were relaxed.
-Fresh exact-revision replay is still pending at this entry's creation. No release
-or original P1/S5/native completion follows from these fixes.
+Fresh solo replay at `51d25a80991e2488f85eb030ceb7d8d126d8f9ba` passes the same
+451 unit and 37 CLI tests, both desktop/mobile HITS and readiness journeys,
+and both included/excluded closed-row simulation journeys. The clean Go 1.25.5
+binary records that revision with `vcs.modified=false`, SHA-256 `54050d86…`.
+The final harness still rejects both original bundles. Build/vet and first-party
+formatting pass; 49 unchanged vendor files have formatting drift. UBS exits 1
+on inspected heuristics (50 critical, 164 warnings across nine files), with no
+suppression or clean-scanner claim. The six Go warnings include four existing
+panic sites, a missing-go.mod result from selected-file staging, and a timer
+whose stop/reset is present. `6ede497c` records the previous repair's evidence;
+`51d25a80` supplies these runtime changes. Fresh release metadata still reports
+v0.24.1 published September 8 at 00:28:07 UTC; Actions remain disabled. No
+release or original P1/S5/native completion follows from these fixes.
+The final evidence-only commit changes no runtime or test files. Its Markdown
+UBS attempt exits 3 (unsupported input), not a scan pass; changelog structural
+validation passes with the existing older-history bare-hash warning.
 
 The additional `bv-oonu.13` repair follows the actual dependent-to-prerequisite
 edges through Rust what-if/actionability/parallel-cut queries, SQLite export

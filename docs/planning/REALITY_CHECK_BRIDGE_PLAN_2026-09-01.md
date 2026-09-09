@@ -19,8 +19,10 @@ including missing/filtered prerequisites, deferral and inherited parent gates.
 - [x] Real desktop/mobile readiness journeys and existing what-if journey pass.
 - [x] 451 Go unit tests and 37 selected CLI tests pass. Two existing export-unit
   skips remain; the local CLI run resolves two RCH environment-specific skips.
-- [ ] Fresh acceptance replay at the implementation revision; complete honesty
-  review and close only `.14`/`.15` if their original criteria are met.
+- [x] Fresh solo acceptance replay at `51d25a80`: clean binary, 451 unit and
+  37 CLI passes, desktop/mobile HITS and readiness, and both closed-row variants
+  of the original simulation journey. Both original bundles still fail the
+  unchanged assertions. Close only `.14`/`.15` on this bounded evidence.
 - [ ] P1 original baseline recovery, S5 transactional claim and full native/final
   gates remain unchanged. OldSurface is now online but resets SSH before
   authentication; the Mac connection question is still pending.
@@ -28,6 +30,9 @@ including missing/filtered prerequisites, deferral and inherited parent gates.
 Evidence: `/data/tmp/bv-hits-20260909-btyveb`. HITS and graph WASM bytes remain
 unchanged. Original failures and corrected test setup runs are retained. The
 complete granular TODO and closure evidence belong to the existing Beads tasks.
+The binary SHA-256 is `54050d86…`, with Go 1.25.5 and `vcs.modified=false`.
+Build/vet and first-party formatting pass; UBS remains nonzero on inspected
+heuristics, without suppression. Verification was solo, not independent-agent.
 
 ## Dashboard simulation follow-through — 2026-09-09
 
