@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..06cc108f` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..ccc166e9` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -12,8 +12,8 @@ evidence supplements them here.
 
 ## September 9 live-source follow-up
 
-`bv-oonu.20` binds TUI and single-repository Pages watchers to the successful
-startup `LoadResult.Source.Path`. It removes a second, unvalidated discovery
+`ccc166e9` (`bv-oonu.20`) binds TUI and single-repository Pages watchers to the
+successful startup `LoadResult.Source.Path`. It removes a second, unvalidated discovery
 pass that could choose a corrupt newer source instead of the loaded fallback.
 Historical `--as-of` exports reject live watch mode before loading or writing.
 The version stays unreleased; live GitHub metadata still identifies v0.24.1
@@ -40,7 +40,16 @@ repetitions: 15 top-level runs, 18 subcases, no failures or skips. UBS remains
 nonzero: its worker-side regex scan classifies console/help output as XSS,
 reports a missing module in its temporary shadow, and misses the existing
 timer Stop/Reset. The source review records these limitations without
-suppressing findings. Exact-commit behavioral verification is pending.
+suppressing findings.
+
+Independent replay at committed `ccc166e9c43f200e3c8d5b26136a4c25a2c0ebe8`
+passes all five focused tests and six subcases, with no failures or skips.
+RCH confirms remote execution on vmi1153651 with `--clean-overlay --no-overlay`,
+Go 1.25.5 and exit 0. This verifies the selected Linux CLI/PTY fixtures, not
+SQLite WAL behavior, workspace source switching or other native platforms.
+The raw `independent.stderr` log has SHA-256
+`803be9b1554cb39c876a99ff68b4077b220a400c3099975fea4c65809a3b8191`.
+The original performance, tracker, native and final proof gates remain open.
 
 ## September 9 dashboard follow-up
 

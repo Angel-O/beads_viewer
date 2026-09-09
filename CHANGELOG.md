@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`06cc108f`](https://github.com/Dicklesworthstone/beads_viewer/commit/06cc108f3dbb6df725e1616bfba1c079ad7b84b2).
+commits through [`ccc166e9`](https://github.com/Dicklesworthstone/beads_viewer/commit/ccc166e9c43f200e3c8d5b26136a4c25a2c0ebe8).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -33,7 +33,8 @@ the latest tag, including installer changes usable with already released binarie
   that successfully loaded at startup. A corrupt newer file can no longer
   redirect the watcher away from its valid fallback. Explicit JSONL and SQLite
   selection remains supported. Historical `--as-of` exports reject
-  `--watch-export` before writing files (`bv-oonu.20`).
+  `--watch-export` before writing files (`bv-oonu.20`;
+  [source repair](https://github.com/Dicklesworthstone/beads_viewer/commit/ccc166e9c43f200e3c8d5b26136a4c25a2c0ebe8)).
 - SQLite and JSONL loading now retain nonblank custom workflow statuses and
   relationship types. `conditional-blocks` and `waits-for` affect blocking
   analysis; custom statuses do not automatically become claimable

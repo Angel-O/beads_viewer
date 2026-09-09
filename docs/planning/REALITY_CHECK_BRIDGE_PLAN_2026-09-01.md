@@ -1,5 +1,27 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Live watchers use the loaded source — 2026-09-09
+
+`bv-oonu.20` repairs startup/watch source drift at `ccc166e9`.
+
+- [x] Reproduce the old binary's missing TUI refresh and wrong watched path.
+- [x] Reuse the successful load result for TUI and single-repository Pages
+  watchers; reject historical watch mode before writing an export.
+- [x] Verify two successive JSONL/SQLite edits, fallback source authority and
+  foreground/background TUI refresh. Forty export tests pass; 225 package
+  tests pass with four existing `tru`-unavailable skips. RCH build/vet pass.
+- [x] Repeat five focused journeys three times: 15 runs and 18 subcases pass,
+  zero skips. Preserve the I/O-stalled run and both test-harness failures;
+  strengthen terminal sizing and detail-heading synchronization.
+- [x] Independent committed-tree replay: RCH on vmi1153651 passes five tests
+  and six subcases at `ccc166e9`, with zero failures or skips.
+- [x] Independent verifier closed `bv-oonu.20` with the execution receipt;
+  all five acceptance items are checked and the Beads export is synchronized.
+- [ ] Original performance, tracker, native and final proof gates remain open.
+
+Evidence: `/data/tmp/bv-watch-source-20260909-n5wgm1md`. UBS remains nonzero;
+console-output taint false positives and scanner limitations are recorded.
+
 ## Capacity path reuse on acyclic backlogs — 2026-09-09
 
 `bv-xbvo.14` replaces repeated DAG path enumeration with shared longest-suffix
