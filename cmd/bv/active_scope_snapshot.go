@@ -26,6 +26,8 @@ type RobotActiveScope struct {
 	State       string `json:"state"`
 	MemberCount int    `json:"member_count"`
 	MemberLimit int    `json:"member_limit"`
+	// MemberLimitKnown distinguishes a valid producer value from legacy omission.
+	MemberLimitKnown bool `json:"-"`
 }
 
 type hubScopeSnapshot struct {
@@ -141,13 +143,21 @@ func decodeActiveScope(data []byte) (*RobotActiveScope, error) {
 	if object == nil {
 		return nil, nil
 	}
+	memberLimitKnown := false
+	for _, key := range []string{"member_limit", "limit"} {
+		if _, ok := object[key].(float64); ok {
+			memberLimitKnown = true
+			break
+		}
+	}
 	active := &RobotActiveScope{
-		ID:          firstString(object, "id", "scope_id"),
-		Name:        firstString(object, "name", "scope_name"),
-		CreatedOn:   firstString(object, "created_on", "created_at"),
-		State:       firstString(object, "state"),
-		MemberCount: firstInt(object, "member_count", "count"),
-		MemberLimit: firstInt(object, "member_limit", "limit"),
+		ID:               firstString(object, "id", "scope_id"),
+		Name:             firstString(object, "name", "scope_name"),
+		CreatedOn:        firstString(object, "created_on", "created_at"),
+		State:            firstString(object, "state"),
+		MemberCount:      firstInt(object, "member_count", "count"),
+		MemberLimit:      firstInt(object, "member_limit", "limit"),
+		MemberLimitKnown: memberLimitKnown,
 	}
 	if active.ID == "" {
 		active.ID = namedScopeID(value)
@@ -157,9 +167,6 @@ func decodeActiveScope(data []byte) (*RobotActiveScope, error) {
 	}
 	if active.State == "" {
 		active.State = "active"
-	}
-	if active.MemberLimit == 0 {
-		active.MemberLimit = 100
 	}
 	return active, nil
 }
@@ -215,8 +222,9 @@ func mergeActiveScope(dst, src *RobotActiveScope) {
 	if dst.MemberCount == 0 {
 		dst.MemberCount = src.MemberCount
 	}
-	if dst.MemberLimit == 0 {
+	if src.MemberLimitKnown {
 		dst.MemberLimit = src.MemberLimit
+		dst.MemberLimitKnown = true
 	}
 }
 

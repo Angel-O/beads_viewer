@@ -99,11 +99,6 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 				for i := range scopes {
 					if scopes[i].ID == activeID || scopes[i].Name == activeID {
 						scopes[i].Active = true
-						// Active scopes have a fixed Hub contract limit when the list omits it.
-						if !scopes[i].MemberLimitKnown {
-							scopes[i].MemberLimit = 100
-							scopes[i].MemberLimitKnown = true
-						}
 						active := scopes[i]
 						return ui.ScopeSnapshot{Scopes: scopes, Active: &active}, nil
 					}
