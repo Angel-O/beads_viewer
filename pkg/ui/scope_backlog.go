@@ -1480,6 +1480,23 @@ func (s *ScopePickerModel) setScopeScreenSize(width, height int) {
 	s.memberViewportRowsOverride = 0
 	s.width, s.height = width, height
 }
+
+// activeScopeFirst keeps the catalog's established order after the active scope.
+func activeScopeFirst(scopes []ScopeInfo) []ScopeInfo {
+	ordered := make([]ScopeInfo, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope.Active {
+			ordered = append(ordered, scope)
+		}
+	}
+	for _, scope := range scopes {
+		if !scope.Active {
+			ordered = append(ordered, scope)
+		}
+	}
+	return ordered
+}
+
 func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 	selectedID := s.selectedScopeID
 	if selectedID == "" {
@@ -1487,7 +1504,7 @@ func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 			selectedID = selected.ID
 		}
 	}
-	s.scopes = append([]ScopeInfo(nil), scopes...)
+	s.scopes = activeScopeFirst(scopes)
 	s.selected = -1
 	if selectedID != "" {
 		for i := range s.scopes {
@@ -2876,7 +2893,7 @@ func (m Model) renderScopeMatchPrompt() string {
 	muted := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
 	action := "Add matching exact label/epic issues to active scope"
 	if m.scopeMatchAction == "remove" {
-		action = "Remove matching exact label/epic issues from selected scope"
+		action = "Descope matching exact label/epic issues from selected scope"
 	}
 	content := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true).Render("Scope match") + "\n\n" +
 		muted.Render(action) + "\n\n" +
@@ -3473,7 +3490,7 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		if m.scopePicker.MemberFocused() {
 			m.scopePicker.ToggleMemberMark()
 		}
-	case "R":
+	case "D":
 		if m.scopePicker.MemberFocused() {
 			return m, m.startScopeMemberRemove()
 		}
