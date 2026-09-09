@@ -44,6 +44,11 @@ the latest tag, including installer changes usable with already released binarie
   relationship types. `conditional-blocks` and `waits-for` affect blocking
   analysis; custom statuses do not automatically become claimable
   ([loader change](https://github.com/Dicklesworthstone/beads_viewer/commit/55ec82b8ceb099222de99e2fdbe23329c91e9bd1)).
+- Recipe validation now rejects a blank `filters.status` entry with a message
+  that says so, instead of calling it an unknown status. Since the loader change
+  above the check has accepted custom workflow states such as `done`; only the
+  error text and the `Validate` documentation still described a closed
+  vocabulary.
 - Static dashboards now include both blocking variants and legacy untyped
   dependencies in their relationship lists and browser graphs. Active ID lists
   agree with blocker counts, including after either endpoint closes, so blocked

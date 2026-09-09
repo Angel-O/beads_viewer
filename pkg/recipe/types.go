@@ -159,8 +159,11 @@ func (r *Recipe) NeedsTriageScores() bool {
 }
 
 // Validate rejects recipes Apply cannot honour: unknown sort fields or
-// directions, malformed time filters, unknown status values and a negative
-// max_items, plus unsupported presentation fields.
+// directions, malformed time filters, blank status values and a negative
+// max_items, plus unsupported presentation fields. Status is deliberately an
+// open vocabulary: br projects define custom workflow states such as "done" or
+// "qa-review", so any nonblank value is accepted and matched case-insensitively
+// against the loaded issues.
 func (r *Recipe) Validate() error {
 	if r == nil {
 		return errors.New("recipe is nil")
@@ -192,7 +195,7 @@ func (r *Recipe) Validate() error {
 	}
 	for _, s := range r.Filters.Status {
 		if !model.Status(strings.ToLower(strings.TrimSpace(s))).IsValid() {
-			problems = append(problems, fmt.Sprintf("filters.status %q is not a known status", s))
+			problems = append(problems, fmt.Sprintf("filters.status %q must not be blank", s))
 		}
 	}
 	if r.View.MaxItems < 0 {

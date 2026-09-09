@@ -392,7 +392,8 @@ func TestValidate_RejectsUnusableRecipes(t *testing.T) {
 		{"bad direction", recipe.Recipe{Sort: recipe.SortConfig{Field: "priority", Direction: "down"}}, `sort.direction "down"`},
 		{"bad created_after", recipe.Recipe{Filters: recipe.FilterConfig{CreatedAfter: "yesterday"}}, "filters.created_after"},
 		{"bad updated_before", recipe.Recipe{Filters: recipe.FilterConfig{UpdatedBefore: "1 month"}}, "filters.updated_before"},
-		{"blank status", recipe.Recipe{Filters: recipe.FilterConfig{Status: []string{"open", "   "}}}, `filters.status "   "`},
+		{"blank status", recipe.Recipe{Filters: recipe.FilterConfig{Status: []string{"open", "   "}}}, `filters.status "   " must not be blank`},
+		{"empty status", recipe.Recipe{Filters: recipe.FilterConfig{Status: []string{"open", ""}}}, `filters.status "" must not be blank`},
 		{"negative max_items", recipe.Recipe{View: recipe.ViewConfig{MaxItems: -1}}, "view.max_items -1"},
 	}
 	for _, tc := range cases {
