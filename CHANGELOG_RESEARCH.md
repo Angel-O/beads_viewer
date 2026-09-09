@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..c06fbfee` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..06cc108f` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -11,6 +11,42 @@ documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
 ## September 9 dashboard follow-up
+
+`06cc108f` repairs exponential capacity path enumeration on acyclic graphs
+(`bv-xbvo.14`). A reachable-subgraph postorder computes each longest suffix
+once, preserving the first longest path in seed/neighbor order. Only the path
+search becomes O(V+E); other capacity calculations retain their existing costs.
+Reachable cycles keep the original exhaustive simple-path fallback.
+
+The original 26-node complete DAG profile attributes 89.21% cumulative CPU to
+the repeated path walk. On the same host and fixture, with three warmups and
+ten measured runs per binary, clean baseline `4abf4bec` has a 3.5547-second
+median and 47,024 KiB maximum RSS; clean `06cc108f` has a 64.25-ms median and
+38,972 KiB maximum RSS. Nearest-rank p95/p99 equal each ten-sample maximum:
+4.0516 seconds before and 65.48 ms after. These are descriptive fixture results,
+not the original P1 performance proof or a tail-latency guarantee. The earlier
+working-tree run's 58.14-ms median is retained separately. Its after-profile
+contains only 20 ms of CPU samples, too few for a reliable new hotspot ranking.
+
+All 126 command-package tests and twelve capacity/forecast/scoping CLI tests
+pass, with 152 and 80 subcases respectively, zero skips. The new path test also
+compares 200 seeded small graphs with the original traversal. Build/vet and
+first-party formatting pass; 49 existing vendor files remain unformatted.
+UBS exits 1 with the same reviewed cancellation/invariant-panic findings and
+scanner-workspace warning recorded below. An initial local build selected
+Go 1.24.13 and failed the version requirement; the verified absolute Go 1.25.5
+compiler built successfully. Both logs remain; the selection's cause is unproved.
+
+Fresh solo replay at clean `06cc108f` passes all three focused handler tests,
+17 subcases and all twelve CLI tests. The new 64-node dense DAG completes in
+62.36 ms; the retained original binary still exceeds the unchanged five-second
+deadline. All 102 complete JSON responses across 51 fixtures and two scopes
+match the original immutable goldens, including version/envelope fields. This
+is author verification, not independent review or completion of the broader
+tracker, native, performance or final gates. Evidence and the clean binary are
+in `/data/tmp/bv-capacity-dag-20260909-2redfrz4`; binary `bv-06cc108f` has
+`vcs.modified=false` and SHA-256
+`3afae80f5b79efb65cac6f130ca7b5a2627dfea99593e8955cf5a784dba064f5`.
 
 `9de473f4` applies candidate selection to forecast output and requires a single
 target to pass the same label/sprint filters (`bv-xbvo.13`). Estimate calculation

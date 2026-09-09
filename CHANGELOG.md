@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`c06fbfee`](https://github.com/Dicklesworthstone/beads_viewer/commit/c06fbfee8d4b494d2d35afc28baf6df94efe48ab).
+commits through [`06cc108f`](https://github.com/Dicklesworthstone/beads_viewer/commit/06cc108f3dbb6df725e1616bfba1c079ad7b84b2).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -95,6 +95,12 @@ the latest tag, including installer changes usable with already released binarie
   duplicate pairs; result ordering is stable. The duration calculation remains
   a heuristic (`bv-xbvo.12`;
   [capacity repair](https://github.com/Dicklesworthstone/beads_viewer/commit/ab144521b77114c45341733d5179009962cfb193)).
+- Capacity path calculation now shares suffix results on acyclic graphs,
+  avoiding exponential enumeration of overlapping paths. It preserves the
+  chosen path, ties and estimates; reachable cycles retain the original
+  exhaustive search. A dense 26-issue fixture fell from a 3.55-second median
+  to 64 ms across ten measured runs per binary (`bv-xbvo.14`;
+  [capacity performance repair](https://github.com/Dicklesworthstone/beads_viewer/commit/06cc108f3dbb6df725e1616bfba1c079ad7b84b2)).
 - Forecasts now honor global selection intersected with the forecast label
   and sprint. A single requested issue must also pass these filters; an
   excluded ID returns an error. Selected estimates retain their loaded

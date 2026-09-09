@@ -1,5 +1,26 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Capacity path reuse on acyclic backlogs — 2026-09-09
+
+`bv-xbvo.14` replaces repeated DAG path enumeration with shared longest-suffix
+calculations at `06cc108f`, preserving path order, estimates and cyclic behavior.
+
+- [x] Profile the real 26-node CLI defect and retain the original five-second
+  timeout on the new 64-node regression.
+- [x] Preserve all 102 complete JSON goldens; check ties, scopes, empty graphs,
+  reachable/unreachable cycles and 200 seeded small-graph comparisons.
+- [x] Pass 126 command-package and twelve capacity/forecast/scoping CLI tests,
+  zero skips; build/vet and first-party formatting pass. Retain UBS findings.
+- [x] Fresh solo committed-revision replay passes; the original still times out.
+  Ten timed runs after three warmups give median 3.55 s before and 64 ms after,
+  with lower peak RSS. This is bounded fixture evidence, not a tail guarantee.
+- [x] Update README/changelog and the granular Beads execution record.
+- [ ] Original performance, tracker, native and final proof gates remain open.
+  Dense cyclic graphs retain an expensive exhaustive path search.
+
+Evidence: `/data/tmp/bv-capacity-dag-20260909-2redfrz4`; clean Go 1.25.5 binary
+SHA-256 `3afae80f…`, revision `06cc108f`, `vcs.modified=false`.
+
 ## Forecast selection and filter intersections — 2026-09-09
 
 `bv-xbvo.13` repairs forecast scope at `9de473f4`; `4abf4bec` records the
