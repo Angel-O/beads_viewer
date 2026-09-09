@@ -820,21 +820,26 @@ async function initGraphEngine() {
 }
 
 /**
- * Build closed set array from database
- * Returns Uint8Array where 1 = closed, 0 = open
+ * Preserve resolved prerequisite identities even when their rows are omitted.
  */
+function getResolvedIssueIDs() {
+  const ids = new Set(execQuery("SELECT id FROM issues WHERE status IN ('closed', 'tombstone')").map(row => row.id));
+  const metadata = getMeta().resolved_issue_ids;
+  if (metadata) {
+    for (const id of JSON.parse(metadata)) ids.add(id);
+  }
+  return ids;
+}
+
+/** Return 1 for resolved nodes (closed or tombstone), 0 for unresolved nodes. */
 function buildClosedSet() {
   if (!GRAPH_STATE.ready) return null;
 
   const n = GRAPH_STATE.graph.nodeCount();
   const closed = new Uint8Array(n);
 
-  const closedIssues = execQuery(`
-    SELECT id FROM issues WHERE status = 'closed'
-  `);
-
-  for (const row of closedIssues) {
-    const idx = GRAPH_STATE.nodeMap.get(row.id);
+  for (const id of getResolvedIssueIDs()) {
+    const idx = GRAPH_STATE.nodeMap.get(id);
     if (idx !== undefined) {
       closed[idx] = 1;
     }
@@ -3649,6 +3654,7 @@ window.beadsViewer = {
   GRAPH_STATE,
   initGraphEngine,
   buildClosedSet,
+  getResolvedIssueIDs,
   recalculateMetrics,
   whatIfClose,
   topWhatIf,

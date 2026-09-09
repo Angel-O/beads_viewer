@@ -12,6 +12,29 @@ evidence supplements them here.
 
 ## September 9 dashboard follow-up
 
+The additional `bv-oonu.13` repair follows the actual dependent-to-prerequisite
+edges through Rust what-if/actionability/parallel-cut queries, SQLite export
+metadata, both browser graph engines and the detail/priority templates. The
+original Chromium bundle returns zero direct unblocks for a root that releases
+one child; the repaired root reports one direct and two transitive unblocks.
+Closed and tombstone prerequisite identities survive omitted issue rows. A
+second real browser failure exposed calls to an unsupported renderer refresh
+method; those now use the existing redraw helper. Reset cancels pending timers.
+The cleanup regression also caught the renderer ticking after its graph was
+released. Cleanup now stops rendering using the documented
+[`pauseAnimation()` API](https://github.com/vasturiano/force-graph#render-control),
+confirmed in the bundled source, and delayed zoom callbacks check graph identity.
+
+The unchanged pinned rebuild harness produces identical glue and WASM from
+two physical Rust homes and passes all five graph fixtures and negative
+controls. Root re-execution passes 202 unit and 25 existing Rust golden tests;
+the affected Go run passes 515 top-level tests with two existing export skips.
+Both real Chromium simulation variants pass, including actual edge pixels,
+displayed gains and reset. Browser setup failures (visible row count, CDP proxy
+serialization and the default link-color accessor) are retained separately
+from product counterexamples. Evidence: `/data/tmp/bv-whatif-20260909-5k4UlI`.
+No version bump or publication accompanies this follow-up.
+
 The nine-commit window `b6e21d22..1c768eac` contains two runtime changes:
 `55ec82b8` preserves producer workflow vocabulary and classifies blocking types;
 `1c768eac` connects those types to the static dashboard's SQL and JavaScript

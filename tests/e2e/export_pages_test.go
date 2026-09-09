@@ -1052,11 +1052,12 @@ func TestExportPages_ExcludeClosed_SQLiteVerification(t *testing.T) {
 		t.Fatalf("mkdir .beads: %v", err)
 	}
 
-	// Create mix of open and closed issues
+	// Resolved prerequisites can be omitted from display without becoming unknown.
 	issueData := `{"id": "open-1", "title": "Open Issue One", "status": "open", "priority": 1, "issue_type": "task"}
 {"id": "open-2", "title": "Open Issue Two", "status": "open", "priority": 2, "issue_type": "bug"}
 {"id": "closed-1", "title": "Closed Issue One", "status": "closed", "priority": 1, "issue_type": "task"}
 {"id": "closed-2", "title": "Closed Issue Two", "status": "closed", "priority": 2, "issue_type": "feature"}
+{"id": "deleted-1", "title": "Deleted Issue", "status": "tombstone", "priority": 2, "issue_type": "task"}
 {"id": "inprogress-1", "title": "In Progress Issue", "status": "in_progress", "priority": 1, "issue_type": "task"}`
 	if err := os.WriteFile(filepath.Join(beadsPath, "issues.jsonl"), []byte(issueData), 0o644); err != nil {
 		t.Fatalf("write issues.jsonl: %v", err)
@@ -1104,6 +1105,18 @@ func TestExportPages_ExcludeClosed_SQLiteVerification(t *testing.T) {
 	if !foundOpen1 || !foundOpen2 || !foundInProgress {
 		t.Errorf("Missing expected issues: open-1=%v, open-2=%v, inprogress-1=%v",
 			foundOpen1, foundOpen2, foundInProgress)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var resolved string
+	if err := db.QueryRow("SELECT value FROM export_meta WHERE key = 'resolved_issue_ids'").Scan(&resolved); err != nil {
+		t.Fatal(err)
+	}
+	if resolved != `["closed-1","closed-2","deleted-1"]` {
+		t.Fatalf("resolved prerequisite metadata = %s", resolved)
 	}
 }
 

@@ -1,5 +1,43 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Dashboard simulation follow-through — 2026-09-09
+
+`bv-oonu.13` repairs a second concrete consumer gap: WASM unblock queries used
+the reverse of exported edge direction, while templates read fields the engine
+does not return. Export now retains resolved prerequisite identities separately
+from visible rows. Simulations use those identities even when closed rows are
+excluded. Graph redraw and delayed-callback cancellation are connected too.
+
+- [x] Retain a Rust and real Chromium original-runtime counterexample.
+- [x] Correct dependent/prerequisite traversal without reversing generic graph
+  adjacency, PageRank, topology or existing metric goldens.
+- [x] Wire detail, priority-pick and cascade counts to returned fields.
+- [x] Carry full-source closed/tombstone IDs through direct, watch and wizard
+  export metadata; consume them in both browser graphs.
+- [x] Correct renderer redraw calls and cancel callbacks on reset/load/cleanup.
+- [x] Prove root/leaf direction, multiple blockers, informational controls,
+  included/excluded closed rows, displayed counts, actual canvas edge colors
+  and reset in real Chromium; retain setup failures separately.
+- [x] Rebuild the shipped WASM pair using pinned tools and verify two isolated
+  physical Rust homes, existing graph goldens and negative controls.
+- [x] Run 227 Rust tests, 515 affected Go tests (two existing skips), build/vet
+  and formatting. Inspect scanner findings without suppression.
+- [ ] Freeze the implementation and replay acceptance on the exact revision;
+  close only `bv-oonu.13`, then push main and the legacy mirror.
+- [ ] P1: recover the original baseline source/binaries. Cass recovered source
+  manifest SHA `a947e19a…` and original build paths, but the dirty snapshot and
+  both binaries remain absent. Do not substitute another baseline.
+- [ ] S5: prove atomic lifecycle eligibility in the installed tracker. Newer
+  CLI prechecks and sequential routing tests do not establish that race contract.
+- [ ] V5: finish native platform and Windows first-start proof. Windows hosts
+  are offline; Macs are online but the configured DSR SSH route is unreachable.
+  The SSH connection detail question remains pending.
+- [ ] Finish the unchanged final vision/performance cohort gates after their
+  prerequisites. This browser repair supplies none of those missing proofs.
+
+Evidence: `/data/tmp/bv-whatif-20260909-5k4UlI`; complete execution TODO and
+honesty review are attached to the existing bead. No new report framework.
+
 ## Dashboard follow-through — 2026-09-09
 
 `bv-oonu.12` repairs a concrete downstream gap after `55ec82b8` expanded valid

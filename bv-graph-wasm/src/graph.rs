@@ -75,6 +75,7 @@ impl DiGraph {
     }
 
     /// Add a directed edge from -> to. Idempotent.
+    /// In a dependency graph, from is the dependent and to its prerequisite.
     #[wasm_bindgen(js_name = addEdge)]
     pub fn add_edge(&mut self, from: usize, to: usize) {
         // Check bounds
@@ -534,7 +535,7 @@ impl DiGraph {
     // Actionable queries (work with closed_set to determine workable items)
     // ========================================================================
 
-    /// Get direct blockers (predecessors) of a node.
+    /// Get direct blockers (successors) of a node.
     /// These are issues that must be completed before this node can start.
     #[wasm_bindgen(js_name = blockers)]
     pub fn blockers(&self, node: usize) -> JsValue {
@@ -543,7 +544,7 @@ impl DiGraph {
         serde_wasm_bindgen::to_value(&nodes).unwrap_or(JsValue::NULL)
     }
 
-    /// Get direct dependents (successors) of a node.
+    /// Get direct dependents (predecessors) of a node.
     /// These are issues that depend on this node being completed.
     #[wasm_bindgen(js_name = dependents)]
     pub fn dependents(&self, node: usize) -> JsValue {
@@ -552,7 +553,7 @@ impl DiGraph {
         serde_wasm_bindgen::to_value(&nodes).unwrap_or(JsValue::NULL)
     }
 
-    /// Get all actionable nodes (nodes with all predecessors in closed_set).
+    /// Get all actionable nodes (open nodes with all prerequisites in closed_set).
     /// closed_set is an array of bytes where non-zero means closed.
     #[wasm_bindgen(js_name = actionableNodes)]
     pub fn actionable_nodes(&self, closed_set: &[u8]) -> JsValue {
@@ -562,7 +563,7 @@ impl DiGraph {
         serde_wasm_bindgen::to_value(&nodes).unwrap_or(JsValue::NULL)
     }
 
-    /// Get open blockers for a node (predecessors not in closed_set).
+    /// Get open blockers for a node (successors not in closed_set).
     /// closed_set is an array of bytes where non-zero means closed.
     #[wasm_bindgen(js_name = openBlockers)]
     pub fn open_blockers(&self, node: usize, closed_set: &[u8]) -> JsValue {

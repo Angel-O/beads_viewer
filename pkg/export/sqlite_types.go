@@ -91,6 +91,9 @@ type SQLiteExportConfig struct {
 	// RobotEnvelope carries source completeness and scope metadata into every
 	// exported robot JSON artifact without changing its existing payload shape.
 	RobotEnvelope map[string]json.RawMessage
+	// ResolvedIDs records closed/tombstone prerequisite identities from the full
+	// source, including rows omitted from the visible issue set.
+	ResolvedIDs []string
 
 	// PageSize is the SQLite page size (optimal: 1024 for httpvfs)
 	PageSize int

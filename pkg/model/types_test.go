@@ -13,6 +13,28 @@ import (
 	"time"
 )
 
+func TestReadinessResolvedIDs(t *testing.T) {
+	var absent *ReadinessIndex
+	if len(absent.ResolvedIDs()) != 0 {
+		t.Fatal("nil readiness returned resolved IDs")
+	}
+	index := NewReadinessIndex([]Issue{
+		{ID: "z-closed", Status: StatusClosed},
+		{ID: "a-deleted", Status: StatusTombstone},
+		{ID: "custom", Status: "qa-review"},
+		{ID: "open", Status: StatusOpen},
+	})
+	want := []string{"a-deleted", "z-closed"}
+	got := index.ResolvedIDs()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolved IDs = %v, want %v", got, want)
+	}
+	got[0] = "changed"
+	if !reflect.DeepEqual(index.ResolvedIDs(), want) {
+		t.Fatal("caller changed readiness data through result")
+	}
+}
+
 func TestIssueActionsPreserveLiteralArguments(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {

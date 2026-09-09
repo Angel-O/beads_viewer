@@ -41,6 +41,14 @@ the latest tag, including installer changes usable with already released binarie
   with stable ordering. The export and real Chromium regressions are tracked by
   `bv-oonu.12`
   ([dashboard repair](https://github.com/Dicklesworthstone/beads_viewer/commit/1c768eacdfcec4937c018b3c1e5febb7091cfc7c)).
+- “Simulate Close” now follows dependencies in the correct direction and shows
+  the engine's actual direct and downstream counts. Priority picks and cascade
+  cards show their calculated gains. Deleted prerequisites and closed rows
+  excluded from the dashboard remain resolved in both browser graph engines.
+- Graph simulation and reset use the bundled renderer's redraw API; cancelling,
+  reloading or cleaning up a simulation cancels its pending animation callbacks.
+  The rebuilt graph WASM preserves unrelated graph metrics. Real Chromium
+  regressions and source-rebuild evidence are tracked in `bv-oonu.13`.
 
 ### Dependency inspection and documentation
 

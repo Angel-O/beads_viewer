@@ -510,6 +510,13 @@ func (e *SQLiteExporter) insertMeta(db *sql.DB) error {
 	if e.Config.Title != "" {
 		meta["title"] = e.Config.Title
 	}
+	if len(e.Config.ResolvedIDs) > 0 {
+		resolved, err := json.Marshal(e.Config.ResolvedIDs)
+		if err != nil {
+			return fmt.Errorf("encode resolved issue IDs: %w", err)
+		}
+		meta["resolved_issue_ids"] = string(resolved)
+	}
 
 	for key, value := range meta {
 		if err := InsertMetaValue(db, key, value); err != nil {

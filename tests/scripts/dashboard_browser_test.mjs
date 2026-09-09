@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 
 const [browser, bundle, artifacts, mode = 'journeys', updatedBundle, projectBundle] = process.argv.slice(2);
 assert.ok(browser && bundle && artifacts, 'browser, bundle, artifacts required');
-assert.ok(['journeys', 'offline-only', 'blocking-types'].includes(mode), 'unknown browser test mode');
+assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if'].includes(mode), 'unknown browser test mode');
 fs.mkdirSync(artifacts, { recursive: true });
 const records = [];
 let brokenAsset = '', changedAsset = '', workerRevision = 0, chrome, server, socket;
@@ -217,6 +217,79 @@ async function blockingTypesJourney(page) {
   console.log('PASS: real exported SQLite, blocking ID lists, issue h/l navigation, graph WASM and force-graph links');
 }
 
+// The seven-task fixture has root<-child<-leaf, child also depending on closed
+// and tombstone prerequisites, held depending on root+other, and other related
+// to root without blocking. All remaining statuses are open; IDs use sim-.
+// An optional second bundle uses --pages-include-closed=false on the same source.
+async function whatIfJourney(page, includeClosed = true) {
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === ${includeClosed ? 6 : 5} && ${app}.graphReady`, 'visible simulation issues (resolved rows filtered) and real graph WASM');
+  await waitFor(page, '!!navigator.serviceWorker.controller', 'simulation worker controls page');
+  await delay(500);
+  await send('Page.navigate', { url: origin + '/#/issue/sim-root' }, page.session);
+  await waitFor(page, `typeof Alpine !== 'undefined' && ${app}.selectedIssue?.id === 'sim-root'`, 'root issue details');
+  await click(page, 'button', 'Simulate Close');
+  await waitFor(page, `${app}.whatIfResult !== null`, 'actual simulation result');
+  const result = await evaluate(page, `JSON.parse(JSON.stringify(${app}.whatIfResult))`);
+  console.log('Observed root what-if:', JSON.stringify(result));
+  assert.equal(result.direct_unblocks, 1, 'closing root directly releases child only');
+  assert.equal(result.transitive_unblocks, 2, 'child completion then releases leaf');
+  assert.deepEqual(result.cascade_issue_ids.sort(), ['sim-child', 'sim-leaf']);
+  await waitFor(page, String.raw`[...document.querySelectorAll('p')].some(e=>(${visible})(e) && /Closing this issue would unblock 1 issue\(s\) and enable 2 downstream item\(s\)/.test(e.textContent.replace(/\s+/g,' ').trim()))`, 'visible direct and transitive counts');
+  assert.equal(await evaluate(page, `whatIfClose('sim-leaf').direct_unblocks`), 0, 'leaf cannot release its prerequisites');
+  assert.equal(await evaluate(page, `whatIfClose('sim-other').direct_unblocks`), 0, 'held still needs root');
+  assert.equal(await evaluate(page, `whatIfClose('sim-deleted').transitive_unblocks`), 0, 'tombstone is already resolved');
+  assert.equal(await evaluate(page, `whatIfClose('sim-closed').transitive_unblocks`), 0, 'closed prerequisite remains resolved even when omitted');
+  assert.deepEqual(await evaluate(page, `[...getResolvedIssueIDs()].sort()`), ['sim-closed', 'sim-deleted']);
+  assert.deepEqual(await evaluate(page, `getActionableIssues().sort()`), ['sim-other', 'sim-root']);
+  assert.deepEqual(await evaluate(page, `getTopKSet(5).items.map(i=>[i.issueId,i.marginal_gain])`), [['sim-root', 2], ['sim-other', 1]]);
+  await capture(page, 'what-if-detail');
+  await key(page, 'Escape');
+  await click(page, 'a[href="#/insights"]');
+  await waitFor(page, `[...document.querySelectorAll('span')].some(e=>(${visible})(e) && e.textContent.trim()==='3 potential unblocks')`, 'visible combined priority gain');
+  await waitFor(page, `[...document.querySelectorAll('[x-text="item.marginal_gain"]')].filter(${visible}).map(e=>e.textContent).join(',')==='2,1'`, 'visible per-pick gains');
+  await waitFor(page, `[...document.querySelectorAll('[x-text="item.result?.transitive_unblocks || 0"]')].filter(${visible}).map(e=>e.textContent).join(',')==='2'`, 'visible cascade impact card');
+  await capture(page, 'what-if-priorities');
+  await click(page, 'a[href="#/graph"]');
+  await waitFor(page, `${app}.forceGraphReady && !${app}.forceGraphLoading && !!document.querySelector('#graph-container canvas')`, 'actual force graph');
+  const forceResult = await evaluate(page, `(()=>{const m=${app}.forceGraphModule; return m.performWhatIf(m.getGraph().graphData().nodes.find(n=>n.id==='sim-root'));})()`);
+  assert.equal(forceResult.direct_unblocks, 1);
+  assert.equal(forceResult.transitive_unblocks, 2);
+  await waitFor(page, `${app}.forceGraphModule.getWhatIfState().unblockedCount === 1`, 'child animation executes');
+  // The graph uses a custom canvas renderer, not ForceGraph's linkColor accessor.
+  // Draw each real link with that renderer into a real browser canvas and inspect
+  // its pixels; alpha/antialiasing can round the theme's RGB by a few units.
+  const greenLinks = await evaluate(page, `(()=>{
+    const g=${app}.forceGraphModule.getGraph(), draw=g.linkCanvasObject();
+    return g.graphData().links.filter(link=>{
+      const c=new OffscreenCanvas(256,256), ctx=c.getContext('2d');
+      const a=link.source, b=link.target;
+      const scale=180/Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y),1);
+      ctx.setTransform(scale,0,0,scale,128-scale*(a.x+b.x)/2,128-scale*(a.y+b.y)/2);
+      draw(link,ctx,scale);
+      const pixels=ctx.getImageData(0,0,256,256).data;
+      for(let i=0;i<pixels.length;i+=4) {
+        if(pixels[i+3]>100 && Math.abs(pixels[i]-80)<=3 && Math.abs(pixels[i+1]-250)<=3 && Math.abs(pixels[i+2]-123)<=3) return true;
+      }
+      return false;
+    }).map(link=>[link.source.id,link.target.id]).sort();
+  })()`);
+  assert.deepEqual(greenLinks, includeClosed ? [['sim-child','sim-closed'],['sim-child','sim-root']] : [['sim-child','sim-root']], 'visible resolved prerequisite edges glow in dependent-to-prerequisite direction');
+  await capture(page, 'what-if-graph');
+  await evaluate(page, `(()=>{const m=${app}.forceGraphModule; m.resetWhatIf(); m.performWhatIf(m.getGraph().graphData().nodes.find(n=>n.id==='sim-root')); m.resetWhatIf();})()`);
+  await delay(900);
+  assert.deepEqual(await evaluate(page, `${app}.forceGraphModule.getWhatIfState()`), { active: false, sourceNode: null, unblockedCount: 0 }, 'cancelled cascade cannot revive itself');
+  assert.equal(await evaluate(page, `${app}.forceGraphModule.getGraph().graphData().nodes.some(n=>n._whatIfState)`), false, 'reset leaves no stale node state');
+  await evaluate(page, `(()=>{const m=${app}.forceGraphModule; m.resetCriticalPath(); m.resetCycleNavigator(); const config=m.getConfig(); m.setConfig('linkWidth', config.linkWidth);})()`);
+  await evaluate(page, `(()=>{const m=${app}.forceGraphModule; m.performWhatIf(m.getGraph().graphData().nodes.find(n=>n.id==='sim-root')); const data=getGraphViewData(); m.loadData(data.issues,data.dependencies,null);})()`);
+  await delay(900);
+  assert.deepEqual(await evaluate(page, `${app}.forceGraphModule.getWhatIfState()`), { active: false, sourceNode: null, unblockedCount: 0 }, 'data reload cancels a pending cascade');
+  await evaluate(page, `(()=>{const m=${app}.forceGraphModule; m.performWhatIf(m.getGraph().graphData().nodes.find(n=>n.id==='sim-root')); m.cleanup();})()`);
+  await delay(900);
+  assert.deepEqual(await evaluate(page, `${app}.forceGraphModule.getWhatIfState()`), { active: false, sourceNode: null, unblockedCount: 0 }, 'cleanup cancels a pending cascade before freeing WASM');
+  clean(page);
+  console.log('PASS: directed what-if, resolved prerequisites, displayed gains, force-graph simulation and cancellation');
+}
+
 async function journey(page, mobile) {
   await ready(page);
   await waitFor(page, '!!navigator.serviceWorker.controller', 'installed offline service worker controls page');
@@ -394,6 +467,12 @@ try {
   const desktop = await openPage('desktop');
   if (mode === 'blocking-types') {
     await blockingTypesJourney(desktop);
+  } else if (mode === 'what-if') {
+    await whatIfJourney(desktop);
+    if (updatedBundle) {
+      activeBundle = updatedBundle;
+      await whatIfJourney(await openPage('closed-rows-excluded'), false);
+    }
   } else if (mode === 'offline-only') {
     await ready(desktop);
     await capture(desktop, 'first-load');

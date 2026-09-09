@@ -167,6 +167,17 @@ success. Retire a receipt when its source/pipeline or shipped pair is
 superseded. No automatic cleanup is performed. These module tests establish
 neither rendered-browser behavior nor a complete native release gate.
 
+The September 9 graph pair corrects prerequisite/dependent traversal in
+what-if, actionable-node and parallel-cut queries. Edges still point from
+dependent to prerequisite; generic traversal and metric algorithms retain
+their direction. Two isolated rebuilds match the manifest's source fingerprint
+`15175bfceaf3f1f7b7811937e2d615fa6584c450fd9368d5746add3f89126aea`.
+The 227 Rust tests and five existing graph fixtures pass without regenerated
+goldens. Separately, the opt-in Chromium harness executes the real exported
+WASM, checks rendered counts and edge pixels, and cancels delayed simulation
+callbacks. It covers both included and omitted closed rows; this is browser
+fixture evidence, not native-platform or full tracker-eligibility proof.
+
 The optional hybrid scorer WASM is not shipped. The real JavaScript scorer
 and loader fallback remain tested with the optional module absent; no hybrid
 WASM provenance is claimed.

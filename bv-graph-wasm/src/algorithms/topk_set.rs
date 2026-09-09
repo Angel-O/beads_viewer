@@ -159,22 +159,23 @@ mod tests {
 
     #[test]
     fn test_simple_chain() {
-        // 0 -> 1 -> 2 -> 3
+        // 0 <- 1 <- 2 <- 3 (dependent -> prerequisite)
         // Completing 0 unblocks 1,2,3 (gain=3)
-        // Then 1 is closed, 2,3 remain but no more gain from selecting 1
-        let g = make_graph(&[(0, 1), (1, 2), (2, 3)]);
+        // Simulating completion of the cascade leaves no further gain.
+        let g = make_graph(&[(1, 0), (2, 1), (3, 2)]);
         let result = topk_set(&g, &[false; 4], 5);
 
-        assert!(!result.items.is_empty());
+        assert_eq!(result.items.len(), 1);
         // First selection should be 0 (highest impact)
         assert_eq!(result.items[0].node, 0);
         assert_eq!(result.items[0].marginal_gain, 3);
+        assert_eq!(result.items[0].unblocked_ids, vec![1, 2, 3]);
     }
 
     #[test]
     fn test_fork_pattern() {
-        // Hub -> A, B, C (hub unblocks 3)
-        let g = make_graph(&[(0, 1), (0, 2), (0, 3)]);
+        // A, B, C point to Hub (hub unblocks 3).
+        let g = make_graph(&[(1, 0), (2, 0), (3, 0)]);
         let result = topk_set(&g, &[false; 4], 5);
 
         assert_eq!(result.items.len(), 1);
@@ -185,12 +186,12 @@ mod tests {
 
     #[test]
     fn test_multiple_hubs() {
-        // Hub1 -> {A, B}, Hub2 -> {X, Y, Z}
+        // A, B depend on Hub1; X, Y, Z depend on Hub2.
         // Hub2 should be picked first (3 > 2)
-        let g = make_graph(&[(0, 1), (0, 2), (3, 4), (3, 5), (3, 6)]);
+        let g = make_graph(&[(1, 0), (2, 0), (4, 3), (5, 3), (6, 3)]);
         let result = topk_set(&g, &[false; 7], 5);
 
-        assert!(result.items.len() >= 2);
+        assert_eq!(result.items.len(), 2);
         // Node 3 (Hub2) has more impact (3) than Node 0 (Hub1, 2)
         assert_eq!(result.items[0].node, 3);
         assert_eq!(result.items[0].marginal_gain, 3);
@@ -201,10 +202,10 @@ mod tests {
 
     #[test]
     fn test_submodularity() {
-        // Chain: 0 -> 1 -> 2 -> 3 -> 4
+        // Chain: 0 <- 1 <- 2 <- 3 <- 4
         // First selection: 0 (gain=4)
         // After that, no more nodes with positive gain (all unblocked)
-        let g = make_graph(&[(0, 1), (1, 2), (2, 3), (3, 4)]);
+        let g = make_graph(&[(1, 0), (2, 1), (3, 2), (4, 3)]);
         let result = topk_set(&g, &[false; 5], 5);
 
         assert_eq!(result.items.len(), 1);
@@ -213,13 +214,13 @@ mod tests {
 
     #[test]
     fn test_partially_closed() {
-        // 0 -> 2, 1 -> 2, 2 -> 3
+        // 2 -> 0, 2 -> 1, 3 -> 2
         // If 0 is already closed, closing 1 unblocks 2 (then 3)
-        let g = make_graph(&[(0, 2), (1, 2), (2, 3)]);
+        let g = make_graph(&[(2, 0), (2, 1), (3, 2)]);
         let closed = vec![true, false, false, false];
         let result = topk_set(&g, &closed, 5);
 
-        assert!(!result.items.is_empty());
+        assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].node, 1);
         assert_eq!(result.items[0].marginal_gain, 2); // 2 and 3
     }
@@ -227,7 +228,7 @@ mod tests {
     #[test]
     fn test_limit_respected() {
         // Many independent chains
-        let g = make_graph(&[(0, 1), (2, 3), (4, 5), (6, 7), (8, 9)]);
+        let g = make_graph(&[(1, 0), (3, 2), (5, 4), (7, 6), (9, 8)]);
         let result = topk_set(&g, &[false; 10], 2);
 
         assert_eq!(result.items.len(), 2);
@@ -236,8 +237,8 @@ mod tests {
     #[test]
     fn test_deterministic() {
         // Same gains - should pick by node index for determinism
-        // 0 -> 1, 2 -> 3 (both have gain 1)
-        let g = make_graph(&[(0, 1), (2, 3)]);
+        // 1 -> 0, 3 -> 2 (0 and 2 both have gain 1)
+        let g = make_graph(&[(1, 0), (3, 2)]);
 
         // Run multiple times
         for _ in 0..5 {
@@ -250,8 +251,8 @@ mod tests {
     #[test]
     fn test_monotonic_marginal_gains() {
         // Submodularity: marginal gains should be non-increasing
-        // Tree: 0 -> {1, 2, 3}, 1 -> {4, 5}
-        let g = make_graph(&[(0, 1), (0, 2), (0, 3), (1, 4), (1, 5)]);
+        // 1, 2, 3 depend on 0; 4 and 5 depend on 1.
+        let g = make_graph(&[(1, 0), (2, 0), (3, 0), (4, 1), (5, 1)]);
         let result = topk_set(&g, &[false; 6], 5);
 
         if result.items.len() >= 2 {
@@ -266,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_open_nodes_count() {
-        let g = make_graph(&[(0, 1), (1, 2)]);
+        let g = make_graph(&[(1, 0), (2, 1)]);
         let closed = vec![true, false, false];
         let result = topk_set(&g, &closed, 5);
 
@@ -276,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_all_closed() {
-        let g = make_graph(&[(0, 1), (1, 2)]);
+        let g = make_graph(&[(1, 0), (2, 1)]);
         let closed = vec![true, true, true];
         let result = topk_set(&g, &closed, 5);
 
@@ -286,10 +287,10 @@ mod tests {
 
     #[test]
     fn test_deep_cascade() {
-        // Deep chain: 0 -> 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
+        // Deep chain: 0 <- 1 <- 2 <- 3 <- 4 <- 5 <- 6 <- 7 <- 8 <- 9
         let mut edges = Vec::new();
         for i in 0..9 {
-            edges.push((i, i + 1));
+            edges.push((i + 1, i));
         }
         let g = make_graph(&edges);
         let result = topk_set(&g, &[false; 10], 5);

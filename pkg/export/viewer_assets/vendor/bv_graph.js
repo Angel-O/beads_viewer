@@ -22,7 +22,7 @@ export class DiGraph {
         wasm.__wbg_digraph_free(ptr, 0);
     }
     /**
-     * Get all actionable nodes (nodes with all predecessors in closed_set).
+     * Get all actionable nodes (open nodes with all prerequisites in closed_set).
      * closed_set is an array of bytes where non-zero means closed.
      * @param {Uint8Array} closed_set
      * @returns {any}
@@ -35,6 +35,7 @@ export class DiGraph {
     }
     /**
      * Add a directed edge from -> to. Idempotent.
+     * In a dependency graph, from is the dependent and to its prerequisite.
      * @param {number} from
      * @param {number} to
      */
@@ -98,7 +99,7 @@ export class DiGraph {
         return ret;
     }
     /**
-     * Get direct blockers (predecessors) of a node.
+     * Get direct blockers (successors) of a node.
      * These are issues that must be completed before this node can start.
      * @param {number} node
      * @returns {any}
@@ -208,7 +209,7 @@ export class DiGraph {
         return ret;
     }
     /**
-     * Get direct dependents (successors) of a node.
+     * Get direct dependents (predecessors) of a node.
      * These are issues that depend on this node being completed.
      * @param {number} node
      * @returns {any}
@@ -411,7 +412,7 @@ export class DiGraph {
         return ret >>> 0;
     }
     /**
-     * Get open blockers for a node (predecessors not in closed_set).
+     * Get open blockers for a node (successors not in closed_set).
      * closed_set is an array of bytes where non-zero means closed.
      * @param {number} node
      * @param {Uint8Array} closed_set

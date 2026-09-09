@@ -3211,6 +3211,7 @@ func main() {
 					issuePointers[i] = &exportIssues[i]
 				}
 				exporter := export.NewSQLiteExporter(issuePointers, deps, stats, &triage)
+				exporter.Config.ResolvedIDs = exportContext.Readiness.ResolvedIDs()
 				envelope, err := withEnvelope(exportContext.Envelope(), struct{}{})
 				if err != nil {
 					return fmt.Errorf("encoding export source authority: %w", err)
@@ -5882,6 +5883,7 @@ func runPagesWizard(beadsPath string) error {
 		issuePointers[i] = &exportIssues[i]
 	}
 	exporter := export.NewSQLiteExporter(issuePointers, deps, stats, &triage)
+	exporter.Config.ResolvedIDs = source.Readiness.ResolvedIDs()
 	envelope, err := withEnvelope(exportContext.Envelope(), struct{}{})
 	if err != nil {
 		return fmt.Errorf("encoding export source authority: %w", err)

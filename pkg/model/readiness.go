@@ -80,6 +80,22 @@ func closedForReadiness(status Status) bool {
 	return status == StatusClosed || status == StatusTombstone
 }
 
+// ResolvedIDs preserves prerequisite resolution when display/export filters
+// omit closed issues or the loader removes tombstone rows.
+func (r *ReadinessIndex) ResolvedIDs() []string {
+	var ids []string
+	if r == nil {
+		return ids
+	}
+	for id, issue := range r.issues {
+		if closedForReadiness(issue.Status) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func combineDependencyState(a, b DependencyState) DependencyState {
 	if a == DependenciesUnknown || b == DependenciesUnknown {
 		return DependenciesUnknown
