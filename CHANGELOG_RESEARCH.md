@@ -10,6 +10,38 @@ checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
+## September 9 SQLite WAL follow-up
+
+`bv-oonu.21` extends the shared watcher to the selected SQLite database's exact
+`-wal` companion, covering event delivery and polling. Source matching uses the
+same three extensions as the loader. WAL removal after checkpointing signals a
+change rather than removal of the main database; `-shm` and unrelated siblings
+are ignored. JSONL polling does not gain another filesystem lookup.
+
+The retained `06cc108f` binary, whose watcher matches the pre-repair source,
+reads the committed `after` row in a fresh triage process but leaves its running
+Pages export at `before` for the full 15-second observation. The writer stays
+open, main-file metadata stays unchanged and the WAL changes. Before the fix,
+both real SQLite watcher regressions fail at their three-second deadline;
+the JSONL sidecar control passes. All raw evidence is retained in
+`/data/tmp/bv-wal-refresh-20260909-wwqn2zz5`.
+
+The affected RCH race suite passes 1,143 tests: 37 watcher, 70 datasource and
+1,036 UI tests. Eight existing UI tests skip: two Phase 2 timing transitions,
+one permission test under the worker's root account, and five opt-in performance
+or stress tests. Independent review found no runtime defect and requested
+stronger checks for the actual watcher backend and WAL creation; those
+assertions are now present. The real-close test verifies notification without
+a database-removal error, but does not isolate sidecar removal from the
+checkpoint's main-file write. Pages/TUI execution and final verification are
+still pending at this point in the record.
+
+During verification, another process committed and pushed the partial runtime
+and unit-test patch as `cd100c66`, followed by native-prerequisite notes at
+`9bb51cc0`. This session did not create those commits. Their history is retained;
+the complete test/documentation work must still be verified before closure.
+No Actions run was listed for that push.
+
 ## September 9 live-source follow-up
 
 `ccc166e9` (`bv-oonu.20`) binds TUI and single-repository Pages watchers to the
