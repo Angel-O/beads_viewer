@@ -5217,7 +5217,7 @@ func uiScopeSnapshot(snapshot hubScopeSnapshot) *ui.ScopeSnapshot {
 		MemberCount:      active.MemberCount,
 		MemberLimit:      active.MemberLimit,
 		MemberCountKnown: true,
-		MemberLimitKnown: true,
+		MemberLimitKnown: active.MemberLimitKnown,
 		Active:           true,
 	}
 	result.Scopes = []ui.ScopeInfo{*result.Active}
@@ -9391,9 +9391,9 @@ func hubScopeSchema() map[string]interface{} {
 			"created_on":   map[string]interface{}{"type": "string", "format": "date"},
 			"state":        map[string]interface{}{"type": "string", "const": "active"},
 			"member_count": map[string]interface{}{"type": "integer"},
-			"member_limit": map[string]interface{}{"type": "integer", "const": 100},
+			"member_limit": map[string]interface{}{"type": "integer"},
 		},
-		"required": []string{"id", "name", "created_on", "state", "member_count", "member_limit"},
+		"required": []string{"id", "name", "created_on", "state", "member_count"},
 	}
 }
 

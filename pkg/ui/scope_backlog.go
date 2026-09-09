@@ -2980,7 +2980,10 @@ func (m Model) renderScopeBadge() string {
 	}
 	label := "scope none"
 	if m.activeScope != nil {
-		label = fmt.Sprintf("%s · %d/%d", m.activeScope.Name, m.activeScope.MemberCount, m.activeScope.MemberLimit)
+		label = fmt.Sprintf("%s · %d", m.activeScope.Name, m.activeScope.MemberCount)
+		if m.activeScope.MemberLimitKnown {
+			label = fmt.Sprintf("%s · %d/%d", m.activeScope.Name, m.activeScope.MemberCount, m.activeScope.MemberLimit)
+		}
 	}
 	return lipgloss.NewStyle().Background(ColorBgHighlight).Foreground(ColorInfo).Padding(0, 1).Render(label)
 }

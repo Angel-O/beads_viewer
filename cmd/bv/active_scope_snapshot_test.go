@@ -51,16 +51,29 @@ func TestHubScopeMemberLoaderUsesOnlyPublicScopeCommands(t *testing.T) {
 
 func TestHubScopeSnapshotLoaderCarriesActiveIdentityAndBoundedMembers(t *testing.T) {
 	calls := filepath.Join(t.TempDir(), "calls")
-	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active","member_limit":100}`, calls)
+	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active"}`, calls)
+	t.Setenv("WBD_SHOW", `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active","member_limit":37,"members":[{"id":"A"},{"issue_id":"B"}]}`)
 	snapshot, err := newHubScopeSnapshotLoader(t.TempDir())(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Active == nil || snapshot.Active.ID != "scope-a" || snapshot.Active.Name != "Active scope" || snapshot.Active.MemberCount != 2 || snapshot.Active.MemberLimit != 100 {
+	if snapshot.Active == nil || snapshot.Active.ID != "scope-a" || snapshot.Active.Name != "Active scope" || snapshot.Active.MemberCount != 2 || snapshot.Active.MemberLimit != 37 || !snapshot.Active.MemberLimitKnown {
 		t.Fatalf("active scope = %#v", snapshot.Active)
 	}
 	if !reflect.DeepEqual(snapshot.MemberIDs, []string{"A", "B"}) {
 		t.Fatalf("scope members = %#v", snapshot.MemberIDs)
+	}
+}
+
+func TestHubScopeSnapshotLoaderLeavesMissingMemberLimitUnknown(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active"}`, calls)
+	snapshot, err := newHubScopeSnapshotLoader(t.TempDir())(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Active == nil || snapshot.Active.MemberLimit != 0 || snapshot.Active.MemberLimitKnown {
+		t.Fatalf("missing member limit = %#v, want unknown zero value", snapshot.Active)
 	}
 }
 
@@ -215,7 +228,7 @@ func TestHubRobotAndExportsUseActiveSnapshotAndEmptyWithoutOne(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active","member_limit":100}`, filepath.Join(root, "wbd-calls"))
+	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active","member_limit":37}`, filepath.Join(root, "wbd-calls"))
 	t.Setenv("WBD_SHOW", `{"id":"scope-a","name":"Active scope","members":[{"id":"active"}]}`)
 	executable := buildTestBinary(t)
 	run := func(arguments ...string) ([]byte, error) {
@@ -233,7 +246,7 @@ func TestHubRobotAndExportsUseActiveSnapshotAndEmptyWithoutOne(t *testing.T) {
 	if err := json.Unmarshal(activeOutput, &activePayload); err != nil {
 		t.Fatal(err)
 	}
-	if activePayload["scope"].(map[string]any)["id"] != "scope-a" || activePayload["scope"].(map[string]any)["member_count"] != float64(1) {
+	if activePayload["scope"].(map[string]any)["id"] != "scope-a" || activePayload["scope"].(map[string]any)["member_count"] != float64(1) || activePayload["scope"].(map[string]any)["member_limit"] != float64(37) {
 		t.Fatalf("active robot scope = %#v", activePayload["scope"])
 	}
 	if strings.Contains(string(activeOutput), "boundary_refs") || strings.Contains(string(activeOutput), "contexts") || strings.Contains(string(activeOutput), "hidden") {

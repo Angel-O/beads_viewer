@@ -73,11 +73,23 @@ func TestActiveScopeBadgeIsCompact(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
 	}})
-	m.activeScope = &ScopeInfo{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 7, MemberLimit: 100, Active: true}
+	m.activeScope = &ScopeInfo{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 7, MemberLimit: 37, MemberLimitKnown: true, Active: true}
 
 	badge := strings.TrimSpace(ansi.Strip(m.renderScopeBadge()))
-	if badge != "Today · 7/100" {
-		t.Fatalf("active scope badge = %q, want %q", badge, "Today · 7/100")
+	if badge != "Today · 7/37" {
+		t.Fatalf("active scope badge = %q, want %q", badge, "Today · 7/37")
+	}
+}
+
+func TestActiveScopeBadgeOmitsUnknownLimit(t *testing.T) {
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },
+	}})
+	m.activeScope = &ScopeInfo{Name: "Today", MemberCount: 7, Active: true}
+
+	badge := strings.TrimSpace(ansi.Strip(m.renderScopeBadge()))
+	if badge != "Today · 7" {
+		t.Fatalf("active scope badge = %q, want count-only badge", badge)
 	}
 }
 

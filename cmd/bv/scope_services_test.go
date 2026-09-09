@@ -27,9 +27,16 @@ func TestDecodeScopeInfos(t *testing.T) {
 }
 
 func TestUIScopeSnapshotCarriesMemberLimit(t *testing.T) {
-	snapshot := uiScopeSnapshot(hubScopeSnapshot{Active: &RobotActiveScope{ID: "s1", MemberCount: 4, MemberLimit: 37}})
-	if snapshot.Active == nil || snapshot.Active.MemberCount != 4 || snapshot.Active.MemberLimit != 37 {
-		t.Fatalf("UI scope snapshot = %#v, want count 4 and limit 37", snapshot.Active)
+	snapshot := uiScopeSnapshot(hubScopeSnapshot{Active: &RobotActiveScope{ID: "s1", MemberCount: 4, MemberLimit: 37, MemberLimitKnown: true}})
+	if snapshot.Active == nil || snapshot.Active.MemberCount != 4 || snapshot.Active.MemberLimit != 37 || !snapshot.Active.MemberLimitKnown {
+		t.Fatalf("UI scope snapshot = %#v, want known count 4 and limit 37", snapshot.Active)
+	}
+}
+
+func TestUIScopeSnapshotLeavesMissingMemberLimitUnknown(t *testing.T) {
+	snapshot := uiScopeSnapshot(hubScopeSnapshot{Active: &RobotActiveScope{ID: "s1", MemberCount: 4}})
+	if snapshot.Active == nil || snapshot.Active.MemberLimit != 0 || snapshot.Active.MemberLimitKnown {
+		t.Fatalf("UI scope snapshot = %#v, want unknown limit", snapshot.Active)
 	}
 }
 
@@ -481,7 +488,7 @@ func TestHubScopeServicesKeepLegacyCompleteLoadersUnpaginated(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$@" >> "$WBD_SCOPE_CALLS"
 case "$2" in
-list) printf '%s' '{"scopes":[{"id":"scope-a","name":"Today"}]}' ;;
+list) printf '%s' '{"scopes":[{"id":"scope-a","name":"Today","member_count":4,"member_limit":37}]}' ;;
 active) printf '%s' '{"id":"scope-a"}' ;;
 show) printf '%s' '{"id":"scope-a","members":[{"id":"b1","title":"Member"}]}' ;;
 esac
@@ -492,8 +499,12 @@ esac
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WBD_SCOPE_CALLS", calls)
 	service := newHubScopeServices(root)
-	if _, err := service.Load(context.Background()); err != nil {
+	snapshot, err := service.Load(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if snapshot.Active == nil || snapshot.Active.ID != "scope-a" || snapshot.Active.MemberCount != 4 || !snapshot.Active.MemberCountKnown || snapshot.Active.MemberLimit != 37 || !snapshot.Active.MemberLimitKnown {
+		t.Fatalf("active scope = %#v, want known count 4 and producer limit 37", snapshot.Active)
 	}
 	if _, err := service.LoadDetails(context.Background(), "scope-a"); err != nil {
 		t.Fatal(err)

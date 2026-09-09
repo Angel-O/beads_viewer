@@ -111,7 +111,7 @@ func TestRobotTypedResultEnvelopeCarriesActiveHubScope(t *testing.T) {
 		AsOfCommit: "0123456789abcdef",
 		ActiveScope: &RobotActiveScope{
 			ID: "scope-a", Name: "Active scope", CreatedOn: "2026-09-05",
-			State: "active", MemberCount: 2, MemberLimit: 100,
+			State: "active", MemberCount: 2, MemberLimit: 37, MemberLimitKnown: true,
 		},
 		LabelScope: "backend",
 		Recipe:     "actionable",
@@ -140,7 +140,7 @@ func TestRobotTypedResultEnvelopeCarriesActiveHubScope(t *testing.T) {
 	for key, want := range map[string]any{
 		"label": "backend", "recipe": "actionable", "repo": "api",
 		"id": "scope-a", "name": "Active scope", "created_on": "2026-09-05",
-		"state": "active", "member_count": float64(2), "member_limit": float64(100),
+		"state": "active", "member_count": float64(2), "member_limit": float64(37),
 	} {
 		if scope[key] != want {
 			t.Fatalf("scope[%q] = %#v, want %#v", key, scope[key], want)
@@ -152,6 +152,23 @@ func TestRobotTypedResultEnvelopeCarriesActiveHubScope(t *testing.T) {
 	}
 	if strings.Contains(encoded.String(), `"scope":null`) || strings.Contains(encoded.String(), `"mode"`) || strings.Contains(encoded.String(), `"contexts"`) {
 		t.Fatalf("scope collision dropped metadata: %s", encoded.String())
+	}
+}
+
+func TestHubScopeSchemaMakesMemberLimitOptionalInteger(t *testing.T) {
+	schema := hubScopeSchema()
+	properties := schema["properties"].(map[string]interface{})
+	limit := properties["member_limit"].(map[string]interface{})
+	if limit["type"] != "integer" {
+		t.Fatalf("member_limit schema type = %#v, want integer", limit["type"])
+	}
+	if _, ok := limit["const"]; ok {
+		t.Fatalf("member_limit schema retains a constant: %#v", limit)
+	}
+	for _, required := range schema["required"].([]string) {
+		if required == "member_limit" {
+			t.Fatal("member_limit must be optional")
+		}
 	}
 }
 

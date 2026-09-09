@@ -74,7 +74,7 @@ func TestScopeParserRejectsUnboundedOrInvalidFilters(t *testing.T) {
 func TestScopePaginationAndMemberFiltersForwardWithoutRewritingOutput(t *testing.T) {
 	t.Run("scope list", func(t *testing.T) {
 		test := newAppTest(t, false)
-		response := `{"scopes":[{"id":"scope-a"}],"pagination":{"limit":1,"has_more":true,"next_cursor":"opaque:/+= token"}}`
+		response := `{"scopes":[{"id":"scope-a","member_limit":37}],"pagination":{"limit":1,"has_more":true,"next_cursor":"opaque:/+= token"}}`
 		setResponses(t, map[string]string{"scope:list": response})
 		code, stdout, stderr := test.run("scope", "list", "--paginate", "--limit", "1", "--cursor", "opaque:/+= token", "--json")
 		if code != 0 || stdout != response || stderr != "" {
@@ -89,7 +89,7 @@ func TestScopePaginationAndMemberFiltersForwardWithoutRewritingOutput(t *testing
 	t.Run("scope show", func(t *testing.T) {
 		test := newAppTest(t, false)
 		writeHubConfig(t, test, map[string]string{"ctx:a": "/a", "ctx:b": "/b"})
-		response := `{"id":"scope-a","members":[{"id":"bead-1"}],"pagination":{"limit":2,"has_more":false}}`
+		response := `{"id":"scope-a","member_limit":29,"members":[{"id":"bead-1"}],"pagination":{"limit":2,"has_more":false}}`
 		setResponses(t, map[string]string{"scope:show": response})
 		code, stdout, stderr := test.run(
 			"scope", "show", "scope-a", "--status", "ready", "--type", "task",
@@ -456,8 +456,8 @@ func TestScopeReadsAndCreatePreserveStableBackendOutput(t *testing.T) {
 		signal   bool
 	}{
 		{name: "list human", args: []string{"scope", "list"}, response: "NAME\nwork\n", wantArgs: []string{"scope", "list"}},
-		{name: "show JSON", args: []string{"scope", "show", "scope-work", "--json"}, response: `{"id":"scope-work"}`, wantArgs: []string{"--json", "scope", "show", "scope-work"}},
-		{name: "active JSON", args: []string{"scope", "active", "--json"}, response: `{"id":"scope-work"}`, wantArgs: []string{"--json", "scope", "active"}},
+		{name: "show JSON", args: []string{"scope", "show", "scope-work", "--json"}, response: `{"id":"scope-work","member_limit":29}`, wantArgs: []string{"--json", "scope", "show", "scope-work"}},
+		{name: "active JSON", args: []string{"scope", "active", "--json"}, response: `{"id":"scope-work","member_limit":37}`, wantArgs: []string{"--json", "scope", "active"}},
 		{name: "activate human", args: []string{"scope", "activate", "scope-work"}, response: "Activated scope: scope-work\n", wantArgs: []string{"scope", "activate", "scope-work"}, signal: true},
 		{name: "deactivate human", args: []string{"scope", "deactivate"}, response: "Deactivated scope\n", wantArgs: []string{"scope", "deactivate"}, signal: true},
 		{name: "create human", args: []string{"scope", "create", "scope-work", "Work", "--activate"}, response: "Created scope: scope-work\n", wantArgs: []string{"scope", "create", "scope-work", "Work", "--activate"}, signal: true},

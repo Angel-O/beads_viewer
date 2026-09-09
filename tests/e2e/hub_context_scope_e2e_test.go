@@ -298,6 +298,12 @@ func TestRealHubScopedRobotReads(t *testing.T) {
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", visible, hidden)
 	scopeID := extractCreatedID(t, fixture.runSuccess(t, fixture.outside, "wbd", "scope", "create", "scope-qa", "Scoped robot QA", "--activate", "--json"))
 	fixture.runSuccess(t, fixture.outside, "wbd", "scope", "add", visible, hidden, shared, contextless, "--scope", scopeID, "--json")
+	var activeScope struct {
+		MemberLimit *int `json:"member_limit"`
+	}
+	if err := json.Unmarshal(fixture.runSuccess(t, fixture.outside, "wbd", "scope", "active", "--json"), &activeScope); err != nil || activeScope.MemberLimit == nil {
+		t.Fatalf("active scope member_limit missing: err=%v", err)
+	}
 
 	current := fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--robot-graph")
 	explicit := fixture.robot(t, fixture.repositories[0], "wbv", "--hub", "--context", contexts[1], "--context", contexts[0], "--robot-graph")
@@ -321,7 +327,7 @@ func TestRealHubScopedRobotReads(t *testing.T) {
 	assertRobotIDs(t, allItems, []string{contextless, hidden, shared, visible})
 	for name, output := range map[string]map[string]any{"current": current, "explicit": explicit, "contextless": contextlessRead, "all": allItems} {
 		scope, ok := output["scope"].(map[string]any)
-		if !ok || scope["id"] != scopeID || scope["member_count"] != float64(4) {
+		if !ok || scope["id"] != scopeID || scope["member_count"] != float64(4) || scope["member_limit"] != float64(*activeScope.MemberLimit) {
 			t.Fatalf("%s scope = %#v, want active scope %s with four members", name, output["scope"], scopeID)
 		}
 	}
