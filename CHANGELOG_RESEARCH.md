@@ -12,6 +12,26 @@ evidence supplements them here.
 
 ## September 9 dashboard follow-up
 
+The next bounded repair covers `bv-oonu.14` and `bv-oonu.15`. HITS data already
+exists in the shipped WASM; the dashboard read singular names instead of its
+`hubs` and `authorities` fields. The original real-browser bundle fails with an
+empty hub list. The readiness consumer separately counted six ready tasks in
+a nine-row fixture where only three qualify. Export now carries the full-source
+readiness index and clock into SQLite; browser counts, quick wins and filters
+read those predicates. Active-node totals no longer double-count blocked work
+or depend on every status being present. The graph engine bytes are unchanged.
+
+Evidence is retained in `/data/tmp/bv-hits-20260909-btyveb`: desktop/mobile HITS
+and readiness journeys, existing what-if journey, 451 Go unit tests (two existing
+export skips), and all 37 selected CLI export tests. RCH's first CLI run exposed
+a fixture mistake: label scope includes neighboring context. Using the documented
+repository filter preserves the original six expected IDs and every readiness
+assertion. Local CLI execution also runs the two tests skipped by that worker's
+environment. Browser setup corrections wait for visible cards and revisit
+Insights after issue navigation; no scores, thresholds or timeouts were relaxed.
+Fresh exact-revision replay is still pending at this entry's creation. No release
+or original P1/S5/native completion follows from these fixes.
+
 The additional `bv-oonu.13` repair follows the actual dependent-to-prerequisite
 edges through Rust what-if/actionability/parallel-cut queries, SQLite export
 metadata, both browser graph engines and the detail/priority templates. The

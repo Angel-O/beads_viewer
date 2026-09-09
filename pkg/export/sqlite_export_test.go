@@ -59,6 +59,111 @@ func TestSetGitHash(t *testing.T) {
 	}
 }
 
+func TestSQLiteExportFullSourceReadiness(t *testing.T) {
+	now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	later := now.Add(time.Hour)
+	dep := func(id string, kind model.DependencyType) *model.Dependency {
+		return &model.Dependency{DependsOnID: id, Type: kind}
+	}
+	cases := []struct {
+		issue model.Issue
+		state model.DependencyState
+		ready bool
+	}{
+		{model.Issue{ID: "open", Status: model.StatusOpen}, model.DependenciesSatisfied, true},
+		{model.Issue{ID: "progress", Status: model.StatusInProgress, Assignee: "agent"}, model.DependenciesSatisfied, true},
+		{model.Issue{ID: "deferred", Status: model.StatusOpen, DeferUntil: &later}, model.DependenciesSatisfied, false},
+		{model.Issue{ID: "due-now", Status: model.StatusOpen, DeferUntil: &now}, model.DependenciesSatisfied, true},
+		{model.Issue{ID: "blocked-status", Status: model.StatusBlocked}, model.DependenciesSatisfied, false},
+		{model.Issue{ID: "custom-status", Status: "qa-review"}, model.DependenciesSatisfied, false},
+		{model.Issue{ID: "missing", Status: model.StatusOpen, Dependencies: []*model.Dependency{dep("absent", model.DepBlocks)}}, model.DependenciesUnknown, false},
+		{model.Issue{ID: "missing-parent", Status: model.StatusOpen, Dependencies: []*model.Dependency{dep("absent", model.DepParentChild)}}, model.DependenciesUnknown, false},
+		{model.Issue{ID: "filtered-blocker", Status: model.StatusOpen, Dependencies: []*model.Dependency{dep("hidden-open", model.DepWaitsFor)}}, model.DependenciesUnsatisfied, false},
+		{model.Issue{ID: "inherited", Status: model.StatusOpen, Dependencies: []*model.Dependency{dep("hidden-parent", model.DepParentChild)}}, model.DependenciesUnsatisfied, false},
+		{model.Issue{ID: "resolved", Status: model.StatusOpen, Dependencies: []*model.Dependency{dep("hidden-closed", model.DepBlocks), dep("hidden-deleted", model.DepWaitsFor)}}, model.DependenciesSatisfied, true},
+	}
+	source := []model.Issue{
+		{ID: "hidden-open", Status: model.StatusOpen},
+		{ID: "hidden-parent", Status: model.StatusOpen, Dependencies: []*model.Dependency{dep("hidden-open", model.DepConditionalBlocks)}},
+		{ID: "hidden-closed", Status: model.StatusClosed},
+		{ID: "hidden-deleted", Status: model.StatusTombstone},
+	}
+	var visible []*model.Issue
+	for i := range cases {
+		cases[i].issue.Title = cases[i].issue.ID
+		cases[i].issue.IssueType = model.TypeTask
+		source = append(source, cases[i].issue)
+		visible = append(visible, &cases[i].issue)
+	}
+	exporter := NewSQLiteExporter(visible, nil, nil, nil)
+	exporter.Config.Readiness = model.NewReadinessIndex(source)
+	exporter.Config.ReadinessAt = now
+	output := t.TempDir()
+	if err := exporter.Export(output); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(output, "beads.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, tc := range cases {
+		var state string
+		var ready bool
+		if err := db.QueryRow(`SELECT dependency_state, is_actionable FROM issue_overview_mv WHERE id = ?`, tc.issue.ID).Scan(&state, &ready); err != nil {
+			t.Fatal(err)
+		}
+		if state != string(tc.state) || ready != tc.ready {
+			t.Errorf("%s: state=%s ready=%v, want %s/%v", tc.issue.ID, state, ready, tc.state, tc.ready)
+		}
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM issues WHERE id LIKE 'hidden-%'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("context rows leaked into display: count=%d err=%v", count, err)
+	}
+	var clock string
+	if err := db.QueryRow(`SELECT value FROM export_meta WHERE key='readiness_at'`).Scan(&clock); err != nil || clock != now.Format(time.RFC3339Nano) {
+		t.Fatalf("readiness clock=%q err=%v", clock, err)
+	}
+}
+
+func TestSQLiteExportStandaloneReadinessRefresh(t *testing.T) {
+	prerequisite := makeTestIssue("root", "Root", model.StatusOpen, 1, model.TypeTask)
+	child := makeTestIssue("child", "Child", model.StatusOpen, 1, model.TypeTask)
+	child.Dependencies = []*model.Dependency{{IssueID: "child", DependsOnID: "root", Type: model.DepBlocks}}
+	// Supply the same edge both ways, as real callers may do, plus a separate
+	// missing prerequisite. Neither merging nor a later export may mutate input.
+	missing := makeTestIssue("missing-child", "Missing", model.StatusOpen, 1, model.TypeTask)
+	exporter := NewSQLiteExporter([]*model.Issue{prerequisite, child, missing}, []*model.Dependency{
+		child.Dependencies[0], {IssueID: "missing-child", DependsOnID: "absent", Type: model.DepBlocks},
+	}, nil, nil)
+	for _, closed := range []bool{false, true} {
+		if closed {
+			prerequisite.Status = model.StatusClosed
+		}
+		output := t.TempDir()
+		if err := exporter.Export(output); err != nil {
+			t.Fatal(err)
+		}
+		db, err := sql.Open("sqlite", filepath.Join(output, "beads.sqlite3"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ready bool
+		if err := db.QueryRow(`SELECT is_actionable FROM issue_overview_mv WHERE id='child'`).Scan(&ready); err != nil || ready != closed {
+			t.Errorf("after root closed=%v child ready=%v err=%v", closed, ready, err)
+		}
+		var state string
+		if err := db.QueryRow(`SELECT dependency_state, is_actionable FROM issue_overview_mv WHERE id='missing-child'`).Scan(&state, &ready); err != nil || state != "unknown" || ready {
+			t.Errorf("missing prerequisite: state=%q ready=%v err=%v", state, ready, err)
+		}
+		db.Close()
+	}
+	if len(child.Dependencies) != 1 || len(missing.Dependencies) != 0 {
+		t.Fatal("export mutated caller dependency slices")
+	}
+}
+
 func TestWriteRobotJSONPreservesPayloadTimestamp(t *testing.T) {
 	const precise = "2026-09-05T02:00:00.123456789Z"
 	const envelopeTime = "2026-09-05T02:00:00Z"

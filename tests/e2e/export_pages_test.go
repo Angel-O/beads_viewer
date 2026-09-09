@@ -17,6 +17,79 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestExportPagesFullSourceReadiness(t *testing.T) {
+	bv := buildBvBinary(t)
+	stageViewerAssets(t, bv)
+	root := t.TempDir()
+	beads := filepath.Join(root, ".beads")
+	if err := os.MkdirAll(beads, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"id":"ready","title":"Ready","status":"in_progress","issue_type":"task","source_repo":"selected"}
+{"id":"missing","title":"Missing","status":"open","issue_type":"task","source_repo":"selected","dependencies":[{"issue_id":"missing","depends_on_id":"absent","type":"blocks"}]}
+{"id":"deferred","title":"Deferred","status":"open","issue_type":"task","source_repo":"selected","defer_until":"2026-09-10T00:00:00Z"}
+{"id":"inherited","title":"Inherited","status":"open","issue_type":"task","source_repo":"selected","dependencies":[{"issue_id":"inherited","depends_on_id":"parent","type":"parent-child"}]}
+{"id":"filtered","title":"Filtered blocker","status":"open","issue_type":"task","source_repo":"selected","dependencies":[{"issue_id":"filtered","depends_on_id":"outside","type":"waits-for"}]}
+{"id":"resolved","title":"Resolved","status":"open","issue_type":"task","source_repo":"selected","dependencies":[{"issue_id":"resolved","depends_on_id":"closed","type":"blocks"},{"issue_id":"resolved","depends_on_id":"deleted","type":"waits-for"}]}
+{"id":"parent","title":"Parent","status":"open","issue_type":"epic","dependencies":[{"issue_id":"parent","depends_on_id":"outside","type":"conditional-blocks"}]}
+{"id":"outside","title":"Outside filter","status":"open","issue_type":"task"}
+{"id":"closed","title":"Closed","status":"closed","issue_type":"task"}
+{"id":"deleted","title":"Deleted","status":"tombstone","issue_type":"task"}
+`
+	if err := os.WriteFile(filepath.Join(beads, "issues.jsonl"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	t.Setenv("SOURCE_DATE_EPOCH", fmt.Sprint(now.Unix()))
+	output := filepath.Join(root, "export")
+	cmd := exec.Command(bv, "--export-pages", output, "--repo", "selected", "--pages-include-closed=false", "--pages-include-history=false", "--no-hooks")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("export readiness fixture: %v\n%s", err, out)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(output, "beads.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	want := map[string]struct {
+		state string
+		ready bool
+	}{
+		"ready": {"satisfied", true}, "resolved": {"satisfied", true},
+		"missing": {"unknown", false}, "deferred": {"satisfied", false},
+		"inherited": {"unsatisfied", false}, "filtered": {"unsatisfied", false},
+	}
+	rows, err := db.Query(`SELECT id, dependency_state, is_actionable FROM issue_overview_mv`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var id, state string
+		var ready bool
+		if err := rows.Scan(&id, &state, &ready); err != nil {
+			t.Fatal(err)
+		}
+		expected, exists := want[id]
+		if !exists || state != expected.state || ready != expected.ready {
+			t.Errorf("unexpected exported row %s: state=%s ready=%v expected=%+v", id, state, ready, expected)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count != len(want) {
+		t.Fatalf("visible count=%d want=%d", count, len(want))
+	}
+	var clock string
+	if err := db.QueryRow(`SELECT value FROM export_meta WHERE key='readiness_at'`).Scan(&clock); err != nil || clock != now.Format(time.RFC3339) {
+		t.Fatalf("readiness clock=%s err=%v", clock, err)
+	}
+}
+
 func TestExportPagesSourceAuthorityAndWatchReload(t *testing.T) {
 	bv := buildBvBinary(t)
 	stageViewerAssets(t, bv)
@@ -142,6 +215,27 @@ func TestExportPagesSourceAuthorityAndWatchReload(t *testing.T) {
 	if !recovered.Authority.ClaimSafe || recovered.Commands.ClaimTop != "" || recovered.AuthorityHash != healthy.AuthorityHash || len(recovered.Recommendations) != 1 || recovered.Recommendations[0].ID != "safe" || !recovered.Recommendations[0].Claimable {
 		t.Fatalf("restored source did not restore graph readiness without an unbound command: %+v", recovered)
 	}
+	// Changing only a dependency must refresh the SQLite readiness snapshot too.
+	withMissing := []byte(`{"id":"safe","title":"Exportable work","status":"open","issue_type":"task","dependencies":[{"issue_id":"safe","depends_on_id":"absent","type":"blocks"}]}` + "\n")
+	if err := os.WriteFile(path, withMissing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		db, err := sql.Open("sqlite", filepath.Join(output, "beads.sqlite3"))
+		if err == nil {
+			var state string
+			var ready bool
+			err = db.QueryRow(`SELECT dependency_state, is_actionable FROM issue_overview_mv WHERE id='safe'`).Scan(&state, &ready)
+			db.Close()
+			if err == nil && state == "unknown" && !ready {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	logs, _ := os.ReadFile(logPath)
+	t.Fatalf("watch retained ready SQLite state after a prerequisite disappeared\n%s", logs)
 }
 
 func TestPartialWorkspaceExportArtifactsRetainAuthority(t *testing.T) {

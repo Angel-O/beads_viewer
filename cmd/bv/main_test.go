@@ -337,6 +337,30 @@ func TestResolvePagesSource_RespectsExplicitBeadsDBFile(t *testing.T) {
 	requireString(t, source.SourcePath, selectedPath)
 }
 
+func TestResolvePagesSource_ReadinessRetainsTombstonesAndParentGates(t *testing.T) {
+	t.Setenv("BEADS_DB", "")
+	path := filepath.Join(t.TempDir(), "issues.jsonl")
+	data := `{"id":"ready","title":"Resolved tombstone","status":"open","issue_type":"task","dependencies":[{"issue_id":"ready","depends_on_id":"deleted","type":"blocks"}]}
+{"id":"deleted","title":"Deleted","status":"tombstone","issue_type":"task"}
+{"id":"child","title":"Inherited gate","status":"open","issue_type":"task","dependencies":[{"issue_id":"child","depends_on_id":"parent","type":"parent-child"}]}
+{"id":"parent","title":"Parent","status":"open","issue_type":"epic","dependencies":[{"issue_id":"parent","depends_on_id":"missing","type":"blocks"}]}
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source, err := resolvePagesSource(&export.WizardConfig{SourcePath: path}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.Issues) != 3 || source.Readiness == nil {
+		t.Fatalf("wizard source must retain three visible issues and full readiness: %+v", source)
+	}
+	now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	if !source.Readiness.Ready("ready", now) || source.Readiness.Ready("child", now) || source.Readiness.DependencyState("child") != model.DependenciesUnknown {
+		t.Fatal("wizard source lost resolved or inherited prerequisite state")
+	}
+}
+
 func TestResolvePagesSource_RespectsSavedSourcePath(t *testing.T) {
 	beadsDir := t.TempDir()
 	selectedPath := filepath.Join(beadsDir, "selected.jsonl")

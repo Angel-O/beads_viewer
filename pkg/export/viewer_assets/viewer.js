@@ -1019,11 +1019,11 @@ function buildFilterClauses(filters = {}, tableAlias = '') {
     params.push(filters.assignee);
   }
 
-	  // Blocked filter
-	  if (filters.hasBlockers === true || filters.hasBlockers === 'true') {
-    clauses.push(`(${col('blocked_by_ids')} IS NOT NULL AND ${col('blocked_by_ids')} <> '')`);
+  // Readiness comes from the full-source export snapshot, not visible edges.
+  if (filters.hasBlockers === true || filters.hasBlockers === 'true') {
+    clauses.push(`${col('dependency_state')} <> 'satisfied'`);
   } else if (filters.hasBlockers === false || filters.hasBlockers === 'false') {
-    clauses.push(`(${col('blocked_by_ids')} IS NULL OR ${col('blocked_by_ids')} = '')`);
+    clauses.push(`${col('is_actionable')} = 1`);
   }
 
   // Blocking filter (has items depending on it)
@@ -1395,7 +1395,7 @@ function countSearchIssues(term, filters = {}) {
  * Get project statistics
  */
 function getStats() {
-  const stats = {};
+  const stats = { open: 0, in_progress: 0, closed: 0, tombstone: 0 };
 
   try {
     // Count by status
@@ -1413,23 +1413,22 @@ function getStats() {
     console.error('[Stats] Error loading status counts:', err);
   }
 
-  // Count blocked (has blocked_by_ids and status is open/in_progress)
+  // Missing prerequisites and inherited parent gates also withhold readiness.
   stats.blocked = execScalar(`
     SELECT COUNT(*) FROM issue_overview_mv
-    WHERE blocked_by_ids IS NOT NULL
-    AND blocked_by_ids <> ''
+    WHERE dependency_state <> 'satisfied'
     AND status IN ('open', 'in_progress')
   `) || 0;
 
-  // Count actionable (open/in_progress with NO open blockers)
+  // Planning readiness includes deferral and lifecycle at the export clock.
   stats.actionable = execScalar(`
     SELECT COUNT(*) FROM issue_overview_mv
-    WHERE status IN ('open', 'in_progress')
-    AND (blocked_by_ids IS NULL OR blocked_by_ids = '')
+    WHERE is_actionable = 1
   `) || 0;
 
   // Total
   stats.total = execScalar(`SELECT COUNT(*) FROM issue_overview_mv`) || 0;
+  stats.active = stats.total - stats.closed - stats.tombstone;
 
   return stats;
 }
@@ -1440,8 +1439,7 @@ function getStats() {
 function getQuickWins(limit = 5) {
   return execQuery(`
     SELECT * FROM issue_overview_mv
-    WHERE status IN ('open', 'in_progress')
-    AND (blocked_by_ids IS NULL OR blocked_by_ids = '')
+    WHERE is_actionable = 1
     ORDER BY blocks_count DESC, triage_score DESC
     LIMIT ?
   `, [limit]);
@@ -1633,9 +1631,9 @@ function getTopByHITSHub(limit = 10) {
 
   try {
     const hitsResult = GRAPH_STATE.graph.hitsDefault();
-    if (!hitsResult || !hitsResult.hub) return [];
+    if (!hitsResult || !hitsResult.hubs) return [];
 
-    const hubScores = Array.from(hitsResult.hub);
+    const hubScores = Array.from(hitsResult.hubs);
     const indexed = hubScores.map((val, idx) => ({ idx, val }));
     indexed.sort((a, b) => b.val - a.val);
     const topNodes = indexed.slice(0, limit);
@@ -1663,9 +1661,9 @@ function getTopByHITSAuth(limit = 10) {
 
   try {
     const hitsResult = GRAPH_STATE.graph.hitsDefault();
-    if (!hitsResult || !hitsResult.authority) return [];
+    if (!hitsResult || !hitsResult.authorities) return [];
 
-    const authScores = Array.from(hitsResult.authority);
+    const authScores = Array.from(hitsResult.authorities);
     const indexed = authScores.map((val, idx) => ({ idx, val }));
     indexed.sort((a, b) => b.val - a.val);
     const topNodes = indexed.slice(0, limit);

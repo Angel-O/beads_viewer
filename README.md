@@ -2824,6 +2824,12 @@ bv --export-pages ./bv-pages --no-hooks                     # Skip .bv/hooks.yam
 bv --preview-pages ./bv-pages                   # Serve at localhost:9000 (or next available port)
 ```
 
+The dashboard's Actionable count, Ready filter and quick wins use readiness at
+export time: open or in-progress work whose deferral has elapsed and whose
+direct and inherited parent gates are satisfied in the full source. Missing
+prerequisites withhold readiness; closed or tombstoned prerequisites remain
+resolved when their rows are omitted. Re-export to refresh this snapshot.
+
 ### Optional: Hybrid Search WASM Scorer
 
 For very large datasets, you can build an optional WASM scorer used by the static viewer. Setting `BV_BUILD_HYBRID_WASM=1` makes `--export-pages` run `wasm-pack` from a source checkout (`pkg/export/wasm_scorer`) and write the result into the bundle's `wasm/` directory, in the released binary as well as in development builds; it fails with a clear error when `wasm-pack` or the source tree is missing. The viewer only loads it once the export holds 5,000 or more issues (`threshold` in `wasm_loader.js`); smaller exports always use the JS scorer.

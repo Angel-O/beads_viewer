@@ -239,6 +239,8 @@ func CreateMaterializedViews(db *sql.DB) error {
 			i.created_at,
 			i.updated_at,
 			i.closed_at,
+			'unknown' as dependency_state,
+			0 as is_actionable,
 			COALESCE(m.pagerank, 0) as pagerank,
 			COALESCE(m.betweenness, 0) as betweenness,
 			COALESCE(m.critical_path_depth, 0) as critical_path_depth,
@@ -289,6 +291,7 @@ func CreateMaterializedViews(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_mv_status ON issue_overview_mv(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_mv_priority ON issue_overview_mv(priority)`,
 		`CREATE INDEX IF NOT EXISTS idx_mv_score ON issue_overview_mv(triage_score DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_mv_actionable ON issue_overview_mv(is_actionable)`,
 	}
 
 	for _, sql := range mvIndexes {

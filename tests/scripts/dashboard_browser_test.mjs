@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 
 const [browser, bundle, artifacts, mode = 'journeys', updatedBundle, projectBundle] = process.argv.slice(2);
 assert.ok(browser && bundle && artifacts, 'browser, bundle, artifacts required');
-assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if'].includes(mode), 'unknown browser test mode');
+assert.ok(['journeys', 'offline-only', 'blocking-types', 'what-if', 'hits', 'readiness'].includes(mode), 'unknown browser test mode');
 fs.mkdirSync(artifacts, { recursive: true });
 const records = [];
 let brokenAsset = '', changedAsset = '', workerRevision = 0, chrome, server, socket;
@@ -215,6 +215,80 @@ async function blockingTypesJourney(page) {
   await capture(page, 'blocking-graph');
   clean(page);
   console.log('PASS: real exported SQLite, blocking ID lists, issue h/l navigation, graph WASM and force-graph links');
+}
+
+// Export the readiness fixture with closed rows excluded: three ready tasks
+// (open, in-progress, resolved prerequisites), a missing dependency, a deferred
+// task, a child inheriting its parent's review gate, that parent, a qa-review
+// prerequisite and an explicit blocked lifecycle. Closed/deleted prerequisites
+// remain in the full source; missing is genuinely absent.
+async function readinessJourney(page) {
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === 9 && ${app}.graphReady`, 'nine visible readiness issues and actual graph WASM');
+  await waitFor(page, '!!navigator.serviceWorker.controller', 'readiness worker controls page');
+  await delay(500);
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.graphReady`, 'readiness app after worker activation');
+  const readyIDs = ['ready-open', 'ready-progress', 'ready-resolved'];
+  const blockedIDs = ['missing-child', 'parent', 'parent-child'];
+  const stats = await evaluate(page, 'getStats()');
+  console.log(`${page.name} readiness:`, JSON.stringify(stats));
+  assert.equal(stats.actionable, 3, 'only three proven ready tasks, including in-progress and omitted resolved prerequisites');
+  assert.equal(stats.blocked, 3, 'missing and inherited gates remain blocked');
+  assert.equal(stats.active, 9, 'active count includes unresolved lifecycles exactly once');
+  assert.equal(stats.closed, 0, 'absent lifecycle count is zero');
+  assert.deepEqual(await evaluate(page, 'getQuickWins(20).map(i=>i.id).sort()'), readyIDs, 'quick wins exclude deferred, unknown, inherited and nonready lifecycle tasks');
+  assert.deepEqual(await evaluate(page, 'queryIssues({hasBlockers:false}).map(i=>i.id).sort()'), readyIDs, 'Ready filter uses the same readiness policy');
+  const readyCard = '[\\@click*="filters.hasBlockers = false"][\\@click*="view ="]';
+  await click(page, readyCard);
+  await resultIDs(page, readyIDs);
+  await capture(page, 'ready-filter');
+  await click(page, 'a[href="#/"]');
+  await click(page, '[\\@click*="filters.hasBlockers = true"][\\@click*="view ="]');
+  await resultIDs(page, blockedIDs);
+  await capture(page, 'blocked-filter');
+  await click(page, 'a[href="#/insights"]');
+  await waitFor(page, `[...document.querySelectorAll('[x-text*="stats.active"]')].filter(${visible}).some(e=>e.textContent.trim()==='9')`, 'visible finite active-node count');
+  await capture(page, 'active-count');
+  clean(page);
+  console.log(`PASS: ${page.name} full-source readiness, quick wins, card filters and active counts`);
+}
+
+// Reuse the asymmetric sim-* fixture below. Its leading dependent (hub) and
+// prerequisite (authority) differ, so swapping the score vectors also fails.
+async function hitsJourney(page) {
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.stats.total === 6 && ${app}.graphReady`, 'six visible issues and actual HITS WASM');
+  await waitFor(page, '!!navigator.serviceWorker.controller', 'HITS bundle worker controls page');
+  await delay(500);
+  await waitFor(page, `typeof Alpine !== 'undefined' && !${app}.loading && ${app}.graphReady`, 'HITS app after worker activation');
+  await click(page, 'a[href="#/insights"]');
+  const raw = await evaluate(page, 'GRAPH_STATE.graph.hitsDefault()');
+  assert.ok(raw.hubs.some(v => v > 0) && raw.authorities.some(v => v > 0), 'real engine computed both score vectors');
+  const before = await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]');
+  for (const [state, field, title, leader] of [
+    ['topByHITSHub', 'hits_hub', 'HITS Hubs', 'sim-child'],
+    ['topByHITSAuth', 'hits_auth', 'HITS Authorities', 'sim-root'],
+  ]) {
+    await click(page, 'a[href="#/insights"]');
+    const rows = await evaluate(page, `JSON.parse(JSON.stringify(${app}.${state}.map(i=>({id:i.id,title:i.title,score:i.${field}}))))`);
+    console.log(`${page.name} ${title}:`, JSON.stringify(rows));
+    assert.equal(rows[0]?.id, leader, `${title}: correct directed leader appears in dashboard`);
+    assert.equal(rows.length, 6, `${title}: all visible issues are ranked, excluding synthetic tombstone`);
+    assert.ok(rows[0].score > 0, `${title}: positive leader score`);
+    assert.ok(rows.every((r, i) => Number.isFinite(r.score) && r.score >= 0 && r.score <= 1 && (i === 0 || rows[i-1].score >= r.score)), `${title}: finite normalized scores in descending order`);
+    const panel = `[...document.querySelectorAll('.metric-panel-premium')].find(e=>e.querySelector('h3')?.textContent.trim()===${JSON.stringify(title)})`;
+    await waitFor(page, `${panel} && [...${panel}.querySelectorAll('.metric-item')].filter(${visible}).length === 5`, `${title}: visible rendered ranking cards`);
+    const rendered = await evaluate(page, `[...${panel}.querySelectorAll('.metric-item')].filter(${visible}).map(e=>({title:e.querySelector('.metric-item-title').textContent,score:e.querySelector('.metric-item-score').textContent}))`);
+    assert.deepEqual(rendered, rows.slice(0, 5).map(r=>({title:r.title,score:r.score.toFixed(3)})), `${title}: rendered scores and ordering match ranked issues`);
+    assert.equal(await evaluate(page, `[...${panel}.querySelectorAll('p')].some(e=>(${visible})(e) && e.textContent.includes('No HITS'))`), false, `${title}: empty-data fallback hidden`);
+    await click(page, `template[x-for*="${state}.slice"] + .metric-item`);
+    await waitFor(page, `${app}.selectedIssue?.id === ${JSON.stringify(leader)}`, `${title}: card opens its actual issue`);
+    await capture(page, `${field}-detail`);
+    await key(page, 'Escape');
+  }
+  await click(page, 'a[href="#/insights"]');
+  assert.deepEqual(await evaluate(page, '[GRAPH_STATE.graph.nodeCount(), GRAPH_STATE.graph.edgeCount()]'), before, 'ranking and navigation do not mutate graph');
+  await capture(page, 'hits-panels');
+  clean(page);
+  console.log(`PASS: ${page.name} actual HITS hub/authority rankings, rendered scores and issue navigation`);
 }
 
 // The seven-task fixture has root<-child<-leaf, child also depending on closed
@@ -467,6 +541,12 @@ try {
   const desktop = await openPage('desktop');
   if (mode === 'blocking-types') {
     await blockingTypesJourney(desktop);
+  } else if (mode === 'readiness') {
+    await readinessJourney(desktop);
+    await readinessJourney(await openPage('mobile-360', 360));
+  } else if (mode === 'hits') {
+    await hitsJourney(desktop);
+    await hitsJourney(await openPage('mobile-360', 360));
   } else if (mode === 'what-if') {
     await whatIfJourney(desktop);
     if (updatedBundle) {

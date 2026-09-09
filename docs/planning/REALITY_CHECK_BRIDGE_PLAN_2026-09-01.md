@@ -1,5 +1,34 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Dashboard rankings and readiness — 2026-09-09
+
+`bv-oonu.14` connects HITS panels to the scores already computed by the bundled
+engine. `bv-oonu.15` connects dashboard readiness to the full-source model index,
+including missing/filtered prerequisites, deferral and inherited parent gates.
+
+- [x] Retain original real-browser failures: empty HITS hub panel and six ready
+  tasks where only three qualify.
+- [x] Repair both HITS result fields; verify rendered rankings and navigation
+  on desktop and mobile.
+- [x] Export per-issue readiness and its clock; preserve full-source context in
+  direct/watch/wizard wiring and derive it for standalone exporter callers.
+- [x] Connect ready counts, quick wins and filters, including in-progress work.
+  Count unresolved active nodes once, with zero defaults for absent statuses.
+- [x] Verify eleven readiness cases, standalone refresh without input mutation,
+  filtered CLI source, wizard source resolution and actual watch reload.
+- [x] Real desktop/mobile readiness journeys and existing what-if journey pass.
+- [x] 451 Go unit tests and 37 selected CLI tests pass. Two existing export-unit
+  skips remain; the local CLI run resolves two RCH environment-specific skips.
+- [ ] Fresh acceptance replay at the implementation revision; complete honesty
+  review and close only `.14`/`.15` if their original criteria are met.
+- [ ] P1 original baseline recovery, S5 transactional claim and full native/final
+  gates remain unchanged. OldSurface is now online but resets SSH before
+  authentication; the Mac connection question is still pending.
+
+Evidence: `/data/tmp/bv-hits-20260909-btyveb`. HITS and graph WASM bytes remain
+unchanged. Original failures and corrected test setup runs are retained. The
+complete granular TODO and closure evidence belong to the existing Beads tasks.
+
 ## Dashboard simulation follow-through — 2026-09-09
 
 `bv-oonu.13` repairs a second concrete consumer gap: WASM unblock queries used

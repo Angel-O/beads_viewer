@@ -50,6 +50,16 @@ the latest tag, including installer changes usable with already released binarie
   The rebuilt graph WASM preserves unrelated graph metrics. Real Chromium
   regressions and source-rebuild evidence are tracked in `bv-oonu.13`
   ([simulation repair](https://github.com/Dicklesworthstone/beads_viewer/commit/40a7cd07d0dab2d8a2a7a8c0ee1874b120fe3d9a)).
+- HITS hub and authority panels now display the bundled engine's scores and
+  open their ranked issues. Their JavaScript consumer previously read field
+  names that the engine does not return (`bv-oonu.14`).
+- Dashboard ready counts, quick wins and Ready/Blocked filters now use the
+  full-source readiness snapshot. Missing or filtered prerequisites, inherited
+  parent gates and deferral no longer disappear from eligibility checks;
+  resolved prerequisites still satisfy them when omitted from the display.
+  Ready cards include eligible in-progress work. Active-node counts include
+  each unresolved issue once and remain numeric when a status group is absent
+  (`bv-oonu.15`).
 
 ### Dependency inspection and documentation
 

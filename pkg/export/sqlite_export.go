@@ -25,13 +25,15 @@ import (
 
 // SQLiteExporter exports bv data to a SQLite database for static deployment.
 type SQLiteExporter struct {
-	Issues  []*model.Issue
-	Deps    []*model.Dependency
-	Metrics map[string]*model.IssueMetrics
-	Stats   *analysis.GraphStats
-	Triage  *analysis.TriageResult
-	Config  SQLiteExportConfig
-	gitHash string
+	Issues      []*model.Issue
+	Deps        []*model.Dependency
+	Metrics     map[string]*model.IssueMetrics
+	Stats       *analysis.GraphStats
+	Triage      *analysis.TriageResult
+	Config      SQLiteExportConfig
+	gitHash     string
+	readiness   *model.ReadinessIndex
+	readinessAt time.Time
 }
 
 // NewSQLiteExporter creates a new exporter with the given data.
@@ -67,6 +69,36 @@ func (e *SQLiteExporter) SetGitHash(hash string) {
 
 // Export writes the SQLite database and supporting files to the output directory.
 func (e *SQLiteExporter) Export(outputDir string) error {
+	e.readiness = e.Config.Readiness
+	if e.readiness == nil {
+		// Standalone callers may supply relationships on issues, separately in
+		// Deps, or both. Copy slices before combining so export never mutates
+		// caller-owned issues. Repeated edges do not change readiness.
+		source := make([]model.Issue, 0, len(e.Issues))
+		positions := make(map[string]int, len(e.Issues))
+		for _, issue := range e.Issues {
+			if issue == nil {
+				continue
+			}
+			copyIssue := *issue
+			copyIssue.Dependencies = append([]*model.Dependency(nil), issue.Dependencies...)
+			positions[issue.ID] = len(source)
+			source = append(source, copyIssue)
+		}
+		for _, dep := range e.Deps {
+			if dep != nil {
+				if pos, exists := positions[dep.IssueID]; exists {
+					source[pos].Dependencies = append(source[pos].Dependencies, dep)
+				}
+			}
+		}
+		e.readiness = model.NewReadinessIndex(source)
+	}
+	e.readinessAt = e.Config.ReadinessAt
+	if e.readinessAt.IsZero() {
+		e.readinessAt = time.Now().UTC()
+	}
+
 	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
@@ -136,6 +168,9 @@ func (e *SQLiteExporter) Export(outputDir string) error {
 	// Create materialized views
 	if err := CreateMaterializedViews(db); err != nil {
 		return fmt.Errorf("create materialized views: %w", err)
+	}
+	if err := e.populateOverviewReadiness(db); err != nil {
+		return fmt.Errorf("populate overview readiness: %w", err)
 	}
 
 	// Populate additional overview metrics (cycle flags)
@@ -455,6 +490,34 @@ func (e *SQLiteExporter) insertTriageRecommendations(db *sql.DB) error {
 	return tx.Commit()
 }
 
+// populateOverviewReadiness records planning eligibility at the export clock.
+// Visible graph edges alone cannot establish readiness: missing references,
+// omitted prerequisites, inherited parent gates and deferral also matter.
+func (e *SQLiteExporter) populateOverviewReadiness(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin readiness: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE issue_overview_mv SET dependency_state = ?, is_actionable = ? WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare readiness: %w", err)
+	}
+	defer stmt.Close()
+	for _, issue := range e.Issues {
+		if issue == nil {
+			continue
+		}
+		if _, err := stmt.Exec(e.readiness.DependencyState(issue.ID), e.readiness.Ready(issue.ID, e.readinessAt), issue.ID); err != nil {
+			return fmt.Errorf("update readiness for %s: %w", issue.ID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit readiness: %w", err)
+	}
+	return nil
+}
+
 // populateOverviewMetrics updates issue_overview_mv with metrics derived from graph analysis.
 func (e *SQLiteExporter) populateOverviewMetrics(db *sql.DB) error {
 	if e.Stats == nil {
@@ -502,6 +565,7 @@ func (e *SQLiteExporter) insertMeta(db *sql.DB) error {
 		"issue_count":      fmt.Sprintf("%d", len(e.Issues)),
 		"dependency_count": fmt.Sprintf("%d", len(e.Deps)),
 		"schema_version":   fmt.Sprintf("%d", SchemaVersion),
+		"readiness_at":     e.readinessAt.UTC().Format(time.RFC3339Nano),
 	}
 
 	if e.gitHash != "" {
@@ -510,8 +574,8 @@ func (e *SQLiteExporter) insertMeta(db *sql.DB) error {
 	if e.Config.Title != "" {
 		meta["title"] = e.Config.Title
 	}
-	if len(e.Config.ResolvedIDs) > 0 {
-		resolved, err := json.Marshal(e.Config.ResolvedIDs)
+	if resolvedIDs := e.readiness.ResolvedIDs(); len(resolvedIDs) > 0 {
+		resolved, err := json.Marshal(resolvedIDs)
 		if err != nil {
 			return fmt.Errorf("encode resolved issue IDs: %w", err)
 		}
