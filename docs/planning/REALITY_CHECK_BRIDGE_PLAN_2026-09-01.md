@@ -22,8 +22,11 @@ excluded. Graph redraw and delayed-callback cancellation are connected too.
   physical Rust homes, existing graph goldens and negative controls.
 - [x] Run 227 Rust tests, 515 affected Go tests (two existing skips), build/vet
   and formatting. Inspect scanner findings without suppression.
-- [ ] Freeze the implementation and replay acceptance on the exact revision;
-  close only `bv-oonu.13`, then push main and the legacy mirror.
+- [x] Freeze and replay acceptance at `40a7cd07`: clean binary, both real
+  Chromium simulation variants, existing dependency navigation, 515 Go tests,
+  227 Rust tests and the pinned WASM rebuild pass. The original bundle still
+  fails direct0 versus expected1. Close only `bv-oonu.13` after this solo proof.
+- [x] Push the verified repair to main and the legacy mirror with Actions disabled.
 - [ ] P1: recover the original baseline source/binaries. Cass recovered source
   manifest SHA `a947e19a…` and original build paths, but the dirty snapshot and
   both binaries remain absent. Do not substitute another baseline.
@@ -37,6 +40,10 @@ excluded. Graph redraw and delayed-callback cancellation are connected too.
 
 Evidence: `/data/tmp/bv-whatif-20260909-5k4UlI`; complete execution TODO and
 honesty review are attached to the existing bead. No new report framework.
+The final binary records `vcs.modified=false` and SHA-256 `8a7a6186…`. Original
+and intermediate failures remain in that directory, including a renderer tick
+after cleanup. The final lifecycle check now covers reset, reload and cleanup.
+UBS remains nonzero on inspected heuristic findings; no rule was suppressed.
 
 ## Dashboard follow-through — 2026-09-09
 

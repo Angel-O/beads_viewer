@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..1c768eac` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..40a7cd07` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -34,6 +34,15 @@ displayed gains and reset. Browser setup failures (visible row count, CDP proxy
 serialization and the default link-color accessor) are retained separately
 from product counterexamples. Evidence: `/data/tmp/bv-whatif-20260909-5k4UlI`.
 No version bump or publication accompanies this follow-up.
+Final source commit: `40a7cd07d0dab2d8a2a7a8c0ee1874b120fe3d9a`; preceding
+`aa5efbeb` only records the previous repair's evidence. A clean binary from
+the final commit, both Chromium variants, the existing blocking-types journey,
+515 Go tests and 227 Rust tests pass on fresh solo re-execution. The original
+bundle still fails the exact direct-count assertion. `bv-oonu.13` closes after
+that replay. UBS remains nonzero on inspected heuristics; no suppression or
+golden regeneration was added. Fresh release metadata still identifies
+v0.24.1 published September 8 at 00:28:07 UTC, neither draft nor prerelease;
+repository Actions remain disabled.
 
 The nine-commit window `b6e21d22..1c768eac` contains two runtime changes:
 `55ec82b8` preserves producer workflow vocabulary and classifies blocking types;

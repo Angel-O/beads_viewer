@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`1c768eac`](https://github.com/Dicklesworthstone/beads_viewer/commit/1c768eacdfcec4937c018b3c1e5febb7091cfc7c).
+commits through [`40a7cd07`](https://github.com/Dicklesworthstone/beads_viewer/commit/40a7cd07d0dab2d8a2a7a8c0ee1874b120fe3d9a).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -14,7 +14,7 @@ the latest tag, including installer changes usable with already released binarie
 
 | Version | Date | Publication | Orientation |
 |---|---|---|---|
-| [Unreleased] | — | Commits after v0.24.1 | Workflow status and dependency support, directed Flow inspection, and installer/documentation repairs. |
+| [Unreleased] | — | Commits after v0.24.1 | Workflow dependency support, working dashboard simulations, directed Flow inspection, and installer/documentation repairs. |
 | [`v0.24.1`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.1) | 2026-09-08 | GitHub Release | Reuse loaded source hashes and avoid waiting for a busy analysis-cache writer. |
 | [`v0.24.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.24.0) | 2026-09-07 | GitHub Release | Latency campaign across analysis, loader and TUI, graph-navigation and causality repairs, release-gate isolation, and the x/text GO-2026-5970 dependency fix. |
 | [`v0.23.0`](https://github.com/Dicklesworthstone/beads_viewer/releases/tag/v0.23.0) | 2026-09-04 | GitHub Release | Reality Check hardening sweep, 10-stage release gate, proactive drift alerts, typed env registry, docgen, and full tracker completion. |
@@ -48,7 +48,8 @@ the latest tag, including installer changes usable with already released binarie
 - Graph simulation and reset use the bundled renderer's redraw API; cancelling,
   reloading or cleaning up a simulation cancels its pending animation callbacks.
   The rebuilt graph WASM preserves unrelated graph metrics. Real Chromium
-  regressions and source-rebuild evidence are tracked in `bv-oonu.13`.
+  regressions and source-rebuild evidence are tracked in `bv-oonu.13`
+  ([simulation repair](https://github.com/Dicklesworthstone/beads_viewer/commit/40a7cd07d0dab2d8a2a7a8c0ee1874b120fe3d9a)).
 
 ### Dependency inspection and documentation
 
