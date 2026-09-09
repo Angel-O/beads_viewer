@@ -9103,7 +9103,8 @@ func (m *Model) renderHelpOverlay() string {
 		}
 	case focusScopePicker:
 		scopeControls := []struct{ key, desc string }{
-			{"Tab", "Switch to members / " + m.globalIssuesTitle()},
+			{"Tab", "Switch to members"},
+			{"Shift+Tab", "Switch to " + m.globalIssuesTitle()},
 			{"j/k", "Move scope selection"},
 			{"←/→", "Previous / next scope page"},
 			{"Enter", "Toggle active scope"},
@@ -9111,22 +9112,10 @@ func (m *Model) renderHelpOverlay() string {
 			{"B", "Return to List"},
 			{"Esc / q", "Return to previous view"},
 		}
-		if m.scopePicker.MemberFocused() {
+		if m.scopePicker.moveTarget != "" {
 			scopeControls = []struct{ key, desc string }{
-				{"Tab", "Switch to " + m.globalIssuesTitle()},
-				{"j/k", "Move member selection"},
-				{"n/p", "Next / previous member page"},
-				{"o/c/r", "Filter members by status"},
-				{"I", "Cycle member type filter"},
-				{"w", "Cycle member ctx filter"},
-				{"space", "Mark current member"},
-				{"D", "Descope marked/current members"},
-				{"M", "Match-descope members"},
-				{"B", "Return to List"},
-				{"Esc / q", "Return to previous view"},
-			}
-		} else if m.scopePicker.moveTarget != "" {
-			scopeControls = []struct{ key, desc string }{
+				{"Tab", "Switch to members"},
+				{"Shift+Tab", "Switch to " + m.globalIssuesTitle()},
 				{"j/k", "Move destination scope"},
 				{"←/→", "Previous / next scope page"},
 				{"Enter", "Move selected bead"},
@@ -9134,12 +9123,24 @@ func (m *Model) renderHelpOverlay() string {
 				{"Esc / q", "Return to previous view"},
 			}
 		}
-		specializedPanels = []string{
-			renderPanel("Scopes", "◉", 0, scopeControls),
-			renderPanel("Global", "🌐", 2, specializedGlobal),
+		membersControls := []struct{ key, desc string }{
+			{"Tab", "Switch to " + m.globalIssuesTitle()},
+			{"Shift+Tab", "Switch to scopes"},
+			{"j/k", "Move member selection"},
+			{"n/p", "Next / previous member page"},
+			{"o/c/r", "Filter members by status"},
+			{"I", "Cycle member type filter"},
+			{"w", "Cycle member ctx filter"},
+			{"space", "Mark current member"},
+			{"D", "Descope marked/current members"},
+			{"M", "Match-descope members"},
+			{"m", "Move marked members to another scope"},
+			{"B", "Return to List"},
+			{"Esc / q", "Return to previous view"},
 		}
-	case focusGlobalIssues:
 		globalIssuesControls := []struct{ key, desc string }{
+			{"Tab", "Switch to scopes"},
+			{"Shift+Tab", "Switch to members"},
 			{"j/k", "Move selection"},
 			{"PgUp/Dn", "Scroll preview (Ctrl+b/f)"},
 			{"space", "Mark current issue"},
@@ -9153,8 +9154,55 @@ func (m *Model) renderHelpOverlay() string {
 			{"Esc / q", "Return to previous view"},
 		}
 		specializedPanels = []string{
-			renderPanel(globalIssuesTitle, "▤", 0, globalIssuesControls),
-			renderPanel("Scope screen", "◉", 2, specializedGlobal),
+			renderPanel("Scopes", "◉", 0, scopeControls),
+			renderPanel("Members", "▣", 1, membersControls),
+			renderPanel(globalIssuesTitle, "▤", 2, globalIssuesControls),
+		}
+	case focusGlobalIssues:
+		globalIssuesControls := []struct{ key, desc string }{
+			{"Tab", "Switch to scopes"},
+			{"Shift+Tab", "Switch to members"},
+			{"j/k", "Move selection"},
+			{"PgUp/Dn", "Scroll preview (Ctrl+b/f)"},
+			{"space", "Mark current issue"},
+			{"n/p", "Next / previous page"},
+			{"/", "ID/title search"},
+			{"l", "Filter by exact label"},
+			{"s", "Cycle status"},
+			{"A", "Add selected issue to scope (or all marked)"},
+			{"M", "Match-add issues to active scope"},
+			{"B", "Return to List"},
+			{"Esc / q", "Return to previous view"},
+		}
+		scopesControls := []struct{ key, desc string }{
+			{"Tab", "Switch to members"},
+			{"Shift+Tab", "Switch to " + globalIssuesTitle},
+			{"j/k", "Move scope selection"},
+			{"←/→", "Previous / next scope page"},
+			{"Enter", "Toggle active scope"},
+			{"n", "Create inactive named scope"},
+			{"B", "Return to List"},
+			{"Esc / q", "Return to previous view"},
+		}
+		membersControls := []struct{ key, desc string }{
+			{"Tab", "Switch to " + globalIssuesTitle},
+			{"Shift+Tab", "Switch to scopes"},
+			{"j/k", "Move member selection"},
+			{"n/p", "Next / previous member page"},
+			{"o/c/r", "Filter members by status"},
+			{"I", "Cycle member type filter"},
+			{"w", "Cycle member ctx filter"},
+			{"space", "Mark current member"},
+			{"D", "Descope marked/current members"},
+			{"M", "Match-descope members"},
+			{"m", "Move marked members to another scope"},
+			{"B", "Return to List"},
+			{"Esc / q", "Return to previous view"},
+		}
+		specializedPanels = []string{
+			renderPanel("Scopes", "◉", 0, scopesControls),
+			renderPanel("Members", "▣", 1, membersControls),
+			renderPanel(globalIssuesTitle, "▤", 2, globalIssuesControls),
 		}
 	case focusBacklog:
 		backlogControls := []struct{ key, desc string }{

@@ -1276,8 +1276,8 @@ func TestKeyBindingDocsCoverAuditedViewContexts(t *testing.T) {
 		focusFlowMatrix:     {"j", "k", "home", "G", "enter", "f", "esc", "q", "?", "F2/;"},
 		focusSprint:         {"j", "k", "esc", "q", "P", "?", "F2/;"},
 		focusAttention:      {"j", "k", "up", "down", "home", "G", "enter", "g", "] / F4", "esc / q", "?", "F2/;"},
-		focusScopePicker:    {"j", "k", "enter", "esc", "q", "B", "ctrl+c", "`", "F2/;", "?"},
-		focusGlobalIssues:   {"j/k", "n/p", "esc", "q", "B", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5"},
+		focusScopePicker:    {"j", "k", "enter", "esc", "q", "B", "ctrl+c", "`", "F2/;", "?", "tab", "shift+tab"},
+		focusGlobalIssues:   {"j/k", "n/p", "esc", "q", "B", "A", "/", "?", "`", "F2/;", "Ctrl+R/F5", "tab", "shift+tab"},
 	}
 
 	hasDoc := func(context, key string) bool {

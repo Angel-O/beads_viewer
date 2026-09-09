@@ -503,6 +503,68 @@ func TestScopeScreenDispatchesGlobalControlsAfterTopPanes(t *testing.T) {
 	}
 }
 
+func TestScopeShiftTabCyclesPanelsBackward(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.showScopePicker = true
+	m.focused = focusScopePicker
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(*Model)
+	if m.focused != focusGlobalIssues || m.scopePicker.MemberFocused() {
+		t.Fatalf("Shift+Tab from Scopes: focus=%s memberFocused=%t, want Global issues", m.focused, m.scopePicker.MemberFocused())
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(*Model)
+	if m.focused != focusScopePicker || !m.scopePicker.MemberFocused() {
+		t.Fatalf("Shift+Tab from Global issues: focus=%s memberFocused=%t, want Members", m.focused, m.scopePicker.MemberFocused())
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(*Model)
+	if m.focused != focusScopePicker || m.scopePicker.MemberFocused() {
+		t.Fatalf("Shift+Tab from Members: focus=%s memberFocused=%t, want Scopes", m.focused, m.scopePicker.MemberFocused())
+	}
+}
+
+func TestScopeHelpDocumentsAllPanelsAndNavigation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		focus         focus
+		memberFocused bool
+	}{
+		{name: "scopes", focus: focusScopePicker},
+		{name: "members", focus: focusScopePicker, memberFocused: true},
+		{name: "global issues", focus: focusGlobalIssues},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.width, m.height = 240, 40
+			m.showScopePicker = true
+			m.focused = tc.focus
+			m.scopePicker.memberFocused = tc.memberFocused
+			help := ansi.Strip(m.renderHelpOverlay())
+			for _, want := range []string{
+				"Scopes", "Members", m.globalIssuesTitle(),
+				"Shift+Tab", "Switch to scopes", "Switch to members",
+				"Shift+Tab Switch to " + m.globalIssuesTitle(),
+				"Move member selection", "Filter members by status",
+				"Add selected issue to scope (or all marked)",
+			} {
+				if !strings.Contains(help, want) {
+					t.Fatalf("Scope help missing %q:\n%s", want, help)
+				}
+			}
+			if strings.Count(help, "Move member selection") != 1 || strings.Count(help, "Toggle active scope") != 1 {
+				t.Fatalf("Scope help duplicated or omitted panel controls:\n%s", help)
+			}
+			if strings.Contains(help, "Switch to members / ") {
+				t.Fatalf("catalog help combined its Tab destination with Members->Global behavior:\n%s", help)
+			}
+		})
+	}
+}
+
 func TestScopeGlobalIssuesSearchConsumesViewSwitchKeys(t *testing.T) {
 	for _, key := range []string{"b", "B", "g"} {
 		t.Run(key, func(t *testing.T) {
@@ -2747,7 +2809,7 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 		focus focus
 		wants []string
 	}{
-		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members / Global issues", "Enter", "Toggle active scope", "n", "Create inactive named scope"}},
+		{name: "scopes", focus: focusScopePicker, wants: []string{"Scopes", "Tab", "Switch to members", "Enter", "Toggle active scope", "n", "Create inactive named scope"}},
 		{name: "global issues", focus: focusBacklog, wants: []string{"Global issues", "n/p", "Next / previous page", "/", "ID/title search", "l", "Filter by exact label", "s", "Cycle status", "A", "Add selected bead to scope", "space", "Mark current", "M", "Add matching exact label/epic issues to active scope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2781,9 +2843,9 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 			t.Fatalf("scope member help missing %q:\n%s", want, help)
 		}
 	}
-	for _, unavailable := range []string{"Toggle active scope", "Create inactive named scope"} {
-		if strings.Contains(help, unavailable) {
-			t.Fatalf("scope member help advertises catalog-only control %q:\n%s", unavailable, help)
+	for _, want := range []string{"Switch to members", "Move scope selection", "Toggle active scope", "Create inactive named scope"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("scope catalog help missing %q:\n%s", want, help)
 		}
 	}
 
@@ -2813,9 +2875,9 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 			t.Fatalf("moving scope member help missing %q:\n%s", want, help)
 		}
 	}
-	for _, unavailable := range []string{"Move destination scope", "Move selected bead"} {
-		if strings.Contains(help, unavailable) {
-			t.Fatalf("moving scope member help advertises destination control %q:\n%s", unavailable, help)
+	for _, want := range []string{"Move destination scope", "Move selected bead", "Move member selection"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("moving Scope help missing %q:\n%s", want, help)
 		}
 	}
 	footer = ansi.Strip(m.renderFooter())
