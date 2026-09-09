@@ -2767,7 +2767,7 @@ func main() {
 		// The TUI retains source rows for its recipe picker. Robot and export
 		// consumers apply the recipe before producing their output.
 		recipeForScope := activeRecipe
-		if !(envRobot || *exportFile != "" || *exportReport != "" || *exportPages != "") {
+		if !(envRobot || *exportFile != "" || *exportReport != "" || *exportPages != "" || *exportGraph != "") {
 			recipeForScope = nil
 		}
 		scopedContext, scopeErr := scopeLoadedIssues(robotDispatchContext, recipeForScope)

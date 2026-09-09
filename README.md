@@ -811,7 +811,13 @@ bv --export-graph graph.html                    # Export to specific file
 bv --export-graph                               # Auto-generate timestamped filename
 bv --export-graph --graph-title "Q4 Sprint"     # Custom title
 bv --export-graph graph.svg --graph-preset roomy  # Static SVG/PNG snapshot; presets: compact (default), roomy
+bv --recipe actionable --export-graph ready.html # Export only work ready to start
 ```
+
+HTML, SVG and PNG exports apply `--recipe`, including custom recipe files and
+sorted `max_items` limits, together with `--label` and `--repo`. Readiness still
+checks prerequisites in the full loaded source. An empty selection reports an
+error without creating a graph file.
 
 ### Why Interactive Graph Visualization?
 
