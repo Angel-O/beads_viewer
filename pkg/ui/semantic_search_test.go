@@ -1397,6 +1397,30 @@ func TestLabelPickerPreservesTextInputCommandWithoutSemanticWork(t *testing.T) {
 	}
 }
 
+func TestLabelPickerSelectionSurvivesBlinkFollowUp(t *testing.T) {
+	m := NewModel([]model.Issue{{
+		ID: "issue-1", Title: "Issue", Status: model.StatusOpen,
+		Labels: []string{"first", "second"},
+	}}, nil, "")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(*Model)
+	if got := m.labelPicker.SelectedLabel(); got != "second" {
+		t.Fatalf("direct Down Arrow selected %q, want second", got)
+	}
+
+	updated, _ = m.Update(embeddedTextInputMsg{
+		session: m.embeddedTextInputSession,
+		msg:     textinput.Blink(),
+	})
+	m = updated.(*Model)
+	if got := m.labelPicker.SelectedLabel(); got != "second" {
+		t.Fatalf("blink follow-up moved selection to %q, want second", got)
+	}
+}
+
 func TestHistorySearchPreservesTextInputCommandWithoutSemanticWork(t *testing.T) {
 	m := NewModel(nil, nil, "")
 	m.isHistoryView = true
