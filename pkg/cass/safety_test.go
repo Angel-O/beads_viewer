@@ -219,7 +219,7 @@ func TestSafety_SearchTimeout_ReturnsEmptyResults(t *testing.T) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(500 * time.Millisecond):
-			return []byte(`{"results":[{"title":"Too late"}]}`), nil
+			return []byte(`{"hits":[{"title":"Too late"}]}`), nil
 		}
 	}
 
@@ -344,11 +344,11 @@ func TestSafety_MalformedJSON_ReturnsEmptyResults(t *testing.T) {
 		output string
 	}{
 		{"completely invalid", "{not valid json at all"},
-		{"truncated", `{"results":[{"title":"test`},
+		{"truncated", `{"hits":[{"title":"test`},
 		{"binary garbage", "\x00\x01\x02\x03\x04"},
 		{"empty object", "{}"},
-		{"wrong type", `{"results": "not an array"}`},
-		{"null results", `{"results": null}`},
+		{"wrong type", `{"hits": "not an array"}`},
+		{"null results", `{"hits": null}`},
 	}
 
 	for _, tc := range testCases {
@@ -391,7 +391,7 @@ func TestSafety_MalformedJSON_SubsequentSearchesWork(t *testing.T) {
 		if callCount == 1 {
 			return []byte(`{malformed}`), nil
 		}
-		return []byte(`{"results":[{"title":"good result"}]}`), nil
+		return []byte(`{"hits":[{"title":"good result"}]}`), nil
 	}
 
 	// First search with bad JSON
@@ -432,7 +432,7 @@ func TestSafety_EmptyResults_NoVisualDifference(t *testing.T) {
 	sNotInstalled := NewSearcher(dNotInstalled)
 	sInstalled := NewSearcher(dInstalled)
 	sInstalled.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results":[],"meta":{"total":0}}`), nil
+		return []byte(`{"hits":[],"total_matches":0}`), nil
 	}
 
 	respNotInstalled := sNotInstalled.Search(context.Background(), SearchOptions{Query: "test"})
@@ -465,7 +465,7 @@ func TestSafety_EmptyResults_ZeroTotal(t *testing.T) {
 
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results":[],"meta":{"total":0}}`), nil
+		return []byte(`{"hits":[],"total_matches":0}`), nil
 	}
 
 	resp := s.Search(context.Background(), SearchOptions{Query: "nonexistent"})
@@ -550,7 +550,7 @@ func TestSafety_RaceCondition_SubsequentOperationsContinue(t *testing.T) {
 			// Every other call fails
 			return nil, errors.New("random failure")
 		}
-		return []byte(`{"results":[{"title":"ok"}]}`), nil
+		return []byte(`{"hits":[{"title":"ok"}]}`), nil
 	}
 
 	// Run multiple searches
@@ -590,7 +590,7 @@ func TestSafety_RaceCondition_ConcurrentSearchesDuringInstability(t *testing.T) 
 		if time.Now().UnixNano()%2 == 0 {
 			return nil, errors.New("random failure")
 		}
-		return []byte(`{"results":[]}`), nil
+		return []byte(`{"hits":[]}`), nil
 	}
 
 	var wg sync.WaitGroup
@@ -800,7 +800,7 @@ func TestSafety_EndToEnd_InvisibilityGuarantee(t *testing.T) {
 			},
 			setupSearch: func() func(context.Context, string, ...string) ([]byte, error) {
 				return func(ctx context.Context, name string, args ...string) ([]byte, error) {
-					return []byte(`{"results":[]}`), nil
+					return []byte(`{"hits":[]}`), nil
 				}
 			},
 		},
@@ -895,7 +895,7 @@ func BenchmarkSafety_SearchWithEmptyResults(b *testing.B) {
 
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results":[]}`), nil
+		return []byte(`{"hits":[]}`), nil
 	}
 
 	b.ResetTimer()

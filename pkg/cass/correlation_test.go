@@ -177,19 +177,20 @@ func TestCorrelator_Correlate_IDMention(t *testing.T) {
 		for _, arg := range args {
 			if arg == `"bv-test123"` {
 				return []byte(`{
-					"results": [
+					"hits": [
 						{
 							"source_path": "/home/user/project/sessions/s1.json",
+							"workspace": "/home/user/project",
 							"title": "Working on bv-test123",
 							"score": 0.95,
-							"snippet": "Discussing bv-test123 implementation"
+							"content": "Discussing bv-test123 implementation"
 						}
 					],
-					"meta": {"total": 1}
+					"total_matches": 1
 				}`), nil
 			}
 		}
-		return []byte(`{"results": [], "meta": {"total": 0}}`), nil
+		return []byte(`{"hits": [], "total_matches": 0}`), nil
 	}
 
 	cache := NewCache()
@@ -240,20 +241,21 @@ func TestCorrelator_Correlate_Keywords(t *testing.T) {
 			if i > 0 && args[i-1] == "search" && !contains(arg, `"bv-`) {
 				if contains(arg, "authentication") || contains(arg, "oauth") {
 					return []byte(`{
-						"results": [
+						"hits": [
 							{
 								"source_path": "/home/user/project/sessions/s2.json",
+								"workspace": "/home/user/project",
 								"title": "OAuth implementation session",
 								"score": 0.8,
-								"snippet": "Working on authentication flow with OAuth"
+								"content": "Working on authentication flow with OAuth"
 							}
 						],
-						"meta": {"total": 1}
+						"total_matches": 1
 					}`), nil
 				}
 			}
 		}
-		return []byte(`{"results": [], "meta": {"total": 0}}`), nil
+		return []byte(`{"hits": [], "total_matches": 0}`), nil
 	}
 
 	cache := NewCache()
@@ -305,7 +307,7 @@ func TestCorrelator_Correlate_CacheHit(t *testing.T) {
 	searchCalled := false
 	searcher.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		searchCalled = true
-		return []byte(`{"results": [], "meta": {"total": 0}}`), nil
+		return []byte(`{"hits": [], "total_matches": 0}`), nil
 	}
 
 	cache := NewCache()
@@ -607,7 +609,7 @@ func TestCorrelator_EmptyResults(t *testing.T) {
 
 	// Return empty results for everything
 	searcher.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results": [], "meta": {"total": 0}}`), nil
+		return []byte(`{"hits": [], "total_matches": 0}`), nil
 	}
 
 	correlator := NewCorrelator(searcher, nil, "")

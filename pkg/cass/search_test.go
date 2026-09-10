@@ -3,7 +3,6 @@ package cass
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -16,7 +15,7 @@ func TestSearchOptions_Defaults(t *testing.T) {
 	args := s.buildArgs(SearchOptions{Query: "test"})
 
 	// Should include defaults
-	expected := []string{"search", "test", "--robot", "--limit", "10", "--fields", "minimal"}
+	expected := []string{"search", "test", "--robot", "--robot-format", "json", "--limit", "10", "--fields", "source_path,line_number,agent,title,score,content,created_at,match_type,workspace", "--max-content-length", "4000"}
 	if len(args) != len(expected) {
 		t.Errorf("buildArgs() returned %d args, want %d", len(args), len(expected))
 	}
@@ -24,6 +23,41 @@ func TestSearchOptions_Defaults(t *testing.T) {
 		if i < len(args) && args[i] != want {
 			t.Errorf("args[%d] = %q, want %q", i, args[i], want)
 		}
+	}
+}
+
+func TestSearcher_CassWireResponse(t *testing.T) {
+	// This is the producer's wire shape, not a marshaled bv SearchResponse.
+	output := []byte(`{"hits":[{"source_path":"/sessions/one.jsonl","line_number":42,"agent":"codex","title":"OAuth repair","score":33.5,"content":"Refresh token timeout","created_at":1788322597432,"workspace":"/work/api"}],"count":1,"total_matches":3,"hits_clamped":true,"budget":{"elapsed_ms":9}}`)
+	resp := NewSearcher(NewDetector()).parseResponse(output, 12)
+	if resp.Meta.Error != "" || len(resp.Results) != 1 {
+		t.Fatalf("producer returned a hit, bv returned %+v", resp)
+	}
+	got := resp.Results[0]
+	if got.SourcePath != "/sessions/one.jsonl" || got.LineNumber != 42 || got.Agent != "codex" || got.Title != "OAuth repair" || got.Snippet != "Refresh token timeout" || got.Score != 33.5 || !got.Timestamp.Equal(time.UnixMilli(1788322597432)) {
+		t.Fatalf("lost producer fields: %+v", got)
+	}
+	if resp.Meta.Total != 3 || !resp.Meta.Truncated || resp.Meta.ElapsedMs != 12 {
+		t.Fatalf("lost search metadata: %+v", resp.Meta)
+	}
+}
+
+func TestSearcher_NeedsIndexStillSearches(t *testing.T) {
+	d := NewDetector()
+	d.lookPath = func(string) (string, error) { return "/bin/cass", nil }
+	d.runCommand = func(context.Context, string, ...string) (int, error) { return 1, nil }
+	s := NewSearcher(d)
+	called := false
+	s.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		called = true
+		return []byte(`{"hits":[{"source_path":"/sessions/one.jsonl","title":"Still searchable"}],"total_matches":1}`), nil
+	}
+	resp := s.Search(context.Background(), SearchOptions{Query: "known issue"})
+	if !called || resp.Meta.Error != "" || len(resp.Results) != 1 {
+		t.Fatalf("advisory index warning prevented bounded search: called=%v response=%+v", called, resp)
+	}
+	if d.Status() != StatusNeedsIndex || d.IsHealthy() {
+		t.Fatal("successful search must not relabel archive health")
 	}
 }
 
@@ -104,33 +138,10 @@ func TestSearcher_SuccessfulSearch(t *testing.T) {
 
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		resp := SearchResponse{
-			Results: []SearchResult{
-				{
-					SourcePath: "/sessions/session1.json",
-					LineNumber: 42,
-					Agent:      "claude",
-					Title:      "Refactoring discussion",
-					Score:      0.95,
-					Snippet:    "Let's refactor the auth module...",
-					MatchType:  "exact",
-				},
-				{
-					SourcePath: "/sessions/session2.json",
-					LineNumber: 100,
-					Agent:      "cursor",
-					Title:      "Bug fix review",
-					Score:      0.8,
-					Snippet:    "The bug was in the auth code...",
-					MatchType:  "fuzzy",
-				},
-			},
-			Meta: SearchMeta{
-				Total:     2,
-				ElapsedMs: 50,
-			},
-		}
-		return json.Marshal(resp)
+		return []byte(`{"hits":[
+			{"source_path":"/sessions/session1.json","line_number":42,"agent":"claude","title":"Refactoring discussion","score":0.95,"content":"Let's refactor the auth module...","match_type":"exact"},
+			{"source_path":"/sessions/session2.json","line_number":100,"agent":"cursor","title":"Bug fix review","score":0.8,"content":"The bug was in the auth code...","match_type":"fuzzy"}
+		],"total_matches":2}`), nil
 	}
 
 	resp := s.Search(context.Background(), SearchOptions{Query: "auth"})
@@ -158,11 +169,7 @@ func TestSearcher_EmptyResults(t *testing.T) {
 
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		resp := SearchResponse{
-			Results: []SearchResult{},
-			Meta:    SearchMeta{Total: 0},
-		}
-		return json.Marshal(resp)
+		return []byte(`{"hits":[],"total_matches":0}`), nil
 	}
 
 	resp := s.Search(context.Background(), SearchOptions{Query: "nonexistent"})
@@ -236,9 +243,9 @@ func TestSearcher_PartialJSON(t *testing.T) {
 	d.Check()
 
 	s := NewSearcher(d)
-	// Return JSON with only results array (no meta)
+	// Return JSON with only the hits array (no count metadata).
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results":[{"source_path":"/test","score":0.5}]}`), nil
+		return []byte(`{"hits":[{"source_path":"/test","score":0.5}]}`), nil
 	}
 
 	resp := s.Search(context.Background(), SearchOptions{Query: "test"})
@@ -268,7 +275,7 @@ func TestSearcher_Timeout(t *testing.T) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(200 * time.Millisecond):
-			return []byte(`{"results":[]}`), nil
+			return []byte(`{"hits":[]}`), nil
 		}
 	}
 
@@ -301,7 +308,7 @@ func TestSearcher_CustomTimeout(t *testing.T) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
-			return []byte(`{"results":[{"source_path":"/test"}]}`), nil
+			return []byte(`{"hits":[{"source_path":"/test"}]}`), nil
 		}
 	}
 
@@ -344,7 +351,7 @@ func TestSearcher_ConcurrencyLimit(t *testing.T) {
 		}
 
 		time.Sleep(20 * time.Millisecond)
-		return []byte(`{"results":[]}`), nil
+		return []byte(`{"hits":[]}`), nil
 	}
 
 	var wg sync.WaitGroup
@@ -411,7 +418,7 @@ func TestSearcher_SearchWithQuery(t *testing.T) {
 		if len(args) >= 2 {
 			capturedQuery = args[1]
 		}
-		return []byte(`{"results":[]}`), nil
+		return []byte(`{"hits":[]}`), nil
 	}
 
 	s.SearchWithQuery(context.Background(), "my simple query")
@@ -435,7 +442,7 @@ func TestSearcher_SearchInWorkspace(t *testing.T) {
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		capturedArgs = args
-		return []byte(`{"results":[]}`), nil
+		return []byte(`{"hits":[]}`), nil
 	}
 
 	s.SearchInWorkspace(context.Background(), "query", "/my/workspace")
@@ -490,7 +497,7 @@ func TestSearcher_NullResults(t *testing.T) {
 
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results":null}`), nil
+		return []byte(`{"hits":null}`), nil
 	}
 
 	resp := s.Search(context.Background(), SearchOptions{Query: "test"})
@@ -566,7 +573,7 @@ func BenchmarkSearcher_Search(b *testing.B) {
 
 	s := NewSearcher(d)
 	s.runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte(`{"results":[{"source_path":"/test","score":0.5}]}`), nil
+		return []byte(`{"hits":[{"source_path":"/test","score":0.5}]}`), nil
 	}
 
 	b.ResetTimer()

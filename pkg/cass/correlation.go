@@ -226,7 +226,7 @@ func (c *Correlator) searchByID(ctx context.Context, beadID string) []ScoredResu
 	for _, r := range resp.Results {
 		score := float64(ScoreIDMention)
 		score = c.applyTimeDecay(score, r.Timestamp)
-		score = c.applyWorkspaceBoost(score, r.SourcePath)
+		score = c.applyWorkspaceBoost(score, r.Workspace)
 
 		if score >= MinScoreThreshold {
 			scored = append(scored, ScoredResult{
@@ -268,7 +268,7 @@ func (c *Correlator) searchByKeywords(ctx context.Context, issue *model.Issue, k
 		// Score based on how well keywords match
 		baseScore := c.scoreKeywordMatch(r, keywords)
 		score := c.applyTimeDecay(baseScore, r.Timestamp)
-		score = c.applyWorkspaceBoost(score, r.SourcePath)
+		score = c.applyWorkspaceBoost(score, r.Workspace)
 
 		if score >= MinScoreThreshold {
 			matchedKeywords := c.findMatchedKeywords(r, keywords)
@@ -308,7 +308,7 @@ func (c *Correlator) searchByTimestamp(ctx context.Context, issue *model.Issue) 
 	scored := make([]ScoredResult, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		baseScore := c.scoreTimestampProximity(r.Timestamp, issue)
-		score := c.applyWorkspaceBoost(baseScore, r.SourcePath)
+		score := c.applyWorkspaceBoost(baseScore, r.Workspace)
 
 		if score >= MinScoreThreshold {
 			scored = append(scored, ScoredResult{

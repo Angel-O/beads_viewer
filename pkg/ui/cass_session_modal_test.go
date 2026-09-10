@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +17,66 @@ import (
 )
 
 // testTheme is defined in history_test.go and reused here
+
+// Opt in with an existing, indexed bead ID and its workspace. This executes the
+// installed cass against its real archive; ordinary suites use no user data.
+func TestModel_CassInstalledSessionLookup(t *testing.T) {
+	id := os.Getenv("BV_CASS_LIVE_BEAD")
+	workspace := os.Getenv("BV_CASS_LIVE_WORKSPACE")
+	if id == "" || workspace == "" {
+		t.Skip("requires BV_CASS_LIVE_BEAD and BV_CASS_LIVE_WORKSPACE")
+	}
+	path, err := exec.LookPath("cass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "search", `"`+id+`"`, "--robot", "--robot-format", "json", "--limit", "3", "--workspace", workspace, "--fields", "source_path,line_number,agent,title,content,created_at", "--max-content-length", "4000")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	t.Logf("cass=%s direct_search_exit=%v stderr=%q", path, err, stderr.String())
+	if err != nil {
+		t.Fatal("direct installed cass search failed")
+	}
+	var direct struct {
+		Hits []struct {
+			SourcePath string `json:"source_path"`
+			LineNumber int    `json:"line_number"`
+			Title      string `json:"title"`
+			Content    string `json:"content"`
+			CreatedAt  int64  `json:"created_at"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(output, &direct); err != nil || len(direct.Hits) == 0 {
+		t.Fatalf("live prerequisite must return known sessions: parse=%v hits=%d", err, len(direct.Hits))
+	}
+	m := NewModel([]model.Issue{{ID: id, Title: "Live session lookup", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+	m.workDir = workspace
+	m.width, m.height = 120, 40
+	health := CheckCassHealthCmd()().(CassHealthMsg)
+	m = *asModelPtr(t, must2(m.Update(health)))
+	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("V")})))
+	if !got.showCassModal || len(got.cassModal.sessions) == 0 {
+		t.Fatalf("direct cass returned %d hits but V has no modal: health=%s status=%q", len(direct.Hits), health.Status, got.statusMsg)
+	}
+	matched := false
+	for _, session := range got.cassModal.sessions {
+		for _, hit := range direct.Hits {
+			if session.SourcePath == hit.SourcePath && session.LineNumber == hit.LineNumber && session.Title == hit.Title && session.Snippet == hit.Content && session.Timestamp.Equal(time.UnixMilli(hit.CreatedAt)) {
+				matched = session.Title != "" && session.Snippet != "" && !session.Timestamp.IsZero()
+			}
+		}
+	}
+	if !matched {
+		t.Fatal("modal did not preserve a live hit's location, title, content and timestamp")
+	}
+	if got.cassStatus != health.Status {
+		t.Fatal("opening sessions changed the reported archive health")
+	}
+	t.Logf("direct_hits=%d modal_sessions=%d archive_health=%s", len(direct.Hits), len(got.cassModal.sessions), got.cassStatus)
+}
 
 func TestNewCassSessionModal(t *testing.T) {
 	theme := testTheme()

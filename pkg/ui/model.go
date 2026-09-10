@@ -9505,11 +9505,9 @@ func (m *Model) showCassSessionModal() {
 		status := detector.Check()
 		m.cassStatus = status
 		switch status {
-		case cass.StatusHealthy:
-		case cass.StatusNeedsIndex:
-			m.statusMsg = "⚠️ cass needs an index: run `cass index` first"
-			m.statusIsError = false
-			return
+		case cass.StatusHealthy, cass.StatusNeedsIndex:
+			// A stale/rebuilding archive can still answer searches. Retain its
+			// health badge and let the bounded query try the existing index.
 		default:
 			m.statusMsg = "⚠️ cass not available (install it for session correlation)"
 			m.statusIsError = false
