@@ -49,6 +49,7 @@ type viewerComposition struct {
 	LabelPredicate         analysis.LabelPredicate
 	SemanticDatasetPath    string
 	SemanticStorePath      string
+	SemanticIndexDir       string
 	IssueChangePath        string
 	MetadataChangePaths    []string
 	RepositoryPresentation bool
@@ -88,11 +89,13 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		}
 	}
 	semanticStore := ""
+	semanticIndexDir := ""
 	if usesHubStore {
 		semanticStore, err = correlation.HubConfigStore(configPath)
 		if err != nil {
 			return viewerComposition{}, err
 		}
+		semanticIndexDir = hub.SemanticCacheDir(hub.Paths{Store: semanticStore})
 	}
 	var provider *correlation.Provider
 	switch mode {
@@ -180,6 +183,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		LabelPredicate:         labelPredicate,
 		SemanticDatasetPath:    semanticDataset,
 		SemanticStorePath:      semanticStore,
+		SemanticIndexDir:       semanticIndexDir,
 		IssueChangePath:        selectedIssuePath,
 		MetadataChangePaths:    compositionMetadataPaths(selectedIssuePath),
 		RepositoryPresentation: usesHubStore,

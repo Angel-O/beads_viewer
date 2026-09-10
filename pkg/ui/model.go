@@ -1514,7 +1514,7 @@ func (m *Model) startSemanticIndexBuild() tea.Cmd {
 	return BuildSemanticIndexCmd(
 		m.issuesForAsync(),
 		m.semanticPath,
-		m.runtimeServices.SemanticStorePath,
+		m.runtimeServices.SemanticIndexDir,
 		m.semanticDataGeneration,
 		m.semanticIndexBuildGen,
 	)

@@ -864,6 +864,7 @@ func TestBuildSemanticIndexCmdUsesHubPrivateStorage(t *testing.T) {
 	dataset := writeUISemanticDataset(t, source)
 	hubParent := filepath.Join(root, "hub")
 	store := filepath.Join(hubParent, ".beads")
+	indexDir := filepath.Join(hubParent, "semantic")
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -881,7 +882,7 @@ func TestBuildSemanticIndexCmdUsesHubPrivateStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	message := BuildSemanticIndexCmd([]model.Issue{{ID: "hub-1", Title: "Hub issue", Status: model.StatusOpen}}, dataset, store)()
+	message := BuildSemanticIndexCmd([]model.Issue{{ID: "hub-1", Title: "Hub issue", Status: model.StatusOpen}}, dataset, indexDir)()
 	ready, ok := message.(SemanticIndexReadyMsg)
 	if !ok {
 		t.Fatalf("BuildSemanticIndexCmd() returned %T", message)
@@ -911,7 +912,7 @@ func TestModelStartedSemanticIndexUsesRuntimeHubPaths(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "hub-1", Title: "Hub issue", Status: model.StatusOpen}}, nil, "")
 	m.SetRuntimeServices(RuntimeServices{
 		SemanticDatasetPath: dataset,
-		SemanticStorePath:   store,
+		SemanticIndexDir:    filepath.Join(root, "hub", "semantic"),
 	})
 	m.semanticSearchEnabled = true
 

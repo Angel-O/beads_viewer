@@ -19,7 +19,6 @@ const hubImportPath = "github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 // remove it without weakening the final package boundary.
 var temporaryHubImportExceptions = map[string]string{
 	"pkg/correlation/hub_config.go": "correlation configuration seam",
-	"pkg/search/index_sync.go":      "semantic-index synchronization seam",
 }
 
 var hubImportAllowedRoots = []string{

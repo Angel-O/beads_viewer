@@ -73,6 +73,14 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 					t.Fatalf("off provider invoked history source: %v", err)
 				}
 			}
+			if test.wantStore {
+				wantIndexDir := filepath.Join(filepath.Dir(got.SemanticStorePath), "semantic")
+				if got.SemanticIndexDir != wantIndexDir {
+					t.Fatalf("semantic index directory = %q, want %q", got.SemanticIndexDir, wantIndexDir)
+				}
+			} else if got.SemanticIndexDir != "" {
+				t.Fatalf("local semantic index directory = %q, want empty", got.SemanticIndexDir)
+			}
 		})
 	}
 }

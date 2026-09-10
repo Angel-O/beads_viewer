@@ -10,14 +10,26 @@ import (
 	"testing"
 )
 
-func TestSemanticIndexPathHubStore(t *testing.T) {
+func TestSemanticIndexPathResolvedDirectory(t *testing.T) {
 	root := t.TempDir()
-	hubStore := filepath.Join(root, "hub", ".beads")
-	got, err := SemanticIndexPath(filepath.Join(root, "source", ".beads", "issues.jsonl"), hubStore, EmbeddingConfig{Provider: ProviderHash, Dim: 384})
+	indexDir := filepath.Join(root, "hub", "semantic")
+	got, err := SemanticIndexPath(filepath.Join(root, "source", ".beads", "issues.jsonl"), indexDir, EmbeddingConfig{Provider: ProviderHash, Dim: 384})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(root, "hub", "semantic", "index-hash-384.bvvi")
+	if got != want {
+		t.Fatalf("SemanticIndexPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSemanticIndexPathResolvedDirectoryUsesProviderAndDimension(t *testing.T) {
+	indexDir := filepath.Join(t.TempDir(), "semantic")
+	got, err := SemanticIndexPath(filepath.Join(t.TempDir(), "issues.jsonl"), indexDir, EmbeddingConfig{Provider: ProviderOpenAI, Dim: 768})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(indexDir, "index-openai-768.bvvi")
 	if got != want {
 		t.Fatalf("SemanticIndexPath() = %q, want %q", got, want)
 	}

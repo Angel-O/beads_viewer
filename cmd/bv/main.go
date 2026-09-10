@@ -44,6 +44,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
@@ -2898,8 +2899,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			hubStore := composition.SemanticStorePath
-			indexPath, err := search.SemanticIndexPath(semanticDatasetPath, hubStore, embedCfg)
+			indexPath, err := search.SemanticIndexPath(semanticDatasetPath, composition.SemanticIndexDir, embedCfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -4977,6 +4977,7 @@ func main() {
 				CatalogLoader:          composition.CatalogLoader,
 				SemanticDatasetPath:    composition.SemanticDatasetPath,
 				SemanticStorePath:      composition.SemanticStorePath,
+				SemanticIndexDir:       composition.SemanticIndexDir,
 				RepositoryPresentation: composition.RepositoryPresentation,
 				DefaultRepositoryID:    composition.DefaultCurrentContext,
 				ExternalHistory:        composition.HistoryProvider.External(),
@@ -4998,6 +4999,7 @@ func main() {
 				CatalogLoader:          composition.CatalogLoader,
 				SemanticDatasetPath:    semanticDatasetPath,
 				SemanticStorePath:      composition.SemanticStorePath,
+				SemanticIndexDir:       composition.SemanticIndexDir,
 				RepositoryPresentation: composition.RepositoryPresentation,
 				DefaultRepositoryID:    composition.DefaultCurrentContext,
 				ExternalHistory:        composition.HistoryProvider.External(),
@@ -5123,6 +5125,7 @@ func main() {
 			CatalogLoader:          composition.CatalogLoader,
 			SemanticDatasetPath:    composition.SemanticDatasetPath,
 			SemanticStorePath:      composition.SemanticStorePath,
+			SemanticIndexDir:       composition.SemanticIndexDir,
 			RepositoryPresentation: composition.RepositoryPresentation,
 			DefaultRepositoryID:    composition.DefaultCurrentContext,
 			ExternalHistory:        composition.HistoryProvider.External(),
@@ -5144,6 +5147,7 @@ func main() {
 			CatalogLoader:          composition.CatalogLoader,
 			SemanticDatasetPath:    semanticDatasetPath,
 			SemanticStorePath:      composition.SemanticStorePath,
+			SemanticIndexDir:       composition.SemanticIndexDir,
 			RepositoryPresentation: composition.RepositoryPresentation,
 			DefaultRepositoryID:    composition.DefaultCurrentContext,
 			ExternalHistory:        composition.HistoryProvider.External(),
@@ -7766,7 +7770,7 @@ var robotShowToonStats bool
 const robotContractVersion = "1.0.0"
 
 func semanticAsOfDatasetPath(cwd string) string {
-	root, _, err := hub.RepositoryIdentity(cwd)
+	root, _, err := repository.RepositoryIdentity(cwd)
 	if err != nil {
 		return cwd
 	}

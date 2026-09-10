@@ -41,10 +41,13 @@ type RuntimeServices struct {
 	MetadataChangePaths []string
 	// CatalogPath identifies the source passed to CatalogLoader and its change
 	// watcher; UI does not interpret or reopen that source.
-	CatalogPath            string
-	CatalogLoader          RepositoryMetadataProvider
-	SemanticDatasetPath    string
-	SemanticStorePath      string
+	CatalogPath         string
+	CatalogLoader       RepositoryMetadataProvider
+	SemanticDatasetPath string
+	SemanticStorePath   string
+	// SemanticIndexDir is an optional already-resolved directory for the
+	// provider/dimension-specific semantic index. Empty keeps local cache policy.
+	SemanticIndexDir       string
 	RepositoryPresentation bool
 	DefaultRepositoryID    string
 	ExternalHistory        bool
