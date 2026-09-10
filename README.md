@@ -270,7 +270,7 @@ br ready --json                       # Show issues ready to work (no blockers)
 br list --status=open --json          # All open issues
 br show <id> --json                   # Full issue details with dependencies
 br create --title="..." --type=task --priority=2 --json
-br update <id> --status=in_progress --json
+br update <id> --claim --json         # Claim for the current actor and start work
 br close <id> --reason="Completed" --json
 br close <id1> <id2> --reason="Completed" --json
 br sync --flush-only                  # Export DB to JSONL after Beads mutations
@@ -292,7 +292,7 @@ bd export -o .beads/issues.jsonl        # Refresh the compatibility export read 
 
 1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
 2. **Verify**: Check the selected tracker's `show`/`ready` output before claiming
-3. **Claim**: Use `br update <id> --status=in_progress --json` or `bd update <id> --claim --json`
+3. **Claim**: Use `br update <id> --claim --json` or `bd update <id> --claim --json`
 4. **Work**: Implement the task
 5. **Complete**: Use the selected tracker's `close` command
 6. **Refresh for bv**: Run `br sync --flush-only` or the `bd export` command above so the JSONL export is current

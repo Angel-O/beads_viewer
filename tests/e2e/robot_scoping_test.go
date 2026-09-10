@@ -44,8 +44,10 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command(br, args...)
 		cmd.Dir, cmd.Env = dir, cleanEnv(dir)
-		out, err := cmd.CombinedOutput()
-		t.Logf("tracker cwd=%q argv=%q exit=%v output=%s", dir, args, err, out)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		t.Logf("tracker cwd=%q argv=%q exit=%v stderr=%s stdout=%s", dir, args, err, stderr.String(), out)
 		if err != nil {
 			t.Fatalf("tracker fixture: %v", err)
 		}
@@ -122,7 +124,10 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 				cmd.Dir = actions.WorkingDirectory
 			}
 			cmd.Env = append(cleanEnv(root), "BEADS_DIR="+filepath.Join(repos[1], ".beads"), "BEADS_DB="+filepath.Join(repos[1], ".beads", "beads.db"))
-			out, err := cmd.CombinedOutput()
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			t.Logf("generated show shell=%v argv=%q exit=%v stderr=%s stdout=%s", shell, cmd.Args, err, stderr.String(), out)
 			var issues []model.Issue
 			if err != nil || json.Unmarshal(out, &issues) != nil || len(issues) != 1 || issues[0].ID != "same-1" || issues[0].Title != title {
 				t.Fatalf("generated show shell=%v reached wrong issue: err%v out%s", shell, err, out)
