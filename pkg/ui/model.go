@@ -9526,9 +9526,17 @@ func (m *Model) showCassSessionModal() {
 
 	// If no sessions found, just show a status message
 	if len(result.TopSessions) == 0 {
-		m.statusMsg = "No correlated sessions found for " + issue.ID
+		if result.Error != "" {
+			m.statusMsg = "⚠️ Session lookup incomplete; press V to retry"
+		} else {
+			m.statusMsg = "No correlated sessions found for " + issue.ID
+		}
 		m.statusIsError = false
 		return
+	}
+	if result.Error != "" {
+		m.statusMsg = "⚠️ Session lookup incomplete; showing available matches"
+		m.statusIsError = false
 	}
 
 	// Create and show the modal

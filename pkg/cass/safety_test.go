@@ -96,9 +96,9 @@ func TestSafety_NoCassBinary_IsHealthyReturnsFalse(t *testing.T) {
 }
 
 // =============================================================================
-// SCENARIO 2: cass Health Check Fails
+// SCENARIO 2: cass Health Check Warns or Fails
 // Environment: cass binary exists but returns exit 1 or 3
-// Expected: Same as no cass - silently disabled
+// Expected: Advisory health allows bounded searches; search failures degrade quietly
 // =============================================================================
 
 func TestSafety_HealthCheckFails_ExitCodeOne(t *testing.T) {
@@ -115,12 +115,20 @@ func TestSafety_HealthCheckFails_ExitCodeOne(t *testing.T) {
 		t.Errorf("Check() = %v, want StatusNeedsIndex for exit code 1", status)
 	}
 
-	// Search should return empty results, not error
+	// An index warning can still allow search; a failed search returns empty results.
 	s := NewSearcher(d)
+	searchCalled := false
+	s.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		searchCalled = true
+		return nil, errors.New("index unavailable")
+	}
 	resp := s.Search(context.Background(), SearchOptions{Query: "test"})
 
+	if !searchCalled {
+		t.Error("index warning should still attempt a bounded search")
+	}
 	if resp.Results == nil || len(resp.Results) != 0 {
-		t.Error("Search should return empty (not nil) results when cass needs indexing")
+		t.Error("Search should return empty (not nil) results when the warned index cannot be searched")
 	}
 }
 
@@ -746,6 +754,11 @@ func TestSafety_EndToEnd_InvisibilityGuarantee(t *testing.T) {
 			setupHealth: func() func(context.Context, string, ...string) (int, error) {
 				return func(ctx context.Context, name string, args ...string) (int, error) {
 					return 3, nil // Index corrupt
+				}
+			},
+			setupSearch: func() func(context.Context, string, ...string) ([]byte, error) {
+				return func(context.Context, string, ...string) ([]byte, error) {
+					return nil, errors.New("index unavailable")
 				}
 			},
 		},

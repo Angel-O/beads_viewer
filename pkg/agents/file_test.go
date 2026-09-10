@@ -1050,6 +1050,36 @@ func TestEnsureBlurb(t *testing.T) {
 		}
 	})
 
+	t.Run("v5 instructions refresh to atomic claim", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		filePath := filepath.Join(tmpDir, "AGENTS.md")
+		original := "# My Instructions\n\n<!-- bv-agent-instructions-v5 -->\nbr update <id> --status=in_progress --json\n<!-- end-bv-agent-instructions -->\n\nPreserve my instructions.\n"
+		if err := os.WriteFile(filePath, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureBlurb(tmpDir); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(content)
+		if !strings.Contains(got, "br update <id> --claim --json") || strings.Contains(got, "--status=in_progress") || NeedsUpdate(got) {
+			t.Fatalf("v5 claim instructions were not refreshed: %s", got)
+		}
+		if !strings.Contains(got, "# My Instructions") || !strings.Contains(got, "Preserve my instructions.") || strings.Count(got, BlurbStartMarker) != 1 {
+			t.Fatalf("refresh lost user text or duplicated instructions: %s", got)
+		}
+		if err := EnsureBlurb(tmpDir); err != nil {
+			t.Fatal(err)
+		}
+		again, err := os.ReadFile(filePath)
+		if err != nil || !bytes.Equal(content, again) {
+			t.Fatalf("second refresh changed instructions: err=%v", err)
+		}
+	})
+
 	t.Run("agent file with current blurb - no change", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		filePath := filepath.Join(tmpDir, "AGENTS.md")

@@ -38,7 +38,7 @@ func TestContainsBlurb(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "has blurb v5 (current)",
+			name:     "has blurb v5",
 			content:  "# My AGENTS.md\n\n<!-- bv-agent-instructions-v5 -->\nSome content\n<!-- end-bv-agent-instructions -->",
 			expected: true,
 		},
@@ -81,7 +81,7 @@ func TestGetBlurbVersion(t *testing.T) {
 			expected: 3,
 		},
 		{
-			name:     "version 4",
+			name:     "version 5",
 			content:  "<!-- bv-agent-instructions-v5 -->",
 			expected: 5,
 		},
@@ -553,8 +553,8 @@ func TestUpdateBlurbMalformedMarkersFailClosed(t *testing.T) {
 
 func TestUpdateBlurbFutureVersionFailsClosed(t *testing.T) {
 	content := "# Header\n\n" +
-		"<!-- bv-agent-instructions-v6 -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n\n" +
-		"<!-- bv-agent-instructions-v5 -->\ncurrent instructions\n<!-- end-bv-agent-instructions -->\n"
+		fmt.Sprintf("<!-- bv-agent-instructions-v%d -->\nnewer instructions\n<!-- end-bv-agent-instructions -->\n\n", BlurbVersion+1) +
+		BlurbStartMarker + "\ncurrent instructions\n<!-- end-bv-agent-instructions -->\n"
 
 	if got := UpdateBlurb(content); got != content {
 		t.Fatalf("UpdateBlurb() downgraded future instructions:\n got: %q\nwant: %q", got, content)
@@ -702,18 +702,23 @@ func TestNeedsUpdate(t *testing.T) {
 		},
 		{
 			name:     "single complete current version",
-			content:  "<!-- bv-agent-instructions-v5 -->\ncontent\n<!-- end-bv-agent-instructions -->",
-			expected: false, // v4 is current, no update needed
+			content:  BlurbStartMarker + "\ncontent\n<!-- end-bv-agent-instructions -->",
+			expected: false,
+		},
+		{
+			name:     "complete v5 needs atomic claim guidance",
+			content:  "<!-- bv-agent-instructions-v5 -->\nbr update <id> --status=in_progress --json\n<!-- end-bv-agent-instructions -->",
+			expected: true,
 		},
 		{
 			name:     "unterminated current version",
-			content:  "<!-- bv-agent-instructions-v5 -->\ncontent",
+			content:  BlurbStartMarker + "\ncontent",
 			expected: true,
 		},
 		{
 			name: "duplicate current version",
-			content: "<!-- bv-agent-instructions-v5 -->\none\n<!-- end-bv-agent-instructions -->\n" +
-				"<!-- bv-agent-instructions-v5 -->\ntwo\n<!-- end-bv-agent-instructions -->",
+			content: BlurbStartMarker + "\none\n<!-- end-bv-agent-instructions -->\n" +
+				BlurbStartMarker + "\ntwo\n<!-- end-bv-agent-instructions -->",
 			expected: true,
 		},
 		{
@@ -729,7 +734,7 @@ func TestNeedsUpdate(t *testing.T) {
 		{
 			name:     "old v1 needs update",
 			content:  "<!-- bv-agent-instructions-v1 -->",
-			expected: true, // v1 is old, needs update to v4
+			expected: true,
 		},
 	}
 
@@ -750,7 +755,7 @@ func TestAgentBlurbContent(t *testing.T) {
 		"br list --status=open --json",
 		"br show <id> --json",
 		"br create",
-		"br update <id> --status=in_progress --json",
+		"br update <id> --claim --json",
 		"br close <id> --reason=\"Completed\" --json",
 		"br sync",
 		"br dep add",

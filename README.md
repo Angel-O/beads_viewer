@@ -194,7 +194,7 @@ Configure pre- and post-export hooks in `.bv/hooks.yaml` to run validations, not
 The text below is exactly what `bv --agents-add` (and the TUI's AGENTS.md prompt) installs (`pkg/agents/blurb.go`, `AgentBlurb`); a docs parity test keeps this copy identical to it.
 
 ````markdown
-<!-- bv-agent-instructions-v5 -->
+<!-- bv-agent-instructions-v6 -->
 
 ---
 
@@ -315,7 +315,7 @@ Tracker commands do not grant permission to commit or push application code. Fol
 
 The blurb uses HTML comment markers for version tracking:
 ```
-<!-- bv-agent-instructions-v5 -->
+<!-- bv-agent-instructions-v6 -->
 ... content ...
 <!-- end-bv-agent-instructions -->
 ```

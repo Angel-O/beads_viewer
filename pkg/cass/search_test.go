@@ -42,6 +42,32 @@ func TestSearcher_CassWireResponse(t *testing.T) {
 	}
 }
 
+func TestSearcher_CassWireBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		wantCount    int
+		wantError    bool
+	}{
+		{"empty search", `{"hits":[],"count":0,"total_matches":0}`, 0, false},
+		{"unrelated object", `{"healthy":true}`, 0, true},
+		{"old invented shape", `{"results":[{"title":"not a cass hit"}]}`, 0, true},
+		{"wrong hit type", `{"hits":"bad"}`, 0, true},
+		{"wrong timestamp", `{"hits":[{"created_at":"yesterday"}]}`, 0, true},
+		{"partial budget", `{"hits":[{"source_path":"/sessions/one.jsonl"}],"budget":{"timed_out":true}}`, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := NewSearcher(NewDetector()).parseResponse([]byte(tc.output), 1)
+			if resp.Results == nil || len(resp.Results) != tc.wantCount || (resp.Meta.Error != "") != tc.wantError {
+				t.Fatalf("unexpected parse outcome: %+v", resp)
+			}
+		})
+	}
+	resp := NewSearcher(NewDetector()).parseResponse([]byte(`{"hits":[{"created_at":null},{"created_at":0}]}`), 1)
+	if len(resp.Results) != 2 || !resp.Results[0].Timestamp.IsZero() || !resp.Results[1].Timestamp.Equal(time.UnixMilli(0)) {
+		t.Fatalf("unknown timestamp and Unix epoch must remain distinct: %+v", resp)
+	}
+}
+
 func TestSearcher_NeedsIndexStillSearches(t *testing.T) {
 	d := NewDetector()
 	d.lookPath = func(string) (string, error) { return "/bin/cass", nil }

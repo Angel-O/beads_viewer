@@ -10,6 +10,71 @@ checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
+## September 10 Cass lookup and generated claim guidance
+
+This bounded follow-up covers the changes after `65cfc346`, beginning with
+`fe88cfb7` and `b543d376`. It does not add a release or repeat the earlier
+historical audit. Direct installed Cass searches returned nonempty `hits`,
+but the viewer decoded an invented `results` envelope and silently discarded
+them. Minimal producer fields also omitted the preview and timestamp needed
+by the modal. A stale or rebuilding archive could remain searchable while
+the viewer refused all searches based on its advisory health result.
+
+The repaired adapter requests bounded preview fields, maps millisecond
+timestamps, keeps workspace separate from the archive file path and preserves
+the health warning. Correlation caches now retain computed scores, strategy,
+keywords and producer totals. Failed or partial searches keep diagnostics and
+remain retryable; a successful empty search still caches normally. Controlled
+subprocess fixtures cover these branches separately from an opt-in test that
+uses the installed Cass archive through the actual `V` update and modal render.
+
+The old runtime fails the wire and advisory-health regressions. The retained
+old executable also fails with three direct live hits: root reproduced the
+NeedsIndex refusal, and independent replay reproduced silent empty results
+with healthy Cass. The first root attempt instead hit the health timeout;
+that distinct failure remains recorded. Old cache controls reproduce changed
+scores, suppressed retries and changed empty-result metadata. Initial test
+compilation errors and RCH admission refusals are retained as failed attempts,
+not counted as product negatives. Evidence lives in
+`/data/tmp/bv-cass-20260910-9vMyP3`; final results and independent closure belong
+to the original `bv-8phk` record.
+
+The independent documentation suite also caught a preexisting mismatch:
+`2c9493d2` changed README claim commands without updating the generated blurb.
+The installed tracker's help confirms that `--claim` sets both assignee and
+in-progress status. The generator now matches that command, and instruction
+version 6 allows existing version 5 blocks to refresh. The existing parity
+assertion stays unchanged; a real temporary-file upgrade checks new guidance,
+preserved user text, one instruction block and repeat-call byte equality.
+This is a bounded `bv-apal.3` repair, not closure of its remaining release gates.
+
+Final Cass/UI race verification passes 167 Cass and 2,023 UI test entries,
+with nine explicit UI skips. The opt-in installed-archive check skips in that
+ordinary suite, then passes when run locally against the real Cass executable:
+three direct hits become three rendered modal sessions with matching fields.
+Independent replay of the same test executable also passes. Its SHA-256 is
+`ce7a4abd787a707bc6999df7928f88d554532ca3219df2eb6ed692f130b29d19`;
+it was built remotely with Go 1.26.0 for Linux amd64. The archive stayed local.
+The UI lookup remains synchronous, with a separate initial health-probe timeout;
+these checks do not establish an end-to-end latency guarantee.
+
+Independent agents-package verification passes 326 test entries with three
+Darwin-only skips. All 24 documentation-parity test entries pass. The old v5
+file-upgrade control fails before the version repair and passes afterward.
+UBS exits 0 on the three changed agents files. Its scan of the eleven Cass/UI
+files exits 1 with 61 critical and six warning findings: reviewed findings
+misclassify session/UI comparisons as secret checks, a fixed executable's
+query argument as shell injection, stored asynchronous cancellation as missing
+cleanup, and test goroutines as loop-variable captures. No suppression was
+added and the raw scanner result is not described as green. First-party
+formatting passes; the same 49 vendor files remain unformatted.
+Full `go build ./...` and `go vet ./...` complete remotely with exit 0 against
+the final Cass and version 6 instruction sources. Their frozen overlay and
+the live test executable's compile receipt share fingerprint
+`be10a60ec5f51ec87d7708294b96ca354b8ec2c512b1bbb1b91ffdf8e5d190ec`.
+No shared executable was replaced, and no release or native/performance gate
+is closed by these checks.
+
 ## September 10 canonical-source repair
 
 This is an additional bounded implementation review against `d70ebf45`, not a

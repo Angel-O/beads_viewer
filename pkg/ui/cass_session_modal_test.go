@@ -44,9 +44,10 @@ func TestModel_CassInstalledSessionLookup(t *testing.T) {
 		Hits []struct {
 			SourcePath string `json:"source_path"`
 			LineNumber int    `json:"line_number"`
+			Agent      string `json:"agent"`
 			Title      string `json:"title"`
 			Content    string `json:"content"`
-			CreatedAt  int64  `json:"created_at"`
+			CreatedAt  *int64 `json:"created_at"`
 		} `json:"hits"`
 	}
 	if err := json.Unmarshal(output, &direct); err != nil || len(direct.Hits) == 0 {
@@ -56,7 +57,7 @@ func TestModel_CassInstalledSessionLookup(t *testing.T) {
 	m.workDir = workspace
 	m.width, m.height = 120, 40
 	health := CheckCassHealthCmd()().(CassHealthMsg)
-	m = *asModelPtr(t, must2(m.Update(health)))
+	m = asModelPtr(t, must2(m.Update(health)))
 	got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("V")})))
 	if !got.showCassModal || len(got.cassModal.sessions) == 0 {
 		t.Fatalf("direct cass returned %d hits but V has no modal: health=%s status=%q", len(direct.Hits), health.Status, got.statusMsg)
@@ -64,13 +65,17 @@ func TestModel_CassInstalledSessionLookup(t *testing.T) {
 	matched := false
 	for _, session := range got.cassModal.sessions {
 		for _, hit := range direct.Hits {
-			if session.SourcePath == hit.SourcePath && session.LineNumber == hit.LineNumber && session.Title == hit.Title && session.Snippet == hit.Content && session.Timestamp.Equal(time.UnixMilli(hit.CreatedAt)) {
+			if hit.CreatedAt != nil && session.SourcePath == hit.SourcePath && session.LineNumber == hit.LineNumber && session.Agent == hit.Agent && session.Title == hit.Title && session.Snippet == hit.Content && session.Timestamp.Equal(time.UnixMilli(*hit.CreatedAt)) {
 				matched = session.Title != "" && session.Snippet != "" && !session.Timestamp.IsZero()
 			}
 		}
 	}
 	if !matched {
 		t.Fatal("modal did not preserve a live hit's location, title, content and timestamp")
+	}
+	rendered := got.cassModal.View()
+	if !strings.Contains(rendered, got.cassModal.sessions[0].Agent) || strings.Contains(rendered, "(no preview available)") || !strings.Contains(rendered, id) {
+		t.Fatal("live modal render omitted the bead, agent or session preview")
 	}
 	if got.cassStatus != health.Status {
 		t.Fatal("opening sessions changed the reported archive health")
@@ -835,11 +840,41 @@ func TestCassSessionModal_UnhandledKeyIgnored(t *testing.T) {
 func writeStubCass(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\nif [ \"$1\" = \"health\" ]; then exit \"${CASS_STUB_EXIT:-0}\"; fi\nexit 0\n"
+	script := "#!/bin/sh\nif [ \"$1\" = \"health\" ]; then exit \"${CASS_STUB_EXIT:-0}\"; fi\nif [ \"$1\" = \"search\" ]; then printf '%s' \"${CASS_STUB_SEARCH:-}\"; exit \"${CASS_STUB_SEARCH_EXIT:-0}\"; fi\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "cass"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write stub cass: %v", err)
 	}
 	return dir
+}
+
+func TestModel_CassLookupUsesSearchOutcome(t *testing.T) {
+	// Controlled subprocess cases, separate from the installed-archive proof.
+	for _, tc := range []struct {
+		name, output, exit string
+		wantModal          bool
+		wantStatus         string
+	}{
+		{"stale searchable", `{"hits":[{"source_path":"/session","agent":"codex","content":"OAuth preview","created_at":1788322597432}],"total_matches":1}`, "0", true, ""},
+		{"empty success", `{"hits":[],"total_matches":0}`, "0", false, "No correlated sessions found"},
+		{"failed search", "", "1", false, "Session lookup incomplete"},
+		{"malformed response", `{"hits":`, "0", false, "Session lookup incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PATH", writeStubCass(t))
+			t.Setenv("CASS_STUB_EXIT", "1")
+			t.Setenv("CASS_STUB_SEARCH", tc.output)
+			t.Setenv("CASS_STUB_SEARCH_EXIT", tc.exit)
+			m := NewModel([]model.Issue{{ID: "bv-preview", Title: "OAuth preview", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
+			m.width, m.height = 120, 40
+			got := asModelPtr(t, must2(m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("V")})))
+			if got.showCassModal != tc.wantModal || !strings.Contains(got.statusMsg, tc.wantStatus) || got.cassStatus != cass.StatusNeedsIndex {
+				t.Fatalf("modal=%v status=%q health=%s", got.showCassModal, got.statusMsg, got.cassStatus)
+			}
+			if tc.wantModal && (!strings.Contains(got.cassModal.View(), "OAuth preview") || !strings.Contains(got.cassModal.View(), "codex")) {
+				t.Fatal("modal lost preview text or agent")
+			}
+		})
+	}
 }
 
 // TestModel_CassDetectionOnStartup (E4): the startup health check feeds the

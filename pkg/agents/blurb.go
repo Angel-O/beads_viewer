@@ -11,11 +11,11 @@ import (
 )
 
 // BlurbVersion is the current version of the agent instructions blurb.
-// Increment this when making breaking changes to the blurb format.
-const BlurbVersion = 5
+// Increment this whenever the instructions change so installed blocks refresh.
+const BlurbVersion = 6
 
 // BlurbStartMarker marks the beginning of injected agent instructions.
-const BlurbStartMarker = "<!-- bv-agent-instructions-v5 -->"
+const BlurbStartMarker = "<!-- bv-agent-instructions-v6 -->"
 
 // BlurbEndMarker marks the end of injected agent instructions.
 const BlurbEndMarker = "<!-- end-bv-agent-instructions -->"
@@ -23,10 +23,10 @@ const BlurbEndMarker = "<!-- end-bv-agent-instructions -->"
 const blurbStartPrefix = "<!-- bv-agent-instructions-v"
 
 // AgentBlurb contains the instructions to be appended to AGENTS.md files.
-// This is the v5 blurb: v4 plus the note that --graph-format=dot|mermaid text
-// is the graph field of the JSON envelope. Bump the version whenever the text
+// This is the v6 blurb: v5 plus atomic br claim guidance.
+// Bump the version whenever the text
 // changes: --agents-add refreshes installed blocks by version, not content.
-const AgentBlurb = `<!-- bv-agent-instructions-v5 -->
+const AgentBlurb = `<!-- bv-agent-instructions-v6 -->
 
 ---
 
@@ -102,7 +102,7 @@ br ready --json                       # Show issues ready to work (no blockers)
 br list --status=open --json          # All open issues
 br show <id> --json                   # Full issue details with dependencies
 br create --title="..." --type=task --priority=2 --json
-br update <id> --status=in_progress --json
+br update <id> --claim --json         # Claim for the current actor and start work
 br close <id> --reason="Completed" --json
 br close <id1> <id2> --reason="Completed" --json
 br sync --flush-only                  # Export DB to JSONL after Beads mutations
@@ -124,7 +124,7 @@ bd export -o .beads/issues.jsonl        # Refresh the compatibility export read 
 
 1. **Triage**: Run ` + "`" + `bv --robot-triage` + "`" + ` to find the highest-impact actionable work
 2. **Verify**: Check the selected tracker's ` + "`" + `show` + "`" + `/` + "`" + `ready` + "`" + ` output before claiming
-3. **Claim**: Use ` + "`" + `br update <id> --status=in_progress --json` + "`" + ` or ` + "`" + `bd update <id> --claim --json` + "`" + `
+3. **Claim**: Use ` + "`" + `br update <id> --claim --json` + "`" + ` or ` + "`" + `bd update <id> --claim --json` + "`" + `
 4. **Work**: Implement the task
 5. **Complete**: Use the selected tracker's ` + "`" + `close` + "`" + ` command
 6. **Refresh for bv**: Run ` + "`" + `br sync --flush-only` + "`" + ` or the ` + "`" + `bd export` + "`" + ` command above so the JSONL export is current

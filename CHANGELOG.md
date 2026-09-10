@@ -4,7 +4,7 @@ All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
 commits through [`80450e34`](https://github.com/Dicklesworthstone/beads_viewer/commit/80450e345e6b2061fd1e17c6eee007bcb49d56c6).
-The September 10 canonical-source repair is covered separately below.
+The September 10 canonical-source and Cass repairs are covered separately below.
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -147,6 +147,23 @@ the latest tag, including installer changes usable with already released binarie
 
 ### Dependency inspection and documentation
 
+- Cass session lookup now reads the actual `hits` response and requests the
+  title, preview, workspace and millisecond timestamp fields used by the UI.
+  Pressing `V` can show sessions from a searchable stale or rebuilding index
+  while retaining its health warning. Cached sessions keep their computed
+  scores and match reasons; failed or partial lookups remain retryable instead
+  of becoming cached empty results (`bv-8phk`;
+  [search adapter](https://github.com/Dicklesworthstone/beads_viewer/commit/fe88cfb7)).
+- README examples now place impact-network fields under `network`, show
+  priority reasoning as an array and use the actual alert fields. Flow Matrix
+  rows are documented as blockers and columns as dependents; saved-baseline
+  drift checks are distinguished from Git-revision comparisons. Cass scoring
+  and modal controls now describe the implemented behavior
+  ([documentation corrections](https://github.com/Dicklesworthstone/beads_viewer/commit/b543d376)).
+- Generated agent instructions now use `br update <id> --claim --json`,
+  matching the README and assigning the current actor as work starts.
+  Instruction version 6 makes existing version 5 blocks eligible for refresh
+  through `--agents-add`; surrounding user instructions remain intact.
 - Flow Matrix drilldowns now show the actual blocker and dependent for each
   relationship, exclude unrelated issues sharing a label, and deduplicate pairs
   spanning multiple labels. Enter inspects either endpoint without changing the
