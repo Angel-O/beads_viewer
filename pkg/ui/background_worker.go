@@ -1115,7 +1115,7 @@ func (w *BackgroundWorker) SetCatalogPath(path string, watch bool) error {
 		return errors.New("cannot configure Hub catalog after worker start")
 	}
 	w.catalogPath = path
-	if watch {
+	if watch && w.catalogSource == nil {
 		configWatcher, err := watcher.NewWatcher(path,
 			watcher.WithDebounceDuration(w.debounceDelay),
 			watcher.WithContentCheck(true),

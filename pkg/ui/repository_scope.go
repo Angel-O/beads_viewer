@@ -31,6 +31,7 @@ type repositoryScopeController struct {
 	catalogGeneration         uint64
 	activeRepos               map[string]bool
 	repositoryLabelPredicate  analysis.LabelPredicate
+	repositoryIssueResolver   IssueRepositoryResolver
 }
 
 func newRepositoryScopeController() repositoryScopeController {
@@ -175,7 +176,7 @@ func (s repositoryScopeController) issueMatchesRepositoryScope(issue model.Issue
 	if !usesHub && s.activeRepos == nil {
 		return true
 	}
-	ids := issueRepositoryIDs(issue, s.repositoryCatalog, s.repositoryLabelPredicate)
+	ids := issueRepositoryIDs(issue, s.repositoryCatalog, s.repositoryIssueResolver, s.repositoryLabelPredicate)
 	if s.repositorySelection.Matches(ids) {
 		return true
 	}
@@ -232,6 +233,10 @@ func (m Model) labelPredicate() analysis.LabelPredicate {
 		return m.runtimeServices.LabelPredicate
 	}
 	return nil
+}
+
+func (m Model) issueRepositoryResolver() IssueRepositoryResolver {
+	return m.runtimeServices.IssueRepositoryResolver
 }
 
 type hubRelationshipEvidence struct {
@@ -291,7 +296,17 @@ func (m *Model) normalizeContextSortMode() bool {
 func contextlessIssueCount(issues []model.Issue, catalog repositorypkg.Catalog, predicates ...analysis.LabelPredicate) int {
 	count := 0
 	for _, issue := range issues {
-		if len(issueRepositoryIDs(issue, catalog, predicates...)) == 0 {
+		if len(issueRepositoryIDs(issue, catalog, nil, predicates...)) == 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func contextlessIssueCountResolved(issues []model.Issue, catalog repositorypkg.Catalog, resolver IssueRepositoryResolver) int {
+	count := 0
+	for _, issue := range issues {
+		if len(issueRepositoryIDs(issue, catalog, resolver)) == 0 {
 			count++
 		}
 	}
@@ -322,7 +337,18 @@ func repositoryCatalogHasID(catalog repositorypkg.Catalog, id string) bool {
 	return false
 }
 
-func issueRepositoryIDs(issue model.Issue, catalog repositorypkg.Catalog, predicates ...analysis.LabelPredicate) []string {
+func issueRepositoryIDs(issue model.Issue, catalog repositorypkg.Catalog, resolver IssueRepositoryResolver, predicates ...analysis.LabelPredicate) []string {
+	if resolver != nil {
+		ids := append([]string(nil), resolver(issue)...)
+		sort.Strings(ids)
+		unique := ids[:0]
+		for _, id := range ids {
+			if id != "" && (len(unique) == 0 || unique[len(unique)-1] != id) {
+				unique = append(unique, id)
+			}
+		}
+		return unique
+	}
 	ids := make([]string, 0)
 	workspaceKey := ""
 	for _, entry := range catalog {
@@ -626,11 +652,13 @@ func (m *Model) refreshRepositoryPresentation() {
 
 func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
 	m.repositoryScopeController.repositoryLabelPredicate = m.labelPredicate()
+	m.repositoryScopeController.repositoryIssueResolver = m.issueRepositoryResolver()
 	return m.repositoryScopeController.issueMatchesRepositoryScope(issue, m.workspaceMode, m.usesHubScope())
 }
 
 func (m *Model) repositoryCandidates() []model.Issue {
 	m.repositoryScopeController.repositoryLabelPredicate = m.labelPredicate()
+	m.repositoryScopeController.repositoryIssueResolver = m.issueRepositoryResolver()
 	return m.repositoryScopeController.repositoryCandidates(m.issues, m.workspaceMode, m.usesHubScope())
 }
 

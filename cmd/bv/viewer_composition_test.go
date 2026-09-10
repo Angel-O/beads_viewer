@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 )
 
@@ -63,12 +64,15 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 			if (got.LabelPredicate != nil) != test.wantStore {
 				t.Fatalf("label admission supplied = %v, want %v", got.LabelPredicate != nil, test.wantStore)
 			}
+			if (got.CatalogLoader != nil) != test.wantStore || (got.IssueRepositoryResolver != nil) != test.wantStore {
+				t.Fatalf("Hub-only repository services supplied = loader:%v resolver:%v, want %v", got.CatalogLoader != nil, got.IssueRepositoryResolver != nil, test.wantStore)
+			}
 			if test.name == "off" {
 				if got.SemanticStorePath == "" || got.HubConfigPath != config || len(got.MetadataChangePaths) != 1 {
 					t.Fatalf("off composition lost non-history services: %#v", got)
 				}
-				if got.DefaultCurrentContext != "" {
-					t.Fatalf("off composition resolved Git-backed current context: %q", got.DefaultCurrentContext)
+				if got.InitialRepositorySelection != nil {
+					t.Fatalf("off composition resolved a repository selection: %#v", got.InitialRepositorySelection)
 				}
 				if _, err := got.HistoryProvider.GenerateReport(context.Background(), nil, correlation.CorrelatorOptions{}); err != nil {
 					t.Fatalf("off provider invoked history source: %v", err)
@@ -83,6 +87,14 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 				t.Fatalf("local semantic index directory = %q, want empty", got.SemanticIndexDir)
 			}
 		})
+	}
+	local, err := composeViewerServices(viewerCompositionInput{HistoryMode: "git", HubConfigPath: config, WorkDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localServices := local.runtimeServicesFor("", nil)
+	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil {
+		t.Fatalf("local composition exposed Hub repository services: %#v", localServices)
 	}
 }
 
@@ -106,6 +118,7 @@ func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
 	}
 
 	initialScope := &ui.ScopeSnapshot{}
+	composition.CurrentRepositoryID = "ctx:alpha"
 	services := composition.runtimeServicesFor("", initialScope)
 	if services.HistoryProvider != composition.HistoryProvider || services.SelectedIssuePath != composition.SelectedIssuePath || services.IssueChangePath != composition.IssueChangePath {
 		t.Fatalf("runtime source/history = %#v, want composition values", services)
@@ -113,8 +126,14 @@ func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
 	if services.SemanticDatasetPath != composition.SemanticDatasetPath || services.SemanticStorePath != composition.SemanticStorePath || services.SemanticIndexDir != composition.SemanticIndexDir {
 		t.Fatalf("runtime search paths = %#v, want composition values", services)
 	}
-	if services.CatalogPath != config || services.CatalogLoader == nil || services.LabelPredicate == nil {
+	if services.CatalogPath != config || services.CatalogLoader == nil || services.IssueRepositoryResolver == nil || services.LabelPredicate == nil {
 		t.Fatalf("runtime Hub services = %#v", services)
+	}
+	if got := services.IssueRepositoryResolver(model.Issue{Labels: []string{"ctx:alpha", "work"}}); len(got) != 1 || got[0] != "ctx:alpha" {
+		t.Fatalf("resolved issue repositories = %v, want [ctx:alpha]", got)
+	}
+	if services.CurrentRepositoryID != "ctx:alpha" {
+		t.Fatalf("runtime current repository ID = %q, want ctx:alpha", services.CurrentRepositoryID)
 	}
 	if !services.ExternalHistory || !services.RepositoryPresentation || !services.RefreshResolved || services.InitialScope != initialScope {
 		t.Fatalf("runtime policy = %#v", services)

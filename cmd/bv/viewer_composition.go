@@ -54,11 +54,14 @@ type viewerComposition struct {
 	IssueChangePath        string
 	MetadataChangePaths    []string
 	RepositoryPresentation bool
-	DefaultCurrentContext  string
 	WorkspacePath          string
 	AsOf                   string
 	HubAutoRefresh         bool
 	HubChangeSignal        string
+
+	IssueRepositoryResolver    ui.IssueRepositoryResolver
+	InitialRepositorySelection *repository.Selection
+	CurrentRepositoryID        string
 	// HubScopeSnapshot is the bounded active-scope loader shared by robot and
 	// export paths. HubScopeMemberIDs adapts the same seam for TUI refreshes.
 	HubScopeSnapshot  hubScopeSnapshotLoader
@@ -76,6 +79,10 @@ func (c viewerComposition) runtimeServicesFor(datasetPath string, initialScope *
 	if datasetPath == "" {
 		datasetPath = c.SemanticDatasetPath
 	}
+	catalogPath := ""
+	if c.UsesHubConfigStore {
+		catalogPath = c.HubConfigPath
+	}
 	return ui.RuntimeServices{
 		Scopes:                 c.ScopeServices,
 		HistoryProvider:        c.HistoryProvider,
@@ -83,19 +90,22 @@ func (c viewerComposition) runtimeServicesFor(datasetPath string, initialScope *
 		SelectedIssuePath:      c.SelectedIssuePath,
 		IssueChangePath:        c.IssueChangePath,
 		MetadataChangePaths:    c.MetadataChangePaths,
-		CatalogPath:            c.HubConfigPath,
+		CatalogPath:            catalogPath,
 		CatalogLoader:          c.CatalogLoader,
 		SemanticDatasetPath:    datasetPath,
 		SemanticStorePath:      c.SemanticStorePath,
 		SemanticIndexDir:       c.SemanticIndexDir,
 		RepositoryPresentation: c.RepositoryPresentation,
-		DefaultRepositoryID:    c.DefaultCurrentContext,
 		ExternalHistory:        c.HistoryProvider.External(),
 		HubAutoRefresh:         c.HubAutoRefresh,
 		HubScopeMemberIDs:      c.HubScopeMemberIDs,
 		InitialScope:           initialScope,
 		HubChangeSignal:        c.HubChangeSignal,
 		RefreshResolved:        true,
+
+		IssueRepositoryResolver:    c.IssueRepositoryResolver,
+		InitialRepositorySelection: c.InitialRepositorySelection,
+		CurrentRepositoryID:        c.CurrentRepositoryID,
 	}
 }
 
@@ -198,12 +208,26 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		}
 	}
 
-	defaultCurrentContext := ""
-	if mode != "off" {
-		defaultCurrentContext = currentHubRepositoryContext(workDir, usesHubStore)
+	var initialRepositorySelection *repository.Selection
+	currentRepositoryID := ""
+	if mode != "off" && usesHubStore {
+		currentRepositoryID = currentHubRepositoryContext(workDir, true)
+		if currentRepositoryID != "" {
+			selection, selectionErr := repository.NewSelectedSelection([]string{currentRepositoryID})
+			if selectionErr != nil {
+				return viewerComposition{}, selectionErr
+			}
+			initialRepositorySelection = &selection
+		}
 	}
 	var labelPredicate analysis.LabelPredicate
+	var catalogLoader func(string, []model.Issue) (repository.Catalog, error)
+	var issueRepositoryResolver ui.IssueRepositoryResolver
 	if usesHubStore {
+		catalogLoader = hub.LoadRepositoryCatalog
+		issueRepositoryResolver = func(issue model.Issue) []string {
+			return hub.Contexts(issue.Labels)
+		}
 		labelPredicate = hub.AdmitLabel
 	}
 
@@ -214,7 +238,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		SelectedIssuePath:      selectedIssuePath,
 		SelectedIssueSource:    selectedSource,
 		HistoryProvider:        provider,
-		CatalogLoader:          hub.LoadRepositoryCatalog,
+		CatalogLoader:          catalogLoader,
 		LabelPredicate:         labelPredicate,
 		SemanticDatasetPath:    semanticDataset,
 		SemanticStorePath:      semanticStore,
@@ -222,7 +246,6 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		IssueChangePath:        selectedIssuePath,
 		MetadataChangePaths:    compositionMetadataPaths(selectedIssuePath),
 		RepositoryPresentation: usesHubStore,
-		DefaultCurrentContext:  defaultCurrentContext,
 		WorkspacePath:          input.WorkspacePath,
 		AsOf:                   input.AsOf,
 		HubAutoRefresh:         compositionHubAutoRefreshEnabled(input.RefreshEnvironment),
@@ -231,6 +254,10 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		HubScopeMemberIDs:      hubScopeMemberIDs,
 		HubRobotFilter:         hubRobotFilter,
 		ScopeServices:          scopeServices,
+
+		IssueRepositoryResolver:    issueRepositoryResolver,
+		InitialRepositorySelection: initialRepositorySelection,
+		CurrentRepositoryID:        currentRepositoryID,
 	}, nil
 }
 

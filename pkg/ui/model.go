@@ -2353,7 +2353,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		hubChangeSignal = ""
 	}
 
-	if (issueChangePath != "" || len(metadataChangePaths) > 0) && (backgroundModeRequested || hubChangeSignal != "") {
+	if (issueChangePath != "" || len(metadataChangePaths) > 0 || runtimeServices.IssueSource != nil || len(runtimeServices.MetadataSources) > 0 || runtimeServices.SourceChangeSource != nil || runtimeServices.CatalogChangeSource != nil) && (backgroundModeRequested || hubChangeSignal != "") {
 		bw, err := NewBackgroundWorker(WorkerConfig{
 			BeadsPath:           beadsPath,
 			SelectedIssuePath:   selectedIssuePath,
@@ -2363,6 +2363,10 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			HubChangeSignal:     hubChangeSignal,
 			CatalogLoader:       runtimeServices.CatalogLoader,
 			LabelPredicate:      runtimeServices.LabelPredicate,
+			IssueSource:         runtimeServices.IssueSource,
+			MetadataSources:     runtimeServices.MetadataSources,
+			SourceChangeSource:  runtimeServices.SourceChangeSource,
+			CatalogChangeSource: runtimeServices.CatalogChangeSource,
 			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
 			SkipInitialRefresh:  runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil,
 		})
@@ -2581,15 +2585,11 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 	if services.SemanticDatasetPath != "" {
 		m.semanticPath = services.SemanticDatasetPath
 	}
-	m.hubRepositoryMode = services.RepositoryPresentation || services.RepositoryCatalog != nil
-	if services.RepositoryCatalog != nil {
-		m.repositoryScopeController.setCatalog(services.RepositoryCatalog)
-	}
+	m.currentRepositoryID = services.CurrentRepositoryID
+	m.hubRepositoryMode = services.RepositoryPresentation || services.IssueRepositoryResolver != nil
 	if services.CatalogPath == "" || services.CatalogLoader == nil {
 		m.refreshRepositoryPresentation()
-		if services.DefaultRepositoryID != "" {
-			m.SetDefaultRepositoryScope(services.DefaultRepositoryID)
-		}
+		m.applyInitialRepositorySelection(services.InitialRepositorySelection)
 		return
 	}
 	if err := m.reloadRepositoryCatalog(); err != nil {
@@ -2612,6 +2612,10 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			CatalogPath:         services.CatalogPath,
 			CatalogLoader:       services.CatalogLoader,
 			LabelPredicate:      services.LabelPredicate,
+			IssueSource:         services.IssueSource,
+			MetadataSources:     services.MetadataSources,
+			SourceChangeSource:  services.SourceChangeSource,
+			CatalogChangeSource: services.CatalogChangeSource,
 			HubScopeMemberIDs:   services.HubScopeMemberIDs,
 			SkipInitialRefresh:  services.InitialScope != nil && services.InitialScope.Active == nil,
 			HubChangeSignal:     services.HubChangeSignal,
@@ -2634,8 +2638,16 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			m.backgroundWorker.mu.Unlock()
 		}
 	}
-	if services.DefaultRepositoryID != "" {
-		m.SetDefaultRepositoryScope(services.DefaultRepositoryID)
+	m.applyInitialRepositorySelection(services.InitialRepositorySelection)
+}
+
+func (m *Model) applyInitialRepositorySelection(selection *repositorypkg.Selection) {
+	if selection == nil || m.defaultRepositorySet || selection.Mode() == repositorypkg.SelectionSelected && !m.repositoryCatalogReady {
+		return
+	}
+	if err := m.SetRepositorySelection(selection.Clone()); err != nil {
+		m.statusMsg = fmt.Sprintf("Initial repository selection unavailable: %v", err)
+		m.statusIsError = true
 	}
 }
 
@@ -2674,6 +2686,9 @@ func (m Model) contextlessBeadCount() int {
 	issues := m.repositoryCatalogIssues
 	if issues == nil {
 		issues = m.issues
+	}
+	if resolver := m.issueRepositoryResolver(); resolver != nil {
+		return contextlessIssueCountResolved(issues, m.repositoryCatalog, resolver)
 	}
 	return contextlessIssueCount(issues, m.repositoryCatalog, m.labelPredicate())
 }
@@ -2717,6 +2732,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	beforeScope := m.RepositorySelection()
 	beforeRepos := sortedRepoKeys(m.activeRepos)
 	m.repositoryScopeController.setCatalog(catalog)
+	m.applyInitialRepositorySelection(m.runtimeServices.InitialRepositorySelection)
 	m.reconcileRepositorySelectionCatalog()
 	contextSortFallback := m.normalizeContextSortMode()
 	scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
@@ -2748,6 +2764,7 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, gene
 		beforeScope := m.RepositorySelection()
 		beforeRepos := sortedRepoKeys(m.activeRepos)
 		m.repositoryScopeController.setCatalog(catalog)
+		m.applyInitialRepositorySelection(m.runtimeServices.InitialRepositorySelection)
 		if m.usesHubScope() {
 			m.reconcileRepositorySelectionCatalog()
 		} else {
@@ -4848,6 +4865,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					DebounceDelay:       200 * time.Millisecond,
 					CatalogLoader:       m.runtimeServices.CatalogLoader,
 					LabelPredicate:      m.runtimeServices.LabelPredicate,
+					IssueSource:         m.runtimeServices.IssueSource,
+					MetadataSources:     m.runtimeServices.MetadataSources,
+					SourceChangeSource:  m.runtimeServices.SourceChangeSource,
+					CatalogChangeSource: m.runtimeServices.CatalogChangeSource,
 				})
 				if err == nil {
 					if m.catalogPath() != "" {

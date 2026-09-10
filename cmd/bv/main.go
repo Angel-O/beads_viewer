@@ -5076,7 +5076,6 @@ func main() {
 		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, runtimeServices)
 		m.SetRepositoryCatalogIssues(catalogIssues)
 		m.SetRuntimeServices(runtimeServices)
-		m.SetDefaultRepositoryScope(composition.DefaultCurrentContext)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config

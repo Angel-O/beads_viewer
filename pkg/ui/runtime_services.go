@@ -14,6 +14,11 @@ import (
 // the UI worker only knows this neutral function type.
 type RepositoryMetadataProvider func(string, []model.Issue) (repositorypkg.Catalog, error)
 
+// IssueRepositoryResolver returns the repository IDs associated with an issue.
+// Hub composition supplies the resolver; nil preserves local/workspace
+// repository matching.
+type IssueRepositoryResolver func(model.Issue) []string
+
 // ChangeSource is the small lifecycle and notification contract consumed by
 // BackgroundWorker. watcher.Watcher satisfies it without becoming a worker
 // policy dependency.
@@ -32,13 +37,23 @@ type RuntimeServices struct {
 	// It is nil for local/standalone Viewer construction.
 	Scopes          ScopeServices
 	HistoryProvider *correlation.Provider
-	// RepositoryCatalog is resolved by composition. A nil catalog preserves
-	// local/standalone zero-value behavior.
-	RepositoryCatalog   repositorypkg.Catalog
+
+	// IssueRepositoryResolver is supplied by Hub composition. Nil preserves
+	// local/workspace repository matching.
+	IssueRepositoryResolver IssueRepositoryResolver
+
 	LabelPredicate      analysis.LabelPredicate
 	SelectedIssuePath   string
 	IssueChangePath     string
 	MetadataChangePaths []string
+
+	// These are optional pre-resolved worker sources. Nil and empty values keep
+	// the worker's ordinary path-backed watcher behavior.
+	IssueSource         ChangeSource
+	MetadataSources     []ChangeSource
+	SourceChangeSource  ChangeSource
+	CatalogChangeSource ChangeSource
+
 	// CatalogPath identifies the source passed to CatalogLoader and its change
 	// watcher; UI does not interpret or reopen that source.
 	CatalogPath         string
@@ -49,10 +64,15 @@ type RuntimeServices struct {
 	// provider/dimension-specific semantic index. Empty keeps local cache policy.
 	SemanticIndexDir       string
 	RepositoryPresentation bool
-	DefaultRepositoryID    string
-	ExternalHistory        bool
-	HubAutoRefresh         bool
-	RefreshResolved        bool
+
+	// InitialRepositorySelection is applied once after the initial catalog is
+	// available. Nil preserves the existing all-repositories default.
+	InitialRepositorySelection *repositorypkg.Selection
+	// CurrentRepositoryID controls presentation independently of selection.
+	CurrentRepositoryID string
+	ExternalHistory     bool
+	HubAutoRefresh      bool
+	RefreshResolved     bool
 	// HubScopeMemberIDs bounds every Hub snapshot to the active named scope.
 	// A nil loader preserves ordinary local loading semantics.
 	HubScopeMemberIDs func(context.Context) ([]string, error)

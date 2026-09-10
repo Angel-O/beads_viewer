@@ -13,6 +13,41 @@ import (
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
+func TestModelPassesRuntimeChangeSourcesToWorker(t *testing.T) {
+	issueSource := &testChangeSource{changes: make(chan struct{}, 1)}
+	metadataSource := &testChangeSource{changes: make(chan struct{}, 1)}
+	sourceRefresh := &testChangeSource{changes: make(chan struct{}, 1)}
+	catalogSource := &testChangeSource{changes: make(chan struct{}, 1)}
+	t.Setenv("BV_BACKGROUND_MODE", "1")
+	m := NewModel(nil, nil, "", RuntimeServices{
+		IssueSource:         issueSource,
+		MetadataSources:     []ChangeSource{metadataSource},
+		SourceChangeSource:  sourceRefresh,
+		CatalogChangeSource: catalogSource,
+	})
+	defer m.Stop()
+	if m.backgroundWorker == nil || m.backgroundWorker.issueSource != issueSource ||
+		len(m.backgroundWorker.metadataSources) != 1 || m.backgroundWorker.metadataSources[0] != metadataSource ||
+		m.backgroundWorker.sourceSource != sourceRefresh || m.backgroundWorker.catalogSource != catalogSource {
+		t.Fatalf("runtime issue source = %v, want injected source", m.backgroundWorker)
+	}
+}
+
+func TestSetCatalogPathPreservesInjectedCatalogChangeSource(t *testing.T) {
+	source := &testChangeSource{changes: make(chan struct{}, 1)}
+	worker, err := NewBackgroundWorker(WorkerConfig{CatalogChangeSource: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	if err := worker.SetCatalogPath("catalog", true); err != nil {
+		t.Fatal(err)
+	}
+	if worker.catalogSource != source || worker.hubConfigWatcher != nil {
+		t.Fatalf("catalog source = %v, fallback watcher = %v", worker.catalogSource, worker.hubConfigWatcher)
+	}
+}
+
 func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 	directory := t.TempDir()
 	issuesPath := filepath.Join(directory, "issues.jsonl")
@@ -185,7 +220,10 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 func TestModelUsesInjectedCatalogCounts(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "OPEN", Labels: []string{"ctx:a"}}}, nil, "")
 	m.SetRuntimeServices(RuntimeServices{
-		RepositoryCatalog:      repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", BeadCount: 2, Kind: repositorypkg.IdentityExact}},
+		CatalogPath: "resolved-catalog",
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", BeadCount: 2, Kind: repositorypkg.IdentityExact}}, nil
+		},
 		RepositoryPresentation: true,
 	})
 	if got := catalogEntry(m.repositoryCatalog, "ctx:a").BeadCount; got != 2 {

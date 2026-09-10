@@ -50,6 +50,40 @@ func requireIssueIDs(t *testing.T, got []string, want ...string) {
 	}
 }
 
+func TestRepositoryScopeUsesResolvedIssueRepositories(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:ignored"}},
+		{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		{ID: "unassigned", Status: model.StatusOpen, Labels: []string{"not-a-repository"}},
+	}
+	m := NewModel(issues, nil, "")
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.SetRuntimeServices(RuntimeServices{
+		RepositoryPresentation: true,
+		LabelPredicate:         func(string) bool { return false },
+		IssueRepositoryResolver: func(issue model.Issue) []string {
+			if issue.ID == "alpha" {
+				return []string{"ctx:alpha", "ctx:alpha"}
+			}
+			if issue.ID == "beta" {
+				return []string{"ctx:beta"}
+			}
+			return nil
+		},
+	})
+	if err := m.SetRepositorySelection(mustSelectedRepositoriesScope(t, "ctx:beta")); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "beta")
+	if err := m.SetRepositorySelection(repositorypkg.NewUnassignedSelection()); err != nil {
+		t.Fatal(err)
+	}
+	requireIssueIDs(t, visibleIssueIDs(m), "unassigned")
+	if got := m.contextlessBeadCount(); got != 1 {
+		t.Fatalf("resolved contextless count = %d, want 1", got)
+	}
+}
+
 func TestRepositoryScopeHubExactMultiContextAndAllSemantics(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "a", Title: "A", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
@@ -188,9 +222,12 @@ func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.SetRuntimeServices(RuntimeServices{
 		HistoryProvider: correlation.NewExternalProvider(nil),
-		RepositoryCatalog: repositorypkg.Catalog{
-			{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact},
-			{ID: "ctx:beta", Name: "beta", Path: "/beta", Kind: repositorypkg.IdentityExact},
+		CatalogPath:     "resolved-catalog",
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{
+				{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:beta", Name: "beta", Path: "/beta", Kind: repositorypkg.IdentityExact},
+			}, nil
 		},
 		RepositoryPresentation: true,
 	})
@@ -208,33 +245,103 @@ func TestRuntimeServicesApplyResolvedDefaultRepository(t *testing.T) {
 		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
 		{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
 	}, nil, "")
+	initial := mustSelectedRepositoriesScope(t, "ctx:beta")
 	m.SetRuntimeServices(RuntimeServices{
-		RepositoryCatalog: repositorypkg.Catalog{
-			{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact},
-			{ID: "ctx:beta", Name: "beta", Path: "/beta", Kind: repositorypkg.IdentityExact},
+		CatalogPath: "resolved-catalog",
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{
+				{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:beta", Name: "beta", Path: "/beta", Kind: repositorypkg.IdentityExact},
+			}, nil
 		},
-		RepositoryPresentation: true,
-		DefaultRepositoryID:    "ctx:beta",
+		RepositoryPresentation:     true,
+		InitialRepositorySelection: &initial,
 	})
 	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:beta"] {
 		t.Fatalf("resolved default scope = %#v, want ctx:beta", scope)
 	}
 }
 
-func TestRuntimeServicesApplyInjectedCatalogWithoutLoader(t *testing.T) {
+func TestRuntimeServicesApplyInjectedCatalogViaLoader(t *testing.T) {
 	m := NewModel([]model.Issue{
 		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
 	}, nil, "")
 	m.SetRuntimeServices(RuntimeServices{
-		RepositoryCatalog:      repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact}},
+		CatalogPath: "resolved-catalog",
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact}}, nil
+		},
 		RepositoryPresentation: true,
-		DefaultRepositoryID:    "ctx:alpha",
+		InitialRepositorySelection: func() *repositorypkg.Selection {
+			selection := mustSelectedRepositoriesScope(t, "ctx:alpha")
+			return &selection
+		}(),
 	})
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].Path != "/alpha" {
 		t.Fatalf("injected catalog = %#v", m.repositoryCatalog)
 	}
 	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
 		t.Fatalf("injected default scope = %#v", scope)
+	}
+}
+
+func TestInitialRepositorySelectionWaitsForCatalogAndRespectsUserChoice(t *testing.T) {
+	newModel := func(t *testing.T) *Model {
+		t.Helper()
+		initial := mustSelectedRepositoriesScope(t, "ctx:alpha")
+		m := NewModel([]model.Issue{
+			{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+			{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
+		}, nil, "")
+		m.SetRuntimeServices(RuntimeServices{
+			RepositoryPresentation:     true,
+			InitialRepositorySelection: &initial,
+		})
+		return m
+	}
+
+	t.Run("applies when catalog arrives", func(t *testing.T) {
+		m := newModel(t)
+		if m.runtimeServices.InitialRepositorySelection == nil {
+			t.Fatal("initial selection was not retained while catalog was unavailable")
+		}
+		if m.RepositorySelection().Mode() != repositorypkg.SelectionAll {
+			t.Fatalf("selection before catalog = %#v, want all", m.RepositorySelection())
+		}
+		m.applyRepositoryCatalogUpdate(hubScopeCatalog("ctx:alpha", "ctx:beta"), 1, true, false, nil)
+		if got := m.RepositorySelection().IDs(); len(got) != 1 || got[0] != "ctx:alpha" {
+			t.Fatalf("selection after catalog = %v, want [ctx:alpha]", got)
+		}
+	})
+
+	t.Run("does not override user choice", func(t *testing.T) {
+		m := newModel(t)
+		if err := m.SetRepositorySelection(repositorypkg.NewUnassignedSelection()); err != nil {
+			t.Fatal(err)
+		}
+		m.applyRepositoryCatalogUpdate(hubScopeCatalog("ctx:alpha", "ctx:beta"), 1, true, false, nil)
+		if got := m.RepositorySelection().Mode(); got != repositorypkg.SelectionUnassigned {
+			t.Fatalf("user selection after catalog = %v, want unassigned", got)
+		}
+	})
+}
+
+func TestRuntimeCurrentRepositoryIDInitializesPresentationSeparately(t *testing.T) {
+	issue := model.Issue{ID: "shared", Status: model.StatusOpen, Labels: []string{"ctx:alpha", "ctx:beta"}}
+	m := NewModel([]model.Issue{issue}, nil, "")
+	m.SetRuntimeServices(RuntimeServices{RepositoryPresentation: true, CurrentRepositoryID: "ctx:beta"})
+	m.repositoryCatalog = repositorypkg.Catalog{
+		{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:beta", Name: "beta", Kind: repositorypkg.IdentityExact},
+	}
+	m.refreshRepositoryPresentation()
+	if m.currentRepositoryID != "ctx:beta" || m.RepositorySelection().Mode() != repositorypkg.SelectionAll {
+		t.Fatalf("runtime current repository state = %q/%v", m.currentRepositoryID, m.RepositorySelection().Mode())
+	}
+	item := IssueItem{Issue: issue}
+	m.decorateIssueItem(&item)
+	if item.RepositoryID != "ctx:beta" || item.RepositoryName != "beta" {
+		t.Fatalf("presentation = %s/%s, want ctx:beta/beta", item.RepositoryID, item.RepositoryName)
 	}
 }
 
