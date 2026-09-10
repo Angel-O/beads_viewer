@@ -24,14 +24,17 @@ import (
 // It is deliberately a data-only boundary: flag and environment policy stays
 // in cmd/bv, while consumers receive resolved services below.
 type viewerCompositionInput struct {
-	HistoryMode        string
-	HubConfigPath      string
-	HistoryResolved    bool
-	ExplicitDBPath     string
-	WorkspacePath      string
-	AsOf               string
-	WorkDir            string
-	RobotMode          bool
+	HistoryMode     string
+	HubConfigPath   string
+	HistoryResolved bool
+	ExplicitDBPath  string
+	WorkspacePath   string
+	AsOf            string
+	WorkDir         string
+	RobotMode       bool
+
+	// HubMode is authoritative for repository-aware Hub capabilities. History
+	// mode and config may still select an external history source in local mode.
 	HubMode            bool
 	RefreshEnvironment string
 	WrapperScope       string
@@ -140,6 +143,8 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		if err != nil {
 			return viewerComposition{}, err
 		}
+	}
+	if input.HubMode && semanticStore != "" {
 		semanticIndexDir = hub.SemanticCacheDir(hub.Paths{Store: semanticStore})
 	}
 	var provider *correlation.Provider
@@ -230,6 +235,12 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		}
 		labelPredicate = hub.AdmitLabel
 	}
+	hubAutoRefresh := false
+	hubChangeSignal := ""
+	if input.HubMode {
+		hubAutoRefresh = compositionHubAutoRefreshEnabled(input.RefreshEnvironment)
+		hubChangeSignal = hubChangeSignalPath(semanticStore)
+	}
 
 	return viewerComposition{
 		HubConfigPath:          configPath,
@@ -248,8 +259,8 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		RepositoryPresentation: input.HubMode,
 		WorkspacePath:          input.WorkspacePath,
 		AsOf:                   input.AsOf,
-		HubAutoRefresh:         compositionHubAutoRefreshEnabled(input.RefreshEnvironment),
-		HubChangeSignal:        hubChangeSignalPath(semanticStore),
+		HubAutoRefresh:         hubAutoRefresh,
+		HubChangeSignal:        hubChangeSignal,
 		HubScopeSnapshot:       hubScopeSnapshot,
 		HubScopeMemberIDs:      hubScopeMemberIDs,
 		HubRobotFilter:         hubRobotFilter,

@@ -81,7 +81,7 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 					t.Fatalf("off provider invoked history source: %v", err)
 				}
 			}
-			if test.wantStore {
+			if test.hubMode {
 				wantIndexDir := filepath.Join(filepath.Dir(got.SemanticStorePath), "semantic")
 				if got.SemanticIndexDir != wantIndexDir {
 					t.Fatalf("semantic index directory = %q, want %q", got.SemanticIndexDir, wantIndexDir)
@@ -96,8 +96,29 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	localServices := local.runtimeServicesFor("", nil)
-	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil {
+	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil || localServices.SemanticIndexDir != "" || localServices.RepositoryPresentation || localServices.HubAutoRefresh || localServices.HubChangeSignal != "" {
 		t.Fatalf("local composition exposed Hub repository services: %#v", localServices)
+	}
+}
+
+func TestLocalCompositionDoesNotGainHubCapabilitiesFromHistoryConfig(t *testing.T) {
+	root := t.TempDir()
+	config := writeCompositionHubConfig(t, root)
+
+	composition, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:   "external",
+		HubConfigPath: config,
+		WorkDir:       root,
+		RobotMode:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !composition.UsesHubConfigStore || composition.HistoryProvider.Mode() != "external" {
+		t.Fatalf("history composition = store:%v mode:%q, want external history from config", composition.UsesHubConfigStore, composition.HistoryProvider.Mode())
+	}
+	if composition.CatalogLoader != nil || composition.IssueRepositoryResolver != nil || composition.LabelPredicate != nil || composition.SemanticIndexDir != "" || composition.InitialRepositorySelection != nil || composition.CurrentRepositoryID != "" || composition.RepositoryPresentation || composition.HubAutoRefresh || composition.HubChangeSignal != "" || composition.HubScopeSnapshot != nil || composition.HubScopeMemberIDs != nil || composition.ScopeServices.Load != nil {
+		t.Fatalf("local composition exposed Hub capabilities: %#v", composition)
 	}
 }
 
