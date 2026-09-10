@@ -2353,23 +2353,15 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		hubChangeSignal = ""
 	}
 
-	if (issueChangePath != "" || len(metadataChangePaths) > 0 || runtimeServices.IssueSource != nil || len(runtimeServices.MetadataSources) > 0 || runtimeServices.SourceChangeSource != nil || runtimeServices.CatalogChangeSource != nil) && (backgroundModeRequested || hubChangeSignal != "") {
-		bw, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:           beadsPath,
-			SelectedIssuePath:   selectedIssuePath,
-			IssueChangePath:     issueChangePath,
-			MetadataChangePaths: metadataChangePaths,
-			DebounceDelay:       200 * time.Millisecond,
-			HubChangeSignal:     hubChangeSignal,
-			CatalogLoader:       runtimeServices.CatalogLoader,
-			LabelPredicate:      runtimeServices.LabelPredicate,
-			IssueSource:         runtimeServices.IssueSource,
-			MetadataSources:     runtimeServices.MetadataSources,
-			SourceChangeSource:  runtimeServices.SourceChangeSource,
-			CatalogChangeSource: runtimeServices.CatalogChangeSource,
-			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
-			SkipInitialRefresh:  runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil,
-		})
+	if (issueChangePath != "" || len(metadataChangePaths) > 0) && (backgroundModeRequested || hubChangeSignal != "") {
+		workerConfig := workerConfigForRuntime(beadsPath, runtimeServices)
+		workerConfig.SelectedIssuePath = selectedIssuePath
+		workerConfig.IssueChangePath = issueChangePath
+		workerConfig.MetadataChangePaths = metadataChangePaths
+		workerConfig.CatalogPath = ""
+		workerConfig.HubChangeSignal = hubChangeSignal
+		workerConfig.DebounceDelay = 200 * time.Millisecond
+		bw, err := NewBackgroundWorker(workerConfig)
 		if err != nil {
 			backgroundModeErr = err
 		} else {
@@ -2563,7 +2555,11 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 
+	m.repositoryScopeController.setCatalogIssues(issues)
 	m.installBackgroundWorker(backgroundWorker)
+	if len(serviceArgs) > 0 {
+		m.SetRuntimeServices(runtimeServices)
+	}
 	m.registerKeyBindings()
 	m.refreshRepositoryCandidates()
 	m.rebuildInsightsPanel()
@@ -2599,27 +2595,9 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 	m.refreshRepositoryPresentation()
 	autoRefresh := m.hubAutoRefreshEnabled()
 	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
-		selectedIssuePath := services.SelectedIssuePath
-		if selectedIssuePath == "" {
-			selectedIssuePath = m.beadsPath
-		}
-		worker, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:           m.beadsPath,
-			SelectedIssuePath:   selectedIssuePath,
-			IssueChangePath:     services.IssueChangePath,
-			MetadataChangePaths: services.MetadataChangePaths,
-			DebounceDelay:       200 * time.Millisecond,
-			CatalogPath:         services.CatalogPath,
-			CatalogLoader:       services.CatalogLoader,
-			LabelPredicate:      services.LabelPredicate,
-			IssueSource:         services.IssueSource,
-			MetadataSources:     services.MetadataSources,
-			SourceChangeSource:  services.SourceChangeSource,
-			CatalogChangeSource: services.CatalogChangeSource,
-			HubScopeMemberIDs:   services.HubScopeMemberIDs,
-			SkipInitialRefresh:  services.InitialScope != nil && services.InitialScope.Active == nil,
-			HubChangeSignal:     services.HubChangeSignal,
-		})
+		workerConfig := workerConfigForRuntime(m.beadsPath, services)
+		workerConfig.DebounceDelay = 200 * time.Millisecond
+		worker, err := NewBackgroundWorker(workerConfig)
 		if err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
 			m.statusIsError = true
@@ -2628,27 +2606,13 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			m.snapshotInitPending = len(m.issues) == 0
 		}
 	} else if m.backgroundWorker != nil {
+		m.backgroundWorker.UpdateRuntimeServices(services)
 		if err := m.backgroundWorker.SetCatalogPath(services.CatalogPath, autoRefresh); err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
 			m.statusIsError = true
-		} else {
-			m.backgroundWorker.mu.Lock()
-			m.backgroundWorker.catalogLoader = services.CatalogLoader
-			m.backgroundWorker.labelPredicate = services.LabelPredicate
-			m.backgroundWorker.mu.Unlock()
 		}
 	}
 	m.applyInitialRepositorySelection(services.InitialRepositorySelection)
-}
-
-func (m *Model) applyInitialRepositorySelection(selection *repositorypkg.Selection) {
-	if selection == nil || m.defaultRepositorySet || selection.Mode() == repositorypkg.SelectionSelected && !m.repositoryCatalogReady {
-		return
-	}
-	if err := m.SetRepositorySelection(selection.Clone()); err != nil {
-		m.statusMsg = fmt.Sprintf("Initial repository selection unavailable: %v", err)
-		m.statusIsError = true
-	}
 }
 
 func (m Model) hubAutoRefreshEnabled() bool {
@@ -2687,10 +2651,7 @@ func (m Model) contextlessBeadCount() int {
 	if issues == nil {
 		issues = m.issues
 	}
-	if resolver := m.issueRepositoryResolver(); resolver != nil {
-		return contextlessIssueCountResolved(issues, m.repositoryCatalog, resolver)
-	}
-	return contextlessIssueCount(issues, m.repositoryCatalog, m.labelPredicate())
+	return contextlessIssueCount(issues, m.repositoryCatalog, m.issueRepositoryResolver(), m.labelPredicate())
 }
 
 func (m *Model) reloadRepositoryCatalog() error {
@@ -2813,7 +2774,7 @@ func (m *Model) rebuildInsightsPanel() {
 
 	prev := m.insightsPanel
 	panel := NewInsightsModel(ins, m.issueMap, m.theme)
-	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
+	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation(), m.labelPredicate())
 	panel.SetActiveIssueIDs(insightsIDs)
 	panel.focusedPanel = prev.focusedPanel
 	panel.selectedIndex = prev.selectedIndex
@@ -4857,19 +4818,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if autoAllowed {
-				bw, err := NewBackgroundWorker(WorkerConfig{
-					BeadsPath:           m.beadsPath,
-					SelectedIssuePath:   m.runtimeServices.SelectedIssuePath,
-					IssueChangePath:     m.runtimeServices.IssueChangePath,
-					MetadataChangePaths: m.runtimeServices.MetadataChangePaths,
-					DebounceDelay:       200 * time.Millisecond,
-					CatalogLoader:       m.runtimeServices.CatalogLoader,
-					LabelPredicate:      m.runtimeServices.LabelPredicate,
-					IssueSource:         m.runtimeServices.IssueSource,
-					MetadataSources:     m.runtimeServices.MetadataSources,
-					SourceChangeSource:  m.runtimeServices.SourceChangeSource,
-					CatalogChangeSource: m.runtimeServices.CatalogChangeSource,
-				})
+				workerConfig := workerConfigForRuntime(m.beadsPath, m.runtimeServices)
+				workerConfig.CatalogPath = ""
+				workerConfig.HubChangeSignal = ""
+				workerConfig.DebounceDelay = 200 * time.Millisecond
+				bw, err := NewBackgroundWorker(workerConfig)
 				if err == nil {
 					if m.catalogPath() != "" {
 						err = bw.SetCatalogPath(m.catalogPath(), m.hubAutoRefreshEnabled())

@@ -80,7 +80,7 @@ func (c viewerComposition) runtimeServicesFor(datasetPath string, initialScope *
 		datasetPath = c.SemanticDatasetPath
 	}
 	catalogPath := ""
-	if c.UsesHubConfigStore {
+	if c.HubMode {
 		catalogPath = c.HubConfigPath
 	}
 	return ui.RuntimeServices{
@@ -210,7 +210,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 
 	var initialRepositorySelection *repository.Selection
 	currentRepositoryID := ""
-	if mode != "off" && usesHubStore {
+	if input.HubMode {
 		currentRepositoryID = currentHubRepositoryContext(workDir, true)
 		if currentRepositoryID != "" {
 			selection, selectionErr := repository.NewSelectedSelection([]string{currentRepositoryID})
@@ -223,7 +223,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	var labelPredicate analysis.LabelPredicate
 	var catalogLoader func(string, []model.Issue) (repository.Catalog, error)
 	var issueRepositoryResolver ui.IssueRepositoryResolver
-	if usesHubStore {
+	if input.HubMode {
 		catalogLoader = hub.LoadRepositoryCatalog
 		issueRepositoryResolver = func(issue model.Issue) []string {
 			return hub.Contexts(issue.Labels)
@@ -245,7 +245,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		SemanticIndexDir:       semanticIndexDir,
 		IssueChangePath:        selectedIssuePath,
 		MetadataChangePaths:    compositionMetadataPaths(selectedIssuePath),
-		RepositoryPresentation: usesHubStore,
+		RepositoryPresentation: input.HubMode,
 		WorkspacePath:          input.WorkspacePath,
 		AsOf:                   input.AsOf,
 		HubAutoRefresh:         compositionHubAutoRefreshEnabled(input.RefreshEnvironment),

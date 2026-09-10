@@ -996,13 +996,13 @@ func TestHubCatalogChangeInvalidatesBoardAndInsightsPresentationCaches(t *testin
 
 	theme := DefaultTheme(lipgloss.NewRenderer(io.Discard))
 	board := NewBoardModel([]model.Issue{issue}, theme)
-	board.SetRepositoryPresentation(oldCatalog, true, "", nil)
+	board.SetRepositoryPresentation(oldCatalog, true, "", nil, nil)
 	board.ShowDetail()
 	_ = board.renderDetailPanel(80, 30)
 	if !strings.Contains(board.detailVP.View(), "old/name") {
 		t.Fatalf("initial board detail missing old name: %s", board.detailVP.View())
 	}
-	board.SetRepositoryPresentation(newCatalog, true, "", nil)
+	board.SetRepositoryPresentation(newCatalog, true, "", nil, nil)
 	_ = board.renderDetailPanel(80, 30)
 	if !strings.Contains(board.detailVP.View(), "new/name") || strings.Contains(board.detailVP.View(), "old/name") {
 		t.Fatalf("board detail cache stale: %s", board.detailVP.View())
@@ -1010,9 +1010,9 @@ func TestHubCatalogChangeInvalidatesBoardAndInsightsPresentationCaches(t *testin
 
 	issueMap := map[string]*model.Issue{"one": &issue}
 	insights := NewInsightsModel(analysis.Insights{Bottlenecks: []analysis.InsightItem{{ID: "one"}}}, issueMap, theme)
-	insights.SetRepositoryPresentation(oldCatalog, true)
+	insights.SetRepositoryPresentation(oldCatalog, true, nil)
 	insights.updateDetailContent()
-	insights.SetRepositoryPresentation(newCatalog, true)
+	insights.SetRepositoryPresentation(newCatalog, true, nil)
 	if !strings.Contains(insights.detailContent, "new/name") || strings.Contains(insights.detailContent, "old/name") {
 		t.Fatalf("insights detail cache stale: %s", insights.detailContent)
 	}
@@ -1678,7 +1678,7 @@ func TestHubRepositoryBadgeFitsNarrowBoardCard(t *testing.T) {
 	board.SetRepositoryPresentation(repositorypkg.Catalog{
 		{ID: "ctx:alpha", Name: "alpha/service", Kind: repositorypkg.IdentityExact},
 		{ID: "ctx:beta", Name: "beta/service", Kind: repositorypkg.IdentityExact},
-	}, true, "", nil)
+	}, true, "", nil, nil)
 	card := board.renderCard(issue, 20, false, 0, 0)
 	if !containsAll(card, "ver…", "+1") {
 		t.Fatalf("narrow repository badge displaced issue ID or multi-context count: %q", card)

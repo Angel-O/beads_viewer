@@ -226,6 +226,8 @@ type BackgroundWorker struct {
 	traceFile           *os.File
 	traceMu             sync.Mutex
 
+	issueRepositoryResolver IssueRepositoryResolver
+
 	// Idle-time GC management (bv-4yje).
 	idleGCEnabled     bool
 	idleGCThreshold   time.Duration
@@ -311,6 +313,19 @@ type WorkerConfig struct {
 	SkipInitialRefresh bool          // observe changes without loading until Hub scope activation
 	SourceRetryBase    time.Duration // default: 1s
 	SourceRetryMax     time.Duration // default: 30s
+
+	IssueRepositoryResolver IssueRepositoryResolver
+}
+
+// UpdateRuntimeServices replaces the callbacks owned by the worker runtime.
+func (w *BackgroundWorker) UpdateRuntimeServices(services RuntimeServices) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.catalogLoader = services.CatalogLoader
+	w.labelPredicate = services.LabelPredicate
+	w.issueRepositoryResolver = services.IssueRepositoryResolver
+	w.hubScopeMemberIDs = services.HubScopeMemberIDs
+	w.skipInitialRefresh = services.InitialScope != nil && services.InitialScope.Active == nil
 }
 
 // NewBackgroundWorker creates a new background worker.
@@ -420,6 +435,8 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		ctx:                 ctx,
 		cancel:              cancel,
 		done:                make(chan struct{}),
+
+		issueRepositoryResolver: cfg.IssueRepositoryResolver,
 
 		idleGCEnabled:     idleGCConfig.Enabled,
 		idleGCThreshold:   idleGCConfig.Threshold,
@@ -1676,6 +1693,7 @@ func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repos
 	w.mu.RLock()
 	path := w.catalogPath
 	catalogLoader := w.catalogLoader
+	issueRepositoryResolver := w.issueRepositoryResolver
 	labelPredicate := w.labelPredicate
 	current := w.snapshot
 	w.mu.RUnlock()
@@ -1698,9 +1716,9 @@ func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repos
 	}
 	catalog, err := catalogLoader(path, issues)
 	if err != nil {
-		return nil, contextlessIssueCount(issues, nil, labelPredicate), true, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
+		return nil, contextlessIssueCount(issues, nil, issueRepositoryResolver, labelPredicate), true, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
 	}
-	contextlessBeadCount := contextlessIssueCount(issues, catalog, labelPredicate)
+	contextlessBeadCount := contextlessIssueCount(issues, catalog, issueRepositoryResolver, labelPredicate)
 	return catalog, contextlessBeadCount, true, nil
 }
 

@@ -47,13 +47,6 @@ type RuntimeServices struct {
 	IssueChangePath     string
 	MetadataChangePaths []string
 
-	// These are optional pre-resolved worker sources. Nil and empty values keep
-	// the worker's ordinary path-backed watcher behavior.
-	IssueSource         ChangeSource
-	MetadataSources     []ChangeSource
-	SourceChangeSource  ChangeSource
-	CatalogChangeSource ChangeSource
-
 	// CatalogPath identifies the source passed to CatalogLoader and its change
 	// watcher; UI does not interpret or reopen that source.
 	CatalogPath         string
@@ -80,4 +73,28 @@ type RuntimeServices struct {
 	// non-nil snapshot with no Active scope keeps startup on the no-scope view.
 	InitialScope    *ScopeSnapshot
 	HubChangeSignal string
+}
+
+func workerConfigForRuntime(beadsPath string, services RuntimeServices) WorkerConfig {
+	selectedIssuePath := services.SelectedIssuePath
+	if selectedIssuePath == "" {
+		selectedIssuePath = beadsPath
+	}
+	issueChangePath := services.IssueChangePath
+	if issueChangePath == "" {
+		issueChangePath = beadsPath
+	}
+	return WorkerConfig{
+		BeadsPath:               beadsPath,
+		SelectedIssuePath:       selectedIssuePath,
+		IssueChangePath:         issueChangePath,
+		MetadataChangePaths:     services.MetadataChangePaths,
+		CatalogPath:             services.CatalogPath,
+		CatalogLoader:           services.CatalogLoader,
+		LabelPredicate:          services.LabelPredicate,
+		IssueRepositoryResolver: services.IssueRepositoryResolver,
+		HubScopeMemberIDs:       services.HubScopeMemberIDs,
+		SkipInitialRefresh:      services.InitialScope != nil && services.InitialScope.Active == nil,
+		HubChangeSignal:         services.HubChangeSignal,
+	}
 }

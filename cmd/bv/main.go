@@ -4965,8 +4965,6 @@ func main() {
 			// Launch TUI with historical issues (already loaded, no live reload)
 			runtimeServices := composition.runtimeServicesFor(composition.SemanticDatasetPath, initialScope)
 			m := ui.NewModel(issues, activeRecipe, "", runtimeServices)
-			m.SetRepositoryCatalogIssues(issues)
-			m.SetRuntimeServices(runtimeServices)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
@@ -5074,8 +5072,6 @@ func main() {
 		// Initial Model with live reload support
 		runtimeServices := composition.runtimeServicesFor(semanticDatasetPath, initialScope)
 		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, runtimeServices)
-		m.SetRepositoryCatalogIssues(catalogIssues)
-		m.SetRuntimeServices(runtimeServices)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config

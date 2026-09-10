@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,23 +14,19 @@ import (
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
-func TestModelPassesRuntimeChangeSourcesToWorker(t *testing.T) {
-	issueSource := &testChangeSource{changes: make(chan struct{}, 1)}
-	metadataSource := &testChangeSource{changes: make(chan struct{}, 1)}
-	sourceRefresh := &testChangeSource{changes: make(chan struct{}, 1)}
-	catalogSource := &testChangeSource{changes: make(chan struct{}, 1)}
-	t.Setenv("BV_BACKGROUND_MODE", "1")
-	m := NewModel(nil, nil, "", RuntimeServices{
-		IssueSource:         issueSource,
-		MetadataSources:     []ChangeSource{metadataSource},
-		SourceChangeSource:  sourceRefresh,
-		CatalogChangeSource: catalogSource,
+func TestNewModelInstallsRuntimeServicesOnce(t *testing.T) {
+	loads := 0
+	m := NewModel([]model.Issue{{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}}}, nil, "", RuntimeServices{
+		CatalogPath: "resolved-catalog",
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			loads++
+			return repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact}}, nil
+		},
+		RepositoryPresentation: true,
 	})
 	defer m.Stop()
-	if m.backgroundWorker == nil || m.backgroundWorker.issueSource != issueSource ||
-		len(m.backgroundWorker.metadataSources) != 1 || m.backgroundWorker.metadataSources[0] != metadataSource ||
-		m.backgroundWorker.sourceSource != sourceRefresh || m.backgroundWorker.catalogSource != catalogSource {
-		t.Fatalf("runtime issue source = %v, want injected source", m.backgroundWorker)
+	if loads != 1 {
+		t.Fatalf("runtime service catalog loads = %d, want one", loads)
 	}
 }
 
@@ -88,19 +85,26 @@ func TestModelRuntimeServicesInstallCatalogLoaderOnExistingWorker(t *testing.T) 
 		return repositorypkg.Catalog{{ID: "ctx:injected"}}, nil
 	}
 	predicate := func(label string) bool { return label != "ctx:injected" }
+	resolver := func(model.Issue) []string { return []string{"ctx:injected"} }
+	members := func(context.Context) ([]string, error) { return []string{"one"}, nil }
 	m.SetRuntimeServices(RuntimeServices{
-		CatalogPath:            "catalog",
-		CatalogLoader:          loader,
-		LabelPredicate:         predicate,
-		RefreshResolved:        true,
-		HubAutoRefresh:         false,
-		RepositoryPresentation: true,
+		CatalogPath:             "catalog",
+		CatalogLoader:           loader,
+		LabelPredicate:          predicate,
+		IssueRepositoryResolver: resolver,
+		HubScopeMemberIDs:       members,
+		RefreshResolved:         true,
+		HubAutoRefresh:          false,
+		RepositoryPresentation:  true,
 	})
 	if worker.catalogLoader == nil {
 		t.Fatal("existing worker lost the injected catalog loader")
 	}
 	if worker.labelPredicate == nil || worker.labelPredicate("ctx:injected") {
 		t.Fatal("existing worker lost the injected label predicate")
+	}
+	if worker.issueRepositoryResolver == nil || worker.hubScopeMemberIDs == nil {
+		t.Fatal("existing worker lost resolved runtime capabilities")
 	}
 	catalog, err := worker.catalogLoader("ignored", nil)
 	if err != nil || len(catalog) != 1 || catalog[0].ID != "ctx:injected" {
@@ -480,17 +484,17 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 	}
 }
 
-func TestBackgroundWorkerContextlessCountUsesInjectedLabelPredicate(t *testing.T) {
+func TestBackgroundWorkerContextlessCountUsesInjectedRepositoryResolver(t *testing.T) {
 	issues := []model.Issue{{ID: "empty"}, {ID: "ordinary", Labels: []string{"kind:bug"}}, {ID: "unknown-context", Labels: []string{"ctx:unknown"}}, {ID: "registered", Labels: []string{"ctx:known"}}}
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		CatalogPath: "catalog.yaml",
-		LabelPredicate: func(label string) bool {
-			switch label {
-			case "ctx:unknown", "ctx:known":
-				return false
-			default:
-				return true
+		IssueRepositoryResolver: func(issue model.Issue) []string {
+			for _, label := range issue.Labels {
+				if label == "ctx:unknown" || label == "ctx:known" {
+					return []string{label}
+				}
 			}
+			return nil
 		},
 	})
 	if err != nil {

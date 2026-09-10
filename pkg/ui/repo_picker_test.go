@@ -320,7 +320,7 @@ func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
 		Snapshot:              snapshot,
 		SnapshotVer:           1,
 		Catalog:               repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
-		ContextlessBeadCount:  contextlessIssueCount(completeIssues, nil),
+		ContextlessBeadCount:  contextlessIssueCount(completeIssues, nil, nil, nil),
 		ContextlessCountReady: true,
 		CatalogGeneration:     1,
 		CatalogAvailable:      true,

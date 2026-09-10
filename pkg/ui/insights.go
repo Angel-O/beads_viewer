@@ -187,12 +187,10 @@ type InsightsModel struct {
 
 // SetRepositoryPresentation updates Hub-only detail metadata and rebuilds the
 // cached detail content for the current selection.
-func (m *InsightsModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, predicates ...analysis.LabelPredicate) {
+func (m *InsightsModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, predicate analysis.LabelPredicate) {
 	m.repositoryCatalog = append(repository.Catalog(nil), catalog...)
 	m.hubPresentation = enabled
-	if len(predicates) > 0 {
-		m.repositoryLabelPredicate = predicates[0]
-	}
+	m.repositoryLabelPredicate = predicate
 	m.updateDetailContent()
 }
 

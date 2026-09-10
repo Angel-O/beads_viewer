@@ -69,14 +69,12 @@ type BoardModel struct {
 
 // SetRepositoryPresentation updates Hub-only display metadata, primary-context
 // preference, and invalidates rendered details for stable selected issues.
-func (b *BoardModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool, predicates ...analysis.LabelPredicate) {
+func (b *BoardModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool, predicate analysis.LabelPredicate) {
 	b.repositoryCatalog = append(repository.Catalog(nil), catalog...)
 	b.hubPresentation = enabled
 	b.currentRepositoryID = currentRepositoryID
 	b.preferredRepositories = preferredRepositories
-	if len(predicates) > 0 {
-		b.repositoryLabelPredicate = predicates[0]
-	}
+	b.repositoryLabelPredicate = predicate
 	b.lastDetailID = ""
 }
 

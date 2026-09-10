@@ -36,11 +36,13 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 	writeFakeWBD(t, `{"id":"scope-a"}`, filepath.Join(root, "wbd-calls"))
 
 	tests := []struct {
-		name, mode, config, wantMode string
-		wantStore                    bool
+		name, mode, config, wantMode       string
+		wantStore, wantRepository, hubMode bool
 	}{
 		{name: "git", mode: "git", wantMode: "git"},
 		{name: "external", mode: "external", config: config, wantMode: "external", wantStore: true},
+		{name: "hub-external", mode: "external", config: config, wantMode: "external", wantStore: true, wantRepository: true, hubMode: true},
+		{name: "hub-history-off", mode: "off", config: config, wantMode: "off", wantStore: true, wantRepository: true, hubMode: true},
 		{name: "off", mode: "off", config: config, wantMode: "off", wantStore: true},
 	}
 	for _, test := range tests {
@@ -51,6 +53,7 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 				ExplicitDBPath: issuePath,
 				WorkDir:        root,
 				RobotMode:      true,
+				HubMode:        test.hubMode,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -58,14 +61,14 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 			if got.HistoryProvider.Mode() != test.wantMode || got.UsesHubConfigStore != test.wantStore {
 				t.Fatalf("mode/store = %s/%v, want %s/%v", got.HistoryProvider.Mode(), got.UsesHubConfigStore, test.wantMode, test.wantStore)
 			}
-			if test.wantStore != got.RepositoryPresentation {
-				t.Fatalf("repository presentation = %v, want %v", got.RepositoryPresentation, test.wantStore)
+			if test.wantRepository != got.RepositoryPresentation {
+				t.Fatalf("repository presentation = %v, want %v", got.RepositoryPresentation, test.wantRepository)
 			}
-			if (got.LabelPredicate != nil) != test.wantStore {
-				t.Fatalf("label admission supplied = %v, want %v", got.LabelPredicate != nil, test.wantStore)
+			if (got.LabelPredicate != nil) != test.wantRepository {
+				t.Fatalf("label admission supplied = %v, want %v", got.LabelPredicate != nil, test.wantRepository)
 			}
-			if (got.CatalogLoader != nil) != test.wantStore || (got.IssueRepositoryResolver != nil) != test.wantStore {
-				t.Fatalf("Hub-only repository services supplied = loader:%v resolver:%v, want %v", got.CatalogLoader != nil, got.IssueRepositoryResolver != nil, test.wantStore)
+			if (got.CatalogLoader != nil) != test.wantRepository || (got.IssueRepositoryResolver != nil) != test.wantRepository {
+				t.Fatalf("Hub-only repository services supplied = loader:%v resolver:%v, want %v", got.CatalogLoader != nil, got.IssueRepositoryResolver != nil, test.wantRepository)
 			}
 			if test.name == "off" {
 				if got.SemanticStorePath == "" || got.HubConfigPath != config || len(got.MetadataChangePaths) != 1 {
@@ -112,6 +115,8 @@ func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
 		ExplicitDBPath: issuePath,
 		WorkspacePath:  "",
 		WorkDir:        root,
+		HubMode:        true,
+		RobotMode:      true,
 	})
 	if err != nil {
 		t.Fatal(err)
