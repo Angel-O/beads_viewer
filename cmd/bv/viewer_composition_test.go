@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 )
 
 func writeCompositionHubConfig(t *testing.T, root string) string {
@@ -85,6 +86,41 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 	}
 }
 
+func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
+	root := t.TempDir()
+	config := writeCompositionHubConfig(t, root)
+	issuePath := filepath.Join(root, "issues.jsonl")
+	if err := os.WriteFile(issuePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	composition, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:    "external",
+		HubConfigPath:  config,
+		ExplicitDBPath: issuePath,
+		WorkspacePath:  "",
+		WorkDir:        root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initialScope := &ui.ScopeSnapshot{}
+	services := composition.runtimeServicesFor("", initialScope)
+	if services.HistoryProvider != composition.HistoryProvider || services.SelectedIssuePath != composition.SelectedIssuePath || services.IssueChangePath != composition.IssueChangePath {
+		t.Fatalf("runtime source/history = %#v, want composition values", services)
+	}
+	if services.SemanticDatasetPath != composition.SemanticDatasetPath || services.SemanticStorePath != composition.SemanticStorePath || services.SemanticIndexDir != composition.SemanticIndexDir {
+		t.Fatalf("runtime search paths = %#v, want composition values", services)
+	}
+	if services.CatalogPath != config || services.CatalogLoader == nil || services.LabelPredicate == nil {
+		t.Fatalf("runtime Hub services = %#v", services)
+	}
+	if !services.ExternalHistory || !services.RepositoryPresentation || !services.RefreshResolved || services.InitialScope != initialScope {
+		t.Fatalf("runtime policy = %#v", services)
+	}
+}
+
 func TestDecodeHubRobotFilterPreservesContextSelection(t *testing.T) {
 	root := t.TempDir()
 	config := filepath.Join(root, "hub.yaml")
@@ -135,6 +171,35 @@ func TestComposeViewerServicesPreservesExplicitDBPrecedence(t *testing.T) {
 	want := filepath.Join(explicitDir, "issues.jsonl")
 	if got.SelectedIssuePath != want {
 		t.Fatalf("selected issue path = %q, want explicit source %q", got.SelectedIssuePath, want)
+	}
+}
+
+func TestComposeViewerServicesHistoryOffPreservesExplicitDB(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	envDir := filepath.Join(root, "env")
+	explicitDir := filepath.Join(root, "explicit")
+	for _, dir := range []string{envDir, explicitDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "issues.jsonl"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("BEADS_DB", envDir)
+
+	got, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:    "off",
+		ExplicitDBPath: explicitDir,
+		WorkDir:        root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(explicitDir, "issues.jsonl")
+	if got.SelectedIssuePath != want {
+		t.Fatalf("history-off selected issue path = %q, want explicit source %q", got.SelectedIssuePath, want)
 	}
 }
 

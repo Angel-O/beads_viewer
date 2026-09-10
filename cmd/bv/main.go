@@ -2052,6 +2052,7 @@ func main() {
 		composition, err := composeViewerServices(viewerCompositionInput{
 			HistoryMode:        resolvedMode,
 			HubConfigPath:      resolvedConfig,
+			HistoryResolved:    true,
 			ExplicitDBPath:     *dbPath,
 			WorkspacePath:      *workspaceConfig,
 			AsOf:               *asOf,
@@ -2067,18 +2068,11 @@ func main() {
 		}
 		usesHubConfigStore := composition.UsesHubConfigStore
 
-		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
-		// Priority: --db flag > BEADS_DB env > BEADS_DIR env > auto-discovery.
-		if *dbPath != "" {
-			absDB, err := filepath.Abs(*dbPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error resolving --db path: %v\n", err)
-				os.Exit(1)
-			}
-			os.Setenv(loader.BeadsDBEnvVar, absDB)
-		} else if usesHubConfigStore {
-			if err := os.Setenv(loader.BeadsDBEnvVar, composition.SemanticStorePath); err != nil {
-				return fmt.Errorf("setting external Beads store: %w", err)
+		// Pin the source selected by composition so downstream loaders do not
+		// rediscover a different local or Hub source.
+		if composition.SelectedIssuePath != "" {
+			if err := os.Setenv(loader.BeadsDBEnvVar, composition.SelectedIssuePath); err != nil {
+				return fmt.Errorf("setting selected Beads source: %w", err)
 			}
 		}
 		// Mark robot mode for downstream packages (e.g., parsers) to keep stdout JSON clean.
@@ -2102,6 +2096,8 @@ func main() {
 			Stdout:             os.Stdout,
 			Stderr:             os.Stderr,
 			HistoryProvider:    composition.HistoryProvider,
+			LabelPredicate:     composition.LabelPredicate,
+			HubMode:            composition.HubMode,
 			Encoder:            newRobotEncoder(os.Stdout),
 			FinalizeBeforeExit: stopCPUProfile,
 		}
@@ -4967,49 +4963,10 @@ func main() {
 			}
 
 			// Launch TUI with historical issues (already loaded, no live reload)
-			m := ui.NewModel(issues, activeRecipe, "", ui.RuntimeServices{
-				HistoryProvider:        composition.HistoryProvider,
-				LabelPredicate:         composition.LabelPredicate,
-				SelectedIssuePath:      composition.SelectedIssuePath,
-				IssueChangePath:        composition.IssueChangePath,
-				MetadataChangePaths:    composition.MetadataChangePaths,
-				CatalogPath:            composition.HubConfigPath,
-				CatalogLoader:          composition.CatalogLoader,
-				SemanticDatasetPath:    composition.SemanticDatasetPath,
-				SemanticStorePath:      composition.SemanticStorePath,
-				SemanticIndexDir:       composition.SemanticIndexDir,
-				RepositoryPresentation: composition.RepositoryPresentation,
-				DefaultRepositoryID:    composition.DefaultCurrentContext,
-				ExternalHistory:        composition.HistoryProvider.External(),
-				HubAutoRefresh:         composition.HubAutoRefresh,
-				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-				InitialScope:           initialScope,
-				Scopes:                 composition.ScopeServices,
-				HubChangeSignal:        composition.HubChangeSignal,
-				RefreshResolved:        true,
-			})
+			runtimeServices := composition.runtimeServicesFor(composition.SemanticDatasetPath, initialScope)
+			m := ui.NewModel(issues, activeRecipe, "", runtimeServices)
 			m.SetRepositoryCatalogIssues(issues)
-			m.SetRuntimeServices(ui.RuntimeServices{
-				HistoryProvider:        composition.HistoryProvider,
-				LabelPredicate:         composition.LabelPredicate,
-				SelectedIssuePath:      composition.SelectedIssuePath,
-				IssueChangePath:        composition.IssueChangePath,
-				MetadataChangePaths:    composition.MetadataChangePaths,
-				CatalogPath:            composition.HubConfigPath,
-				CatalogLoader:          composition.CatalogLoader,
-				SemanticDatasetPath:    semanticDatasetPath,
-				SemanticStorePath:      composition.SemanticStorePath,
-				SemanticIndexDir:       composition.SemanticIndexDir,
-				RepositoryPresentation: composition.RepositoryPresentation,
-				DefaultRepositoryID:    composition.DefaultCurrentContext,
-				ExternalHistory:        composition.HistoryProvider.External(),
-				HubAutoRefresh:         composition.HubAutoRefresh,
-				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-				InitialScope:           initialScope,
-				Scopes:                 composition.ScopeServices,
-				HubChangeSignal:        composition.HubChangeSignal,
-				RefreshResolved:        true,
-			})
+			m.SetRuntimeServices(runtimeServices)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
@@ -5115,49 +5072,10 @@ func main() {
 		}
 
 		// Initial Model with live reload support
-		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, ui.RuntimeServices{
-			HistoryProvider:        composition.HistoryProvider,
-			LabelPredicate:         composition.LabelPredicate,
-			SelectedIssuePath:      composition.SelectedIssuePath,
-			IssueChangePath:        composition.IssueChangePath,
-			MetadataChangePaths:    composition.MetadataChangePaths,
-			CatalogPath:            composition.HubConfigPath,
-			CatalogLoader:          composition.CatalogLoader,
-			SemanticDatasetPath:    composition.SemanticDatasetPath,
-			SemanticStorePath:      composition.SemanticStorePath,
-			SemanticIndexDir:       composition.SemanticIndexDir,
-			RepositoryPresentation: composition.RepositoryPresentation,
-			DefaultRepositoryID:    composition.DefaultCurrentContext,
-			ExternalHistory:        composition.HistoryProvider.External(),
-			HubAutoRefresh:         composition.HubAutoRefresh,
-			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-			InitialScope:           initialScope,
-			Scopes:                 composition.ScopeServices,
-			HubChangeSignal:        composition.HubChangeSignal,
-			RefreshResolved:        true,
-		})
+		runtimeServices := composition.runtimeServicesFor(semanticDatasetPath, initialScope)
+		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, runtimeServices)
 		m.SetRepositoryCatalogIssues(catalogIssues)
-		m.SetRuntimeServices(ui.RuntimeServices{
-			HistoryProvider:        composition.HistoryProvider,
-			LabelPredicate:         composition.LabelPredicate,
-			SelectedIssuePath:      composition.SelectedIssuePath,
-			IssueChangePath:        composition.IssueChangePath,
-			MetadataChangePaths:    composition.MetadataChangePaths,
-			CatalogPath:            composition.HubConfigPath,
-			CatalogLoader:          composition.CatalogLoader,
-			SemanticDatasetPath:    semanticDatasetPath,
-			SemanticStorePath:      composition.SemanticStorePath,
-			SemanticIndexDir:       composition.SemanticIndexDir,
-			RepositoryPresentation: composition.RepositoryPresentation,
-			DefaultRepositoryID:    composition.DefaultCurrentContext,
-			ExternalHistory:        composition.HistoryProvider.External(),
-			HubAutoRefresh:         composition.HubAutoRefresh,
-			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-			InitialScope:           initialScope,
-			Scopes:                 composition.ScopeServices,
-			HubChangeSignal:        composition.HubChangeSignal,
-			RefreshResolved:        true,
-		})
+		m.SetRuntimeServices(runtimeServices)
 		m.SetDefaultRepositoryScope(composition.DefaultCurrentContext)
 		defer m.Stop() // Clean up file watcher
 

@@ -26,6 +26,7 @@ import (
 type viewerCompositionInput struct {
 	HistoryMode        string
 	HubConfigPath      string
+	HistoryResolved    bool
 	ExplicitDBPath     string
 	WorkspacePath      string
 	AsOf               string
@@ -68,10 +69,44 @@ type viewerComposition struct {
 	ScopeServices  ui.ScopeServices
 }
 
+// runtimeServicesFor adapts the resolved composition to the neutral UI
+// runtime boundary. The CLI resolves policy once; the TUI only receives the
+// resulting services and paths.
+func (c viewerComposition) runtimeServicesFor(datasetPath string, initialScope *ui.ScopeSnapshot) ui.RuntimeServices {
+	if datasetPath == "" {
+		datasetPath = c.SemanticDatasetPath
+	}
+	return ui.RuntimeServices{
+		Scopes:                 c.ScopeServices,
+		HistoryProvider:        c.HistoryProvider,
+		LabelPredicate:         c.LabelPredicate,
+		SelectedIssuePath:      c.SelectedIssuePath,
+		IssueChangePath:        c.IssueChangePath,
+		MetadataChangePaths:    c.MetadataChangePaths,
+		CatalogPath:            c.HubConfigPath,
+		CatalogLoader:          c.CatalogLoader,
+		SemanticDatasetPath:    datasetPath,
+		SemanticStorePath:      c.SemanticStorePath,
+		SemanticIndexDir:       c.SemanticIndexDir,
+		RepositoryPresentation: c.RepositoryPresentation,
+		DefaultRepositoryID:    c.DefaultCurrentContext,
+		ExternalHistory:        c.HistoryProvider.External(),
+		HubAutoRefresh:         c.HubAutoRefresh,
+		HubScopeMemberIDs:      c.HubScopeMemberIDs,
+		InitialScope:           initialScope,
+		HubChangeSignal:        c.HubChangeSignal,
+		RefreshResolved:        true,
+	}
+}
+
 func composeViewerServices(input viewerCompositionInput) (viewerComposition, error) {
-	mode, configPath, err := resolveHistoryConfiguration(input.HistoryMode, input.HubConfigPath)
-	if err != nil {
-		return viewerComposition{}, err
+	mode, configPath := input.HistoryMode, input.HubConfigPath
+	var err error
+	if !input.HistoryResolved {
+		mode, configPath, err = resolveHistoryConfiguration(mode, configPath)
+		if err != nil {
+			return viewerComposition{}, err
+		}
 	}
 	usesHubStore := configPath != "" && mode != "git"
 	if usesHubStore && input.WorkspacePath != "" {
@@ -107,7 +142,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 
 	selectedIssuePath := ""
 	var selectedSource datasource.DataSource
-	if input.WorkspacePath == "" && input.AsOf == "" && (mode == "git" || usesHubStore) {
+	if input.WorkspacePath == "" && input.AsOf == "" && (mode == "git" || usesHubStore || input.ExplicitDBPath != "") {
 		sourcePath := input.ExplicitDBPath
 		if usesHubStore {
 			sourcePath = semanticStore
