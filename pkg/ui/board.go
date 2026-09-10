@@ -79,7 +79,7 @@ func (b *BoardModel) SetRepositoryPresentation(catalog repository.Catalog, enabl
 }
 
 func (b BoardModel) issuePresentation(issue model.Issue) issueRepositoryPresentation {
-	return repositoryPresentationForIssueWithPredicate(issue, b.repositoryCatalog, b.hubPresentation, b.currentRepositoryID, b.preferredRepositories, b.repositoryLabelPredicate)
+	return repositoryPresentationForIssue(issue, b.repositoryCatalog, b.hubPresentation, b.currentRepositoryID, b.preferredRepositories, b.repositoryLabelPredicate)
 }
 
 // searchMatch holds info about a matching card (bv-yg39)

@@ -1864,7 +1864,7 @@ func (m *InsightsModel) buildDetailMarkdown(selectedID string) string {
 	}
 
 	var sb strings.Builder
-	presentation := repositoryPresentationForIssueWithPredicate(*issue, m.repositoryCatalog, m.hubPresentation, "", nil, m.repositoryLabelPredicate)
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubPresentation, "", nil, m.repositoryLabelPredicate)
 
 	// === HEADER: Title with Type Icon ===
 	sb.WriteString(fmt.Sprintf("# %s %s\n\n", GetTypeIconMD(string(issue.IssueType)), issue.Title))

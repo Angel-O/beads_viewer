@@ -821,7 +821,7 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: repositorypkg.IdentityExact},
 	}
 
-	presentation := repositoryPresentationForIssueWithPredicate(issue, catalog, true, "", nil, func(label string) bool {
+	presentation := repositoryPresentationForIssue(issue, catalog, true, "", nil, func(label string) bool {
 		switch label {
 		case "ctx:zeta", "ctx:Mixed", "ctx:alpha":
 			return false
@@ -857,6 +857,17 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 	filterValue := item.FilterValue()
 	if !containsAll(filterValue, "teams/alpha/service", "teams/zeta/service", "Ctx:upper", "myctx:keep") || strings.Contains(filterValue, "ctx:alpha") {
 		t.Fatalf("fuzzy display tokens = %q", filterValue)
+	}
+}
+
+func TestRepositoryPresentationKeepsLocalLabelsWithExplicitPolicy(t *testing.T) {
+	issue := model.Issue{Labels: []string{"ctx:alpha", "backend"}}
+	presentation := repositoryPresentationForIssue(issue, hubScopeCatalog("ctx:alpha"), false, "", nil, func(string) bool {
+		return false
+	})
+
+	if presentation.ID != "" || !slices.Equal(presentation.Labels, issue.Labels) {
+		t.Fatalf("local presentation = %+v, want raw labels and no repository badge", presentation)
 	}
 }
 
@@ -952,6 +963,7 @@ func TestHubListBadgePrefersSelectedRepositoryThenAscendingDisplayName(t *testin
 			true,
 			"",
 			map[string]bool{"ctx:repo-a": true, "ctx:repo-b": true},
+			nil,
 		)
 		if presentation.ID != "ctx:repo-a" || presentation.Extra != 1 {
 			t.Fatalf("presentation = %+v, want ctx:repo-a with +1", presentation)

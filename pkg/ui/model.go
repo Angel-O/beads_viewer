@@ -357,7 +357,7 @@ func (m Model) commentRepositoryPath(issueID string) (string, error) {
 	if issue == nil {
 		return "", fmt.Errorf("cannot mutate comment for %s: issue is unavailable", issueID)
 	}
-	presentation := repositoryPresentationForIssueWithPredicate(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos, m.labelPredicate())
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos, m.labelPredicate())
 	if presentation.ID == "" || presentation.ID == contextlessRepositoryID {
 		return "", fmt.Errorf("cannot mutate comment for %s: no registered repository path; register its Hub context and retry", issueID)
 	}
@@ -11767,7 +11767,7 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	presentation := repositoryPresentationForIssueWithPredicate(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil, m.labelPredicate())
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil, m.labelPredicate())
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Context:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && presentation.ID == contextlessRepositoryID {

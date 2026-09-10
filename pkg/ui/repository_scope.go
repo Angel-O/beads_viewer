@@ -392,11 +392,10 @@ func issueHasRepositoryContext(issue model.Issue, catalog repositorypkg.Catalog,
 	return false
 }
 
-func repositoryPresentationForIssue(issue model.Issue, catalog repositorypkg.Catalog, hubMode bool, currentRepositoryID string, preferredRepositories map[string]bool) issueRepositoryPresentation {
-	return repositoryPresentationForIssueWithPredicate(issue, catalog, hubMode, currentRepositoryID, preferredRepositories, nil)
-}
-
-func repositoryPresentationForIssueWithPredicate(issue model.Issue, catalog repositorypkg.Catalog, hubMode bool, currentRepositoryID string, preferredRepositories map[string]bool, predicate analysis.LabelPredicate) issueRepositoryPresentation {
+// repositoryPresentationForIssue is the single presentation policy entry
+// point. The neutral label predicate is explicit; nil is valid for local mode
+// and never turns label matching into repository resolution.
+func repositoryPresentationForIssue(issue model.Issue, catalog repositorypkg.Catalog, hubMode bool, currentRepositoryID string, preferredRepositories map[string]bool, predicate analysis.LabelPredicate) issueRepositoryPresentation {
 	presentation := issueRepositoryPresentation{Labels: issue.Labels}
 	if !hubMode {
 		return presentation
@@ -583,7 +582,7 @@ func (m *Model) decorateIssueItem(item *IssueItem) {
 	if item == nil {
 		return
 	}
-	presentation := repositoryPresentationForIssueWithPredicate(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.currentRepositoryID, m.activeRepos, m.labelPredicate())
 	item.HubPresentation = m.hubRepositoryPresentation()
 	item.RepositoryID = presentation.ID
 	item.RepositoryName = presentation.Name
