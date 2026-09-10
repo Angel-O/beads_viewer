@@ -144,7 +144,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	var selectedSource datasource.DataSource
 	if input.WorkspacePath == "" && input.AsOf == "" && (mode == "git" || usesHubStore || input.ExplicitDBPath != "") {
 		sourcePath := input.ExplicitDBPath
-		if usesHubStore {
+		if usesHubStore && sourcePath == "" {
 			sourcePath = semanticStore
 		}
 		selectedIssuePath, selectedSource = compositionIssueSource(workDir, sourcePath)

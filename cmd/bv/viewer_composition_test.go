@@ -203,6 +203,32 @@ func TestComposeViewerServicesHistoryOffPreservesExplicitDB(t *testing.T) {
 	}
 }
 
+func TestComposeViewerServicesExplicitDBOverridesHubStore(t *testing.T) {
+	root := t.TempDir()
+	config := writeCompositionHubConfig(t, root)
+	explicitDir := filepath.Join(root, "explicit")
+	if err := os.MkdirAll(explicitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(explicitDir, "issues.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:    "external",
+		HubConfigPath:  config,
+		ExplicitDBPath: explicitDir,
+		WorkDir:        root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(explicitDir, "issues.jsonl")
+	if got.SelectedIssuePath != want {
+		t.Fatalf("Hub-config selected issue path = %q, want explicit source %q", got.SelectedIssuePath, want)
+	}
+}
+
 func TestComposeViewerServicesRejectsHubStoreWorkspaceAndAsOf(t *testing.T) {
 	root := t.TempDir()
 	config := writeCompositionHubConfig(t, root)
