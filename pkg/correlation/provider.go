@@ -9,7 +9,7 @@ type Provider struct {
 	mode           HistoryMode
 	repositoryRoot string
 	issuePath      string
-	configPath     string
+	external       ExternalHistorySource
 	feedback       *FeedbackStore
 }
 
@@ -38,9 +38,9 @@ func NewGitProvider(repositoryRoot, selectedIssuePath string) *Provider {
 	return &Provider{mode: HistoryModeGit, repositoryRoot: repositoryRoot, issuePath: selectedIssuePath}
 }
 
-// NewExternalProvider correlates using the authoritative Hub configuration.
-func NewExternalProvider(configPath string) *Provider {
-	return &Provider{mode: HistoryModeExternal, configPath: configPath}
+// NewExternalProvider correlates using a validated external-history source.
+func NewExternalProvider(source ExternalHistorySource) *Provider {
+	return &Provider{mode: HistoryModeExternal, external: source}
 }
 
 // NewDisabledProvider returns a provider whose report has the same empty
@@ -69,7 +69,7 @@ func (p *Provider) correlator(ctx context.Context) *Correlator {
 	}
 	c := NewCorrelator(p.repositoryRoot, p.issuePath)
 	c.historyMode = p.mode
-	c.hubConfigPath = p.configPath
+	c.external = p.external
 	c.WithFeedbackStore(p.feedback)
 	c.ctx = ctx
 	c.extractor.ctx = ctx

@@ -17,9 +17,7 @@ const hubImportPath = "github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 // temporaryHubImportExceptions records only current neutral-package seams.
 // Each entry is intentionally file-specific so the owning migration phase can
 // remove it without weakening the final package boundary.
-var temporaryHubImportExceptions = map[string]string{
-	"pkg/correlation/hub_config.go": "correlation configuration seam",
-}
+var temporaryHubImportExceptions = map[string]string{}
 
 var hubImportAllowedRoots = []string{
 	"pkg/hub/",

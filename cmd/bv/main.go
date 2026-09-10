@@ -1759,7 +1759,7 @@ func main() {
 			if resolvedConfig == "" {
 				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, added, err := correlation.AddExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
+			record, added, err := hub.AddExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil && !added {
 				return fmt.Errorf("adding correlation: %w", err)
 			}
@@ -1783,7 +1783,7 @@ func main() {
 			if resolvedConfig == "" {
 				return fmt.Errorf("correlate remove requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, removed, err := correlation.RemoveExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
+			record, removed, err := hub.RemoveExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil && !removed {
 				return fmt.Errorf("removing correlation: %w", err)
 			}

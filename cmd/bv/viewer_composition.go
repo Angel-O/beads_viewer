@@ -91,7 +91,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	semanticStore := ""
 	semanticIndexDir := ""
 	if usesHubStore {
-		semanticStore, err = correlation.HubConfigStore(configPath)
+		semanticStore, err = hub.StorePath(configPath)
 		if err != nil {
 			return viewerComposition{}, err
 		}
@@ -102,7 +102,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	case "off":
 		provider = correlation.NewDisabledProvider()
 	case "external":
-		provider = correlation.NewExternalProvider(configPath)
+		provider = correlation.NewExternalProvider(hub.NewExternalHistorySource(configPath))
 	}
 
 	selectedIssuePath := ""
