@@ -853,7 +853,7 @@ func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", filepath.Join(directory, "viewer-generation"))
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.backgroundWorker.catalogPath != configPath {
 		t.Fatal("manual catalog refresh was not configured")
 	}
@@ -910,7 +910,7 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	if m.backgroundWorker != nil || m.watcher == nil {
 		t.Fatal("direct mode did not start with the ordinary file watcher")
 	}
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigWatcher == nil || m.watcher == nil {
 		t.Fatal("Hub provider did not retain the file watcher during worker transition")
 	}
@@ -948,7 +948,7 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.watcher == nil || !m.watcher.IsStarted() {
 		t.Fatal("Hub transition did not retain a live fallback watcher")
 	}
@@ -973,7 +973,7 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRepositoryCatalogIssues(nil)
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:empty" || m.repositoryCatalog[0].BeadCount != 0 {
 		t.Fatalf("empty Hub catalog = %#v", m.repositoryCatalog)
 	}
@@ -993,7 +993,7 @@ func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
 	}
 	m := NewModel(filtered, nil, "")
 	m.SetRepositoryCatalogIssues(all)
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if got := catalogEntry(m.repositoryCatalog, "ctx:a").BeadCount; got != 2 {
 		t.Fatalf("unfiltered startup count = %d, want 2", got)
 	}
@@ -2989,7 +2989,7 @@ func countMessagesOfType[T any](messages []tea.Msg) int {
 func TestModelHubSourceRefreshReloadsOnlyExternalHistoryAndRejectsStaleResult(t *testing.T) {
 	issue := model.Issue{ID: "fixture-1", Title: "Fixture", Status: model.StatusOpen, IssueType: model.TypeTask}
 	m := NewModel([]model.Issue{issue}, nil, "")
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider("fixture-hub.yaml"), CatalogPath: "fixture-hub.yaml", RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: "fixture-hub.yaml", RepositoryPresentation: true, ExternalHistory: true})
 	m.backgroundWorker = &BackgroundWorker{}
 	m.snapshot = &DataSnapshot{CreatedAt: time.Now().Add(-3 * time.Minute)}
 	m.historyGeneration = 4

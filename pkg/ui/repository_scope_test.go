@@ -182,7 +182,7 @@ func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
 		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
 	}
 	m := NewModel(issues, nil, "")
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if !m.SetDefaultRepositoryScope("ctx:alpha") {
 		t.Fatal("synchronous catalog did not apply the current repository")
 	}
@@ -1087,7 +1087,7 @@ func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) 
 			m.applyFilter()
 			m.list.Select(1)
 
-			m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+			m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 			if m.sortMode != SortDefault {
 				t.Fatalf("sort mode after synchronous catalog reload = %v, want Default", m.sortMode)
 			}
@@ -1127,7 +1127,7 @@ func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
 		t.Fatalf("selected before synchronous catalog reload = %q, want two", selected)
 	}
 
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if got := m.RepositorySelection(); got.Mode() != repositorypkg.SelectionSelected || !slices.Equal(got.IDs(), []string{"ctx:one"}) {
 		t.Fatalf("scope after synchronous catalog reload = %#v", got)
 	}
