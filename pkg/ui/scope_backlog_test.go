@@ -17,8 +17,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 func TestScopeFirstViewShowsNoActiveStateAndOpensChooser(t *testing.T) {
@@ -1140,15 +1140,15 @@ func TestBacklogContextPickerIsolatedFromGenericScope(t *testing.T) {
 	}})
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
-	generic, err := hub.NewSelectedContextsHubScope([]string{"ctx:alpha"})
+	generic, err := repositorypkg.NewSelectedSelection([]string{"ctx:alpha"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetHubScope(generic); err != nil {
+	if err := m.SetRepositorySelection(generic); err != nil {
 		t.Fatal(err)
 	}
 	wantGenericIDs := visibleIssueIDs(m)
-	wantGenericScope := m.HubScope()
+	wantGenericScope := m.RepositorySelection()
 	m.isBacklogView, m.focused = true, focusBacklog
 	m.backlog.SetPage(BacklogPage{Issues: []model.Issue{{ID: "old"}}, HasMore: true, NextCursor: "old-cursor"}, 1)
 	m.backlog.ToggleMark()
@@ -1174,8 +1174,8 @@ func TestBacklogContextPickerIsolatedFromGenericScope(t *testing.T) {
 		m = updated.(*Model)
 	}
 
-	if !reflect.DeepEqual(m.HubScope(), wantGenericScope) || !reflect.DeepEqual(visibleIssueIDs(m), wantGenericIDs) {
-		t.Fatalf("backlog apply changed generic scope/list: scope=%#v ids=%v", m.HubScope(), visibleIssueIDs(m))
+	if !reflect.DeepEqual(m.RepositorySelection(), wantGenericScope) || !reflect.DeepEqual(visibleIssueIDs(m), wantGenericIDs) {
+		t.Fatalf("backlog apply changed generic scope/list: scope=%#v ids=%v", m.RepositorySelection(), visibleIssueIDs(m))
 	}
 	if got.Contexts == nil || !reflect.DeepEqual(got.Contexts, []string{"ctx:alpha"}) || !got.IncludeContextless {
 		t.Fatalf("backlog context query=%#v, want alpha plus contextless", got)
@@ -1356,8 +1356,8 @@ func TestScopeMemberRowsUseLocalBoundedOrderAndLabels(t *testing.T) {
 	picker.SetScopes([]ScopeInfo{{ID: "s1", Name: "Today"}})
 	now := time.Now()
 	picker.SetMembers([]IssueItem{
-		{Issue: model.Issue{ID: "short", Title: "A deliberately long member title that must truncate", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, CreatedAt: now.Add(-2 * time.Hour), Labels: []string{"ctx:one", "backend"}}, RepositoryName: "one", RepositoryExtra: 1, HubPresentation: true, PresentationLabels: []string{"ctx:one", "backend"}},
-		{Issue: model.Issue{ID: "long-id", Title: "Other", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, CreatedAt: now.Add(-3 * time.Hour), Labels: []string{"ctx:two", "frontend"}}, RepositoryName: "two", RepositoryExtra: 10, HubPresentation: true, PresentationLabels: []string{"ctx:two", "frontend"}},
+		{Issue: model.Issue{ID: "short", Title: "A deliberately long member title that must truncate", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, CreatedAt: now.Add(-2 * time.Hour), Labels: []string{"ctx:one", "backend"}}, RepositoryName: "one", RepositoryExtra: 1, HubPresentation: true, PresentationLabels: []string{"backend"}},
+		{Issue: model.Issue{ID: "long-id", Title: "Other", Status: model.StatusOpen, IssueType: model.TypeTask, Priority: 1, CreatedAt: now.Add(-3 * time.Hour), Labels: []string{"ctx:two", "frontend"}}, RepositoryName: "two", RepositoryExtra: 10, HubPresentation: true, PresentationLabels: []string{"frontend"}},
 	})
 	view := ansi.Strip(picker.renderMembers(70, 8))
 	rows := make([]string, 0, 2)

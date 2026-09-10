@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
@@ -215,14 +214,20 @@ func runGitForHistoryOpenTest(t *testing.T, repository string, args ...string) {
 
 func testHubConfig(t *testing.T, repositories map[string]string) string {
 	t.Helper()
-	config := hub.Config{
-		Version:      hub.ConfigVersion,
-		Store:        "store",
-		Ledger:       "ledger",
-		Repositories: make(map[string]hub.Repository, len(repositories)),
-	}
+	config := struct {
+		Version      int    `json:"version"`
+		Store        string `json:"store"`
+		Ledger       string `json:"ledger"`
+		Repositories map[string]struct {
+			Path string `json:"path"`
+		} `json:"repositories"`
+	}{Version: 1, Store: "store", Ledger: "ledger", Repositories: make(map[string]struct {
+		Path string `json:"path"`
+	}, len(repositories))}
 	for context, repository := range repositories {
-		config.Repositories[context] = hub.Repository{Path: repository}
+		config.Repositories[context] = struct {
+			Path string `json:"path"`
+		}{Path: repository}
 	}
 	data, err := json.Marshal(config)
 	if err != nil {
@@ -241,7 +246,7 @@ func testHubCatalog(t *testing.T, configPath string) repositorypkg.Catalog {
 }
 
 func testHubCatalogMust(configPath string) repositorypkg.Catalog {
-	catalog, err := hub.LoadRepositoryCatalog(configPath, nil)
+	catalog, err := testRepositoryCatalogLoader(configPath, nil)
 	if err != nil {
 		panic(err)
 	}

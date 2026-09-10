@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
@@ -46,7 +45,7 @@ func repoPickerLineHasUnderline(line string) bool {
 
 func TestRepoPickerCurrentNameIsAccentedAndUnderlinedWithoutChangingPlainText(t *testing.T) {
 	m, theme := newANSIRepoPickerModel(testRepositoryCatalog())
-	m.SetHubScope(hub.NewAllItemsHubScope())
+	m.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SetSize(120, 24)
 
@@ -73,11 +72,11 @@ func TestRepoPickerCurrentNameTruncatesBeforeStyling(t *testing.T) {
 	m, theme := newANSIRepoPickerModel(repositorypkg.Catalog{{
 		ID: "ctx:long", Name: ".", BeadCount: 42,
 	}})
-	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:long"})
+	scope, err := repositorypkg.NewSelectedSelection([]string{"ctx:long"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.SetHubScope(scope)
+	m.SetRepositorySelection(scope)
 	m.SetCurrentRepository("ctx:long")
 	m.MoveDown()
 
@@ -123,7 +122,7 @@ func TestRepoPickerCurrentNameTruncatesBeforeStyling(t *testing.T) {
 
 func TestRepoPickerContextlessRowPreservesCountAtNarrowWidth(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(hub.NewAllItemsHubScope())
+	m.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.SetSize(20, 8)
 
 	view := m.View()

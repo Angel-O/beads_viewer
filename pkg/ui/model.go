@@ -25,7 +25,6 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/debug"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/instance"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -358,7 +357,7 @@ func (m Model) commentRepositoryPath(issueID string) (string, error) {
 	if issue == nil {
 		return "", fmt.Errorf("cannot mutate comment for %s: issue is unavailable", issueID)
 	}
-	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos)
+	presentation := repositoryPresentationForIssueWithPredicate(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos, m.labelPredicate())
 	if presentation.ID == "" || presentation.ID == contextlessRepositoryID {
 		return "", fmt.Errorf("cannot mutate comment for %s: no registered repository path; register its Hub context and retry", issueID)
 	}
@@ -2363,6 +2362,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			DebounceDelay:       200 * time.Millisecond,
 			HubChangeSignal:     hubChangeSignal,
 			CatalogLoader:       runtimeServices.CatalogLoader,
+			LabelPredicate:      runtimeServices.LabelPredicate,
 			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
 			SkipInitialRefresh:  runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil,
 		})
@@ -2611,6 +2611,7 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 			DebounceDelay:       200 * time.Millisecond,
 			CatalogPath:         services.CatalogPath,
 			CatalogLoader:       services.CatalogLoader,
+			LabelPredicate:      services.LabelPredicate,
 			HubScopeMemberIDs:   services.HubScopeMemberIDs,
 			SkipInitialRefresh:  services.InitialScope != nil && services.InitialScope.Active == nil,
 			HubChangeSignal:     services.HubChangeSignal,
@@ -2629,6 +2630,7 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 		} else {
 			m.backgroundWorker.mu.Lock()
 			m.backgroundWorker.catalogLoader = services.CatalogLoader
+			m.backgroundWorker.labelPredicate = services.LabelPredicate
 			m.backgroundWorker.mu.Unlock()
 		}
 	}
@@ -2673,17 +2675,17 @@ func (m Model) contextlessBeadCount() int {
 	if issues == nil {
 		issues = m.issues
 	}
-	return contextlessIssueCount(issues)
+	return contextlessIssueCount(issues, m.repositoryCatalog, m.labelPredicate())
 }
 
 func (m *Model) reloadRepositoryCatalog() error {
 	if m.workspaceMode {
-		beforeScope := m.HubScope()
+		beforeScope := m.RepositorySelection()
 		beforeRepos := sortedRepoKeys(m.activeRepos)
 		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
 		m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
 		contextSortFallback := m.normalizeContextSortMode()
-		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
 		if scopeChanged {
 			m.refreshRepositoryCandidates()
 		} else if contextSortFallback && m.list.Width() > 0 {
@@ -2693,8 +2695,8 @@ func (m *Model) reloadRepositoryCatalog() error {
 		if m.showRepoPicker {
 			m.repoPicker.SetCatalog(m.repositoryCatalog)
 		}
-		m.board.SetRepositoryPresentation(m.repositoryCatalog, false, m.currentRepositoryID, m.activeRepos)
-		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false)
+		m.board.SetRepositoryPresentation(m.repositoryCatalog, false, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false, m.labelPredicate())
 		return nil
 	}
 	if strings.TrimSpace(m.catalogPath()) == "" {
@@ -2712,12 +2714,12 @@ func (m *Model) reloadRepositoryCatalog() error {
 	if err != nil {
 		return err
 	}
-	beforeScope := m.HubScope()
+	beforeScope := m.RepositorySelection()
 	beforeRepos := sortedRepoKeys(m.activeRepos)
 	m.repositoryScopeController.setCatalog(catalog)
-	m.reconcileHubScopeCatalog()
+	m.reconcileRepositorySelectionCatalog()
 	contextSortFallback := m.normalizeContextSortMode()
-	scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+	scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
 	if scopeChanged {
 		m.refreshRepositoryCandidates()
 	} else if contextSortFallback && m.list.Width() > 0 {
@@ -2728,8 +2730,8 @@ func (m *Model) reloadRepositoryCatalog() error {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
 		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
 	}
-	m.board.SetRepositoryPresentation(catalog, true, m.currentRepositoryID, m.activeRepos)
-	m.insightsPanel.SetRepositoryPresentation(catalog, true)
+	m.board.SetRepositoryPresentation(catalog, true, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+	m.insightsPanel.SetRepositoryPresentation(catalog, true, m.labelPredicate())
 	return nil
 }
 
@@ -2743,11 +2745,11 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, gene
 		return
 	}
 	if changed {
-		beforeScope := m.HubScope()
+		beforeScope := m.RepositorySelection()
 		beforeRepos := sortedRepoKeys(m.activeRepos)
 		m.repositoryScopeController.setCatalog(catalog)
 		if m.usesHubScope() {
-			m.reconcileHubScopeCatalog()
+			m.reconcileRepositorySelectionCatalog()
 		} else {
 			m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
 		}
@@ -2758,7 +2760,7 @@ func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, gene
 		}
 		m.refreshRepositoryPresentation()
 		defaultApplied := m.applyDefaultRepositoryScope()
-		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
 		if !defaultApplied && scopeChanged {
 			m.refreshRepositoryCandidates()
 		} else if contextSortFallback && m.list.Width() > 0 {
@@ -3762,7 +3764,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focused == focusLabelDashboard {
 			cfg := analysis.DefaultLabelHealthConfig()
 			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
-			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
+			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.repositoryCatalog, m.hubRepositoryPresentation())
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
 		}
@@ -4723,7 +4725,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			oldHash := m.insightsPanel.triageDataHash
 
 			m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
-			m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
+			m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation(), m.labelPredicate())
 			m.insightsPanel.topPicks = oldTopPicks
 			m.insightsPanel.recommendations = oldRecs
 			m.insightsPanel.recommendationMap = oldRecMap
@@ -4845,6 +4847,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					MetadataChangePaths: m.runtimeServices.MetadataChangePaths,
 					DebounceDelay:       200 * time.Millisecond,
 					CatalogLoader:       m.runtimeServices.CatalogLoader,
+					LabelPredicate:      m.runtimeServices.LabelPredicate,
 				})
 				if err == nil {
 					if m.catalogPath() != "" {
@@ -6253,7 +6256,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.labelHealthCached {
 					cfg := analysis.DefaultLabelHealthConfig()
 					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
-					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
+					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.repositoryCatalog, m.hubRepositoryPresentation())
 					m.labelHealthCached = true
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -6355,9 +6358,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
 				if m.isBacklogView || m.focused == focusGlobalIssues {
-					m.repoPicker.SetHubScope(m.backlogHubScope())
+					m.repoPicker.SetRepositorySelection(m.backlogRepositorySelection())
 				} else if m.hubRepositoryMode {
-					m.repoPicker.SetHubScope(m.hubScope)
+					m.repoPicker.SetRepositorySelection(m.repositorySelection)
 				} else {
 					m.repoPicker.SetActiveRepos(m.activeRepos)
 				}
@@ -6385,7 +6388,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				labelCounts := extractLabelCounts(labelExtraction.Stats)
 				labels := labelExtraction.Labels
 				if m.hubRepositoryPresentation() {
-					labels = filterHubContextLabels(labels)
+					labels = filterRepositoryLabels(labels, m.repositoryCatalog)
 				}
 				m.labelPicker.SetLabels(labels, labelCounts)
 				m.labelPicker.Reset()
@@ -7466,9 +7469,13 @@ func (m *Model) resetRecipePicker() {
 }
 
 func (m *Model) applyRepositoryPickerSelection() *Model {
-	selected := m.repoPicker.SelectedRepos()
+	selection, err := m.repoPicker.RepositorySelection()
+	if err != nil {
+		return m
+	}
+	selected := selection.IDs()
 	if m.repoPickerOrigin == focusBacklog || m.repoPickerOrigin == focusGlobalIssues {
-		return m.applyBacklogPickerSelection(selected)
+		return m.applyBacklogPickerSelection(selection)
 	}
 	// Successful apply, like cancel, returns to the view that opened the picker.
 	focusAfterApply := m.repoPickerOrigin
@@ -7476,27 +7483,29 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 		focusAfterApply = focusScopePicker
 	}
 	if m.hubRepositoryMode {
-		includeContextless := m.repoPicker.ContextlessSelected()
+		includeContextless := selection.IncludesUnassigned() || selection.Mode() == repositorypkg.SelectionUnassigned
 		switch {
 		case len(selected) == 0 && includeContextless:
 			m.statusMsg = "Context: no-context"
 		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeContextless:
 			m.statusMsg = "Context: all"
 		case includeContextless:
-			m.statusMsg = fmt.Sprintf("Context: %s, no-context", strings.Join(m.repositoryScopeNames(selected), ", "))
+			m.statusMsg = fmt.Sprintf("Context: %s, no-context", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
 		default:
-			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
 		}
 		m.statusIsError = false
-		m.setHubRepositoryScope(selected, includeContextless)
+		if err := m.SetRepositorySelection(selection); err != nil {
+			m.statusMsg, m.statusIsError = err.Error(), true
+		}
 	} else {
 		if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
 			m.statusMsg = "Context: all"
 		} else {
-			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
 		}
 		m.statusIsError = false
-		m.SetRepositoryScope(selected)
+		m.SetRepositoryScope(repositoryIDsMap(selected))
 	}
 	m.showRepoPicker = false
 	m.focused = focusAfterApply
@@ -7507,31 +7516,30 @@ func (m *Model) applyRepositoryPickerSelection() *Model {
 	return m
 }
 
-func (m Model) backlogHubScope() hub.HubScope {
+func (m Model) backlogRepositorySelection() repositorypkg.Selection {
 	contexts := m.backlog.Contexts()
 	if len(contexts) == 0 {
 		if m.backlog.IncludeContextless() {
-			return hub.NewContextlessHubScope()
+			return repositorypkg.NewUnassignedSelection()
 		}
-		return hub.NewAllItemsHubScope()
+		return repositorypkg.NewAllSelection()
 	}
 	if m.backlog.IncludeContextless() {
-		if scope, err := hub.NewSelectedContextsAndContextlessHubScope(contexts); err == nil {
+		if scope, err := repositorypkg.NewSelectedAndUnassignedSelection(contexts); err == nil {
 			return scope
 		}
-	} else if scope, err := hub.NewSelectedContextsHubScope(contexts); err == nil {
+	} else if scope, err := repositorypkg.NewSelectedSelection(contexts); err == nil {
 		return scope
 	}
-	return hub.NewAllItemsHubScope()
+	return repositorypkg.NewAllSelection()
 }
 
-func (m *Model) applyBacklogPickerSelection(selected map[string]bool) *Model {
-	includeContextless := m.repoPicker.ContextlessSelected()
-	contexts := sortedRepoKeys(selected)
+func (m *Model) applyBacklogPickerSelection(selection repositorypkg.Selection) *Model {
+	includeContextless := selection.IncludesUnassigned() || selection.Mode() == repositorypkg.SelectionUnassigned
+	contexts := selection.IDs()
 	// An empty draft is the backlog's all-items choice. Treat the equivalent
 	// all-contexts-plus-contextless draft the same way so the query stays small.
-	if (len(contexts) == 0 && !includeContextless) ||
-		(includeContextless && len(contexts) == len(m.repositoryCatalog) && len(contexts) > 0) {
+	if len(contexts) == 0 && !includeContextless {
 		contexts = nil
 		includeContextless = false
 	}
@@ -9809,12 +9817,24 @@ func (m Model) repositoryScopeNames(selected map[string]bool) []string {
 	return names
 }
 
+func (m Model) repositoryScopeNamesForIDs(ids []string) []string {
+	return m.repositoryScopeNames(repositoryIDsMap(ids))
+}
+
+func repositoryIDsMap(ids []string) map[string]bool {
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
+	return selected
+}
+
 func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 	if !m.workspaceMode && !m.hubRepositoryMode {
 		return ""
 	}
 	selectedCount := len(m.activeRepos)
-	if m.hubRepositoryMode && m.hubScope.Mode == hub.HubScopeContextless {
+	if m.hubRepositoryMode && m.repositorySelection.Mode() == repositorypkg.SelectionUnassigned {
 		return lipgloss.NewStyle().
 			Background(ThemeBg("#45B7D1")).
 			Foreground(ColorBg).
@@ -9827,7 +9847,7 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 	}
 	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
 	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
-	if m.hubRepositoryMode && m.hubScope.IncludeContextless {
+	if m.hubRepositoryMode && m.repositorySelection.IncludesUnassigned() {
 		compact += " + no-context"
 		if label != "" {
 			label += ", "
@@ -11773,7 +11793,7 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil)
+	presentation := repositoryPresentationForIssueWithPredicate(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil, m.labelPredicate())
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Context:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && presentation.ID == contextlessRepositoryID {

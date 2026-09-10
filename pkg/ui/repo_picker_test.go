@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
@@ -61,7 +60,7 @@ func TestRepoPickerViewContainsRepos(t *testing.T) {
 
 func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
 	m, _ := newANSIRepoPickerModel(testRepositoryCatalog())
-	m.SetHubScope(hub.NewAllItemsHubScope())
+	m.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SetSize(120, 24)
 
@@ -92,7 +91,7 @@ func TestRepoPickerMarksAuthoritativeCurrentRepository(t *testing.T) {
 
 func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(hub.NewAllItemsHubScope())
+	m.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.SetCurrentRepository("ctx:beta-456")
 	m.SelectCurrent()
 
@@ -104,7 +103,7 @@ func TestRepoPickerCurrentOnlyClearsOtherDraftChoices(t *testing.T) {
 
 func TestRepoPickerCurrentOnlyAbsentIsNoOp(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(hub.NewAllItemsHubScope())
+	m.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.SetCurrentRepository("ctx:missing")
 	before := m.SelectedRepos()
 	beforeContextless := m.ContextlessSelected()
@@ -120,30 +119,30 @@ func TestRepoPickerCurrentOnlyCancelAndApply(t *testing.T) {
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha-123", "ctx:beta-456", "ctx:gamma-789")
 	m.currentRepositoryID = "ctx:beta-456"
-	if err := m.SetHubScope(hub.NewAllItemsHubScope()); err != nil {
+	if err := m.SetRepositorySelection(repositorypkg.NewAllSelection()); err != nil {
 		t.Fatal(err)
 	}
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 	m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-	m.repoPicker.SetHubScope(hub.NewAllItemsHubScope())
+	m.repoPicker.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.showRepoPicker = true
 	m.focused = focusRepoPicker
 
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.HubScope().Mode != hub.HubScopeAllItems {
-		t.Fatalf("cancel applied current-only draft: %#v", m.HubScope())
+	if m.RepositorySelection().Mode() != repositorypkg.SelectionAll {
+		t.Fatalf("cancel applied current-only draft: %#v", m.RepositorySelection())
 	}
 
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 	m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
-	m.repoPicker.SetHubScope(hub.NewAllItemsHubScope())
+	m.repoPicker.SetRepositorySelection(repositorypkg.NewAllSelection())
 	m.showRepoPicker = true
 	m.focused = focusRepoPicker
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = m.handleRepoPickerKeys(tea.KeyMsg{Type: tea.KeyEnter})
-	scope := m.HubScope()
-	if scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 1 || scope.Contexts[0] != "ctx:beta-456" || scope.IncludeContextless {
+	scope := m.RepositorySelection()
+	if scope.Mode() != repositorypkg.SelectionSelected || len(scope.IDs()) != 1 || scope.IDs()[0] != "ctx:beta-456" || scope.IncludesUnassigned() {
 		t.Fatalf("apply current-only scope = %#v", scope)
 	}
 }
@@ -282,6 +281,7 @@ func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.ready = true
 	m.hubRepositoryMode = true
+	m.runtimeServices.LabelPredicate = testRepositoryLabelPredicate
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
@@ -343,7 +343,7 @@ func TestHubRepositoryPickerUsesCompleteCountForOpenOnlySnapshot(t *testing.T) {
 		Snapshot:              snapshot,
 		SnapshotVer:           1,
 		Catalog:               repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 0}},
-		ContextlessBeadCount:  contextlessIssueCount(completeIssues),
+		ContextlessBeadCount:  contextlessIssueCount(completeIssues, nil),
 		ContextlessCountReady: true,
 		CatalogGeneration:     1,
 		CatalogAvailable:      true,
@@ -504,7 +504,7 @@ func TestRepoPickerCatalogRefreshHonorsAllAndClearedDrafts(t *testing.T) {
 
 func TestRepoPickerContextlessChoiceTogglesIndependently(t *testing.T) {
 	m := NewRepoPickerModel(testRepositoryCatalog(), DefaultTheme(lipgloss.NewRenderer(nil)))
-	m.SetHubScope(hub.NewAllItemsHubScope())
+	m.SetRepositorySelection(repositorypkg.NewAllSelection())
 	if m.FilteredCount() != len(testRepositoryCatalog())+1 || !m.currentChoiceIsContextless() {
 		t.Fatalf("contextless choice missing: count=%d current=%q", m.FilteredCount(), m.currentRepositoryID())
 	}
@@ -553,26 +553,26 @@ func TestRepoPickerAllItemsAppliesAndReopensWithEveryCheckboxChecked(t *testing.
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha-123", "ctx:beta-456", "ctx:gamma-789")
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-	m.repoPicker.SetHubScope(hub.NewContextlessHubScope())
+	m.repoPicker.SetRepositorySelection(repositorypkg.NewUnassignedSelection())
 	m.repoPicker.SelectAll()
 	m = m.applyRepositoryPickerSelection()
-	if scope := m.HubScope(); scope.Mode != hub.HubScopeAllItems {
+	if scope := m.RepositorySelection(); scope.Mode() != repositorypkg.SelectionAll {
 		t.Fatalf("all-checkbox scope = %#v", scope)
 	}
 
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-	m.repoPicker.SetHubScope(m.HubScope())
+	m.repoPicker.SetRepositorySelection(m.RepositorySelection())
 	if !m.repoPicker.ContextlessSelected() || len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
 		t.Fatalf("reopened all scope: contextless=%v repos=%v", m.repoPicker.ContextlessSelected(), m.repoPicker.SelectedRepos())
 	}
 
 	m.repoPicker.ToggleSelected()
 	m = m.applyRepositoryPickerSelection()
-	if scope := m.HubScope(); scope.Mode != hub.HubScopeSelectedContexts || scope.IncludeContextless || len(scope.Contexts) != len(m.repositoryCatalog) {
+	if scope := m.RepositorySelection(); scope.Mode() != repositorypkg.SelectionSelected || scope.IncludesUnassigned() || len(scope.IDs()) != len(m.repositoryCatalog) {
 		t.Fatalf("repositories-only scope applied as all items: %#v", scope)
 	}
 	m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
-	m.repoPicker.SetHubScope(m.HubScope())
+	m.repoPicker.SetRepositorySelection(m.RepositorySelection())
 	if m.repoPicker.ContextlessSelected() || len(m.repoPicker.SelectedRepos()) != len(m.repositoryCatalog) {
 		t.Fatalf("reopened repositories-only scope: contextless=%v repos=%v", m.repoPicker.ContextlessSelected(), m.repoPicker.SelectedRepos())
 	}
@@ -850,17 +850,17 @@ func TestRepositoryPickerApplyFromBoardRestoresBoardLifecycle(t *testing.T) {
 				m.width, m.height = 120, 30
 				m.hubRepositoryMode = true
 				m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta", "ctx:gamma")
-				var scope hub.HubScope
+				var scope repositorypkg.Selection
 				var err error
 				if tt.change == "addition" {
-					scope, err = hub.NewSelectedContextsHubScope([]string{"ctx:alpha"})
+					scope, err = repositorypkg.NewSelectedSelection([]string{"ctx:alpha"})
 				} else {
-					scope = hub.NewAllItemsHubScope()
+					scope = repositorypkg.NewAllSelection()
 				}
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := m.SetHubScope(scope); err != nil {
+				if err := m.SetRepositorySelection(scope); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -912,18 +912,18 @@ func TestRepositoryPickerApplyFromBoardRestoresBoardLifecycle(t *testing.T) {
 					}
 				}
 			} else {
-				scope := m.HubScope()
+				scope := m.RepositorySelection()
 				switch tt.change {
 				case "unchanged":
-					if scope.Mode != hub.HubScopeAllItems {
+					if scope.Mode() != repositorypkg.SelectionAll {
 						t.Fatalf("unchanged Hub scope = %#v, want all", scope)
 					}
 				case "removal":
-					if scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 2 || !scope.IncludeContextless {
+					if scope.Mode() != repositorypkg.SelectionSelected || len(scope.IDs()) != 2 || !scope.IncludesUnassigned() {
 						t.Fatalf("Hub removal scope = %#v", scope)
 					}
 				case "addition":
-					if scope.Mode != hub.HubScopeSelectedContexts || len(scope.Contexts) != 2 || scope.IncludeContextless {
+					if scope.Mode() != repositorypkg.SelectionSelected || len(scope.IDs()) != 2 || scope.IncludesUnassigned() {
 						t.Fatalf("Hub addition scope = %#v", scope)
 					}
 				}

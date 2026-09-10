@@ -21,7 +21,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
@@ -296,9 +295,9 @@ func TestBackgroundWorkerMetadataChangePathIsObserved(t *testing.T) {
 func TestModelRepositoryCatalogMessagesReconcileSelectionAndIgnoreStale(t *testing.T) {
 	m := &Model{
 		repositoryScopeController: repositoryScopeController{
-			activeRepos:       map[string]bool{"ctx:a": true, "ctx:removed": true},
-			catalogGeneration: 1,
-			hubScope:          hub.NewAllItemsHubScope(),
+			activeRepos:         map[string]bool{"ctx:a": true, "ctx:removed": true},
+			catalogGeneration:   1,
+			repositorySelection: repositorypkg.NewAllSelection(),
 		},
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
@@ -854,7 +853,7 @@ func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", filepath.Join(directory, "viewer-generation"))
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.backgroundWorker.catalogPath != configPath {
 		t.Fatal("manual catalog refresh was not configured")
 	}
@@ -874,15 +873,20 @@ func TestModelRuntimeServicesInstallCatalogLoaderOnExistingWorker(t *testing.T) 
 	loader := func(string, []model.Issue) (repositorypkg.Catalog, error) {
 		return repositorypkg.Catalog{{ID: "ctx:injected"}}, nil
 	}
+	predicate := testRepositoryLabelPredicate
 	m.SetRuntimeServices(RuntimeServices{
 		CatalogPath:            "catalog",
 		CatalogLoader:          loader,
+		LabelPredicate:         predicate,
 		RefreshResolved:        true,
 		HubAutoRefresh:         false,
 		RepositoryPresentation: true,
 	})
 	if worker.catalogLoader == nil {
 		t.Fatal("existing worker lost the injected catalog loader")
+	}
+	if worker.labelPredicate == nil || worker.labelPredicate("ctx:injected") {
+		t.Fatal("existing worker lost the injected label predicate")
 	}
 	catalog, err := worker.catalogLoader("ignored", nil)
 	if err != nil || len(catalog) != 1 || catalog[0].ID != "ctx:injected" {
@@ -906,7 +910,7 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	if m.backgroundWorker != nil || m.watcher == nil {
 		t.Fatal("direct mode did not start with the ordinary file watcher")
 	}
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigWatcher == nil || m.watcher == nil {
 		t.Fatal("Hub provider did not retain the file watcher during worker transition")
 	}
@@ -944,7 +948,7 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if m.backgroundWorker == nil || m.watcher == nil || !m.watcher.IsStarted() {
 		t.Fatal("Hub transition did not retain a live fallback watcher")
 	}
@@ -969,7 +973,7 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRepositoryCatalogIssues(nil)
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:empty" || m.repositoryCatalog[0].BeadCount != 0 {
 		t.Fatalf("empty Hub catalog = %#v", m.repositoryCatalog)
 	}
@@ -989,7 +993,7 @@ func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
 	}
 	m := NewModel(filtered, nil, "")
 	m.SetRepositoryCatalogIssues(all)
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
 	if got := catalogEntry(m.repositoryCatalog, "ctx:a").BeadCount; got != 2 {
 		t.Fatalf("unfiltered startup count = %d, want 2", got)
 	}
@@ -1002,7 +1006,7 @@ func TestModelWorkspaceCatalogIgnoresHubCatalogMessages(t *testing.T) {
 			repositoryCatalog: repositorypkg.Catalog{
 				{ID: "api", Name: "api", Kind: repositorypkg.IdentityPrefix},
 			},
-			hubScope: hub.NewAllItemsHubScope(),
+			repositorySelection: repositorypkg.NewAllSelection(),
 		},
 	}
 	updated, _ := m.Update(RepositoryCatalogReadyMsg{
@@ -1048,7 +1052,7 @@ func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) 
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:       issuesPath,
 		CatalogPath:     configPath,
-		CatalogLoader:   hub.LoadRepositoryCatalog,
+		CatalogLoader:   testRepositoryCatalogLoader,
 		SourceRetryBase: time.Hour,
 	})
 	if err != nil {
@@ -1113,7 +1117,7 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 	}
 	repositories := map[string]string{"ctx:a": "/a"}
 	writeWorkerHubConfig(t, configPath, repositories)
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, SourceRetryBase: time.Hour})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, SourceRetryBase: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1158,7 +1162,7 @@ func TestBackgroundWorkerPairsSnapshotAndCatalogInOneMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, MessageBuffer: 1})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, MessageBuffer: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1186,7 +1190,7 @@ func TestBackgroundWorkerCatalogGenerationSuppressesStaleResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1264,6 +1268,39 @@ func TestBackgroundWorkerCatalogCountsCompleteSetForOpenOnlySnapshot(t *testing.
 	}
 }
 
+func TestBackgroundWorkerContextlessCountUsesInjectedLabelPredicate(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "empty"},
+		{ID: "ordinary", Labels: []string{"kind:bug"}},
+		{ID: "unknown-context", Labels: []string{"ctx:unknown"}},
+		{ID: "registered", Labels: []string{"ctx:known"}},
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{
+		CatalogPath:    "catalog.yaml",
+		LabelPredicate: testRepositoryLabelPredicate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+
+	worker.catalogLoader = func(_ string, _ []model.Issue) (repositorypkg.Catalog, error) {
+		return repositorypkg.Catalog{{ID: "ctx:known", Kind: repositorypkg.IdentityExact}}, nil
+	}
+	_, count, ready, err := worker.buildRepositoryCatalog(&DataSnapshot{Issues: issues})
+	if err != nil || !ready || count != 2 {
+		t.Fatalf("successful catalog count = %d, ready=%v, err=%v; want 2, true, nil", count, ready, err)
+	}
+
+	worker.catalogLoader = func(_ string, _ []model.Issue) (repositorypkg.Catalog, error) {
+		return nil, errors.New("catalog unavailable")
+	}
+	_, count, ready, err = worker.buildRepositoryCatalog(&DataSnapshot{Issues: issues})
+	if err == nil || !ready || count != 2 {
+		t.Fatalf("failed catalog count = %d, ready=%v, err=%v; want 2, true, error", count, ready, err)
+	}
+}
+
 func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
 	directory := t.TempDir()
 	issuesPath := filepath.Join(directory, "issues.jsonl")
@@ -1272,7 +1309,7 @@ func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, DebounceDelay: 5 * time.Millisecond})
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, DebounceDelay: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

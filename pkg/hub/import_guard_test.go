@@ -18,19 +18,8 @@ const hubImportPath = "github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 // Each entry is intentionally file-specific so the owning migration phase can
 // remove it without weakening the final package boundary.
 var temporaryHubImportExceptions = map[string]string{
-	"pkg/correlation/hub_config.go":         "correlation configuration seam",
-	"pkg/search/index_sync.go":              "semantic-index synchronization seam",
-	"pkg/ui/background_worker_test.go":      "UI worker test seam",
-	"pkg/ui/git_remote_url_test.go":         "UI remote decoration test seam",
-	"pkg/ui/logic_test.go":                  "UI behavior test seam",
-	"pkg/ui/model.go":                       "UI model seam",
-	"pkg/ui/repo_picker.go":                 "UI repository picker seam",
-	"pkg/ui/repo_picker_row_test.go":        "UI repository picker row test seam",
-	"pkg/ui/repo_picker_test.go":            "UI repository picker test seam",
-	"pkg/ui/repository_list_layout_test.go": "UI repository list layout test seam",
-	"pkg/ui/repository_scope.go":            "UI repository scope seam",
-	"pkg/ui/repository_scope_test.go":       "UI repository scope test seam",
-	"pkg/ui/scope_backlog_test.go":          "UI scope backlog test seam",
+	"pkg/correlation/hub_config.go": "correlation configuration seam",
+	"pkg/search/index_sync.go":      "semantic-index synchronization seam",
 }
 
 var hubImportAllowedRoots = []string{

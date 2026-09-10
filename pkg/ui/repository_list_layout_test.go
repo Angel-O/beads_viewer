@@ -13,7 +13,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
@@ -799,11 +798,11 @@ func TestListMetadataColumnsStayStableAcrossNavigationFiltersAndScopes(t *testin
 		t.Fatalf("filter moved List columns: got title=%d age=%d cmt=%d, want title=%d age=%d cmt=%d", title, age, comments, wantTitle, wantAge, wantComments)
 	}
 
-	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:short"})
+	scope, err := repositorypkg.NewSelectedSelection([]string{"ctx:short"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetHubScope(scope); err != nil {
+	if err := m.SetRepositorySelection(scope); err != nil {
 		t.Fatal(err)
 	}
 	if title, age, comments := contract(); title != wantTitle || age != wantAge || comments != wantComments {
@@ -942,11 +941,11 @@ func TestListLayoutUsesCanonicalIssuesWhenFiltersRemoveWidestMetadata(t *testing
 
 	m.activeRecipe = nil
 	m.currentFilter = "all"
-	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:narrow"})
+	scope, err := repositorypkg.NewSelectedSelection([]string{"ctx:narrow"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetHubScope(scope); err != nil {
+	if err := m.SetRepositorySelection(scope); err != nil {
 		t.Fatal(err)
 	}
 	if got := contract(); !reflect.DeepEqual(got, want) {
@@ -980,11 +979,11 @@ func TestHubListExtraWidthUsesCanonicalIssuesAfterLargestIssueLeavesScope(t *tes
 		t.Fatalf("initial canonical +N width = %d, want %d", wantExtra, lipgloss.Width("+12"))
 	}
 
-	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:narrow"})
+	scope, err := repositorypkg.NewSelectedSelection([]string{"ctx:narrow"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetHubScope(scope); err != nil {
+	if err := m.SetRepositorySelection(scope); err != nil {
 		t.Fatal(err)
 	}
 	_, gotExtra := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
@@ -1103,11 +1102,11 @@ func TestHubListRepositoryWidthUsesStableCatalogPolicy(t *testing.T) {
 	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = catalog
 	m.list.SetSize(120, 10)
-	scope, err := hub.NewSelectedContextsHubScope([]string{"ctx:s"})
+	scope, err := repositorypkg.NewSelectedSelection([]string{"ctx:s"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetHubScope(scope); err != nil {
+	if err := m.SetRepositorySelection(scope); err != nil {
 		t.Fatal(err)
 	}
 	nameWidth, _ := m.repositoryListColumnWidths(IssueDelegate{Theme: m.theme})
@@ -1122,7 +1121,7 @@ func TestHubListRepositoryWidthUsesStableCatalogPolicy(t *testing.T) {
 	contextless.runtimeServices.CatalogPath = "hub.yaml"
 	contextless.repositoryCatalog = catalog
 	contextless.list.SetSize(120, 10)
-	if err := contextless.SetHubScope(hub.NewContextlessHubScope()); err != nil {
+	if err := contextless.SetRepositorySelection(repositorypkg.NewUnassignedSelection()); err != nil {
 		t.Fatal(err)
 	}
 	nameWidth, _ = contextless.repositoryListColumnWidths(IssueDelegate{Theme: contextless.theme})
@@ -1150,11 +1149,11 @@ func TestHubListExtraWidthUsesRenderedInactiveContexts(t *testing.T) {
 	m.runtimeServices.CatalogPath = "hub.yaml"
 	m.repositoryCatalog = catalog
 	m.list.SetSize(120, 10)
-	scope, err := hub.NewSelectedContextsHubScope([]string{activeID})
+	scope, err := repositorypkg.NewSelectedSelection([]string{activeID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SetHubScope(scope); err != nil {
+	if err := m.SetRepositorySelection(scope); err != nil {
 		t.Fatal(err)
 	}
 

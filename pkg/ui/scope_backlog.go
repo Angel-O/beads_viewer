@@ -391,47 +391,47 @@ func isBacklogReloadNotice(status string) bool {
 // BacklogModel renders the global, unscoped backlog independently of the
 // ordinary graph snapshot. It deliberately owns only one page and cursors.
 type BacklogModel struct {
-	issues             []model.Issue
-	items              []IssueItem
-	filtered           []model.Issue
-	filteredItems      []IssueItem
-	selected           int
-	selectedIssueID    string
-	viewportStart      int
-	filter             string
-	label              string
-	status             string
-	searching          bool
-	labelEditing       bool
-	labelInput         textinput.Model
-	hasMore            bool
-	nextCursor         string
-	pageIndex          int
-	pageCursors        []string
-	pageHistoryKey     string
-	loading            bool
-	error              string
-	previewOffset      int
-	contexts           []string
-	contextNames       []string
-	includeContextless bool
-	width              int
-	height             int
-	theme              Theme
-	delegate           IssueDelegate
-	marked             map[string]bool
-	title              string
-	excludedIDs        map[string]struct{}
+	issues              []model.Issue
+	items               []IssueItem
+	filtered            []model.Issue
+	filteredItems       []IssueItem
+	selected            int
+	selectedIssueID     string
+	viewportStart       int
+	filter              string
+	label               string
+	status              string
+	searching           bool
+	labelEditing        bool
+	labelInput          textinput.Model
+	hasMore             bool
+	nextCursor          string
+	pageIndex           int
+	pageCursors         []string
+	pageHistoryKey      string
+	loading             bool
+	error               string
+	previewOffset       int
+	repositorySelection repositorypkg.Selection
+	contextNames        []string
+	width               int
+	height              int
+	theme               Theme
+	delegate            IssueDelegate
+	marked              map[string]bool
+	title               string
+	excludedIDs         map[string]struct{}
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
 	b := BacklogModel{
-		theme:       theme,
-		status:      backlogStatusAll,
-		pageCursors: []string{""},
-		delegate:    IssueDelegate{Theme: theme, useFullWidth: true},
-		labelInput:  newBacklogLabelInput(theme),
-		title:       "Global issues",
+		theme:               theme,
+		repositorySelection: repositorypkg.NewAllSelection(),
+		status:              backlogStatusAll,
+		pageCursors:         []string{""},
+		delegate:            IssueDelegate{Theme: theme, useFullWidth: true},
+		labelInput:          newBacklogLabelInput(theme),
+		title:               "Global issues",
 	}
 	b.pageHistoryKey = b.filterTupleKey()
 	return b
@@ -603,36 +603,43 @@ func (b *BacklogModel) resetCursor() {
 	b.selected, b.previewOffset, b.selectedIssueID, b.viewportStart = 0, 0, "", 0
 }
 
-// SetContextFilter records the backlog-owned Hub context projection. It does
-// not touch the generic Model scope or its active issue list.
+// SetContextFilter records the backlog repository projection. It does not
+// touch the generic Model scope or its active issue list.
 func (b *BacklogModel) SetContextFilter(contexts []string, includeContextless bool, names []string) {
-	changed := includeContextless != b.includeContextless || len(contexts) != len(b.contexts)
-	if !changed {
-		for i := range contexts {
-			if contexts[i] != b.contexts[i] {
-				changed = true
-				break
-			}
+	selection := repositorypkg.NewAllSelection()
+	if len(contexts) > 0 {
+		var err error
+		if includeContextless {
+			selection, err = repositorypkg.NewSelectedAndUnassignedSelection(contexts)
+		} else {
+			selection, err = repositorypkg.NewSelectedSelection(contexts)
 		}
+		if err != nil {
+			return
+		}
+	} else if includeContextless {
+		selection = repositorypkg.NewUnassignedSelection()
 	}
-	b.contexts = append([]string(nil), contexts...)
+	changed := !sameRepositorySelection(b.repositorySelection, selection)
+	b.repositorySelection = selection
 	b.contextNames = append([]string(nil), names...)
-	b.includeContextless = includeContextless
 	if changed {
 		b.InvalidatePage()
 	}
 }
 
-func (b BacklogModel) Contexts() []string { return append([]string(nil), b.contexts...) }
+func (b BacklogModel) Contexts() []string { return b.repositorySelection.IDs() }
 
-func (b BacklogModel) IncludeContextless() bool { return b.includeContextless }
+func (b BacklogModel) IncludeContextless() bool {
+	return b.repositorySelection.IncludesUnassigned() || b.repositorySelection.Mode() == repositorypkg.SelectionUnassigned
+}
 
 func (b BacklogModel) contextFilterLabel() string {
 	labels := append([]string(nil), b.contextNames...)
-	if len(labels) != len(b.contexts) {
-		labels = append([]string(nil), b.contexts...)
+	if len(labels) != len(b.Contexts()) {
+		labels = b.Contexts()
 	}
-	if b.includeContextless {
+	if b.IncludeContextless() {
 		labels = append(labels, contextlessRepositoryID)
 	}
 	if len(labels) == 0 {
@@ -756,7 +763,7 @@ func (b *BacklogModel) CycleStatus() {
 
 func isBacklogOrdinaryLabel(value string) bool {
 	label := strings.TrimSpace(value)
-	return label != "" && !strings.Contains(label, ",") && !strings.HasPrefix(label, "ctx:")
+	return label != "" && !strings.Contains(label, ",")
 }
 
 func (b *BacklogModel) NextPageCursor() string {
@@ -947,7 +954,7 @@ func (b BacklogModel) filterTupleKey() string {
 	if status == backlogStatusAll {
 		status = ""
 	}
-	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%t", b.filter, b.label, status, strings.Join(b.contexts, "\x00"), b.includeContextless)
+	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%t", b.filter, b.label, status, strings.Join(b.Contexts(), "\x00"), b.IncludeContextless())
 }
 
 func (b *BacklogModel) ensurePageHistory() {
@@ -2575,13 +2582,7 @@ func scopeMemberLabels(item IssueItem) []string {
 	if item.HubPresentation {
 		labels = item.PresentationLabels
 	}
-	filtered := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if !isHubContextLabel(label) {
-			filtered = append(filtered, label)
-		}
-	}
-	return filtered
+	return labels
 }
 
 func scopeMemberRepository(item IssueItem) string {
@@ -3900,7 +3901,7 @@ func parseScopeMatch(value string) (string, string, error) {
 	}
 	switch strings.ToLower(strings.TrimSpace(prefix)) {
 	case "label":
-		if strings.HasPrefix(target, "ctx:") || strings.Contains(target, ",") {
+		if strings.Contains(target, ",") {
 			return "", "", fmt.Errorf("enter one ordinary label")
 		}
 		return "", target, nil

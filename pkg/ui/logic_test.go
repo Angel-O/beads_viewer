@@ -11,7 +11,6 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
@@ -363,19 +362,19 @@ func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
 	tests := []struct {
 		name      string
 		issues    []model.Issue
-		scope     hub.HubScope
+		scope     repositorypkg.Selection
 		workspace bool
 		want      bool
 	}{
-		{name: "selected one with secondary effective context", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha"), want: true},
-		{name: "selected one without secondary effective context", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha"), want: false},
-		{name: "selected two with one unused", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedContextsScope(t, "ctx:alpha", "ctx:beta"), want: true},
-		{name: "selected plus contextless without secondary", issues: []model.Issue{{ID: "none"}}, scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: false},
-		{name: "selected plus contextless with secondary", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}, {ID: "none"}}, scope: mustSelectedContextsAndContextlessScope(t, "ctx:alpha"), want: true},
-		{name: "contextless only", issues: []model.Issue{{ID: "none"}}, scope: hub.NewContextlessHubScope(), want: false},
-		{name: "all items ignores unused catalog contexts", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: hub.NewAllItemsHubScope(), want: false},
-		{name: "all items with effective contexts", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: hub.NewAllItemsHubScope(), want: true},
-		{name: "workspace", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: hub.NewAllItemsHubScope(), workspace: true, want: false},
+		{name: "selected one with secondary effective context", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: mustSelectedRepositoriesScope(t, "ctx:alpha"), want: true},
+		{name: "selected one without secondary effective context", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedRepositoriesScope(t, "ctx:alpha"), want: false},
+		{name: "selected two with one unused", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: mustSelectedRepositoriesScope(t, "ctx:alpha", "ctx:beta"), want: true},
+		{name: "selected plus contextless without secondary", issues: []model.Issue{{ID: "none"}}, scope: mustSelectedAndUnassignedScope(t, "ctx:alpha"), want: false},
+		{name: "selected plus contextless with secondary", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}, {ID: "none"}}, scope: mustSelectedAndUnassignedScope(t, "ctx:alpha"), want: true},
+		{name: "unassigned only", issues: []model.Issue{{ID: "none"}}, scope: repositorypkg.NewUnassignedSelection(), want: false},
+		{name: "all items ignores unused catalog contexts", issues: []model.Issue{{ID: "alpha", Labels: []string{"ctx:alpha"}}}, scope: repositorypkg.NewAllSelection(), want: false},
+		{name: "all items with effective contexts", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: repositorypkg.NewAllSelection(), want: true},
+		{name: "workspace", issues: []model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, scope: repositorypkg.NewAllSelection(), workspace: true, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -384,7 +383,7 @@ func TestContextSortAvailabilityFollowsActiveHubScope(t *testing.T) {
 			m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
 			m.refreshRepositoryCandidates()
 			m.workspaceMode = tt.workspace
-			if err := m.SetHubScope(tt.scope); err != nil {
+			if err := m.SetRepositorySelection(tt.scope); err != nil {
 				t.Fatal(err)
 			}
 			if got := m.contextSortModesAvailable(); got != tt.want {
@@ -398,7 +397,7 @@ func TestContextSortCycleReachesModesFromEffectiveSelectedScope(t *testing.T) {
 	m := NewModel([]model.Issue{{ID: "both", Labels: []string{"ctx:alpha", "ctx:beta"}}}, nil, "")
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
-	if err := m.SetHubScope(mustSelectedContextsScope(t, "ctx:alpha")); err != nil {
+	if err := m.SetRepositorySelection(mustSelectedRepositoriesScope(t, "ctx:alpha")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -413,18 +412,18 @@ func TestContextSortCycleReachesModesFromEffectiveSelectedScope(t *testing.T) {
 	}
 }
 
-func mustSelectedContextsScope(t *testing.T, contexts ...string) hub.HubScope {
+func mustSelectedRepositoriesScope(t *testing.T, contexts ...string) repositorypkg.Selection {
 	t.Helper()
-	scope, err := hub.NewSelectedContextsHubScope(contexts)
+	scope, err := repositorypkg.NewSelectedSelection(contexts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return scope
 }
 
-func mustSelectedContextsAndContextlessScope(t *testing.T, contexts ...string) hub.HubScope {
+func mustSelectedAndUnassignedScope(t *testing.T, contexts ...string) repositorypkg.Selection {
 	t.Helper()
-	scope, err := hub.NewSelectedContextsAndContextlessHubScope(contexts)
+	scope, err := repositorypkg.NewSelectedAndUnassignedSelection(contexts)
 	if err != nil {
 		t.Fatal(err)
 	}

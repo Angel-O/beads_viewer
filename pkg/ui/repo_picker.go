@@ -9,7 +9,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
@@ -93,18 +92,18 @@ func (m *RepoPickerModel) SetActiveRepos(active map[string]bool) {
 	}
 }
 
-// SetHubScope enables the dedicated contextless choice and initializes the
-// picker from an explicit Hub selector.
-func (m *RepoPickerModel) SetHubScope(scope hub.HubScope) {
+// SetRepositorySelection enables the unassigned choice and initializes the
+// picker from an explicit neutral repository selection.
+func (m *RepoPickerModel) SetRepositorySelection(scope repositorypkg.Selection) {
 	m.showContextless = true
-	contextlessSelected := scope.Mode == hub.HubScopeAllItems || scope.Mode == hub.HubScopeContextless || scope.IncludeContextless
-	if scope.Mode == hub.HubScopeContextless {
+	contextlessSelected := scope.Mode() == repositorypkg.SelectionAll || scope.Mode() == repositorypkg.SelectionUnassigned || scope.IncludesUnassigned()
+	if scope.Mode() == repositorypkg.SelectionUnassigned {
 		m.selected = make(map[string]bool)
 		m.selectFuture = false
-	} else if scope.Mode == hub.HubScopeSelectedContexts {
-		selected := make(map[string]bool, len(scope.Contexts))
-		for _, contextID := range scope.Contexts {
-			selected[contextID] = true
+	} else if scope.Mode() == repositorypkg.SelectionSelected {
+		selected := make(map[string]bool, len(scope.IDs()))
+		for _, id := range scope.IDs() {
+			selected[id] = true
 		}
 		m.SetActiveRepos(selected)
 	} else {
@@ -254,6 +253,28 @@ func (m RepoPickerModel) SelectedRepos() map[string]bool {
 		}
 	}
 	return out
+}
+
+// RepositorySelection returns the current draft as a neutral selection.
+func (m RepoPickerModel) RepositorySelection() (repositorypkg.Selection, error) {
+	selected := m.SelectedRepos()
+	if len(selected) == 0 {
+		if m.contextlessSelected {
+			return repositorypkg.NewUnassignedSelection(), nil
+		}
+		return repositorypkg.NewAllSelection(), nil
+	}
+	if m.contextlessSelected && len(selected) == len(m.catalog) {
+		return repositorypkg.NewAllSelection(), nil
+	}
+	ids := make([]string, 0, len(selected))
+	for id := range selected {
+		ids = append(ids, id)
+	}
+	if m.contextlessSelected {
+		return repositorypkg.NewSelectedAndUnassignedSelection(ids)
+	}
+	return repositorypkg.NewSelectedSelection(ids)
 }
 
 func (m RepoPickerModel) ContextlessSelected() bool { return m.contextlessSelected }

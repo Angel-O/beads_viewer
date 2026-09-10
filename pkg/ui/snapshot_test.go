@@ -1447,7 +1447,7 @@ func TestSnapshotSwapPreservesHubSelectedContextlessProjection(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
-	if err := m.repositoryScopeController.setHubRepositoryScope(map[string]bool{"ctx:alpha": true}, true); err != nil {
+	if err := m.repositoryScopeController.setPickerRepositorySelection(map[string]bool{"ctx:alpha": true}, true); err != nil {
 		t.Fatal(err)
 	}
 	m.currentFilter = "all"

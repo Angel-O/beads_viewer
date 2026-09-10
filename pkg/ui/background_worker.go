@@ -212,6 +212,7 @@ type BackgroundWorker struct {
 	catalogGeneration   uint64
 	catalog             repositorypkg.Catalog
 	catalogLoader       func(string, []model.Issue) (repositorypkg.Catalog, error)
+	labelPredicate      analysis.LabelPredicate
 	hubScopeMemberIDs   func(context.Context) ([]string, error)
 	skipInitialRefresh  bool
 	catalogFailed       bool
@@ -290,6 +291,7 @@ type WorkerConfig struct {
 	DebounceDelay       time.Duration
 	MessageBuffer       int // Buffer size for worker -> UI messages (default: 8)
 	CatalogLoader       RepositoryMetadataProvider
+	LabelPredicate      analysis.LabelPredicate
 	IssueSource         ChangeSource   // issue content changes rebuild snapshots
 	MetadataSources     []ChangeSource // metadata changes invalidate external-only views
 	SourceChangeSource  ChangeSource   // source/export changes use source-refresh semantics
@@ -409,6 +411,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		metricsEnabled:      metricsEnabled,
 		tracePath:           tracePath,
 		catalogLoader:       cfg.CatalogLoader,
+		labelPredicate:      cfg.LabelPredicate,
 		hubScopeMemberIDs:   cfg.HubScopeMemberIDs,
 		skipInitialRefresh:  cfg.SkipInitialRefresh,
 		generation:          1, // Generation zero is reserved for non-worker messages.
@@ -1673,6 +1676,7 @@ func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repos
 	w.mu.RLock()
 	path := w.catalogPath
 	catalogLoader := w.catalogLoader
+	labelPredicate := w.labelPredicate
 	current := w.snapshot
 	w.mu.RUnlock()
 	if path == "" || catalogLoader == nil {
@@ -1692,11 +1696,11 @@ func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repos
 		issues = loaded.Issues
 		defer loader.ReturnIssuePtrsToPool(loaded.PoolRefs)
 	}
-	contextlessBeadCount := contextlessIssueCount(issues)
 	catalog, err := catalogLoader(path, issues)
 	if err != nil {
-		return nil, contextlessBeadCount, true, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
+		return nil, contextlessIssueCount(issues, nil, labelPredicate), true, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
 	}
+	contextlessBeadCount := contextlessIssueCount(issues, catalog, labelPredicate)
 	return catalog, contextlessBeadCount, true, nil
 }
 
