@@ -43,9 +43,9 @@ BV computes these metrics to surface hidden project dynamics:
 | **Critical Path** | Longest dependent chain in task counts | Prerequisites supporting long chains; not delivery-time estimates |
 | **Eigenvector** | Influence via neighbors | Strategic dependencies |
 | **Degree** | Direct connection counts | Immediate blockers/blocked |
-| **Density** | Edge-to-node ratio | Project coupling health |
+| **Density** | Directed edges / possible edges: `E / (N × (N−1))` for `N > 1` | Project coupling health |
 | **Cycles** | Circular dependencies | Structural errors (must fix!) |
-| **Topo Sort** | Valid execution order | Work queue foundation |
+| **Topo Sort** | Prerequisites-first order for acyclic graphs | Structural order; readiness still requires lifecycle and dependency checks |
 
 ## Two-Phase Analysis
 

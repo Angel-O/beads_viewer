@@ -386,9 +386,9 @@ graph TD
 | 4 | **Critical Path** | Longest dependent chain in task counts | Prerequisites supporting long chains |
 | 5 | **Eigenvector** | Influence via neighbors | Strategic dependencies |
 | 6 | **Degree** | Direct connection counts | Immediate blockers/blocked |
-| 7 | **Density** | Edge-to-node ratio | Project coupling health |
+| 7 | **Density** | Directed edges / possible edges: `E / (N × (N−1))` for `N > 1` | Project coupling health |
 | 8 | **Cycles** | Circular dependencies | Structural errors |
-| 9 | **Topo Sort** | Valid execution order | Work queue foundation |
+| 9 | **Topo Sort** | Prerequisites-first order for acyclic graphs | Structural order; readiness still requires lifecycle and dependency checks |
 
 ### 1. PageRank (Dependency Authority)
 **The Math:** Originally designed to rank web pages by "importance" based on incoming links, PageRank models a "random surfer" walking the graph. In our dependency graph (u → v implies u depends on v), we treat dependencies as "votes" of importance.
@@ -478,7 +478,7 @@ Where $|E|$ is the edge count and $|V|$ is the node count. For a directed graph,
 ### 9. Topological Sort (Execution Order)
 **The Math:** A topological ordering of a DAG is a linear sequence of all vertices such that for every edge u → v, vertex u appears before v in the sequence. Only acyclic graphs have valid topological orderings.
 
-**The Intuition:** Edge direction matters. In bv's stored graph, A → B means A depends on B. A topological ordering of those edges puts A before B; prerequisite-first work order reverses it. The cross-label Flow Matrix presents the opposite direction, from blocker to dependent.
+**The Intuition:** Edge direction matters. In bv's stored graph, A → B means A depends on B. A raw topological ordering of those edges puts A before B; bv reverses that ordering so its published order puts prerequisites first. The cross-label Flow Matrix presents the opposite edge direction, from blocker to dependent.
 
 **Pragmatic Meaning:** **Work Queue.** `--robot-plan` checks dependency eligibility and groups actionable work into tracks. Raw topological order alone does not establish readiness: lifecycle status, unresolved blockers and deferral also matter.
 
@@ -532,7 +532,7 @@ Using `beads` directly gives an agent *data*. Using `bv --robot-insights` gives 
 | Capability | Raw Beads (JSONL) | `bv` Robot Mode |
 | :--- | :--- | :--- |
 | **Query** | "List all issues." | "List the top 5 bottlenecks blocking the release." |
-| **Context Cost** | High (Linear with issue count). | Low (Fixed summary struct). |
+| **Context Cost** | Full issue records grow with issue count. | Compact summaries and capped metric maps; source diagnostics and graph output can still grow with the project. |
 | **Graph Logic** | Agent must infer/compute. | Pre-computed (PageRank/Brandes). |
 | **Safety** | Agent might miss a cycle. | Cycles explicitly flagged. |
 
@@ -548,7 +548,7 @@ Agents typically use `bv` in three phases:
     When asked to "refactor the login module," the agent checks the **PageRank** and **Impact Scores** of the relevant beads. If the scores are high, the agent knows this is a high-risk change with many downstream dependents, prompting it to run more comprehensive tests.
 
 3.  **Execution Planning:**
-    Instead of guessing the order of operations, the agent uses `bv`'s topological sort to generate a strictly linearized plan.
+    The agent uses `--robot-plan` to select currently actionable work and group it into dependency-connected tracks. Items are ordered by priority, then ID within each track; the plan does not assign agents or establish freedom from file conflicts.
 
 **JSON Output Excerpt (`--robot-insights`):**
 Field names are case-sensitive. This excerpt uses illustrative values and omits the source envelope and other metrics; `bv --robot-schema` describes the complete contract.
@@ -2476,7 +2476,8 @@ bv --robot-correlation-stats
 
 Stored feedback applies to the identified commit/issue pair: confirmation pins confidence to 1.0, rejection removes that pair from the report and derived index, and ignore leaves it unchanged. These decisions do not train patterns for unrelated pairs or establish calibrated accuracy.
 
-**Impact Network Output Schema:**
+**Impact Network Output Excerpt:**
+Selected fields from `--robot-impact-network all`; clusters and edges belong to `.network`, while `.top_clusters` is a separate shortlist.
 ```json
 {
   "generated_at": "2025-01-15T14:32:00Z",
@@ -2489,19 +2490,21 @@ Stored feedback applies to the identified commit/issue pair: confirmation pins c
     "density": 0.086,
     "isolated_nodes": 3
   },
-  "clusters": [
-    {
-      "cluster_id": 1,
-      "bead_ids": ["BV-123", "BV-456", "BV-321"],
-      "label": "Auth Module",
-      "internal_connectivity": 0.85,
-      "central_bead": "BV-123",
-      "shared_files": ["pkg/auth/session.go", "pkg/auth/token.go"]
-    }
-  ],
-  "edges": [
-    {"from_bead": "BV-123", "to_bead": "BV-456", "edge_type": "shared_commit", "weight": 5}
-  ]
+  "network": {
+    "clusters": [
+      {
+        "cluster_id": 1,
+        "bead_ids": ["BV-123", "BV-456", "BV-321"],
+        "label": "Auth Module",
+        "internal_connectivity": 0.85,
+        "central_bead": "BV-123",
+        "shared_files": ["pkg/auth/session.go", "pkg/auth/token.go"]
+      }
+    ],
+    "edges": [
+      {"from_bead": "BV-123", "to_bead": "BV-456", "edge_type": "shared_commit", "weight": 5}
+    ]
+  }
 }
 ```
 
@@ -2537,10 +2540,10 @@ graph LR
 | Status | Indicator | Meaning |
 |--------|-----------|---------|
 | **Healthy** | `🤖 cass` in the footer | cass is installed, indexed, and ready |
-| **Needs Index** | `⚠ cass index` in the footer | cass installed but needs `cass index` |
+| **Needs Index** | `⚠ cass index` in the footer | Index health needs attention; a bounded search may still return sessions |
 | **Not Installed** | (none) | cass not in PATH; `V` says so when pressed |
 
-The check runs once when the TUI starts (`cass health`, bounded to 2 seconds) and its result is reused when you press `V`, so a missing or unindexed cass costs one probe, not one per keypress.
+The startup check runs `cass health` with a 2-second timeout. Its result is cached for five minutes and reused by session lookups. An advisory index warning permits a bounded search attempt while the footer retains the warning; a successful search does not turn that health state into Healthy.
 
 ### Session Preview Modal (`V` Key)
 
@@ -2553,29 +2556,26 @@ Press `V` on any bead to open the **Session Preview Modal**—a view of AI codin
 │                                                                         │
 │  ▸ Session 1 (claude-opus-4)                         Dec 15, 2:30 PM   │
 │    "Implementing session refresh timeout handling..."                   │
-│    Confidence: 0.92 (explicit mention)                                  │
+│    Matched via: bead ID mentioned (BV-123)                              │
 │                                                                         │
 │    Session 2 (claude-opus-4)                         Dec 14, 10:15 AM  │
 │    "Refactoring token validation middleware..."                         │
-│    Confidence: 0.67 (file overlap)                                      │
+│    Matched via: bead ID mentioned (BV-123)                              │
 │                                                                         │
 │    Session 3 (claude-opus-4)                         Dec 13, 4:45 PM   │
 │    "Adding retry logic to auth service..."                              │
-│    Confidence: 0.45 (temporal)                                          │
+│    Matched via: bead ID mentioned (BV-123)                              │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  j/k: Navigate   y: Copy search command   Enter: View full session      │
+│  j/k: Navigate   y: Copy search command   V/Esc: Close                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Session Correlation Methods:**
 
-| Method | Weight | Meaning |
-|--------|--------|---------|
-| **Explicit** | 0.9-1.0 | Session mentions bead ID directly |
-| **File Overlap** | 0.5-0.8 | Session touched files associated with bead |
-| **Temporal** | 0.3-0.6 | Session occurred during bead's active lifecycle |
-| **Keyword** | 0.2-0.5 | Session contains keywords from bead title/description |
+The correlator tries a quoted bead-ID search first, then title keywords, then a broader time-window search. It returns up to three sessions from the first strategy with qualifying results. ID matches start at 100 points; keyword and timestamp matches use lower point scores, with recency and workspace adjustments. These are ranking heuristics, not calibrated confidence probabilities. There is no file-overlap strategy in this session correlator.
+
+The search adapter reads cass's `.hits`, requests preview and timestamp fields, and converts `created_at` milliseconds into session timestamps. The modal shows agent, time, match reason and preview text. `y` copies a search command for further inspection; Enter, `V`, Esc and `q` dismiss the modal.
 
 ### Status Bar Indicator
 
@@ -2801,7 +2801,7 @@ ui          4      2       -      0
 docs        0      0       0      -
 ```
 
-Read as: "api has 3 issues that depend on auth issues." High values indicate coupling between domains; the `bottleneck_labels` field highlights labels that block the most cross-domain work.
+Read as: "api issues block auth issues through 3 dependency relationships." Rows are blocker labels and columns are dependent labels. Counts are relationships, not distinct issues: one issue can contribute several dependencies, and multiple labels contribute their cross-product. High values indicate coupling between domains; `bottleneck_labels` lists labels with the highest outgoing relationship count. The current `critical_paths` array is empty; this matrix does not provide critical-path annotations.
 
 ---
 
@@ -3047,24 +3047,27 @@ bv --robot-alerts --alert-type=blocking_cascade
 bv --robot-alerts --alert-label=backend
 ```
 
-### Output Schema
+### Output Excerpt
+
+Selected fields from `--robot-alerts`; downstream issue IDs are in `details`.
 
 ```json
 {
   "alerts": [
     {
       "type": "blocking_cascade",
-      "severity": "critical",
+      "severity": "info",
       "issue_id": "bv-456",
-      "message": "Blocks 8 downstream tasks",
-      "blocked_ids": ["bv-101", "bv-102", "..."],
-      "suggested_action": "Prioritize completion or break into smaller tasks"
+      "message": "Completing bv-456 unblocks 3 downstream item(s)",
+      "details": ["bv-101", "bv-102", "bv-103"],
+      "unblocks_count": 3,
+      "suggested_action": "Prioritize this issue: closing it releases the listed downstream items"
     }
   ],
   "summary": {
-    "total": 3,
-    "critical": 1,
-    "warning": 1,
+    "total": 1,
+    "critical": 0,
+    "warning": 0,
     "info": 1
   }
 }
@@ -3599,7 +3602,7 @@ Each typed action contains `argv` and `working_directory`. Inspect `.actions.sho
       "suggested_priority": 1,
       "confidence": 0.87,
       "direction": "increase",
-      "reasoning": "High PageRank (0.15) + High Betweenness (0.45) indicates foundational blocker"
+      "reasoning": ["High PageRank (0.15) + High Betweenness (0.45) indicates foundational blocker"]
     }
   ],
   "summary": {
@@ -3951,7 +3954,7 @@ The analysis engine uses a **compact adjacency-list graph** (`compactDirectedGra
 ## ❓ Troubleshooting & FAQ
 
 **Q: My icons look weird / text is misaligned.**
-*   `bv` requires a terminal with **TrueColor** support and a **Nerd Font** installed.
+*   For best display, use a terminal with **TrueColor** support and a **Nerd Font**. The theme also supports 16/256-color terminals; glyph availability depends on your font.
 *   *Recommended:* [Nerd Fonts](https://www.nerdfonts.com/) (e.g., "JetBrains Mono Nerd Font" or "Hack Nerd Font").
 *   *Terminals:* Windows Terminal, iTerm2, Alacritty, Kitty, WezTerm.
 
@@ -3971,7 +3974,7 @@ No — it just means `bv` is using polling instead of filesystem events for live
 These indicators mean the background worker hasn’t produced a fresh snapshot recently (or needed to self-heal). Try `Ctrl+R`/`F5`, check filesystem permissions/health, or temporarily disable background mode (`BV_BACKGROUND_MODE=0`) to fall back to synchronous reload.
 
 **Q: I see "Cycles Detected" in the dashboard. What now?**
-A: A cycle (e.g., A → B → A) means your project logic is broken; no task can be finished first. Use the Insights Dashboard (`i`) to find the specific cycle members, then use `br` to remove one of the dependency links (e.g., `br unblock A --from B`).
+A: A cycle (e.g., A → B → A) means the dependency gates prevent the cycle's tasks from becoming ready. Use the Insights Dashboard (`i`) to inspect the cycle members, then correct an erroneous dependency link in the tracker. For example, `br dep remove A B` removes the edge saying A depends on B; it does not close either issue.
 
 **Q: Does this work with Jira/GitHub?**
 A: `bv` is data-agnostic. The Beads data schema supports an `external_ref` field. If you populate your Beads JSONL export with issues from external trackers (e.g., using a custom script or sync tool), `bv` will render them alongside your local tasks. Future versions of the `br` CLI may support native syncing, but `bv` is ready for that data today.
@@ -4397,7 +4400,8 @@ Copyright (c) 2026 Jeffrey Emanuel
   bv --robot-insights > insights.json
   bv --robot-plan | jq '.plan.summary'
   bv --robot-priority | jq '.recommendations[0]'
-  bv --check-drift --robot-drift --diff-since HEAD~5 > drift.json
+  bv --check-drift --robot-drift > drift.json  # Compare with a saved --save-baseline snapshot
+  bv --robot-diff --diff-since HEAD~5 > diff.json  # Compare issue state with a Git revision
   ```
 - Compare `data_hash`, `authority_hash`, `scope_hash`, effective analysis configuration, reference clock and metric status. Equal data hashes alone do not mean two responses came from the same run or scope.
 - Exit codes: drift check (0 ok, 1 critical, 2 warning).
