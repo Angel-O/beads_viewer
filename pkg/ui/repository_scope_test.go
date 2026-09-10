@@ -182,7 +182,7 @@ func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
 		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
 	}
 	m := NewModel(issues, nil, "")
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
 	if !m.SetDefaultRepositoryScope("ctx:alpha") {
 		t.Fatal("synchronous catalog did not apply the current repository")
 	}
@@ -202,11 +202,29 @@ func TestRuntimeServicesApplyResolvedDefaultRepository(t *testing.T) {
 	}, nil, "")
 	m.SetRuntimeServices(RuntimeServices{
 		CatalogPath:            configPath,
+		CatalogLoader:          hub.LoadRepositoryCatalog,
 		RepositoryPresentation: true,
 		DefaultRepositoryID:    "ctx:beta",
 	})
 	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:beta"] {
 		t.Fatalf("resolved default scope = %#v, want ctx:beta", scope)
+	}
+}
+
+func TestRuntimeServicesApplyInjectedCatalogWithoutLoader(t *testing.T) {
+	m := NewModel([]model.Issue{
+		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
+	}, nil, "")
+	m.SetRuntimeServices(RuntimeServices{
+		RepositoryCatalog:      repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact}},
+		RepositoryPresentation: true,
+		DefaultRepositoryID:    "ctx:alpha",
+	})
+	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].Path != "/alpha" {
+		t.Fatalf("injected catalog = %#v", m.repositoryCatalog)
+	}
+	if scope := m.RepositoryScope(); len(scope) != 1 || !scope["ctx:alpha"] {
+		t.Fatalf("injected default scope = %#v", scope)
 	}
 }
 
@@ -1068,7 +1086,7 @@ func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) 
 			m.applyFilter()
 			m.list.Select(1)
 
-			m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
+			m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
 			if m.sortMode != SortDefault {
 				t.Fatalf("sort mode after synchronous catalog reload = %v, want Default", m.sortMode)
 			}
@@ -1108,7 +1126,7 @@ func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
 		t.Fatalf("selected before synchronous catalog reload = %q, want two", selected)
 	}
 
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(configPath), CatalogPath: configPath, CatalogLoader: hub.LoadRepositoryCatalog, RepositoryPresentation: true, ExternalHistory: true})
 	if got := m.HubScope(); got.Mode != hub.HubScopeSelectedContexts || !slices.Equal(got.Contexts, []string{"ctx:one"}) {
 		t.Fatalf("scope after synchronous catalog reload = %#v", got)
 	}

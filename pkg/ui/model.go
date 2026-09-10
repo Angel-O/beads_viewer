@@ -2581,8 +2581,15 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 	if services.SemanticDatasetPath != "" {
 		m.semanticPath = services.SemanticDatasetPath
 	}
-	m.hubRepositoryMode = services.RepositoryPresentation
-	if services.CatalogPath == "" {
+	m.hubRepositoryMode = services.RepositoryPresentation || services.RepositoryCatalog != nil
+	if services.RepositoryCatalog != nil {
+		m.repositoryScopeController.setCatalog(services.RepositoryCatalog)
+	}
+	if services.CatalogPath == "" || services.CatalogLoader == nil {
+		m.refreshRepositoryPresentation()
+		if services.DefaultRepositoryID != "" {
+			m.SetDefaultRepositoryScope(services.DefaultRepositoryID)
+		}
 		return
 	}
 	if err := m.reloadRepositoryCatalog(); err != nil {
@@ -2619,6 +2626,10 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 		if err := m.backgroundWorker.SetCatalogPath(services.CatalogPath, autoRefresh); err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
 			m.statusIsError = true
+		} else {
+			m.backgroundWorker.mu.Lock()
+			m.backgroundWorker.catalogLoader = services.CatalogLoader
+			m.backgroundWorker.mu.Unlock()
 		}
 	}
 	if services.DefaultRepositoryID != "" {
@@ -2695,7 +2706,7 @@ func (m *Model) reloadRepositoryCatalog() error {
 	}
 	loader := m.runtimeServices.CatalogLoader
 	if loader == nil {
-		loader = defaultRepositoryMetadataProvider
+		return nil
 	}
 	catalog, err := loader(m.catalogPath(), issues)
 	if err != nil {
@@ -7180,20 +7191,19 @@ func (m Model) getCommitURL(repository, sha string) (string, error) {
 	}
 
 	repository = strings.TrimSpace(repository)
-	repositoryDir := strings.TrimSpace(m.workDir)
-	if repository != "" {
-		if strings.TrimSpace(m.catalogPath()) == "" {
-			return "", fmt.Errorf("repository %q has no Hub configuration", repository)
+	repositoryDir := ""
+	if repository == "" {
+		repositoryDir = strings.TrimSpace(m.workDir)
+	} else {
+		for _, entry := range m.repositoryCatalog {
+			if entry.ID == repository {
+				repositoryDir = strings.TrimSpace(entry.Path)
+				break
+			}
 		}
-		config, err := hub.Resolve(m.catalogPath())
-		if err != nil {
-			return "", fmt.Errorf("resolving Hub repository %q: %w", repository, err)
+		if repositoryDir == "" {
+			return "", fmt.Errorf("repository %q is not available in the repository catalog", repository)
 		}
-		registered, ok := config.Repositories[repository]
-		if !ok || strings.TrimSpace(registered.Path) == "" {
-			return "", fmt.Errorf("repository %q is not registered in the Hub", repository)
-		}
-		repositoryDir = registered.Path
 	}
 	if repositoryDir == "" {
 		return "", fmt.Errorf("commit repository is unavailable")

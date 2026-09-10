@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
@@ -45,6 +46,7 @@ type viewerComposition struct {
 	SelectedIssueSource    datasource.DataSource
 	HistoryProvider        *correlation.Provider
 	CatalogLoader          func(string, []model.Issue) (repository.Catalog, error)
+	LabelPredicate         analysis.LabelPredicate
 	SemanticDatasetPath    string
 	SemanticStorePath      string
 	IssueChangePath        string
@@ -162,6 +164,10 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	if mode != "off" {
 		defaultCurrentContext = currentHubRepositoryContext(workDir, usesHubStore)
 	}
+	var labelPredicate analysis.LabelPredicate
+	if usesHubStore {
+		labelPredicate = hub.AdmitLabel
+	}
 
 	return viewerComposition{
 		HubConfigPath:          configPath,
@@ -171,6 +177,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		SelectedIssueSource:    selectedSource,
 		HistoryProvider:        provider,
 		CatalogLoader:          hub.LoadRepositoryCatalog,
+		LabelPredicate:         labelPredicate,
 		SemanticDatasetPath:    semanticDataset,
 		SemanticStorePath:      semanticStore,
 		IssueChangePath:        selectedIssuePath,

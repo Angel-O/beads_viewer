@@ -59,6 +59,9 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 			if test.wantStore != got.RepositoryPresentation {
 				t.Fatalf("repository presentation = %v, want %v", got.RepositoryPresentation, test.wantStore)
 			}
+			if (got.LabelPredicate != nil) != test.wantStore {
+				t.Fatalf("label admission supplied = %v, want %v", got.LabelPredicate != nil, test.wantStore)
+			}
 			if test.name == "off" {
 				if got.SemanticStorePath == "" || got.HubConfigPath != config || len(got.MetadataChangePaths) != 1 {
 					t.Fatalf("off composition lost non-history services: %#v", got)

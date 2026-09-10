@@ -30,7 +30,6 @@ var temporaryHubImportExceptions = map[string]string{
 	"pkg/ui/repository_list_layout_test.go": "UI repository list layout test seam",
 	"pkg/ui/repository_scope.go":            "UI repository scope seam",
 	"pkg/ui/repository_scope_test.go":       "UI repository scope test seam",
-	"pkg/ui/runtime_services.go":            "UI runtime service seam",
 	"pkg/ui/scope_backlog_test.go":          "UI scope backlog test seam",
 }
 

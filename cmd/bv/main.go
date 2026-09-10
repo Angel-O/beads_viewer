@@ -4969,6 +4969,7 @@ func main() {
 			// Launch TUI with historical issues (already loaded, no live reload)
 			m := ui.NewModel(issues, activeRecipe, "", ui.RuntimeServices{
 				HistoryProvider:        composition.HistoryProvider,
+				LabelPredicate:         composition.LabelPredicate,
 				SelectedIssuePath:      composition.SelectedIssuePath,
 				IssueChangePath:        composition.IssueChangePath,
 				MetadataChangePaths:    composition.MetadataChangePaths,
@@ -4989,6 +4990,7 @@ func main() {
 			m.SetRepositoryCatalogIssues(issues)
 			m.SetRuntimeServices(ui.RuntimeServices{
 				HistoryProvider:        composition.HistoryProvider,
+				LabelPredicate:         composition.LabelPredicate,
 				SelectedIssuePath:      composition.SelectedIssuePath,
 				IssueChangePath:        composition.IssueChangePath,
 				MetadataChangePaths:    composition.MetadataChangePaths,
@@ -5113,6 +5115,7 @@ func main() {
 		// Initial Model with live reload support
 		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, ui.RuntimeServices{
 			HistoryProvider:        composition.HistoryProvider,
+			LabelPredicate:         composition.LabelPredicate,
 			SelectedIssuePath:      composition.SelectedIssuePath,
 			IssueChangePath:        composition.IssueChangePath,
 			MetadataChangePaths:    composition.MetadataChangePaths,
@@ -5133,6 +5136,7 @@ func main() {
 		m.SetRepositoryCatalogIssues(catalogIssues)
 		m.SetRuntimeServices(ui.RuntimeServices{
 			HistoryProvider:        composition.HistoryProvider,
+			LabelPredicate:         composition.LabelPredicate,
 			SelectedIssuePath:      composition.SelectedIssuePath,
 			IssueChangePath:        composition.IssueChangePath,
 			MetadataChangePaths:    composition.MetadataChangePaths,

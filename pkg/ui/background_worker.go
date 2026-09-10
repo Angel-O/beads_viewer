@@ -425,9 +425,6 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		idleGCGCPercent:   idleGCConfig.GCPercent,
 		idleGCFunc:        runtime.GC,
 	}
-	if w.catalogLoader == nil {
-		w.catalogLoader = defaultRepositoryMetadataProvider
-	}
 	w.lastActivityUnixNano.Store(time.Now().UnixNano())
 
 	// Initialize neutral change sources. Paths remain a convenience for the
@@ -1376,6 +1373,7 @@ func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotB
 	w.lastHeartbeat = now
 	gen := w.generation
 	catalogGeneration := w.catalogGeneration
+	catalogConfigured := w.catalogPath != "" && w.catalogLoader != nil
 	w.mu.Unlock()
 	w.logEvent(LogLevelDebug, "state_change", map[string]any{
 		"state": "processing",
@@ -1450,7 +1448,7 @@ func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotB
 	sourceRefreshUnchanged := refreshBDExport && snapshot == nil && w.lastError == nil
 	catalogChanged := false
 	catalogRecovered := false
-	if !catalogStale && w.catalogPath != "" {
+	if !catalogStale && catalogConfigured {
 		if catalogErr != nil {
 			w.catalogFailed = true
 		} else {
@@ -1538,7 +1536,7 @@ func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotB
 			ContextlessBeadCount:  contextlessBeadCount,
 			ContextlessCountReady: contextlessCountReady,
 			CatalogGeneration:     catalogGeneration,
-			CatalogAvailable:      !catalogStale && catalogErr == nil && w.catalogPath != "",
+			CatalogAvailable:      !catalogStale && catalogErr == nil && catalogConfigured,
 			CatalogChanged:        !catalogStale && catalogChanged,
 			CatalogRecovered:      !catalogStale && catalogRecovered,
 			CatalogError:          deliveredCatalogErr,
@@ -1564,7 +1562,7 @@ func (w *BackgroundWorker) processWithSnapshotBuilder(build func(bool) snapshotB
 				w.send(RepositoryCatalogReadyMsg{
 					Catalog:               catalog,
 					ContextlessBeadCount:  contextlessBeadCount,
-					ContextlessCountReady: w.catalogPath != "",
+					ContextlessCountReady: catalogConfigured,
 					Generation:            catalogGeneration,
 					Recovered:             catalogRecovered,
 				})
@@ -1674,9 +1672,10 @@ func (w *BackgroundWorker) scheduleSourceRetry() {
 func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repositorypkg.Catalog, int, bool, error) {
 	w.mu.RLock()
 	path := w.catalogPath
+	catalogLoader := w.catalogLoader
 	current := w.snapshot
 	w.mu.RUnlock()
-	if path == "" {
+	if path == "" || catalogLoader == nil {
 		return nil, 0, false, nil
 	}
 	var issues []model.Issue
@@ -1694,7 +1693,7 @@ func (w *BackgroundWorker) buildRepositoryCatalog(snapshot *DataSnapshot) (repos
 		defer loader.ReturnIssuePtrsToPool(loaded.PoolRefs)
 	}
 	contextlessBeadCount := contextlessIssueCount(issues)
-	catalog, err := w.catalogLoader(path, issues)
+	catalog, err := catalogLoader(path, issues)
 	if err != nil {
 		return nil, contextlessBeadCount, true, &WorkerError{Phase: "catalog", Cause: err, Time: time.Now()}
 	}

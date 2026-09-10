@@ -12,6 +12,7 @@ import (
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
+	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 func TestGitRemoteToWebURL(t *testing.T) {
@@ -75,7 +76,7 @@ func TestGetCommitURLUsesCorrelatedCommitRepository(t *testing.T) {
 		"ctx:github-111": githubRepository,
 		"ctx:gitlab-222": gitlabRepository,
 	})
-	m := Model{workDir: localRepository, runtimeServices: RuntimeServices{CatalogPath: configPath}}
+	m := Model{workDir: localRepository, repositoryScopeController: repositoryScopeController{repositoryCatalog: testHubCatalog(t, configPath)}}
 
 	tests := []struct {
 		name       string
@@ -97,6 +98,9 @@ func TestGetCommitURLUsesCorrelatedCommitRepository(t *testing.T) {
 				t.Fatalf("getCommitURL(%q) = %q, want %q", test.repository, got, test.want)
 			}
 		})
+	}
+	if _, err := m.getCommitURL("ctx:missing-333", "abc123"); err == nil || !strings.Contains(err.Error(), "repository catalog") {
+		t.Fatalf("missing catalog repository error = %v", err)
 	}
 }
 
@@ -146,7 +150,7 @@ func TestHistoryOpenCommitReportsMissingMetadata(t *testing.T) {
 	}{
 		{name: "commit", want: "No commit selected"},
 		{name: "repository", sha: "abc123", want: "commit repository is unavailable"},
-		{name: "Hub registration", repository: "ctx:missing-222", sha: "abc123", want: "is not registered in the Hub"},
+		{name: "catalog registration", repository: "ctx:missing-222", sha: "abc123", want: "is not available in the repository catalog"},
 		{name: "remote", repository: "ctx:no-remote-111", sha: "abc123", want: "reading origin remote"},
 	}
 
@@ -181,7 +185,8 @@ func historyOpenTestModel(repository, sha, configPath string) *Model {
 		}
 	}
 	m := NewModel(nil, nil, "")
-	m.runtimeServices.CatalogPath = configPath
+	m.repositoryCatalog = testHubCatalogMust(configPath)
+	m.hubRepositoryMode = true
 	m.historyView = NewHistoryModel(report, testTheme())
 	makeHistoryReportCurrent(m, report)
 	m.isHistoryView = true
@@ -228,4 +233,17 @@ func testHubConfig(t *testing.T, repositories map[string]string) string {
 		t.Fatal(err)
 	}
 	return configPath
+}
+
+func testHubCatalog(t *testing.T, configPath string) repositorypkg.Catalog {
+	t.Helper()
+	return testHubCatalogMust(configPath)
+}
+
+func testHubCatalogMust(configPath string) repositorypkg.Catalog {
+	catalog, err := hub.LoadRepositoryCatalog(configPath, nil)
+	if err != nil {
+		panic(err)
+	}
+	return catalog
 }

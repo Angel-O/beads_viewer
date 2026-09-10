@@ -282,6 +282,9 @@ type issueRepositoryPresentation struct {
 }
 
 func (m Model) labelPredicate() analysis.LabelPredicate {
+	if m.runtimeServices.LabelPredicate != nil {
+		return m.runtimeServices.LabelPredicate
+	}
 	if m.hubRepositoryPresentation() {
 		return hub.AdmitLabel
 	}
@@ -537,7 +540,7 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 }
 
 func (m *Model) hubRepositoryPresentation() bool {
-	return !m.workspaceMode && strings.TrimSpace(m.catalogPath()) != ""
+	return !m.workspaceMode && (m.hubRepositoryMode || strings.TrimSpace(m.catalogPath()) != "")
 }
 
 func (m *Model) decorateIssueItem(item *IssueItem) {
