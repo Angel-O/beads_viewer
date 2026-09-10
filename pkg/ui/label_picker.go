@@ -106,9 +106,13 @@ func (m *LabelPickerModel) SelectedLabel() string {
 // UpdateInput processes a key message for the text input and returns any
 // follow-up command (for example, an asynchronous clipboard paste).
 func (m *LabelPickerModel) UpdateInput(msg tea.Msg) tea.Cmd {
+	previousValue := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	m.filterLabels()
+	// Follow-up messages such as cursor blink must not reset a navigated selection.
+	if m.input.Value() != previousValue {
+		m.filterLabels()
+	}
 	return cmd
 }
 
