@@ -228,6 +228,179 @@ func (s *repositoryScopeController) setCatalogIssues(issues []model.Issue) {
 	s.contextlessCountReady = false
 }
 
+// SetRepositoryCatalogIssues provides the unfiltered issue universe used for
+// stable total counts when the initial TUI view is recipe-filtered.
+func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
+	m.repositoryScopeController.setCatalogIssues(issues)
+}
+
+func (m Model) contextlessBeadCount() int {
+	if m.contextlessCountReady {
+		return m.contextlessBeadCountValue
+	}
+	issues := m.repositoryCatalogIssues
+	if issues == nil {
+		issues = m.issues
+	}
+	return contextlessIssueCount(issues, m.repositoryCatalog, m.issueRepositoryResolver(), m.labelPredicate())
+}
+
+func (m *Model) reloadRepositoryCatalog() error {
+	if m.workspaceMode {
+		beforeScope := m.RepositorySelection()
+		beforeRepos := sortedRepoKeys(m.activeRepos)
+		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
+		m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
+		contextSortFallback := m.normalizeContextSortMode()
+		scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		if scopeChanged {
+			m.refreshRepositoryCandidates()
+		} else if contextSortFallback && m.list.Width() > 0 {
+			m.sortListItems(m.list.Items())
+			m.updateViewportContent()
+		}
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+		}
+		m.board.SetRepositoryPresentation(m.repositoryCatalog, false, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false, m.labelPredicate())
+		return nil
+	}
+	if strings.TrimSpace(m.catalogPath()) == "" {
+		return nil
+	}
+	issues := m.issues
+	if m.repositoryCatalogIssues != nil {
+		issues = m.repositoryCatalogIssues
+	}
+	loader := m.runtimeServices.CatalogLoader
+	if loader == nil {
+		return nil
+	}
+	catalog, err := loader(m.catalogPath(), issues)
+	if err != nil {
+		return err
+	}
+	beforeScope := m.RepositorySelection()
+	beforeRepos := sortedRepoKeys(m.activeRepos)
+	m.repositoryScopeController.setCatalog(catalog)
+	m.applyInitialRepositorySelection(m.runtimeServices.InitialRepositorySelection)
+	m.reconcileRepositorySelectionCatalog()
+	contextSortFallback := m.normalizeContextSortMode()
+	scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+	if scopeChanged {
+		m.refreshRepositoryCandidates()
+	} else if contextSortFallback && m.list.Width() > 0 {
+		m.sortListItems(m.list.Items())
+		m.updateViewportContent()
+	}
+	if m.showRepoPicker {
+		m.repoPicker.SetCatalog(m.repositoryCatalog)
+		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+	}
+	m.board.SetRepositoryPresentation(catalog, true, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+	m.insightsPanel.SetRepositoryPresentation(catalog, true, m.labelPredicate())
+	return nil
+}
+
+func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, generation uint64, changed, recovered bool, err error) {
+	if m.workspaceMode || !m.repositoryScopeController.acceptCatalogGeneration(generation) {
+		return
+	}
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", err)
+		m.statusIsError = true
+		return
+	}
+	if changed {
+		beforeScope := m.RepositorySelection()
+		beforeRepos := sortedRepoKeys(m.activeRepos)
+		m.repositoryScopeController.setCatalog(catalog)
+		m.applyInitialRepositorySelection(m.runtimeServices.InitialRepositorySelection)
+		if m.usesHubScope() {
+			m.reconcileRepositorySelectionCatalog()
+		} else {
+			m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
+		}
+		contextSortFallback := m.normalizeContextSortMode()
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+			m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+		}
+		m.refreshRepositoryPresentation()
+		defaultApplied := m.applyDefaultRepositoryScope()
+		scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		if !defaultApplied && scopeChanged {
+			m.refreshRepositoryCandidates()
+		} else if contextSortFallback && m.list.Width() > 0 {
+			m.sortListItems(m.list.Items())
+			m.updateViewportContent()
+		}
+	}
+	if recovered && (strings.HasPrefix(m.statusMsg, "Repository catalog load failed:") || strings.HasPrefix(m.statusMsg, "Repository catalog reload failed")) {
+		m.statusMsg = ""
+		m.statusIsError = false
+	}
+}
+
+func (m *Model) applyRepositoryPickerSelection() *Model {
+	selection, err := m.repoPicker.RepositorySelection()
+	if err != nil {
+		return m
+	}
+	selected := selection.IDs()
+	if m.repoPickerOrigin == focusBacklog || m.repoPickerOrigin == focusGlobalIssues {
+		return m.applyBacklogPickerSelection(selection)
+	}
+	focusAfterApply := m.repoPickerOrigin
+	if m.repoPickerOrigin == focusScopePicker {
+		focusAfterApply = focusScopePicker
+	}
+	if m.hubRepositoryMode {
+		includeUnassigned := selection.IncludesUnassigned() || selection.Mode() == repositorypkg.SelectionUnassigned
+		switch {
+		case len(selected) == 0 && includeUnassigned:
+			m.statusMsg = "Context: no-context"
+		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeUnassigned:
+			m.statusMsg = "Context: all"
+		case includeUnassigned:
+			m.statusMsg = fmt.Sprintf("Context: %s, no-context", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
+		default:
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
+		}
+		m.statusIsError = false
+		if err := m.SetRepositorySelection(selection); err != nil {
+			m.statusMsg, m.statusIsError = err.Error(), true
+		}
+	} else {
+		if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
+			m.statusMsg = "Context: all"
+		} else {
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
+		}
+		m.statusIsError = false
+		m.SetRepositoryScope(repositoryIDsMap(selected))
+	}
+	m.showRepoPicker = false
+	m.focused = focusAfterApply
+	if focusAfterApply == focusTree {
+		m.rebuildRepositoryTree()
+	}
+	return m
+}
+
+func (m Model) repositoryScopeNamesForIDs(ids []string) []string {
+	return m.repositoryScopeNames(repositoryIDsMap(ids))
+}
+
+func repositoryIDsMap(ids []string) map[string]bool {
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
+	return selected
+}
+
 func (s *repositoryScopeController) setProjectedIssues(issues []model.Issue) {
 	s.repositoryIssues = issues
 	s.repositoryIssueIDs = issueIDSet(issues)

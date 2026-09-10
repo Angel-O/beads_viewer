@@ -3242,6 +3242,236 @@ func (m *Model) applyScopePickerDetails(details ScopeDetails) {
 	m.scopePicker.SetMembers(items)
 }
 
+func (m *Model) handleScopeSnapshotMessage(msg scopeSnapshotMsg) []tea.Cmd {
+	if msg.err != nil {
+		m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+		m.statusIsError = true
+		return nil
+	}
+	previousSelected := m.scopePicker.SelectedScopeID()
+	m.backlogScopeLoaded = true
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		previousActive := m.activeScope
+		for _, incoming := range msg.snapshot.Scopes {
+			for i := range m.scopeCatalog {
+				if m.scopeCatalog[i].ID == incoming.ID {
+					m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], incoming)
+				}
+			}
+		}
+		m.activeScope = nil
+		if msg.snapshot.Active != nil {
+			active := *msg.snapshot.Active
+			if previousActive != nil && previousActive.ID == active.ID {
+				active = mergeScopeInfo(*previousActive, active)
+			}
+			for _, catalogScope := range m.scopeCatalog {
+				if catalogScope.ID == active.ID {
+					active = mergeScopeInfo(active, catalogScope)
+				}
+			}
+			active.Active = true
+			m.activeScope = &active
+		}
+		for i := range m.scopeCatalog {
+			m.scopeCatalog[i].Active = m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID
+			if m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID {
+				m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], *m.activeScope)
+				m.scopeCatalog[i].Active = true
+			}
+		}
+		m.scopePicker.SetScopes(m.scopeCatalog)
+		return nil
+	}
+	m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.activeScope = nil
+	if msg.snapshot.Active != nil {
+		active := *msg.snapshot.Active
+		m.activeScope = &active
+		for i := range m.scopeCatalog {
+			m.scopeCatalog[i].Active = m.scopeCatalog[i].ID == active.ID
+		}
+		m.scopePicker.SetScopes(m.scopeCatalog)
+	}
+	if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+		m.scopePicker.ClearMemberMarks()
+		return []tea.Cmd{m.loadSelectedScopeDetails()}
+	}
+	return nil
+}
+
+func (m *Model) handleScopeCatalogPageMessage(msg scopeCatalogPageMsg) []tea.Cmd {
+	if !m.scopePicker.acceptsCatalogPage(msg.generation) {
+		return nil
+	}
+	if msg.err != nil {
+		m.scopePicker.SetCatalogError(msg.generation, msg.err)
+		m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+		m.statusIsError = true
+		return nil
+	}
+	m.backlogScopeLoaded = true
+	previousSelected := m.scopePicker.SelectedScopeID()
+	page := msg.page
+	page.Scopes = append([]ScopeInfo(nil), msg.page.Scopes...)
+	activeID := ""
+	if m.activeScope != nil {
+		activeID = m.activeScope.ID
+	}
+	for i := range page.Scopes {
+		for _, catalogScope := range m.scopeCatalog {
+			if catalogScope.ID == page.Scopes[i].ID {
+				page.Scopes[i] = mergeScopeInfoPreservingActive(catalogScope, page.Scopes[i])
+				break
+			}
+		}
+		if activeID != "" {
+			page.Scopes[i].Active = page.Scopes[i].ID == activeID
+		}
+		if m.activeScope != nil && page.Scopes[i].ID == activeID {
+			active := mergeScopeInfo(*m.activeScope, page.Scopes[i])
+			active.Active = true
+			m.activeScope = &active
+			page.Scopes[i] = mergeScopeInfo(page.Scopes[i], active)
+			page.Scopes[i].Active = true
+		}
+	}
+	m.scopeCatalog = append([]ScopeInfo(nil), page.Scopes...)
+	m.scopePicker.SetCatalogPage(page, msg.index, msg.generation)
+	if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+		m.scopePicker.ClearMemberMarks()
+		return []tea.Cmd{m.loadSelectedScopeDetails()}
+	}
+	return nil
+}
+
+func (m *Model) handleScopeDetailsMessage(msg scopeDetailsMsg) {
+	if msg.generation > 0 && !m.scopePicker.acceptsMemberDetails(msg.scopeID, msg.generation) {
+		return
+	}
+	if msg.err != nil {
+		if msg.generation > 0 {
+			m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+		}
+		return
+	}
+	details := msg.details
+	m.scopeDetails = &details
+	if ids, ok := completeScopeMemberIDs(details); ok {
+		if m.scopeMembershipIDs == nil {
+			m.scopeMembershipIDs = make(map[string][]string)
+		}
+		m.scopeMembershipIDs[msg.scopeID] = ids
+		if msg.scopeID == m.scopeMembershipScopeID {
+			m.scopeMembershipLoading = false
+		}
+	}
+	pickerScopeID := m.scopePicker.SelectedScopeID()
+	responseScopeID := msg.scopeID
+	if responseScopeID == "" {
+		responseScopeID = details.Info.ID
+	}
+	if pickerScopeID == "" || responseScopeID == pickerScopeID {
+		m.applyScopePickerDetails(details)
+	}
+}
+
+func (m *Model) handleScopeMembershipMessage(msg scopeMembershipMsg) {
+	if !m.acceptsScopeMembership(msg) {
+		return
+	}
+	if msg.err == nil {
+		if m.scopeMembershipIDs == nil {
+			m.scopeMembershipIDs = make(map[string][]string)
+		}
+		m.scopeMembershipIDs[msg.scopeID] = append([]string(nil), msg.ids...)
+		m.scopeMembershipLoading = false
+	} else if msg.scopeID == m.scopeMembershipScopeID {
+		m.scopeMembershipLoading = false
+	}
+}
+
+func (m *Model) handleScopeMembersPageMessage(msg scopeMembersPageMsg) {
+	if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation, msg.cursor) {
+		return
+	}
+	if msg.err != nil {
+		m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+		return
+	}
+	if msg.page.Scope.ID == "" {
+		msg.page.Scope.ID = msg.scopeID
+	}
+	if !scopeInfoCountKnown(msg.page.Scope.CompletedCount, msg.page.Scope.CompletedCountKnown) && msg.page.CompletedCount != 0 {
+		msg.page.Scope.CompletedCount = msg.page.CompletedCount
+		msg.page.Scope.CompletedCountKnown = true
+	}
+	for i := range m.scopeCatalog {
+		if m.scopeCatalog[i].ID == msg.page.Scope.ID {
+			m.scopeCatalog[i] = mergeScopeInfoPreservingActive(m.scopeCatalog[i], msg.page.Scope)
+			if m.activeScope != nil && m.activeScope.ID == msg.page.Scope.ID {
+				active := mergeScopeInfo(*m.activeScope, msg.page.Scope)
+				active.Active = true
+				m.activeScope = &active
+			}
+			break
+		}
+	}
+	items := make([]IssueItem, len(msg.page.Members))
+	ready := make(map[string]bool, len(items))
+	for i, issue := range msg.page.Members {
+		items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+		m.decorateIssueItem(&items[i])
+		ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
+	}
+	m.scopePicker.SetMemberReadyIDs(ready)
+	m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation, msg.requestKey)
+}
+
+func (m *Model) handleBacklogPageMessage(msg backlogPageMsg) {
+	expectedCursor, hasRequestedPage := m.backlog.pageCursorAt(msg.index)
+	if msg.generation != m.backlogPageGeneration ||
+		(msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) ||
+		!hasRequestedPage || msg.cursor != expectedCursor {
+		return
+	}
+	m.backlog.SetLoading(false)
+	m.backlogLoading = false
+	if msg.err != nil {
+		m.backlog.SetError(msg.err)
+		m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)
+		m.statusIsError = true
+		return
+	}
+	m.backlog.SetPage(msg.page, msg.index)
+	items := make([]IssueItem, len(msg.page.Issues))
+	for i, issue := range msg.page.Issues {
+		items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+		m.decorateIssueItem(&items[i])
+	}
+	m.backlog.setPresentation(items)
+}
+
+func (m *Model) handleScopeMutationMessage(msg scopeMutationMsg) []tea.Cmd {
+	if msg.err != nil {
+		m.statusMsg = fmt.Sprintf("Scope %s failed: %v", msg.action, msg.err)
+		m.statusIsError = true
+		return nil
+	}
+	mutation := msg.mutation
+	if mutation.Kind == "" {
+		mutation.Kind = ScopeMutationKind(msg.action)
+	}
+	if msg.restoreFocus {
+		m.closeScopePicker()
+	}
+	m.clearSubmittedScopeMarks(mutation.IssueIDs)
+	m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
+	m.statusIsError = false
+	return []tea.Cmd{m.refreshAfterScopeMutation(mutation)}
+}
+
 func (m *Model) closeScopePicker() {
 	if m.scopePickerMoveIssue != "" {
 		restoreScopeSession := len(m.scopePickerMoveIssues) > 0 && m.scopeMoveOriginFocus == focusScopePicker
@@ -3339,6 +3569,58 @@ func (m *Model) backlogQuery(cursor string) BacklogQuery {
 		Cursor:             cursor,
 		Limit:              backlogPageSize,
 	}
+}
+
+func (m Model) backlogRepositorySelection() repositorypkg.Selection {
+	contexts := m.backlog.Contexts()
+	if len(contexts) == 0 {
+		if m.backlog.IncludeContextless() {
+			return repositorypkg.NewUnassignedSelection()
+		}
+		return repositorypkg.NewAllSelection()
+	}
+	if m.backlog.IncludeContextless() {
+		if scope, err := repositorypkg.NewSelectedAndUnassignedSelection(contexts); err == nil {
+			return scope
+		}
+	} else if scope, err := repositorypkg.NewSelectedSelection(contexts); err == nil {
+		return scope
+	}
+	return repositorypkg.NewAllSelection()
+}
+
+func (m *Model) applyBacklogPickerSelection(selection repositorypkg.Selection) *Model {
+	includeUnassigned := selection.IncludesUnassigned() || selection.Mode() == repositorypkg.SelectionUnassigned
+	contexts := selection.IDs()
+	// An empty draft is the backlog's all-items choice. Treat the equivalent
+	// all-contexts-plus-unassigned draft the same way so the query stays small.
+	if len(contexts) == 0 && !includeUnassigned {
+		contexts = nil
+		includeUnassigned = false
+	}
+	names := make([]string, 0, len(contexts))
+	for _, contextID := range contexts {
+		for _, repository := range m.repositoryCatalog {
+			if repository.ID == contextID {
+				name := repository.Name
+				if name == "" {
+					name = repository.ID
+				}
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	m.backlog.SetContextFilter(contexts, includeUnassigned, names)
+	m.backlog.resetCursor()
+	m.showRepoPicker = false
+	if m.repoPickerOrigin == focusGlobalIssues {
+		m.focused = focusGlobalIssues
+	} else {
+		m.focused = focusBacklog
+	}
+	m.backlogReloadCmd = m.reloadBacklogFromFirstPage()
+	return m
 }
 
 func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {

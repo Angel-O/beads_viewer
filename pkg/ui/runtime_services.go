@@ -2,6 +2,10 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
@@ -97,4 +101,115 @@ func workerConfigForRuntime(beadsPath string, services RuntimeServices) WorkerCo
 		SkipInitialRefresh:      services.InitialScope != nil && services.InitialScope.Active == nil,
 		HubChangeSignal:         services.HubChangeSignal,
 	}
+}
+
+func runtimeIssuePaths(beadsPath string, services RuntimeServices) (string, string) {
+	selectedIssuePath := services.SelectedIssuePath
+	if selectedIssuePath == "" {
+		selectedIssuePath = beadsPath
+	}
+	issueChangePath := services.IssueChangePath
+	if issueChangePath == "" {
+		issueChangePath = beadsPath
+	}
+	return selectedIssuePath, issueChangePath
+}
+
+func newRuntimeBackgroundWorker(beadsPath string, services RuntimeServices, backgroundModeRequested, force bool) (*BackgroundWorker, error) {
+	selectedIssuePath, issueChangePath := runtimeIssuePaths(beadsPath, services)
+	metadataChangePaths := services.MetadataChangePaths
+	hubChangeSignal := services.HubChangeSignal
+	if !force {
+		hubChangeSignal = strings.TrimSpace(os.Getenv("BV_HUB_CHANGE_SIGNAL"))
+		if services.HubChangeSignal != "" {
+			hubChangeSignal = services.HubChangeSignal
+		}
+		if services.RefreshResolved && !services.HubAutoRefresh {
+			hubChangeSignal = ""
+		}
+		if !hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
+			hubChangeSignal = ""
+		}
+	}
+	if !force && (issueChangePath == "" && len(metadataChangePaths) == 0 || !backgroundModeRequested && hubChangeSignal == "") {
+		return nil, nil
+	}
+	workerConfig := workerConfigForRuntime(beadsPath, services)
+	workerConfig.SelectedIssuePath = selectedIssuePath
+	workerConfig.IssueChangePath = issueChangePath
+	workerConfig.MetadataChangePaths = metadataChangePaths
+	if !force {
+		workerConfig.CatalogPath = ""
+	}
+	workerConfig.HubChangeSignal = hubChangeSignal
+	workerConfig.DebounceDelay = 200 * time.Millisecond
+	return NewBackgroundWorker(workerConfig)
+}
+
+func hubAutoRefreshEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+// SetRuntimeServices installs already-resolved services and owns their
+// lifecycle adaptation; Model only invokes this composition hook.
+func (m *Model) SetRuntimeServices(services RuntimeServices) {
+	m.runtimeServices = services
+	if services.SemanticDatasetPath != "" {
+		m.semanticPath = services.SemanticDatasetPath
+	}
+	m.currentRepositoryID = services.CurrentRepositoryID
+	m.hubRepositoryMode = services.RepositoryPresentation || services.IssueRepositoryResolver != nil
+	if services.CatalogPath == "" || services.CatalogLoader == nil {
+		m.refreshRepositoryPresentation()
+		m.applyInitialRepositorySelection(services.InitialRepositorySelection)
+		return
+	}
+	if err := m.reloadRepositoryCatalog(); err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog load failed: %v", err)
+		m.statusIsError = true
+	}
+	m.refreshRepositoryPresentation()
+	autoRefresh := m.hubAutoRefreshEnabled()
+	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
+		worker, err := newRuntimeBackgroundWorker(m.beadsPath, services, false, true)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
+			m.statusIsError = true
+		} else if worker != nil {
+			m.backgroundWorker = worker
+			m.snapshotInitPending = len(m.issues) == 0
+		}
+	} else if m.backgroundWorker != nil {
+		m.backgroundWorker.UpdateRuntimeServices(services)
+		if err := m.backgroundWorker.SetCatalogPath(services.CatalogPath, autoRefresh); err != nil {
+			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
+			m.statusIsError = true
+		}
+	}
+	m.applyInitialRepositorySelection(services.InitialRepositorySelection)
+}
+
+func (m Model) hubAutoRefreshEnabled() bool {
+	if m.runtimeServices.RefreshResolved {
+		return m.runtimeServices.HubAutoRefresh
+	}
+	return hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
+}
+
+func (m Model) catalogPath() string { return m.runtimeServices.CatalogPath }
+
+func (m Model) runtimeHistoryProvider() *correlation.Provider {
+	if m.runtimeServices.HistoryProvider != nil {
+		return m.runtimeServices.HistoryProvider
+	}
+	workDir := m.workDir
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
+	return correlation.NewGitProvider(workDir, resolveHistoryCorrelationPath(m.beadsPath, workDir))
 }
