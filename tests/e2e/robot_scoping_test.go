@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -50,13 +51,13 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 		}
 		return out
 	}
-	repos := []string{filepath.Join(root, "a repo ' $"), filepath.Join(root, "b repo")}
-	for i, dir := range repos {
+	initTracker := func(dir, title string) {
+		t.Helper()
 		beadsDir := filepath.Join(dir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		issue := map[string]any{"id": "same-1", "title": fmt.Sprintf("Repository %d", i), "status": "open", "priority": 1,
+		issue := map[string]any{"id": "same-1", "title": title, "status": "open", "priority": 1,
 			"issue_type": "task", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "labels": []string{"work"}}
 		data, err := json.Marshal(issue)
 		if err != nil {
@@ -67,6 +68,10 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 		}
 		tracker(dir, "init", "--prefix", "same", "--json")
 		tracker(dir, "show", "same-1", "--json") // A real br database with the imported ID.
+	}
+	repos := []string{filepath.Join(root, "a repo ' $"), filepath.Join(root, "b repo")}
+	for i, dir := range repos {
+		initTracker(dir, fmt.Sprintf("Repository %d", i))
 	}
 	workspacePath := filepath.Join(root, "workspace.yaml")
 	workspaceData := fmt.Sprintf("repos:\n  - name: api\n    path: %q\n    prefix: api-\n  - name: web\n    path: %q\n    prefix: web-\n", repos[0], repos[1])
@@ -412,6 +417,102 @@ func TestRobotActionRoutesLiveTrackers(t *testing.T) {
 		}
 		for _, args := range [][]string{{"--robot-next"}, {"--robot-triage", "--robot-triage-by-track", "--robot-triage-by-label"}, {"--robot-triage", "--brief"}, {"--emit-script"}} {
 			assertNoMutation(t, run(root, nil, append(args, "--db", copyPath)...))
+		}
+	})
+	// Execute suggestions captured before deferral through both published
+	// command forms. An explicit undefer must make the same route usable again.
+	t.Run("tracker_rechecks_deferred_claim", func(t *testing.T) {
+		for _, tc := range []struct {
+			name        string
+			deferArgs   []string
+			undeferArgs []string
+			wantStatus  model.Status
+			wantUntil   any
+		}{
+			{"future_defer_until", []string{"--defer", "2099-01-01T00:00:00Z"}, []string{"--defer", ""}, model.StatusOpen, "2099-01-01T00:00:00Z"},
+			{"deferred_status", []string{"--status", "deferred"}, []string{"--status", "open"}, model.StatusDeferred, nil},
+		} {
+			for _, form := range []string{"argv", "shell"} {
+				t.Run(tc.name+"/"+form, func(t *testing.T) {
+					dir := filepath.Join(root, tc.name+" "+form+" repo ' $")
+					initTracker(dir, "Deferral control")
+					var next struct {
+						Actionable bool               `json:"actionable"`
+						Actions    model.IssueActions `json:"actions"`
+					}
+					if err := json.Unmarshal(run(dir, nil, "--robot-next"), &next); err != nil {
+						t.Fatal(err)
+					}
+					if !next.Actionable {
+						t.Fatal("fresh fixture is not actionable before deferral")
+					}
+					verifyShow(next.Actions, dir, "Deferral control", filepath.Join(dir, ".beads", "beads.db"))
+					command := next.Actions.Claim
+					executeClaim := func() ([]byte, error) {
+						t.Helper()
+						cmd := exec.Command(command.Argv[0], command.Argv[1:]...)
+						cmd.Dir = command.WorkingDirectory
+						if form == "shell" {
+							cmd = exec.Command("sh", "-c", command.Shell)
+							cmd.Dir = root
+						}
+						cmd.Env = append(cleanEnv(root), "BEADS_DIR="+filepath.Join(repos[1], ".beads"), "BEADS_DB="+filepath.Join(repos[1], ".beads", "beads.db"))
+						out, err := cmd.CombinedOutput()
+						t.Logf("captured claim form=%s cwd=%q argv=%q exit=%v out=%s", form, cmd.Dir, cmd.Args, err, out)
+						return out, err
+					}
+					tracker(dir, append([]string{"update", "same-1", "--json"}, tc.deferArgs...)...)
+					var deferred struct {
+						Actionable   bool                `json:"actionable"`
+						Actions      *model.IssueActions `json:"actions"`
+						ClaimCommand string              `json:"claim_command"`
+					}
+					deferredOutput := run(dir, nil, "--robot-next")
+					assertNoMutation(t, deferredOutput)
+					if err := json.Unmarshal(deferredOutput, &deferred); err != nil {
+						t.Fatal(err)
+					}
+					if deferred.Actionable || deferred.ClaimCommand != "" || (deferred.Actions != nil && deferred.Actions.Claim != nil) {
+						t.Fatalf("fresh snapshot still offers deferred claim: %+v", deferred)
+					}
+					var before, after []map[string]any
+					if err := json.Unmarshal(tracker(dir, "show", "same-1", "--json"), &before); err != nil || len(before) != 1 {
+						t.Fatalf("read deferred fixture: %v %v", err, before)
+					}
+					if before[0]["status"] != string(tc.wantStatus) || before[0]["defer_until"] != tc.wantUntil {
+						t.Fatalf("tracker did not persist requested deferral: got %v, want status=%s defer_until=%v", before[0], tc.wantStatus, tc.wantUntil)
+					}
+					jsonlPath := filepath.Join(dir, ".beads", "issues.jsonl")
+					beforeJSONL, err := os.ReadFile(jsonlPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					out, claimErr := executeClaim()
+					if claimErr == nil {
+						t.Errorf("tracker accepted captured claim after %s: %s", tc.name, out)
+					} else if exitErr, ok := claimErr.(*exec.ExitError); !ok || exitErr.ExitCode() != 4 || !bytes.Contains(out, []byte("VALIDATION_FAILED")) || !bytes.Contains(out, []byte("cannot claim deferred issue same-1")) {
+						t.Errorf("claim failed without tracker deferral validation refusal: %v %s", claimErr, out)
+					}
+					if err := json.Unmarshal(tracker(dir, "show", "same-1", "--json"), &after); err != nil {
+						t.Fatal(err)
+					}
+					afterJSONL, err := os.ReadFile(jsonlPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(before, after) || !bytes.Equal(beforeJSONL, afterJSONL) {
+						t.Fatalf("stale claim changed deferred fixture: before=%v after=%v JSONL unchanged=%v", before, after, bytes.Equal(beforeJSONL, afterJSONL))
+					}
+					tracker(dir, append([]string{"update", "same-1", "--json"}, tc.undeferArgs...)...)
+					if out, err := executeClaim(); err != nil {
+						t.Fatalf("explicit undefer did not permit captured claim: %v %s", err, out)
+					}
+					var claimed []model.Issue
+					if err := json.Unmarshal(tracker(dir, "show", "same-1", "--json"), &claimed); err != nil || len(claimed) != 1 || claimed[0].Status != model.StatusInProgress || claimed[0].Assignee == "" || claimed[0].DeferUntil != nil {
+						t.Fatalf("explicit undefer claim not persisted: %v %+v", err, claimed)
+					}
+				})
+			}
 		}
 	})
 	// A valid live snapshot does not reserve the issue. Close the isolated
