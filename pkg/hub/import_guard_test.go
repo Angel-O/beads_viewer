@@ -14,11 +14,7 @@ import (
 
 const hubImportPath = "github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 
-// temporaryHubImportExceptions records only current neutral-package seams.
-// Each entry is intentionally file-specific so the owning migration phase can
-// remove it without weakening the final package boundary.
-var temporaryHubImportExceptions = map[string]string{}
-
+// Keep the final boundary explicit; neutral-package import exceptions are not permitted.
 var hubImportAllowedRoots = []string{
 	"pkg/hub/",
 	"cmd/bv/",
@@ -36,23 +32,12 @@ func TestHubImportBoundary(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
-	violations, usedExceptions, err := scanHubImports(root)
+	violations, err := scanHubImports(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(violations) != 0 {
 		t.Fatalf("pkg/hub imports outside the migration boundary: %s", strings.Join(violations, ", "))
-	}
-	exceptions := make([]string, 0, len(temporaryHubImportExceptions))
-	for path := range temporaryHubImportExceptions {
-		exceptions = append(exceptions, path)
-	}
-	sort.Strings(exceptions)
-	for _, path := range exceptions {
-		reason := temporaryHubImportExceptions[path]
-		if !usedExceptions[path] {
-			t.Errorf("temporary Hub import exception %s is unused (%s)", path, reason)
-		}
 	}
 }
 
@@ -69,9 +54,8 @@ func TestHubImportBoundaryPolicy(t *testing.T) {
 	}
 }
 
-func scanHubImports(root string) ([]string, map[string]bool, error) {
+func scanHubImports(root string) ([]string, error) {
 	violations := make(map[string]bool)
-	usedExceptions := make(map[string]bool)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -102,23 +86,19 @@ func scanHubImports(root string) ([]string, map[string]bool, error) {
 			if hubImportIsAllowed(relative) {
 				continue
 			}
-			if _, ok := temporaryHubImportExceptions[relative]; ok {
-				usedExceptions[relative] = true
-				continue
-			}
 			violations[relative] = true
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	result := make([]string, 0, len(violations))
 	for path := range violations {
 		result = append(result, path)
 	}
 	sort.Strings(result)
-	return result, usedExceptions, nil
+	return result, nil
 }
 
 func hubImportIsAllowed(path string) bool {
