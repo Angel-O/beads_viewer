@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
@@ -391,47 +392,47 @@ func isBacklogReloadNotice(status string) bool {
 // BacklogModel renders the global, unscoped backlog independently of the
 // ordinary graph snapshot. It deliberately owns only one page and cursors.
 type BacklogModel struct {
-	issues             []model.Issue
-	items              []IssueItem
-	filtered           []model.Issue
-	filteredItems      []IssueItem
-	selected           int
-	selectedIssueID    string
-	viewportStart      int
-	filter             string
-	label              string
-	status             string
-	searching          bool
-	labelEditing       bool
-	labelInput         textinput.Model
-	hasMore            bool
-	nextCursor         string
-	pageIndex          int
-	pageCursors        []string
-	pageHistoryKey     string
-	loading            bool
-	error              string
-	previewOffset      int
-	contexts           []string
-	contextNames       []string
-	includeContextless bool
-	width              int
-	height             int
-	theme              Theme
-	delegate           IssueDelegate
-	marked             map[string]bool
-	title              string
-	excludedIDs        map[string]struct{}
+	issues              []model.Issue
+	items               []IssueItem
+	filtered            []model.Issue
+	filteredItems       []IssueItem
+	selected            int
+	selectedIssueID     string
+	viewportStart       int
+	filter              string
+	label               string
+	status              string
+	searching           bool
+	labelEditing        bool
+	labelInput          textinput.Model
+	hasMore             bool
+	nextCursor          string
+	pageIndex           int
+	pageCursors         []string
+	pageHistoryKey      string
+	loading             bool
+	error               string
+	previewOffset       int
+	repositorySelection repositorypkg.Selection
+	contextNames        []string
+	width               int
+	height              int
+	theme               Theme
+	delegate            IssueDelegate
+	marked              map[string]bool
+	title               string
+	excludedIDs         map[string]struct{}
 }
 
 func NewBacklogModel(theme Theme) BacklogModel {
 	b := BacklogModel{
-		theme:       theme,
-		status:      backlogStatusAll,
-		pageCursors: []string{""},
-		delegate:    IssueDelegate{Theme: theme, useFullWidth: true},
-		labelInput:  newBacklogLabelInput(theme),
-		title:       "Global issues",
+		theme:               theme,
+		repositorySelection: repositorypkg.NewAllSelection(),
+		status:              backlogStatusAll,
+		pageCursors:         []string{""},
+		delegate:            IssueDelegate{Theme: theme, useFullWidth: true},
+		labelInput:          newBacklogLabelInput(theme),
+		title:               "Global issues",
 	}
 	b.pageHistoryKey = b.filterTupleKey()
 	return b
@@ -603,36 +604,43 @@ func (b *BacklogModel) resetCursor() {
 	b.selected, b.previewOffset, b.selectedIssueID, b.viewportStart = 0, 0, "", 0
 }
 
-// SetContextFilter records the backlog-owned Hub context projection. It does
-// not touch the generic Model scope or its active issue list.
+// SetContextFilter records the backlog repository projection. It does not
+// touch the generic Model scope or its active issue list.
 func (b *BacklogModel) SetContextFilter(contexts []string, includeContextless bool, names []string) {
-	changed := includeContextless != b.includeContextless || len(contexts) != len(b.contexts)
-	if !changed {
-		for i := range contexts {
-			if contexts[i] != b.contexts[i] {
-				changed = true
-				break
-			}
+	selection := repositorypkg.NewAllSelection()
+	if len(contexts) > 0 {
+		var err error
+		if includeContextless {
+			selection, err = repositorypkg.NewSelectedAndUnassignedSelection(contexts)
+		} else {
+			selection, err = repositorypkg.NewSelectedSelection(contexts)
 		}
+		if err != nil {
+			return
+		}
+	} else if includeContextless {
+		selection = repositorypkg.NewUnassignedSelection()
 	}
-	b.contexts = append([]string(nil), contexts...)
+	changed := !sameRepositorySelection(b.repositorySelection, selection)
+	b.repositorySelection = selection
 	b.contextNames = append([]string(nil), names...)
-	b.includeContextless = includeContextless
 	if changed {
 		b.InvalidatePage()
 	}
 }
 
-func (b BacklogModel) Contexts() []string { return append([]string(nil), b.contexts...) }
+func (b BacklogModel) Contexts() []string { return b.repositorySelection.IDs() }
 
-func (b BacklogModel) IncludeContextless() bool { return b.includeContextless }
+func (b BacklogModel) IncludeContextless() bool {
+	return b.repositorySelection.IncludesUnassigned() || b.repositorySelection.Mode() == repositorypkg.SelectionUnassigned
+}
 
 func (b BacklogModel) contextFilterLabel() string {
 	labels := append([]string(nil), b.contextNames...)
-	if len(labels) != len(b.contexts) {
-		labels = append([]string(nil), b.contexts...)
+	if len(labels) != len(b.Contexts()) {
+		labels = b.Contexts()
 	}
-	if b.includeContextless {
+	if b.IncludeContextless() {
 		labels = append(labels, contextlessRepositoryID)
 	}
 	if len(labels) == 0 {
@@ -754,9 +762,11 @@ func (b *BacklogModel) CycleStatus() {
 	b.InvalidatePage()
 }
 
-func isBacklogOrdinaryLabel(value string) bool {
+// isBacklogOrdinaryLabel validates one user-entered label. A nil predicate
+// preserves local behavior; Hub mode supplies its reserved-label policy.
+func isBacklogOrdinaryLabel(value string, predicate analysis.LabelPredicate) bool {
 	label := strings.TrimSpace(value)
-	return label != "" && !strings.Contains(label, ",") && !strings.HasPrefix(label, "ctx:")
+	return label != "" && !strings.Contains(label, ",") && (predicate == nil || predicate(label))
 }
 
 func (b *BacklogModel) NextPageCursor() string {
@@ -947,7 +957,7 @@ func (b BacklogModel) filterTupleKey() string {
 	if status == backlogStatusAll {
 		status = ""
 	}
-	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%t", b.filter, b.label, status, strings.Join(b.contexts, "\x00"), b.includeContextless)
+	return fmt.Sprintf("%q\x00%q\x00%q\x00%q\x00%t", b.filter, b.label, status, strings.Join(b.Contexts(), "\x00"), b.IncludeContextless())
 }
 
 func (b *BacklogModel) ensurePageHistory() {
@@ -2575,13 +2585,7 @@ func scopeMemberLabels(item IssueItem) []string {
 	if item.HubPresentation {
 		labels = item.PresentationLabels
 	}
-	filtered := make([]string, 0, len(labels))
-	for _, label := range labels {
-		if !isHubContextLabel(label) {
-			filtered = append(filtered, label)
-		}
-	}
-	return filtered
+	return labels
 }
 
 func scopeMemberRepository(item IssueItem) string {
@@ -3238,6 +3242,236 @@ func (m *Model) applyScopePickerDetails(details ScopeDetails) {
 	m.scopePicker.SetMembers(items)
 }
 
+func (m *Model) handleScopeSnapshotMessage(msg scopeSnapshotMsg) []tea.Cmd {
+	if msg.err != nil {
+		m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+		m.statusIsError = true
+		return nil
+	}
+	previousSelected := m.scopePicker.SelectedScopeID()
+	m.backlogScopeLoaded = true
+	if m.runtimeServices.Scopes.QueryCatalog != nil {
+		previousActive := m.activeScope
+		for _, incoming := range msg.snapshot.Scopes {
+			for i := range m.scopeCatalog {
+				if m.scopeCatalog[i].ID == incoming.ID {
+					m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], incoming)
+				}
+			}
+		}
+		m.activeScope = nil
+		if msg.snapshot.Active != nil {
+			active := *msg.snapshot.Active
+			if previousActive != nil && previousActive.ID == active.ID {
+				active = mergeScopeInfo(*previousActive, active)
+			}
+			for _, catalogScope := range m.scopeCatalog {
+				if catalogScope.ID == active.ID {
+					active = mergeScopeInfo(active, catalogScope)
+				}
+			}
+			active.Active = true
+			m.activeScope = &active
+		}
+		for i := range m.scopeCatalog {
+			m.scopeCatalog[i].Active = m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID
+			if m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID {
+				m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], *m.activeScope)
+				m.scopeCatalog[i].Active = true
+			}
+		}
+		m.scopePicker.SetScopes(m.scopeCatalog)
+		return nil
+	}
+	m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
+	m.scopePicker.SetScopes(m.scopeCatalog)
+	m.activeScope = nil
+	if msg.snapshot.Active != nil {
+		active := *msg.snapshot.Active
+		m.activeScope = &active
+		for i := range m.scopeCatalog {
+			m.scopeCatalog[i].Active = m.scopeCatalog[i].ID == active.ID
+		}
+		m.scopePicker.SetScopes(m.scopeCatalog)
+	}
+	if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+		m.scopePicker.ClearMemberMarks()
+		return []tea.Cmd{m.loadSelectedScopeDetails()}
+	}
+	return nil
+}
+
+func (m *Model) handleScopeCatalogPageMessage(msg scopeCatalogPageMsg) []tea.Cmd {
+	if !m.scopePicker.acceptsCatalogPage(msg.generation) {
+		return nil
+	}
+	if msg.err != nil {
+		m.scopePicker.SetCatalogError(msg.generation, msg.err)
+		m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
+		m.statusIsError = true
+		return nil
+	}
+	m.backlogScopeLoaded = true
+	previousSelected := m.scopePicker.SelectedScopeID()
+	page := msg.page
+	page.Scopes = append([]ScopeInfo(nil), msg.page.Scopes...)
+	activeID := ""
+	if m.activeScope != nil {
+		activeID = m.activeScope.ID
+	}
+	for i := range page.Scopes {
+		for _, catalogScope := range m.scopeCatalog {
+			if catalogScope.ID == page.Scopes[i].ID {
+				page.Scopes[i] = mergeScopeInfoPreservingActive(catalogScope, page.Scopes[i])
+				break
+			}
+		}
+		if activeID != "" {
+			page.Scopes[i].Active = page.Scopes[i].ID == activeID
+		}
+		if m.activeScope != nil && page.Scopes[i].ID == activeID {
+			active := mergeScopeInfo(*m.activeScope, page.Scopes[i])
+			active.Active = true
+			m.activeScope = &active
+			page.Scopes[i] = mergeScopeInfo(page.Scopes[i], active)
+			page.Scopes[i].Active = true
+		}
+	}
+	m.scopeCatalog = append([]ScopeInfo(nil), page.Scopes...)
+	m.scopePicker.SetCatalogPage(page, msg.index, msg.generation)
+	if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
+		m.scopePicker.ClearMemberMarks()
+		return []tea.Cmd{m.loadSelectedScopeDetails()}
+	}
+	return nil
+}
+
+func (m *Model) handleScopeDetailsMessage(msg scopeDetailsMsg) {
+	if msg.generation > 0 && !m.scopePicker.acceptsMemberDetails(msg.scopeID, msg.generation) {
+		return
+	}
+	if msg.err != nil {
+		if msg.generation > 0 {
+			m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+		}
+		return
+	}
+	details := msg.details
+	m.scopeDetails = &details
+	if ids, ok := completeScopeMemberIDs(details); ok {
+		if m.scopeMembershipIDs == nil {
+			m.scopeMembershipIDs = make(map[string][]string)
+		}
+		m.scopeMembershipIDs[msg.scopeID] = ids
+		if msg.scopeID == m.scopeMembershipScopeID {
+			m.scopeMembershipLoading = false
+		}
+	}
+	pickerScopeID := m.scopePicker.SelectedScopeID()
+	responseScopeID := msg.scopeID
+	if responseScopeID == "" {
+		responseScopeID = details.Info.ID
+	}
+	if pickerScopeID == "" || responseScopeID == pickerScopeID {
+		m.applyScopePickerDetails(details)
+	}
+}
+
+func (m *Model) handleScopeMembershipMessage(msg scopeMembershipMsg) {
+	if !m.acceptsScopeMembership(msg) {
+		return
+	}
+	if msg.err == nil {
+		if m.scopeMembershipIDs == nil {
+			m.scopeMembershipIDs = make(map[string][]string)
+		}
+		m.scopeMembershipIDs[msg.scopeID] = append([]string(nil), msg.ids...)
+		m.scopeMembershipLoading = false
+	} else if msg.scopeID == m.scopeMembershipScopeID {
+		m.scopeMembershipLoading = false
+	}
+}
+
+func (m *Model) handleScopeMembersPageMessage(msg scopeMembersPageMsg) {
+	if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation, msg.cursor) {
+		return
+	}
+	if msg.err != nil {
+		m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
+		return
+	}
+	if msg.page.Scope.ID == "" {
+		msg.page.Scope.ID = msg.scopeID
+	}
+	if !scopeInfoCountKnown(msg.page.Scope.CompletedCount, msg.page.Scope.CompletedCountKnown) && msg.page.CompletedCount != 0 {
+		msg.page.Scope.CompletedCount = msg.page.CompletedCount
+		msg.page.Scope.CompletedCountKnown = true
+	}
+	for i := range m.scopeCatalog {
+		if m.scopeCatalog[i].ID == msg.page.Scope.ID {
+			m.scopeCatalog[i] = mergeScopeInfoPreservingActive(m.scopeCatalog[i], msg.page.Scope)
+			if m.activeScope != nil && m.activeScope.ID == msg.page.Scope.ID {
+				active := mergeScopeInfo(*m.activeScope, msg.page.Scope)
+				active.Active = true
+				m.activeScope = &active
+			}
+			break
+		}
+	}
+	items := make([]IssueItem, len(msg.page.Members))
+	ready := make(map[string]bool, len(items))
+	for i, issue := range msg.page.Members {
+		items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+		m.decorateIssueItem(&items[i])
+		ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
+	}
+	m.scopePicker.SetMemberReadyIDs(ready)
+	m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation, msg.requestKey)
+}
+
+func (m *Model) handleBacklogPageMessage(msg backlogPageMsg) {
+	expectedCursor, hasRequestedPage := m.backlog.pageCursorAt(msg.index)
+	if msg.generation != m.backlogPageGeneration ||
+		(msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) ||
+		!hasRequestedPage || msg.cursor != expectedCursor {
+		return
+	}
+	m.backlog.SetLoading(false)
+	m.backlogLoading = false
+	if msg.err != nil {
+		m.backlog.SetError(msg.err)
+		m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)
+		m.statusIsError = true
+		return
+	}
+	m.backlog.SetPage(msg.page, msg.index)
+	items := make([]IssueItem, len(msg.page.Issues))
+	for i, issue := range msg.page.Issues {
+		items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
+		m.decorateIssueItem(&items[i])
+	}
+	m.backlog.setPresentation(items)
+}
+
+func (m *Model) handleScopeMutationMessage(msg scopeMutationMsg) []tea.Cmd {
+	if msg.err != nil {
+		m.statusMsg = fmt.Sprintf("Scope %s failed: %v", msg.action, msg.err)
+		m.statusIsError = true
+		return nil
+	}
+	mutation := msg.mutation
+	if mutation.Kind == "" {
+		mutation.Kind = ScopeMutationKind(msg.action)
+	}
+	if msg.restoreFocus {
+		m.closeScopePicker()
+	}
+	m.clearSubmittedScopeMarks(mutation.IssueIDs)
+	m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
+	m.statusIsError = false
+	return []tea.Cmd{m.refreshAfterScopeMutation(mutation)}
+}
+
 func (m *Model) closeScopePicker() {
 	if m.scopePickerMoveIssue != "" {
 		restoreScopeSession := len(m.scopePickerMoveIssues) > 0 && m.scopeMoveOriginFocus == focusScopePicker
@@ -3335,6 +3569,58 @@ func (m *Model) backlogQuery(cursor string) BacklogQuery {
 		Cursor:             cursor,
 		Limit:              backlogPageSize,
 	}
+}
+
+func (m Model) backlogRepositorySelection() repositorypkg.Selection {
+	contexts := m.backlog.Contexts()
+	if len(contexts) == 0 {
+		if m.backlog.IncludeContextless() {
+			return repositorypkg.NewUnassignedSelection()
+		}
+		return repositorypkg.NewAllSelection()
+	}
+	if m.backlog.IncludeContextless() {
+		if scope, err := repositorypkg.NewSelectedAndUnassignedSelection(contexts); err == nil {
+			return scope
+		}
+	} else if scope, err := repositorypkg.NewSelectedSelection(contexts); err == nil {
+		return scope
+	}
+	return repositorypkg.NewAllSelection()
+}
+
+func (m *Model) applyBacklogPickerSelection(selection repositorypkg.Selection) *Model {
+	includeUnassigned := selection.IncludesUnassigned() || selection.Mode() == repositorypkg.SelectionUnassigned
+	contexts := selection.IDs()
+	// An empty draft is the backlog's all-items choice. Treat the equivalent
+	// all-contexts-plus-unassigned draft the same way so the query stays small.
+	if len(contexts) == 0 && !includeUnassigned {
+		contexts = nil
+		includeUnassigned = false
+	}
+	names := make([]string, 0, len(contexts))
+	for _, contextID := range contexts {
+		for _, repository := range m.repositoryCatalog {
+			if repository.ID == contextID {
+				name := repository.Name
+				if name == "" {
+					name = repository.ID
+				}
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	m.backlog.SetContextFilter(contexts, includeUnassigned, names)
+	m.backlog.resetCursor()
+	m.showRepoPicker = false
+	if m.repoPickerOrigin == focusGlobalIssues {
+		m.focused = focusGlobalIssues
+	} else {
+		m.focused = focusBacklog
+	}
+	m.backlogReloadCmd = m.reloadBacklogFromFirstPage()
+	return m
 }
 
 func (m *Model) reloadBacklogFromFirstPage() tea.Cmd {
@@ -3631,7 +3917,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			label := strings.TrimSpace(m.backlog.LabelInputValue())
-			if isBacklogOrdinaryLabel(label) {
+			if isBacklogOrdinaryLabel(label, m.labelPredicate()) {
 				oldLabel := m.backlog.Label()
 				m.backlog.EndLabelEdit()
 				m.backlog.SetLabel(label)
@@ -3892,7 +4178,9 @@ func (m *Model) beginScopeMatchMutation(action string) tea.Cmd {
 	return m.scopeMatchInput.Focus()
 }
 
-func parseScopeMatch(value string) (string, string, error) {
+// parseScopeMatch parses a scope match while delegating label admission to the
+// resolved runtime policy.
+func parseScopeMatch(value string, predicate analysis.LabelPredicate) (string, string, error) {
 	prefix, target, ok := strings.Cut(strings.TrimSpace(value), ":")
 	target = strings.TrimSpace(target)
 	if !ok || target == "" {
@@ -3900,7 +4188,7 @@ func parseScopeMatch(value string) (string, string, error) {
 	}
 	switch strings.ToLower(strings.TrimSpace(prefix)) {
 	case "label":
-		if strings.HasPrefix(target, "ctx:") || strings.Contains(target, ",") {
+		if !isBacklogOrdinaryLabel(target, predicate) {
 			return "", "", fmt.Errorf("enter one ordinary label")
 		}
 		return "", target, nil
@@ -3919,7 +4207,7 @@ func (m *Model) handleScopeMatchKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.focused = m.scopeMatchOrigin
 		return m, nil
 	case "enter":
-		epic, label, err := parseScopeMatch(m.scopeMatchInput.Value())
+		epic, label, err := parseScopeMatch(m.scopeMatchInput.Value(), m.labelPredicate())
 		if err != nil {
 			m.statusMsg, m.statusIsError = err.Error(), true
 			return m, nil

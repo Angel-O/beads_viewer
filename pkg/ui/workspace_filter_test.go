@@ -33,8 +33,7 @@ func TestApplyFilterRespectsWorkspaceRepoFilter(t *testing.T) {
 	})
 
 	// Filter to api only
-	m.activeRepos = map[string]bool{"api": true}
-	m.applyFilter()
+	m.SetRepositoryScope(map[string]bool{"api": true})
 
 	if got := len(m.list.Items()); got != 1 {
 		t.Fatalf("expected 1 visible item after repo filter, got %d", got)
@@ -46,8 +45,7 @@ func TestApplyFilterRespectsWorkspaceRepoFilter(t *testing.T) {
 	requireWorkspaceFilterString(t, "api issue", item.Issue.ID, "api-AUTH-1")
 
 	// Clear repo filter (nil = all repos)
-	m.activeRepos = nil
-	m.applyFilter()
+	m.SetRepositoryScope(nil)
 	if got := len(m.list.Items()); got != 2 {
 		t.Fatalf("expected 2 visible items with no repo filter, got %d", got)
 	}
@@ -69,8 +67,7 @@ func TestApplyFilterRespectsHyphenatedWorkspaceRepoKey(t *testing.T) {
 		RepoPrefixes: []string{"backend-service-", "web-app-"},
 	})
 
-	m.activeRepos = map[string]bool{"backend-service": true}
-	m.applyFilter()
+	m.SetRepositoryScope(map[string]bool{"backend-service": true})
 
 	if got := len(m.list.Items()); got != 1 {
 		t.Fatalf("expected 1 visible item after hyphenated repo filter, got %d", got)

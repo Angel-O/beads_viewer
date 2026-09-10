@@ -133,7 +133,7 @@ func (a *app) migrate(request request) int {
 	correlations := migrationCorrelationSummary{Planned: len(plan.correlations)}
 	for _, planned := range plan.correlations {
 		newID := backend.IssueMap[planned.OldID]
-		_, added, correlationErr := correlation.AddExternalCorrelation(plan.config.Path, newID, plan.context, planned.Commit)
+		_, added, correlationErr := hub.AddExternalCorrelation(plan.config.Path, newID, plan.context, planned.Commit)
 		if correlationErr != nil {
 			return a.fail(fmt.Errorf("adding correlation for %q/%s: incomplete apply: %w", planned.OldID, planned.Commit, correlationErr))
 		}

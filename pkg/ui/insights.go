@@ -135,15 +135,16 @@ var metricDescriptions = map[MetricPanel]MetricInfo{
 
 // InsightsModel is an interactive insights dashboard
 type InsightsModel struct {
-	insights          analysis.Insights
-	issueMap          map[string]*model.Issue
-	activeIssueIDs    map[string]bool
-	theme             Theme
-	extraText         string
-	labelAttention    []analysis.LabelAttentionScore
-	labelFlow         *analysis.CrossLabelFlow
-	repositoryCatalog repository.Catalog
-	hubPresentation   bool
+	insights                 analysis.Insights
+	issueMap                 map[string]*model.Issue
+	activeIssueIDs           map[string]bool
+	theme                    Theme
+	extraText                string
+	labelAttention           []analysis.LabelAttentionScore
+	labelFlow                *analysis.CrossLabelFlow
+	repositoryCatalog        repository.Catalog
+	hubPresentation          bool
+	repositoryLabelPredicate analysis.LabelPredicate
 
 	// Priority triage data (bv-91)
 	topPicks []analysis.TopPick
@@ -186,9 +187,10 @@ type InsightsModel struct {
 
 // SetRepositoryPresentation updates Hub-only detail metadata and rebuilds the
 // cached detail content for the current selection.
-func (m *InsightsModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool) {
+func (m *InsightsModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, predicate analysis.LabelPredicate) {
 	m.repositoryCatalog = append(repository.Catalog(nil), catalog...)
 	m.hubPresentation = enabled
+	m.repositoryLabelPredicate = predicate
 	m.updateDetailContent()
 }
 
@@ -1862,7 +1864,7 @@ func (m *InsightsModel) buildDetailMarkdown(selectedID string) string {
 	}
 
 	var sb strings.Builder
-	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubPresentation, "", nil)
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubPresentation, "", nil, m.repositoryLabelPredicate)
 
 	// === HEADER: Title with Type Icon ===
 	sb.WriteString(fmt.Sprintf("# %s %s\n\n", GetTypeIconMD(string(issue.IssueType)), issue.Title))

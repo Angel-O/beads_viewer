@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 
@@ -31,12 +32,13 @@ type BoardModel struct {
 	blocksIndex map[string][]string
 
 	// Issue lookup map: ID -> *Issue for getting blocker titles (bv-kklp)
-	issueMap              map[string]*model.Issue
-	candidateIDs          map[string]bool
-	repositoryCatalog     repository.Catalog
-	hubPresentation       bool
-	currentRepositoryID   string
-	preferredRepositories map[string]bool
+	issueMap                 map[string]*model.Issue
+	candidateIDs             map[string]bool
+	repositoryCatalog        repository.Catalog
+	hubPresentation          bool
+	currentRepositoryID      string
+	preferredRepositories    map[string]bool
+	repositoryLabelPredicate analysis.LabelPredicate
 
 	// Detail panel (bv-r6kh)
 	showDetail   bool
@@ -67,16 +69,17 @@ type BoardModel struct {
 
 // SetRepositoryPresentation updates Hub-only display metadata, primary-context
 // preference, and invalidates rendered details for stable selected issues.
-func (b *BoardModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool) {
+func (b *BoardModel) SetRepositoryPresentation(catalog repository.Catalog, enabled bool, currentRepositoryID string, preferredRepositories map[string]bool, predicate analysis.LabelPredicate) {
 	b.repositoryCatalog = append(repository.Catalog(nil), catalog...)
 	b.hubPresentation = enabled
 	b.currentRepositoryID = currentRepositoryID
 	b.preferredRepositories = preferredRepositories
+	b.repositoryLabelPredicate = predicate
 	b.lastDetailID = ""
 }
 
 func (b BoardModel) issuePresentation(issue model.Issue) issueRepositoryPresentation {
-	return repositoryPresentationForIssue(issue, b.repositoryCatalog, b.hubPresentation, b.currentRepositoryID, b.preferredRepositories)
+	return repositoryPresentationForIssue(issue, b.repositoryCatalog, b.hubPresentation, b.currentRepositoryID, b.preferredRepositories, b.repositoryLabelPredicate)
 }
 
 // searchMatch holds info about a matching card (bv-yg39)

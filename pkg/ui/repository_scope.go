@@ -2,13 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
@@ -18,7 +18,7 @@ import (
 // field-level access while catalog reconciliation has one owner.
 type repositoryScopeController struct {
 	repositoryCatalog         repositorypkg.Catalog
-	hubScope                  hub.HubScope
+	repositorySelection       repositorypkg.Selection
 	repositoryCatalogIssues   []model.Issue
 	contextlessBeadCountValue int
 	contextlessCountReady     bool
@@ -30,49 +30,23 @@ type repositoryScopeController struct {
 	defaultRepositorySet      bool
 	catalogGeneration         uint64
 	activeRepos               map[string]bool
+	repositoryLabelPredicate  analysis.LabelPredicate
+	repositoryIssueResolver   IssueRepositoryResolver
 }
 
 func newRepositoryScopeController() repositoryScopeController {
-	return repositoryScopeController{hubScope: hub.NewAllItemsHubScope()}
+	return repositoryScopeController{repositorySelection: repositorypkg.NewAllSelection()}
 }
 
-func (s *repositoryScopeController) reconcileHubScopeCatalog(usesHub bool) {
-	if !usesHub || s.hubScope.Mode != hub.HubScopeSelectedContexts {
+func (s *repositoryScopeController) reconcileRepositorySelection(usesHub bool) {
+	if !usesHub || s.repositorySelection.Mode() != repositorypkg.SelectionSelected {
 		return
 	}
-	selected := make(map[string]bool, len(s.hubScope.Contexts))
-	for _, contextID := range s.hubScope.Contexts {
-		selected[contextID] = true
-	}
-	reconciled := repositorypkg.ReconcileSelection(selected, s.repositoryCatalog)
-	if reconciled == nil {
-		if s.hubScope.IncludeContextless {
-			s.hubScope = hub.NewContextlessHubScope()
-		} else {
-			s.hubScope = hub.NewAllItemsHubScope()
-		}
+	s.repositorySelection = s.repositorySelection.Reconcile(s.repositoryCatalog)
+	s.activeRepos = selectionMap(s.repositorySelection)
+	if len(s.activeRepos) == len(s.repositoryCatalog) && s.repositorySelection.IncludesUnassigned() {
 		s.activeRepos = nil
-		return
 	}
-	if s.hubScope.IncludeContextless && len(reconciled) == len(s.repositoryCatalog) {
-		s.hubScope = hub.NewAllItemsHubScope()
-		s.activeRepos = nil
-		return
-	}
-	var scope hub.HubScope
-	var err error
-	if s.hubScope.IncludeContextless {
-		scope, err = hub.NewSelectedContextsAndContextlessHubScope(sortedRepoKeys(reconciled))
-	} else {
-		scope, err = hub.NewSelectedContextsHubScope(sortedRepoKeys(reconciled))
-	}
-	if err != nil {
-		s.hubScope = hub.NewAllItemsHubScope()
-		s.activeRepos = nil
-		return
-	}
-	s.hubScope = scope
-	s.activeRepos = reconciled
 }
 
 func (s *repositoryScopeController) setRepositoryScope(selected map[string]bool, usesHub bool) error {
@@ -80,89 +54,97 @@ func (s *repositoryScopeController) setRepositoryScope(selected map[string]bool,
 	s.defaultRepositoryID = ""
 	reconciled := repositorypkg.ReconcileSelection(selected, s.repositoryCatalog)
 	if usesHub {
-		if len(selected) == 0 || len(reconciled) == 0 {
-			s.hubScope = hub.NewAllItemsHubScope()
+		if len(selected) == 0 {
+			s.repositorySelection = repositorypkg.NewAllSelection()
 			s.activeRepos = nil
 			return nil
 		}
-		return s.setHubRepositoryScope(reconciled, false)
+		return s.setPickerRepositorySelection(reconciled, false)
 	}
 	if len(selected) == 0 || len(reconciled) == len(s.repositoryCatalog) {
+		s.repositorySelection = repositorypkg.NewAllSelection()
 		s.activeRepos = nil
-	} else {
-		s.activeRepos = reconciled
+		return nil
 	}
+	selection, err := repositorypkg.NewSelectedSelection(sortedRepoKeys(reconciled))
+	if err != nil {
+		return err
+	}
+	s.repositorySelection = selection
+	s.activeRepos = reconciled
 	return nil
 }
 
-func (s *repositoryScopeController) setHubRepositoryScope(selected map[string]bool, includeContextless bool) error {
+func (s *repositoryScopeController) setPickerRepositorySelection(selected map[string]bool, includeUnassigned bool) error {
 	s.defaultRepositorySet = true
 	s.defaultRepositoryID = ""
 	if len(selected) == 0 {
-		if includeContextless {
-			s.hubScope = hub.NewContextlessHubScope()
+		if includeUnassigned {
+			s.repositorySelection = repositorypkg.NewUnassignedSelection()
 		} else {
-			s.hubScope = hub.NewAllItemsHubScope()
+			s.repositorySelection = repositorypkg.NewAllSelection()
 		}
 		s.activeRepos = nil
 		return nil
 	}
-	if includeContextless && len(selected) == len(s.repositoryCatalog) {
-		s.hubScope = hub.NewAllItemsHubScope()
+	if includeUnassigned && len(selected) == len(s.repositoryCatalog) {
+		s.repositorySelection = repositorypkg.NewAllSelection()
 		s.activeRepos = nil
 		return nil
 	}
 	contexts := sortedRepoKeys(selected)
-	var scope hub.HubScope
-	var err error
-	if includeContextless {
-		scope, err = hub.NewSelectedContextsAndContextlessHubScope(contexts)
+	var scope repositorypkg.Selection
+	if includeUnassigned {
+		var err error
+		scope, err = repositorypkg.NewSelectedAndUnassignedSelection(contexts)
+		if err != nil {
+			return err
+		}
 	} else {
-		scope, err = hub.NewSelectedContextsHubScope(contexts)
+		var err error
+		scope, err = repositorypkg.NewSelectedSelection(contexts)
+		if err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-	s.hubScope = scope
+	s.repositorySelection = scope
 	s.activeRepos = repositorypkg.ReconcileSelection(selected, s.repositoryCatalog)
 	return nil
 }
 
-func (s *repositoryScopeController) setHubScope(scope hub.HubScope, usesHub bool) error {
+func (s *repositoryScopeController) setRepositorySelection(scope repositorypkg.Selection, usesHub bool) error {
 	if err := scope.Validate(); err != nil {
 		return err
 	}
-	if scope.Mode == hub.HubScopeSelectedContexts {
+	if scope.Mode() == repositorypkg.SelectionSelected {
 		available := make(map[string]bool, len(s.repositoryCatalog))
 		for _, repository := range s.repositoryCatalog {
-			if repository.Kind == repositorypkg.IdentityExact {
-				available[repository.ID] = true
-			}
+			available[repository.ID] = true
 		}
-		for _, contextID := range scope.Contexts {
-			if !available[contextID] {
-				return fmt.Errorf("Hub context is not registered: %s", contextID)
+		for _, id := range scope.IDs() {
+			if !available[id] {
+				return fmt.Errorf("repository is not available: %s", id)
 			}
 		}
 	}
 	s.defaultRepositorySet = true
 	s.defaultRepositoryID = ""
-	switch scope.Mode {
-	case hub.HubScopeAllItems:
-		s.hubScope = hub.NewAllItemsHubScope()
-	case hub.HubScopeContextless:
-		s.hubScope = hub.NewContextlessHubScope()
-	default:
-		s.hubScope = scope.Clone()
-	}
-	s.activeRepos = nil
-	if usesHub && scope.Mode == hub.HubScopeSelectedContexts {
-		s.activeRepos = make(map[string]bool, len(scope.Contexts))
-		for _, contextID := range scope.Contexts {
-			s.activeRepos[contextID] = true
-		}
+	s.repositorySelection = scope.Clone()
+	s.activeRepos = selectionMap(scope)
+	if scope.Mode() != repositorypkg.SelectionSelected || usesHub && scope.IncludesUnassigned() && len(s.activeRepos) == len(s.repositoryCatalog) {
+		s.activeRepos = nil
 	}
 	return nil
+}
+
+func (m *Model) applyInitialRepositorySelection(selection *repositorypkg.Selection) {
+	if selection == nil || m.defaultRepositorySet || selection.Mode() == repositorypkg.SelectionSelected && !m.repositoryCatalogReady {
+		return
+	}
+	if err := m.SetRepositorySelection(selection.Clone()); err != nil {
+		m.statusMsg = fmt.Sprintf("Initial repository selection unavailable: %v", err)
+		m.statusIsError = true
+	}
 }
 
 func (s *repositoryScopeController) applyDefault() bool {
@@ -174,71 +156,44 @@ func (s *repositoryScopeController) applyDefault() bool {
 		if repository.Kind != repositorypkg.IdentityExact || repository.ID != s.defaultRepositoryID {
 			continue
 		}
-		scope, err := hub.NewSelectedContextsHubScope([]string{repository.ID})
+		scope, err := repositorypkg.NewSelectedSelection([]string{repository.ID})
 		if err != nil {
 			return false
 		}
 		s.activeRepos = map[string]bool{repository.ID: true}
-		s.hubScope = scope
+		s.repositorySelection = scope
 		return true
 	}
 	return false
 }
 
-func (s repositoryScopeController) usesHubScope(workspaceMode, hubRepositoryMode bool, catalogPath string) bool {
+func (s repositoryScopeController) usesHubScope(workspaceMode, repositoryPresentation bool) bool {
 	if workspaceMode {
 		return false
 	}
-	if hubRepositoryMode || strings.TrimSpace(catalogPath) != "" {
+	if repositoryPresentation {
 		return true
-	}
-	for _, repository := range s.repositoryCatalog {
-		if repository.Kind == repositorypkg.IdentityExact {
-			return true
-		}
 	}
 	return false
 }
 
 func (s repositoryScopeController) issueMatchesRepositoryScope(issue model.Issue, workspaceMode, usesHub bool) bool {
-	if usesHub {
-		return s.hubScope.MatchesLabels(issue.Labels)
-	}
-	if s.activeRepos == nil {
+	if !usesHub && s.activeRepos == nil {
 		return true
 	}
-
-	workspaceKey := ""
-	for _, repository := range s.repositoryCatalog {
-		if !s.activeRepos[repository.ID] {
-			continue
-		}
-		switch repository.Kind {
-		case repositorypkg.IdentityExact:
-			if repository.ID != strings.ToLower(repository.ID) || !strings.HasPrefix(repository.ID, "ctx:") {
-				continue
-			}
-			for _, label := range issue.Labels {
-				if label == repository.ID {
-					return true
-				}
-			}
-		case repositorypkg.IdentityPrefix:
-			if workspaceKey == "" {
-				workspaceKey = issueRepoKey(issue)
-			}
-			if workspaceKey == repository.ID {
-				return true
-			}
-		}
+	ids := issueRepositoryIDs(issue, s.repositoryCatalog, s.repositoryIssueResolver)
+	if (s.repositorySelection.Mode() == repositorypkg.SelectionUnassigned || s.repositorySelection.IncludesUnassigned()) && len(ids) == 0 && issueHasRepositoryContext(issue, s.repositoryCatalog, s.repositoryIssueResolver, s.repositoryLabelPredicate) {
+		return false
 	}
-
+	if s.repositorySelection.Matches(ids) {
+		return true
+	}
 	// Legacy workspace filtering keeps issues with no source/prefix visible.
-	return workspaceMode && workspaceKey == ""
+	return workspaceMode && !usesHub && len(ids) == 0
 }
 
 func (s repositoryScopeController) repositoryCandidates(issues []model.Issue, workspaceMode, usesHub bool) []model.Issue {
-	if (!usesHub && s.activeRepos == nil) || (usesHub && s.hubScope.Mode == hub.HubScopeAllItems) {
+	if (!usesHub && s.activeRepos == nil) || (usesHub && s.repositorySelection.Mode() == repositorypkg.SelectionAll) {
 		return issues
 	}
 	candidates := make([]model.Issue, 0, len(issues))
@@ -268,6 +223,180 @@ func (s *repositoryScopeController) setCatalogIssues(issues []model.Issue) {
 	s.contextlessCountReady = false
 }
 
+// SetRepositoryCatalogIssues provides the unfiltered issue universe used for
+// stable total counts when the initial TUI view is recipe-filtered.
+func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
+	m.repositoryScopeController.setCatalogIssues(issues)
+}
+
+func (m Model) contextlessBeadCount() int {
+	if m.contextlessCountReady {
+		return m.contextlessBeadCountValue
+	}
+	issues := m.repositoryCatalogIssues
+	if issues == nil {
+		issues = m.issues
+	}
+	return contextlessIssueCount(issues, m.repositoryCatalog, m.issueRepositoryResolver(), m.labelPredicate())
+}
+
+func (m *Model) reloadRepositoryCatalog() error {
+	if m.workspaceMode {
+		beforeScope := m.RepositorySelection()
+		beforeRepos := sortedRepoKeys(m.activeRepos)
+		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
+		m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
+		contextSortFallback := m.normalizeContextSortMode()
+		scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		if scopeChanged {
+			m.refreshRepositoryCandidates()
+		} else if contextSortFallback && m.list.Width() > 0 {
+			m.sortListItems(m.list.Items())
+			m.updateViewportContent()
+		}
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+		}
+		m.board.SetRepositoryPresentation(m.repositoryCatalog, false, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false, m.labelPredicate())
+		return nil
+	}
+	if strings.TrimSpace(m.catalogPath()) == "" {
+		return nil
+	}
+	issues := m.issues
+	if m.repositoryCatalogIssues != nil {
+		issues = m.repositoryCatalogIssues
+	}
+	loader := m.runtimeServices.CatalogLoader
+	if loader == nil {
+		return nil
+	}
+	catalog, err := loader(m.catalogPath(), issues)
+	if err != nil {
+		return err
+	}
+	beforeScope := m.RepositorySelection()
+	beforeRepos := sortedRepoKeys(m.activeRepos)
+	m.repositoryScopeController.setCatalog(catalog)
+	m.applyInitialRepositorySelection(m.runtimeServices.InitialRepositorySelection)
+	m.reconcileRepositorySelectionCatalog()
+	contextSortFallback := m.normalizeContextSortMode()
+	scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+	if scopeChanged {
+		m.refreshRepositoryCandidates()
+	} else if contextSortFallback && m.list.Width() > 0 {
+		m.sortListItems(m.list.Items())
+		m.updateViewportContent()
+	}
+	if m.showRepoPicker {
+		m.repoPicker.SetCatalog(m.repositoryCatalog)
+		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+	}
+	presentation := m.hubRepositoryPresentation()
+	m.board.SetRepositoryPresentation(catalog, presentation, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+	m.insightsPanel.SetRepositoryPresentation(catalog, presentation, m.labelPredicate())
+	return nil
+}
+
+func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, generation uint64, changed, recovered bool, err error) {
+	if m.workspaceMode || !m.repositoryScopeController.acceptCatalogGeneration(generation) {
+		return
+	}
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", err)
+		m.statusIsError = true
+		return
+	}
+	if changed {
+		beforeScope := m.RepositorySelection()
+		beforeRepos := sortedRepoKeys(m.activeRepos)
+		m.repositoryScopeController.setCatalog(catalog)
+		m.applyInitialRepositorySelection(m.runtimeServices.InitialRepositorySelection)
+		if m.usesHubScope() {
+			m.reconcileRepositorySelectionCatalog()
+		} else {
+			m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
+		}
+		contextSortFallback := m.normalizeContextSortMode()
+		if m.showRepoPicker {
+			m.repoPicker.SetCatalog(m.repositoryCatalog)
+			m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
+		}
+		m.refreshRepositoryPresentation()
+		defaultApplied := m.applyDefaultRepositoryScope()
+		scopeChanged := !sameRepositorySelection(beforeScope, m.repositorySelection) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
+		if !defaultApplied && scopeChanged {
+			m.refreshRepositoryCandidates()
+		} else if contextSortFallback && m.list.Width() > 0 {
+			m.sortListItems(m.list.Items())
+			m.updateViewportContent()
+		}
+	}
+	if recovered && (strings.HasPrefix(m.statusMsg, "Repository catalog load failed:") || strings.HasPrefix(m.statusMsg, "Repository catalog reload failed")) {
+		m.statusMsg = ""
+		m.statusIsError = false
+	}
+}
+
+func (m *Model) applyRepositoryPickerSelection() *Model {
+	selection, err := m.repoPicker.RepositorySelection()
+	if err != nil {
+		return m
+	}
+	selected := selection.IDs()
+	if m.repoPickerOrigin == focusBacklog || m.repoPickerOrigin == focusGlobalIssues {
+		return m.applyBacklogPickerSelection(selection)
+	}
+	focusAfterApply := m.repoPickerOrigin
+	if m.repoPickerOrigin == focusScopePicker {
+		focusAfterApply = focusScopePicker
+	}
+	if m.hubRepositoryMode {
+		includeUnassigned := selection.IncludesUnassigned() || selection.Mode() == repositorypkg.SelectionUnassigned
+		switch {
+		case len(selected) == 0 && includeUnassigned:
+			m.statusMsg = "Context: no-context"
+		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeUnassigned:
+			m.statusMsg = "Context: all"
+		case includeUnassigned:
+			m.statusMsg = fmt.Sprintf("Context: %s, no-context", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
+		default:
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
+		}
+		m.statusIsError = false
+		if err := m.SetRepositorySelection(selection); err != nil {
+			m.statusMsg, m.statusIsError = err.Error(), true
+		}
+	} else {
+		if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
+			m.statusMsg = "Context: all"
+		} else {
+			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNamesForIDs(selected), ", "))
+		}
+		m.statusIsError = false
+		m.SetRepositoryScope(repositoryIDsMap(selected))
+	}
+	m.showRepoPicker = false
+	m.focused = focusAfterApply
+	if focusAfterApply == focusTree {
+		m.rebuildRepositoryTree()
+	}
+	return m
+}
+
+func (m Model) repositoryScopeNamesForIDs(ids []string) []string {
+	return m.repositoryScopeNames(repositoryIDsMap(ids))
+}
+
+func repositoryIDsMap(ids []string) map[string]bool {
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
+	return selected
+}
+
 func (s *repositoryScopeController) setProjectedIssues(issues []model.Issue) {
 	s.repositoryIssues = issues
 	s.repositoryIssueIDs = issueIDSet(issues)
@@ -282,10 +411,14 @@ type issueRepositoryPresentation struct {
 }
 
 func (m Model) labelPredicate() analysis.LabelPredicate {
-	if m.hubRepositoryPresentation() {
-		return hub.AdmitLabel
+	if m.runtimeServices.LabelPredicate != nil {
+		return m.runtimeServices.LabelPredicate
 	}
 	return nil
+}
+
+func (m Model) issueRepositoryResolver() IssueRepositoryResolver {
+	return m.runtimeServices.IssueRepositoryResolver
 }
 
 type hubRelationshipEvidence struct {
@@ -308,9 +441,9 @@ func (m Model) effectiveHubContextIDs() map[string]struct{} {
 	}
 
 	effective := make(map[string]struct{}, len(recognized))
-	if m.hubScope.Mode == hub.HubScopeSelectedContexts {
-		for _, contextID := range m.hubScope.Contexts {
-			effective[contextID] = struct{}{}
+	if m.repositorySelection.Mode() == repositorypkg.SelectionSelected {
+		for _, id := range m.repositorySelection.IDs() {
+			effective[id] = struct{}{}
 		}
 	}
 	for _, issue := range m.repositoryCandidates() {
@@ -327,8 +460,8 @@ func (m Model) contextSortModesAvailable() bool {
 	if m.workspaceMode || !m.usesHubScope() {
 		return false
 	}
-	switch m.hubScope.Mode {
-	case hub.HubScopeContextless:
+	switch m.repositorySelection.Mode() {
+	case repositorypkg.SelectionUnassigned:
 		return false
 	}
 	return len(m.effectiveHubContextIDs()) >= 2
@@ -342,22 +475,96 @@ func (m *Model) normalizeContextSortMode() bool {
 	return true
 }
 
-func isHubContextLabel(label string) bool {
-	return hub.IsContextLabel(label)
-}
-
-func contextlessIssueCount(issues []model.Issue) int {
-	scope := hub.NewContextlessHubScope()
+func contextlessIssueCount(issues []model.Issue, catalog repositorypkg.Catalog, resolver IssueRepositoryResolver, predicate analysis.LabelPredicate) int {
 	count := 0
 	for _, issue := range issues {
-		if scope.MatchesLabels(issue.Labels) {
+		if !issueHasRepositoryContext(issue, catalog, resolver, predicate) {
 			count++
 		}
 	}
 	return count
 }
 
-func repositoryPresentationForIssue(issue model.Issue, catalog repositorypkg.Catalog, hubMode bool, currentRepositoryID string, preferredRepositories map[string]bool) issueRepositoryPresentation {
+func selectionMap(selection repositorypkg.Selection) map[string]bool {
+	if selection.Mode() != repositorypkg.SelectionSelected {
+		return nil
+	}
+	selected := make(map[string]bool, len(selection.IDs()))
+	for _, id := range selection.IDs() {
+		selected[id] = true
+	}
+	return selected
+}
+
+func sameRepositorySelection(a, b repositorypkg.Selection) bool {
+	return a.Mode() == b.Mode() && a.IncludesUnassigned() == b.IncludesUnassigned() && slices.Equal(a.IDs(), b.IDs())
+}
+
+func repositoryCatalogHasID(catalog repositorypkg.Catalog, id string) bool {
+	for _, entry := range catalog {
+		if entry.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func issueRepositoryIDs(issue model.Issue, catalog repositorypkg.Catalog, resolver IssueRepositoryResolver) []string {
+	if resolver != nil {
+		ids := append([]string(nil), resolver(issue)...)
+		sort.Strings(ids)
+		unique := ids[:0]
+		for _, id := range ids {
+			if id != "" && (len(unique) == 0 || unique[len(unique)-1] != id) {
+				unique = append(unique, id)
+			}
+		}
+		return unique
+	}
+	ids := make([]string, 0)
+	workspaceKey := ""
+	for _, entry := range catalog {
+		matched := false
+		if entry.Kind == repositorypkg.IdentityExact || entry.Kind == "" {
+			for _, label := range issue.Labels {
+				if label == entry.ID {
+					matched = true
+					break
+				}
+			}
+		} else if entry.Kind == repositorypkg.IdentityPrefix {
+			if workspaceKey == "" {
+				workspaceKey = issueRepoKey(issue)
+			}
+			matched = workspaceKey == entry.ID
+		}
+		if matched {
+			ids = append(ids, entry.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func issueHasRepositoryContext(issue model.Issue, catalog repositorypkg.Catalog, resolver IssueRepositoryResolver, predicate analysis.LabelPredicate) bool {
+	if len(issueRepositoryIDs(issue, catalog, resolver)) > 0 {
+		return true
+	}
+	if resolver != nil || predicate == nil {
+		return false
+	}
+	for _, label := range issue.Labels {
+		if !predicate(label) {
+			return true
+		}
+	}
+	return false
+}
+
+// repositoryPresentationForIssue is the single presentation policy entry
+// point. The neutral label predicate is explicit; nil is valid for local mode
+// and never turns label matching into repository resolution.
+func repositoryPresentationForIssue(issue model.Issue, catalog repositorypkg.Catalog, hubMode bool, currentRepositoryID string, preferredRepositories map[string]bool, predicate analysis.LabelPredicate) issueRepositoryPresentation {
 	presentation := issueRepositoryPresentation{Labels: issue.Labels}
 	if !hubMode {
 		return presentation
@@ -366,7 +573,7 @@ func repositoryPresentationForIssue(issue model.Issue, catalog repositorypkg.Cat
 	presentation.Labels = make([]string, 0, len(issue.Labels))
 	contexts := make(map[string]bool)
 	for _, label := range issue.Labels {
-		if isHubContextLabel(label) {
+		if repositoryCatalogHasID(catalog, label) || predicate != nil && !predicate(label) {
 			contexts[label] = true
 			continue
 		}
@@ -439,7 +646,7 @@ func hubContextNames(issue model.Issue, catalog repositorypkg.Catalog) []string 
 	}
 	contexts := make([]string, 0)
 	for _, label := range issue.Labels {
-		if !isHubContextLabel(label) {
+		if !repositoryCatalogHasID(catalog, label) {
 			continue
 		}
 		name := namesByID[label]
@@ -537,14 +744,14 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 }
 
 func (m *Model) hubRepositoryPresentation() bool {
-	return !m.workspaceMode && strings.TrimSpace(m.catalogPath()) != ""
+	return !m.workspaceMode && m.hubRepositoryMode
 }
 
 func (m *Model) decorateIssueItem(item *IssueItem) {
 	if item == nil {
 		return
 	}
-	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.currentRepositoryID, m.activeRepos)
+	presentation := repositoryPresentationForIssue(item.Issue, m.repositoryCatalog, m.hubRepositoryPresentation(), m.currentRepositoryID, m.activeRepos, m.labelPredicate())
 	item.HubPresentation = m.hubRepositoryPresentation()
 	item.RepositoryID = presentation.ID
 	item.RepositoryName = presentation.Name
@@ -553,14 +760,14 @@ func (m *Model) decorateIssueItem(item *IssueItem) {
 	item.PresentationLabels = presentation.Labels
 }
 
-func projectHubLabelHealth(result analysis.LabelAnalysisResult, hubMode bool) analysis.LabelAnalysisResult {
+func projectHubLabelHealth(result analysis.LabelAnalysisResult, catalog repositorypkg.Catalog, hubMode bool) analysis.LabelAnalysisResult {
 	if !hubMode {
 		return result
 	}
 	result.TotalLabels, result.HealthyCount, result.WarningCount, result.CriticalCount = 0, 0, 0, 0
-	result.Labels = slicesDeleteContextHealth(result.Labels)
-	result.Summaries = slicesDeleteContextSummaries(result.Summaries)
-	result.AttentionNeeded = filterHubContextLabels(result.AttentionNeeded)
+	result.Labels = slicesDeleteContextHealth(result.Labels, catalog)
+	result.Summaries = slicesDeleteContextSummaries(result.Summaries, catalog)
+	result.AttentionNeeded = filterRepositoryLabels(result.AttentionNeeded, catalog)
 	result.TotalLabels = len(result.Labels)
 	for _, health := range result.Labels {
 		switch health.HealthLevel {
@@ -575,30 +782,30 @@ func projectHubLabelHealth(result analysis.LabelAnalysisResult, hubMode bool) an
 	return result
 }
 
-func slicesDeleteContextHealth(values []analysis.LabelHealth) []analysis.LabelHealth {
+func slicesDeleteContextHealth(values []analysis.LabelHealth, catalog repositorypkg.Catalog) []analysis.LabelHealth {
 	filtered := make([]analysis.LabelHealth, 0, len(values))
 	for _, value := range values {
-		if !isHubContextLabel(value.Label) {
+		if !repositoryCatalogHasID(catalog, value.Label) {
 			filtered = append(filtered, value)
 		}
 	}
 	return filtered
 }
 
-func slicesDeleteContextSummaries(values []analysis.LabelSummary) []analysis.LabelSummary {
+func slicesDeleteContextSummaries(values []analysis.LabelSummary, catalog repositorypkg.Catalog) []analysis.LabelSummary {
 	filtered := make([]analysis.LabelSummary, 0, len(values))
 	for _, value := range values {
-		if !isHubContextLabel(value.Label) {
+		if !repositoryCatalogHasID(catalog, value.Label) {
 			filtered = append(filtered, value)
 		}
 	}
 	return filtered
 }
 
-func filterHubContextLabels(values []string) []string {
+func filterRepositoryLabels(values []string, catalog repositorypkg.Catalog) []string {
 	filtered := make([]string, 0, len(values))
 	for _, value := range values {
-		if !isHubContextLabel(value) {
+		if !repositoryCatalogHasID(catalog, value) {
 			filtered = append(filtered, value)
 		}
 	}
@@ -617,27 +824,32 @@ func (m *Model) refreshRepositoryPresentation() {
 		m.updateListDelegate()
 		m.updateViewportContent()
 	}
-	m.board.SetRepositoryPresentation(m.repositoryCatalog, hubMode, m.currentRepositoryID, m.activeRepos)
-	m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, hubMode)
+	predicate := m.labelPredicate()
+	m.board.SetRepositoryPresentation(m.repositoryCatalog, hubMode, m.currentRepositoryID, m.activeRepos, predicate)
+	m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, hubMode, predicate)
 }
 
 func (m *Model) issueMatchesRepositoryScope(issue model.Issue) bool {
+	m.repositoryScopeController.repositoryIssueResolver = m.issueRepositoryResolver()
+	m.repositoryScopeController.repositoryLabelPredicate = m.labelPredicate()
 	return m.repositoryScopeController.issueMatchesRepositoryScope(issue, m.workspaceMode, m.usesHubScope())
 }
 
 func (m *Model) repositoryCandidates() []model.Issue {
+	m.repositoryScopeController.repositoryIssueResolver = m.issueRepositoryResolver()
+	m.repositoryScopeController.repositoryLabelPredicate = m.labelPredicate()
 	return m.repositoryScopeController.repositoryCandidates(m.issues, m.workspaceMode, m.usesHubScope())
 }
 
 func (m Model) repositoryScopeIsAll() bool {
 	if m.usesHubScope() {
-		return m.hubScope.Mode == hub.HubScopeAllItems
+		return m.repositorySelection.Mode() == repositorypkg.SelectionAll
 	}
 	return m.activeRepos == nil
 }
 
 func (m Model) usesHubScope() bool {
-	return m.repositoryScopeController.usesHubScope(m.workspaceMode, m.hubRepositoryMode, m.catalogPath())
+	return m.repositoryScopeController.usesHubScope(m.workspaceMode, m.hubRepositoryMode)
 }
 
 func issueIDSet(issues []model.Issue) map[string]bool {
@@ -656,8 +868,8 @@ func repositoryCatalogIDs(catalog repositorypkg.Catalog) []string {
 	return ids
 }
 
-func (m *Model) reconcileHubScopeCatalog() {
-	m.repositoryScopeController.reconcileHubScopeCatalog(m.usesHubScope())
+func (m *Model) reconcileRepositorySelectionCatalog() {
+	m.repositoryScopeController.reconcileRepositorySelection(m.usesHubScope())
 }
 
 // SetDefaultRepositoryScope applies an exact Hub context once the initial
@@ -700,18 +912,9 @@ func (m *Model) SetRepositoryScope(selected map[string]bool) {
 	m.refreshRepositoryPresentation()
 }
 
-func (m *Model) setHubRepositoryScope(selected map[string]bool, includeContextless bool) {
-	if err := m.repositoryScopeController.setHubRepositoryScope(selected, includeContextless); err != nil {
-		return
-	}
-	m.refreshRepositoryCandidates()
-	m.refreshRepositoryPresentation()
-}
-
-// SetHubScope applies an explicit Hub candidate selector. Selected context IDs
-// must be present in the current Hub repository catalog.
-func (m *Model) SetHubScope(scope hub.HubScope) error {
-	if err := m.repositoryScopeController.setHubScope(scope, m.usesHubScope()); err != nil {
+// SetRepositorySelection applies a validated neutral repository projection.
+func (m *Model) SetRepositorySelection(scope repositorypkg.Selection) error {
+	if err := m.repositoryScopeController.setRepositorySelection(scope, m.usesHubScope()); err != nil {
 		return err
 	}
 	m.refreshRepositoryCandidates()
@@ -719,15 +922,15 @@ func (m *Model) SetHubScope(scope hub.HubScope) error {
 	return nil
 }
 
-// HubScope returns a detached explicit Hub selector.
-func (m Model) HubScope() hub.HubScope {
-	return m.hubScope.Clone()
+// RepositorySelection returns a detached neutral repository projection.
+func (m Model) RepositorySelection() repositorypkg.Selection {
+	return m.repositorySelection.Clone()
 }
 
 // RepositoryScope returns a defensive copy of the selected exact catalog IDs.
 // Nil means all repositories.
 func (m Model) RepositoryScope() map[string]bool {
-	if m.usesHubScope() && m.hubScope.Mode != hub.HubScopeSelectedContexts {
+	if m.usesHubScope() && m.repositorySelection.Mode() != repositorypkg.SelectionSelected {
 		return nil
 	}
 	if m.activeRepos == nil {
@@ -1161,7 +1364,7 @@ func (m *Model) refreshRepositoryDerivedViews() {
 	if m.focused == focusLabelDashboard {
 		cfg := analysis.DefaultLabelHealthConfig()
 		m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
-		m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
+		m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.repositoryCatalog, m.hubRepositoryPresentation())
 		m.labelHealthCached = true
 		m.labelDashboard.SetData(m.labelHealthCache.Labels)
 	}
@@ -1223,21 +1426,17 @@ func (m *Model) rebuildRepositoryTree() {
 
 func (m Model) repositoryHistoryReport(report *correlation.HistoryReport) *correlation.HistoryReport {
 	typeFilterActive := len(m.activeIssueTypes) > 0
-	if m.usesHubScope() && m.hubScope.Mode == hub.HubScopeAllItems && !typeFilterActive {
+	if m.usesHubScope() && m.repositorySelection.Mode() == repositorypkg.SelectionAll && !typeFilterActive {
 		return report
 	}
-	repositories := m.activeRepos
-	if m.usesHubScope() && m.hubScope.Mode == hub.HubScopeContextless {
-		repositories = map[string]bool{}
-	}
-	if !m.usesHubScope() && repositories == nil && !typeFilterActive {
+	if !m.usesHubScope() && m.repositorySelection.Mode() == repositorypkg.SelectionAll && !typeFilterActive {
 		return report
 	}
 	ids := m.repositoryIssueIDs
 	if typeFilterActive {
 		ids = issueIDSet(m.typeFilteredIssues(m.repositoryIssues))
 	}
-	return projectHistoryReport(report, ids, repositories)
+	return projectHistoryReport(report, ids, m.repositorySelection)
 }
 
 // refreshAttentionView recomputes scoped label attention and updates both the
@@ -1271,7 +1470,7 @@ func (m *Model) refreshFlowMatrix() {
 	m.flowMatrix.SetSize(m.width, panelHeight)
 }
 
-func projectHistoryReport(report *correlation.HistoryReport, ids map[string]bool, repositories map[string]bool) *correlation.HistoryReport {
+func projectHistoryReport(report *correlation.HistoryReport, ids map[string]bool, selection repositorypkg.Selection) *correlation.HistoryReport {
 	if report == nil {
 		return nil
 	}
@@ -1280,7 +1479,11 @@ func projectHistoryReport(report *correlation.HistoryReport, ids map[string]bool
 	projected.CommitIndex = make(correlation.CommitIndex)
 	projected.Warnings = nil
 	for _, warning := range report.Warnings {
-		if warning.Context == "" || repositories == nil || repositories[warning.Context] {
+		warningRepositories := []string(nil)
+		if warning.Context != "" {
+			warningRepositories = []string{warning.Context}
+		}
+		if selection.Matches(warningRepositories) {
 			projected.Warnings = append(projected.Warnings, warning)
 		}
 	}

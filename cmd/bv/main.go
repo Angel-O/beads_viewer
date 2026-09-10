@@ -44,6 +44,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/search"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/updater"
@@ -1758,7 +1759,7 @@ func main() {
 			if resolvedConfig == "" {
 				return fmt.Errorf("correlate add requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, added, err := correlation.AddExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
+			record, added, err := hub.AddExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil && !added {
 				return fmt.Errorf("adding correlation: %w", err)
 			}
@@ -1782,7 +1783,7 @@ func main() {
 			if resolvedConfig == "" {
 				return fmt.Errorf("correlate remove requires --hub-config or ~/.config/bv/hub.yaml")
 			}
-			record, removed, err := correlation.RemoveExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
+			record, removed, err := hub.RemoveExternalCorrelation(resolvedConfig, *correlateBead, *repoFilter, *correlateCommit)
 			if err != nil && !removed {
 				return fmt.Errorf("removing correlation: %w", err)
 			}
@@ -2051,6 +2052,7 @@ func main() {
 		composition, err := composeViewerServices(viewerCompositionInput{
 			HistoryMode:        resolvedMode,
 			HubConfigPath:      resolvedConfig,
+			HistoryResolved:    true,
 			ExplicitDBPath:     *dbPath,
 			WorkspacePath:      *workspaceConfig,
 			AsOf:               *asOf,
@@ -2066,18 +2068,11 @@ func main() {
 		}
 		usesHubConfigStore := composition.UsesHubConfigStore
 
-		// Apply --db flag: set BEADS_DB env var so all downstream code respects it.
-		// Priority: --db flag > BEADS_DB env > BEADS_DIR env > auto-discovery.
-		if *dbPath != "" {
-			absDB, err := filepath.Abs(*dbPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error resolving --db path: %v\n", err)
-				os.Exit(1)
-			}
-			os.Setenv(loader.BeadsDBEnvVar, absDB)
-		} else if usesHubConfigStore {
-			if err := os.Setenv(loader.BeadsDBEnvVar, composition.SemanticStorePath); err != nil {
-				return fmt.Errorf("setting external Beads store: %w", err)
+		// Pin the source selected by composition so downstream loaders do not
+		// rediscover a different local or Hub source.
+		if composition.SelectedIssuePath != "" {
+			if err := os.Setenv(loader.BeadsDBEnvVar, composition.SelectedIssuePath); err != nil {
+				return fmt.Errorf("setting selected Beads source: %w", err)
 			}
 		}
 		// Mark robot mode for downstream packages (e.g., parsers) to keep stdout JSON clean.
@@ -2101,6 +2096,8 @@ func main() {
 			Stdout:             os.Stdout,
 			Stderr:             os.Stderr,
 			HistoryProvider:    composition.HistoryProvider,
+			LabelPredicate:     composition.LabelPredicate,
+			HubMode:            composition.HubMode,
 			Encoder:            newRobotEncoder(os.Stdout),
 			FinalizeBeforeExit: stopCPUProfile,
 		}
@@ -2898,8 +2895,7 @@ func main() {
 				os.Exit(1)
 			}
 
-			hubStore := composition.SemanticStorePath
-			indexPath, err := search.SemanticIndexPath(semanticDatasetPath, hubStore, embedCfg)
+			indexPath, err := search.SemanticIndexPath(semanticDatasetPath, composition.SemanticIndexDir, embedCfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -4967,45 +4963,8 @@ func main() {
 			}
 
 			// Launch TUI with historical issues (already loaded, no live reload)
-			m := ui.NewModel(issues, activeRecipe, "", ui.RuntimeServices{
-				HistoryProvider:        composition.HistoryProvider,
-				SelectedIssuePath:      composition.SelectedIssuePath,
-				IssueChangePath:        composition.IssueChangePath,
-				MetadataChangePaths:    composition.MetadataChangePaths,
-				CatalogPath:            composition.HubConfigPath,
-				CatalogLoader:          composition.CatalogLoader,
-				SemanticDatasetPath:    composition.SemanticDatasetPath,
-				SemanticStorePath:      composition.SemanticStorePath,
-				RepositoryPresentation: composition.RepositoryPresentation,
-				DefaultRepositoryID:    composition.DefaultCurrentContext,
-				ExternalHistory:        composition.HistoryProvider.External(),
-				HubAutoRefresh:         composition.HubAutoRefresh,
-				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-				InitialScope:           initialScope,
-				Scopes:                 composition.ScopeServices,
-				HubChangeSignal:        composition.HubChangeSignal,
-				RefreshResolved:        true,
-			})
-			m.SetRepositoryCatalogIssues(issues)
-			m.SetRuntimeServices(ui.RuntimeServices{
-				HistoryProvider:        composition.HistoryProvider,
-				SelectedIssuePath:      composition.SelectedIssuePath,
-				IssueChangePath:        composition.IssueChangePath,
-				MetadataChangePaths:    composition.MetadataChangePaths,
-				CatalogPath:            composition.HubConfigPath,
-				CatalogLoader:          composition.CatalogLoader,
-				SemanticDatasetPath:    semanticDatasetPath,
-				SemanticStorePath:      composition.SemanticStorePath,
-				RepositoryPresentation: composition.RepositoryPresentation,
-				DefaultRepositoryID:    composition.DefaultCurrentContext,
-				ExternalHistory:        composition.HistoryProvider.External(),
-				HubAutoRefresh:         composition.HubAutoRefresh,
-				HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-				InitialScope:           initialScope,
-				Scopes:                 composition.ScopeServices,
-				HubChangeSignal:        composition.HubChangeSignal,
-				RefreshResolved:        true,
-			})
+			runtimeServices := composition.runtimeServicesFor(composition.SemanticDatasetPath, initialScope)
+			m := ui.NewModel(issues, activeRecipe, "", runtimeServices)
 			defer m.Stop()
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
@@ -5111,46 +5070,8 @@ func main() {
 		}
 
 		// Initial Model with live reload support
-		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, ui.RuntimeServices{
-			HistoryProvider:        composition.HistoryProvider,
-			SelectedIssuePath:      composition.SelectedIssuePath,
-			IssueChangePath:        composition.IssueChangePath,
-			MetadataChangePaths:    composition.MetadataChangePaths,
-			CatalogPath:            composition.HubConfigPath,
-			CatalogLoader:          composition.CatalogLoader,
-			SemanticDatasetPath:    composition.SemanticDatasetPath,
-			SemanticStorePath:      composition.SemanticStorePath,
-			RepositoryPresentation: composition.RepositoryPresentation,
-			DefaultRepositoryID:    composition.DefaultCurrentContext,
-			ExternalHistory:        composition.HistoryProvider.External(),
-			HubAutoRefresh:         composition.HubAutoRefresh,
-			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-			InitialScope:           initialScope,
-			Scopes:                 composition.ScopeServices,
-			HubChangeSignal:        composition.HubChangeSignal,
-			RefreshResolved:        true,
-		})
-		m.SetRepositoryCatalogIssues(catalogIssues)
-		m.SetRuntimeServices(ui.RuntimeServices{
-			HistoryProvider:        composition.HistoryProvider,
-			SelectedIssuePath:      composition.SelectedIssuePath,
-			IssueChangePath:        composition.IssueChangePath,
-			MetadataChangePaths:    composition.MetadataChangePaths,
-			CatalogPath:            composition.HubConfigPath,
-			CatalogLoader:          composition.CatalogLoader,
-			SemanticDatasetPath:    semanticDatasetPath,
-			SemanticStorePath:      composition.SemanticStorePath,
-			RepositoryPresentation: composition.RepositoryPresentation,
-			DefaultRepositoryID:    composition.DefaultCurrentContext,
-			ExternalHistory:        composition.HistoryProvider.External(),
-			HubAutoRefresh:         composition.HubAutoRefresh,
-			HubScopeMemberIDs:      composition.HubScopeMemberIDs,
-			InitialScope:           initialScope,
-			Scopes:                 composition.ScopeServices,
-			HubChangeSignal:        composition.HubChangeSignal,
-			RefreshResolved:        true,
-		})
-		m.SetDefaultRepositoryScope(composition.DefaultCurrentContext)
+		runtimeServices := composition.runtimeServicesFor(semanticDatasetPath, initialScope)
+		m := ui.NewModel(catalogIssues, activeRecipe, beadsPath, runtimeServices)
 		defer m.Stop() // Clean up file watcher
 
 		// Enable workspace mode if loading from workspace config
@@ -7762,7 +7683,7 @@ var robotShowToonStats bool
 const robotContractVersion = "1.0.0"
 
 func semanticAsOfDatasetPath(cwd string) string {
-	root, _, err := hub.RepositoryIdentity(cwd)
+	root, _, err := repository.RepositoryIdentity(cwd)
 	if err != nil {
 		return cwd
 	}

@@ -13,18 +13,24 @@ import (
 )
 
 func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts CorrelatorOptions) (*historyArtifact, error) {
-	hub, err := loadHubConfig(c.hubConfigPath, beads)
+	if c.external == nil {
+		return nil, fmt.Errorf("external history mode requires an external history source")
+	}
+	snapshot, err := c.external(beads)
 	if err != nil {
 		return nil, err
+	}
+	if err := snapshot.Validate(); err != nil {
+		return nil, fmt.Errorf("validating external history snapshot: %w", err)
 	}
 
 	type applicableCorrelation struct {
 		ExternalHistoryCorrelation
 		record int
 	}
-	applicable := make([]applicableCorrelation, 0, len(hub.correlations))
+	applicable := make([]applicableCorrelation, 0, len(snapshot.Correlations))
 	skippedByContext := make(map[string]int)
-	for i, correlation := range hub.correlations {
+	for i, correlation := range snapshot.Correlations {
 		if opts.BeadID != "" && correlation.BeadID != opts.BeadID {
 			continue
 		}
@@ -40,7 +46,7 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 	unavailable := make(map[string]struct{})
 	warnings := make([]HistoryWarning, 0)
 	for _, key := range repositoryKeys {
-		path := hub.repositories[key]
+		path := snapshot.Repositories[key]
 		reason, probeErr := c.probeExternalRepository(path)
 		if probeErr != nil {
 			return nil, fmt.Errorf("probing external history repository %q: %w", key, probeErr)
@@ -73,7 +79,7 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		}
 		request := requestsByContext[correlation.Context]
 		if request == nil {
-			request = &externalBatchRequest{context: correlation.Context, repository: hub.repositories[correlation.Context]}
+			request = &externalBatchRequest{context: correlation.Context, repository: snapshot.Repositories[correlation.Context]}
 			requestsByContext[correlation.Context] = request
 		}
 		seen := false
@@ -119,10 +125,10 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		identity := CommitIdentity(correlation.Context, strings.ToLower(correlation.Commit))
 		entry, exists := loaded[identity]
 		if !exists {
-			return nil, fmt.Errorf("correlation ledger %q record %d: commit %q was not included in the repository batch", hub.ledger, correlation.record, correlation.Commit)
+			return nil, fmt.Errorf("correlation ledger %q record %d: commit %q was not included in the repository batch", snapshot.Ledger, correlation.record, correlation.Commit)
 		}
 		if entry.err != nil {
-			return nil, fmt.Errorf("correlation ledger %q record %d: %w", hub.ledger, correlation.record, entry.err)
+			return nil, fmt.Errorf("correlation ledger %q record %d: %w", snapshot.Ledger, correlation.record, entry.err)
 		}
 		commit := entry.commit
 		if opts.Since != nil && commit.Timestamp.Before(*opts.Since) {
@@ -154,8 +160,8 @@ func (c *Correlator) extractExternalHistoryArtifact(beads []BeadInfo, opts Corre
 		}
 		commits = filtered
 	}
-	lifecycleBeads := selectLifecycleBeads(beads, hub.correlations, opts.BeadID)
-	events, err := loadBeadsLifecycle(c.ctx, hub.store, lifecycleBeads, opts)
+	lifecycleBeads := selectLifecycleBeads(beads, snapshot.Correlations, opts.BeadID)
+	events, err := loadBeadsLifecycle(c.ctx, snapshot.Store, lifecycleBeads, opts)
 	if err != nil {
 		return nil, err
 	}

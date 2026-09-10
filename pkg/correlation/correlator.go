@@ -25,14 +25,14 @@ import (
 // An optional FeedbackStore (WithFeedbackStore) is consulted during report
 // assembly: rejected pairs are dropped, confirmed pairs are pinned to 1.0.
 type Correlator struct {
-	repoPath      string
-	extractor     *Extractor
-	coCommitter   *CoCommitExtractor
-	hubConfigPath string
-	historyMode   HistoryMode
-	explicit      *ExplicitMatcher
-	scorer        *Scorer
-	feedback      *FeedbackStore
+	repoPath    string
+	extractor   *Extractor
+	coCommitter *CoCommitExtractor
+	external    ExternalHistorySource
+	historyMode HistoryMode
+	explicit    *ExplicitMatcher
+	scorer      *Scorer
+	feedback    *FeedbackStore
 
 	// ctx, when set via WithContext, bounds every git subprocess spawned
 	// during report generation (issue #166). nil means context.Background().
@@ -405,9 +405,9 @@ func (c *Correlator) GenerateReport(beads []BeadInfo, opts CorrelatorOptions) (*
 	var err error
 	if c.historyMode == HistoryModeOff {
 		art = &historyArtifact{Events: []BeadEvent{}, Commits: []CorrelatedCommit{}}
-	} else if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
-		if c.hubConfigPath == "" {
-			return nil, fmt.Errorf("external history mode requires a hub config")
+	} else if c.historyMode == HistoryModeExternal {
+		if c.external == nil {
+			return nil, fmt.Errorf("external history mode requires an external history source")
 		}
 		art, err = c.extractExternalHistoryArtifact(beads, opts)
 	} else {
@@ -466,7 +466,7 @@ func (c *Correlator) assembleReport(beads []BeadInfo, opts CorrelatorOptions, ar
 	// Get latest commit SHA for incremental updates. Histories contain the
 	// merged output of every strategy, after feedback and bead filtering.
 	latestEvents := events
-	if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+	if c.historyMode == HistoryModeExternal {
 		latestEvents = nil
 	}
 	var latestCommits []CorrelatedCommit
@@ -934,7 +934,7 @@ func (c *Correlator) describeGitRange(opts CorrelatorOptions) string {
 	if c.historyMode == HistoryModeOff {
 		return "history disabled"
 	}
-	if c.historyMode == HistoryModeExternal || c.hubConfigPath != "" {
+	if c.historyMode == HistoryModeExternal {
 		return "external hub history"
 	}
 	parts := []string{}

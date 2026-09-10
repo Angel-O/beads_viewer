@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,7 +24,6 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/debug"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/drift"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/export"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/instance"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/loader"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
@@ -358,7 +356,7 @@ func (m Model) commentRepositoryPath(issueID string) (string, error) {
 	if issue == nil {
 		return "", fmt.Errorf("cannot mutate comment for %s: issue is unavailable", issueID)
 	}
-	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos)
+	presentation := repositoryPresentationForIssue(*issue, m.repositoryCatalog, m.hubRepositoryPresentation(), "", m.activeRepos, m.labelPredicate())
 	if presentation.ID == "" || presentation.ID == contextlessRepositoryID {
 		return "", fmt.Errorf("cannot mutate comment for %s: no registered repository path; register its Hub context and retry", issueID)
 	}
@@ -1515,7 +1513,7 @@ func (m *Model) startSemanticIndexBuild() tea.Cmd {
 	return BuildSemanticIndexCmd(
 		m.issuesForAsync(),
 		m.semanticPath,
-		m.runtimeServices.SemanticStorePath,
+		m.runtimeServices.SemanticIndexDir,
 		m.semanticDataGeneration,
 		m.semanticIndexBuildGen,
 	)
@@ -2062,15 +2060,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 	if len(serviceArgs) > 0 {
 		runtimeServices = serviceArgs[0]
 	}
-	selectedIssuePath := runtimeServices.SelectedIssuePath
-	if selectedIssuePath == "" {
-		selectedIssuePath = beadsPath
-	}
-	issueChangePath := runtimeServices.IssueChangePath
-	if issueChangePath == "" {
-		issueChangePath = beadsPath
-	}
-	metadataChangePaths := runtimeServices.MetadataChangePaths
+	_, issueChangePath := runtimeIssuePaths(beadsPath, runtimeServices)
 	// Graph Analysis - Phase 1 is instant, Phase 2 runs in background
 	analyzer := analysis.NewAnalyzer(issues)
 	// bv-90: accept/ignore feedback tunes the factor weights the priority
@@ -2343,35 +2333,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 			backgroundModeRequested = false
 		}
 	}
-	hubChangeSignal := strings.TrimSpace(os.Getenv("BV_HUB_CHANGE_SIGNAL"))
-	if runtimeServices.HubChangeSignal != "" {
-		hubChangeSignal = runtimeServices.HubChangeSignal
-	}
-	if runtimeServices.RefreshResolved && !runtimeServices.HubAutoRefresh {
-		hubChangeSignal = ""
-	}
-	if !hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
-		hubChangeSignal = ""
-	}
-
-	if (issueChangePath != "" || len(metadataChangePaths) > 0) && (backgroundModeRequested || hubChangeSignal != "") {
-		bw, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:           beadsPath,
-			SelectedIssuePath:   selectedIssuePath,
-			IssueChangePath:     issueChangePath,
-			MetadataChangePaths: metadataChangePaths,
-			DebounceDelay:       200 * time.Millisecond,
-			HubChangeSignal:     hubChangeSignal,
-			CatalogLoader:       runtimeServices.CatalogLoader,
-			HubScopeMemberIDs:   runtimeServices.HubScopeMemberIDs,
-			SkipInitialRefresh:  runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil,
-		})
-		if err != nil {
-			backgroundModeErr = err
-		} else {
-			backgroundWorker = bw
-		}
-	}
+	backgroundWorker, backgroundModeErr = newRuntimeBackgroundWorker(beadsPath, runtimeServices, backgroundModeRequested, false)
 
 	if issueChangePath != "" && backgroundWorker == nil {
 		w, err := watcher.NewWatcher(issueChangePath,
@@ -2559,206 +2521,15 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		}
 	}
 
+	m.repositoryScopeController.setCatalogIssues(issues)
 	m.installBackgroundWorker(backgroundWorker)
+	if len(serviceArgs) > 0 {
+		m.SetRuntimeServices(runtimeServices)
+	}
 	m.registerKeyBindings()
 	m.refreshRepositoryCandidates()
 	m.rebuildInsightsPanel()
 	return &m
-}
-
-func hubAutoRefreshEnabled(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
-}
-
-// SetRuntimeServices installs the already-resolved services used by the TUI.
-func (m *Model) SetRuntimeServices(services RuntimeServices) {
-	m.runtimeServices = services
-	if services.SemanticDatasetPath != "" {
-		m.semanticPath = services.SemanticDatasetPath
-	}
-	m.hubRepositoryMode = services.RepositoryPresentation
-	if services.CatalogPath == "" {
-		return
-	}
-	if err := m.reloadRepositoryCatalog(); err != nil {
-		m.statusMsg = fmt.Sprintf("Repository catalog load failed: %v", err)
-		m.statusIsError = true
-	}
-	m.refreshRepositoryPresentation()
-	autoRefresh := m.hubAutoRefreshEnabled()
-	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
-		selectedIssuePath := services.SelectedIssuePath
-		if selectedIssuePath == "" {
-			selectedIssuePath = m.beadsPath
-		}
-		worker, err := NewBackgroundWorker(WorkerConfig{
-			BeadsPath:           m.beadsPath,
-			SelectedIssuePath:   selectedIssuePath,
-			IssueChangePath:     services.IssueChangePath,
-			MetadataChangePaths: services.MetadataChangePaths,
-			DebounceDelay:       200 * time.Millisecond,
-			CatalogPath:         services.CatalogPath,
-			CatalogLoader:       services.CatalogLoader,
-			HubScopeMemberIDs:   services.HubScopeMemberIDs,
-			SkipInitialRefresh:  services.InitialScope != nil && services.InitialScope.Active == nil,
-			HubChangeSignal:     services.HubChangeSignal,
-		})
-		if err != nil {
-			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
-			m.statusIsError = true
-		} else {
-			m.backgroundWorker = worker
-			m.snapshotInitPending = len(m.issues) == 0
-		}
-	} else if m.backgroundWorker != nil {
-		if err := m.backgroundWorker.SetCatalogPath(services.CatalogPath, autoRefresh); err != nil {
-			m.statusMsg = fmt.Sprintf("Repository catalog refresh unavailable: %v", err)
-			m.statusIsError = true
-		}
-	}
-	if services.DefaultRepositoryID != "" {
-		m.SetDefaultRepositoryScope(services.DefaultRepositoryID)
-	}
-}
-
-func (m Model) hubAutoRefreshEnabled() bool {
-	if m.runtimeServices.RefreshResolved {
-		return m.runtimeServices.HubAutoRefresh
-	}
-	return hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
-}
-
-func (m Model) catalogPath() string {
-	return m.runtimeServices.CatalogPath
-}
-
-func (m Model) runtimeHistoryProvider() *correlation.Provider {
-	if m.runtimeServices.HistoryProvider != nil {
-		return m.runtimeServices.HistoryProvider
-	}
-	workDir := m.workDir
-	if workDir == "" {
-		workDir, _ = os.Getwd()
-	}
-	return correlation.NewGitProvider(workDir, resolveHistoryCorrelationPath(m.beadsPath, workDir))
-}
-
-// SetRepositoryCatalogIssues provides the unfiltered issue universe used for
-// stable total counts when the initial TUI view is recipe-filtered.
-func (m *Model) SetRepositoryCatalogIssues(issues []model.Issue) {
-	m.repositoryScopeController.setCatalogIssues(issues)
-}
-
-func (m Model) contextlessBeadCount() int {
-	if m.contextlessCountReady {
-		return m.contextlessBeadCountValue
-	}
-	issues := m.repositoryCatalogIssues
-	if issues == nil {
-		issues = m.issues
-	}
-	return contextlessIssueCount(issues)
-}
-
-func (m *Model) reloadRepositoryCatalog() error {
-	if m.workspaceMode {
-		beforeScope := m.HubScope()
-		beforeRepos := sortedRepoKeys(m.activeRepos)
-		m.repositoryCatalog = workspaceRepositoryCatalog(m.availableRepos, m.workspaceRepos, m.issues)
-		m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
-		contextSortFallback := m.normalizeContextSortMode()
-		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
-		if scopeChanged {
-			m.refreshRepositoryCandidates()
-		} else if contextSortFallback && m.list.Width() > 0 {
-			m.sortListItems(m.list.Items())
-			m.updateViewportContent()
-		}
-		if m.showRepoPicker {
-			m.repoPicker.SetCatalog(m.repositoryCatalog)
-		}
-		m.board.SetRepositoryPresentation(m.repositoryCatalog, false, m.currentRepositoryID, m.activeRepos)
-		m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, false)
-		return nil
-	}
-	if strings.TrimSpace(m.catalogPath()) == "" {
-		return nil
-	}
-	issues := m.issues
-	if m.repositoryCatalogIssues != nil {
-		issues = m.repositoryCatalogIssues
-	}
-	loader := m.runtimeServices.CatalogLoader
-	if loader == nil {
-		loader = defaultRepositoryMetadataProvider
-	}
-	catalog, err := loader(m.catalogPath(), issues)
-	if err != nil {
-		return err
-	}
-	beforeScope := m.HubScope()
-	beforeRepos := sortedRepoKeys(m.activeRepos)
-	m.repositoryScopeController.setCatalog(catalog)
-	m.reconcileHubScopeCatalog()
-	contextSortFallback := m.normalizeContextSortMode()
-	scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
-	if scopeChanged {
-		m.refreshRepositoryCandidates()
-	} else if contextSortFallback && m.list.Width() > 0 {
-		m.sortListItems(m.list.Items())
-		m.updateViewportContent()
-	}
-	if m.showRepoPicker {
-		m.repoPicker.SetCatalog(m.repositoryCatalog)
-		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
-	}
-	m.board.SetRepositoryPresentation(catalog, true, m.currentRepositoryID, m.activeRepos)
-	m.insightsPanel.SetRepositoryPresentation(catalog, true)
-	return nil
-}
-
-func (m *Model) applyRepositoryCatalogUpdate(catalog repositorypkg.Catalog, generation uint64, changed, recovered bool, err error) {
-	if m.workspaceMode || !m.repositoryScopeController.acceptCatalogGeneration(generation) {
-		return
-	}
-	if err != nil {
-		m.statusMsg = fmt.Sprintf("Repository catalog reload failed (will retry): %v", err)
-		m.statusIsError = true
-		return
-	}
-	if changed {
-		beforeScope := m.HubScope()
-		beforeRepos := sortedRepoKeys(m.activeRepos)
-		m.repositoryScopeController.setCatalog(catalog)
-		if m.usesHubScope() {
-			m.reconcileHubScopeCatalog()
-		} else {
-			m.activeRepos = repositorypkg.ReconcileSelection(m.activeRepos, m.repositoryCatalog)
-		}
-		contextSortFallback := m.normalizeContextSortMode()
-		if m.showRepoPicker {
-			m.repoPicker.SetCatalog(m.repositoryCatalog)
-			m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
-		}
-		m.refreshRepositoryPresentation()
-		defaultApplied := m.applyDefaultRepositoryScope()
-		scopeChanged := beforeScope.Mode != m.hubScope.Mode || !slices.Equal(beforeScope.Contexts, m.hubScope.Contexts) || !slices.Equal(beforeRepos, sortedRepoKeys(m.activeRepos))
-		if !defaultApplied && scopeChanged {
-			m.refreshRepositoryCandidates()
-		} else if contextSortFallback && m.list.Width() > 0 {
-			m.sortListItems(m.list.Items())
-			m.updateViewportContent()
-		}
-	}
-	if recovered && (strings.HasPrefix(m.statusMsg, "Repository catalog load failed:") || strings.HasPrefix(m.statusMsg, "Repository catalog reload failed")) {
-		m.statusMsg = ""
-		m.statusIsError = false
-	}
 }
 
 // SetSemanticDatasetPath sets the stable repository or dataset identity used
@@ -2783,7 +2554,7 @@ func (m *Model) rebuildInsightsPanel() {
 
 	prev := m.insightsPanel
 	panel := NewInsightsModel(ins, m.issueMap, m.theme)
-	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
+	panel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation(), m.labelPredicate())
 	panel.SetActiveIssueIDs(insightsIDs)
 	panel.focusedPanel = prev.focusedPanel
 	panel.selectedIndex = prev.selectedIndex
@@ -3053,229 +2824,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshVisibleUpdateNotice()
 
 	case scopeSnapshotMsg:
-		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
-			m.statusIsError = true
-			break
-		}
-		previousSelected := m.scopePicker.SelectedScopeID()
-		m.backlogScopeLoaded = true
-		if m.runtimeServices.Scopes.QueryCatalog != nil {
-			previousActive := m.activeScope
-			for _, incoming := range msg.snapshot.Scopes {
-				for i := range m.scopeCatalog {
-					if m.scopeCatalog[i].ID == incoming.ID {
-						m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], incoming)
-					}
-				}
-			}
-			m.activeScope = nil
-			if msg.snapshot.Active != nil {
-				active := *msg.snapshot.Active
-				if previousActive != nil && previousActive.ID == active.ID {
-					active = mergeScopeInfo(*previousActive, active)
-				}
-				for _, catalogScope := range m.scopeCatalog {
-					if catalogScope.ID == active.ID {
-						active = mergeScopeInfo(active, catalogScope)
-					}
-				}
-				active.Active = true
-				m.activeScope = &active
-			}
-			for i := range m.scopeCatalog {
-				m.scopeCatalog[i].Active = m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID
-				if m.activeScope != nil && m.scopeCatalog[i].ID == m.activeScope.ID {
-					m.scopeCatalog[i] = mergeScopeInfo(m.scopeCatalog[i], *m.activeScope)
-					m.scopeCatalog[i].Active = true
-				}
-			}
-			m.scopePicker.SetScopes(m.scopeCatalog)
-			break
-		}
-		m.scopeCatalog = append([]ScopeInfo(nil), msg.snapshot.Scopes...)
-		m.scopePicker.SetScopes(m.scopeCatalog)
-		m.activeScope = nil
-		if msg.snapshot.Active != nil {
-			active := *msg.snapshot.Active
-			m.activeScope = &active
-			for i := range m.scopeCatalog {
-				m.scopeCatalog[i].Active = m.scopeCatalog[i].ID == active.ID
-			}
-			m.scopePicker.SetScopes(m.scopeCatalog)
-		}
-		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
-			m.scopePicker.ClearMemberMarks()
-			cmds = append(cmds, m.loadSelectedScopeDetails())
-		}
+		cmds = append(cmds, m.handleScopeSnapshotMessage(msg)...)
 
 	case scopeCatalogPageMsg:
-		if !m.scopePicker.acceptsCatalogPage(msg.generation) {
-			break
-		}
-		if msg.err != nil {
-			m.scopePicker.SetCatalogError(msg.generation, msg.err)
-			m.statusMsg = fmt.Sprintf("Scope load failed: %v", msg.err)
-			m.statusIsError = true
-			break
-		}
-		m.backlogScopeLoaded = true
-		previousSelected := m.scopePicker.SelectedScopeID()
-		page := msg.page
-		page.Scopes = append([]ScopeInfo(nil), msg.page.Scopes...)
-		activeID := ""
-		if m.activeScope != nil {
-			activeID = m.activeScope.ID
-		}
-		for i := range page.Scopes {
-			for _, catalogScope := range m.scopeCatalog {
-				if catalogScope.ID == page.Scopes[i].ID {
-					page.Scopes[i] = mergeScopeInfoPreservingActive(catalogScope, page.Scopes[i])
-					break
-				}
-			}
-			if activeID != "" {
-				page.Scopes[i].Active = page.Scopes[i].ID == activeID
-			}
-			if m.activeScope != nil && page.Scopes[i].ID == activeID {
-				active := mergeScopeInfo(*m.activeScope, page.Scopes[i])
-				active.Active = true
-				m.activeScope = &active
-				page.Scopes[i] = mergeScopeInfo(page.Scopes[i], active)
-				page.Scopes[i].Active = true
-			}
-		}
-		m.scopeCatalog = append([]ScopeInfo(nil), page.Scopes...)
-		m.scopePicker.SetCatalogPage(page, msg.index, msg.generation)
-		if m.showScopePicker && previousSelected != m.scopePicker.SelectedScopeID() {
-			// Catalog paging changes the selected page; member pages belong to the
-			// selected scope and must never survive that boundary.
-			m.scopePicker.ClearMemberMarks()
-			cmds = append(cmds, m.loadSelectedScopeDetails())
-		}
+		cmds = append(cmds, m.handleScopeCatalogPageMessage(msg)...)
 
 	case scopeDetailsMsg:
-		if msg.generation > 0 && !m.scopePicker.acceptsMemberDetails(msg.scopeID, msg.generation) {
-			break
-		}
-		if msg.err != nil {
-			if msg.generation > 0 {
-				m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
-			}
-			break
-		}
-		details := msg.details
-		m.scopeDetails = &details
-		if ids, ok := completeScopeMemberIDs(details); ok {
-			if m.scopeMembershipIDs == nil {
-				m.scopeMembershipIDs = make(map[string][]string)
-			}
-			m.scopeMembershipIDs[msg.scopeID] = ids
-			if msg.scopeID == m.scopeMembershipScopeID {
-				m.scopeMembershipLoading = false
-			}
-		}
-		// A hidden picker still owns its retained selection. Mutation refreshes for
-		// another scope may update scopeDetails, but must not replace that pane.
-		pickerScopeID := m.scopePicker.SelectedScopeID()
-		responseScopeID := msg.scopeID
-		if responseScopeID == "" {
-			responseScopeID = details.Info.ID
-		}
-		if pickerScopeID == "" || responseScopeID == pickerScopeID {
-			m.applyScopePickerDetails(details)
-		}
+		m.handleScopeDetailsMessage(msg)
 
 	case scopeMembershipMsg:
-		if !m.acceptsScopeMembership(msg) {
-			break
-		}
-		if msg.err == nil {
-			if m.scopeMembershipIDs == nil {
-				m.scopeMembershipIDs = make(map[string][]string)
-			}
-			m.scopeMembershipIDs[msg.scopeID] = append([]string(nil), msg.ids...)
-			m.scopeMembershipLoading = false
-		} else if msg.scopeID == m.scopeMembershipScopeID {
-			m.scopeMembershipLoading = false
-		}
+		m.handleScopeMembershipMessage(msg)
 
 	case scopeMembersPageMsg:
-		if !m.scopePicker.acceptsMemberPage(msg.scopeID, msg.requestKey, msg.generation, msg.cursor) {
-			break
-		}
-		if msg.err != nil {
-			m.scopePicker.SetMemberError(msg.scopeID, msg.generation, msg.err)
-			break
-		}
-		if msg.page.Scope.ID == "" {
-			msg.page.Scope.ID = msg.scopeID
-		}
-		if !scopeInfoCountKnown(msg.page.Scope.CompletedCount, msg.page.Scope.CompletedCountKnown) && msg.page.CompletedCount != 0 {
-			msg.page.Scope.CompletedCount = msg.page.CompletedCount
-			msg.page.Scope.CompletedCountKnown = true
-		}
-		for i := range m.scopeCatalog {
-			if m.scopeCatalog[i].ID == msg.page.Scope.ID {
-				m.scopeCatalog[i] = mergeScopeInfoPreservingActive(m.scopeCatalog[i], msg.page.Scope)
-				if m.activeScope != nil && m.activeScope.ID == msg.page.Scope.ID {
-					active := mergeScopeInfo(*m.activeScope, msg.page.Scope)
-					active.Active = true
-					m.activeScope = &active
-				}
-				break
-			}
-		}
-		items := make([]IssueItem, len(msg.page.Members))
-		ready := make(map[string]bool, len(items))
-		for i, issue := range msg.page.Members {
-			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
-			m.decorateIssueItem(&items[i])
-			ready[issue.ID] = isIssueReadyAt(issue, m.issueMap, time.Now())
-		}
-		m.scopePicker.SetMemberReadyIDs(ready)
-		m.scopePicker.SetMemberPage(msg.page, items, msg.index, msg.generation, msg.requestKey)
+		m.handleScopeMembersPageMessage(msg)
 
 	case backlogPageMsg:
-		expectedCursor, hasRequestedPage := m.backlog.pageCursorAt(msg.index)
-		if msg.generation != m.backlogPageGeneration ||
-			(msg.queryKey != "" && msg.queryKey != m.backlog.filterTupleKey()) ||
-			!hasRequestedPage || msg.cursor != expectedCursor {
-			break
-		}
-		m.backlog.SetLoading(false)
-		m.backlogLoading = false
-		if msg.err != nil {
-			m.backlog.SetError(msg.err)
-			m.statusMsg = fmt.Sprintf("Backlog load failed: %v", msg.err)
-			m.statusIsError = true
-			break
-		}
-		m.backlog.SetPage(msg.page, msg.index)
-		items := make([]IssueItem, len(msg.page.Issues))
-		for i, issue := range msg.page.Issues {
-			items[i] = IssueItem{Issue: issue, RepoPrefix: issueRepoKey(issue)}
-			m.decorateIssueItem(&items[i])
-		}
-		m.backlog.setPresentation(items)
+		m.handleBacklogPageMessage(msg)
 
 	case scopeMutationMsg:
-		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Scope %s failed: %v", msg.action, msg.err)
-			m.statusIsError = true
-			break
-		}
-		mutation := msg.mutation
-		if mutation.Kind == "" {
-			mutation.Kind = ScopeMutationKind(msg.action)
-		}
-		if msg.restoreFocus {
-			m.closeScopePicker()
-		}
-		m.clearSubmittedScopeMarks(mutation.IssueIDs)
-		m.statusMsg = fmt.Sprintf("Scope %s succeeded", msg.action)
-		m.statusIsError = false
-		cmds = append(cmds, m.refreshAfterScopeMutation(mutation))
+		cmds = append(cmds, m.handleScopeMutationMessage(msg)...)
 
 	case commentAddedMsg:
 		m.commentSubmitting = false
@@ -3751,7 +3318,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focused == focusLabelDashboard {
 			cfg := analysis.DefaultLabelHealthConfig()
 			m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
-			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
+			m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.repositoryCatalog, m.hubRepositoryPresentation())
 			m.labelHealthCached = true
 			m.labelDashboard.SetData(m.labelHealthCache.Labels)
 		}
@@ -4712,7 +4279,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			oldHash := m.insightsPanel.triageDataHash
 
 			m.insightsPanel = NewInsightsModel(ins, m.issueMap, m.theme)
-			m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation())
+			m.insightsPanel.SetRepositoryPresentation(m.repositoryCatalog, m.hubRepositoryPresentation(), m.labelPredicate())
 			m.insightsPanel.topPicks = oldTopPicks
 			m.insightsPanel.recommendations = oldRecs
 			m.insightsPanel.recommendationMap = oldRecMap
@@ -4827,17 +4394,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if autoAllowed {
-				bw, err := NewBackgroundWorker(WorkerConfig{
-					BeadsPath:           m.beadsPath,
-					SelectedIssuePath:   m.runtimeServices.SelectedIssuePath,
-					IssueChangePath:     m.runtimeServices.IssueChangePath,
-					MetadataChangePaths: m.runtimeServices.MetadataChangePaths,
-					DebounceDelay:       200 * time.Millisecond,
-					CatalogLoader:       m.runtimeServices.CatalogLoader,
-				})
+				workerConfig := workerConfigForRuntime(m.beadsPath, m.runtimeServices)
+				workerConfig.CatalogPath = ""
+				workerConfig.SourceChangePath = ""
+				workerConfig.DebounceDelay = 200 * time.Millisecond
+				bw, err := NewBackgroundWorker(workerConfig)
 				if err == nil {
 					if m.catalogPath() != "" {
-						err = bw.SetCatalogPath(m.catalogPath(), m.hubAutoRefreshEnabled())
+						err = bw.SetCatalogPath(m.catalogPath(), m.runtimeServices.AutoRefresh)
 					}
 				}
 				if err == nil {
@@ -6242,7 +5806,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.labelHealthCached {
 					cfg := analysis.DefaultLabelHealthConfig()
 					m.labelHealthCache = analysis.ComputeAllLabelHealth(m.typeFilteredIssues(m.repositoryIssues), cfg, time.Now().UTC(), m.analysis, m.labelPredicate())
-					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.hubRepositoryPresentation())
+					m.labelHealthCache = projectHubLabelHealth(m.labelHealthCache, m.repositoryCatalog, m.hubRepositoryPresentation())
 					m.labelHealthCached = true
 				}
 				m.labelDashboard.SetData(m.labelHealthCache.Labels)
@@ -6344,9 +5908,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.repoPicker = NewRepoPickerModel(m.repositoryCatalog, m.theme)
 				m.repoPicker.SetCurrentRepository(m.currentRepositoryID)
 				if m.isBacklogView || m.focused == focusGlobalIssues {
-					m.repoPicker.SetHubScope(m.backlogHubScope())
+					m.repoPicker.SetRepositorySelection(m.backlogRepositorySelection())
 				} else if m.hubRepositoryMode {
-					m.repoPicker.SetHubScope(m.hubScope)
+					m.repoPicker.SetRepositorySelection(m.repositorySelection)
 				} else {
 					m.repoPicker.SetActiveRepos(m.activeRepos)
 				}
@@ -6374,7 +5938,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				labelCounts := extractLabelCounts(labelExtraction.Stats)
 				labels := labelExtraction.Labels
 				if m.hubRepositoryPresentation() {
-					labels = filterHubContextLabels(labels)
+					labels = filterRepositoryLabels(labels, m.repositoryCatalog)
 				}
 				m.labelPicker.SetLabels(labels, labelCounts)
 				m.labelPicker.Reset()
@@ -7180,20 +6744,19 @@ func (m Model) getCommitURL(repository, sha string) (string, error) {
 	}
 
 	repository = strings.TrimSpace(repository)
-	repositoryDir := strings.TrimSpace(m.workDir)
-	if repository != "" {
-		if strings.TrimSpace(m.catalogPath()) == "" {
-			return "", fmt.Errorf("repository %q has no Hub configuration", repository)
+	repositoryDir := ""
+	if repository == "" {
+		repositoryDir = strings.TrimSpace(m.workDir)
+	} else {
+		for _, entry := range m.repositoryCatalog {
+			if entry.ID == repository {
+				repositoryDir = strings.TrimSpace(entry.Path)
+				break
+			}
 		}
-		config, err := hub.Resolve(m.catalogPath())
-		if err != nil {
-			return "", fmt.Errorf("resolving Hub repository %q: %w", repository, err)
+		if repositoryDir == "" {
+			return "", fmt.Errorf("repository %q is not available in the repository catalog", repository)
 		}
-		registered, ok := config.Repositories[repository]
-		if !ok || strings.TrimSpace(registered.Path) == "" {
-			return "", fmt.Errorf("repository %q is not registered in the Hub", repository)
-		}
-		repositoryDir = registered.Path
 	}
 	if repositoryDir == "" {
 		return "", fmt.Errorf("commit repository is unavailable")
@@ -7453,101 +7016,6 @@ func (m *Model) resetRecipePicker() {
 			return
 		}
 	}
-}
-
-func (m *Model) applyRepositoryPickerSelection() *Model {
-	selected := m.repoPicker.SelectedRepos()
-	if m.repoPickerOrigin == focusBacklog || m.repoPickerOrigin == focusGlobalIssues {
-		return m.applyBacklogPickerSelection(selected)
-	}
-	// Successful apply, like cancel, returns to the view that opened the picker.
-	focusAfterApply := m.repoPickerOrigin
-	if m.repoPickerOrigin == focusScopePicker {
-		focusAfterApply = focusScopePicker
-	}
-	if m.hubRepositoryMode {
-		includeContextless := m.repoPicker.ContextlessSelected()
-		switch {
-		case len(selected) == 0 && includeContextless:
-			m.statusMsg = "Context: no-context"
-		case len(selected) == 0 || len(selected) == len(m.repositoryCatalog) && includeContextless:
-			m.statusMsg = "Context: all"
-		case includeContextless:
-			m.statusMsg = fmt.Sprintf("Context: %s, no-context", strings.Join(m.repositoryScopeNames(selected), ", "))
-		default:
-			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
-		}
-		m.statusIsError = false
-		m.setHubRepositoryScope(selected, includeContextless)
-	} else {
-		if len(selected) == 0 || len(selected) == len(m.repositoryCatalog) {
-			m.statusMsg = "Context: all"
-		} else {
-			m.statusMsg = fmt.Sprintf("Context: %s", strings.Join(m.repositoryScopeNames(selected), ", "))
-		}
-		m.statusIsError = false
-		m.SetRepositoryScope(selected)
-	}
-	m.showRepoPicker = false
-	m.focused = focusAfterApply
-	// The scope refresh ran while the picker had focus; refresh tree-origin pickers now.
-	if focusAfterApply == focusTree {
-		m.rebuildRepositoryTree()
-	}
-	return m
-}
-
-func (m Model) backlogHubScope() hub.HubScope {
-	contexts := m.backlog.Contexts()
-	if len(contexts) == 0 {
-		if m.backlog.IncludeContextless() {
-			return hub.NewContextlessHubScope()
-		}
-		return hub.NewAllItemsHubScope()
-	}
-	if m.backlog.IncludeContextless() {
-		if scope, err := hub.NewSelectedContextsAndContextlessHubScope(contexts); err == nil {
-			return scope
-		}
-	} else if scope, err := hub.NewSelectedContextsHubScope(contexts); err == nil {
-		return scope
-	}
-	return hub.NewAllItemsHubScope()
-}
-
-func (m *Model) applyBacklogPickerSelection(selected map[string]bool) *Model {
-	includeContextless := m.repoPicker.ContextlessSelected()
-	contexts := sortedRepoKeys(selected)
-	// An empty draft is the backlog's all-items choice. Treat the equivalent
-	// all-contexts-plus-contextless draft the same way so the query stays small.
-	if (len(contexts) == 0 && !includeContextless) ||
-		(includeContextless && len(contexts) == len(m.repositoryCatalog) && len(contexts) > 0) {
-		contexts = nil
-		includeContextless = false
-	}
-	names := make([]string, 0, len(contexts))
-	for _, contextID := range contexts {
-		for _, repository := range m.repositoryCatalog {
-			if repository.ID == contextID {
-				name := repository.Name
-				if name == "" {
-					name = repository.ID
-				}
-				names = append(names, name)
-				break
-			}
-		}
-	}
-	m.backlog.SetContextFilter(contexts, includeContextless, names)
-	m.backlog.resetCursor()
-	m.showRepoPicker = false
-	if m.repoPickerOrigin == focusGlobalIssues {
-		m.focused = focusGlobalIssues
-	} else {
-		m.focused = focusBacklog
-	}
-	m.backlogReloadCmd = m.reloadBacklogFromFirstPage()
-	return m
 }
 
 // handleLabelPickerKeys handles keyboard input when label picker is focused
@@ -9804,7 +9272,7 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 		return ""
 	}
 	selectedCount := len(m.activeRepos)
-	if m.hubRepositoryMode && m.hubScope.Mode == hub.HubScopeContextless {
+	if m.hubRepositoryMode && m.repositorySelection.Mode() == repositorypkg.SelectionUnassigned {
 		return lipgloss.NewStyle().
 			Background(ThemeBg("#45B7D1")).
 			Foreground(ColorBg).
@@ -9817,7 +9285,7 @@ func (m Model) renderRepositoryScopeBadge(availableWidth int) string {
 	}
 	compact := fmt.Sprintf("REPOS %d/%d", selectedCount, len(m.repositoryCatalog))
 	label := strings.Join(m.repositoryScopeNames(m.activeRepos), ", ")
-	if m.hubRepositoryMode && m.hubScope.IncludeContextless {
+	if m.hubRepositoryMode && m.repositorySelection.IncludesUnassigned() {
 		compact += " + no-context"
 		if label != "" {
 			label += ", "
@@ -11763,7 +11231,7 @@ func (m *Model) updateViewportContent() {
 		item.CreatedAt.Format("2006-01-02"),
 	))
 
-	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil)
+	presentation := repositoryPresentationForIssue(item, m.repositoryCatalog, m.hubRepositoryPresentation(), "", nil, m.labelPredicate())
 	if len(presentation.Names) > 0 {
 		sb.WriteString(fmt.Sprintf("**Context:** %s\n\n", strings.Join(presentation.Names, ", ")))
 	} else if m.hubRepositoryPresentation() && presentation.ID == contextlessRepositoryID {

@@ -1,234 +1,105 @@
-package correlation
+package hub
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	json "github.com/goccy/go-json"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/correlation"
 )
 
-func TestProbeExternalRepositoryClassifiesUnavailablePaths(t *testing.T) {
+func TestExternalHistorySourceLoadsValidatedSnapshot(t *testing.T) {
 	root := t.TempDir()
-	regularFile := filepath.Join(root, "regular-file")
-	if err := os.WriteFile(regularFile, []byte("not a directory"), 0o600); err != nil {
+	ledger := filepath.Join(root, "private", "correlations.jsonl")
+	config := filepath.Join(root, "hub.yaml")
+	data := "version: 1\nstore: store\nledger: private/correlations.jsonl\nrepositories:\n  ctx:source:\n    path: source\n"
+	if err := os.MkdirAll(filepath.Join(root, "source"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	notGit := filepath.Join(root, "not-git")
-	if err := os.Mkdir(notGit, 0o700); err != nil {
+	if err := os.WriteFile(config, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	validGit := filepath.Join(root, "valid-git")
-	if err := os.Mkdir(validGit, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ledger), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", validGit, "init", "--quiet").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-
-	tests := []struct {
-		name, path, want string
-	}{
-		{name: "missing", path: filepath.Join(root, "missing"), want: "not_found"},
-		{name: "regular file", path: regularFile, want: "not_directory"},
-		{name: "directory without git", path: notGit, want: "not_git"},
-		{name: "valid checkout", path: validGit, want: ""},
-	}
-	if runtime.GOOS != "windows" {
-		loop := filepath.Join(root, "symlink-loop")
-		if err := os.Symlink(loop, loop); err != nil {
-			t.Fatal(err)
-		}
-		tests = append(tests, struct{ name, path, want string }{name: "unreadable metadata", path: loop, want: "unreadable"})
-	}
-
-	correlator := NewCorrelator(root, "")
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := correlator.probeExternalRepository(test.path)
-			if err != nil {
-				t.Fatalf("probeExternalRepository: %v", err)
-			}
-			if got != test.want {
-				t.Fatalf("reason = %q, want %q", got, test.want)
-			}
-		})
-	}
-
-}
-
-func TestProbeExternalRepositoryDistinguishesUnreadableAndMalformedMetadata(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-bit behavior is not portable to Windows")
-	}
-
-	repository := filepath.Join(t.TempDir(), "repository")
-	if err := os.Mkdir(repository, 0o700); err != nil {
+	sha := strings.Repeat("a", 40)
+	if err := os.WriteFile(ledger, []byte(`{"bead_id":"item-1","context":"ctx:source","commit":"`+sha+`"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", repository, "init", "--quiet").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	headPath := filepath.Join(repository, ".git", "HEAD")
-	if err := os.Chmod(headPath, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(headPath, 0o600) })
-	if _, err := os.ReadFile(headPath); !os.IsPermission(err) {
-		t.Skip("filesystem does not enforce permission bits for this process")
-	}
-
-	correlator := NewCorrelator(repository, "")
-	if reason, err := correlator.probeExternalRepository(repository); err != nil || reason != "unreadable" {
-		t.Fatalf("unreadable Git metadata should be recoverable, got reason=%q err=%v", reason, err)
-	}
-
-	if err := os.Chmod(headPath, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(headPath, []byte("malformed\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if reason, err := correlator.probeExternalRepository(repository); err == nil || reason != "" {
-		t.Fatalf("readable malformed Git metadata should be fatal, got reason=%q err=%v", reason, err)
-	}
-}
-
-func TestExpandConfigPathExpandsHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	got, err := expandConfigPath("~/.config/bv/hub.yaml")
+	snapshot, err := NewExternalHistorySource(config)([]correlation.BeadInfo{{ID: "item-1", Labels: []string{"ctx:source"}}})
 	if err != nil {
-		t.Fatalf("expandConfigPath: %v", err)
+		t.Fatalf("load external snapshot: %v", err)
 	}
-	want := filepath.Join(home, ".config", "bv", "hub.yaml")
-	if got != want {
-		t.Fatalf("expandConfigPath = %q, want %q", got, want)
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("snapshot validation: %v", err)
 	}
-}
-
-func TestHubConfigRepositoriesRequireContextMap(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hub.yaml")
-	listConfig := "version: 1\nstore: /tmp/store\nledger: /tmp/ledger\nrepositories:\n  - context: ctx:old\n    path: /tmp/repo\n"
-	if err := os.WriteFile(path, []byte(listConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := HubConfigStore(path); err == nil {
-		t.Fatal("temporary list repository schema should be rejected")
-	}
-
-	mapConfig := "version: 1\nstore: /tmp/store\nledger: /tmp/ledger\nrepositories:\n  z-invalid:\n    path: /tmp/z\n  a-invalid:\n    path: /tmp/a\n"
-	if err := os.WriteFile(path, []byte(mapConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := HubConfigStore(path)
-	if err == nil || !strings.Contains(err.Error(), `"a-invalid"`) {
-		t.Fatalf("expected deterministic first context-key diagnostic, got %v", err)
+	if snapshot.Store != filepath.Join(root, "store") || snapshot.Ledger != ledger || len(snapshot.Correlations) != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
 
-func TestHubConfigStoreDoesNotResolveUnusedLedger(t *testing.T) {
+func TestExternalHistorySourceAllowsEmptyRepositoryMap(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "hub.yaml")
-	config := "version: 1\nstore: .beads\nledger: ~other/ledger.jsonl\nrepositories: {}\n"
-	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+	config := filepath.Join(root, "hub.yaml")
+	data := "version: 1\nstore: .beads\nledger: correlations.jsonl\nrepositories: {}\n"
+	if err := os.WriteFile(config, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	store, err := HubConfigStore(path)
+	snapshot, err := NewExternalHistorySource(config)(nil)
 	if err != nil {
-		t.Fatalf("HubConfigStore() resolved unused ledger: %v", err)
+		t.Fatalf("load external snapshot: %v", err)
 	}
-	if want := filepath.Join(root, ".beads"); store != want {
-		t.Fatalf("HubConfigStore() = %q, want %q", store, want)
+	if snapshot.Store != filepath.Join(root, ".beads") || snapshot.Ledger != filepath.Join(root, "correlations.jsonl") || len(snapshot.Correlations) != 0 {
+		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
 
-func TestLifecycleEventType(t *testing.T) {
-	tests := []struct {
-		name              string
-		previous, current string
-		first             bool
-		want              EventType
-	}{
-		{name: "created", current: "open", first: true, want: EventCreated},
-		{name: "claimed", previous: "open", current: "in_progress", want: EventClaimed},
-		{name: "closed", previous: "in_progress", current: "closed", want: EventClosed},
-		{name: "reopened", previous: "closed", current: "open", want: EventReopened},
-		{name: "modified", previous: "open", current: "open", want: EventModified},
+func TestExternalHistorySourceSkipsStaleRecordsAndPreservesLedger(t *testing.T) {
+	root := t.TempDir()
+	ledger := filepath.Join(root, "correlations.jsonl")
+	config := filepath.Join(root, "hub.yaml")
+	sha := strings.Repeat("a", 40)
+	original := `{"bead_id":"stale-issue","context":"ctx:source","commit":"` + strings.Repeat("0", 40) + `"}` + "\n" +
+		`{"bead_id":"known-issue","context":"ctx:source","commit":"` + sha + `"}` + "\n"
+	data := "version: 1\nstore: store\nledger: correlations.jsonl\nrepositories:\n  ctx:source:\n    path: source\n"
+	if err := os.WriteFile(config, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := lifecycleEventType(test.previous, test.current, test.first); got != test.want {
-				t.Fatalf("lifecycleEventType() = %q, want %q", got, test.want)
-			}
-		})
+	if err := os.WriteFile(ledger, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := NewExternalHistorySource(config)([]correlation.BeadInfo{{ID: "known-issue", Labels: []string{"ctx:source"}}})
+	if err != nil {
+		t.Fatalf("load external snapshot: %v", err)
+	}
+	if len(snapshot.Correlations) != 1 || snapshot.Correlations[0].BeadID != "known-issue" {
+		t.Fatalf("correlations = %#v", snapshot.Correlations)
+	}
+	dataAfter, err := os.ReadFile(ledger)
+	if err != nil || string(dataAfter) != original {
+		t.Fatalf("history load changed ledger: data=%q err=%v", dataAfter, err)
 	}
 }
 
-func TestLifecycleEventsFromSnapshotsSkipsUnchangedRows(t *testing.T) {
-	snapshots := []beadsHistorySnapshot{
-		{
-			CommitHash: "unrelated-later",
-			Committer:  "root",
-			CommitDate: "2026-08-18T00:02:00Z",
-			Issue:      json.RawMessage(`{"id":"global-1","title":"Updated","status":"open","priority":1,"updated_at":"2026-08-18T00:01:00Z"}`),
-		},
-		{
-			CommitHash: "created",
-			Committer:  "root",
-			CommitDate: "2026-08-18T00:00:00Z",
-			Issue:      json.RawMessage(`{"id":"global-1","title":"Original","status":"open","priority":2,"updated_at":"2026-08-18T00:00:00Z"}`),
-		},
-		{
-			CommitHash: "modified",
-			Committer:  "root",
-			CommitDate: "2026-08-18T00:01:00Z",
-			Issue:      json.RawMessage(`{"id":"global-1","title":"Updated","status":"open","priority":1,"updated_at":"2026-08-18T00:01:00Z"}`),
-		},
-	}
-
-	events, err := lifecycleEventsFromSnapshots("global-1", snapshots, CorrelatorOptions{})
-	if err != nil {
+func TestExternalHistorySourceRejectsDuplicateKnownRecords(t *testing.T) {
+	root := t.TempDir()
+	ledger := filepath.Join(root, "correlations.jsonl")
+	config := filepath.Join(root, "hub.yaml")
+	sha := strings.Repeat("a", 40)
+	data := "version: 1\nstore: store\nledger: correlations.jsonl\nrepositories:\n  ctx:source:\n    path: source\n"
+	if err := os.WriteFile(config, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("events = %d, want 2: %#v", len(events), events)
-	}
-	if events[0].EventType != EventCreated || events[0].CommitSHA != "created" {
-		t.Fatalf("first event = %#v, want created snapshot", events[0])
-	}
-	if events[1].EventType != EventModified || events[1].CommitSHA != "modified" {
-		t.Fatalf("second event = %#v, want genuine modification", events[1])
-	}
-}
-
-func TestLifecycleEventsFromSnapshotsPreservesStatusTransitions(t *testing.T) {
-	snapshots := []beadsHistorySnapshot{
-		{CommitHash: "created", CommitDate: "2026-08-18T00:00:00Z", Issue: json.RawMessage(`{"id":"global-1","status":"open"}`)},
-		{CommitHash: "claimed", CommitDate: "2026-08-18T00:01:00Z", Issue: json.RawMessage(`{"id":"global-1","status":"in_progress"}`)},
-		{CommitHash: "closed", CommitDate: "2026-08-18T00:02:00Z", Issue: json.RawMessage(`{"id":"global-1","status":"closed"}`)},
-	}
-
-	events, err := lifecycleEventsFromSnapshots("global-1", snapshots, CorrelatorOptions{})
-	if err != nil {
+	duplicate := `{"bead_id":"known-issue","context":"ctx:source","commit":"` + sha + `"}` + "\n" +
+		`{"bead_id":"known-issue","context":"ctx:source","commit":"` + strings.ToUpper(sha) + `"}` + "\n"
+	if err := os.WriteFile(ledger, []byte(duplicate), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want := []EventType{EventCreated, EventClaimed, EventClosed}
-	if len(events) != len(want) {
-		t.Fatalf("events = %d, want %d", len(events), len(want))
-	}
-	for i, eventType := range want {
-		if events[i].EventType != eventType {
-			t.Fatalf("event %d type = %q, want %q", i, events[i].EventType, eventType)
-		}
+	if _, err := NewExternalHistorySource(config)([]correlation.BeadInfo{{ID: "known-issue", Labels: []string{"ctx:source"}}}); err == nil || !strings.Contains(err.Error(), "repeats correlation") {
+		t.Fatalf("duplicate ledger error = %v", err)
 	}
 }
 
@@ -242,90 +113,6 @@ func TestLoadCorrelationLedgerRejectsMalformedLine(t *testing.T) {
 	}
 }
 
-func TestLoadHubConfigAllowsEmptyRepositoryMap(t *testing.T) {
-	root := t.TempDir()
-	configPath := filepath.Join(root, "hub.yaml")
-	config := "version: 1\nstore: .beads\nledger: correlations.jsonl\nrepositories: {}\n"
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	hub, err := loadHubConfig(configPath, nil)
-	if err != nil {
-		t.Fatalf("loadHubConfig: %v", err)
-	}
-	if len(hub.repositories) != 0 || len(hub.correlations) != 0 {
-		t.Fatalf("expected empty external history, got repositories=%v correlations=%v", hub.repositories, hub.correlations)
-	}
-}
-
-func TestHistoryLoadSkipsUnknownLedgerRecordsAndRetainsValidCorrelations(t *testing.T) {
-	root := t.TempDir()
-	repository := filepath.Join(root, "repository")
-	if err := os.Mkdir(repository, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command("git", "-C", repository, "init", "--quiet").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	if err := os.WriteFile(filepath.Join(repository, "file.go"), []byte("package fixture\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{
-		{"config", "user.name", "History Test"},
-		{"config", "user.email", "history@example.invalid"},
-		{"add", "file.go"},
-		{"commit", "--quiet", "-m", "valid correlation"},
-	} {
-		if out, err := exec.Command("git", append([]string{"-C", repository}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	validSHAOutput, err := exec.Command("git", "-C", repository, "rev-parse", "HEAD").CombinedOutput()
-	if err != nil {
-		t.Fatalf("git rev-parse: %v\n%s", err, validSHAOutput)
-	}
-	validSHA := strings.TrimSpace(string(validSHAOutput))
-
-	ledgerPath := filepath.Join(root, "correlations.jsonl")
-	ledger := fmt.Sprintf("%s\n%s\n",
-		`{"bead_id":"stale-issue","context":"ctx:source","commit":"`+strings.Repeat("0", 40)+`"}`,
-		`{"bead_id":"known-issue","context":"ctx:source","commit":"`+validSHA+`"}`)
-	if err := os.WriteFile(ledgerPath, []byte(ledger), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(root, "hub.yaml")
-	config := fmt.Sprintf("version: 1\nstore: %s\nledger: %s\nrepositories:\n  ctx:source:\n    path: %s\n", filepath.Join(root, "store"), ledgerPath, repository)
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(root, "bin")
-	if err := os.Mkdir(bin, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	bd := `#!/bin/sh
-printf '%s\n' '{"schema_version":1,"issues":[{"issue_id":"known-issue","snapshots":[]}]}'
-`
-	if err := os.WriteFile(filepath.Join(bin, "bd"), []byte(bd), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	correlator := NewCorrelator(repository).WithContext(context.Background())
-	correlator.hubConfigPath = configPath
-	report, err := correlator.GenerateReport([]BeadInfo{{ID: "known-issue", Labels: []string{"ctx:source"}}}, CorrelatorOptions{})
-	if err != nil {
-		t.Fatalf("GenerateReport: %v", err)
-	}
-	commits := report.Histories["known-issue"].Commits
-	if len(commits) != 1 || commits[0].SHA != validSHA {
-		t.Fatalf("valid ledger correlation = %#v, want commit %q", commits, validSHA)
-	}
-	if data, err := os.ReadFile(ledgerPath); err != nil || string(data) != ledger {
-		t.Fatalf("history load changed the ledger: data=%q err=%v", data, err)
-	}
-}
-
 func TestLoadCorrelationLedgerRejectsDanglingSymlink(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "correlations.jsonl")
 	if err := os.Symlink(filepath.Join(filepath.Dir(path), "missing-target.jsonl"), path); err != nil {
@@ -336,24 +123,24 @@ func TestLoadCorrelationLedgerRejectsDanglingSymlink(t *testing.T) {
 	}
 }
 
-func TestFullCommitSHAValidation(t *testing.T) {
+func TestFullExternalCommitSHAValidation(t *testing.T) {
 	for _, sha := range []string{
 		"0123456789abcdef0123456789abcdef01234567",
 		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	} {
-		if !fullCommitSHARegex.MatchString(sha) {
+		if !fullExternalCommitSHA.MatchString(sha) {
 			t.Fatalf("expected full object ID to be accepted: %s", sha)
 		}
 	}
 	for _, sha := range []string{"deadbee", "0123456789abcdef0123456789abcdef012345678"} {
-		if fullCommitSHARegex.MatchString(sha) {
+		if fullExternalCommitSHA.MatchString(sha) {
 			t.Fatalf("expected abbreviated/invalid object ID to be rejected: %s", sha)
 		}
 	}
 }
 
 func TestRemoveExternalCorrelationRemovesExactDuplicatesAndPreservesUnrelatedRawRecords(t *testing.T) {
-	configPath, ledgerPath := correlationRemovalFixture(t)
+	configPath, ledgerPath := externalHistoryMutationFixture(t)
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	otherSHA := "89abcdef0123456789abcdef0123456789abcdef"
 	unrelatedFirst := ` {"bead_id":"item-beta","context":"ctx:synthetic-a","commit":"` + sha + `","extra":true}`
@@ -383,7 +170,7 @@ func TestRemoveExternalCorrelationRemovesExactDuplicatesAndPreservesUnrelatedRaw
 }
 
 func TestRemoveExternalCorrelationWrongTupleAndNotFoundAreIdempotent(t *testing.T) {
-	configPath, ledgerPath := correlationRemovalFixture(t)
+	configPath, ledgerPath := externalHistoryMutationFixture(t)
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	otherSHA := "89abcdef0123456789abcdef0123456789abcdef"
 	original := `{"bead_id":"item-alpha","context":"ctx:synthetic-a","commit":"` + sha + `"}` + "\n"
@@ -403,7 +190,7 @@ func TestRemoveExternalCorrelationWrongTupleAndNotFoundAreIdempotent(t *testing.
 		t.Fatalf("wrong tuple changed ledger: data=%q err=%v", data, err)
 	}
 
-	missingConfigPath, missingLedgerPath := correlationRemovalFixture(t)
+	missingConfigPath, missingLedgerPath := externalHistoryMutationFixture(t)
 	record, removed, err = RemoveExternalCorrelation(missingConfigPath, "item-alpha", "ctx:synthetic-a", sha)
 	if err != nil || removed || record.Commit != sha {
 		t.Fatalf("missing ledger result = %#v, removed=%v, err=%v", record, removed, err)
@@ -414,7 +201,7 @@ func TestRemoveExternalCorrelationWrongTupleAndNotFoundAreIdempotent(t *testing.
 }
 
 func TestRemoveExternalCorrelationRejectsNonFullSHA(t *testing.T) {
-	configPath, ledgerPath := correlationRemovalFixture(t)
+	configPath, ledgerPath := externalHistoryMutationFixture(t)
 	if _, _, err := RemoveExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", "0123456"); err == nil || !strings.Contains(err.Error(), "full 40- or 64-character") {
 		t.Fatalf("abbreviated SHA error = %v", err)
 	}
@@ -424,7 +211,7 @@ func TestRemoveExternalCorrelationRejectsNonFullSHA(t *testing.T) {
 }
 
 func TestRemoveExternalCorrelationRejectsUnauthorizedBeadContext(t *testing.T) {
-	configPath, ledgerPath := correlationRemovalFixture(t)
+	configPath, ledgerPath := externalHistoryMutationFixture(t)
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	original := `{"bead_id":"item-alpha","context":"ctx:synthetic-a","commit":"` + sha + `"}` + "\n"
 	if err := os.WriteFile(ledgerPath, []byte(original), 0o600); err != nil {
@@ -454,7 +241,7 @@ func TestRemoveExternalCorrelationRejectsUnauthorizedBeadContext(t *testing.T) {
 
 func TestRemoveExternalCorrelationMalformedLedgerAndWriteFailurePreserveLedger(t *testing.T) {
 	t.Run("malformed ledger", func(t *testing.T) {
-		configPath, ledgerPath := correlationRemovalFixture(t)
+		configPath, ledgerPath := externalHistoryMutationFixture(t)
 		original := []byte("{not-json}\n")
 		if err := os.WriteFile(ledgerPath, original, 0o600); err != nil {
 			t.Fatal(err)
@@ -468,7 +255,7 @@ func TestRemoveExternalCorrelationMalformedLedgerAndWriteFailurePreserveLedger(t
 	})
 
 	t.Run("atomic write failure", func(t *testing.T) {
-		configPath, ledgerPath := correlationRemovalFixture(t)
+		configPath, ledgerPath := externalHistoryMutationFixture(t)
 		original := []byte(`{"bead_id":"item-alpha","context":"ctx:synthetic-a","commit":"0123456789abcdef0123456789abcdef01234567"}` + "\n")
 		if err := os.WriteFile(ledgerPath, original, 0o600); err != nil {
 			t.Fatal(err)
@@ -485,7 +272,7 @@ func TestRemoveExternalCorrelationMalformedLedgerAndWriteFailurePreserveLedger(t
 	})
 }
 
-func TestCorrelationPostRenameFailureReportsCommittedMutation(t *testing.T) {
+func TestExternalCorrelationPostRenameFailureReportsCommittedMutation(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	postRenameFailure := func(path string, entries []correlationLedgerEntry) (bool, error) {
 		committed, err := writeCorrelationLedgerAtomic(path, entries)
@@ -496,7 +283,7 @@ func TestCorrelationPostRenameFailureReportsCommittedMutation(t *testing.T) {
 	}
 
 	t.Run("remove", func(t *testing.T) {
-		configPath, ledgerPath := correlationRemovalFixture(t)
+		configPath, ledgerPath := externalHistoryMutationFixture(t)
 		original := `{"bead_id":"item-alpha","context":"ctx:synthetic-a","commit":"` + sha + `"}` + "\n"
 		if err := os.WriteFile(ledgerPath, []byte(original), 0o600); err != nil {
 			t.Fatal(err)
@@ -515,18 +302,11 @@ func TestCorrelationPostRenameFailureReportsCommittedMutation(t *testing.T) {
 	})
 
 	t.Run("add", func(t *testing.T) {
-		configPath, ledgerPath := correlationRemovalFixture(t)
+		configPath, ledgerPath := externalHistoryMutationFixture(t)
 		repository := filepath.Join(filepath.Dir(configPath), "repository")
-		for _, arguments := range [][]string{
-			{"init", "--quiet"},
-			{"config", "user.name", "Synthetic Test"},
-			{"config", "user.email", "synthetic@example.invalid"},
-			{"commit", "--allow-empty", "--quiet", "-m", "synthetic correlation fixture"},
-		} {
-			if out, commandErr := exec.Command("git", append([]string{"-C", repository}, arguments...)...).CombinedOutput(); commandErr != nil {
-				t.Fatalf("git %v: %v\n%s", arguments, commandErr, out)
-			}
-		}
+		gitRun(t, repository, "init", "--quiet")
+		configureGitIdentity(t, repository)
+		gitRun(t, repository, "commit", "--allow-empty", "--quiet", "-m", "synthetic correlation fixture")
 
 		record, added, err := addExternalCorrelation(configPath, "item-alpha", "ctx:synthetic-a", "HEAD", postRenameFailure)
 		if !added || err == nil || !strings.Contains(err.Error(), "post-rename durability failure") {
@@ -537,7 +317,7 @@ func TestCorrelationPostRenameFailureReportsCommittedMutation(t *testing.T) {
 			t.Fatal(readErr)
 		}
 		entries, loadErr := loadCorrelationLedger(ledgerPath)
-		if loadErr != nil || len(entries) != 1 || entries[0] != record {
+		if loadErr != nil || len(entries) != 1 || entries[0].correlation != record {
 			t.Fatalf("committed add ledger=%q entries=%#v err=%v", data, entries, loadErr)
 		}
 	})
@@ -562,7 +342,7 @@ func TestRemoveExternalCorrelationRejectsInvalidUnrelatedRecordsWithoutMutation(
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			configPath, ledgerPath := correlationRemovalFixture(t)
+			configPath, ledgerPath := externalHistoryMutationFixture(t)
 			original := strings.Join(testCase.records, "\n") + "\n"
 			if err := os.WriteFile(ledgerPath, []byte(original), 0o600); err != nil {
 				t.Fatal(err)
@@ -585,7 +365,7 @@ func TestRemoveExternalCorrelationRejectsInvalidUnrelatedRecordsWithoutMutation(
 	}
 }
 
-func correlationRemovalFixture(t *testing.T) (string, string) {
+func externalHistoryMutationFixture(t *testing.T) (string, string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses a POSIX fake bd executable")

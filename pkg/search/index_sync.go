@@ -5,14 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/Dicklesworthstone/beads_viewer/pkg/hub"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/metrics"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
 
 // DefaultIndexPath returns the default semantic index path under the given project directory.
@@ -32,15 +32,11 @@ func indexPath(directory string, cfg EmbeddingConfig) string {
 }
 
 // SemanticIndexPath returns an application-owned semantic index path for a
-// loaded dataset. Hub indexes live beside the Hub store. Local indexes live in
-// the user cache under a key derived from the canonical repository or dataset.
-func SemanticIndexPath(datasetPath, hubStore string, cfg EmbeddingConfig) (string, error) {
-	if hubStore != "" {
-		store, err := hub.ResolvePath(hubStore, "")
-		if err != nil {
-			return "", fmt.Errorf("resolving Hub store for semantic index: %w", err)
-		}
-		return indexPath(hub.SemanticCacheDir(hub.Paths{Store: store}), cfg), nil
+// loaded dataset. A non-empty indexDirectory is already resolved by the
+// composition layer; an empty directory preserves the local user-cache path.
+func SemanticIndexPath(datasetPath, indexDirectory string, cfg EmbeddingConfig) (string, error) {
+	if strings.TrimSpace(indexDirectory) != "" {
+		return indexPath(indexDirectory, cfg), nil
 	}
 
 	key, err := semanticDatasetKey(datasetPath)
@@ -76,7 +72,7 @@ func semanticDatasetKey(datasetPath string) (string, error) {
 	if info, statErr := os.Stat(absolute); statErr == nil && info.IsDir() {
 		repositoryDirectory = absolute
 	}
-	if root, repository, repositoryErr := hub.RepositoryIdentity(repositoryDirectory); repositoryErr == nil {
+	if root, common, repositoryErr := repository.RepositoryIdentity(repositoryDirectory); repositoryErr == nil {
 		canonical := absolute
 		if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
 			canonical = resolved
@@ -85,7 +81,7 @@ func semanticDatasetKey(datasetPath string) (string, error) {
 		if relativeErr != nil {
 			return "", fmt.Errorf("resolving semantic dataset within repository: %w", relativeErr)
 		}
-		identity = "repository\x00" + repository + "\x00" + filepath.ToSlash(relative)
+		identity = "repository\x00" + common + "\x00" + filepath.ToSlash(relative)
 	} else {
 		canonical, canonicalErr := filepath.EvalSymlinks(absolute)
 		if canonicalErr != nil {

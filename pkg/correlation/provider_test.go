@@ -11,7 +11,10 @@ func TestProviderConstructors(t *testing.T) {
 	if git.mode != HistoryModeGit || git.repositoryRoot != "repo" || git.issuePath != "issues.jsonl" {
 		t.Fatalf("git provider = %#v", git)
 	}
-	if external := NewExternalProvider("hub.yaml"); external.mode != HistoryModeExternal || external.configPath != "hub.yaml" {
+	source := ExternalHistorySource(func([]BeadInfo) (ExternalHistorySnapshot, error) {
+		return ExternalHistorySnapshot{Store: "store", Ledger: "ledger", Repositories: map[string]string{}}, nil
+	})
+	if external := NewExternalProvider(source); external.mode != HistoryModeExternal || external.external == nil {
 		t.Fatalf("external provider = %#v", external)
 	}
 	if disabled := NewDisabledProvider(); disabled.mode != HistoryModeOff {

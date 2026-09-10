@@ -836,24 +836,6 @@ func DurableRepositoryRoot(dir string) (string, error) {
 	return currentRoot, nil
 }
 
-// RepositoryIdentity returns the canonical worktree root and Git common
-// directory for the repository containing dir.
-func RepositoryIdentity(dir string) (string, string, error) {
-	root, err := gitOutput(dir, "rev-parse", "--show-toplevel")
-	if err != nil || root == "" {
-		return "", "", errors.New("cannot resolve the current Git repository root")
-	}
-	root, err = canonicalDirectory(root)
-	if err != nil {
-		return "", "", fmt.Errorf("cannot canonicalize the current Git repository root: %w", err)
-	}
-	common, err := gitCommonDirectory(root)
-	if err != nil {
-		return "", "", err
-	}
-	return root, common, nil
-}
-
 // Register ensures the Hub config and registers the repository at dir.
 func Register(paths Paths, dir string) (Registration, error) {
 	context, err := Context(dir)

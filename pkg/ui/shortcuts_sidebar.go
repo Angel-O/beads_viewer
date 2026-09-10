@@ -213,7 +213,7 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 				b.Desc = "Switch to members"
 			}
 			if !s.scopeMembers && !s.scopeMove && b.Key == "tab" {
-				b.Desc = strings.ReplaceAll(b.Desc, "Global issues", s.globalIssuesTitle)
+				b.Desc = "Switch catalog/members/" + s.globalIssuesTitle
 			}
 			if s.scopeMove && !s.scopeMembers && (memberOnly || b.Key == "n") {
 				continue

@@ -679,14 +679,14 @@ func BuildHybridMetricsCmd(issues []model.Issue, dataGen, buildGen uint64) tea.C
 }
 
 // BuildSemanticIndexCmd builds or updates the semantic index for the given issues.
-// It accepts either dataset/store paths followed by data/build generations, or
+// It accepts either dataset/index-directory paths followed by data/build generations, or
 // the legacy two-argument generation form.
 func BuildSemanticIndexCmd(issues []model.Issue, args ...any) tea.Cmd {
-	var datasetPath, hubStore string
+	var datasetPath, indexDirectory string
 	var dataGen, buildGen uint64
 	if len(args) == 4 {
 		datasetPath, _ = args[0].(string)
-		hubStore, _ = args[1].(string)
+		indexDirectory, _ = args[1].(string)
 		if value, ok := args[2].(uint64); ok {
 			dataGen = value
 		}
@@ -697,7 +697,7 @@ func BuildSemanticIndexCmd(issues []model.Issue, args ...any) tea.Cmd {
 		switch value := args[0].(type) {
 		case string:
 			datasetPath = value
-			hubStore, _ = args[1].(string)
+			indexDirectory, _ = args[1].(string)
 		case uint64:
 			dataGen = value
 			buildGen, _ = args[1].(uint64)
@@ -708,10 +708,10 @@ func BuildSemanticIndexCmd(issues []model.Issue, args ...any) tea.Cmd {
 			}
 		}
 	}
-	return buildSemanticIndexCmd(issues, datasetPath, hubStore, dataGen, buildGen)
+	return buildSemanticIndexCmd(issues, datasetPath, indexDirectory, dataGen, buildGen)
 }
 
-func buildSemanticIndexCmd(issues []model.Issue, datasetPath, hubStore string, dataGen, buildGen uint64) tea.Cmd {
+func buildSemanticIndexCmd(issues []model.Issue, datasetPath, indexDirectory string, dataGen, buildGen uint64) tea.Cmd {
 	return func() tea.Msg {
 		cfg := search.EmbeddingConfigFromEnv()
 		embedder, err := search.NewEmbedderFromConfig(cfg)
@@ -719,7 +719,7 @@ func buildSemanticIndexCmd(issues []model.Issue, datasetPath, hubStore string, d
 			return SemanticIndexReadyMsg{DataGeneration: dataGen, BuildGeneration: buildGen, Error: err}
 		}
 
-		indexPath, err := search.SemanticIndexPath(datasetPath, hubStore, cfg)
+		indexPath, err := search.SemanticIndexPath(datasetPath, indexDirectory, cfg)
 		if err != nil {
 			return SemanticIndexReadyMsg{DataGeneration: dataGen, BuildGeneration: buildGen, Error: err}
 		}
