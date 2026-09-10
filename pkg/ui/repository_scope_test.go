@@ -88,7 +88,14 @@ func TestHubScopeExplicitVariantsAndUnregisteredMembership(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	m.hubRepositoryMode = true
-	m.runtimeServices.LabelPredicate = testRepositoryLabelPredicate
+	m.runtimeServices.LabelPredicate = func(label string) bool {
+		switch label {
+		case "ctx:alpha", "ctx:beta", "ctx:unknown":
+			return false
+		default:
+			return true
+		}
+	}
 	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
 
 	if err := m.SetRepositorySelection(repositorypkg.NewAllSelection()); err != nil {
@@ -174,15 +181,19 @@ func TestContextlessScopePersistsAcrossCatalogAndSnapshotRefresh(t *testing.T) {
 }
 
 func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
-	directory := t.TempDir()
-	configPath := filepath.Join(directory, "hub.yaml")
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:alpha": "/alpha", "ctx:beta": "/beta"})
 	issues := []model.Issue{
 		{ID: "alpha", Title: "Alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
 		{ID: "beta", Title: "Beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
 	}
 	m := NewModel(issues, nil, "")
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{
+		HistoryProvider: correlation.NewExternalProvider(nil),
+		RepositoryCatalog: repositorypkg.Catalog{
+			{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact},
+			{ID: "ctx:beta", Name: "beta", Path: "/beta", Kind: repositorypkg.IdentityExact},
+		},
+		RepositoryPresentation: true,
+	})
 	if !m.SetDefaultRepositoryScope("ctx:alpha") {
 		t.Fatal("synchronous catalog did not apply the current repository")
 	}
@@ -193,16 +204,15 @@ func TestDefaultRepositoryScopeSynchronousCatalog(t *testing.T) {
 }
 
 func TestRuntimeServicesApplyResolvedDefaultRepository(t *testing.T) {
-	directory := t.TempDir()
-	configPath := filepath.Join(directory, "hub.yaml")
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:alpha": "/alpha", "ctx:beta": "/beta"})
 	m := NewModel([]model.Issue{
 		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
 		{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:beta"}},
 	}, nil, "")
 	m.SetRuntimeServices(RuntimeServices{
-		CatalogPath:            configPath,
-		CatalogLoader:          testRepositoryCatalogLoader,
+		RepositoryCatalog: repositorypkg.Catalog{
+			{ID: "ctx:alpha", Name: "alpha", Path: "/alpha", Kind: repositorypkg.IdentityExact},
+			{ID: "ctx:beta", Name: "beta", Path: "/beta", Kind: repositorypkg.IdentityExact},
+		},
 		RepositoryPresentation: true,
 		DefaultRepositoryID:    "ctx:beta",
 	})
@@ -704,7 +714,14 @@ func TestHubRepositoryPresentationIsStableFriendlyAndNonMutating(t *testing.T) {
 		{ID: "ctx:alpha", Name: "teams/alpha/service", Kind: repositorypkg.IdentityExact},
 	}
 
-	presentation := repositoryPresentationForIssueWithPredicate(issue, catalog, true, "", nil, testRepositoryLabelPredicate)
+	presentation := repositoryPresentationForIssueWithPredicate(issue, catalog, true, "", nil, func(label string) bool {
+		switch label {
+		case "ctx:zeta", "ctx:Mixed", "ctx:alpha":
+			return false
+		default:
+			return true
+		}
+	})
 	if presentation.ID != "ctx:alpha" || presentation.Name != "teams/alpha/service" || presentation.Extra != 1 {
 		t.Fatalf("presentation = %+v", presentation)
 	}
@@ -903,7 +920,7 @@ func TestHubContextCleanupIsTUIOnlyAndExact(t *testing.T) {
 	}}
 	m := NewModel(issues, nil, "")
 	m.runtimeServices.CatalogPath = "hub.yaml"
-	m.runtimeServices.LabelPredicate = testRepositoryLabelPredicate
+	m.runtimeServices.LabelPredicate = func(label string) bool { return label != "ctx:alpha" }
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
 
@@ -1068,9 +1085,6 @@ func TestHubCatalogRefreshResortsActiveContextModes(t *testing.T) {
 }
 
 func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) {
-	directory := t.TempDir()
-	configPath := filepath.Join(directory, "hub.yaml")
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:one": "/one"})
 	issues := []model.Issue{
 		{ID: "one", Title: "One", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
 		{ID: "two", Title: "Two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
@@ -1087,7 +1101,13 @@ func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) 
 			m.applyFilter()
 			m.list.Select(1)
 
-			m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+			m.SetRuntimeServices(RuntimeServices{
+				HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: "resolved-catalog",
+				CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+					return repositorypkg.Catalog{{ID: "ctx:one", Name: "one", Path: "/one", Kind: repositorypkg.IdentityExact}}, nil
+				},
+				RepositoryPresentation: true, ExternalHistory: true,
+			})
 			if m.sortMode != SortDefault {
 				t.Fatalf("sort mode after synchronous catalog reload = %v, want Default", m.sortMode)
 			}
@@ -1100,15 +1120,11 @@ func TestSynchronousCatalogReloadNormalizesUnavailableContextSort(t *testing.T) 
 }
 
 func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
-	directory := t.TempDir()
-	configPath := filepath.Join(directory, "hub.yaml")
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:one": "/one"})
 	issues := []model.Issue{
 		{ID: "one", Status: model.StatusOpen, Labels: []string{"ctx:one"}},
 		{ID: "two", Status: model.StatusOpen, Labels: []string{"ctx:two"}},
 	}
 	m := NewModel(issues, nil, "")
-	m.runtimeServices.CatalogPath = configPath
 	m.hubRepositoryMode = true
 	m.repositoryCatalog = repositorypkg.Catalog{
 		{ID: "ctx:one", Name: "Alpha", Kind: repositorypkg.IdentityExact},
@@ -1127,7 +1143,13 @@ func TestSynchronousCatalogReloadReconcilesScopeAndCandidates(t *testing.T) {
 		t.Fatalf("selected before synchronous catalog reload = %q, want two", selected)
 	}
 
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{
+		HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: "resolved-catalog",
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{{ID: "ctx:one", Name: "one", Path: "/one", Kind: repositorypkg.IdentityExact}}, nil
+		},
+		RepositoryPresentation: true, ExternalHistory: true,
+	})
 	if got := m.RepositorySelection(); got.Mode() != repositorypkg.SelectionSelected || !slices.Equal(got.IDs(), []string{"ctx:one"}) {
 		t.Fatalf("scope after synchronous catalog reload = %#v", got)
 	}
@@ -1310,7 +1332,7 @@ func TestHubLabelPickerAndAttentionActionsExcludeContextMetadata(t *testing.T) {
 	}}
 	m := NewModel(issues, nil, "")
 	m.runtimeServices.CatalogPath = "hub.yaml"
-	m.runtimeServices.LabelPredicate = testRepositoryLabelPredicate
+	m.runtimeServices.LabelPredicate = func(label string) bool { return label != "ctx:alpha" }
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", Kind: repositorypkg.IdentityExact}}
 	m.refreshRepositoryPresentation()
 

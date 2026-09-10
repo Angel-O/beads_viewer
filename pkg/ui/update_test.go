@@ -556,7 +556,9 @@ func TestCommentsAddRefreshesHubSnapshotAndShowsCount(t *testing.T) {
 	root, issuesPath := makeReloadBDWorkspace(t, initial)
 	payloadPath := installReloadFakeBD(t, root, initial)
 	configPath := filepath.Join(root, "hub.yaml")
-	writeWorkerHubConfig(t, configPath, nil)
+	if err := os.WriteFile(configPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	m := NewModel([]model.Issue{{ID: "A", Title: "Alpha", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, "")
 	m.width, m.height = 120, 40

@@ -1,11 +1,8 @@
 package ui
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,11 +68,10 @@ func TestGetCommitURLUsesCorrelatedCommitRepository(t *testing.T) {
 	localRepository := testGitRepository(t, "git@github.com:owner/local.git")
 	githubRepository := testGitRepository(t, "https://github.com/owner/github.git")
 	gitlabRepository := testGitRepository(t, "ssh://git@gitlab.com/group/gitlab.git")
-	configPath := testHubConfig(t, map[string]string{
-		"ctx:github-111": githubRepository,
-		"ctx:gitlab-222": gitlabRepository,
-	})
-	m := Model{workDir: localRepository, repositoryScopeController: repositoryScopeController{repositoryCatalog: testHubCatalog(t, configPath)}}
+	m := Model{workDir: localRepository, repositoryScopeController: repositoryScopeController{repositoryCatalog: repositorypkg.Catalog{
+		{ID: "ctx:github-111", Name: "github", Path: githubRepository, Kind: repositorypkg.IdentityExact},
+		{ID: "ctx:gitlab-222", Name: "gitlab", Path: gitlabRepository, Kind: repositorypkg.IdentityExact},
+	}}}
 
 	tests := []struct {
 		name       string
@@ -105,8 +101,9 @@ func TestGetCommitURLUsesCorrelatedCommitRepository(t *testing.T) {
 
 func TestHistoryOpenCommit(t *testing.T) {
 	repository := testGitRepository(t, "git@github.com:owner/external.git")
-	configPath := testHubConfig(t, map[string]string{"ctx:external-111": repository})
-	m := historyOpenTestModel("ctx:external-111", "abcdef123456", configPath)
+	m := historyOpenTestModel("ctx:external-111", "abcdef123456", repositorypkg.Catalog{
+		{ID: "ctx:external-111", Name: "external", Path: repository, Kind: repositorypkg.IdentityExact},
+	})
 	var openedURL string
 	m.browserOpener = func(url string) error {
 		openedURL = url
@@ -125,8 +122,9 @@ func TestHistoryOpenCommit(t *testing.T) {
 
 func TestHistoryOpenCommitReportsOpenerFailureInGitMode(t *testing.T) {
 	repository := testGitRepository(t, "https://github.com/owner/external.git")
-	configPath := testHubConfig(t, map[string]string{"ctx:external-111": repository})
-	m := historyOpenTestModel("ctx:external-111", "abcdef123456", configPath)
+	m := historyOpenTestModel("ctx:external-111", "abcdef123456", repositorypkg.Catalog{
+		{ID: "ctx:external-111", Name: "external", Path: repository, Kind: repositorypkg.IdentityExact},
+	})
 	m.historyView.ToggleViewMode()
 	m.browserOpener = func(string) error { return errors.New("opener unavailable") }
 
@@ -139,7 +137,6 @@ func TestHistoryOpenCommitReportsOpenerFailureInGitMode(t *testing.T) {
 
 func TestHistoryOpenCommitReportsMissingMetadata(t *testing.T) {
 	noRemoteRepository := testGitRepository(t, "")
-	configPath := testHubConfig(t, map[string]string{"ctx:no-remote-111": noRemoteRepository})
 
 	tests := []struct {
 		name       string
@@ -155,7 +152,9 @@ func TestHistoryOpenCommitReportsMissingMetadata(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			m := historyOpenTestModel(test.repository, test.sha, configPath)
+			m := historyOpenTestModel(test.repository, test.sha, repositorypkg.Catalog{
+				{ID: "ctx:no-remote-111", Name: "no-remote", Path: noRemoteRepository, Kind: repositorypkg.IdentityExact},
+			})
 			m.browserOpener = func(string) error {
 				t.Fatal("browser opener called with incomplete metadata")
 				return nil
@@ -170,7 +169,7 @@ func TestHistoryOpenCommitReportsMissingMetadata(t *testing.T) {
 	}
 }
 
-func historyOpenTestModel(repository, sha, configPath string) *Model {
+func historyOpenTestModel(repository, sha string, catalog repositorypkg.Catalog) *Model {
 	report := &correlation.HistoryReport{Histories: map[string]correlation.BeadHistory{}}
 	if sha != "" {
 		report.Histories["global-test"] = correlation.BeadHistory{
@@ -184,7 +183,7 @@ func historyOpenTestModel(repository, sha, configPath string) *Model {
 		}
 	}
 	m := NewModel(nil, nil, "")
-	m.repositoryCatalog = testHubCatalogMust(configPath)
+	m.repositoryCatalog = catalog
 	m.hubRepositoryMode = true
 	m.historyView = NewHistoryModel(report, testTheme())
 	makeHistoryReportCurrent(m, report)
@@ -210,45 +209,4 @@ func runGitForHistoryOpenTest(t *testing.T, repository string, args ...string) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
-}
-
-func testHubConfig(t *testing.T, repositories map[string]string) string {
-	t.Helper()
-	config := struct {
-		Version      int    `json:"version"`
-		Store        string `json:"store"`
-		Ledger       string `json:"ledger"`
-		Repositories map[string]struct {
-			Path string `json:"path"`
-		} `json:"repositories"`
-	}{Version: 1, Store: "store", Ledger: "ledger", Repositories: make(map[string]struct {
-		Path string `json:"path"`
-	}, len(repositories))}
-	for context, repository := range repositories {
-		config.Repositories[context] = struct {
-			Path string `json:"path"`
-		}{Path: repository}
-	}
-	data, err := json.Marshal(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(t.TempDir(), "hub.json")
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return configPath
-}
-
-func testHubCatalog(t *testing.T, configPath string) repositorypkg.Catalog {
-	t.Helper()
-	return testHubCatalogMust(configPath)
-}
-
-func testHubCatalogMust(configPath string) repositorypkg.Catalog {
-	catalog, err := testRepositoryCatalogLoader(configPath, nil)
-	if err != nil {
-		panic(err)
-	}
-	return catalog
 }

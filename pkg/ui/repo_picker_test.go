@@ -281,7 +281,14 @@ func TestHubRepositoryPickerShowsContextlessBeadCount(t *testing.T) {
 	m := NewModel(issues, nil, "")
 	m.ready = true
 	m.hubRepositoryMode = true
-	m.runtimeServices.LabelPredicate = testRepositoryLabelPredicate
+	m.runtimeServices.LabelPredicate = func(label string) bool {
+		switch label {
+		case "ctx:alpha", "ctx:unknown":
+			return false
+		default:
+			return true
+		}
+	}
 	m.repositoryCatalog = repositorypkg.Catalog{{ID: "ctx:alpha", Name: "alpha", BeadCount: 1}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})

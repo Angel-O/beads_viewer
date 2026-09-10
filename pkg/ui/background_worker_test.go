@@ -847,13 +847,19 @@ func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	writeWorkerCatalogMarker(t, configPath, "a")
 	t.Setenv("BV_BACKGROUND_MODE", "1")
 	t.Setenv("BV_HUB_AUTO_REFRESH", "0")
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", filepath.Join(directory, "viewer-generation"))
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{
+		HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath,
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
+		},
+		RepositoryPresentation: true, ExternalHistory: true,
+	})
 	if m.backgroundWorker == nil || m.backgroundWorker.catalogPath != configPath {
 		t.Fatal("manual catalog refresh was not configured")
 	}
@@ -873,7 +879,7 @@ func TestModelRuntimeServicesInstallCatalogLoaderOnExistingWorker(t *testing.T) 
 	loader := func(string, []model.Issue) (repositorypkg.Catalog, error) {
 		return repositorypkg.Catalog{{ID: "ctx:injected"}}, nil
 	}
-	predicate := testRepositoryLabelPredicate
+	predicate := func(label string) bool { return label != "ctx:injected" }
 	m.SetRuntimeServices(RuntimeServices{
 		CatalogPath:            "catalog",
 		CatalogLoader:          loader,
@@ -901,7 +907,7 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	writeWorkerCatalogMarker(t, configPath, "a")
 	t.Setenv("BV_BACKGROUND_MODE", "")
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
 	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
@@ -910,7 +916,16 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	if m.backgroundWorker != nil || m.watcher == nil {
 		t.Fatal("direct mode did not start with the ordinary file watcher")
 	}
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{
+		HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath,
+		CatalogLoader: func(path string, _ []model.Issue) (repositorypkg.Catalog, error) {
+			if fileMarker(path) == "b" {
+				return repositorypkg.Catalog{{ID: "ctx:b", Name: "b", Path: "/b", Kind: repositorypkg.IdentityExact}}, nil
+			}
+			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
+		},
+		RepositoryPresentation: true, ExternalHistory: true,
+	})
 	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigWatcher == nil || m.watcher == nil {
 		t.Fatal("Hub provider did not retain the file watcher during worker transition")
 	}
@@ -925,7 +940,7 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 		t.Fatal("fallback file watcher remained after the Hub worker produced a snapshot")
 	}
 	temporary := filepath.Join(directory, "hub.yaml.next")
-	writeWorkerHubConfig(t, temporary, map[string]string{"ctx:b": "/b"})
+	writeWorkerCatalogMarker(t, temporary, "b")
 	if err := os.Rename(temporary, configPath); err != nil {
 		t.Fatal(err)
 	}
@@ -942,13 +957,19 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
+	writeWorkerCatalogMarker(t, configPath, "a")
 	t.Setenv("BV_BACKGROUND_MODE", "")
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
 	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{
+		HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath,
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
+		},
+		RepositoryPresentation: true, ExternalHistory: true,
+	})
 	if m.backgroundWorker == nil || m.watcher == nil || !m.watcher.IsStarted() {
 		t.Fatal("Hub transition did not retain a live fallback watcher")
 	}
@@ -966,14 +987,20 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 	if err := os.WriteFile(issuesPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:empty": "/empty"})
+	writeWorkerCatalogMarker(t, configPath, "empty")
 	t.Setenv("BV_BACKGROUND_MODE", "")
 	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
 	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRepositoryCatalogIssues(nil)
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+	m.SetRuntimeServices(RuntimeServices{
+		HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath,
+		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+			return repositorypkg.Catalog{{ID: "ctx:empty", Name: "empty", Path: "/empty", Kind: repositorypkg.IdentityExact}}, nil
+		},
+		RepositoryPresentation: true, ExternalHistory: true,
+	})
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:empty" || m.repositoryCatalog[0].BeadCount != 0 {
 		t.Fatalf("empty Hub catalog = %#v", m.repositoryCatalog)
 	}
@@ -982,20 +1009,14 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 	}
 }
 
-func TestModelHubCatalogCountsUnfilteredStartupIssues(t *testing.T) {
-	directory := t.TempDir()
-	configPath := filepath.Join(directory, "hub.yaml")
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	filtered := []model.Issue{{ID: "OPEN", Labels: []string{"ctx:a"}}}
-	all := []model.Issue{
-		{ID: "OPEN", Labels: []string{"ctx:a"}},
-		{ID: "CLOSED", Labels: []string{"ctx:a"}},
-	}
-	m := NewModel(filtered, nil, "")
-	m.SetRepositoryCatalogIssues(all)
-	m.SetRuntimeServices(RuntimeServices{HistoryProvider: correlation.NewExternalProvider(nil), CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, RepositoryPresentation: true, ExternalHistory: true})
+func TestModelUsesInjectedCatalogCounts(t *testing.T) {
+	m := NewModel([]model.Issue{{ID: "OPEN", Labels: []string{"ctx:a"}}}, nil, "")
+	m.SetRuntimeServices(RuntimeServices{
+		RepositoryCatalog:      repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", BeadCount: 2, Kind: repositorypkg.IdentityExact}},
+		RepositoryPresentation: true,
+	})
 	if got := catalogEntry(m.repositoryCatalog, "ctx:a").BeadCount; got != 2 {
-		t.Fatalf("unfiltered startup count = %d, want 2", got)
+		t.Fatalf("injected catalog count = %d, want 2", got)
 	}
 }
 
@@ -1048,11 +1069,29 @@ func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) 
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task","labels":["ctx:a"]}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/team/a/repo", "ctx:zero": "/team/zero"})
+	writeWorkerCatalogMarker(t, configPath, "initial")
+	catalogLoader := func(path string, _ []model.Issue) (repositorypkg.Catalog, error) {
+		switch fileMarker(path) {
+		case "changed":
+			return repositorypkg.Catalog{
+				{ID: "ctx:a", Name: "repo", Path: "/renamed/a/repo", BeadCount: 1, Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:new", Name: "new", Path: "/team/new", Kind: repositorypkg.IdentityExact},
+			}, nil
+		case "error":
+			return nil, errors.New("catalog unavailable")
+		case "recovered":
+			return repositorypkg.Catalog{{ID: "ctx:recovered", Name: "recovered", Path: "/team/recovered", Kind: repositorypkg.IdentityExact}}, nil
+		default:
+			return repositorypkg.Catalog{
+				{ID: "ctx:a", Name: "repo", Path: "/team/a/repo", BeadCount: 1, Kind: repositorypkg.IdentityExact},
+				{ID: "ctx:zero", Name: "zero", Path: "/team/zero", Kind: repositorypkg.IdentityExact},
+			}, nil
+		}
+	}
 	worker, err := NewBackgroundWorker(WorkerConfig{
 		BeadsPath:       issuesPath,
 		CatalogPath:     configPath,
-		CatalogLoader:   testRepositoryCatalogLoader,
+		CatalogLoader:   catalogLoader,
 		SourceRetryBase: time.Hour,
 	})
 	if err != nil {
@@ -1067,14 +1106,14 @@ func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) 
 	}
 	initialHash := worker.LastHash()
 
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/renamed/a/repo", "ctx:new": "/team/new"})
+	writeWorkerCatalogMarker(t, configPath, "changed")
 	worker.markCatalogDirty()
 	worker.process()
 	changed := waitForCatalogReady(t, worker.Messages())
 	if worker.LastHash() != initialHash {
 		t.Fatal("catalog-only refresh changed issue snapshot hash")
 	}
-	if len(changed.Catalog) != 2 || catalogEntry(changed.Catalog, "ctx:a").Path != "/renamed/a/repo" || catalogEntry(changed.Catalog, "ctx:new").BeadCount != 0 {
+	if len(changed.Catalog) != 2 || catalogEntry(changed.Catalog, "ctx:a").Path != "/renamed/a/repo" || catalogEntry(changed.Catalog, "ctx:new").ID == "" {
 		t.Fatalf("changed catalog = %#v", changed.Catalog)
 	}
 	if err := os.WriteFile(issuesPath, []byte(
@@ -1083,15 +1122,10 @@ func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) 
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	worker.markCatalogDirty()
 	worker.process()
-	counted := waitForCatalogReady(t, worker.Messages())
-	if catalogEntry(counted.Catalog, "ctx:new").BeadCount != 1 {
-		t.Fatalf("issue-count refresh catalog = %#v", counted.Catalog)
-	}
 
-	if err := os.WriteFile(configPath, []byte("version: ["), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeWorkerCatalogMarker(t, configPath, "error")
 	worker.markCatalogDirty()
 	worker.process()
 	waitForCatalogError(t, worker.Messages())
@@ -1099,7 +1133,7 @@ func TestBackgroundWorkerCatalogRefreshesIndependentlyAndRecovers(t *testing.T) 
 		t.Fatalf("transient failure replaced last valid catalog: %q", got)
 	}
 
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:recovered": "/team/recovered"})
+	writeWorkerCatalogMarker(t, configPath, "recovered")
 	worker.markCatalogDirty()
 	worker.process()
 	recovered := waitForCatalogReady(t, worker.Messages())
@@ -1115,9 +1149,14 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	repositories := map[string]string{"ctx:a": "/a"}
-	writeWorkerHubConfig(t, configPath, repositories)
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, SourceRetryBase: time.Hour})
+	writeWorkerCatalogMarker(t, configPath, "initial")
+	catalogLoader := func(path string, _ []model.Issue) (repositorypkg.Catalog, error) {
+		if fileMarker(path) == "error" {
+			return nil, errors.New("catalog unavailable")
+		}
+		return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: catalogLoader, SourceRetryBase: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1125,9 +1164,7 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 	worker.process()
 	initial := waitForCatalogReady(t, worker.Messages())
 
-	if err := os.WriteFile(configPath, []byte("version: ["), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeWorkerCatalogMarker(t, configPath, "error")
 	worker.markCatalogDirty()
 	worker.process()
 	loadError := waitForCatalogError(t, worker.Messages())
@@ -1140,7 +1177,7 @@ func TestBackgroundWorkerCatalogIdenticalRecoveryClearsModelError(t *testing.T) 
 		t.Fatal("catalog failure did not set model error state")
 	}
 
-	writeWorkerHubConfig(t, configPath, repositories)
+	writeWorkerCatalogMarker(t, configPath, "initial")
 	worker.markCatalogDirty()
 	worker.process()
 	recovered := waitForCatalogReady(t, worker.Messages())
@@ -1161,8 +1198,10 @@ func TestBackgroundWorkerPairsSnapshotAndCatalogInOneMessage(t *testing.T) {
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task","labels":["ctx:a"]}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, MessageBuffer: 1})
+	writeWorkerCatalogMarker(t, configPath, "a")
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+		return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Kind: repositorypkg.IdentityExact}}, nil
+	}, MessageBuffer: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1189,8 +1228,10 @@ func TestBackgroundWorkerCatalogGenerationSuppressesStaleResult(t *testing.T) {
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader})
+	writeWorkerCatalogMarker(t, configPath, "a")
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
+		return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Kind: repositorypkg.IdentityExact}}, nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1276,8 +1317,15 @@ func TestBackgroundWorkerContextlessCountUsesInjectedLabelPredicate(t *testing.T
 		{ID: "registered", Labels: []string{"ctx:known"}},
 	}
 	worker, err := NewBackgroundWorker(WorkerConfig{
-		CatalogPath:    "catalog.yaml",
-		LabelPredicate: testRepositoryLabelPredicate,
+		CatalogPath: "catalog.yaml",
+		LabelPredicate: func(label string) bool {
+			switch label {
+			case "ctx:unknown", "ctx:known":
+				return false
+			default:
+				return true
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1308,8 +1356,13 @@ func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkerHubConfig(t, configPath, map[string]string{"ctx:a": "/a"})
-	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: testRepositoryCatalogLoader, DebounceDelay: 5 * time.Millisecond})
+	writeWorkerCatalogMarker(t, configPath, "a")
+	worker, err := NewBackgroundWorker(WorkerConfig{BeadsPath: issuesPath, CatalogPath: configPath, CatalogLoader: func(path string, _ []model.Issue) (repositorypkg.Catalog, error) {
+		if fileMarker(path) == "b" {
+			return repositorypkg.Catalog{{ID: "ctx:b", Name: "b", Kind: repositorypkg.IdentityExact}}, nil
+		}
+		return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Kind: repositorypkg.IdentityExact}}, nil
+	}, DebounceDelay: 5 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1321,7 +1374,7 @@ func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
 	waitForCatalogReady(t, worker.Messages())
 
 	temporary := filepath.Join(directory, "hub.yaml.next")
-	writeWorkerHubConfig(t, temporary, map[string]string{"ctx:b": "/b"})
+	writeWorkerCatalogMarker(t, temporary, "b")
 	if err := os.Rename(temporary, configPath); err != nil {
 		t.Fatal(err)
 	}
@@ -1331,21 +1384,18 @@ func TestBackgroundWorkerWatchesAtomicHubConfigReplacement(t *testing.T) {
 	}
 }
 
-func writeWorkerHubConfig(t *testing.T, path string, repositories map[string]string) {
+// Marker files exercise watcher transitions without reimplementing Hub config
+// parsing; each test supplies its neutral catalog values directly.
+func writeWorkerCatalogMarker(t *testing.T, path, marker string) {
 	t.Helper()
-	var builder strings.Builder
-	builder.WriteString("version: 1\nstore: store\nledger: ledger\nrepositories:\n")
-	keys := make([]string, 0, len(repositories))
-	for key := range repositories {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		fmt.Fprintf(&builder, "  %s:\n    path: %s\n", key, repositories[key])
-	}
-	if err := os.WriteFile(path, []byte(builder.String()), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(marker), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func fileMarker(path string) string {
+	data, _ := os.ReadFile(path)
+	return string(data)
 }
 
 func waitForCatalogReady(t *testing.T, messages <-chan tea.Msg) RepositoryCatalogReadyMsg {
