@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
@@ -761,9 +762,11 @@ func (b *BacklogModel) CycleStatus() {
 	b.InvalidatePage()
 }
 
-func isBacklogOrdinaryLabel(value string) bool {
+// isBacklogOrdinaryLabel validates one user-entered label. A nil predicate
+// preserves local behavior; Hub mode supplies its reserved-label policy.
+func isBacklogOrdinaryLabel(value string, predicate analysis.LabelPredicate) bool {
 	label := strings.TrimSpace(value)
-	return label != "" && !strings.Contains(label, ",")
+	return label != "" && !strings.Contains(label, ",") && (predicate == nil || predicate(label))
 }
 
 func (b *BacklogModel) NextPageCursor() string {
@@ -3632,7 +3635,7 @@ func (m *Model) handleBacklogKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			label := strings.TrimSpace(m.backlog.LabelInputValue())
-			if isBacklogOrdinaryLabel(label) {
+			if isBacklogOrdinaryLabel(label, m.labelPredicate()) {
 				oldLabel := m.backlog.Label()
 				m.backlog.EndLabelEdit()
 				m.backlog.SetLabel(label)
@@ -3893,7 +3896,9 @@ func (m *Model) beginScopeMatchMutation(action string) tea.Cmd {
 	return m.scopeMatchInput.Focus()
 }
 
-func parseScopeMatch(value string) (string, string, error) {
+// parseScopeMatch parses a scope match while delegating label admission to the
+// resolved runtime policy.
+func parseScopeMatch(value string, predicate analysis.LabelPredicate) (string, string, error) {
 	prefix, target, ok := strings.Cut(strings.TrimSpace(value), ":")
 	target = strings.TrimSpace(target)
 	if !ok || target == "" {
@@ -3901,7 +3906,7 @@ func parseScopeMatch(value string) (string, string, error) {
 	}
 	switch strings.ToLower(strings.TrimSpace(prefix)) {
 	case "label":
-		if strings.Contains(target, ",") {
+		if !isBacklogOrdinaryLabel(target, predicate) {
 			return "", "", fmt.Errorf("enter one ordinary label")
 		}
 		return "", target, nil
@@ -3920,7 +3925,7 @@ func (m *Model) handleScopeMatchKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 		m.focused = m.scopeMatchOrigin
 		return m, nil
 	case "enter":
-		epic, label, err := parseScopeMatch(m.scopeMatchInput.Value())
+		epic, label, err := parseScopeMatch(m.scopeMatchInput.Value(), m.labelPredicate())
 		if err != nil {
 			m.statusMsg, m.statusIsError = err.Error(), true
 			return m, nil

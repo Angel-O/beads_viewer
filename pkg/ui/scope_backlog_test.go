@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
+	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 )
@@ -4822,6 +4823,29 @@ func TestScopeMatchPromptRoutesEpicOrLabelAndCancelPreservesMarks(t *testing.T) 
 	}
 	if m.backlog.MarkCount() != 0 {
 		t.Fatal("successful semantic mutation retained marks")
+	}
+}
+
+func TestScopeLabelAdmissionUsesInjectedPolicyAndPreservesLocalLabels(t *testing.T) {
+	admit := analysis.LabelPredicate(func(label string) bool {
+		return label != "ctx:hub" && label != "hub:metadata"
+	})
+	m := NewModel(nil, nil, "", RuntimeServices{LabelPredicate: admit})
+
+	for _, label := range []string{"ctx:hub", "hub:metadata"} {
+		if isBacklogOrdinaryLabel(label, m.labelPredicate()) {
+			t.Fatalf("Hub label %q was admitted to the backlog filter", label)
+		}
+		if _, _, err := parseScopeMatch("label:"+label, m.labelPredicate()); err == nil {
+			t.Fatalf("Hub label %q was admitted to scope matching", label)
+		}
+	}
+
+	if !isBacklogOrdinaryLabel("ctx:local", nil) {
+		t.Fatal("local mode rejected a label with a ctx prefix")
+	}
+	if _, label, err := parseScopeMatch("label:ctx:local", nil); err != nil || label != "ctx:local" {
+		t.Fatalf("local scope matching rejected ctx label: label=%q err=%v", label, err)
 	}
 }
 
