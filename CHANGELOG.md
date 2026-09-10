@@ -153,7 +153,8 @@ the latest tag, including installer changes usable with already released binarie
   while retaining its health warning. Cached sessions keep their computed
   scores and match reasons; failed or partial lookups remain retryable instead
   of becoming cached empty results (`bv-8phk`;
-  [search adapter](https://github.com/Dicklesworthstone/beads_viewer/commit/fe88cfb7)).
+  [search adapter](https://github.com/Dicklesworthstone/beads_viewer/commit/fe88cfb7),
+  [cache repair and live verification](https://github.com/Dicklesworthstone/beads_viewer/commit/c008a9b7f955680e17baebcc0e35de83efe3804d)).
 - README examples now place impact-network fields under `network`, show
   priority reasoning as an array and use the actual alert fields. Flow Matrix
   rows are documented as blockers and columns as dependents; saved-baseline
