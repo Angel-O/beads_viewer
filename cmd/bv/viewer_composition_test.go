@@ -96,7 +96,7 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	localServices := local.runtimeServicesFor("", nil)
-	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil || localServices.SemanticIndexDir != "" || localServices.RepositoryPresentation || localServices.HubAutoRefresh || localServices.HubChangeSignal != "" {
+	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil || localServices.SemanticIndexDir != "" || localServices.RepositoryPresentation || localServices.AutoRefresh || localServices.SourceChangeSource != nil || localServices.CatalogChangeSource != nil {
 		t.Fatalf("local composition exposed Hub repository services: %#v", localServices)
 	}
 }
@@ -117,7 +117,7 @@ func TestLocalCompositionDoesNotGainHubCapabilitiesFromHistoryConfig(t *testing.
 	if !composition.UsesHubConfigStore || composition.HistoryProvider.Mode() != "external" {
 		t.Fatalf("history composition = store:%v mode:%q, want external history from config", composition.UsesHubConfigStore, composition.HistoryProvider.Mode())
 	}
-	if composition.CatalogLoader != nil || composition.IssueRepositoryResolver != nil || composition.LabelPredicate != nil || composition.SemanticIndexDir != "" || composition.InitialRepositorySelection != nil || composition.CurrentRepositoryID != "" || composition.RepositoryPresentation || composition.HubAutoRefresh || composition.HubChangeSignal != "" || composition.HubScopeSnapshot != nil || composition.HubScopeMemberIDs != nil || composition.ScopeServices.Load != nil {
+	if composition.CatalogLoader != nil || composition.IssueRepositoryResolver != nil || composition.LabelPredicate != nil || composition.SemanticIndexDir != "" || composition.InitialRepositorySelection != nil || composition.CurrentRepositoryID != "" || composition.RepositoryPresentation || composition.AutoRefresh || composition.SourceChangeSource != nil || composition.CatalogChangeSource != nil || composition.HubScopeSnapshot != nil || composition.HubScopeMemberIDs != nil || composition.ScopeServices.Load != nil {
 		t.Fatalf("local composition exposed Hub capabilities: %#v", composition)
 	}
 }
@@ -161,8 +161,32 @@ func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
 	if services.CurrentRepositoryID != "ctx:alpha" {
 		t.Fatalf("runtime current repository ID = %q, want ctx:alpha", services.CurrentRepositoryID)
 	}
-	if !services.ExternalHistory || !services.RepositoryPresentation || !services.RefreshResolved || services.InitialScope != initialScope {
+	if !services.ExternalHistory || !services.RepositoryPresentation || !services.AutoRefresh || services.InitialScope != initialScope {
 		t.Fatalf("runtime policy = %#v", services)
+	}
+	if services.SourceChangeSource == nil || services.CatalogChangeSource == nil {
+		t.Fatalf("runtime refresh sources were not composed: %#v", services)
+	}
+}
+
+func TestViewerCompositionResolvesRefreshOptOutBeforeUI(t *testing.T) {
+	root := t.TempDir()
+	config := writeCompositionHubConfig(t, root)
+	writeFakeWBD(t, `{"id":"scope-a"}`, filepath.Join(root, "wbd-calls"))
+	composition, err := composeViewerServices(viewerCompositionInput{
+		HistoryMode:        "external",
+		HubConfigPath:      config,
+		WorkDir:            root,
+		HubMode:            true,
+		RefreshEnvironment: "0",
+		RobotMode:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := composition.runtimeServicesFor("", nil)
+	if !services.RepositoryPresentation || services.AutoRefresh || services.SourceChangeSource != nil || services.CatalogChangeSource != nil {
+		t.Fatalf("refresh opt-out was not resolved at composition: %#v", services)
 	}
 }
 
@@ -311,8 +335,8 @@ func TestComposeViewerServicesProvidesBoundedHubScopeSeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.HubScopeSnapshot == nil || got.HubScopeMemberIDs == nil || got.HubChangeSignal == "" {
-		t.Fatalf("Hub scope composition = snapshot %v, members %v, signal %q", got.HubScopeSnapshot != nil, got.HubScopeMemberIDs != nil, got.HubChangeSignal)
+	if got.HubScopeSnapshot == nil || got.HubScopeMemberIDs == nil || got.SourceChangeSource == nil || got.CatalogChangeSource == nil {
+		t.Fatalf("Hub scope composition = snapshot %v, members %v, source %v, catalog %v", got.HubScopeSnapshot != nil, got.HubScopeMemberIDs != nil, got.SourceChangeSource != nil, got.CatalogChangeSource != nil)
 	}
 	if got.ScopeServices.QueryBacklog == nil || got.ScopeServices.LoadDetails == nil || got.ScopeServices.Mutate == nil || got.ScopeServices.MutateMatching == nil {
 		t.Fatalf("typed Hub scope services were not composed: %#v", got.ScopeServices)
@@ -322,7 +346,7 @@ func TestComposeViewerServicesProvidesBoundedHubScopeSeam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if local.HubScopeSnapshot != nil || local.HubScopeMemberIDs != nil || local.HubChangeSignal != "" {
+	if local.HubScopeSnapshot != nil || local.HubScopeMemberIDs != nil || local.SourceChangeSource != nil || local.CatalogChangeSource != nil {
 		t.Fatalf("local composition acquired Hub scope loading: %#v", local)
 	}
 }

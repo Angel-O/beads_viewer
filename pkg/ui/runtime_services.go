@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
@@ -50,6 +49,8 @@ type RuntimeServices struct {
 	SelectedIssuePath   string
 	IssueChangePath     string
 	MetadataChangePaths []string
+	IssueSource         ChangeSource
+	MetadataSources     []ChangeSource
 
 	// CatalogPath identifies the source passed to CatalogLoader and its change
 	// watcher; UI does not interpret or reopen that source.
@@ -68,15 +69,17 @@ type RuntimeServices struct {
 	// CurrentRepositoryID controls presentation independently of selection.
 	CurrentRepositoryID string
 	ExternalHistory     bool
-	HubAutoRefresh      bool
-	RefreshResolved     bool
+	// AutoRefresh and the change sources are resolved by the composition root.
+	// The UI only installs and drives the supplied neutral lifecycle services.
+	AutoRefresh         bool
+	SourceChangeSource  ChangeSource
+	CatalogChangeSource ChangeSource
 	// HubScopeMemberIDs bounds every Hub snapshot to the active named scope.
 	// A nil loader preserves ordinary local loading semantics.
 	HubScopeMemberIDs func(context.Context) ([]string, error)
 	// InitialScope is the scope state resolved before Hub issue loading. A
 	// non-nil snapshot with no Active scope keeps startup on the no-scope view.
-	InitialScope    *ScopeSnapshot
-	HubChangeSignal string
+	InitialScope *ScopeSnapshot
 }
 
 func workerConfigForRuntime(beadsPath string, services RuntimeServices) WorkerConfig {
@@ -95,11 +98,14 @@ func workerConfigForRuntime(beadsPath string, services RuntimeServices) WorkerCo
 		MetadataChangePaths:     services.MetadataChangePaths,
 		CatalogPath:             services.CatalogPath,
 		CatalogLoader:           services.CatalogLoader,
+		IssueSource:             services.IssueSource,
+		MetadataSources:         services.MetadataSources,
+		SourceChangeSource:      services.SourceChangeSource,
+		CatalogChangeSource:     services.CatalogChangeSource,
 		LabelPredicate:          services.LabelPredicate,
 		IssueRepositoryResolver: services.IssueRepositoryResolver,
 		HubScopeMemberIDs:       services.HubScopeMemberIDs,
 		SkipInitialRefresh:      services.InitialScope != nil && services.InitialScope.Active == nil,
-		HubChangeSignal:         services.HubChangeSignal,
 	}
 }
 
@@ -118,41 +124,26 @@ func runtimeIssuePaths(beadsPath string, services RuntimeServices) (string, stri
 func newRuntimeBackgroundWorker(beadsPath string, services RuntimeServices, backgroundModeRequested, force bool) (*BackgroundWorker, error) {
 	selectedIssuePath, issueChangePath := runtimeIssuePaths(beadsPath, services)
 	metadataChangePaths := services.MetadataChangePaths
-	hubChangeSignal := services.HubChangeSignal
-	if !force {
-		hubChangeSignal = strings.TrimSpace(os.Getenv("BV_HUB_CHANGE_SIGNAL"))
-		if services.HubChangeSignal != "" {
-			hubChangeSignal = services.HubChangeSignal
-		}
-		if services.RefreshResolved && !services.HubAutoRefresh {
-			hubChangeSignal = ""
-		}
-		if !hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH")) {
-			hubChangeSignal = ""
-		}
+	sourceChangeSource := services.SourceChangeSource
+	catalogChangeSource := services.CatalogChangeSource
+	catalogPath := services.CatalogPath
+	if !services.AutoRefresh {
+		sourceChangeSource = nil
+		catalogChangeSource = nil
+		catalogPath = ""
 	}
-	if !force && (issueChangePath == "" && len(metadataChangePaths) == 0 || !backgroundModeRequested && hubChangeSignal == "") {
+	if !force && (issueChangePath == "" && len(metadataChangePaths) == 0 || !backgroundModeRequested && sourceChangeSource == nil && catalogChangeSource == nil) {
 		return nil, nil
 	}
 	workerConfig := workerConfigForRuntime(beadsPath, services)
 	workerConfig.SelectedIssuePath = selectedIssuePath
 	workerConfig.IssueChangePath = issueChangePath
 	workerConfig.MetadataChangePaths = metadataChangePaths
-	if !force {
-		workerConfig.CatalogPath = ""
-	}
-	workerConfig.HubChangeSignal = hubChangeSignal
+	workerConfig.CatalogPath = catalogPath
+	workerConfig.SourceChangeSource = sourceChangeSource
+	workerConfig.CatalogChangeSource = catalogChangeSource
 	workerConfig.DebounceDelay = 200 * time.Millisecond
 	return NewBackgroundWorker(workerConfig)
-}
-
-func hubAutoRefreshEnabled(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
 }
 
 // SetRuntimeServices installs already-resolved services and owns their
@@ -163,7 +154,9 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 		m.semanticPath = services.SemanticDatasetPath
 	}
 	m.currentRepositoryID = services.CurrentRepositoryID
-	m.hubRepositoryMode = services.RepositoryPresentation || services.IssueRepositoryResolver != nil
+	// Presentation is an explicit composition decision. Resolver/capability
+	// presence must not change the viewer's mode downstream.
+	m.hubRepositoryMode = services.RepositoryPresentation
 	if services.CatalogPath == "" || services.CatalogLoader == nil {
 		m.refreshRepositoryPresentation()
 		m.applyInitialRepositorySelection(services.InitialRepositorySelection)
@@ -174,7 +167,7 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 		m.statusIsError = true
 	}
 	m.refreshRepositoryPresentation()
-	autoRefresh := m.hubAutoRefreshEnabled()
+	autoRefresh := services.AutoRefresh
 	if m.backgroundWorker == nil && m.beadsPath != "" && autoRefresh {
 		worker, err := newRuntimeBackgroundWorker(m.beadsPath, services, false, true)
 		if err != nil {
@@ -192,13 +185,6 @@ func (m *Model) SetRuntimeServices(services RuntimeServices) {
 		}
 	}
 	m.applyInitialRepositorySelection(services.InitialRepositorySelection)
-}
-
-func (m Model) hubAutoRefreshEnabled() bool {
-	if m.runtimeServices.RefreshResolved {
-		return m.runtimeServices.HubAutoRefresh
-	}
-	return hubAutoRefreshEnabled(os.Getenv("BV_HUB_AUTO_REFRESH"))
 }
 
 func (m Model) catalogPath() string { return m.runtimeServices.CatalogPath }

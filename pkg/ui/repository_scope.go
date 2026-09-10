@@ -167,17 +167,12 @@ func (s *repositoryScopeController) applyDefault() bool {
 	return false
 }
 
-func (s repositoryScopeController) usesHubScope(workspaceMode, hubRepositoryMode bool, catalogPath string) bool {
+func (s repositoryScopeController) usesHubScope(workspaceMode, repositoryPresentation bool) bool {
 	if workspaceMode {
 		return false
 	}
-	if hubRepositoryMode || strings.TrimSpace(catalogPath) != "" {
+	if repositoryPresentation {
 		return true
-	}
-	for _, repository := range s.repositoryCatalog {
-		if repository.Kind == repositorypkg.IdentityExact {
-			return true
-		}
 	}
 	return false
 }
@@ -298,8 +293,9 @@ func (m *Model) reloadRepositoryCatalog() error {
 		m.repoPicker.SetCatalog(m.repositoryCatalog)
 		m.repoPicker.SetContextlessBeadCount(m.contextlessBeadCount())
 	}
-	m.board.SetRepositoryPresentation(catalog, true, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
-	m.insightsPanel.SetRepositoryPresentation(catalog, true, m.labelPredicate())
+	presentation := m.hubRepositoryPresentation()
+	m.board.SetRepositoryPresentation(catalog, presentation, m.currentRepositoryID, m.activeRepos, m.labelPredicate())
+	m.insightsPanel.SetRepositoryPresentation(catalog, presentation, m.labelPredicate())
 	return nil
 }
 
@@ -748,7 +744,7 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 }
 
 func (m *Model) hubRepositoryPresentation() bool {
-	return !m.workspaceMode && (m.hubRepositoryMode || strings.TrimSpace(m.catalogPath()) != "")
+	return !m.workspaceMode && m.hubRepositoryMode
 }
 
 func (m *Model) decorateIssueItem(item *IssueItem) {
@@ -853,7 +849,7 @@ func (m Model) repositoryScopeIsAll() bool {
 }
 
 func (m Model) usesHubScope() bool {
-	return m.repositoryScopeController.usesHubScope(m.workspaceMode, m.hubRepositoryMode, m.catalogPath())
+	return m.repositoryScopeController.usesHubScope(m.workspaceMode, m.hubRepositoryMode)
 }
 
 func issueIDSet(issues []model.Issue) map[string]bool {

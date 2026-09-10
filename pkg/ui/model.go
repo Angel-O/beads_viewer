@@ -4396,12 +4396,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if autoAllowed {
 				workerConfig := workerConfigForRuntime(m.beadsPath, m.runtimeServices)
 				workerConfig.CatalogPath = ""
-				workerConfig.HubChangeSignal = ""
+				workerConfig.SourceChangePath = ""
 				workerConfig.DebounceDelay = 200 * time.Millisecond
 				bw, err := NewBackgroundWorker(workerConfig)
 				if err == nil {
 					if m.catalogPath() != "" {
-						err = bw.SetCatalogPath(m.catalogPath(), m.hubAutoRefreshEnabled())
+						err = bw.SetCatalogPath(m.catalogPath(), m.runtimeServices.AutoRefresh)
 					}
 				}
 				if err == nil {

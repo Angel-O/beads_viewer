@@ -14,6 +14,7 @@ func TestKeyDispatch_FlowMatrixExcludesContextLabels(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	m.runtimeServices.CatalogPath = "hub.yaml"
+	m.hubRepositoryMode = true
 	m.runtimeServices.LabelPredicate = func(label string) bool {
 		switch label {
 		case "ctx:project-one", "ctx:project-two":
@@ -56,6 +57,7 @@ func TestKeyDispatch_FlowMatrixContextOnlySelectionSafety(t *testing.T) {
 	}
 	m := NewModel(issues, nil, "")
 	m.runtimeServices.CatalogPath = "hub.yaml"
+	m.hubRepositoryMode = true
 	m.runtimeServices.LabelPredicate = func(label string) bool {
 		switch label {
 		case "ctx:project-one", "ctx:project-two":

@@ -25,6 +25,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/recipe"
 	repositorypkg "github.com/Dicklesworthstone/beads_viewer/pkg/repository"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
 )
 
 func TestBackgroundWorker_NewWithoutPath(t *testing.T) {
@@ -191,8 +192,7 @@ func TestManualReloadKeepsActiveHubScopeWhenAutoRefreshDisabled(t *testing.T) {
 	memberIDs := []string{"B"}
 	m := NewModel([]model.Issue{{ID: "A", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath, RuntimeServices{
 		IssueChangePath:   issuesPath,
-		HubAutoRefresh:    false,
-		RefreshResolved:   true,
+		AutoRefresh:       false,
 		HubScopeMemberIDs: func(context.Context) ([]string, error) { return memberIDs, nil },
 	})
 	defer m.Stop()
@@ -2343,9 +2343,9 @@ func TestBackgroundWorker_HubSignalRefreshesAndDeduplicates(t *testing.T) {
 	writeTestSignal(t, signalPath, "initial")
 
 	worker, err := NewBackgroundWorker(WorkerConfig{
-		BeadsPath:       issuesPath,
-		HubChangeSignal: signalPath,
-		DebounceDelay:   20 * time.Millisecond,
+		BeadsPath:        issuesPath,
+		SourceChangePath: signalPath,
+		DebounceDelay:    20 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2402,9 +2402,9 @@ func TestBackgroundWorker_HubSignalBurstCoalesces(t *testing.T) {
 	signalPath := filepath.Join(root, "viewer-generation")
 	writeTestSignal(t, signalPath, "initial")
 	worker, err := NewBackgroundWorker(WorkerConfig{
-		BeadsPath:       issuesPath,
-		HubChangeSignal: signalPath,
-		DebounceDelay:   40 * time.Millisecond,
+		BeadsPath:        issuesPath,
+		SourceChangePath: signalPath,
+		DebounceDelay:    40 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2434,11 +2434,11 @@ func TestBackgroundWorker_HubFailureRetainsSnapshotAndRecovers(t *testing.T) {
 	signalPath := filepath.Join(root, "viewer-generation")
 	writeTestSignal(t, signalPath, "initial")
 	worker, err := NewBackgroundWorker(WorkerConfig{
-		BeadsPath:       issuesPath,
-		HubChangeSignal: signalPath,
-		DebounceDelay:   5 * time.Millisecond,
-		SourceRetryBase: 80 * time.Millisecond,
-		SourceRetryMax:  80 * time.Millisecond,
+		BeadsPath:        issuesPath,
+		SourceChangePath: signalPath,
+		DebounceDelay:    5 * time.Millisecond,
+		SourceRetryBase:  80 * time.Millisecond,
+		SourceRetryMax:   80 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2535,9 +2535,9 @@ func TestBackgroundWorker_StopCancelsHubExport(t *testing.T) {
 	signalPath := filepath.Join(root, "viewer-generation")
 	writeTestSignal(t, signalPath, "initial")
 	worker, err := NewBackgroundWorker(WorkerConfig{
-		BeadsPath:       issuesPath,
-		HubChangeSignal: signalPath,
-		DebounceDelay:   5 * time.Millisecond,
+		BeadsPath:        issuesPath,
+		SourceChangePath: signalPath,
+		DebounceDelay:    5 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2560,7 +2560,7 @@ func TestBackgroundWorker_StopCancelsHubExport(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Stop did not cancel the in-flight Hub export")
 	}
-	if worker.State() != WorkerStopped || worker.watcher.IsStarted() || worker.hubChangeWatcher.IsStarted() {
+	if worker.State() != WorkerStopped || worker.watcher.IsStarted() || worker.sourceWatcher.IsStarted() {
 		t.Fatalf("worker or watcher remained active after Stop")
 	}
 }
@@ -2569,7 +2569,6 @@ func TestNewModel_HubAndLocalWatcherModes(t *testing.T) {
 	content := `{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}` + "\n"
 	t.Run("local", func(t *testing.T) {
 		t.Setenv("BV_BACKGROUND_MODE", "0")
-		t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
 		path := filepath.Join(t.TempDir(), "issues.jsonl")
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -2589,13 +2588,22 @@ func TestNewModel_HubAndLocalWatcherModes(t *testing.T) {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
-		model := NewModel(nil, nil, path)
+		source := newTestWatcher(t, signalPath)
+		model := NewModel(nil, nil, path, RuntimeServices{AutoRefresh: true, SourceChangeSource: source})
 		defer model.Stop()
-		if model.backgroundWorker == nil || model.watcher != nil || model.backgroundWorker.hubChangeWatcher == nil {
+		if model.backgroundWorker == nil || model.watcher != nil || model.backgroundWorker.sourceSource != source {
 			t.Fatalf("Hub mode watcher selection: worker=%v watcher=%v", model.backgroundWorker, model.watcher)
 		}
 	})
+}
+
+func newTestWatcher(t *testing.T, path string) *watcher.Watcher {
+	t.Helper()
+	source, err := watcher.NewWatcher(path, watcher.WithContentCheck(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }
 
 type startupSnapshotProbe struct {
@@ -2628,10 +2636,9 @@ func TestModelInitialHubSnapshotDoesNotRequireInput(t *testing.T) {
 	writeTestSignal(t, signalPath, "initial")
 
 	t.Setenv("BV_BACKGROUND_MODE", "0")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
-	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	source := newTestWatcher(t, signalPath)
 	probe := startupSnapshotProbe{
-		Model: NewModel([]model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath),
+		Model: NewModel([]model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath, RuntimeServices{AutoRefresh: true, SourceChangeSource: source}),
 		ready: make(chan struct{}),
 	}
 	defer probe.Model.Stop()
@@ -2673,10 +2680,9 @@ func TestModelEmptyInitialHubSnapshotLeavesLoadingWithoutInput(t *testing.T) {
 	writeTestSignal(t, signalPath, "initial")
 
 	t.Setenv("BV_BACKGROUND_MODE", "0")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
-	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
+	source := newTestWatcher(t, signalPath)
 	probe := startupSnapshotProbe{
-		Model: NewModel(nil, nil, issuesPath),
+		Model: NewModel(nil, nil, issuesPath, RuntimeServices{AutoRefresh: true, SourceChangeSource: source}),
 		ready: make(chan struct{}),
 	}
 	defer probe.Model.Stop()
@@ -2710,15 +2716,12 @@ func TestModelEmptyInitialHubSnapshotLeavesLoadingWithoutInput(t *testing.T) {
 func TestModelHubAutoRefreshDisabledShowsLoadedDataImmediately(t *testing.T) {
 	directory := t.TempDir()
 	issuesPath := filepath.Join(directory, "issues.jsonl")
-	signalPath := filepath.Join(directory, "viewer-generation")
 	if err := os.WriteFile(issuesPath, []byte(`{"id":"ONE","title":"One","status":"open","priority":1,"issue_type":"task"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Setenv("BV_BACKGROUND_MODE", "0")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
-	t.Setenv("BV_HUB_AUTO_REFRESH", "0")
-	m := NewModel([]model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath)
+	m := NewModel([]model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}, nil, issuesPath, RuntimeServices{AutoRefresh: false})
 	defer m.Stop()
 
 	if m.backgroundWorker != nil || m.snapshotInitPending {
@@ -2870,10 +2873,9 @@ func TestModelBackgroundSnapshotCaptions(t *testing.T) {
 	writeTestSignal(t, signalPath, "initial")
 
 	t.Setenv("BV_BACKGROUND_MODE", "0")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", signalPath)
-	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	issues := []model.Issue{{ID: "ONE", Title: "One", Status: model.StatusOpen, IssueType: model.TypeTask}}
-	m := NewModel(issues, nil, issuesPath)
+	source := newTestWatcher(t, signalPath)
+	m := NewModel(issues, nil, issuesPath, RuntimeServices{AutoRefresh: true, SourceChangeSource: source})
 	defer m.Stop()
 
 	if got := m.statusMsg; got != "Background mode enabled" {

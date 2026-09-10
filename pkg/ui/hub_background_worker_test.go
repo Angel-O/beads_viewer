@@ -40,8 +40,8 @@ func TestSetCatalogPathPreservesInjectedCatalogChangeSource(t *testing.T) {
 	if err := worker.SetCatalogPath("catalog", true); err != nil {
 		t.Fatal(err)
 	}
-	if worker.catalogSource != source || worker.hubConfigWatcher != nil {
-		t.Fatalf("catalog source = %v, fallback watcher = %v", worker.catalogSource, worker.hubConfigWatcher)
+	if worker.catalogSource != source || worker.catalogWatcher != nil {
+		t.Fatalf("catalog source = %v, fallback watcher = %v", worker.catalogSource, worker.catalogWatcher)
 	}
 }
 
@@ -54,8 +54,6 @@ func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 	}
 	writeHubCatalogMarker(t, configPath, "a")
 	t.Setenv("BV_BACKGROUND_MODE", "1")
-	t.Setenv("BV_HUB_AUTO_REFRESH", "0")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", filepath.Join(directory, "viewer-generation"))
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRuntimeServices(RuntimeServices{
@@ -63,12 +61,12 @@ func TestModelHubCatalogRespectsAutoRefreshOptOut(t *testing.T) {
 		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
 			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
 		},
-		RepositoryPresentation: true, ExternalHistory: true,
+		RepositoryPresentation: true, ExternalHistory: true, AutoRefresh: false,
 	})
 	if m.backgroundWorker == nil || m.backgroundWorker.catalogPath != configPath {
 		t.Fatal("manual catalog refresh was not configured")
 	}
-	if m.backgroundWorker.hubConfigWatcher != nil || m.backgroundWorker.hubChangeWatcher != nil {
+	if m.backgroundWorker.catalogWatcher != nil || m.backgroundWorker.sourceWatcher != nil {
 		t.Fatal("Hub auto-refresh opt-out left a Hub watcher enabled")
 	}
 }
@@ -93,8 +91,7 @@ func TestModelRuntimeServicesInstallCatalogLoaderOnExistingWorker(t *testing.T) 
 		LabelPredicate:          predicate,
 		IssueRepositoryResolver: resolver,
 		HubScopeMemberIDs:       members,
-		RefreshResolved:         true,
-		HubAutoRefresh:          false,
+		AutoRefresh:             false,
 		RepositoryPresentation:  true,
 	})
 	if worker.catalogLoader == nil {
@@ -121,8 +118,6 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 	}
 	writeHubCatalogMarker(t, configPath, "a")
 	t.Setenv("BV_BACKGROUND_MODE", "")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
-	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	if m.backgroundWorker != nil || m.watcher == nil {
@@ -136,9 +131,9 @@ func TestModelDirectHubModeEnablesConfigWatcher(t *testing.T) {
 			}
 			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
 		},
-		RepositoryPresentation: true, ExternalHistory: true,
+		RepositoryPresentation: true, ExternalHistory: true, AutoRefresh: true,
 	})
-	if m.backgroundWorker == nil || m.backgroundWorker.hubConfigWatcher == nil || m.watcher == nil {
+	if m.backgroundWorker == nil || m.backgroundWorker.catalogWatcher == nil || m.watcher == nil {
 		t.Fatal("Hub provider did not retain the file watcher during worker transition")
 	}
 	if err := m.backgroundWorker.Start(); err != nil {
@@ -171,8 +166,6 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 	}
 	writeHubCatalogMarker(t, configPath, "a")
 	t.Setenv("BV_BACKGROUND_MODE", "")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
-	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRuntimeServices(RuntimeServices{
@@ -180,7 +173,7 @@ func TestModelHubWorkerStartFailureRestoresFileWatcher(t *testing.T) {
 		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
 			return repositorypkg.Catalog{{ID: "ctx:a", Name: "a", Path: "/a", Kind: repositorypkg.IdentityExact}}, nil
 		},
-		RepositoryPresentation: true, ExternalHistory: true,
+		RepositoryPresentation: true, ExternalHistory: true, AutoRefresh: true,
 	})
 	if m.backgroundWorker == nil || m.watcher == nil || !m.watcher.IsStarted() {
 		t.Fatal("Hub transition did not retain a live fallback watcher")
@@ -201,8 +194,6 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 	}
 	writeHubCatalogMarker(t, configPath, "empty")
 	t.Setenv("BV_BACKGROUND_MODE", "")
-	t.Setenv("BV_HUB_CHANGE_SIGNAL", "")
-	t.Setenv("BV_HUB_AUTO_REFRESH", "1")
 	m := NewModel(nil, nil, issuesPath)
 	defer m.Stop()
 	m.SetRepositoryCatalogIssues(nil)
@@ -211,7 +202,7 @@ func TestModelEmptyHubStartsWithRegisteredRepositories(t *testing.T) {
 		CatalogLoader: func(string, []model.Issue) (repositorypkg.Catalog, error) {
 			return repositorypkg.Catalog{{ID: "ctx:empty", Name: "empty", Path: "/empty", Kind: repositorypkg.IdentityExact}}, nil
 		},
-		RepositoryPresentation: true, ExternalHistory: true,
+		RepositoryPresentation: true, ExternalHistory: true, AutoRefresh: true,
 	})
 	if len(m.repositoryCatalog) != 1 || m.repositoryCatalog[0].ID != "ctx:empty" || m.repositoryCatalog[0].BeadCount != 0 {
 		t.Fatalf("empty Hub catalog = %#v", m.repositoryCatalog)

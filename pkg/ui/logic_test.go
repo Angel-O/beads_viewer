@@ -272,6 +272,7 @@ func TestContextSortCreatedGroupsByCompleteContextSet(t *testing.T) {
 		contextSortIssue("no-new", 2, time.Date(2026, 1, 8, 0, 0, 0, 0, time.UTC)),
 	}
 	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
 	m.repositoryCatalog = contextSortCatalog()
 	m.sortMode = SortContextCreated
 	m.applyFilter()
@@ -299,6 +300,7 @@ func TestContextSortPriorityUsesPriorityThenIDWithinGroups(t *testing.T) {
 		contextSortIssue("no", 0, date),
 	}
 	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
 	m.repositoryCatalog = contextSortCatalog()
 	m.sortMode = SortContextPriority
 	m.applyFilter()
@@ -317,6 +319,7 @@ func TestContextSortModesAreReachableThroughSortCycle(t *testing.T) {
 		{ID: "alpha", Status: model.StatusOpen, Labels: []string{"ctx:zeta"}},
 		{ID: "beta", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}},
 	}, nil, "")
+	m.hubRepositoryMode = true
 	m.repositoryCatalog = contextSortCatalog()
 	want := []SortMode{
 		SortCreatedAsc, SortCreatedDesc, SortPriority, SortUpdated,

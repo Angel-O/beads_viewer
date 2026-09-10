@@ -257,14 +257,14 @@ type BackgroundWorker struct {
 	errorCount int          // Consecutive error count for backoff
 
 	// Components
-	watcher          *watcher.Watcher
-	hubChangeWatcher *watcher.Watcher
-	hubConfigWatcher *watcher.Watcher
-	issueSource      ChangeSource
-	metadataSources  []ChangeSource
-	sourceSource     ChangeSource
-	catalogSource    ChangeSource
-	msgCh            chan tea.Msg
+	watcher         *watcher.Watcher
+	sourceWatcher   *watcher.Watcher
+	catalogWatcher  *watcher.Watcher
+	issueSource     ChangeSource
+	metadataSources []ChangeSource
+	sourceSource    ChangeSource
+	catalogSource   ChangeSource
+	msgCh           chan tea.Msg
 
 	// Lifecycle
 	ctx         context.Context
@@ -307,7 +307,7 @@ type WorkerConfig struct {
 	HeartbeatTimeout   time.Duration // default: 30s
 	ProcessingTimeout  time.Duration // default: 30s
 	MaxRecoveries      int           // default: 3
-	HubChangeSignal    string        // application-owned Hub generation file
+	SourceChangePath   string        // Resolved external source change signal
 	CatalogPath        string        // Resolved repository catalog source
 	HubScopeMemberIDs  func(context.Context) ([]string, error)
 	SkipInitialRefresh bool          // observe changes without loading until Hub scope activation
@@ -475,16 +475,16 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		w.metadataSources = append(w.metadataSources, metadataWatcher)
 	}
 	w.sourceSource = cfg.SourceChangeSource
-	if w.sourceSource == nil && cfg.HubChangeSignal != "" {
-		hubWatcher, err := watcher.NewWatcher(cfg.HubChangeSignal,
+	if w.sourceSource == nil && cfg.SourceChangePath != "" {
+		sourceWatcher, err := watcher.NewWatcher(cfg.SourceChangePath,
 			watcher.WithDebounceDuration(cfg.DebounceDelay),
 			watcher.WithContentCheck(true),
 		)
 		if err != nil {
 			return nil, err
 		}
-		w.hubChangeWatcher = hubWatcher
-		w.sourceSource = hubWatcher
+		w.sourceWatcher = sourceWatcher
+		w.sourceSource = sourceWatcher
 	}
 	w.catalogSource = cfg.CatalogChangeSource
 	if w.catalogSource == nil && cfg.CatalogPath != "" {
@@ -495,7 +495,7 @@ func NewBackgroundWorker(cfg WorkerConfig) (*BackgroundWorker, error) {
 		if err != nil {
 			return nil, err
 		}
-		w.hubConfigWatcher = configWatcher
+		w.catalogWatcher = configWatcher
 		w.catalogSource = configWatcher
 	}
 
@@ -710,8 +710,8 @@ func (w *BackgroundWorker) Start() error {
 
 	w.openTraceFile()
 	w.logEvent(LogLevelInfo, "worker_start", map[string]any{
-		"beads_path":        w.beadsPath,
-		"hub_change_signal": cfgString(w.hubChangeWatcher),
+		"beads_path":         w.beadsPath,
+		"source_change_path": cfgString(w.sourceWatcher),
 	})
 
 	// Avoid mutating global GC percent in tests (it can interfere with parallel test execution).
@@ -1140,7 +1140,7 @@ func (w *BackgroundWorker) SetCatalogPath(path string, watch bool) error {
 		if err != nil {
 			return err
 		}
-		w.hubConfigWatcher = configWatcher
+		w.catalogWatcher = configWatcher
 		w.catalogSource = configWatcher
 	}
 	return nil

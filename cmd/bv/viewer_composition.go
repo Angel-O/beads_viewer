@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/beads_viewer/internal/datasource"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/analysis"
@@ -18,6 +19,7 @@ import (
 	"github.com/Dicklesworthstone/beads_viewer/pkg/model"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/repository"
 	"github.com/Dicklesworthstone/beads_viewer/pkg/ui"
+	"github.com/Dicklesworthstone/beads_viewer/pkg/watcher"
 )
 
 // viewerCompositionInput contains policy decisions already parsed by the CLI.
@@ -59,8 +61,9 @@ type viewerComposition struct {
 	RepositoryPresentation bool
 	WorkspacePath          string
 	AsOf                   string
-	HubAutoRefresh         bool
-	HubChangeSignal        string
+	AutoRefresh            bool
+	SourceChangeSource     ui.ChangeSource
+	CatalogChangeSource    ui.ChangeSource
 
 	IssueRepositoryResolver    ui.IssueRepositoryResolver
 	InitialRepositorySelection *repository.Selection
@@ -87,25 +90,24 @@ func (c viewerComposition) runtimeServicesFor(datasetPath string, initialScope *
 		catalogPath = c.HubConfigPath
 	}
 	return ui.RuntimeServices{
-		Scopes:                 c.ScopeServices,
-		HistoryProvider:        c.HistoryProvider,
-		LabelPredicate:         c.LabelPredicate,
-		SelectedIssuePath:      c.SelectedIssuePath,
-		IssueChangePath:        c.IssueChangePath,
-		MetadataChangePaths:    c.MetadataChangePaths,
-		CatalogPath:            catalogPath,
-		CatalogLoader:          c.CatalogLoader,
-		SemanticDatasetPath:    datasetPath,
-		SemanticStorePath:      c.SemanticStorePath,
-		SemanticIndexDir:       c.SemanticIndexDir,
-		RepositoryPresentation: c.RepositoryPresentation,
-		ExternalHistory:        c.HistoryProvider.External(),
-		HubAutoRefresh:         c.HubAutoRefresh,
-		HubScopeMemberIDs:      c.HubScopeMemberIDs,
-		InitialScope:           initialScope,
-		HubChangeSignal:        c.HubChangeSignal,
-		RefreshResolved:        true,
-
+		Scopes:                     c.ScopeServices,
+		HistoryProvider:            c.HistoryProvider,
+		LabelPredicate:             c.LabelPredicate,
+		SelectedIssuePath:          c.SelectedIssuePath,
+		IssueChangePath:            c.IssueChangePath,
+		MetadataChangePaths:        c.MetadataChangePaths,
+		CatalogPath:                catalogPath,
+		CatalogLoader:              c.CatalogLoader,
+		SemanticDatasetPath:        datasetPath,
+		SemanticStorePath:          c.SemanticStorePath,
+		SemanticIndexDir:           c.SemanticIndexDir,
+		RepositoryPresentation:     c.RepositoryPresentation,
+		ExternalHistory:            c.HistoryProvider.External(),
+		AutoRefresh:                c.AutoRefresh,
+		SourceChangeSource:         c.SourceChangeSource,
+		CatalogChangeSource:        c.CatalogChangeSource,
+		HubScopeMemberIDs:          c.HubScopeMemberIDs,
+		InitialScope:               initialScope,
 		IssueRepositoryResolver:    c.IssueRepositoryResolver,
 		InitialRepositorySelection: c.InitialRepositorySelection,
 		CurrentRepositoryID:        c.CurrentRepositoryID,
@@ -237,9 +239,21 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	}
 	hubAutoRefresh := false
 	hubChangeSignal := ""
+	var sourceChangeSource ui.ChangeSource
+	var catalogChangeSource ui.ChangeSource
 	if input.HubMode {
 		hubAutoRefresh = compositionHubAutoRefreshEnabled(input.RefreshEnvironment)
 		hubChangeSignal = hubChangeSignalPath(semanticStore)
+		if hubAutoRefresh {
+			sourceChangeSource, err = compositionChangeSource(hubChangeSignal)
+			if err != nil {
+				return viewerComposition{}, err
+			}
+			catalogChangeSource, err = compositionChangeSource(configPath)
+			if err != nil {
+				return viewerComposition{}, err
+			}
+		}
 	}
 
 	return viewerComposition{
@@ -259,8 +273,9 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		RepositoryPresentation: input.HubMode,
 		WorkspacePath:          input.WorkspacePath,
 		AsOf:                   input.AsOf,
-		HubAutoRefresh:         hubAutoRefresh,
-		HubChangeSignal:        hubChangeSignal,
+		AutoRefresh:            hubAutoRefresh,
+		SourceChangeSource:     sourceChangeSource,
+		CatalogChangeSource:    catalogChangeSource,
 		HubScopeSnapshot:       hubScopeSnapshot,
 		HubScopeMemberIDs:      hubScopeMemberIDs,
 		HubRobotFilter:         hubRobotFilter,
@@ -270,6 +285,16 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		InitialRepositorySelection: initialRepositorySelection,
 		CurrentRepositoryID:        currentRepositoryID,
 	}, nil
+}
+
+func compositionChangeSource(path string) (ui.ChangeSource, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	return watcher.NewWatcher(path,
+		watcher.WithDebounceDuration(200*time.Millisecond),
+		watcher.WithContentCheck(true),
+	)
 }
 
 func decodeHubRobotFilter(raw, configPath string) (*hub.HubScope, error) {
