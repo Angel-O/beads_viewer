@@ -3,7 +3,7 @@
 All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are listed newest-first, with GitHub Releases distinguished from tag-only versions.
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
-commits through [`cd100c66`](https://github.com/Dicklesworthstone/beads_viewer/commit/cd100c661a5bb7ce751b6e10a45c5af16af34ce5).
+commits through [`80450e34`](https://github.com/Dicklesworthstone/beads_viewer/commit/80450e345e6b2061fd1e17c6eee007bcb49d56c6).
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -158,6 +158,15 @@ the latest tag, including installer changes usable with already released binarie
 
 ### Windows installation
 
+- Version-check failures now retain stdout and stderr, capped at 4,096
+  characters per stream. The original ten-second execution deadline remains;
+  pipe draining is bounded to one additional second, including when a child
+  inherits the pipes. Truncated version output is rejected before installation
+  (`bv-oonu.9`;
+  [diagnostic repair](https://github.com/Dicklesworthstone/beads_viewer/commit/80450e345e6b2061fd1e17c6eee007bcb49d56c6)).
+  Both README install commands now pin this reviewed script. Portable process
+  regressions and native PowerShell 5.1 version/mismatch checks pass; the original
+  native source first-start failure remains open.
 - Suppress download progress locally inside `Install-FromRelease`, avoiding
   the redirected-download stalls observed with Windows PowerShell 5.1 without
   changing the caller's preference. The native harness now checks the existing

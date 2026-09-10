@@ -1,5 +1,33 @@
 # Bridge Plan: beads_viewer (bv)
 
+## Installer diagnostics and live tracker recheck — 2026-09-10
+
+- [x] Read the complete AGENTS/README, inspect loading, readiness and action
+  routing, and review recent Git, Beads and CASS activity.
+- [x] Re-run all fourteen real-route cases at `f0133a4a` against the exact
+  installed `br 0.5.12` binary through RCH: zero failures or skips. The
+  stale-closed claim now fails correctly; three competing-claimant pairs each
+  have one winner.
+- [x] Reproduce a remaining stale-action failure: defer an issue after capture,
+  confirm fresh analysis excludes it, then observe the captured claim succeed.
+  Send the actual argv and database readback to the tracker agent.
+- [x] Repair installer output loss and inherited-pipe hangs at `80450e34`;
+  independently pass four archive controls and eight real-process cases.
+  Preserve the ten-second execution deadline and bound diagnostic draining.
+  RCH build/vet and first-party formatting pass; scanner limits are recorded.
+- [x] Independently check the same function on native Windows PowerShell 5.1:
+  accept the retained v0.23.0 executable and reject a wrong requested tag,
+  preserving the executable hash. Native timeout/first-start claims stay open.
+- [x] Pin both README Windows installer commands to the reviewed repair and
+  update Unreleased history and the existing Beads TODOs.
+- [ ] Complete original S5 transaction eligibility (`bv-xbvo.9` / `.10`),
+  native/source-first-start evidence (`bv-oonu.9` / `.10`), and original P1
+  baseline-dependent measurements before final documentation and epic closure.
+
+Evidence: `/data/tmp/bv-s5-br0512-20260910-4ZNyVM` and
+`/data/tmp/bv-ps1-timeout-20260910-cQm5qS`. No original acceptance criterion
+was relaxed; twelve original tasks remain open or blocked.
+
 ## Committed SQLite WAL updates refresh the viewer — 2026-09-09
 
 `bv-oonu.21` connects live refresh to the selected SQLite WAL companion.

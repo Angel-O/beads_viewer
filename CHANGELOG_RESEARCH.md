@@ -1,6 +1,6 @@
 # Changelog research: v0.24.1 and its follow-ups
 
-Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..cd100c66` commit
+Scope: the complete `v0.24.0..v0.24.1` and `v0.24.1..80450e34` commit
 windows. Earlier changelog entries are preserved, not re-audited by this update.
 This is a bounded application of `changelog-md-workmanship`, requested after
 publication of v0.24.1. Dates use UTC publication dates for GitHub Releases.
@@ -9,6 +9,56 @@ Evidence order: Git diffs and tag identities, live GitHub Release metadata,
 checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
+
+## September 10 installer diagnostics and tracker recheck
+
+`80450e34` preserves both version-check streams in `install.ps1`, retaining
+at most 4,096 characters each while draining excess output. The execution
+deadline stays at 10,000 ms; post-exit draining stops after 1,000 ms even if a
+descendant inherits a pipe. Output exceeding the cap is rejected before version
+validation, including whitespace that previously disappeared during trimming.
+The two README Windows install commands pin this source revision.
+
+The unchanged function loses both stream markers in three timeout controls
+and hangs beyond the 15-second outer guard after a parent exits with inherited
+pipes. The repaired function passes all eight real-process controls plus the
+four existing archive-fixture checks. An independent replay of the final bytes
+passes all twelve checks with no skips, including direct-child termination
+before fixture cleanup. Its `independent.stdout` SHA-256 is
+`56df062af03c112d2eac4d228ec2fe28e1180d05de31a8a1246276409ee3c355`.
+Raw output is retained in `/data/tmp/bv-ps1-timeout-20260910-cQm5qS`.
+These portable checks use PowerShell 7.5.4 on Linux; they are not native Windows
+source first-start evidence. A separate OldSurface check runs the exact function
+under Windows PowerShell 5.1.26100.9444 against the retained v0.23.0 executable.
+Both the implementing agent and root run the successful-version and wrong-tag
+cases: root observes exit 0 in 1,145 ms and the intended exit 1 in 561 ms, with
+the executable's hash unchanged. The native driver checks source and executable
+hashes and uses the real platform guard. Raw output and the driver are retained
+in `/data/tmp/bv-ps51-compat-20260910-xi8wYK`; SSH warnings are preserved. This
+establishes those two PS5.1 paths, leaving native timeout handling and the current
+source-built executable's first invocation unproven.
+
+RCH build and vet pass for the unchanged Go tree
+at `f0133a4a`. First-party formatting and Bash syntax pass. ShellCheck reports
+the same three false unreachable-code notices for the existing EXIT trap in
+both old and new harnesses. UBS has no PowerShell or shell scanner and exits 3;
+this is explicitly not a scanner pass. No assertion or scanner suppression was
+added. Live GitHub metadata still identifies v0.24.1, published September 8 at
+00:28:07 UTC; no release was created.
+
+Installed `br 0.5.12` now passes the unchanged fourteen live-route cases at
+`f0133a4a` through RCH with zero skips. Three competing-claimant pairs each
+produce one winner and one assignment-validation error. S5 remains open:
+after a captured action's issue is deferred to 2099, fresh `bv` correctly
+withholds a claim but the captured action still succeeds in `br`. Both a
+direct tracker control and the installed v0.24.1 typed-action journey reproduce
+this. Beads comments 469–471 retain source/tool identities and raw paths;
+Agent Mail message 215 hands the defect to the tracker agent, who acknowledged
+it in message 218. This is an observed deferral failure, not proof of a
+closed/claim transaction race. No tracker source or installation was changed
+by this session. The intervening `f0133a4a` recipe wording/test correction is
+also included in Unreleased; the intervening WAL proof commits add verification
+without changing the already-described watcher behavior.
 
 ## September 9 SQLite WAL follow-up
 
