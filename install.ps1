@@ -149,18 +149,85 @@ function Assert-BinaryVersion {
     $process.StartInfo = $start
     try {
         if (-not $process.Start()) { Fail "Could not run $Binary --version" }
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(10000)) {
-            $process.Kill()
-            Fail "$Binary --version timed out; existing installation was not changed"
+        $execution = [System.Diagnostics.Stopwatch]::StartNew()
+        $streams = @(
+            @{ Name = 'stdout'; Reader = $process.StandardOutput },
+            @{ Name = 'stderr'; Reader = $process.StandardError }
+        )
+        foreach ($stream in $streams) {
+            $stream.Buffer = New-Object char[] 1024
+            $stream.Text = New-Object System.Text.StringBuilder
+            $stream.Done = $false
+            $stream.Truncated = $false
+            $stream.ReadFailed = $false
+            $stream.Pending = $stream.Reader.ReadAsync($stream.Buffer, 0, $stream.Buffer.Length)
         }
-        $reported = $stdout.GetAwaiter().GetResult().Trim()
-        $diagnostic = $stderr.GetAwaiter().GetResult().Trim()
+        $drain = $null
+        $timedOut = $false
+        $killFailed = $false
+        while ($true) {
+            # Read both pipes while the child runs, retaining at most 4096
+            # characters each. Keep draining excess output to avoid deadlock.
+            foreach ($stream in $streams) {
+                if (-not $stream.Done -and $stream.Pending.IsCompleted) {
+                    try {
+                        $count = $stream.Pending.GetAwaiter().GetResult()
+                        if ($count -eq 0) {
+                            $stream.Done = $true
+                        } else {
+                            $keep = [Math]::Min($count, 4096 - $stream.Text.Length)
+                            [void]$stream.Text.Append($stream.Buffer, 0, $keep)
+                            if ($keep -lt $count) { $stream.Truncated = $true }
+                            $stream.Pending = $stream.Reader.ReadAsync($stream.Buffer, 0, $stream.Buffer.Length)
+                        }
+                    } catch {
+                        $stream.ReadFailed = $true
+                        $stream.Done = $true
+                    }
+                }
+            }
+            if ($null -eq $drain) {
+                if ($process.HasExited) {
+                    $drain = [System.Diagnostics.Stopwatch]::StartNew()
+                } elseif ($execution.ElapsedMilliseconds -ge 10000) {
+                    # Preserve the original child deadline. Exiting between
+                    # HasExited and Kill is harmless; a failed kill is reported.
+                    $timedOut = $true
+                    try { $process.Kill() } catch {
+                        if (-not $process.HasExited) { $killFailed = $true }
+                    }
+                    $drain = [System.Diagnostics.Stopwatch]::StartNew()
+                }
+            }
+            if ($null -ne $drain) {
+                # A descendant may inherit these pipes after the child exits.
+                # Never await EOF indefinitely, including after a timeout kill.
+                if (($streams[0].Done -and $streams[1].Done) -or $drain.ElapsedMilliseconds -ge 1000) { break }
+                Start-Sleep -Milliseconds 10
+            } else {
+                $remaining = [Math]::Max(0, 10000 - $execution.ElapsedMilliseconds)
+                [void]$process.WaitForExit([int][Math]::Min(20, $remaining))
+            }
+        }
+        $reported = $streams[0].Text.ToString().Trim()
+        $diagnostic = ($streams | ForEach-Object {
+            $text = $_.Text.ToString().Trim()
+            if ($_.Truncated) { $text += ' [truncated at 4096 characters]' }
+            if (-not $_.Done) { $text += ' [incomplete: pipe still open]' }
+            if ($_.ReadFailed) { $text += ' [incomplete: pipe read failed]' }
+            "$($_.Name): $text"
+        }) -join [Environment]::NewLine
+        if ($timedOut) {
+            if ($killFailed) { $diagnostic += "`nCould not terminate the version-check process" }
+            Fail "$Binary --version timed out; existing installation was not changed`n$diagnostic"
+        }
         if ($process.ExitCode -ne 0) {
-            Fail "$Binary --version exited with code $($process.ExitCode): $diagnostic"
+            Fail "$Binary --version exited with code $($process.ExitCode):`n$diagnostic"
         }
-        if ($reported.Length -gt 4096 -or $reported -notmatch '^bv\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+        if (-not $streams[0].Done -or -not $streams[1].Done -or $streams[0].ReadFailed -or $streams[1].ReadFailed) {
+            Fail "Could not read complete --version output; existing installation was not changed`n$diagnostic"
+        }
+        if ($streams[0].Truncated -or $reported -notmatch '^bv\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
             Fail "Unexpected --version output from downloaded binary; existing installation was not changed"
         }
         if ($Matches[1].TrimStart('v') -cne $Tag.TrimStart('v')) {
