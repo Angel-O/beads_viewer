@@ -48,6 +48,38 @@ func TestHubScopeAndLabelAdmissionAreCaseSensitive(t *testing.T) {
 	}
 }
 
+func TestHubScopeCharacterization(t *testing.T) {
+	selected, err := NewSelectedContextsHubScope([]string{"ctx:a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedWithContextless, err := NewSelectedContextsAndContextlessHubScope([]string{"ctx:a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		scope  HubScope
+		labels []string
+		want   bool
+	}{
+		{name: "all includes contexted", scope: NewAllItemsHubScope(), labels: []string{"ctx:b"}, want: true},
+		{name: "selected matches intersection", scope: selected, labels: []string{"ctx:a", "team"}, want: true},
+		{name: "selected excludes another context", scope: selected, labels: []string{"ctx:b"}},
+		{name: "selected excludes contextless", scope: selected, labels: []string{"team"}},
+		{name: "selected plus contextless includes neutral", scope: selectedWithContextless, labels: []string{"team"}, want: true},
+		{name: "contextless excludes contexted", scope: NewContextlessHubScope(), labels: []string{"ctx:a"}},
+		{name: "contextless includes neutral", scope: NewContextlessHubScope(), labels: []string{"Ctx:a"}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.scope.MatchesLabels(test.labels); got != test.want {
+				t.Fatalf("MatchesLabels(%v) = %v, want %v", test.labels, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAdmitIssueCardinalityAndRegistration(t *testing.T) {
 	registered := map[string]Repository{"ctx:a": {}, "ctx:b": {}}
 	tests := []struct {
