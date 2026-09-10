@@ -203,7 +203,7 @@ func TestFindJSONLPath_SkipsBackupFiles(t *testing.T) {
 	// Create backup and regular files
 	os.WriteFile(filepath.Join(dir, "beads.jsonl.backup"), []byte(`{"id":"1"}`), 0644)
 	os.WriteFile(filepath.Join(dir, "beads.backup.jsonl"), []byte(`{"id":"2"}`), 0644)
-	os.WriteFile(filepath.Join(dir, "other.jsonl"), []byte(`{"id":"3"}`), 0644)
+	os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(`{"id":"3"}`), 0644)
 
 	path, err := loader.FindJSONLPath(dir)
 	if err != nil {
@@ -219,7 +219,7 @@ func TestFindJSONLPath_SkipsMergeArtifacts(t *testing.T) {
 	// Create merge artifacts and regular files
 	os.WriteFile(filepath.Join(dir, "beads.orig.jsonl"), []byte(`{"id":"1"}`), 0644)
 	os.WriteFile(filepath.Join(dir, "beads.merge.jsonl"), []byte(`{"id":"2"}`), 0644)
-	os.WriteFile(filepath.Join(dir, "other.jsonl"), []byte(`{"id":"3"}`), 0644)
+	os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(`{"id":"3"}`), 0644)
 
 	path, err := loader.FindJSONLPath(dir)
 	if err != nil {
@@ -830,7 +830,7 @@ func TestFindJSONLPath_SkipsDeletionsJSONL(t *testing.T) {
 	dir := t.TempDir()
 	// Create deletions.jsonl and another file
 	os.WriteFile(filepath.Join(dir, "deletions.jsonl"), []byte(`{"id":"1"}`), 0644)
-	os.WriteFile(filepath.Join(dir, "other.jsonl"), []byte(`{"id":"2"}`), 0644)
+	os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(`{"id":"2"}`), 0644)
 
 	path, err := loader.FindJSONLPath(dir)
 	if err != nil {
@@ -841,7 +841,7 @@ func TestFindJSONLPath_SkipsDeletionsJSONL(t *testing.T) {
 	}
 }
 
-func TestFindJSONLPath_SkipsEmptyPreferredFiles(t *testing.T) {
+func TestFindJSONLPath_PreservesEmptyPreferredFiles(t *testing.T) {
 	dir := t.TempDir()
 	// Create empty beads.jsonl and non-empty other.jsonl
 	os.WriteFile(filepath.Join(dir, "beads.jsonl"), []byte{}, 0644)
@@ -851,48 +851,59 @@ func TestFindJSONLPath_SkipsEmptyPreferredFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if filepath.Base(path) == "beads.jsonl" {
-		t.Error("Should skip empty beads.jsonl and use non-empty file")
+	if filepath.Base(path) != "beads.jsonl" {
+		t.Errorf("Empty authoritative export must win over unrelated issue-shaped files, got %s", path)
+	}
+	for _, name := range []string{"issues.jsonl", "beads.jsonl"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "beads.base.jsonl"), []byte(`{"id":"stale"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		path, err := loader.FindJSONLPath(dir)
+		if err != nil || filepath.Base(path) != name {
+			t.Fatalf("empty %s lost to base: path=%s err=%v", name, path, err)
+		}
 	}
 }
 
-func TestFindJSONLPath_ReturnsEmptyFileAsLastResort(t *testing.T) {
-	dir := t.TempDir()
-	// Create only empty files
-	os.WriteFile(filepath.Join(dir, "empty.jsonl"), []byte{}, 0644)
-
-	path, err := loader.FindJSONLPath(dir)
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	if path == "" {
-		t.Error("Should return empty file as last resort")
+func TestFindJSONLPath_RejectsSidecarOnlyDirectory(t *testing.T) {
+	for _, content := range []string{"", `{"id":"stale","title":"snapshot","status":"open"}`} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "sync_base.jsonl"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if path, err := loader.FindJSONLPath(dir); err == nil {
+			t.Fatalf("implicit discovery accepted a sidecar: %s", path)
+		}
 	}
 }
 
 func TestFindJSONLPath_IgnoresDirectories(t *testing.T) {
 	dir := t.TempDir()
 	// Create a directory with .jsonl name and a regular file
-	os.MkdirAll(filepath.Join(dir, "fake.jsonl"), 0755)
-	os.WriteFile(filepath.Join(dir, "real.jsonl"), []byte(`{"id":"1"}`), 0644)
+	os.MkdirAll(filepath.Join(dir, "issues.jsonl"), 0755)
+	os.WriteFile(filepath.Join(dir, "beads.jsonl"), []byte(`{"id":"1"}`), 0644)
 
 	path, err := loader.FindJSONLPath(dir)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if filepath.Base(path) != "real.jsonl" {
-		t.Errorf("Expected real.jsonl, got: %s", path)
+	if filepath.Base(path) != "beads.jsonl" {
+		t.Errorf("Expected beads.jsonl, got: %s", path)
 	}
 }
 
 func TestFindJSONLPath_FollowsSymlink(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "beads.jsonl")
+	target := filepath.Join(dir, "custom.jsonl")
 	if err := os.WriteFile(target, []byte(`{"id":"link-1"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	link := filepath.Join(dir, "beads.link.jsonl")
+	link := filepath.Join(dir, "issues.jsonl")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks not supported on this filesystem: %v", err)
 	}
@@ -901,8 +912,8 @@ func TestFindJSONLPath_FollowsSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if path != target {
-		t.Errorf("Expected to resolve symlink to %s, got %s", target, path)
+	if path != link {
+		t.Errorf("Expected canonical symlink %s, got %s", link, path)
 	}
 }
 

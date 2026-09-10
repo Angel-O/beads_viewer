@@ -327,10 +327,17 @@ func explicitBeadsDBFileType(dbPath string) (SourceType, int, bool) {
 // stats post-load. A genuinely-corrupt JSONL is still rejected (and we fall
 // through to the next candidate), but the happy path reads the file exactly once.
 func loadSmart(beadsDir, repoPath string) (LoadResult, error) {
+	var warn func(string)
+	if !env.Robot.Bool() {
+		warn = func(message string) {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", message)
+		}
+	}
 	sources, err := DiscoverSources(DiscoveryOptions{
 		BeadsDir:               beadsDir,
 		RepoPath:               repoPath,
 		ValidateAfterDiscovery: false,
+		WarningHandler:         warn,
 	})
 	if err != nil {
 		return LoadResult{}, err

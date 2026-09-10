@@ -4,6 +4,7 @@ All notable changes to **Beads Viewer (`bv`)** are documented here. Versions are
 
 Scope window: this update verifies `v0.24.0..v0.24.1` and the post-release
 commits through [`80450e34`](https://github.com/Dicklesworthstone/beads_viewer/commit/80450e345e6b2061fd1e17c6eee007bcb49d56c6).
+The September 10 canonical-source repair is covered separately below.
 Earlier entries are retained without a fresh historical audit. The recent entries
 are checked against Git diffs, tags, live GitHub Release metadata, Beads records,
 and release receipts; [research notes](CHANGELOG_RESEARCH.md) record coverage.
@@ -29,6 +30,13 @@ the latest tag, including installer changes usable with already released binarie
 
 ### Workflow data and static dashboards
 
+- Source discovery now honors `issues.jsonl`, then `beads.jsonl`, then
+  `beads.base.jsonl` before comparing the selected export with SQLite and
+  worktree sources. A newer sync snapshot cannot replace current issue state,
+  and an empty export stays empty. Sidecar-only directories no longer bypass
+  the filename allowlist through the fallback loader; explicit file overrides
+  remain available. Human commands now report ignored left/right merge
+  artifacts while robot stderr stays clean (`bv-mvvu`, `bv-uoyj.1`).
 - SQLite live refresh now detects committed WAL updates in event and polling
   modes. TUI and watched Pages exports update while the writer remains open;
   checkpoint removal of the WAL is handled without reporting the database

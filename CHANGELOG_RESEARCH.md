@@ -10,6 +10,59 @@ checked-in Beads history, retained release receipts, then existing release
 documentation. Public source links belong in the changelog; local execution
 evidence supplements them here.
 
+## September 10 canonical-source repair
+
+This is an additional bounded implementation review against `d70ebf45`, not a
+new release or a repeat of the historical audit. Ordinary `bv --robot-next`
+selected `beads.base.jsonl` when a normal tracker flush wrote that snapshot
+177 ms after `issues.jsonl`. The live copies happened to be identical, but
+the selected snapshot lacked the metadata-declared live action route.
+
+The retained old-source control uses different issue contents: eight of nine
+regression cases fail, including an empty canonical export resurrecting an
+issue and a sidecar-only directory being accepted by the legacy fallback.
+Base-only loading is the one passing control. The repair resolves local JSONL
+filename authority before freshness comparison with SQLite/worktree sources;
+explicit file overrides remain available. It also connects the previously
+test-only merge-warning callback to human loading, keeping robot stderr quiet.
+Normal tracker base snapshots are not classified as left/right merge artifacts.
+
+The existing test that expected an empty preferred export to lose to an
+arbitrary JSONL file was corrected to require the empty authoritative export.
+Backup/deletion/merge tests retain those exclusions with a canonical positive
+fixture; directory and symlink controls now use actual canonical filenames.
+The discarded-candidate warning test still executes a real rejected JSONL
+probe. The initial watch-export run exposed an obsolete expectation that an
+ignored legacy file degraded authority: only that initial expected Boolean was
+corrected. The corrupt-SQLite fallback, exact source/readback assertions and
+15-second publication bounds remain unchanged. Raw controls and subsequent
+checks are retained in `/data/tmp/bv-canonical-20260910-UPzL40`; final verification
+and independent review belong to the original `bv-mvvu` and `bv-uoyj.1` records.
+
+Final independent RCH verification on `hz4` passes 289 top-level tests and
+268 subtests across the datasource, loader and workspace race suites, with no
+race warnings. Two existing missing-fixture cases skip. Four real CLI tests
+and four explicit-override subtests pass without skips, including the human
+merge warning and silent robot control. The independent evidence is retained
+in `/data/tmp/bv-canonical-independent-20260910-Sucibl`; all seven Go overlay
+hashes match the final build and vet inputs. Root's extended CLI cohort passes
+all 46 source, authority and watch test entries with unchanged deadlines.
+
+A combined run also retains the installed tracker's four deferral failures:
+the prior temporary candidate path had disappeared, and captured argv proves
+the installed `br` ran. After copying and hash-checking the qualified candidate
+into a fresh isolated worker directory, all 18 tracker-route leaves pass with
+the final viewer source. This does not establish the shared installed-tracker
+gate. Neither shared executable was replaced by this repair.
+
+Full `go build ./...` and `go vet ./...` both complete remotely with exit 0.
+First-party formatting and diff checks pass; the same 49 vendor files remain
+unformatted. UBS exits 0 for the seven changed Go files, with no critical
+findings and two reviewed false positives: a loop capture under per-iteration
+Go semantics and a SQL result explicitly closed in the existing test. No
+finding is suppressed. Independent review reports no remaining substantive
+finding; native-platform and original performance gates remain separate.
+
 ## September 10 installer diagnostics and tracker recheck
 
 `80450e34` preserves both version-check streams in `install.ps1`, retaining

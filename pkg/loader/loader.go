@@ -668,8 +668,8 @@ func GetGitDir(repoPath string) (string, error) {
 
 // FindJSONLPath locates the beads JSONL file in the given directory.
 // Prefers issues.jsonl (current br) over beads.jsonl (legacy bd) and
-// beads.base.jsonl (daemon/base export). Skips backup files and merge artifacts.
-// Skips backup files and merge artifacts.
+// beads.base.jsonl (base snapshot). An existing empty export is authoritative;
+// other JSONL names require an explicit file override.
 func FindJSONLPath(beadsDir string) (string, error) {
 	return FindJSONLPathWithWarnings(beadsDir, nil)
 }
@@ -736,8 +736,13 @@ func FindJSONLPathWithWarnings(beadsDir string, warnFunc func(msg string)) (stri
 		for _, name := range candidates {
 			if name == preferred {
 				path := filepath.Join(beadsDir, name)
-				// Check if file has content (skip empty files)
-				if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+				info, err := os.Stat(path)
+				if err != nil {
+					return "", fmt.Errorf("inspect beads JSONL file %s: %w", path, err)
+				}
+				// Empty exports represent empty projects. Do not resurrect an
+				// older snapshot merely because it still contains records.
+				if info.Mode().IsRegular() {
 					return path, nil
 				}
 			}
@@ -747,26 +752,14 @@ func FindJSONLPathWithWarnings(beadsDir string, warnFunc func(msg string)) (stri
 	// In a bd (Dolt-backed) workspace the issue data lives in the Dolt
 	// database; never fall back to a stray non-issue JSONL (memories,
 	// interactions, ...) — that silently reports an empty project (#189).
-	// Accept an existing-but-empty compatibility export (a legitimately empty
-	// project); otherwise require the export.
+	// Empty compatibility exports were accepted above; otherwise require the
+	// export rather than accepting an unrelated file or a directory.
 	if isBD {
 		issuesPath := filepath.Join(beadsDir, "issues.jsonl")
-		if _, err := os.Stat(issuesPath); err == nil {
-			return issuesPath, nil
-		}
 		return "", fmt.Errorf("no compatibility JSONL found at %s; run 'bd export -o .beads/issues.jsonl'", issuesPath)
 	}
 
-	// Fall back to first non-empty candidate
-	for _, name := range candidates {
-		path := filepath.Join(beadsDir, name)
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			return path, nil
-		}
-	}
-
-	// Last resort: return first candidate even if empty
-	return filepath.Join(beadsDir, candidates[0]), nil
+	return "", fmt.Errorf("no beads JSONL file found in %s (expected %s; use an explicit file override for other names)", beadsDir, strings.Join(preferredNames, ", "))
 }
 
 // LoadIssues reads issues from the beads directory.

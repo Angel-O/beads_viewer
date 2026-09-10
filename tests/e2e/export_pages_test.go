@@ -193,7 +193,10 @@ func TestExportPagesWatchUsesLoadedSource(t *testing.T) {
 				logs, _ := os.ReadFile(logPath)
 				t.Fatalf("watch did not publish %s from %s\n%s", id, selected, logs)
 			}
-			waitForPublication("before", tc.explicit)
+			// A legacy JSONL beside issues.jsonl is excluded before validation,
+			// so it cannot degrade the canonical export's authority. A corrupt
+			// SQLite candidate still exercises actual fallback and must do so.
+			waitForPublication("before", tc.explicit || tc.rejected == "beads.jsonl")
 			var siblingDB *sql.DB
 			if tc.wal {
 				var err error

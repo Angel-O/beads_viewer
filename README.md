@@ -3855,10 +3855,10 @@ Reliability is key. `bv` doesn't assume a perfect environment; it actively handl
 
 ### 1. Intelligent Path Discovery
 The loader (`pkg/loader/loader.go`, `internal/datasource`) doesn't blindly open one hard-coded JSONL path:
-1.  **Explicit override:** `--db <file-or-dir>`, then `BEADS_DB`, then `BEADS_DIR` bypass discovery entirely. `--db` accepts a database file or a `.beads` directory.
+1.  **Explicit override:** `--db <file-or-dir>`, then `BEADS_DB`, then `BEADS_DIR` select where to read. A file override bypasses discovery; a directory override runs discovery in that directory.
 2.  **Redirect:** If `.beads/redirect` exists, its target directory is followed (up to 10 hops, loops and missing targets are errors) so bv reads the same store `br where` reports.
-3.  **Allowlist:** Only three file names are ever considered: `issues.jsonl` (preferred), `beads.jsonl` (legacy), and `beads.base.jsonl` (`loader.PreferredJSONLNames`). Sidecars that sit beside them (`sync_base.jsonl`, `sprints.jsonl`, `correlation_feedback.jsonl`, `deletions.jsonl`, backups, merge artifacts) never load as issues.
-4.  **Freshness gate:** Robot and TUI startup share the smart loader: it tries candidates in freshness order and falls through when validation rejects a source. The TUI and single-repository watched Pages export watch the source that successfully loaded, including a valid fallback or an explicitly selected database. Historical exports with `--as-of` are fixed snapshots and cannot use `--watch-export`.
+3.  **Allowlist:** Local JSONL discovery selects the first existing regular file in this order: `issues.jsonl`, `beads.jsonl` (legacy), then `beads.base.jsonl` (base snapshot). An empty export represents an empty project; a newer legacy or base file cannot replace it. Sidecars such as `sync_base.jsonl`, `sprints.jsonl`, `correlation_feedback.jsonl`, `deletions.jsonl`, backups and merge artifacts require an explicit file override and are never discovered as issues.
+4.  **Freshness gate:** Robot and TUI startup share the smart loader: the selected local JSONL export competes with SQLite and worktree sources in freshness order, with validation failures reported when a fallback is used. The TUI and single-repository watched Pages export watch the source that successfully loaded, including a valid fallback or an explicitly selected database. Historical exports with `--as-of` are fixed snapshots and cannot use `--watch-export`.
 
 SQLite watchers also observe the selected database's `-wal` companion in event
 and polling modes, so a writer can remain open between committed updates.

@@ -134,6 +134,7 @@ func TestDiscoverSources_AllowlistNamesAreCandidates(t *testing.T) {
 }
 
 func TestLoadIssues_FresherSyncBaseDoesNotWin(t *testing.T) {
+	t.Setenv("BV_ROBOT", "1") // Robot loads stay quiet even with ignored merge artifacts.
 	beads := writeSidecarFixture(t, sidecarSet)
 	wantHash := func() string {
 		clean, err := loader.LoadIssuesFromFileWithOptions(filepath.Join(beads, "issues.jsonl"), loader.ParseOptions{WarningHandler: func(string) {}})
@@ -170,8 +171,97 @@ func TestLoadIssues_FresherSyncBaseDoesNotWin(t *testing.T) {
 	}
 }
 
-// A legitimately named but corrupt candidate that loses the freshness race must
-// not leak its warnings; the selected source's own warnings still print.
+func TestLoadIssues_CanonicalJSONLPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		files     map[string]string
+		wantPath  string
+		wantCount int
+		wantError bool
+		wantDrops int
+	}{
+		{"canonical", map[string]string{"issues.jsonl": sidecarIssueA + "\n", "beads.jsonl": sidecarIssueB + "\n", "beads.base.jsonl": sidecarIssueC + "\n"}, "issues.jsonl", 1, false, 0},
+		{"empty_canonical", map[string]string{"issues.jsonl": "", "beads.jsonl": sidecarIssueB + "\n", "beads.base.jsonl": sidecarIssueC + "\n"}, "issues.jsonl", 0, false, 0},
+		{"corrupt_canonical", map[string]string{"issues.jsonl": "{broken\n", "beads.jsonl": sidecarIssueB + "\n", "beads.base.jsonl": sidecarIssueC + "\n"}, "issues.jsonl", 0, false, 1},
+		{"legacy", map[string]string{"beads.jsonl": sidecarIssueB + "\n", "beads.base.jsonl": sidecarIssueC + "\n"}, "beads.jsonl", 1, false, 0},
+		{"empty_legacy", map[string]string{"beads.jsonl": "", "beads.base.jsonl": sidecarIssueC + "\n"}, "beads.jsonl", 0, false, 0},
+		{"base_only", map[string]string{"beads.base.jsonl": sidecarIssueC + "\n"}, "beads.base.jsonl", 1, false, 0},
+		{"sidecar_only", map[string]string{"sync_base.jsonl": sidecarIssueC + "\n"}, "", 0, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BV_ROBOT", "1")
+			beads := t.TempDir()
+			for name, content := range tc.files {
+				path := filepath.Join(beads, name)
+				if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				stamp := time.Unix(1700000000, 0)
+				if name != tc.wantPath {
+					stamp = stamp.Add(time.Hour)
+				}
+				if err := os.Chtimes(path, stamp, stamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded, err := LoadIssuesFromDir(beads)
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("sidecar-only directory loaded as an issue source: %+v", loaded.Source)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if filepath.Base(loaded.Source.Path) != tc.wantPath || len(loaded.Issues) != tc.wantCount || loaded.Report.Errors != tc.wantDrops {
+				t.Fatalf("source=%s issues=%d drops=%d; want %s/%d/%d", loaded.Source.Path, len(loaded.Issues), loaded.Report.Errors, tc.wantPath, tc.wantCount, tc.wantDrops)
+			}
+			if tc.wantCount > 0 {
+				want, err := loader.LoadIssuesFromFile(filepath.Join(beads, tc.wantPath))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if analysis.ComputeDataHash(loaded.Issues) != analysis.ComputeDataHash(want) {
+					t.Fatal("loaded issue state differs from the selected canonical file")
+				}
+			}
+		})
+	}
+}
+
+func TestLoadIssues_CanonicalJSONLPreservesSQLiteFreshness(t *testing.T) {
+	for _, sqliteNewer := range []bool{false, true} {
+		name := "jsonl_newer"
+		if sqliteNewer {
+			name = "sqlite_newer"
+		}
+		t.Run(name, func(t *testing.T) {
+			beads := writeSidecarFixture(t, map[string]string{"beads.base.jsonl": sidecarIssueC + "\n"})
+			dbPath := filepath.Join(beads, "beads.db")
+			createTestSQLiteDB(t, dbPath)
+			stamp := time.Now().Add(-3 * time.Hour)
+			wantType := SourceTypeJSONLLocal
+			if sqliteNewer {
+				stamp = time.Now().Add(-time.Hour)
+				wantType = SourceTypeSQLite
+			}
+			if err := os.Chtimes(dbPath, stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadIssuesFromDir(beads)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Source.Type != wantType || filepath.Base(loaded.Source.Path) == "beads.base.jsonl" {
+				t.Fatalf("source=%+v, want %s without the newer base", loaded.Source, wantType)
+			}
+		})
+	}
+}
+
+// A rejected JSONL probe must not leak its warnings; the selected source's own
+// warnings still print. A newer legacy export cannot replace the canonical one.
 func TestLoadIssues_RejectedCandidateIsSilentSelectedStillWarns(t *testing.T) {
 	dir := t.TempDir()
 	beads := filepath.Join(dir, ".beads")
@@ -185,8 +275,8 @@ func TestLoadIssues_RejectedCandidateIsSilentSelectedStillWarns(t *testing.T) {
 	}
 	old := time.Now().Add(-2 * time.Hour)
 	_ = os.Chtimes(issuesPath, old, old)
-	// beads.jsonl: newer, allowlisted name, but every line is garbage so the
-	// error-rate gate rejects it and loadSmart falls through to issues.jsonl.
+	// beads.jsonl: newer legacy export, but every line is garbage. Probe it
+	// directly to retain coverage of discarded-candidate warning buffering.
 	badPath := filepath.Join(beads, "beads.jsonl")
 	if err := os.WriteFile(badPath, []byte("{bad 1\n{bad 2\n{bad 3\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -198,6 +288,9 @@ func TestLoadIssues_RejectedCandidateIsSilentSelectedStillWarns(t *testing.T) {
 	var got int
 	var loaded LoadResult
 	stderr := captureStderr(t, func() {
+		if _, err := loadAndValidateJSONL(DataSource{Type: SourceTypeJSONLLocal, Path: badPath}); err == nil {
+			t.Fatal("corrupt JSONL probe must fail validation")
+		}
 		var err error
 		loaded, err = LoadIssuesFromDir(beads)
 		if err != nil {

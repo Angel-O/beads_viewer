@@ -92,6 +92,9 @@ type DiscoveryOptions struct {
 	Verbose bool
 	// Logger receives log messages when Verbose is true
 	Logger func(msg string)
+	// WarningHandler receives actionable discovery warnings, such as leftover
+	// merge artifacts. Nil keeps discovery silent for robot and probe callers.
+	WarningHandler func(msg string)
 }
 
 // DiscoverSources finds all potential data sources in the beads directory
@@ -253,6 +256,10 @@ func discoverLocalJSONLSources(beadsDir string, opts DiscoveryOptions) ([]DataSo
 	if err != nil {
 		return nil, fmt.Errorf("failed to read beads directory: %w", err)
 	}
+	// Filename authority is resolved before comparing this export with
+	// SQLite or worktree sources. A newer base/legacy snapshot must not
+	// shadow the canonical export, even when the canonical file is empty.
+	preferredPath, selectionErr := loader.FindJSONLPathWithWarnings(beadsDir, opts.WarningHandler)
 
 	for _, e := range entries {
 		if e.IsDir() {
@@ -280,8 +287,17 @@ func discoverLocalJSONLSources(beadsDir string, opts DiscoveryOptions) ([]DataSo
 		}
 
 		path := filepath.Join(beadsDir, name)
-		info, err := e.Info()
+		if selectionErr != nil || path != preferredPath {
+			if opts.Verbose {
+				opts.Logger(fmt.Sprintf("Skipping %s: not the preferred local issue export", name))
+			}
+			continue
+		}
+		info, err := os.Stat(path)
 		if err != nil {
+			return nil, fmt.Errorf("inspect local issue export %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 
@@ -298,7 +314,7 @@ func discoverLocalJSONLSources(beadsDir string, opts DiscoveryOptions) ([]DataSo
 		}
 	}
 
-	return sources, nil
+	return sources, selectionErr
 }
 
 // discoverWorktreeSources finds JSONL files in git worktree beads directories
