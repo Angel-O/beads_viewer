@@ -203,21 +203,23 @@ func TestScopePickerEnterTogglesActiveScopeAndPreservesInactiveActivation(t *tes
 func TestScopePickerViewOmitsLocalHintsAndSpacesHeader(t *testing.T) {
 	picker := NewScopePickerModel(testTheme())
 	picker.SetSize(80, 20)
-	picker.SetScopes([]ScopeInfo{{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2}})
+	picker.SetScopes([]ScopeInfo{{Name: "Today", CreatedAt: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), MemberCount: 2, CompletedCount: 1, MemberCountKnown: true, CompletedCountKnown: true}})
 	view := ansi.Strip(picker.View())
 	lines := strings.Split(view, "\n")
-	header, entry, detail := -1, -1, -1
+	header, entry, completion, created := -1, -1, -1, -1
 	for index, line := range lines {
 		switch {
 		case strings.Contains(line, "Scopes"):
 			header = index
 		case strings.Contains(line, "▸ Today"):
 			entry = index
-		case strings.Contains(line, "created: 2026-01-02 · members: 2"):
-			detail = index
+		case completion < 0 && strings.Contains(line, "completed: 1/2"):
+			completion = index
+		case created < 0 && strings.Contains(line, "created: 2026-01-02"):
+			created = index
 		}
 	}
-	if header < 0 || entry < 0 || detail < 0 || entry != header+2 || detail != entry+1 {
+	if header < 0 || entry < 0 || completion < 0 || created < 0 || entry != header+2 || completion != entry+1 || created != completion+1 {
 		t.Fatalf("scope header spacing missing:\n%s", view)
 	}
 	for _, hint := range []string{"enter activate", "n new scope", "esc back", "enter move bead"} {
@@ -1105,7 +1107,7 @@ func TestScopePickerCatalogStylesSelectedNameAndActiveScope(t *testing.T) {
 	}
 }
 
-func TestScopePickerCatalogWindowUsesTwoLineRowBounds(t *testing.T) {
+func TestScopePickerCatalogWindowUsesThreeLineRowBounds(t *testing.T) {
 	picker := NewScopePickerModel(testTheme())
 	picker.SetScopes([]ScopeInfo{
 		{Name: "One"}, {Name: "Two"}, {Name: "Three"},
@@ -1115,7 +1117,7 @@ func TestScopePickerCatalogWindowUsesTwoLineRowBounds(t *testing.T) {
 
 	for _, rows := range []int{5, 6, 7} {
 		catalog := ansi.Strip(picker.renderCatalog("Scopes", 60, rows))
-		visible := (rows - 2) / 2
+		visible := (rows - 2) / 3
 		if got := strings.Count(catalog, "created:"); got > visible {
 			t.Fatalf("rows=%d rendered %d rich rows, want at most %d:\n%s", rows, got, visible, catalog)
 		}
