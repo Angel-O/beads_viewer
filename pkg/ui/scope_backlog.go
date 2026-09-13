@@ -2482,14 +2482,14 @@ func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string 
 	} else if len(s.scopes) == 0 {
 		lines = append(lines, "No scopes available.")
 	} else {
-		// Match the Context picker: a catalog row gets a muted detail line when
-		// the panel can afford two-line entries, otherwise keep the old compact
+		// Match the Context picker: a catalog row gets muted detail lines when
+		// the panel can afford three-line entries, otherwise keep the old compact
 		// one-line row. Windowing uses that same row height so the panel cannot
 		// render past its assigned viewport.
 		showDetails := rows >= 5
 		rowHeight := 1
 		if showDetails {
-			rowHeight = 2
+			rowHeight = 3
 		}
 		visible := (rows - len(lines)) / rowHeight
 		if visible < 0 {
@@ -2551,12 +2551,9 @@ func (s ScopePickerModel) renderCatalog(heading string, width, rows int) string 
 			nameWidth := maxInt(width-lipgloss.Width(prefix)-lipgloss.Width(active), 0)
 			displayName := truncateRunesHelper(s.scopes[i].Name, nameWidth, "…")
 			lines = append(lines, prefix+nameStyle.Render(displayName)+activeRendered)
-			detail := fmt.Sprintf("    created: %s · %s", date, scopeMemberProgress(s.scopes[i]))
-			if scopeInfoCountKnown(s.scopes[i].CompletedCount, s.scopes[i].CompletedCountKnown) {
-				detail = fmt.Sprintf("    %s · created: %s", scopeMemberProgress(s.scopes[i]), date)
-			}
-			lines = append(lines, s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext).
-				Render(truncateRunesHelper(detail, width, "…")))
+			detailStyle := s.theme.Renderer.NewStyle().Foreground(s.theme.Subtext)
+			lines = append(lines, detailStyle.Render(truncateRunesHelper("    "+scopeMemberProgress(s.scopes[i]), width, "…")))
+			lines = append(lines, detailStyle.Render(truncateRunesHelper("    created: "+date, width, "…")))
 		}
 	}
 	return lipgloss.NewStyle().Width(width).Height(rows).MaxHeight(rows).Render(strings.Join(lines, "\n"))
