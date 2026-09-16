@@ -325,7 +325,7 @@ func (w *BackgroundWorker) UpdateRuntimeServices(services RuntimeServices) {
 	w.labelPredicate = services.LabelPredicate
 	w.issueRepositoryResolver = services.IssueRepositoryResolver
 	w.hubScopeMemberIDs = services.HubScopeMemberIDs
-	w.skipInitialRefresh = services.InitialScope != nil && services.InitialScope.Active == nil
+	w.skipInitialRefresh = services.InitialScope != nil
 }
 
 // NewBackgroundWorker creates a new background worker.

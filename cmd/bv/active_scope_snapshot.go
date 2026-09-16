@@ -33,14 +33,15 @@ type RobotActiveScope struct {
 type hubScopeSnapshot struct {
 	Active    *RobotActiveScope
 	MemberIDs []string
+	Issues    []model.Issue
 }
 
 type hubScopeSnapshotLoader func(context.Context) (hubScopeSnapshot, error)
 
-// loadHubStartupIssues resolves the active scope before touching the bounded
-// Hub issue projection. An absent active scope is a valid empty startup state,
-// not a request to load the whole Hub.
-func loadHubStartupIssues(ctx context.Context, loadScope hubScopeSnapshotLoader, loadIssues func() ([]model.Issue, error)) (hubScopeSnapshot, []model.Issue, error) {
+// loadHubStartupIssues resolves the active scope before loading its hydrated
+// snapshot. An absent active scope is a valid empty startup state, not a
+// request to load the whole Hub.
+func loadHubStartupIssues(ctx context.Context, loadScope hubScopeSnapshotLoader) (hubScopeSnapshot, []model.Issue, error) {
 	snapshot, err := loadScope(ctx)
 	if err != nil {
 		return hubScopeSnapshot{}, nil, err
@@ -48,11 +49,7 @@ func loadHubStartupIssues(ctx context.Context, loadScope hubScopeSnapshotLoader,
 	if snapshot.Active == nil {
 		return snapshot, nil, nil
 	}
-	issues, err := loadIssues()
-	if err != nil {
-		return hubScopeSnapshot{}, nil, err
-	}
-	return snapshot, filterHubScopeIssues(issues, snapshot.MemberIDs), nil
+	return snapshot, snapshot.Issues, nil
 }
 
 func newHubScopeMemberLoader(workDir string) hubScopeMemberLoader {
@@ -82,24 +79,59 @@ func newHubScopeSnapshotLoader(workDir string) hubScopeSnapshotLoader {
 		if active == nil || active.ID == "" {
 			return hubScopeSnapshot{}, nil
 		}
-		shown, err := runWBDScopeCommand(ctx, workDir, "show", active.ID)
+		shown, err := runWBDScopeCommand(ctx, workDir, "show", active.ID, "--snapshot")
 		if err != nil {
 			return hubScopeSnapshot{}, err
 		}
-		if shownScope, decodeErr := decodeActiveScope(shown); decodeErr != nil {
-			return hubScopeSnapshot{}, decodeErr
-		} else {
-			mergeActiveScope(active, shownScope)
-		}
-		memberIDs, err := decodeScopeMemberIDs(shown)
+		snapshot, err := decodeHubScopeSnapshot(shown)
 		if err != nil {
 			return hubScopeSnapshot{}, err
 		}
-		active.MemberCount = len(memberIDs)
-		return hubScopeSnapshot{Active: active, MemberIDs: memberIDs}, nil
+		mergeActiveScope(active, snapshot.Active)
+		active.MemberCount = len(snapshot.MemberIDs)
+		snapshot.Active = active
+		return snapshot, nil
 	}
 }
 
+// decodeHubScopeSnapshot converts the versioned wbd snapshot at the
+// composition boundary to the existing Viewer issue slice. wbd deliberately
+// forwards this payload without interpreting its hydrated members.
+func decodeHubScopeSnapshot(data []byte) (hubScopeSnapshot, error) {
+	var payload struct {
+		SchemaVersion int             `json:"schema_version"`
+		Scope         json.RawMessage `json:"scope"`
+		MemberCount   *int            `json:"member_count"`
+		MemberLimit   *int            `json:"member_limit"`
+		Members       []model.Issue   `json:"members"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return hubScopeSnapshot{}, fmt.Errorf("decoding wbd scope snapshot: %w", err)
+	}
+	if payload.SchemaVersion != 1 {
+		return hubScopeSnapshot{}, fmt.Errorf("decoding wbd scope snapshot: unsupported schema version %d", payload.SchemaVersion)
+	}
+	scope, err := decodeActiveScope(payload.Scope)
+	if err != nil {
+		return hubScopeSnapshot{}, err
+	}
+	if scope != nil {
+		if payload.MemberCount != nil {
+			scope.MemberCount = *payload.MemberCount
+		}
+		if payload.MemberLimit != nil {
+			scope.MemberLimit = *payload.MemberLimit
+			scope.MemberLimitKnown = true
+		}
+	}
+	memberIDs := make([]string, 0, len(payload.Members))
+	for _, issue := range payload.Members {
+		if issue.ID != "" {
+			memberIDs = append(memberIDs, issue.ID)
+		}
+	}
+	return hubScopeSnapshot{Active: scope, MemberIDs: memberIDs, Issues: payload.Members}, nil
+}
 func runWBDScopeCommand(ctx context.Context, workDir, subcommand string, args ...string) ([]byte, error) {
 	commandArgs := []string{"scope", subcommand}
 	commandArgs = append(commandArgs, args...)

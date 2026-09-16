@@ -2671,9 +2671,7 @@ func main() {
 		var initialScope *ui.ScopeSnapshot
 		hubStartupLoaded := false
 		if composition.HubScopeSnapshot != nil {
-			snapshot, loadedIssues, scopeErr := loadHubStartupIssues(context.Background(), composition.HubScopeSnapshot, func() ([]model.Issue, error) {
-				return datasource.LoadIssues("")
-			})
+			snapshot, loadedIssues, scopeErr := loadHubStartupIssues(context.Background(), composition.HubScopeSnapshot)
 			if scopeErr != nil {
 				return fmt.Errorf("loading active Hub scope: %w", scopeErr)
 			}

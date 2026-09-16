@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -2638,14 +2639,17 @@ func TestHubNoActiveInitialRenderSkipsLoadingProjectionPath(t *testing.T) {
 	}
 }
 
-func TestHubActiveEmptyInitialScopeIsNotNoActive(t *testing.T) {
-	m := NewModel(nil, nil, "", RuntimeServices{
+func TestHubActiveEmptyInitialScopeIsLoaded(t *testing.T) {
+	issuesPath := filepath.Join(t.TempDir(), "issues.jsonl")
+	changeSource := &testChangeSource{changes: make(chan struct{}, 1)}
+	m := NewModel(nil, nil, issuesPath, RuntimeServices{
 		InitialScope: &ScopeSnapshot{Active: &ScopeInfo{ID: "empty", Name: "Empty", Active: true}},
-		Scopes:       ScopeServices{Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil }},
+		AutoRefresh:  true, SourceChangeSource: changeSource,
+		Scopes: ScopeServices{Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil }},
 	})
 	defer m.Stop()
-	if containsText(m.View(), "No active scope") {
-		t.Fatal("active empty scope rendered as no active scope")
+	if m.backgroundWorker == nil || m.snapshotInitPending || containsText(m.View(), "Loading beads") || containsText(m.View(), "No active scope") {
+		t.Fatalf("active empty scope startup state: worker=%v pending=%v view=%q", m.backgroundWorker != nil, m.snapshotInitPending, m.View())
 	}
 }
 

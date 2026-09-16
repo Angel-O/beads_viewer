@@ -77,8 +77,9 @@ type RuntimeServices struct {
 	// HubScopeMemberIDs bounds every Hub snapshot to the active named scope.
 	// A nil loader preserves ordinary local loading semantics.
 	HubScopeMemberIDs func(context.Context) ([]string, error)
-	// InitialScope is the scope state resolved before Hub issue loading. A
-	// non-nil snapshot with no Active scope keeps startup on the no-scope view.
+	// InitialScope is the scope state resolved before Hub issue loading. Any
+	// non-nil snapshot is already authoritative for the initial issue set; a
+	// snapshot with no Active scope also keeps startup on the no-scope view.
 	InitialScope *ScopeSnapshot
 }
 
@@ -105,7 +106,7 @@ func workerConfigForRuntime(beadsPath string, services RuntimeServices) WorkerCo
 		LabelPredicate:          services.LabelPredicate,
 		IssueRepositoryResolver: services.IssueRepositoryResolver,
 		HubScopeMemberIDs:       services.HubScopeMemberIDs,
-		SkipInitialRefresh:      services.InitialScope != nil && services.InitialScope.Active == nil,
+		SkipInitialRefresh:      services.InitialScope != nil,
 	}
 }
 

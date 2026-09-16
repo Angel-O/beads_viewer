@@ -38,6 +38,28 @@ func TestWorkerConfigForRuntimePreservesResolvedServices(t *testing.T) {
 	}
 }
 
+func TestWorkerConfigForRuntimeSkipsRefreshForPreloadedScope(t *testing.T) {
+	active := ScopeInfo{ID: "scope-a", Active: true}
+	if config := workerConfigForRuntime("issues.jsonl", RuntimeServices{InitialScope: &ScopeSnapshot{Active: &active}}); !config.SkipInitialRefresh {
+		t.Fatal("preloaded active scope scheduled an initial source refresh")
+	}
+	if config := workerConfigForRuntime("issues.jsonl", RuntimeServices{}); config.SkipInitialRefresh {
+		t.Fatal("local runtime unexpectedly skipped its initial refresh")
+	}
+	if config := workerConfigForRuntime("issues.jsonl", RuntimeServices{InitialScope: &ScopeSnapshot{}}); !config.SkipInitialRefresh {
+		t.Fatal("preloaded no-scope state scheduled an initial source refresh")
+	}
+	worker, err := NewBackgroundWorker(WorkerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Stop()
+	worker.UpdateRuntimeServices(RuntimeServices{InitialScope: &ScopeSnapshot{Active: &active}})
+	if !worker.skipInitialRefresh {
+		t.Fatal("runtime service update re-enabled the initial source refresh")
+	}
+}
+
 func TestRuntimeServicesUseExplicitPresentationState(t *testing.T) {
 	resolver := func(model.Issue) []string { return []string{"ctx:alpha"} }
 	loader := func(string, []model.Issue) (repositorypkg.Catalog, error) {
