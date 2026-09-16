@@ -47,6 +47,43 @@ func TestScopeParserSupportsPaginationAndMemberFilters(t *testing.T) {
 	}
 }
 
+func TestScopeSnapshotForwardsOpaqueVersionedPayload(t *testing.T) {
+	test := newAppTest(t, false)
+	response := `{"schema_version":1,"scope":{"id":"scope-a"},"member_count":1,"member_limit":100,"members":[{"id":"bead-1","numeric":9007199254740993123456789}]}`
+	setResponses(t, map[string]string{"scope:show": response})
+
+	code, stdout, stderr := test.run("scope", "show", "scope-a", "--snapshot", "--json")
+	if code != 0 || stdout != response || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "scope", "show", "scope-a", "--snapshot"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestScopeSnapshotPropagatesBackendFailure(t *testing.T) {
+	test := newAppTest(t, false)
+	setExitCodes(t, map[string]int{"scope:show": 9})
+	t.Setenv("WBD_CHILD_STDERR", "snapshot backend failed\n")
+
+	code, stdout, stderr := test.run("scope", "show", "scope-a", "--snapshot", "--json")
+	if code != 9 || stdout != "" || stderr != "snapshot backend failed\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestScopeSnapshotRequiresJSONAndRejectsFilters(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"scope", "show", "scope-a", "--snapshot"},
+		{"scope", "show", "scope-a", "--snapshot", "--limit", "1", "--json"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Errorf("parse(%v) unexpectedly succeeded", arguments)
+		}
+	}
+}
+
 func TestScopeShowStatusAcceptsOnlyBackendStates(t *testing.T) {
 	for _, status := range []string{"open", "completed", "ready"} {
 		if _, err := parse([]string{"scope", "show", "scope-work", "--status", status}); err != nil {

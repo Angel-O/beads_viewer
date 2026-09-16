@@ -21,6 +21,9 @@ const backlogContextLabelPrefix = "ctx:"
 // forwarded unchanged; semantic mutations retain their complete reads.
 
 func (a *app) scope(request request) int {
+	if request.scopeSnapshot {
+		return a.scopeSnapshot(request.positionals[0])
+	}
 	if request.scopeSubcommand == "show" && len(request.scopeContexts) > 0 {
 		config, err := hub.Resolve(a.paths.Config)
 		if err != nil {
@@ -79,6 +82,11 @@ func (a *app) scope(request request) int {
 		return a.runBDMutation(a.dir, args...)
 	}
 	return a.runBD(a.dir, args...)
+}
+
+// scopeSnapshot forwards bd's versioned, hydrated scope response unchanged.
+func (a *app) scopeSnapshot(scopeID string) int {
+	return a.runBD(a.dir, "--json", "scope", "show", scopeID, "--snapshot")
 }
 
 // semanticScopeMutation resolves one selector target to IDs, then preserves the
