@@ -2679,7 +2679,13 @@ func TestCommentsAggregateHelpExposesReadAndMutationForms(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	for _, want := range []string{"<issue-id> --json", "add|edit|delete", "--help"} {
+	for _, want := range []string{
+		"wbd comments <issue-id> --json",
+		"wbd --json comments add <issue-id> -- <text>",
+		"wbd --json comments edit <issue-id> <comment-id> -- <text>",
+		"wbd --json comments delete <issue-id> <comment-id>",
+		"--help",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("comments help does not contain %q:\n%s", want, stdout)
 		}

@@ -73,19 +73,21 @@ Claim ownership only through the safe claim operation: `wbd claim <id> --json`. 
 
 Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
-Read authoritative comments for one exact canonical issue ID with the
-read-only command below. It validates the issue's stored Hub membership and
-checks it against the registered repository catalog before delegating to the
-backend:
+Read authoritative comments for one exact canonical issue ID, or manage an
+existing comment, with these safe forms. Before add, edit, or delete, run
+`wbd show <issue-id> --json` and verify the issue's type and contexts:
 
 ```sh
 wbd comments <issue-id> --json
+wbd --json comments add <issue-id> -- <text>
+wbd --json comments edit <issue-id> <comment-id> -- <text>
+wbd --json comments delete <issue-id> <comment-id>
 ```
 
-The result is always a JSON array. Each comment contains `id`, `issue_id`,
+The read result is always a JSON array. Each comment contains `id`, `issue_id`,
 `author`, `created_at`, and `text`; an issue with no comments returns `[]`.
 `wbd show <issue-id> --json` may report `comment_count` with
-`comments_omitted: true`; use the command above for the comment bodies.
+`comments_omitted: true`; use the read command above for comment bodies.
 The primary issue remains fully detailed, including its `issue_type` and
 `ctx:` labels. Dependency and dependent issue objects are compact by default,
 with exactly `id`, `title`, `status`, `priority`, `issue_type`, and
