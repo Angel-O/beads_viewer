@@ -821,7 +821,8 @@ func (b *BacklogModel) ClearFilter() {
 }
 func (b *BacklogModel) Backspace() {
 	if b.filter != "" {
-		b.filter = b.filter[:len(b.filter)-1]
+		runes := []rune(b.filter)
+		b.filter = string(runes[:len(runes)-1])
 		b.InvalidatePage()
 		b.applyFilter()
 	}

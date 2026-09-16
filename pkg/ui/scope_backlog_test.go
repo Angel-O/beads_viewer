@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/colorprofile"
@@ -603,6 +604,94 @@ func TestScopeGlobalIssuesSearchConsumesViewSwitchKeys(t *testing.T) {
 			}
 			if !m.showScopePicker || m.focused != focusGlobalIssues || m.isBoardView || m.isGraphView {
 				t.Fatalf("search key %q changed Scope view: picker=%t focus=%s board=%t graph=%t", key, m.showScopePicker, m.focused, m.isBoardView, m.isGraphView)
+			}
+		})
+	}
+}
+
+func TestScopeSearchBackspaceDeletesOneRuneThroughUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    string
+		want     string
+		unscoped bool
+	}{
+		{name: "ASCII global", input: "ab", want: "a"},
+		{name: "multibyte global", input: "a界", want: "a"},
+		{name: "multibyte unscoped", input: "a界", want: "a", unscoped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := []BacklogQuery{}
+			m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+				QueryBacklog: func(_ context.Context, query BacklogQuery) (BacklogPage, error) {
+					queries = append(queries, query)
+					return BacklogPage{}, nil
+				},
+			}})
+			m.showScopePicker = true
+			m.focused = focusGlobalIssues
+			if tc.unscoped {
+				m.scopePicker.SetScopes([]ScopeInfo{{ID: "today", Name: "Today", Active: true}})
+				m.activeScope = &ScopeInfo{ID: "today", Name: "Today", Active: true}
+				m.scopeMembershipIDs = map[string][]string{"today": {"member-1"}}
+				if got := m.globalIssuesTitle(); got != "Unscoped issues" {
+					t.Fatalf("selected-scope lower panel title = %q, want Unscoped issues", got)
+				}
+			}
+
+			dispatch := func(msg tea.KeyMsg) {
+				updated, cmd := m.Update(msg)
+				m = updated.(*Model)
+				for _, response := range runUISemanticCommands(cmd) {
+					updated, _ = m.Update(response)
+					m = updated.(*Model)
+				}
+			}
+			dispatch(keyMsg("/"))
+			dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.input)})
+			dispatch(keyMsg("backspace"))
+
+			if got := m.backlog.Filter(); got != tc.want || !utf8.ValidString(got) {
+				t.Fatalf("filter after Backspace = %q, want valid UTF-8 %q", got, tc.want)
+			}
+			if len(queries) == 0 || queries[len(queries)-1].Filter != tc.want {
+				t.Fatalf("reload queries = %#v, want final filter %q", queries, tc.want)
+			}
+		})
+	}
+}
+
+func TestScopeLabelBackspaceDeletesOneRuneThroughUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		label string
+		want  string
+	}{
+		{name: "ASCII", label: "old", want: "ol"},
+		{name: "multibyte", label: "old界", want: "old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewModel(nil, nil, "")
+			m.showScopePicker = true
+			m.focused = focusGlobalIssues
+			m.backlog.SetLabel(tc.label)
+
+			updated, _ := m.Update(keyMsg("l"))
+			m = updated.(*Model)
+			updated, _ = m.Update(keyMsg("backspace"))
+			m = updated.(*Model)
+
+			if !m.backlog.LabelEditing() {
+				t.Fatal("label editor closed during Backspace")
+			}
+			if got := m.backlog.LabelInputValue(); got != tc.want || !utf8.ValidString(got) {
+				t.Fatalf("label input after Backspace = %q, want valid UTF-8 %q", got, tc.want)
+			}
+			if got := m.backlog.labelInput.Position(); got != len([]rune(tc.want)) {
+				t.Fatalf("label cursor position = %d, want %d", got, len([]rune(tc.want)))
+			}
+			if got := m.backlog.Label(); got != tc.label {
+				t.Fatalf("stored label changed before submit: %q, want %q", got, tc.label)
 			}
 		})
 	}
