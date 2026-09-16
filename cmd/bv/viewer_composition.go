@@ -74,8 +74,9 @@ type viewerComposition struct {
 	HubScopeMemberIDs hubScopeMemberLoader
 	// HubRobotFilter preserves wbv's context/contextless selection inside the
 	// already bounded active-scope issue slice.
-	HubRobotFilter *hub.HubScope
-	ScopeServices  ui.ScopeServices
+	HubRobotFilter   *hub.HubScope
+	ScopeServices    ui.ScopeServices
+	EpicChildClosure ui.EpicChildClosureProvider
 }
 
 // runtimeServicesFor adapts the resolved composition to the neutral UI
@@ -111,6 +112,7 @@ func (c viewerComposition) runtimeServicesFor(datasetPath string, initialScope *
 		IssueRepositoryResolver:    c.IssueRepositoryResolver,
 		InitialRepositorySelection: c.InitialRepositorySelection,
 		CurrentRepositoryID:        c.CurrentRepositoryID,
+		EpicChildClosureProvider:   c.EpicChildClosure,
 	}
 }
 
@@ -183,6 +185,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 	}
 	var hubScopeMemberIDs hubScopeMemberLoader
 	var hubScopeSnapshot hubScopeSnapshotLoader
+	var epicChildClosureProvider ui.EpicChildClosureProvider
 	var scopeServices ui.ScopeServices
 	if input.HubMode && !input.RobotMode {
 		defaultPaths, pathErr := hub.DefaultPaths()
@@ -199,6 +202,7 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		if err != nil {
 			return viewerComposition{}, err
 		}
+		epicChildClosureProvider = newHubEpicChildClosureProvider(workDir)
 		hubScopeMemberIDs = func(ctx context.Context) ([]string, error) {
 			snapshot, loadErr := hubScopeSnapshot(ctx)
 			if loadErr != nil {
@@ -280,11 +284,40 @@ func composeViewerServices(input viewerCompositionInput) (viewerComposition, err
 		HubScopeMemberIDs:      hubScopeMemberIDs,
 		HubRobotFilter:         hubRobotFilter,
 		ScopeServices:          scopeServices,
+		EpicChildClosure:       epicChildClosureProvider,
 
 		IssueRepositoryResolver:    issueRepositoryResolver,
 		InitialRepositorySelection: initialRepositorySelection,
 		CurrentRepositoryID:        currentRepositoryID,
 	}, nil
+}
+
+func newHubEpicChildClosureProvider(workDir string) ui.EpicChildClosureProvider {
+	return func(ctx context.Context, parentID string) ([]ui.EpicChild, error) {
+		command := exec.CommandContext(ctx, "wbd", "epic", "child-closure", parentID, "--json")
+		command.Dir = workDir
+		output, err := command.CombinedOutput()
+		if err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			}
+			return nil, fmt.Errorf("wbd epic child-closure failed: %s", detail)
+		}
+		var children []ui.EpicChild
+		if err := json.Unmarshal(output, &children); err != nil {
+			return nil, fmt.Errorf("decoding wbd epic child-closure: %w", err)
+		}
+		if children == nil {
+			return []ui.EpicChild{}, nil
+		}
+		for index, child := range children {
+			if strings.TrimSpace(child.ID) == "" {
+				return nil, fmt.Errorf("decoding wbd epic child-closure: child %d has no id", index)
+			}
+		}
+		return children, nil
+	}
 }
 
 func compositionChangeSource(path string) (ui.ChangeSource, error) {

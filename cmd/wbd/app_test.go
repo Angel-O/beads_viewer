@@ -133,6 +133,9 @@ func fakeCommandKey(arguments []string) string {
 		case "--json":
 			arguments = arguments[1:]
 		default:
+			if arguments[0] == "epic" && len(arguments) > 2 && arguments[1] == "child-closure" {
+				return "epic:child-closure:" + arguments[2]
+			}
 			if arguments[0] == "scope" && len(arguments) > 1 {
 				return "scope:" + arguments[1]
 			}
@@ -187,6 +190,33 @@ func TestParseMigrateRequiresOnePhaseAndJSON(t *testing.T) {
 				t.Fatalf("parse(%v) error = %v, want success=%t", testCase.args, err, testCase.want)
 			}
 		})
+	}
+}
+
+func TestEpicChildClosureForwardsRawBackendJSON(t *testing.T) {
+	test := newAppTest(t, false)
+	raw := "[\n  {\"id\":\"child-1\",\"status\":\"open\",\"issue_type\":\"task\",\"storage_plane\":\"hub\"}\n]\n"
+	setResponses(t, map[string]string{"epic:child-closure:epic-1": raw})
+
+	code, stdout, stderr := test.run("epic", "child-closure", "epic-1", "--json")
+	if code != 0 || stdout != raw || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	calls := test.calls()
+	want := []string{"--db", test.store, "--json", "epic", "child-closure", "epic-1"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("bd calls=%#v, want one call with %#v", calls, want)
+	}
+}
+
+func TestParseEpicChildClosureRequiresJSONAndOneParent(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"epic", "child-closure", "epic-1"},
+		{"epic", "child-closure", "epic-1", "epic-2", "--json"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Fatalf("parse(%v) succeeded", arguments)
+		}
 	}
 }
 

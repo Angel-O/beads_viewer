@@ -206,6 +206,23 @@ func (a *app) run(arguments []string) int {
 			}
 		}
 		return 0
+	case "epic":
+		if request.subcommand != "child-closure" {
+			return a.fail(errors.New("internal unsupported epic command"))
+		}
+		data, childStderr, err := a.runBDCaptureWithStderr(a.dir, "--json", "epic", "child-closure", request.positionals[0])
+		if err != nil {
+			return a.fail(fmt.Errorf("reading epic child closure for %s: %w", request.positionals[0], err))
+		}
+		if _, err := a.stdout.Write(data); err != nil {
+			return a.fail(fmt.Errorf("writing epic child closure response: %w", err))
+		}
+		if len(childStderr) > 0 {
+			if _, err := a.stderr.Write(childStderr); err != nil {
+				return a.fail(fmt.Errorf("writing epic child closure diagnostics: %w", err))
+			}
+		}
+		return 0
 	case "update":
 		if requestValue(request.args, "--status", "") != "" {
 			issue, issueErr := a.readIssue(request.positionals[0], true)
@@ -508,7 +525,7 @@ func helpTarget(arguments []string) (string, bool, error) {
 		return "", true, errors.New(supportedCommands())
 	}
 	path := filtered[0]
-	if (path == "dep" || path == "comments" || path == "scope" || path == "backlog") && len(filtered) > 1 {
+	if (path == "dep" || path == "comments" || path == "scope" || path == "backlog" || path == "epic") && len(filtered) > 1 {
 		candidate := path + " " + filtered[1]
 		if _, ok := specFor(candidate); !ok {
 			return "", true, errors.New(usageFor(path))

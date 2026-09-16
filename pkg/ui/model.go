@@ -1037,6 +1037,7 @@ type Model struct {
 	semanticPath      string // Stable repository or dataset identity for semantic caching
 	runtimeServices   RuntimeServices
 	hubRepositoryMode bool
+	epicChildren      epicChildClosureState
 	// BEGIN UPSTREAM INTEGRATION BOUNDARY: embedded repository scope controller
 	repositoryScopeController
 	// END UPSTREAM INTEGRATION BOUNDARY
@@ -2844,6 +2845,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scopeMutationMsg:
 		cmds = append(cmds, m.handleScopeMutationMessage(msg)...)
 
+	case epicChildClosureMsg:
+		m.handleEpicChildClosure(msg)
+
 	case commentAddedMsg:
 		m.commentSubmitting = false
 		m.commentIssueID = ""
@@ -2947,7 +2951,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isSplitView || m.showDetails {
 			m.updateViewportContent()
 		}
-		return m, tea.Batch(cmd, m.pendingSemanticFilterCmd())
+		return m, tea.Batch(cmd, m.pendingSemanticFilterCmd(), m.epicChildClosureCmd())
 
 	case editorExitMsg:
 		// Terminal editor exited — parse changes and apply via br update (bv-134)
@@ -3576,6 +3580,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Swap snapshot pointer
 		m.snapshot = msg.Snapshot
+		m.epicChildren = epicChildClosureState{}
 		if m.backgroundWorker != nil {
 			latencyStart := msg.FileChangeAt
 			if latencyStart.IsZero() {
@@ -4125,6 +4130,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Recompute analysis (async Phase 1/Phase 2) with caching
 		m.issues = newIssues
+		m.epicChildren = epicChildClosureState{}
 		m.SetRepositoryCatalogIssues(newIssues)
 		if err := m.reloadRepositoryCatalog(); err != nil {
 			m.statusMsg = fmt.Sprintf("Repository catalog reload failed: %v", err)
@@ -6128,6 +6134,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Trigger async semantic computation if needed (debounced).
 	if pendingCmd := m.pendingSemanticFilterCmd(); pendingCmd != nil {
 		cmds = append(cmds, pendingCmd)
+	}
+	if closureCmd := m.epicChildClosureCmd(); closureCmd != nil {
+		cmds = append(cmds, closureCmd)
 	}
 
 	return m, tea.Batch(cmds...)
