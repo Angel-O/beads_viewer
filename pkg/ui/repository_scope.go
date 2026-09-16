@@ -728,6 +728,26 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 
 	var sb strings.Builder
 	sb.WriteString("### Relationships\n")
+	// Keep the authoritative total separate from the child bullets below.
+	if childrenLoaded {
+		outOfContext, outOfScope := 0, 0
+		for _, child := range m.epicChildren.children {
+			switch m.epicChildVisibility(child.ID) {
+			case " _(out of context)_":
+				outOfContext++
+			case " _(out of scope)_":
+				outOfScope++
+			}
+		}
+		sb.WriteString(fmt.Sprintf("**Direct children:** %d total", len(m.epicChildren.children)))
+		if outOfContext > 0 {
+			sb.WriteString(fmt.Sprintf("; %d out of context", outOfContext))
+		}
+		if outOfScope > 0 {
+			sb.WriteString(fmt.Sprintf("; %d out of scope", outOfScope))
+		}
+		sb.WriteString("\n")
+	}
 	if supersededOriginal && issue.CloseReason != "" {
 		sb.WriteString(fmt.Sprintf("- **Close reason:** %s\n", issue.CloseReason))
 	}
@@ -744,29 +764,12 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 			strings.Join(hubContextNames(*endpoint, m.repositoryCatalog), ", "), boundary))
 	}
 	if childrenLoaded {
-		outOfContext, outOfScope := 0, 0
 		seen := make(map[string]bool, len(evidence))
 		for _, relation := range evidence {
 			if relation.Child {
 				seen[relation.Endpoint.ID] = true
 			}
 		}
-		sb.WriteString(fmt.Sprintf("- **Direct children:** %d total", len(m.epicChildren.children)))
-		for _, child := range m.epicChildren.children {
-			switch m.epicChildVisibility(child.ID) {
-			case " _(out of context)_":
-				outOfContext++
-			case " _(out of scope)_":
-				outOfScope++
-			}
-		}
-		if outOfContext > 0 {
-			sb.WriteString(fmt.Sprintf("; %d out of context", outOfContext))
-		}
-		if outOfScope > 0 {
-			sb.WriteString(fmt.Sprintf("; %d out of scope", outOfScope))
-		}
-		sb.WriteString("\n")
 		for _, child := range m.epicChildren.children {
 			boundary := m.epicChildVisibility(child.ID)
 			if boundary == "" || seen[child.ID] {
