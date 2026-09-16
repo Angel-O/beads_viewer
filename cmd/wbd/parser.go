@@ -209,6 +209,7 @@ var commandSpecs = map[string]commandSpec{
 	"scope show": {
 		path: "scope show", usage: "wbd scope show <id> [options]", summary: "Show one backlog scope.",
 		options: []optionSpec{
+			{name: "--snapshot", description: "Forward the fully hydrated versioned scope snapshot; requires --json."},
 			{name: "--paginate", description: "Forward bounded pagination to bd; requires --limit."},
 			{name: "--limit", value: "<1-1000>", description: "Maximum member results."},
 			{name: "--cursor", value: "<token>", description: "Opaque cursor returned by a previous page."},
@@ -325,6 +326,7 @@ type request struct {
 	migrateApply       bool
 	scopeSubcommand    string
 	scopeID            string
+	scopeSnapshot      bool
 	scopeEpic          string
 	scopeLabel         string
 	scopeContexts      []string
@@ -951,6 +953,17 @@ func parseScope(result request, arguments []string) (request, error) {
 			result.args = append(result.args, argument)
 			continue
 		}
+		if argument == "--snapshot" {
+			if result.scopeSubcommand != "show" {
+				return result, fmt.Errorf("unsupported option for scope %s: %s", result.scopeSubcommand, argument)
+			}
+			if err := markSeen(seen, argument); err != nil {
+				return result, err
+			}
+			result.scopeSnapshot = true
+			result.args = append(result.args, argument)
+			continue
+		}
 		if argument == "--activate" {
 			if result.scopeSubcommand != "create" {
 				return result, fmt.Errorf("unsupported option for scope %s: %s", result.scopeSubcommand, argument)
@@ -1106,6 +1119,14 @@ func parseScope(result request, arguments []string) (request, error) {
 	}
 	if result.scopeCursor != "" && !result.scopeLimitSet {
 		return result, errors.New("--cursor requires --limit so the page is bounded")
+	}
+	if result.scopeSnapshot {
+		if !result.json {
+			return result, errors.New("scope snapshots require --json")
+		}
+		if len(result.args) != 1 {
+			return result, errors.New("--snapshot cannot be combined with scope show filters")
+		}
 	}
 	return result, nil
 }

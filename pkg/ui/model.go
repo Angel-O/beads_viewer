@@ -2414,7 +2414,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		semanticPath:              beadsPath,
 		repositoryScopeController: newRepositoryScopeController(),
 		watcher:                   fileWatcher,
-		snapshotInitPending:       backgroundWorker != nil && len(issues) == 0 && !(runtimeServices.InitialScope != nil && runtimeServices.InitialScope.Active == nil),
+		snapshotInitPending:       backgroundWorker != nil && len(issues) == 0 && runtimeServices.InitialScope == nil,
 		backgroundWorker:          backgroundWorker,
 		instanceLock:              instLock,
 		list:                      l,

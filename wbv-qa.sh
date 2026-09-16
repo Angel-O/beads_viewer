@@ -9,8 +9,8 @@ die() {
 [ "$#" -eq 0 ] || die 'this script does not accept arguments'
 
 viewer_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-beads_root=$(CDPATH= cd -- "$viewer_root/../../beads/integration-backlog-backend" 2>/dev/null && pwd) ||
-  die "Beads checkout not found: $viewer_root/../../beads/integration-backlog-backend"
+beads_root=$(CDPATH= cd -- "$viewer_root/../beads" 2>/dev/null && pwd) ||
+  die "Beads checkout not found: $viewer_root/../beads"
 
 check_branch() {
   local root=$1 branch=$2
@@ -26,8 +26,8 @@ check_clean() {
     die "$root has dirty or untracked files"
 }
 
-check_branch "$viewer_root" integration/backlog-viewer
-check_branch "$beads_root" integration/backlog-backend
+check_branch "$viewer_root" integration-light-load
+check_branch "$beads_root" integration-light-load
 check_clean "$viewer_root"
 check_clean "$beads_root"
 

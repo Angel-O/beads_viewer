@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +25,7 @@ func writeFakeWBD(t *testing.T, output, calls string) {
 	t.Setenv("PATH", filepath.Dir(path)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WBD_CALLS", calls)
 	t.Setenv("WBD_ACTIVE", output)
-	t.Setenv("WBD_SHOW", `{"id":"scope-a","members":[{"id":"A"},{"issue_id":"B"}]}`)
+	t.Setenv("WBD_SHOW", `{"schema_version":1,"scope":{"id":"scope-a"},"member_count":2,"member_limit":37,"members":[{"id":"A","title":"A","status":"open","issue_type":"task"},{"id":"B","title":"B","status":"blocked","issue_type":"task"}]}`)
 }
 
 func TestHubScopeMemberLoaderUsesOnlyPublicScopeCommands(t *testing.T) {
@@ -44,7 +43,7 @@ func TestHubScopeMemberLoaderUsesOnlyPublicScopeCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(callsData) != "scope active --json\nscope show scope-a --json\n" {
+	if string(callsData) != "scope active --json\nscope show scope-a --snapshot --json\n" {
 		t.Fatalf("wbd calls = %q", callsData)
 	}
 }
@@ -52,7 +51,7 @@ func TestHubScopeMemberLoaderUsesOnlyPublicScopeCommands(t *testing.T) {
 func TestHubScopeSnapshotLoaderCarriesActiveIdentityAndBoundedMembers(t *testing.T) {
 	calls := filepath.Join(t.TempDir(), "calls")
 	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active"}`, calls)
-	t.Setenv("WBD_SHOW", `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active","member_limit":37,"members":[{"id":"A"},{"issue_id":"B"}]}`)
+	t.Setenv("WBD_SHOW", `{"schema_version":1,"scope":{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active"},"member_count":2,"member_limit":37,"members":[{"id":"A","title":"A","status":"open","issue_type":"task"},{"id":"B","title":"B","status":"blocked","issue_type":"task"}]}`)
 	snapshot, err := newHubScopeSnapshotLoader(t.TempDir())(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +59,7 @@ func TestHubScopeSnapshotLoaderCarriesActiveIdentityAndBoundedMembers(t *testing
 	if snapshot.Active == nil || snapshot.Active.ID != "scope-a" || snapshot.Active.Name != "Active scope" || snapshot.Active.MemberCount != 2 || snapshot.Active.MemberLimit != 37 || !snapshot.Active.MemberLimitKnown {
 		t.Fatalf("active scope = %#v", snapshot.Active)
 	}
-	if !reflect.DeepEqual(snapshot.MemberIDs, []string{"A", "B"}) {
+	if !reflect.DeepEqual(snapshot.MemberIDs, []string{"A", "B"}) || len(snapshot.Issues) != 2 || snapshot.Issues[0].Title != "A" || snapshot.Issues[1].Status != model.StatusBlocked {
 		t.Fatalf("scope members = %#v", snapshot.MemberIDs)
 	}
 }
@@ -68,6 +67,7 @@ func TestHubScopeSnapshotLoaderCarriesActiveIdentityAndBoundedMembers(t *testing
 func TestHubScopeSnapshotLoaderLeavesMissingMemberLimitUnknown(t *testing.T) {
 	calls := filepath.Join(t.TempDir(), "calls")
 	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active"}`, calls)
+	t.Setenv("WBD_SHOW", `{"schema_version":1,"scope":{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active"},"member_count":2,"members":[]}`)
 	snapshot, err := newHubScopeSnapshotLoader(t.TempDir())(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -100,9 +100,6 @@ func TestHubStartupResolvesScopeBeforeIssueLoad(t *testing.T) {
 	snapshot, issues, err := loadHubStartupIssues(context.Background(), func(context.Context) (hubScopeSnapshot, error) {
 		calls = append(calls, "scope")
 		return hubScopeSnapshot{}, nil
-	}, func() ([]model.Issue, error) {
-		calls = append(calls, "issues")
-		return nil, fmt.Errorf("poisoned projection read")
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,25 +112,22 @@ func TestHubStartupResolvesScopeBeforeIssueLoad(t *testing.T) {
 	}
 }
 
-func TestHubStartupLoadsAndBoundsActiveScope(t *testing.T) {
+func TestHubStartupUsesHydratedActiveScopeSnapshot(t *testing.T) {
 	var calls []string
 	snapshot, issues, err := loadHubStartupIssues(context.Background(), func(context.Context) (hubScopeSnapshot, error) {
 		calls = append(calls, "scope")
-		return hubScopeSnapshot{Active: &RobotActiveScope{ID: "scope-a"}, MemberIDs: []string{"A"}}, nil
-	}, func() ([]model.Issue, error) {
-		calls = append(calls, "issues")
-		return []model.Issue{{ID: "A"}, {ID: "B"}}, nil
+		return hubScopeSnapshot{Active: &RobotActiveScope{ID: "scope-a"}, MemberIDs: []string{"A"}, Issues: []model.Issue{{ID: "A", Title: "from snapshot"}}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(calls, []string{"scope", "issues"}) {
-		t.Fatalf("startup calls = %#v, want scope then issues", calls)
+	if !reflect.DeepEqual(calls, []string{"scope"}) {
+		t.Fatalf("startup calls = %#v, want scope only", calls)
 	}
 	if snapshot.Active == nil {
 		t.Fatal("active startup lost active scope")
 	}
-	if got := snapshotIssueIDs(issues); !reflect.DeepEqual(got, []string{"A"}) {
+	if got := snapshotIssueIDs(issues); !reflect.DeepEqual(got, []string{"A"}) || issues[0].Title != "from snapshot" {
 		t.Fatalf("active startup issues = %#v, want [A]", got)
 	}
 }
@@ -141,10 +135,8 @@ func TestHubStartupLoadsAndBoundsActiveScope(t *testing.T) {
 func TestHubStartupLoadsActiveEmptyScope(t *testing.T) {
 	loaded := false
 	snapshot, issues, err := loadHubStartupIssues(context.Background(), func(context.Context) (hubScopeSnapshot, error) {
-		return hubScopeSnapshot{Active: &RobotActiveScope{ID: "empty"}}, nil
-	}, func() ([]model.Issue, error) {
 		loaded = true
-		return []model.Issue{{ID: "outside"}}, nil
+		return hubScopeSnapshot{Active: &RobotActiveScope{ID: "empty"}, Issues: []model.Issue{}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,23 +205,12 @@ func TestHubRobotAndExportsUseActiveSnapshotAndEmptyWithoutOne(t *testing.T) {
 	if err := os.WriteFile(config, []byte("version: 1\nstore: "+store+"\nledger: "+filepath.Join(root, "ledger.jsonl")+"\nrepositories: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	issues := []model.Issue{
-		{ID: "active", Title: "Active member", Status: model.StatusOpen, IssueType: model.TypeTask, Dependencies: []*model.Dependency{{IssueID: "active", DependsOnID: "hidden", Type: model.DepBlocks}}},
-		{ID: "hidden", Title: "Hidden member", Status: model.StatusOpen, IssueType: model.TypeTask},
-	}
-	var lines strings.Builder
-	encoder := json.NewEncoder(&lines)
-	for _, issue := range issues {
-		if err := encoder.Encode(issue); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(store, "issues.jsonl"), []byte(lines.String()), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(store, "issues.jsonl"), []byte("not a source read"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	writeFakeWBD(t, `{"id":"scope-a","name":"Active scope","created_on":"2026-09-05","state":"active","member_limit":37}`, filepath.Join(root, "wbd-calls"))
-	t.Setenv("WBD_SHOW", `{"id":"scope-a","name":"Active scope","members":[{"id":"active"}]}`)
+	t.Setenv("WBD_SHOW", `{"schema_version":1,"scope":{"id":"scope-a","name":"Active scope","state":"active"},"member_count":1,"member_limit":37,"members":[{"id":"active","title":"Active member","status":"open","priority":1,"issue_type":"task"}]}`)
 	executable := buildTestBinary(t)
 	run := func(arguments ...string) ([]byte, error) {
 		t.Helper()
