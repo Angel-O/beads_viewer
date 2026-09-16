@@ -656,7 +656,14 @@ func TestHubEpicChildClosureReportsAuthoritativeTotalAndBoundaries(t *testing.T)
 	}
 
 	content := m.hubRelationshipMarkdown(*m.issueMap["epic"])
-	if !containsAll(content, "Direct children", "3 total", "1 out of context", "1 out of scope", "context-child", "missing-child") {
+	lines := strings.Split(content, "\n")
+	if len(lines) < 3 || lines[1] != "**Direct children:** 3 total; 1 out of context; 1 out of scope" {
+		t.Fatalf("direct-child summary placement/content:\n%s", content)
+	}
+	if strings.HasPrefix(lines[1], "-") || !strings.HasPrefix(lines[2], "- **Child:**") {
+		t.Fatalf("direct-child summary is not a non-bulleted opening line:\n%s", content)
+	}
+	if !containsAll(content, "context-child", "missing-child") {
 		t.Fatalf("epic child closure presentation:\n%s", content)
 	}
 	if strings.Contains(content, "context-child` (out of scope)") || strings.Contains(content, "missing-child` (out of context)") {
