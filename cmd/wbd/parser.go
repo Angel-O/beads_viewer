@@ -158,7 +158,13 @@ var commandSpecs = map[string]commandSpec{
 		options: []optionSpec{{name: "--reason", value: "<text>", description: "Reopen reason."}, {name: "--json", description: "Emit JSON."}},
 	},
 	"comments": {
-		path: "comments", usage: "wbd comments <issue-id> --json | wbd comments add|edit|delete ...", summary: "Read or manage comments on authoritative Hub issues.",
+		path: "comments", usage: "wbd comments <issue-id> --json | wbd --json comments add|edit|delete ...", summary: "Read or manage comments on authoritative Hub issues.",
+		examples: []string{
+			"wbd comments <issue-id> --json",
+			"wbd --json comments add <issue-id> -- <text>",
+			"wbd --json comments edit <issue-id> <comment-id> -- <text>",
+			"wbd --json comments delete <issue-id> <comment-id>",
+		},
 	},
 	"comments add": {
 		path: "comments add", usage: "wbd comments add <issue-id> (<text...> | --file <path>) [options]", summary: "Add a comment to an authoritative Hub issue.",
