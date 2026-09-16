@@ -29,6 +29,7 @@ var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "claim", "unclaim", "dep", "dep add", "dep remove",
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
+	"epic", "epic child-closure",
 	"scope", "scope create", "scope list", "scope show", "scope active", "scope activate", "scope deactivate", "scope add", "scope remove", "scope move",
 	"backlog", "backlog list", "migrate",
 }
@@ -183,6 +184,11 @@ var commandSpecs = map[string]commandSpec{
 	"unlink": {
 		path: "unlink", usage: "wbd unlink <bead-id> <full-commit-sha>", summary: "Remove one exact current-context commit correlation.",
 		examples: []string{`wbd unlink <id> 0123456789abcdef0123456789abcdef01234567`},
+	},
+	"epic": {path: "epic", usage: "wbd epic child-closure <parent-id> --json", summary: "Read an epic's direct child closure through bd."},
+	"epic child-closure": {
+		path: "epic child-closure", usage: "wbd epic child-closure <parent-id> --json", summary: "Read an epic's direct children without changing state.",
+		options: []optionSpec{{name: "--json", description: "Required; preserve the backend JSON array."}},
 	},
 	"migrate": {
 		path: "migrate", usage: "wbd migrate (--dry-run|--apply) --json", summary: "Copy the local repository store into the private Hub.",
@@ -434,6 +440,8 @@ func parse(arguments []string) (request, error) {
 		default:
 			return parseCommentsDelete(result, arguments[1:])
 		}
+	case "epic":
+		return parseEpic(result, arguments)
 	case "link":
 		if result.json || len(arguments) < 1 || len(arguments) > 2 {
 			return result, errors.New(usageFor("link"))
@@ -495,6 +503,32 @@ func parseMigrate(result request, arguments []string) (request, error) {
 	}
 	if !result.json || result.migrateDryRun == result.migrateApply {
 		return result, errors.New(usageFor("migrate"))
+	}
+	return result, nil
+}
+
+func parseEpic(result request, arguments []string) (request, error) {
+	if len(arguments) < 1 || arguments[0] != "child-closure" {
+		return result, errors.New(usageFor("epic"))
+	}
+	result.subcommand = arguments[0]
+	for _, argument := range arguments[1:] {
+		if argument == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, "-") || len(result.positionals) > 0 {
+			return result, errors.New(usageFor("epic child-closure"))
+		}
+		if err := safeID("epic child-closure", argument); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, argument)
+	}
+	if !result.json || len(result.positionals) != 1 {
+		return result, errors.New(usageFor("epic child-closure"))
 	}
 	return result, nil
 }

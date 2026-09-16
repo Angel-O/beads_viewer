@@ -424,6 +424,7 @@ func (m Model) issueRepositoryResolver() IssueRepositoryResolver {
 type hubRelationshipEvidence struct {
 	Label    string
 	Endpoint *model.Issue
+	Child    bool
 }
 
 const contextlessRepositoryID = "no-context"
@@ -710,11 +711,12 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 				label = "Child"
 			}
 			if label != "" {
-				evidence = append(evidence, hubRelationshipEvidence{Label: label, Endpoint: candidate})
+				evidence = append(evidence, hubRelationshipEvidence{Label: label, Endpoint: candidate, Child: dependency.Type == model.DepParentChild})
 			}
 		}
 	}
-	if len(evidence) == 0 && !(supersededOriginal && issue.CloseReason != "") {
+	childrenLoaded := m.epicChildren.loaded && m.epicChildren.parentID == issue.ID
+	if len(evidence) == 0 && !childrenLoaded && !(supersededOriginal && issue.CloseReason != "") {
 		return ""
 	}
 	sort.SliceStable(evidence, func(i, j int) bool {
@@ -732,15 +734,60 @@ func (m Model) hubRelationshipMarkdown(issue model.Issue) string {
 	for _, relation := range evidence {
 		endpoint := relation.Endpoint
 		boundary := ""
-		if !m.issueMatchesRepositoryScope(*endpoint) {
+		if relation.Child {
+			boundary = m.epicChildVisibility(endpoint.ID)
+		} else if !m.issueMatchesRepositoryScope(*endpoint) {
 			boundary = " _(out of scope)_"
 		}
 		sb.WriteString(fmt.Sprintf("- **%s:** `%s` %s (%s; contexts: %s)%s\n",
 			relation.Label, endpoint.ID, endpoint.Title, endpoint.Status,
 			strings.Join(hubContextNames(*endpoint, m.repositoryCatalog), ", "), boundary))
 	}
+	if childrenLoaded {
+		outOfContext, outOfScope := 0, 0
+		seen := make(map[string]bool, len(evidence))
+		for _, relation := range evidence {
+			if relation.Child {
+				seen[relation.Endpoint.ID] = true
+			}
+		}
+		sb.WriteString(fmt.Sprintf("- **Direct children:** %d total", len(m.epicChildren.children)))
+		for _, child := range m.epicChildren.children {
+			switch m.epicChildVisibility(child.ID) {
+			case " _(out of context)_":
+				outOfContext++
+			case " _(out of scope)_":
+				outOfScope++
+			}
+		}
+		if outOfContext > 0 {
+			sb.WriteString(fmt.Sprintf("; %d out of context", outOfContext))
+		}
+		if outOfScope > 0 {
+			sb.WriteString(fmt.Sprintf("; %d out of scope", outOfScope))
+		}
+		sb.WriteString("\n")
+		for _, child := range m.epicChildren.children {
+			boundary := m.epicChildVisibility(child.ID)
+			if boundary == "" || seen[child.ID] {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("- **Child:** `%s`%s\n", child.ID, boundary))
+		}
+	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+func (m Model) epicChildVisibility(childID string) string {
+	child := m.issueMap[childID]
+	if child == nil {
+		return " _(out of scope)_"
+	}
+	if !m.issueMatchesRepositoryScope(*child) {
+		return " _(out of context)_"
+	}
+	return ""
 }
 
 func (m *Model) hubRepositoryPresentation() bool {

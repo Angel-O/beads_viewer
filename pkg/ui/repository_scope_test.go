@@ -630,6 +630,40 @@ func TestHubFocusedRelationshipBoundaryEvidence(t *testing.T) {
 	}
 }
 
+func TestHubEpicChildClosureReportsAuthoritativeTotalAndBoundaries(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "epic", Title: "Epic", Status: model.StatusOpen, IssueType: model.TypeEpic, Labels: []string{"ctx:alpha"}},
+		{ID: "context-child", Title: "Other context child", Status: model.StatusOpen, Labels: []string{"ctx:beta"}, Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+		{ID: "visible-child", Title: "Visible child", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}, Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.runtimeServices.CatalogPath = "hub.yaml"
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	selection, err := repositorypkg.NewSelectedSelection([]string{"ctx:alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetRepositorySelection(selection); err != nil {
+		t.Fatal(err)
+	}
+	m.epicChildren.parentID = "epic"
+	m.epicChildren.loaded = true
+	m.epicChildren.children = []EpicChild{
+		{ID: "context-child", Status: "open", IssueType: "task", StoragePlane: "hub"},
+		{ID: "visible-child", Status: "open", IssueType: "task", StoragePlane: "hub"},
+		{ID: "missing-child", Status: "closed", IssueType: "task", StoragePlane: "hub"},
+	}
+
+	content := m.hubRelationshipMarkdown(*m.issueMap["epic"])
+	if !containsAll(content, "Direct children", "3 total", "1 out of context", "1 out of scope", "context-child", "missing-child") {
+		t.Fatalf("epic child closure presentation:\n%s", content)
+	}
+	if strings.Contains(content, "context-child` (out of scope)") || strings.Contains(content, "missing-child` (out of context)") {
+		t.Fatalf("epic child boundaries were misclassified:\n%s", content)
+	}
+}
+
 func TestHubTreeAndBoardMarkHiddenCanonicalEndpoints(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "child", Title: "Visible child", Status: model.StatusOpen, Labels: []string{"ctx:alpha"}, Dependencies: []*model.Dependency{

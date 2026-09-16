@@ -22,6 +22,19 @@ type RepositoryMetadataProvider func(string, []model.Issue) (repositorypkg.Catal
 // repository matching.
 type IssueRepositoryResolver func(model.Issue) []string
 
+// EpicChild is the neutral presentation projection of one direct epic child.
+// The composition root maps Hub data into this type; UI code never imports Hub.
+type EpicChild struct {
+	ID           string `json:"id"`
+	Status       string `json:"status"`
+	IssueType    string `json:"issue_type"`
+	StoragePlane string `json:"storage_plane"`
+}
+
+// EpicChildClosureProvider reads the authoritative direct children for one
+// displayed epic. A nil provider preserves local and non-Hub behavior.
+type EpicChildClosureProvider func(context.Context, string) ([]EpicChild, error)
+
 // ChangeSource is the small lifecycle and notification contract consumed by
 // BackgroundWorker. watcher.Watcher satisfies it without becoming a worker
 // policy dependency.
@@ -80,7 +93,8 @@ type RuntimeServices struct {
 	// InitialScope is the scope state resolved before Hub issue loading. Any
 	// non-nil snapshot is already authoritative for the initial issue set; a
 	// snapshot with no Active scope also keeps startup on the no-scope view.
-	InitialScope *ScopeSnapshot
+	InitialScope             *ScopeSnapshot
+	EpicChildClosureProvider EpicChildClosureProvider
 }
 
 func workerConfigForRuntime(beadsPath string, services RuntimeServices) WorkerConfig {

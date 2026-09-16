@@ -96,7 +96,7 @@ func TestComposeViewerServicesSelectsHistoryProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	localServices := local.runtimeServicesFor("", nil)
-	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil || localServices.SemanticIndexDir != "" || localServices.RepositoryPresentation || localServices.AutoRefresh || localServices.SourceChangeSource != nil || localServices.CatalogChangeSource != nil {
+	if localServices.CatalogPath != "" || localServices.CatalogLoader != nil || localServices.IssueRepositoryResolver != nil || localServices.SemanticIndexDir != "" || localServices.RepositoryPresentation || localServices.AutoRefresh || localServices.SourceChangeSource != nil || localServices.CatalogChangeSource != nil || localServices.EpicChildClosureProvider != nil {
 		t.Fatalf("local composition exposed Hub repository services: %#v", localServices)
 	}
 }
@@ -152,7 +152,7 @@ func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
 	if services.SemanticDatasetPath != composition.SemanticDatasetPath || services.SemanticStorePath != composition.SemanticStorePath || services.SemanticIndexDir != composition.SemanticIndexDir {
 		t.Fatalf("runtime search paths = %#v, want composition values", services)
 	}
-	if services.CatalogPath != config || services.CatalogLoader == nil || services.IssueRepositoryResolver == nil || services.LabelPredicate == nil {
+	if services.CatalogPath != config || services.CatalogLoader == nil || services.IssueRepositoryResolver == nil || services.LabelPredicate == nil || services.EpicChildClosureProvider == nil {
 		t.Fatalf("runtime Hub services = %#v", services)
 	}
 	if got := services.IssueRepositoryResolver(model.Issue{Labels: []string{"ctx:alpha", "work"}}); len(got) != 1 || got[0] != "ctx:alpha" {
@@ -166,6 +166,30 @@ func TestViewerCompositionBuildsNeutralRuntimeServices(t *testing.T) {
 	}
 	if services.SourceChangeSource == nil || services.CatalogChangeSource == nil {
 		t.Fatalf("runtime refresh sources were not composed: %#v", services)
+	}
+}
+
+func TestHubEpicChildClosureProviderMapsWBDJSON(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	bin := t.TempDir()
+	wbd := filepath.Join(bin, "wbd")
+	if err := os.WriteFile(wbd, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WBD_CALLS\"\nprintf '%s' '[{\"id\":\"child-1\",\"status\":\"closed\",\"issue_type\":\"task\",\"storage_plane\":\"hub\"}]'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_CALLS", calls)
+
+	children, err := newHubEpicChildClosureProvider(root)(context.Background(), "epic-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 || children[0].ID != "child-1" || children[0].Status != "closed" || children[0].IssueType != "task" || children[0].StoragePlane != "hub" {
+		t.Fatalf("children=%#v", children)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil || string(data) != "epic child-closure epic-1 --json\n" {
+		t.Fatalf("wbd calls=%q err=%v", data, err)
 	}
 }
 
