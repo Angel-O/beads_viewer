@@ -3980,6 +3980,23 @@ theme: light   # light | dark | auto
 
 **Precedence:** `--theme` → `BV_THEME` → config file → auto-detect.
 
+### Board Empty-Column Visibility
+
+To start interactive boards with empty columns hidden, add this key to
+`~/.config/bv/config.yaml`:
+
+```yaml
+board:
+  hide_empty_columns: true
+```
+
+This applies Hide Empty at startup, including the Status board. The `e` key
+still cycles through Show All, Hide Empty, and Auto for the current session;
+those changes are not saved. When the key is absent or false, the existing Auto
+behavior remains: Status shows all columns, while Priority and Type hide empty
+columns. An all-empty board always shows all four columns. `BV_NO_SAVED_CONFIG`
+disables this saved preference.
+
 ---
 
 ## 📄 License
