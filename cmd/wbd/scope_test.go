@@ -523,10 +523,15 @@ func TestScopeReadsAndCreatePreserveStableBackendOutput(t *testing.T) {
 
 func TestFailedScopeMutationDoesNotSignal(t *testing.T) {
 	test := newAppTest(t, true)
-	setResponses(t, map[string]string{"scope:active": `{"id":"active"}`, "list": `[{"id":"bead-1"}]`})
+	setResponses(t, map[string]string{
+		"scope:active": `{"id":"active"}`,
+		"list":         `[{"id":"bead-1"}]`,
+		"scope:add":    `{"error":"scope active is at capacity"}`,
+	})
 	setExitCodes(t, map[string]int{"scope:add": 9})
 	code, stdout, stderr := test.run("--json", "scope", "add", "bead-1")
-	if code != 9 || stdout != "" || stderr != "" {
+	if code != 1 || stdout != "" || !strings.Contains(stderr, `"code":"invalid_request"`) ||
+		!strings.Contains(stderr, "scope active is at capacity") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if calls := test.calls(); len(calls) != 3 {
