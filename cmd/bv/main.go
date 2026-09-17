@@ -4964,6 +4964,9 @@ func main() {
 			runtimeServices := composition.runtimeServicesFor(composition.SemanticDatasetPath, initialScope)
 			m := ui.NewModel(issues, activeRecipe, "", runtimeServices)
 			defer m.Stop()
+			if loadBoardHideEmptyColumnsPreference() {
+				m.ApplyBoardHideEmptyColumnsPreference()
+			}
 			if err := runTUIProgram(m); err != nil {
 				fmt.Printf("Error running beads viewer: %v\n", err)
 				os.Exit(1)
@@ -5095,6 +5098,9 @@ func main() {
 			output := m.RenderDebugView(*debugRender, *debugWidth, *debugHeight)
 			fmt.Println(output)
 			os.Exit(0)
+		}
+		if loadBoardHideEmptyColumnsPreference() {
+			m.ApplyBoardHideEmptyColumnsPreference()
 		}
 
 		// Run Program
