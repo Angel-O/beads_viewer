@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,7 +92,8 @@ func (a *app) scopeSnapshot(scopeID string) int {
 // backend's existing multi-ID scope mutation. Exact IDs are resolved without the
 // implicit current-repository filter; exact remove candidates include closed
 // members, while label/epic selectors retain their scoped candidate reads and
-// requested status/type filters.
+// requested status/type filters. Backend mutation errors are read from bd's JSON
+// stdout so wbd can report them through its structured stderr contract.
 func (a *app) semanticScopeMutation(request request) int {
 	name, err := a.scopeOption(request.args, "--scope")
 	if err != nil {
@@ -218,12 +218,18 @@ func (a *app) semanticScopeMutation(request request) int {
 	mutation := appendJSON(nil, request.json)
 	mutation = append(mutation, "scope", request.scopeSubcommand, name)
 	mutation = append(mutation, ids...)
-	stdout := a.stdout
-	a.stdout = io.Discard
-	code := a.runBD(a.dir, mutation...)
-	a.stdout = stdout
-	if code != 0 {
-		return code
+	mutationOutput, mutationStderr, mutationErr := a.runBDCaptureWithStderr(a.dir, mutation...)
+	if mutationErr != nil {
+		var backendError struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(mutationOutput, &backendError) == nil && backendError.Error != "" {
+			mutationErr = errors.New(backendError.Error)
+		}
+		return a.fail(mutationErr)
+	}
+	if len(mutationStderr) > 0 {
+		_, _ = a.stderr.Write(mutationStderr)
 	}
 	a.signalMutation("scope mutation")
 	return a.writeScopeMutationCount(request, name, len(ids))
