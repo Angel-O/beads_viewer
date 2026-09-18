@@ -211,6 +211,11 @@ func runHubScopeMutation(ctx context.Context, workDir string, mutation ui.ScopeM
 		if mutation.TargetScopeID != "" {
 			args = append(args, "--target-scope", mutation.TargetScopeID)
 		}
+	case ui.ScopeMutationRename:
+		if mutation.ScopeID == "" || strings.TrimSpace(mutation.Name) == "" {
+			return fmt.Errorf("scope rename requires a scope ID and name")
+		}
+		args = []string{"rename", mutation.ScopeID, mutation.Name}
 	default:
 		return fmt.Errorf("unsupported scope mutation %q", mutation.Kind)
 	}

@@ -1215,8 +1215,10 @@ type Model struct {
 	repoPickerOrigin      focus
 	showScopePicker       bool
 	showScopeCreatePrompt bool
+	showScopeRenamePrompt bool
 	scopePicker           ScopePickerModel
 	scopeCreateInput      textinput.Model
+	scopeRenameScopeID    string
 	showScopeMatchPrompt  bool
 	scopeMatchInput       textinput.Model
 	scopeMatchAction      string
@@ -4448,7 +4450,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
-		if (m.showScopePicker || m.showScopeCreatePrompt || m.showScopeMatchPrompt) && msg.String() == "B" {
+		if (m.showScopePicker || m.showScopeCreatePrompt || m.showScopeRenamePrompt || m.showScopeMatchPrompt) && msg.String() == "B" {
 			if m.showTutorial {
 				m.focused = m.scopeSessionFocus
 			} else if m.showHelp {
@@ -4464,6 +4466,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.quitCommand()
 			}
 			return m.handleScopeCreateKey(msg)
+		}
+		if m.focused == focusScopeCreateInput && m.showScopeRenamePrompt {
+			if msg.String() == "ctrl+c" {
+				return m, m.quitCommand()
+			}
+			return m.handleScopeRenameKey(msg)
 		}
 		if m.focused == focusScopeCreateInput && m.showScopeMatchPrompt {
 			if msg.String() == "ctrl+c" {
@@ -7801,6 +7809,8 @@ func (m *Model) View() string {
 		body = m.repoPicker.View()
 	} else if m.showScopeCreatePrompt {
 		body = m.renderScopeCreatePrompt()
+	} else if m.showScopeRenamePrompt {
+		body = m.renderScopeRenamePrompt()
 	} else if m.showScopeMatchPrompt {
 		body = m.renderScopeMatchPrompt()
 	} else if m.showScopePicker {
@@ -9806,6 +9816,8 @@ func (m *Model) renderFooter() string {
 		}
 	} else if m.showScopeCreatePrompt {
 		keyHints = append(keyHints, keyStyle.Render("enter")+" create", keyStyle.Render("esc")+" cancel", keyStyle.Render("B")+" list")
+	} else if m.showScopeRenamePrompt {
+		keyHints = append(keyHints, keyStyle.Render("enter")+" rename", keyStyle.Render("esc")+" cancel", keyStyle.Render("B")+" list")
 	} else if m.showScopeMatchPrompt {
 		keyHints = append(keyHints, keyStyle.Render("type")+" match", keyStyle.Render("enter")+" apply", keyStyle.Render("esc")+" cancel", keyStyle.Render("B")+" list")
 	} else if m.showScopePicker && m.focused != focusGlobalIssues {
@@ -9828,7 +9840,7 @@ func (m *Model) renderFooter() string {
 			if m.runtimeServices.Scopes.QueryCatalog != nil {
 				keyHints = append(keyHints, keyStyle.Render("←/→")+" page")
 			}
-			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("n")+" new", keyStyle.Render("B")+" list")
+			keyHints = append(keyHints, keyStyle.Render("enter")+" toggle", keyStyle.Render("r")+" rename", keyStyle.Render("n")+" new", keyStyle.Render("B")+" list")
 		}
 	} else if m.focused == focusGlobalIssues {
 		if m.backlog.Searching() {

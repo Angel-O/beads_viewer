@@ -2815,6 +2815,63 @@ func TestScopeCreationValidationCancelAndFailureKeepPickerUsable(t *testing.T) {
 	}
 }
 
+func TestScopeRenameUsesSelectedCatalogScopeAndTrimsName(t *testing.T) {
+	var got ScopeMutation
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Mutate: func(_ context.Context, mutation ScopeMutation) error { got = mutation; return nil },
+	}})
+	m.showScopePicker, m.focused = true, focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "scope-1", Name: "Today"}})
+
+	updated, cmd := m.Update(keyMsg("r"))
+	m = updated.(*Model)
+	if cmd == nil || !m.showScopeRenamePrompt || m.focused != focusScopeCreateInput || m.scopeCreateInput.Value() != "Today" {
+		t.Fatalf("rename prompt: cmd=%t shown=%t focus=%s value=%q", cmd != nil, m.showScopeRenamePrompt, m.focused, m.scopeCreateInput.Value())
+	}
+	m.scopeCreateInput.SetValue("  Renamed  ")
+	updated, cmd = m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd == nil || m.showScopeRenamePrompt || m.focused != focusScopePicker {
+		t.Fatalf("rename submit state: cmd=%t shown=%t focus=%s", cmd != nil, m.showScopeRenamePrompt, m.focused)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if got.Kind != ScopeMutationRename || got.ScopeID != "scope-1" || got.Name != "Renamed" {
+		t.Fatalf("rename mutation=%#v, want selected ID and trimmed name", got)
+	}
+}
+
+func TestScopeRenameValidationCancelAndMoveDestinationGuard(t *testing.T) {
+	renamed := false
+	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
+		Mutate: func(context.Context, ScopeMutation) error { renamed = true; return nil },
+	}})
+	m.showScopePicker, m.focused = true, focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "scope-1", Name: "Today"}})
+
+	updated, _ := m.Update(keyMsg("r"))
+	m = updated.(*Model)
+	m.scopeCreateInput.SetValue("  ")
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(*Model)
+	if cmd != nil || !m.showScopeRenamePrompt || !m.statusIsError || m.statusMsg != "Scope name cannot be empty" {
+		t.Fatalf("empty rename: cmd=%t shown=%t error=%t status=%q", cmd != nil, m.showScopeRenamePrompt, m.statusIsError, m.statusMsg)
+	}
+	updated, _ = m.Update(keyMsg("esc"))
+	m = updated.(*Model)
+	if m.showScopeRenamePrompt || m.focused != focusScopePicker {
+		t.Fatalf("rename cancel: shown=%t focus=%s", m.showScopeRenamePrompt, m.focused)
+	}
+
+	m.scopePickerMoveIssue = "issue"
+	m.scopePicker.SetMoveTarget("Issue")
+	updated, cmd = m.Update(keyMsg("r"))
+	m = updated.(*Model)
+	if cmd != nil || m.showScopeRenamePrompt || renamed {
+		t.Fatalf("move destination accepted rename: cmd=%t shown=%t renamed=%t", cmd != nil, m.showScopeRenamePrompt, renamed)
+	}
+}
+
 func TestScopePickerBTogglesDirectlyToList(t *testing.T) {
 	m := NewModel(nil, nil, "", RuntimeServices{Scopes: ScopeServices{
 		Load: func(context.Context) (ScopeSnapshot, error) { return ScopeSnapshot{}, nil },

@@ -297,7 +297,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"w", "Context picker (Hub)", "Filters", "list"},
 		{"o", "Narrow members to open", "Filters", "scope"},
 		{"c", "Narrow members to closed", "Filters", "scope"},
-		{"r", "Narrow members to ready", "Filters", "scope"},
+		{"r", "Rename selected scope / narrow members to ready", "Filters", "scope"},
 		{"I", "Cycle member type filter", "Filters", "scope"},
 		{"w", "Cycle member ctx filter", "Filters", "scope"},
 		{"/", "ID/title search", "Filters", "list,global-issues"},

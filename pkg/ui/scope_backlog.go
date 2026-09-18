@@ -161,11 +161,13 @@ const (
 	ScopeMutationAdd        ScopeMutationKind = "add"
 	ScopeMutationRemove     ScopeMutationKind = "remove"
 	ScopeMutationMove       ScopeMutationKind = "move"
+	ScopeMutationRename     ScopeMutationKind = "rename"
 )
 
 // ScopeMutation is the semantic scope change accepted by the Viewer service.
 // IssueIDs may contain more than one ID for add/remove/move.
 // HubWide is set only for matching initiated from the Global/Unscoped panel.
+// Name is used by create and rename operations.
 type ScopeMutation struct {
 	Kind          ScopeMutationKind
 	Name          string
@@ -2885,6 +2887,21 @@ func (m Model) renderScopeCreatePrompt() string {
 	return lipgloss.Place(availableWidth, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
 }
 
+func (m Model) renderScopeRenamePrompt() string {
+	availableWidth := m.mainContentWidth()
+	boxStyle := m.theme.Renderer.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Primary).
+		Padding(1, 3).
+		Align(lipgloss.Center)
+	muted := m.theme.Renderer.NewStyle().Foreground(m.theme.Subtext)
+	content := m.theme.Renderer.NewStyle().Foreground(m.theme.Primary).Bold(true).Render("Rename named scope") + "\n\n" +
+		muted.Render("Enter a new name for the selected scope.") + "\n\n" +
+		m.scopeCreateInput.View() + "\n\n" +
+		muted.Render("Enter rename · Esc cancel")
+	return lipgloss.Place(availableWidth, max(1, m.height-1), lipgloss.Center, lipgloss.Center, boxStyle.Render(content))
+}
+
 func (m Model) renderScopeMatchPrompt() string {
 	availableWidth := m.mainContentWidth()
 	boxStyle := m.theme.Renderer.NewStyle().
@@ -3519,6 +3536,12 @@ func (m *Model) closeScopeToList() {
 		m.scopeCreateInput.Blur()
 		m.showScopeCreatePrompt = false
 	}
+	if m.showScopeRenamePrompt {
+		m.focused = focusScopePicker
+		m.scopeCreateInput.Blur()
+		m.showScopeRenamePrompt = false
+		m.scopeRenameScopeID = ""
+	}
 	if m.showScopeMatchPrompt {
 		m.focused = m.scopeMatchOrigin
 		m.scopeMatchInput.Blur()
@@ -3771,6 +3794,21 @@ func (m *Model) handleScopePickerKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			if m.scopePicker.memberServerFiltering {
 				return m, m.startScopeMembersPage("", 0)
 			}
+		} else if msg.String() == "r" && m.scopePickerMoveIssue == "" {
+			selected := m.scopePicker.Selected()
+			if selected == nil {
+				return m, nil
+			}
+			if m.runtimeServices.Scopes.Mutate == nil {
+				m.statusMsg, m.statusIsError = "Scope rename is unavailable", true
+				return m, nil
+			}
+			m.scopeRenameScopeID = selected.ID
+			m.scopeCreateInput.SetValue(selected.Name)
+			focusCmd := m.scopeCreateInput.Focus()
+			m.showScopeRenamePrompt = true
+			m.focused = focusScopeCreateInput
+			return m, focusCmd
 		}
 	case "I":
 		if m.scopePicker.MemberFocused() {
@@ -3896,6 +3934,35 @@ func (m *Model) handleScopeCreateKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 				return m.runtimeServices.Scopes.Mutate(ctx, mutation)
 			}
 			return m.runtimeServices.Scopes.Create(ctx, name)
+		})
+	default:
+		var cmd tea.Cmd
+		m.scopeCreateInput, cmd = m.scopeCreateInput.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m *Model) handleScopeRenameKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.scopeCreateInput.Blur()
+		m.showScopeRenamePrompt = false
+		m.scopeRenameScopeID = ""
+		m.focused = focusScopePicker
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.scopeCreateInput.Value())
+		if name == "" {
+			m.statusMsg, m.statusIsError = "Scope name cannot be empty", true
+			return m, nil
+		}
+		m.scopeCreateInput.Blur()
+		m.showScopeRenamePrompt = false
+		m.focused = focusScopePicker
+		mutation := ScopeMutation{Kind: ScopeMutationRename, ScopeID: m.scopeRenameScopeID, Name: name}
+		m.scopeRenameScopeID = ""
+		return m, runScopeMutationCmd(mutation, false, func(ctx context.Context) error {
+			return m.runtimeServices.Scopes.Mutate(ctx, mutation)
 		})
 	default:
 		var cmd tea.Cmd

@@ -181,6 +181,7 @@ printf '%s' '{"matched":2,"changed":2}'
 		{name: "batch add", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationAdd, ScopeID: "today", IssueIDs: []string{"b1", "b2"}}, want: []string{"scope", "add", "b1", "b2", "--scope", "today", "--json"}},
 		{name: "semantic remove", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationRemove, ScopeID: "today", Label: "team"}, want: []string{"scope", "remove", "--label", "team", "--scope", "today", "--json"}},
 		{name: "move", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationMove, IssueIDs: []string{"b1", "b2"}, SourceScopeID: "today", TargetScopeID: "later"}, want: []string{"scope", "move", "b1", "b2", "--source-scope", "today", "--target-scope", "later", "--json"}},
+		{name: "rename", mutation: ui.ScopeMutation{Kind: ui.ScopeMutationRename, ScopeID: "today", Name: "Renamed"}, want: []string{"scope", "rename", "today", "Renamed", "--json"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var mutate func(context.Context, ui.ScopeMutation) error
