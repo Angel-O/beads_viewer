@@ -37,7 +37,7 @@ func (a *app) scope(request request) int {
 	args = append(args, "scope", request.scopeSubcommand)
 
 	switch request.scopeSubcommand {
-	case "create", "show":
+	case "create", "show", "rename":
 		args = append(args, request.positionals...)
 		args = append(args, request.args...)
 	case "list", "active":
@@ -77,7 +77,8 @@ func (a *app) scope(request request) int {
 
 	if request.scopeSubcommand == "create" || request.scopeSubcommand == "activate" ||
 		request.scopeSubcommand == "deactivate" || request.scopeSubcommand == "add" ||
-		request.scopeSubcommand == "remove" || request.scopeSubcommand == "move" {
+		request.scopeSubcommand == "remove" || request.scopeSubcommand == "move" ||
+		request.scopeSubcommand == "rename" {
 		return a.runBDMutation(a.dir, args...)
 	}
 	return a.runBD(a.dir, args...)

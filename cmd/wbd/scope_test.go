@@ -15,6 +15,7 @@ func TestScopeParserExposesPublicSubcommands(t *testing.T) {
 		{"scope", "create", "scope-work", "Work", "--activate", "--json"},
 		{"scope", "list", "--json"},
 		{"scope", "show", "work"},
+		{"scope", "rename", "work", "New name", "--json"},
 		{"scope", "active", "--json"},
 		{"scope", "activate", "work"},
 		{"scope", "deactivate", "--json"},
@@ -27,6 +28,48 @@ func TestScopeParserExposesPublicSubcommands(t *testing.T) {
 			t.Errorf("parse(%v) = %v", arguments, err)
 		}
 	}
+}
+
+func TestScopeRenameParserRequiresExactlyTwoPositionals(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"scope", "rename"},
+		{"scope", "rename", "scope-a"},
+		{"scope", "rename", "scope-a", "New name", "extra"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Errorf("parse(%v) unexpectedly succeeded", arguments)
+		}
+	}
+}
+
+func TestScopeRenameForwardsOpaqueOutputAndSignalsOnSuccess(t *testing.T) {
+	test := newAppTest(t, false)
+	response := "{\n  \"status\":\"renamed\",\"scope_id\":\"scope-a\",\"name\":\"New name\",\"normalized_name\":\"new-name\"\n}\n"
+	setResponses(t, map[string]string{"scope:rename": response})
+
+	code, stdout, stderr := test.run("scope", "rename", "scope-a", "New name", "--json")
+	if code != 0 || stdout != response || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	want := []string{"--db", test.store, "--json", "scope", "rename", "scope-a", "New name"}
+	if calls := test.calls(); len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+	assertViewerSignal(t, test)
+}
+
+func TestScopeRenamePreservesBackendFailureWithoutSignaling(t *testing.T) {
+	test := newAppTest(t, false)
+	response := `{"error":"scope rename rejected"}`
+	setResponses(t, map[string]string{"scope:rename": response})
+	setExitCodes(t, map[string]int{"scope:rename": 9})
+	t.Setenv("WBD_CHILD_STDERR", "scope rename rejected\n")
+
+	code, stdout, stderr := test.run("scope", "rename", "scope-a", "New name", "--json")
+	if code != 9 || stdout != response || stderr != "scope rename rejected\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	assertNoViewerSignal(t, test)
 }
 
 func TestScopeParserSupportsPaginationAndMemberFilters(t *testing.T) {
