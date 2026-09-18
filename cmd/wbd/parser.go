@@ -30,7 +30,7 @@ var commandOrder = []string{
 	"compatibility", "list", "show", "update", "claim", "unclaim", "dep", "dep add", "dep remove",
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
 	"epic", "epic child-closure",
-	"scope", "scope create", "scope list", "scope show", "scope active", "scope activate", "scope deactivate", "scope add", "scope remove", "scope move",
+	"scope", "scope create", "scope list", "scope show", "scope rename", "scope active", "scope activate", "scope deactivate", "scope add", "scope remove", "scope move",
 	"backlog", "backlog list", "migrate",
 }
 
@@ -204,7 +204,7 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--json", description: "Required; emit JSON."},
 		},
 	},
-	"scope": {path: "scope", usage: "wbd scope <create|list|show|active|activate|deactivate|add|remove|move> [options]", summary: "Manage named backlog scopes through bd."},
+	"scope": {path: "scope", usage: "wbd scope <create|list|show|rename|active|activate|deactivate|add|remove|move> [options]", summary: "Manage named backlog scopes through bd."},
 	"scope create": {
 		path: "scope create", usage: "wbd scope create <id> <name> [--activate] [--json]", summary: "Create a named backlog scope.",
 		options: []optionSpec{{name: "--activate", description: "Activate the scope in the same backend call."}, {name: "--json", description: "Emit JSON."}},
@@ -230,6 +230,10 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--context", value: "<ctx-id>", description: "Filter members by a registered context; repeatable."},
 			{name: "--json", description: "Emit JSON."},
 		},
+	},
+	"scope rename": {
+		path: "scope rename", usage: "wbd scope rename <scope-id> <new-name> [--json]", summary: "Rename a named backlog scope.",
+		options: []optionSpec{{name: "--json", description: "Emit JSON."}},
 	},
 	"scope active":     {path: "scope active", usage: "wbd scope active [--json]", summary: "Show the active backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
 	"scope activate":   {path: "scope activate", usage: "wbd scope activate <id> [--json]", summary: "Activate a backlog scope.", options: []optionSpec{{name: "--json", description: "Emit JSON."}}},
@@ -967,7 +971,7 @@ func parseList(result request, arguments []string) (request, error) {
 }
 
 func parseScope(result request, arguments []string) (request, error) {
-	if len(arguments) == 0 || !oneOf(arguments[0], "create", "list", "show", "active", "activate", "deactivate", "add", "remove", "move") {
+	if len(arguments) == 0 || !oneOf(arguments[0], "create", "list", "show", "rename", "active", "activate", "deactivate", "add", "remove", "move") {
 		return result, errors.New(usageFor("scope"))
 	}
 	result.scopeSubcommand = arguments[0]
@@ -1124,7 +1128,7 @@ func parseScope(result request, arguments []string) (request, error) {
 
 	wantPositionals := 0
 	switch result.scopeSubcommand {
-	case "create":
+	case "create", "rename":
 		wantPositionals = 2
 	case "show", "activate":
 		wantPositionals = 1
