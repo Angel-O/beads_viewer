@@ -26,8 +26,8 @@ check_clean() {
     die "$root has dirty or untracked files"
 }
 
-check_branch "$viewer_root" integration-light-load
-check_branch "$beads_root" integration-light-load
+check_branch "$viewer_root" integration-scope-rename
+check_branch "$beads_root" integration-scope-rename
 check_clean "$viewer_root"
 check_clean "$beads_root"
 
