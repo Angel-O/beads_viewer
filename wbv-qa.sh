@@ -9,9 +9,15 @@ die() {
 [ "$#" -eq 0 ] || die 'this script does not accept arguments'
 
 viewer_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-beads_root_input=${BEADS_ROOT:-"$viewer_root/../beads"}
-beads_root=$(CDPATH= cd -- "$beads_root_input" 2>/dev/null && pwd) ||
-  die "Beads checkout not found: $beads_root_input (set BEADS_ROOT to override)"
+default_beads_root="$viewer_root/../beads"
+if ! beads_root=$(CDPATH= cd -- "$default_beads_root" 2>/dev/null && pwd); then
+  viewer_branch=$(git -C "$viewer_root" branch --show-current) ||
+    die "Viewer branch unavailable: $viewer_root"
+  [ -n "$viewer_branch" ] || die "Viewer checkout is detached: $viewer_root"
+  matching_beads_root="$viewer_root/../../beads/$viewer_branch"
+  beads_root=$(CDPATH= cd -- "$matching_beads_root" 2>/dev/null && pwd) ||
+    die "Beads checkout not found: $default_beads_root or $matching_beads_root"
+fi
 
 check_branch() {
   local root=$1 branch=$2
