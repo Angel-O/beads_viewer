@@ -11,10 +11,7 @@ die() {
 viewer_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 default_beads_root="$viewer_root/../beads"
 if ! beads_root=$(CDPATH= cd -- "$default_beads_root" 2>/dev/null && pwd); then
-  viewer_branch=$(git -C "$viewer_root" branch --show-current) ||
-    die "Viewer branch unavailable: $viewer_root"
-  [ -n "$viewer_branch" ] || die "Viewer checkout is detached: $viewer_root"
-  matching_beads_root="$viewer_root/../../beads/$viewer_branch"
+  matching_beads_root="$viewer_root/../../beads/scope-rename"
   beads_root=$(CDPATH= cd -- "$matching_beads_root" 2>/dev/null && pwd) ||
     die "Beads checkout not found: $default_beads_root or $matching_beads_root"
 fi
