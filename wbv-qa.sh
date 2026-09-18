@@ -9,8 +9,9 @@ die() {
 [ "$#" -eq 0 ] || die 'this script does not accept arguments'
 
 viewer_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-beads_root=$(CDPATH= cd -- "$viewer_root/../beads" 2>/dev/null && pwd) ||
-  die "Beads checkout not found: $viewer_root/../beads"
+beads_root_input=${BEADS_ROOT:-"$viewer_root/../beads"}
+beads_root=$(CDPATH= cd -- "$beads_root_input" 2>/dev/null && pwd) ||
+  die "Beads checkout not found: $beads_root_input (set BEADS_ROOT to override)"
 
 check_branch() {
   local root=$1 branch=$2
