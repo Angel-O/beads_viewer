@@ -2992,6 +2992,9 @@ func TestScopeAndBacklogHelpDocumentsSupportedControls(t *testing.T) {
 			if tc.focus == focusScopePicker && strings.Contains(help, "Move selected bead") {
 				t.Fatalf("scope help retained move action:\n%s", help)
 			}
+			if strings.Contains(help, "Rename named scope") {
+				t.Fatalf("%s help advertised rename without a selected scope:\n%s", tc.name, help)
+			}
 		})
 	}
 }
@@ -3001,6 +3004,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 	m.width, m.height = 240, 40
 	m.showScopePicker = true
 	m.focused = focusScopePicker
+	m.scopePicker.SetScopes([]ScopeInfo{{ID: "scope-1", Name: "Today"}})
 	m.scopePicker.memberFocused = true
 	help := ansi.Strip(m.renderHelpOverlay())
 	for _, want := range []string{"Switch to Global issues", "Move member selection", "Filter members by status", "Cycle member type filter", "Cycle member ctx filter", "Mark current member", "Descope marked/current members", "Match-descope members"} {
@@ -3008,7 +3012,7 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 			t.Fatalf("scope member help missing %q:\n%s", want, help)
 		}
 	}
-	for _, want := range []string{"Switch to members", "Move scope selection", "Toggle active scope", "Create inactive named scope"} {
+	for _, want := range []string{"Switch to members", "Move scope selection", "Toggle active scope", "Create inactive named scope", "Rename named scope"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("scope catalog help missing %q:\n%s", want, help)
 		}
@@ -3044,6 +3048,18 @@ func TestScopeMemberHelpAndFooterDescribeEffectiveControls(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Fatalf("moving Scope help missing %q:\n%s", want, help)
 		}
+	}
+	if strings.Contains(help, "Rename named scope") {
+		t.Fatalf("moving Scope help advertised rename:\n%s", help)
+	}
+	global := NewModel(nil, nil, "")
+	global.width, global.height = 240, 40
+	global.showScopePicker = true
+	global.focused = focusGlobalIssues
+	global.scopePicker.SetScopes([]ScopeInfo{{ID: "scope-1", Name: "Today"}})
+	global.scopePicker.SetMoveTarget("Visible bead")
+	if help := ansi.Strip(global.renderHelpOverlay()); strings.Contains(help, "Rename named scope") {
+		t.Fatalf("Global issues move help advertised rename:\n%s", help)
 	}
 	footer = ansi.Strip(m.renderFooter())
 	for _, want := range []string{"tab unscoped │", "j/k nav", "o/c/r status"} {

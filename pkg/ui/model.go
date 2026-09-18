@@ -7884,7 +7884,7 @@ func (m *Model) View() string {
 			sidebarFocus = focusAttention
 		}
 		m.shortcutsSidebar.SetFocus(sidebarFocus)
-		m.shortcutsSidebar.SetScopePickerState(m.scopePicker.MemberFocused(), m.scopePickerMoveIssue != "")
+		m.shortcutsSidebar.SetScopePickerState(m.scopePicker.MemberFocused(), m.scopePickerMoveIssue != "", m.scopePicker.Selected() != nil)
 		m.shortcutsSidebar.SetBacklogSearch(m.backlog.Searching())
 		m.shortcutsSidebar.SetBacklogLabelEditing(m.backlog.LabelEditing())
 		m.shortcutsSidebar.SetGlobalIssuesTitle(m.globalIssuesTitle())
@@ -8598,9 +8598,14 @@ func (m *Model) renderHelpOverlay() string {
 			{"←/→", "Previous / next scope page"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
-			{"B", "Return to List"},
-			{"Esc / q", "Return to previous view"},
 		}
+		if m.scopePicker.moveTarget == "" && m.scopePicker.Selected() != nil {
+			scopeControls = append(scopeControls, struct{ key, desc string }{"r", "Rename named scope"})
+		}
+		scopeControls = append(scopeControls,
+			struct{ key, desc string }{"B", "Return to List"},
+			struct{ key, desc string }{"Esc / q", "Return to previous view"},
+		)
 		if m.scopePicker.moveTarget != "" {
 			scopeControls = []struct{ key, desc string }{
 				{"Tab", "Switch to members"},
@@ -8670,9 +8675,14 @@ func (m *Model) renderHelpOverlay() string {
 			{"←/→", "Previous / next scope page"},
 			{"Enter", "Toggle active scope"},
 			{"n", "Create inactive named scope"},
-			{"B", "Return to List"},
-			{"Esc / q", "Return to previous view"},
 		}
+		if m.scopePicker.moveTarget == "" && m.scopePicker.Selected() != nil {
+			scopesControls = append(scopesControls, struct{ key, desc string }{"r", "Rename named scope"})
+		}
+		scopesControls = append(scopesControls,
+			struct{ key, desc string }{"B", "Return to List"},
+			struct{ key, desc string }{"Esc / q", "Return to previous view"},
+		)
 		membersControls := []struct{ key, desc string }{
 			{"Tab", "Switch to " + globalIssuesTitle},
 			{"Shift+Tab", "Switch to scopes"},

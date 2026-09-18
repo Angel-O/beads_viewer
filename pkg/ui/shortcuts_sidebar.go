@@ -20,6 +20,7 @@ type ShortcutsSidebar struct {
 	splitView         bool         // Whether List focus is the left pane of Split view
 	scopeMembers      bool         // Whether the Scope picker is focused on members
 	scopeMove         bool         // Whether the Scope picker chooses a move destination
+	scopeSelected     bool         // Whether the Scope picker has an actionable catalog selection
 	backlogSearch     bool         // Whether backlog search owns printable input
 	backlogLabel      bool         // Whether backlog label input owns printable input
 	globalIssuesTitle string       // Current lower-panel title
@@ -72,9 +73,10 @@ func (s *ShortcutsSidebar) SetSplitView(split bool) {
 
 // SetScopePickerState keeps scope-specific shortcuts aligned with the active
 // picker region without changing the picker itself.
-func (s *ShortcutsSidebar) SetScopePickerState(members, move bool) {
+func (s *ShortcutsSidebar) SetScopePickerState(members, move, selected bool) {
 	s.scopeMembers = members
 	s.scopeMove = move
+	s.scopeSelected = selected
 }
 
 // SetBacklogSearch keeps the sidebar on the controls owned by Global issues search.
@@ -196,9 +198,19 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			}
 		}
 		if s.focusHint == focusScopePicker {
-			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "r" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "D" || b.Key == "M" || b.Key == "m"
+			memberOnly := b.Key == "o" || b.Key == "c" || b.Key == "I" || b.Key == "w" || b.Key == "space" || b.Key == "D" || b.Key == "M" || b.Key == "m"
 			if memberOnly && !s.scopeMembers {
 				continue
+			}
+			if b.Key == "r" && (!s.scopeSelected || (!s.scopeMembers && s.scopeMove)) {
+				continue
+			}
+			if b.Key == "r" {
+				if s.scopeMembers {
+					b.Desc = "Narrow members to ready"
+				} else {
+					b.Desc = "Rename named scope"
+				}
 			}
 			if s.scopeMembers && b.Key == "M" {
 				b.Desc = "Match-descope members"
@@ -215,7 +227,7 @@ func (s *ShortcutsSidebar) sectionsFromRegistry() []shortcutSection {
 			if !s.scopeMembers && !s.scopeMove && b.Key == "tab" {
 				b.Desc = "Switch catalog/members/" + s.globalIssuesTitle
 			}
-			if s.scopeMove && !s.scopeMembers && (memberOnly || b.Key == "n") {
+			if s.scopeMove && !s.scopeMembers && (memberOnly || b.Key == "r" || b.Key == "n") {
 				continue
 			}
 			if s.scopeMove && !s.scopeMembers && b.Key == "enter" {
