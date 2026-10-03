@@ -18,7 +18,7 @@ import (
 func writeFakeWBD(t *testing.T, output, calls string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "wbd")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WBD_CALLS\"\nif [ \"$2\" = active ]; then printf '%s' \"$WBD_ACTIVE\"; else printf '%s' \"$WBD_SHOW\"; fi\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WBD_CALLS\"\nif [ \"$2\" = active ]; then printf '%s' \"$WBD_ACTIVE\"; [ -z \"$WBD_ACTIVE_STDERR\" ] || printf '%s\\n' \"$WBD_ACTIVE_STDERR\" >&2; else printf '%s' \"$WBD_SHOW\"; fi\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +61,19 @@ func TestHubScopeSnapshotLoaderCarriesActiveIdentityAndBoundedMembers(t *testing
 	}
 	if !reflect.DeepEqual(snapshot.MemberIDs, []string{"A", "B"}) || len(snapshot.Issues) != 2 || snapshot.Issues[0].Title != "A" || snapshot.Issues[1].Status != model.StatusBlocked {
 		t.Fatalf("scope members = %#v", snapshot.MemberIDs)
+	}
+}
+
+func TestHubScopeSnapshotLoaderIgnoresDiagnosticStderrOnSuccess(t *testing.T) {
+	calls := filepath.Join(t.TempDir(), "calls")
+	writeFakeWBD(t, `{"id":"scope-a"}`, calls)
+	t.Setenv("WBD_ACTIVE_STDERR", "trace: active scope lookup")
+	snapshot, err := newHubScopeSnapshotLoader(t.TempDir())(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Active == nil || snapshot.Active.ID != "scope-a" {
+		t.Fatalf("active scope = %#v", snapshot.Active)
 	}
 }
 
