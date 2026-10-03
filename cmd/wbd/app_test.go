@@ -2536,7 +2536,7 @@ func TestShowCompactsDependenciesWithoutChangingPrimaryIssue(t *testing.T) {
 	full := `[{
  "id":"work-1","title":"Primary","description":"Details","status":"open","priority":1,"issue_type":"task",
  "labels":["ctx:project","team"],"parent":"parent-1","dependency_count":3,"dependent_count":2,
- "comment_count":4,"comments_omitted":true,"named_scopes":[{"id":"scope-1","name":"Release"},{"id":"scope-2","name":"Triage"}],
+ "comment_count":4,"comments_omitted":true,"named_scope":{"id":"scope-1","name":"Release"},
  "dependencies":[
  {"id":"blocked-1","title":"Blocked","status":"open","priority":0,"issue_type":"bug","owner":"agent","dependency_type":"blocks","created_at":"old"},
  {"id":"related-1","title":"Related","status":"closed","priority":3,"issue_type":"feature","dependency_type":"related","notes":"extra"}
@@ -2571,9 +2571,9 @@ func TestShowCompactsDependenciesWithoutChangingPrimaryIssue(t *testing.T) {
 	if err := json.Unmarshal(issue["labels"], &labels); err != nil || !reflect.DeepEqual(labels, []string{"ctx:project", "team"}) {
 		t.Errorf("primary labels = %#v, err = %v", labels, err)
 	}
-	var namedScopes []map[string]string
-	if err := json.Unmarshal(issue["named_scopes"], &namedScopes); err != nil || !reflect.DeepEqual(namedScopes, []map[string]string{{"id": "scope-1", "name": "Release"}, {"id": "scope-2", "name": "Triage"}}) {
-		t.Errorf("primary named_scopes = %#v, err = %v", namedScopes, err)
+	var namedScope map[string]string
+	if err := json.Unmarshal(issue["named_scope"], &namedScope); err != nil || !reflect.DeepEqual(namedScope, map[string]string{"id": "scope-1", "name": "Release"}) {
+		t.Errorf("primary named_scope = %#v, err = %v", namedScope, err)
 	}
 	for _, field := range []string{"dependencies", "dependents"} {
 		var relations []map[string]json.RawMessage
@@ -2610,7 +2610,7 @@ func TestShowCompactsDependenciesWithoutChangingPrimaryIssue(t *testing.T) {
 
 func TestShowNoDependenciesKeepsEmptyArrays(t *testing.T) {
 	test := newAppTest(t, false)
-	setResponses(t, map[string]string{"show:work-1": `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","named_scopes":[],"dependencies":[],"dependents":[],"dependency_count":0,"dependent_count":0}]`})
+	setResponses(t, map[string]string{"show:work-1": `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","named_scope":null,"dependencies":[],"dependents":[],"dependency_count":0,"dependent_count":0}]`})
 	code, stdout, stderr := test.run("show", "work-1", "--json")
 	if code != 0 || stderr != "" {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
@@ -2622,14 +2622,13 @@ func TestShowNoDependenciesKeepsEmptyArrays(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &issues); err != nil {
 		t.Fatal(err)
 	}
-	var namedScopes []map[string]string
-	if err := json.Unmarshal(issues[0]["named_scopes"], &namedScopes); err != nil || namedScopes == nil || len(namedScopes) != 0 {
-		t.Errorf("empty primary named_scopes = %#v, err = %v", namedScopes, err)
+	if string(issues[0]["named_scope"]) != "null" {
+		t.Errorf("unscoped primary named_scope = %s, want null", issues[0]["named_scope"])
 	}
 }
 
 func TestShowExpansionRestoresBackendResponse(t *testing.T) {
-	full := `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","labels":["ctx:project"],"named_scopes":[{"id":"scope-1","name":"Release"}],"dependencies":[{"id":"dep-1","title":"Dependency","status":"open","priority":1,"issue_type":"bug","created_at":"when","dependency_type":"blocks"}],"dependency_count":1,"dependent_count":0,"comments_omitted":true}]`
+	full := `[{"id":"work-1","title":"Work","status":"open","priority":2,"issue_type":"task","labels":["ctx:project"],"named_scope":{"id":"scope-1","name":"Release"},"dependencies":[{"id":"dep-1","title":"Dependency","status":"open","priority":1,"issue_type":"bug","created_at":"when","dependency_type":"blocks"}],"dependency_count":1,"dependent_count":0,"comments_omitted":true}]`
 	test := newAppTest(t, false)
 	setResponses(t, map[string]string{"show:work-1": full})
 	code, stdout, stderr := test.run("show", "work-1", "--json", "--expand-dependencies")
