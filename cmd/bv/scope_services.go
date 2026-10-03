@@ -144,6 +144,13 @@ func newHubScopeServices(workDir string) ui.ScopeServices {
 			}
 			return decodeScopeDetails(data, scopeID)
 		},
+		LookupIssue: func(ctx context.Context, issueID string) (ui.IssueLookupResult, error) {
+			data, err := runWBDIssueCommand(ctx, workDir, issueID)
+			if err != nil {
+				return ui.IssueLookupResult{}, err
+			}
+			return decodeIssueLookupResult(data, issueID)
+		},
 		Mutate: func(ctx context.Context, mutation ui.ScopeMutation) error {
 			return runHubScopeMutation(ctx, workDir, mutation, false)
 		},
@@ -298,6 +305,109 @@ func runWBDBacklogCommand(ctx context.Context, workDir string, args ...string) (
 		return nil, fmt.Errorf("wbd backlog failed: %s", detail)
 	}
 	return stdout.Bytes(), nil
+}
+
+func runWBDIssueCommand(ctx context.Context, workDir, issueID string) ([]byte, error) {
+	command := exec.CommandContext(ctx, "wbd", "show", issueID, "--json")
+	command.Dir = workDir
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("wbd show failed: %s", detail)
+	}
+	return stdout.Bytes(), nil
+}
+
+type issueLookupWire struct {
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Status      model.Status    `json:"status"`
+	Priority    int             `json:"priority"`
+	IssueType   model.IssueType `json:"issue_type"`
+	Assignee    string          `json:"assignee"`
+	Labels      []string        `json:"labels"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	ClosedAt    *time.Time      `json:"closed_at"`
+	NamedScope  json.RawMessage `json:"named_scope"`
+	// wbd preserves these known bd show fields. They are deliberately retained
+	// as raw values because lookup only presents the fields above.
+	Design             json.RawMessage `json:"design"`
+	AcceptanceCriteria json.RawMessage `json:"acceptance_criteria"`
+	Notes              json.RawMessage `json:"notes"`
+	EstimatedMinutes   json.RawMessage `json:"estimated_minutes"`
+	DueDate            json.RawMessage `json:"due_date"`
+	DeferUntil         json.RawMessage `json:"defer_until"`
+	CloseReason        json.RawMessage `json:"close_reason"`
+	ExternalRef        json.RawMessage `json:"external_ref"`
+	CompactionLevel    json.RawMessage `json:"compaction_level"`
+	CompactedAt        json.RawMessage `json:"compacted_at"`
+	CompactedAtCommit  json.RawMessage `json:"compacted_at_commit"`
+	OriginalSize       json.RawMessage `json:"original_size"`
+	Dependencies       json.RawMessage `json:"dependencies"`
+	Dependents         json.RawMessage `json:"dependents"`
+	Comments           json.RawMessage `json:"comments"`
+	SourceRepo         json.RawMessage `json:"source_repo"`
+	Parent             json.RawMessage `json:"parent"`
+	DependencyCount    json.RawMessage `json:"dependency_count"`
+	DependentCount     json.RawMessage `json:"dependent_count"`
+	CommentCount       json.RawMessage `json:"comment_count"`
+	CommentsOmitted    json.RawMessage `json:"comments_omitted"`
+}
+
+type issueLookupScopeWire struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// decodeIssueLookupResult accepts only the singular wbd show contract: one
+// matching issue and an explicit named_scope object or null. Keeping this
+// decoder strict prevents a backend shape change from silently misnavigating
+// the scope screen.
+func decodeIssueLookupResult(data []byte, issueID string) (ui.IssueLookupResult, error) {
+	var records []json.RawMessage
+	if err := decodeStrictJSON(data, &records); err != nil {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show: %w", err)
+	}
+	if len(records) != 1 {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show: expected one issue, got %d", len(records))
+	}
+	var wire issueLookupWire
+	if err := decodeStrictJSON(records[0], &wire); err != nil {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show issue: %w", err)
+	}
+	if wire.ID != issueID {
+		return ui.IssueLookupResult{}, fmt.Errorf("returned issue %q, want exact issue %q", wire.ID, issueID)
+	}
+	if len(wire.NamedScope) == 0 {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show issue: named_scope is missing")
+	}
+
+	issue := model.Issue{
+		ID: wire.ID, Title: wire.Title, Description: wire.Description,
+		Status: wire.Status, Priority: wire.Priority, IssueType: wire.IssueType,
+		Assignee: wire.Assignee, Labels: wire.Labels, CreatedAt: wire.CreatedAt,
+		UpdatedAt: wire.UpdatedAt, ClosedAt: wire.ClosedAt,
+	}
+	result := ui.IssueLookupResult{Issue: issue}
+	if bytes.Equal(bytes.TrimSpace(wire.NamedScope), []byte("null")) {
+		return result, nil
+	}
+	var scope issueLookupScopeWire
+	if err := decodeStrictJSON(wire.NamedScope, &scope); err != nil {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show named_scope: %w", err)
+	}
+	if strings.TrimSpace(scope.ID) == "" || strings.TrimSpace(scope.Name) == "" {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show named_scope: id and name are required")
+	}
+	result.Scope = &ui.ScopeInfo{ID: scope.ID, Name: scope.Name}
+	return result, nil
 }
 
 func decodeScopeInfos(data []byte) ([]ui.ScopeInfo, error) {

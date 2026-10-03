@@ -277,6 +277,7 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"P", "Sprint dashboard", "Views", "list,detail"},
 		{"B", "Scope view", "Views", "list,detail"},
 		{"B", "Return to List", "Views", "scope,global-issues"},
+		{"ctrl+g", "Look up bead by ID", "Actions", "scope,global-issues"},
 		{"enter", "Toggle active scope", "Views", "scope"},
 		{"n", "Create inactive named scope", "Views", "scope"},
 		{"j", "Move scope/member selection", "Navigation", "scope"},

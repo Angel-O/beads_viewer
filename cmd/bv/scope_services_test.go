@@ -71,6 +71,62 @@ printf '%s\n' 'bd warning: source directory is not a Git repository' >&2
 	}
 }
 
+func TestHubScopeServiceLookupIssueRunsOneExactShow(t *testing.T) {
+	root := t.TempDir()
+	calls := filepath.Join(root, "calls")
+	wbd := filepath.Join(root, "wbd")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$WBD_SCOPE_CALLS"
+printf '%s' '[{"id":"lookup-1","title":"Found","status":"open","priority":2,"issue_type":"task","description":"","assignee":"","labels":[],"created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-02T00:00:00Z","closed_at":null,"named_scope":{"id":"scope-1","name":"Today"}}]'
+`
+	if err := os.WriteFile(wbd, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WBD_SCOPE_CALLS", calls)
+
+	result, err := newHubScopeServices(root).LookupIssue(context.Background(), "lookup-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Issue.ID != "lookup-1" || result.Scope == nil || result.Scope.ID != "scope-1" {
+		t.Fatalf("lookup result = %#v", result)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := splitLines(string(data)), []string{"show", "lookup-1", "--json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("wbd lookup args=%#v, want %#v", got, want)
+	}
+}
+
+func TestDecodeIssueLookupResultStrictContract(t *testing.T) {
+	valid := `[{"id":"lookup-1","title":"Found","status":"open","priority":2,"issue_type":"task","description":"","assignee":"","labels":[],"created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-02T00:00:00Z","closed_at":null,"named_scope":null,"dependencies":[],"dependents":[],"comment_count":0,"comments_omitted":true}]`
+	result, err := decodeIssueLookupResult([]byte(valid), "lookup-1")
+	if err != nil || result.Issue.Title != "Found" || result.Scope != nil {
+		t.Fatalf("unscoped result=%#v err=%v", result, err)
+	}
+	for _, tc := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{"none", `[]`, "expected one issue"},
+		{"many", "[" + strings.TrimSuffix(strings.TrimPrefix(valid, "["), "]") + "," + strings.TrimSuffix(strings.TrimPrefix(valid, "["), "]") + "]", "expected one issue"},
+		{"missing named scope", `[{"id":"lookup-1"}]`, "named_scope is missing"},
+		{"mismatched id", strings.Replace(valid, `"lookup-1"`, `"other-1"`, 1), "want exact issue"},
+		{"empty scope", strings.Replace(valid, `"named_scope":null`, `"named_scope":{"id":"","name":"Today"}`, 1), "id and name are required"},
+		{"unknown field", strings.Replace(valid, `"named_scope":null`, `"extra":true,"named_scope":null`, 1), "unknown field"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := decodeIssueLookupResult([]byte(tc.data), "lookup-1"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestHubScopeServiceCreatesSluggedInactiveScopeFromName(t *testing.T) {
 	root := t.TempDir()
 	calls := filepath.Join(root, "calls")
