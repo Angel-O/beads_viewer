@@ -60,7 +60,9 @@ func (m *Model) handleIssueLookupKey(msg tea.KeyMsg) (*Model, tea.Cmd) {
 			if m.issueLookupResult.Scope == nil {
 				return m, nil
 			}
-			return m, m.applyIssueLookupResult(*m.issueLookupResult)
+			result := *m.issueLookupResult
+			m.closeIssueLookup()
+			return m, m.applyIssueLookupResult(result)
 		}
 		if m.issueLookupLoading {
 			return m, nil

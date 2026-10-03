@@ -101,8 +101,8 @@ func TestIssueLookupScopedResultAddsTransientScopeAndLoadsFirstMembersPage(t *te
 		updated, _ = m.Update(message)
 		m = updated.(*Model)
 	}
-	if m.issueLookupResult == nil || m.scopePicker.SelectedScopeID() != "scope-2" || m.focused != focusScopePicker {
-		t.Fatalf("scoped lookup state: result=%#v scope=%q focus=%s", m.issueLookupResult, m.scopePicker.SelectedScopeID(), m.focused)
+	if m.showIssueLookup || m.CurrentContext() == ContextIssueLookup || !m.showScopePicker || m.scopePicker.SelectedScopeID() != "scope-2" || m.focused != focusScopePicker {
+		t.Fatalf("scoped lookup state: shown=%t context=%s scopeShown=%t scope=%q focus=%s", m.showIssueLookup, m.CurrentContext(), m.showScopePicker, m.scopePicker.SelectedScopeID(), m.focused)
 	}
 	if queries != 1 || query.ScopeID != "scope-2" || query.Cursor != "" || query.Limit != scopePageSize {
 		t.Fatalf("member query count=%d query=%#v", queries, query)
