@@ -150,6 +150,14 @@ type ScopeDetails struct {
 	MemberIDs []string
 }
 
+// IssueLookupResult is the bounded projection returned by the interactive Hub
+// bead lookup. The optional scope is backend-owned membership evidence; the UI
+// never derives it by scanning the loaded issue set.
+type IssueLookupResult struct {
+	Issue model.Issue
+	Scope *ScopeInfo
+}
+
 // ScopeMutationKind names the semantic operation requested by the Viewer.
 // Keeping this typed prevents command names from leaking into Model seams.
 type ScopeMutationKind string
@@ -195,6 +203,9 @@ type ScopeServices struct {
 	// LoadDetails loads one selected scope without taking ownership of member
 	// pagination, caching, or streaming.
 	LoadDetails func(context.Context, string) (ScopeDetails, error)
+	// LookupIssue performs one exact-ID lookup. It is intentionally separate from
+	// catalog/member services so lookup cannot grow into a client-side scan.
+	LookupIssue func(context.Context, string) (IssueLookupResult, error)
 	// Mutate applies one semantic scope operation, including batch membership
 	// changes. The legacy mutation fields remain compatibility fallbacks.
 	Mutate func(context.Context, ScopeMutation) error
@@ -246,6 +257,13 @@ type backlogPageMsg struct {
 type scopeDetailsMsg struct {
 	details    ScopeDetails
 	scopeID    string
+	generation uint64
+	err        error
+}
+
+type issueLookupMsg struct {
+	result     IssueLookupResult
+	issueID    string
 	generation uint64
 	err        error
 }
@@ -305,6 +323,16 @@ func loadScopeDetailsCmd(service ScopeServices, scopeID string, generations ...u
 		}
 		details, err := service.LoadDetails(context.Background(), scopeID)
 		return scopeDetailsMsg{details: details, scopeID: scopeID, generation: generation, err: err}
+	}
+}
+
+func lookupIssueCmd(service ScopeServices, issueID string, generation uint64) tea.Cmd {
+	return func() tea.Msg {
+		if service.LookupIssue == nil {
+			return issueLookupMsg{issueID: issueID, generation: generation, err: fmt.Errorf("bead lookup is unavailable")}
+		}
+		result, err := service.LookupIssue(context.Background(), issueID)
+		return issueLookupMsg{result: result, issueID: issueID, generation: generation, err: err}
 	}
 }
 
@@ -370,7 +398,7 @@ var backlogStatuses = [...]string{backlogStatusAll, "open", "in_progress", "bloc
 // keys remain input text.
 func isScopeBacklogGlobalKey(key string) bool {
 	switch key {
-	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5",
+	case "ctrl+c", "?", "`", ";", "f2", "ctrl+j", "ctrl+k", "ctrl+r", "f5", "ctrl+g",
 		"w", "B", "a", "b", "g", "h", "i", "E", "f", "[", "]", "f3", "f4":
 		return true
 	default:
@@ -1548,6 +1576,35 @@ func (s *ScopePickerModel) SetScopes(scopes []ScopeInfo) {
 	} else {
 		s.selectedScopeID = ""
 	}
+}
+
+// SelectScopeByID changes only the catalog cursor; it does not activate or
+// load the selected scope.
+func (s *ScopePickerModel) SelectScopeByID(id string) bool {
+	for index := range s.scopes {
+		if s.scopes[index].ID != id {
+			continue
+		}
+		s.selected = index
+		s.selectedScopeID = id
+		return true
+	}
+	return false
+}
+
+// SelectMemberByID selects a row only when it is already on the loaded member
+// page. Lookup must not inject a member or scan another page.
+func (s *ScopePickerModel) SelectMemberByID(id string) bool {
+	for index := range s.filteredMembers {
+		if s.filteredMembers[index].Issue.ID != id {
+			continue
+		}
+		s.memberSelected = index
+		s.memberSelectedID = id
+		s.clampMemberViewport()
+		return true
+	}
+	return false
 }
 
 func (s *ScopePickerModel) BeginCatalogLoad() uint64 {

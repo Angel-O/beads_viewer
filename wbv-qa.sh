@@ -9,13 +9,10 @@ die() {
 [ "$#" -eq 0 ] || die 'this script does not accept arguments'
 
 viewer_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-integration_branch=integration-scope-rename
-default_beads_root="$viewer_root/../beads"
-if ! beads_root=$(CDPATH= cd -- "$default_beads_root" 2>/dev/null && pwd); then
-  matching_beads_root="$viewer_root/../../beads/${integration_branch#integration-}"
-  beads_root=$(CDPATH= cd -- "$matching_beads_root" 2>/dev/null && pwd) ||
-    die "Beads checkout not found: $default_beads_root or $matching_beads_root"
-fi
+viewer_branch=local-integration/tui-scope-lookup
+beads_branch=delivery/named-scope-detail
+beads_root="$viewer_root/../../beads/named-scope-detail"
+[ -e "$beads_root/.git" ] || die "Beads checkout not found: $beads_root"
 
 check_branch() {
   local root=$1 branch=$2
@@ -31,8 +28,8 @@ check_clean() {
     die "$root has dirty or untracked files"
 }
 
-check_branch "$viewer_root" "$integration_branch"
-check_branch "$beads_root" "$integration_branch"
+check_branch "$viewer_root" "$viewer_branch"
+check_branch "$beads_root" "$beads_branch"
 check_clean "$viewer_root"
 check_clean "$beads_root"
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -138,15 +139,18 @@ func runWBDScopeCommand(ctx context.Context, workDir, subcommand string, args ..
 	commandArgs = append(commandArgs, "--json")
 	command := exec.CommandContext(ctx, "wbd", commandArgs...)
 	command.Dir = workDir
-	output, err := command.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = err.Error()
 		}
 		return nil, fmt.Errorf("wbd scope %s failed: %s", subcommand, detail)
 	}
-	return output, nil
+	return stdout.Bytes(), nil
 }
 
 func isNoActiveScopeError(err error) bool {

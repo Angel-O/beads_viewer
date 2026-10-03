@@ -97,6 +97,7 @@ const (
 	focusCommentInput
 	focusScopePicker
 	focusScopeCreateInput
+	focusIssueLookup
 	focusGlobalIssues
 	focusBacklog
 	focusCommentSelection
@@ -1225,6 +1226,13 @@ type Model struct {
 	scopeMatchOrigin      focus
 	scopeMatchScopeID     string
 	scopePickerOrigin     focus
+	showIssueLookup       bool
+	issueLookupInput      textinput.Model
+	issueLookupOrigin     focus
+	issueLookupResult     *IssueLookupResult
+	issueLookupError      string
+	issueLookupLoading    bool
+	issueLookupGeneration uint64
 	scopePickerMoveIssue  string
 	// scopePickerMoveIssues retains marked Scope members while choosing a destination.
 	scopePickerMoveIssues []string
@@ -2473,6 +2481,7 @@ func NewModel(issues []model.Issue, activeRecipe *recipe.Recipe, beadsPath strin
 		timeTravelInput:     ti,
 		scopeCreateInput:    newScopeNameInput(theme),
 		scopeMatchInput:     newScopeMatchInput(theme),
+		issueLookupInput:    newIssueLookupInput(theme),
 		backlog:             NewBacklogModel(theme),
 		commentInput: func() textarea.Model {
 			input := textarea.New()
@@ -2846,6 +2855,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case scopeMutationMsg:
 		cmds = append(cmds, m.handleScopeMutationMessage(msg)...)
+
+	case issueLookupMsg:
+		cmds = append(cmds, m.handleIssueLookupMessage(msg))
 
 	case epicChildClosureMsg:
 		m.handleEpicChildClosure(msg)
@@ -4450,6 +4462,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		// Lookup owns every key while open, including uppercase B. This must
+		// precede the Scope toggle so cancellation cannot alter the B screen.
+		if m.showIssueLookup {
+			return m.handleIssueLookupKey(msg)
+		}
 		if (m.showScopePicker || m.showScopeCreatePrompt || m.showScopeRenamePrompt || m.showScopeMatchPrompt) && msg.String() == "B" {
 			if m.showTutorial {
 				m.focused = m.scopeSessionFocus
@@ -4519,6 +4536,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showScopePicker && !m.showRepoPicker &&
 			(!isScopeBacklogGlobalKey(msg.String()) || msg.String() == "w" && m.scopePicker.MemberFocused() || isScopePickerPagingKey(msg.String()) && m.scopePicker.OwnsPagingKey(msg.String())) {
 			return m.handleScopePickerKey(msg)
+		}
+		if m.showScopePicker && msg.String() == "ctrl+g" {
+			return m, m.openIssueLookup()
 		}
 		if m.isBacklogView && !m.showRepoPicker && msg.String() != "ctrl+c" && (m.backlog.Searching() || m.backlog.LabelEditing() || !isScopeBacklogGlobalKey(msg.String())) {
 			return m.handleBacklogKey(msg)
@@ -7813,6 +7833,8 @@ func (m *Model) View() string {
 		body = m.renderScopeRenamePrompt()
 	} else if m.showScopeMatchPrompt {
 		body = m.renderScopeMatchPrompt()
+	} else if m.showIssueLookup {
+		body = m.renderIssueLookup()
 	} else if m.showScopePicker {
 		body = m.renderScopeScreen()
 	} else if m.showTypePicker {
@@ -11752,6 +11774,8 @@ func (f focus) String() string {
 		return "global_issues"
 	case focusScopeCreateInput:
 		return "scope_create_input"
+	case focusIssueLookup:
+		return "issue_lookup"
 	case focusBacklog:
 		return "backlog"
 	case focusCommentSelection:

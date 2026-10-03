@@ -22,6 +22,7 @@ const (
 	ContextTypePicker         Context = "type-picker"
 	ContextAgentPrompt        Context = "agent-prompt"
 	ContextCassSession        Context = "cass-session"
+	ContextIssueLookup        Context = "issue-lookup"
 
 	// Views
 	ContextInsights       Context = "insights"
@@ -56,6 +57,10 @@ func (m Model) CurrentContext() Context {
 	// Cass session modal (bv-qi94)
 	if m.showCassModal {
 		return ContextCassSession
+	}
+
+	if m.showIssueLookup {
+		return ContextIssueLookup
 	}
 
 	// Agent prompt modal
@@ -213,6 +218,7 @@ func (c Context) Description() string {
 		ContextTypePicker:         "Issue type picker",
 		ContextAgentPrompt:        "Agent prompt",
 		ContextCassSession:        "Cass session preview",
+		ContextIssueLookup:        "Bead lookup",
 		ContextInsights:           "Insights panel",
 		ContextFlowMatrix:         "Flow matrix",
 		ContextGraph:              "Dependency graph",
@@ -241,7 +247,7 @@ func (c Context) IsOverlay() bool {
 	case ContextLabelPicker, ContextRecipePicker, ContextHelp, ContextQuitConfirm,
 		ContextLabelHealthDetail, ContextLabelDrilldown, ContextLabelGraphAnalysis,
 		ContextTimeTravelInput, ContextAlerts, ContextRepoPicker, ContextTypePicker, ContextAgentPrompt,
-		ContextCassSession:
+		ContextCassSession, ContextIssueLookup:
 		return true
 	}
 	return false
