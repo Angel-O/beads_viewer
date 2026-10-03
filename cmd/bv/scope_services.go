@@ -324,18 +324,18 @@ func runWBDIssueCommand(ctx context.Context, workDir, issueID string) ([]byte, e
 }
 
 type issueLookupWire struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Status      model.Status    `json:"status"`
-	Priority    int             `json:"priority"`
-	IssueType   model.IssueType `json:"issue_type"`
-	Assignee    string          `json:"assignee"`
-	Labels      []string        `json:"labels"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	ClosedAt    *time.Time      `json:"closed_at"`
-	NamedScope  json.RawMessage `json:"named_scope"`
+	ID          string           `json:"id"`
+	Title       *string          `json:"title"`
+	Description string           `json:"description"`
+	Status      *model.Status    `json:"status"`
+	Priority    *int             `json:"priority"`
+	IssueType   *model.IssueType `json:"issue_type"`
+	Assignee    string           `json:"assignee"`
+	Labels      []string         `json:"labels"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+	ClosedAt    *time.Time       `json:"closed_at"`
+	NamedScope  json.RawMessage  `json:"named_scope"`
 	// wbd preserves these known bd show fields. They are deliberately retained
 	// as raw values because lookup only presents the fields above.
 	Design             json.RawMessage `json:"design"`
@@ -379,7 +379,7 @@ func decodeIssueLookupResult(data []byte, issueID string) (ui.IssueLookupResult,
 		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show: expected one issue, got %d", len(records))
 	}
 	var wire issueLookupWire
-	if err := decodeStrictJSON(records[0], &wire); err != nil {
+	if err := json.Unmarshal(records[0], &wire); err != nil {
 		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show issue: %w", err)
 	}
 	if wire.ID != issueID {
@@ -388,10 +388,13 @@ func decodeIssueLookupResult(data []byte, issueID string) (ui.IssueLookupResult,
 	if len(wire.NamedScope) == 0 {
 		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show issue: named_scope is missing")
 	}
+	if wire.Title == nil || wire.Status == nil || wire.Priority == nil || wire.IssueType == nil {
+		return ui.IssueLookupResult{}, fmt.Errorf("decoding wbd show issue: title, status, priority, and issue_type are required")
+	}
 
 	issue := model.Issue{
-		ID: wire.ID, Title: wire.Title, Description: wire.Description,
-		Status: wire.Status, Priority: wire.Priority, IssueType: wire.IssueType,
+		ID: wire.ID, Title: *wire.Title, Description: wire.Description,
+		Status: *wire.Status, Priority: *wire.Priority, IssueType: *wire.IssueType,
 		Assignee: wire.Assignee, Labels: wire.Labels, CreatedAt: wire.CreatedAt,
 		UpdatedAt: wire.UpdatedAt, ClosedAt: wire.ClosedAt,
 	}

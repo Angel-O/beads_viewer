@@ -102,7 +102,7 @@ printf '%s' '[{"id":"lookup-1","title":"Found","status":"open","priority":2,"iss
 }
 
 func TestDecodeIssueLookupResultStrictContract(t *testing.T) {
-	valid := `[{"id":"lookup-1","title":"Found","status":"open","priority":2,"issue_type":"task","description":"","assignee":"","labels":[],"created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-02T00:00:00Z","closed_at":null,"named_scope":null,"dependencies":[],"dependents":[],"comment_count":0,"comments_omitted":true}]`
+	valid := `[{"id":"lookup-1","title":"Found","status":"open","priority":2,"issue_type":"task","description":"","assignee":"","labels":[],"created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-02T00:00:00Z","closed_at":null,"named_scope":null,"created_by":"qa","dependencies":[],"dependents":[],"comment_count":0,"comments_omitted":true}]`
 	result, err := decodeIssueLookupResult([]byte(valid), "lookup-1")
 	if err != nil || result.Issue.Title != "Found" || result.Scope != nil {
 		t.Fatalf("unscoped result=%#v err=%v", result, err)
@@ -115,9 +115,17 @@ func TestDecodeIssueLookupResultStrictContract(t *testing.T) {
 		{"none", `[]`, "expected one issue"},
 		{"many", "[" + strings.TrimSuffix(strings.TrimPrefix(valid, "["), "]") + "," + strings.TrimSuffix(strings.TrimPrefix(valid, "["), "]") + "]", "expected one issue"},
 		{"missing named scope", `[{"id":"lookup-1"}]`, "named_scope is missing"},
+		{"malformed named scope", strings.Replace(valid, `"named_scope":null`, `"named_scope":"invalid"`, 1), "decoding wbd show named_scope"},
+		{"missing title", strings.Replace(valid, `"title":"Found",`, "", 1), "title, status, priority, and issue_type are required"},
+		{"null title", strings.Replace(valid, `"title":"Found"`, `"title":null`, 1), "title, status, priority, and issue_type are required"},
+		{"missing status", strings.Replace(valid, `"status":"open",`, "", 1), "title, status, priority, and issue_type are required"},
+		{"null status", strings.Replace(valid, `"status":"open"`, `"status":null`, 1), "title, status, priority, and issue_type are required"},
+		{"missing priority", strings.Replace(valid, `"priority":2,`, "", 1), "title, status, priority, and issue_type are required"},
+		{"null priority", strings.Replace(valid, `"priority":2`, `"priority":null`, 1), "title, status, priority, and issue_type are required"},
+		{"missing issue type", strings.Replace(valid, `"issue_type":"task",`, "", 1), "title, status, priority, and issue_type are required"},
+		{"null issue type", strings.Replace(valid, `"issue_type":"task"`, `"issue_type":null`, 1), "title, status, priority, and issue_type are required"},
 		{"mismatched id", strings.Replace(valid, `"lookup-1"`, `"other-1"`, 1), "want exact issue"},
 		{"empty scope", strings.Replace(valid, `"named_scope":null`, `"named_scope":{"id":"","name":"Today"}`, 1), "id and name are required"},
-		{"unknown field", strings.Replace(valid, `"named_scope":null`, `"extra":true,"named_scope":null`, 1), "unknown field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := decodeIssueLookupResult([]byte(tc.data), "lookup-1"); err == nil || !strings.Contains(err.Error(), tc.want) {
