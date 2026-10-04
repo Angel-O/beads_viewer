@@ -876,6 +876,64 @@ func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestCreateAndUpdateForwardMultilineDescriptionsExactly(t *testing.T) {
+	description := "## Problem\r\nThe issue has seven sections.\n\n## Scope\n\tPreserve the Markdown exactly.\n\n## Acceptance Criteria\nStored as supplied.\n\n## Validation\nFocused tests.\n\n## Constraints\nNo unrelated changes.\n\n## Decisions\nUse the existing CLI.\n\n## Notes\nKeep tabs."
+	for _, testCase := range []struct {
+		name string
+		args []string
+	}{
+		{name: "create", args: []string{"create", "Structured Bead", "--description", description}},
+		{name: "update", args: []string{"update", "bead-1", "--description", description}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			test := newAppTest(t, true)
+			if code, _, stderr := test.run(testCase.args...); code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			calls := test.calls()
+			if len(calls) != 1 {
+				t.Fatalf("calls=%#v", calls)
+			}
+			index := slices.Index(calls[0].Args, "--description")
+			if index < 0 || index+1 == len(calls[0].Args) {
+				t.Fatalf("description was not forwarded; args=%#v", calls[0].Args)
+			}
+			if calls[0].Args[index+1] != description {
+				t.Fatalf("forwarded description=%q, want exact %q; args=%#v", calls[0].Args[index+1], description, calls[0].Args)
+			}
+		})
+	}
+}
+
+func TestDescriptionValidationIsCommandSpecificAndRejectsUnsafeControls(t *testing.T) {
+	description := "line one\r\n\tline two\nline three"
+	for _, command := range []string{"create", "new", "update"} {
+		t.Run(command+" accepts Markdown whitespace", func(t *testing.T) {
+			args := []string{command, "bead title", "--description", description}
+			if command == "update" {
+				args[1] = "bead-1"
+			}
+			request, err := parse(args)
+			if err != nil || requestValue(request.args, "--description", "") != description {
+				t.Fatalf("parse(%#v) request=%#v error=%v", args, request, err)
+			}
+		})
+	}
+
+	for _, args := range [][]string{
+		{"create", "Title", "--description", ""},
+		{"create", "Title", "--description", "unsafe\x00value"},
+		{"update", "bead-1", "--description", "unsafe\x0bvalue"},
+		{"create", "Title\ncontinued"},
+		{"create", "Title", "--labels", "team\tlabel"},
+		{"replace", "bead-1", "--context", "ctx:test", "--description", description},
+	} {
+		if _, err := parse(args); err == nil {
+			t.Fatalf("parse(%#v) succeeded", args)
+		}
+	}
+}
+
 func TestCreateAndNewRejectAssigneeMutation(t *testing.T) {
 	for _, command := range []string{"create", "new"} {
 		t.Run(command, func(t *testing.T) {

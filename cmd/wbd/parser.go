@@ -10,11 +10,12 @@ import (
 )
 
 type optionSpec struct {
-	name        string
-	value       string
-	description string
-	defaultText string
-	allowEmpty  bool
+	name           string
+	value          string
+	description    string
+	defaultText    string
+	allowEmpty     bool
+	allowMultiline bool // Description-only Markdown input; still rejects unsafe controls.
 }
 
 type commandSpec struct {
@@ -45,7 +46,7 @@ var commandSpecs = map[string]commandSpec{
 	"create": {
 		path: "create", usage: "wbd create <title> [options]", summary: "Create an issue; omitted targeting uses the current repository context.",
 		options: []optionSpec{
-			{name: "--description", value: "<text>", description: "Issue description."},
+			{name: "--description", value: "<text>", description: "Issue description; Markdown may contain LF, CRLF, and tabs.", allowMultiline: true},
 			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo.", defaultText: "task"},
 			{name: "--priority", value: "<0-4|P0-P4>", description: "Priority, where 0 is highest.", defaultText: "2"},
 			{name: "--labels", value: "<label,...>", description: "Ordinary labels; repeatable; ctx: labels are wrapper-owned."},
@@ -113,7 +114,7 @@ var commandSpecs = map[string]commandSpec{
 		path: "update", usage: "wbd update <id> <mutation> [--json]", summary: "Update issue fields other than claim ownership.",
 		options: []optionSpec{
 			{name: "--title", value: "<text>", description: "New title."},
-			{name: "--description", value: "<text>", description: "New description."},
+			{name: "--description", value: "<text>", description: "New description; Markdown may contain LF, CRLF, and tabs.", allowMultiline: true},
 			{name: "--priority", value: "<0-4|P0-P4>", description: "New priority."},
 			{name: "--status", value: "<status>", description: "open|in_progress|blocked|deferred; use close for closed."},
 			{name: "--add-label", value: "<label,...>", description: "Add ordinary labels; repeatable; ctx: labels are wrapper-owned."},
@@ -1561,6 +1562,9 @@ func safeOptionValue(option optionSpec, value string) error {
 	if value == "" && option.allowEmpty {
 		return nil
 	}
+	if option.allowMultiline {
+		return validateMultilineValue(option.name, value)
+	}
 	return safeValue(option.name, value)
 }
 
@@ -1593,16 +1597,20 @@ func safeValue(name, value string) error {
 	return nil
 }
 
-func validateCommentBody(value string) error {
+func validateMultilineValue(name, value string) error {
 	if value == "" {
-		return errors.New("missing value for comments add")
+		return fmt.Errorf("missing value for %s", name)
 	}
 	for _, character := range value {
 		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
-			return errors.New("invalid control character in comments add")
+			return fmt.Errorf("invalid control character in %s", name)
 		}
 	}
 	return nil
+}
+
+func validateCommentBody(value string) error {
+	return validateMultilineValue("comments add", value)
 }
 
 func validateCommentEditBody(value string) error {
