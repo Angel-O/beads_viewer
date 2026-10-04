@@ -3760,6 +3760,7 @@ bv has a comprehensive built-in help system:
 | | `]` / `F4` | Toggle **Attention View** (label attention scores) |
 | **Scope** | `B` | Open Scope from List; return to List from Scope |
 | | `Tab` | Switch between catalog, members, and Global issues |
+| | `ctrl+g` | Look up bead by ID |
 | | `n/p` | Next / previous Global issues page |
 | **Kanban Board** | `h` / `l` | Move Between Columns |
 | | `j` / `k` | Move Within Column |
