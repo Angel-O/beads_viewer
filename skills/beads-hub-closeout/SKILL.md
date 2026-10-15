@@ -103,14 +103,18 @@ are retained. If the recorded dedicated worktree is missing or otherwise
 ineligible, do not offer another target or invoke cleanup; report that cleanup
 was skipped because no eligible recorded target is available.
 
-Only for an explicit `Yes`, invoke the existing command with the recorded
-branch name, never the filesystem path:
+Only for an explicit `Yes`, invoke the bundled disposal helper with the
+recorded branch name, never the filesystem path:
 
 ```sh
-gwtrm <recorded-branch>
+skills/beads-hub-closeout/dispose.sh <recorded-branch>
 ```
 
 Do not offer or remove the reference checkout, an arbitrary worktree, or a
-manually selected path. If `gwtrm` fails, report the cleanup failure and that
-the worktree was retained; the completed closeout remains completed and must
+manually selected path. The helper runs `git wtrm <recorded-branch>` first and
+then `git branch -d <recorded-branch>`; it never deletes a remote branch. If
+worktree removal fails, report that the worktree and local branch were retained.
+If local branch deletion fails after worktree removal, report that
+the worktree was removed and the local branch was retained. In either case,
+report the cleanup failure; the completed closeout remains completed and must
 not be undone.
