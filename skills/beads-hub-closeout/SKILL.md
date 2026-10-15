@@ -6,8 +6,8 @@ description: Safely correlate and close concrete private Hub work after a pull r
 # Private Beads Hub Closeout
 
 Load `beads-hub` first. This skill is only the small post-merge closeout command;
-it does not claim, review, merge, or push. After a successful closeout, the
-agent must ask the disposal questionnaire when an eligible recorded dedicated
+do not claim, review, merge, or push. After successful merged closeout,
+you must ask the disposal questionnaire when an eligible recorded dedicated
 implementation worktree exists, as described below.
 
 ## Interface and privacy
@@ -83,10 +83,10 @@ precondition. Epic dispatch remains documentation-only and never runs this pull.
 The bundled script remains non-interactive and never removes a worktree. If
 closeout fails or is incomplete, report that failure or partial success and do
 not ask or invoke cleanup. Only after it reports a successful merged closeout
-with `closeout complete`, ask this mandatory question for the recorded dedicated
-implementation worktree associated with the just-closed concrete item. Use only
-the branch and path recorded by runtime orchestration; do not discover another
-target:
+with `closeout complete`, you must ask this questionnaire for the recorded
+dedicated implementation worktree associated with the just-closed concrete
+item. Use only the branch and path recorded by runtime orchestration; do not
+discover another target:
 
 ```text
 Dispose of the recorded dedicated implementation worktree?

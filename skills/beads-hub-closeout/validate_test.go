@@ -160,11 +160,11 @@ func TestCloseoutSkillDocumentsSafeWorktreeDisposal(t *testing.T) {
 	}
 	skill := string(content)
 	for _, required := range []string{
-		"agent must ask the disposal questionnaire",
+		"you must ask the disposal questionnaire",
 		"closeout fails or is incomplete",
 		"ask or invoke cleanup",
 		"Only after it reports a successful merged closeout",
-		"ask this mandatory question",
+		"you must ask this questionnaire",
 		"with `closeout complete`",
 		"Branch: <recorded-branch>",
 		"Path:   <recorded-worktree-path>",
@@ -187,8 +187,11 @@ func TestCloseoutSkillDocumentsSafeWorktreeDisposal(t *testing.T) {
 			t.Errorf("closeout skill is missing disposal guidance %q", required)
 		}
 	}
-	if strings.Contains(skill, "may offer disposal") {
-		t.Error("closeout skill makes the disposal questionnaire discretionary")
+	lowerSkill := strings.ToLower(skill)
+	for _, thirdPerson := range []string{"agent may", "agent must", "may offer", "offer this question"} {
+		if strings.Contains(lowerSkill, thirdPerson) {
+			t.Errorf("closeout skill uses third-person disposal wording: %q", thirdPerson)
+		}
 	}
 
 	if strings.Contains(skill, "gwtrm <recorded-worktree-path>") {
