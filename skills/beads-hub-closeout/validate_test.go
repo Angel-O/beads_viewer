@@ -153,6 +153,56 @@ func TestCloseoutPassesFullPullRequestURLUnchangedToGH(t *testing.T) {
 	}
 }
 
+func TestCloseoutSkillDocumentsSafeWorktreeDisposal(t *testing.T) {
+	content, err := os.ReadFile("SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill := string(content)
+	for _, required := range []string{
+		"you must ask the disposal questionnaire",
+		"closeout fails or is incomplete",
+		"ask or invoke cleanup",
+		"Only after it reports a successful merged closeout",
+		"you must ask this questionnaire",
+		"with `closeout complete`",
+		"Branch: <recorded-branch>",
+		"Path:   <recorded-worktree-path>",
+		"Yes (recommended/default) | No",
+		"Yes/No questionnaire",
+		"Require an explicit, unambiguous `Yes`",
+		"On `No`, no response",
+		"ambiguous response",
+		"do not invoke cleanup",
+		"no eligible recorded target is available",
+		"gwtrm <recorded-branch>",
+		"never the filesystem path",
+		"Do not offer or remove the reference checkout",
+		"an arbitrary worktree, or a",
+		"If `gwtrm` fails, report the cleanup failure",
+		"the worktree was retained",
+		"the completed closeout remains completed",
+	} {
+		if !strings.Contains(skill, required) {
+			t.Errorf("closeout skill is missing disposal guidance %q", required)
+		}
+	}
+	lowerSkill := strings.ToLower(skill)
+	for _, thirdPerson := range []string{"agent may", "agent must", "may offer", "offer this question"} {
+		if strings.Contains(lowerSkill, thirdPerson) {
+			t.Errorf("closeout skill uses third-person disposal wording: %q", thirdPerson)
+		}
+	}
+
+	if strings.Contains(skill, "gwtrm <recorded-worktree-path>") {
+		t.Error("closeout skill passes a worktree path to gwtrm")
+	}
+	if strings.Index(skill, "Only after it reports a successful merged closeout") >
+		strings.Index(skill, "gwtrm <recorded-branch>") {
+		t.Error("closeout skill offers gwtrm before successful closeout")
+	}
+}
+
 func writeExecutable(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {

@@ -6,7 +6,9 @@ description: Safely correlate and close concrete private Hub work after a pull r
 # Private Beads Hub Closeout
 
 Load `beads-hub` first. This skill is only the small post-merge closeout command;
-it does not claim, review, merge, push, or manage worktrees.
+do not claim, review, merge, or push. After successful merged closeout,
+you must ask the disposal questionnaire when an eligible recorded dedicated
+implementation worktree exists, as described below.
 
 ## Interface and privacy
 
@@ -75,3 +77,40 @@ no branch or remote arguments.
 
 The final pull is a local reference synchronization convenience, not a closure
 precondition. Epic dispatch remains documentation-only and never runs this pull.
+
+## Dedicated worktree disposal
+
+The bundled script remains non-interactive and never removes a worktree. If
+closeout fails or is incomplete, report that failure or partial success and do
+not ask or invoke cleanup. Only after it reports a successful merged closeout
+with `closeout complete`, you must ask this questionnaire for the recorded
+dedicated implementation worktree associated with the just-closed concrete
+item. Use only the branch and path recorded by runtime orchestration; do not
+discover another target:
+
+```text
+Dispose of the recorded dedicated implementation worktree?
+  Branch: <recorded-branch>
+  Path:   <recorded-worktree-path>
+  Choice: Yes (recommended/default) | No
+```
+
+This is a Yes/No questionnaire. Require an explicit, unambiguous `Yes`
+selection; the displayed default must not turn an unanswered prompt into
+consent. On `No`, no response, or an ambiguous response, do not invoke cleanup;
+report that cleanup was skipped and that the successful closeout and worktree
+are retained. If the recorded dedicated worktree is missing or otherwise
+ineligible, do not offer another target or invoke cleanup; report that cleanup
+was skipped because no eligible recorded target is available.
+
+Only for an explicit `Yes`, invoke the existing command with the recorded
+branch name, never the filesystem path:
+
+```sh
+gwtrm <recorded-branch>
+```
+
+Do not offer or remove the reference checkout, an arbitrary worktree, or a
+manually selected path. If `gwtrm` fails, report the cleanup failure and that
+the worktree was retained; the completed closeout remains completed and must
+not be undone.
