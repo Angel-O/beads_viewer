@@ -220,6 +220,22 @@ func TestParseEpicChildClosureRequiresJSONAndOneParent(t *testing.T) {
 	}
 }
 
+func TestParseEpicContextReconciliationRequiresAllAndJSON(t *testing.T) {
+	request, err := parse([]string{"epic", "reconcile-contexts", "--all", "--json"})
+	if err != nil || request.subcommand != "reconcile-contexts" || !request.epicReconcileAll {
+		t.Fatalf("request = %#v, error = %v", request, err)
+	}
+	for _, arguments := range [][]string{
+		{"epic", "reconcile-contexts", "--json"},
+		{"epic", "reconcile-contexts", "--all"},
+		{"epic", "reconcile-contexts", "--all", "--json", "extra"},
+	} {
+		if _, err := parse(arguments); err == nil {
+			t.Fatalf("parse(%v) succeeded", arguments)
+		}
+	}
+}
+
 func TestDiscoverMigrationCorrelationsUsesFullCommitBodies(t *testing.T) {
 	repository := newGitRepository(t)
 	path := filepath.Join(repository, "body-reference")
@@ -984,6 +1000,30 @@ func TestCreateTargetingAndAdmission(t *testing.T) {
 		}
 	})
 
+	t.Run("contextless epic keeps ordinary labels", func(t *testing.T) {
+		test := newAppTest(t, true)
+		code, _, stderr := test.run("create", "Planning", "--type", "epic", "--labels", "team")
+		if code != 0 || stderr != "" {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		calls := test.calls()
+		want := []string{"--db", test.store, "create", "Planning", "--type", "epic", "--labels", "team"}
+		if len(calls) != 1 || !reflect.DeepEqual(calls[0].Args, want) {
+			t.Fatalf("calls = %#v, want %#v", calls, want)
+		}
+	})
+
+	t.Run("epic rejects explicit context targeting", func(t *testing.T) {
+		test := newAppTest(t, false)
+		code, _, stderr := test.run("--json", "create", "Planning", "--type", "epic", "--context", "ctx:target")
+		if code != 1 || !strings.Contains(stderr, "explicit context targeting") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		if calls := test.calls(); len(calls) != 0 {
+			t.Fatalf("rejected epic creation delegated: %#v", calls)
+		}
+	})
+
 	t.Run("invalid cardinality fails before mutation", func(t *testing.T) {
 		test := newAppTest(t, true)
 		writeHubConfig(t, test, map[string]string{"ctx:target": "/target"})
@@ -1300,6 +1340,7 @@ func TestReplaceRejectsDecisionExplicitTarget(t *testing.T) {
 func TestEpicParentAndSupersededReopenPrevalidation(t *testing.T) {
 	t.Run("outside epic context", func(t *testing.T) {
 		test := newAppTest(t, false)
+		writeHubConfig(t, test, map[string]string{"ctx:inside": "/inside"})
 		setResponses(t, map[string]string{
 			"show:child-1": `[{"id":"child-1","status":"open","issue_type":"task","labels":["ctx:outside"]}]`,
 			"show:epic-1":  `[{"id":"epic-1","status":"open","issue_type":"epic","labels":["ctx:inside"]}]`,
@@ -1312,8 +1353,9 @@ func TestEpicParentAndSupersededReopenPrevalidation(t *testing.T) {
 
 	t.Run("valid epic child delegates", func(t *testing.T) {
 		test := newAppTest(t, false)
+		writeHubConfig(t, test, map[string]string{"ctx:inside": "/inside", "ctx:other": "/other", "ctx:new": "/new"})
 		setResponses(t, map[string]string{
-			"show:child-1": `[{"id":"child-1","status":"open","issue_type":"task","labels":["ctx:inside"]}]`,
+			"show:child-1": `[{"id":"child-1","status":"open","issue_type":"task","labels":["ctx:new"]}]`,
 			"show:epic-1":  `[{"id":"epic-1","status":"open","issue_type":"epic","labels":["ctx:inside","ctx:other"]}]`,
 		})
 		code, _, stderr := test.run("dep", "add", "child-1", "epic-1", "--type", "parent-child")
@@ -1321,7 +1363,7 @@ func TestEpicParentAndSupersededReopenPrevalidation(t *testing.T) {
 			t.Fatalf("code = %d, stderr = %q", code, stderr)
 		}
 		calls := test.calls()
-		if len(calls) != 3 || fakeCommandKey(calls[2].Args) != "dep" {
+		if len(calls) != 3 || fakeCommandKey(calls[2].Args) != "dep" || !slices.Contains(calls[2].Args, "--reconcile-epic-contexts") {
 			t.Fatalf("calls = %#v", calls)
 		}
 	})
@@ -1451,8 +1493,14 @@ func TestDependencyRemovalPreservesOrdinaryRelations(t *testing.T) {
 			if testCase.targetRead {
 				wantCalls = 3
 			}
+			if testCase.name == "parent-child" {
+				wantCalls = 3
+			}
 			if len(calls) != wantCalls || fakeCommandKey(calls[len(calls)-1].Args) != "dep" {
 				t.Fatalf("ordinary removal calls = %#v", calls)
+			}
+			if testCase.name == "parent-child" && !slices.Contains(calls[len(calls)-1].Args, "--reconcile-epic-contexts") {
+				t.Fatalf("epic parent-child removal did not request reconciliation: %#v", calls)
 			}
 			if _, err := os.Stat(hub.ChangeSignalPath(test.app.paths)); err != nil {
 				t.Fatalf("ordinary removal did not signal Viewer: %v", err)
@@ -1536,6 +1584,82 @@ func TestCompatibilityUnreadableAuthoritativeDataFails(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr, "authoritative correlation ledger") {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
+}
+
+func TestCompatibilityReportsEpicContextMismatch(t *testing.T) {
+	test := newAppTest(t, false)
+	writeHubConfig(t, test, map[string]string{"ctx:known": "/known", "ctx:new": "/new"})
+	setResponses(t, map[string]string{
+		"list":         `[{"id":"epic-1"},{"id":"child-1"}]`,
+		"show:epic-1":  `[{"id":"epic-1","status":"open","issue_type":"epic","labels":["ctx:known","team"]}]`,
+		"show:child-1": `[{"id":"child-1","status":"open","issue_type":"task","labels":["ctx:new"],"dependencies":[{"id":"epic-1","dependency_type":"parent-child"}]}]`,
+	})
+	code, stdout, stderr := test.run("compatibility", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, `"code":"epic_context_mismatch"`) || strings.Contains(stdout, `"code":"invalid_cardinality"`) {
+		t.Fatalf("compatibility output = %s", stdout)
+	}
+	if calls := test.calls(); len(calls) == 0 || !slices.Contains(calls[0].Args, "--no-directory-labels") {
+		t.Fatalf("compatibility list did not bypass directory labels: %#v", calls)
+	}
+}
+
+func TestEpicContextReconciliationMigrationIsDeterministicAndPreservesOrdinaryLabels(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"list":         `[{"id":"epic-b"},{"id":"epic-a"},{"id":"epic-c"},{"id":"child-b"}]`,
+		"show:epic-a":  `[{"id":"epic-a","status":"open","issue_type":"epic","labels":["ctx:old","team"]}]`,
+		"show:epic-b":  `[{"id":"epic-b","status":"open","issue_type":"epic","labels":["team","ctx:new"]}]`,
+		"show:epic-c":  `[{"id":"epic-c","status":"open","issue_type":"epic","labels":["team"]}]`,
+		"show:child-b": `[{"id":"child-b","status":"open","issue_type":"task","labels":["ctx:other"],"dependencies":[{"id":"epic-b","dependency_type":"parent-child"}]}]`,
+	})
+	code, stdout, stderr := test.run("epic", "reconcile-contexts", "--all", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var result epicReconcileOutput
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.EpicsProcessed != 3 || result.EpicsReconciled != 2 || result.EpicsSkipped != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	calls := test.calls()
+	if len(calls) == 0 || !slices.Contains(calls[0].Args, "--no-directory-labels") {
+		t.Fatalf("migration list did not bypass directory labels: %#v", calls)
+	}
+	if len(calls) != 7 || fakeCommandKey(calls[1].Args) != "show:child-b" || fakeCommandKey(calls[2].Args) != "show:epic-a" || fakeCommandKey(calls[3].Args) != "show:epic-b" || fakeCommandKey(calls[4].Args) != "show:epic-c" {
+		t.Fatalf("calls = %#v", calls)
+	}
+	if !reflect.DeepEqual(calls[5].Args, []string{"--db", test.store, "--json", "update", "epic-a", "--set-labels", "team"}) {
+		t.Fatalf("first migration update = %#v", calls[5].Args)
+	}
+	if !reflect.DeepEqual(calls[6].Args, []string{"--db", test.store, "--json", "update", "epic-b", "--set-labels", "team", "--set-labels", "ctx:other"}) {
+		t.Fatalf("second migration update = %#v", calls[6].Args)
+	}
+	assertViewerSignal(t, test)
+}
+
+func TestEpicContextReconciliationMigrationFailsAtFirstEpic(t *testing.T) {
+	test := newAppTest(t, false)
+	setResponses(t, map[string]string{
+		"list":        `[{"id":"epic-a"},{"id":"epic-b"}]`,
+		"show:epic-a": `[{"id":"epic-a","status":"open","issue_type":"epic","labels":["ctx:old"]}]`,
+		"show:epic-b": `[{"id":"epic-b","status":"open","issue_type":"epic","labels":["ctx:old"]}]`,
+	})
+	setExitCodes(t, map[string]int{"update": 9})
+	code, _, stderr := test.run("epic", "reconcile-contexts", "--all", "--json")
+	if code != 1 || !strings.Contains(stderr, "reconciling epic epic-a") {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	for _, call := range test.calls() {
+		if fakeCommandKey(call.Args) == "update" {
+			return
+		}
+	}
+	t.Fatal("migration did not reach the first failing epic")
 }
 
 func TestParserRejectsRemovedAndInvalidCompositions(t *testing.T) {

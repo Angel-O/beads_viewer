@@ -91,8 +91,8 @@ func TestAdmitIssueCardinalityAndRegistration(t *testing.T) {
 	}{
 		{name: "contextless todo", kind: "todo", want: []string{}},
 		{name: "deduplicated todo", kind: "todo", contexts: []string{"ctx:b", "ctx:a", "ctx:b"}, want: []string{"ctx:a", "ctx:b"}},
-		{name: "multi-context epic", kind: "epic", contexts: []string{"ctx:b", "ctx:a"}, want: []string{"ctx:a", "ctx:b"}},
-		{name: "contextless epic", kind: "epic", code: PolicyInvalidCardinality},
+		{name: "caller-targeted epic", kind: "epic", contexts: []string{"ctx:b", "ctx:a"}, code: PolicyInvalidCardinality},
+		{name: "contextless epic", kind: "epic", want: []string{}},
 		{name: "single project", kind: "task", contexts: []string{"ctx:a"}, want: []string{"ctx:a"}},
 		{name: "multi project", kind: "bug", contexts: []string{"ctx:a", "ctx:b"}, code: PolicyInvalidCardinality},
 		{name: "decision", kind: "decision", contexts: []string{"ctx:a"}, want: []string{"ctx:a"}},
@@ -153,8 +153,8 @@ func TestLifecycleEndpointPolicy(t *testing.T) {
 	if err := ValidateEpicChild(epic, projectB); err != nil {
 		t.Fatalf("valid epic child: %v", err)
 	}
-	if err := ValidateEpicChild(epic, IssueState{ID: "outside", Kind: "task", Labels: []string{"ctx:c"}}); err == nil {
-		t.Fatal("outside-context epic child accepted")
+	if err := ValidateEpicChild(epic, IssueState{ID: "outside", Kind: "task", Labels: []string{"ctx:c"}}); err != nil {
+		t.Fatalf("new-context epic child rejected: %v", err)
 	}
 	if err := ValidateEpicChild(projectA, todo); err != nil {
 		t.Fatalf("non-epic behavior was constrained: %v", err)
