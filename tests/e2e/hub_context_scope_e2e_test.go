@@ -212,13 +212,13 @@ func TestRealHubCreationLifecycleAndCorrection(t *testing.T) {
 	explicitWork := fixture.create(t, fixture.repositories[0], "Explicit work", "--type", "bug", "--context", contexts[1])
 	contextlessTodo := fixture.create(t, fixture.outside, "Contextless todo", "--type", "todo", "--contextless")
 	multiTodo := fixture.create(t, fixture.repositories[0], "Shared todo", "--type", "todo", "--context", contexts[0], "--context", contexts[1])
-	multiEpic := fixture.create(t, fixture.repositories[0], "Shared epic", "--type", "epic", "--context", contexts[0], "--context", contexts[1])
+	multiEpic := fixture.create(t, fixture.repositories[0], "Shared epic", "--type", "epic", "--labels", "ordinary-epic")
 
 	fixture.assertContexts(t, defaultWork, contexts[0])
 	fixture.assertContexts(t, explicitWork, contexts[1])
 	fixture.assertContexts(t, contextlessTodo)
 	fixture.assertContexts(t, multiTodo, contexts[0], contexts[1])
-	fixture.assertContexts(t, multiEpic, contexts[0], contexts[1])
+	fixture.assertContexts(t, multiEpic)
 
 	before := fixture.issueIDs(t)
 	fixture.runFailure(t, fixture.repositories[0], "wbd", "--json", "create", "Invalid cardinality", "--type", "task", "--context", contexts[0], "--context", contexts[1])
@@ -236,10 +236,31 @@ func TestRealHubCreationLifecycleAndCorrection(t *testing.T) {
 	}
 
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", defaultWork, multiEpic, "--type", "parent-child")
+	fixture.assertContexts(t, multiEpic, contexts[0])
+	sameContextChild := fixture.create(t, fixture.repositories[0], "Same-context child", "--type", "chore")
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", sameContextChild, multiEpic, "--type", "parent-child")
+	fixture.assertContexts(t, multiEpic, contexts[0])
+	if !fixture.listHasID(t, fixture.repositories[0], multiEpic) {
+		t.Fatalf("context-scoped list omitted supported epic %s", multiEpic)
+	}
 	outsideChild := fixture.create(t, fixture.repositories[2], "Outside child", "--type", "chore")
-	fixture.runFailure(t, fixture.repositories[0], "wbd", "--json", "dep", "add", outsideChild, multiEpic, "--type", "parent-child")
+	fixture.runSuccess(t, fixture.repositories[2], "wbd", "dep", "add", outsideChild, multiEpic, "--type", "parent-child")
 	fixture.assertRelation(t, defaultWork, multiEpic, "parent-child")
-	fixture.assertNoRelation(t, outsideChild, multiEpic, "parent-child")
+	fixture.assertRelation(t, outsideChild, multiEpic, "parent-child")
+	fixture.assertContexts(t, multiEpic, contexts[0], contexts[2])
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "remove", defaultWork, multiEpic)
+	fixture.assertContexts(t, multiEpic, contexts[0], contexts[2])
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "remove", sameContextChild, multiEpic)
+	fixture.assertContexts(t, multiEpic, contexts[2])
+	if fixture.listHasID(t, fixture.repositories[0], multiEpic) {
+		t.Fatalf("context-scoped list retained unsupported epic %s", multiEpic)
+	}
+	fixture.runSuccess(t, fixture.repositories[2], "wbd", "dep", "remove", outsideChild, multiEpic)
+	fixture.assertContexts(t, multiEpic)
+	epicsAfterReconciliation := fixture.show(t, multiEpic)
+	if !slices.Contains(epicsAfterReconciliation.Labels, "ordinary-epic") {
+		t.Fatalf("ordinary epic label was not preserved: %#v", epicsAfterReconciliation.Labels)
+	}
 
 	blocker := fixture.create(t, fixture.repositories[0], "Open blocker", "--type", "task")
 	original := fixture.create(t, fixture.repositories[0], "Misplaced work", "--type", "task", "--description", "Original audit detail")
@@ -293,7 +314,12 @@ func TestRealHubScopedRobotReads(t *testing.T) {
 	contexts := fixture.registerRepositories(t, 2)
 	visible := fixture.create(t, fixture.repositories[0], "Visible blocked work", "--type", "task")
 	hidden := fixture.create(t, fixture.repositories[1], "Hidden blocker", "--type", "task")
-	shared := fixture.create(t, fixture.repositories[0], "Shared coordination", "--type", "epic", "--context", contexts[0], "--context", contexts[1])
+	shared := fixture.create(t, fixture.repositories[0], "Shared coordination", "--type", "epic")
+	sharedChildA := fixture.create(t, fixture.repositories[0], "Shared coordination work A", "--type", "task")
+	sharedChildB := fixture.create(t, fixture.repositories[1], "Shared coordination work B", "--type", "task")
+	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", sharedChildA, shared, "--type", "parent-child")
+	fixture.runSuccess(t, fixture.repositories[1], "wbd", "dep", "add", sharedChildB, shared, "--type", "parent-child")
+	fixture.assertContexts(t, shared, contexts[0], contexts[1])
 	contextless := fixture.create(t, fixture.outside, "Neutral capture", "--type", "todo", "--contextless")
 	fixture.runSuccess(t, fixture.repositories[0], "wbd", "dep", "add", visible, hidden)
 	scopeID := extractCreatedID(t, fixture.runSuccess(t, fixture.outside, "wbd", "scope", "create", "scope-qa", "Scoped robot QA", "--activate", "--json"))
@@ -544,6 +570,23 @@ func (f *realHubFixture) issueIDs(t *testing.T) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func (f *realHubFixture) listHasID(t *testing.T, directory, id string) bool {
+	t.Helper()
+	output := f.runSuccess(t, directory, "wbd", "list", "--json", "--limit", "1000")
+	var issues []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		t.Fatalf("decode context-scoped issue list: %v\n%s", err, output)
+	}
+	for _, issue := range issues {
+		if issue.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *realHubFixture) createLegacyInvalid(t *testing.T) {

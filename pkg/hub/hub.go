@@ -256,6 +256,12 @@ func AdmitIssue(kind string, contexts, labels []string, registered map[string]Re
 	}
 
 	contexts = uniqueSorted(contexts)
+	if class == KindEpic && len(contexts) > 0 {
+		return AdmittedIssue{}, &PolicyError{
+			Code: PolicyInvalidCardinality, Field: "context", Value: kind,
+			Message: "epic contexts are derived from direct children; explicit context targeting is not supported",
+		}
+	}
 	if err := ValidateRegisteredContexts(contexts, registered); err != nil {
 		return AdmittedIssue{}, err
 	}
@@ -327,7 +333,8 @@ func ValidateCorrelationOwner(issue IssueState) error {
 }
 
 // ValidateEpicChild preserves ordinary parent-child behavior for non-epic
-// parents and constrains only epic coordination.
+// parents and constrains only epic coordination. Epic contexts are materialized
+// from direct children, so the child's context need not already be on the epic.
 func ValidateEpicChild(parent, child IssueState) error {
 	parentClass, err := ClassifyKind(parent.Kind)
 	if err != nil || parentClass != KindEpic {
@@ -335,11 +342,10 @@ func ValidateEpicChild(parent, child IssueState) error {
 	}
 	childClass, childErr := ClassifyKind(child.Kind)
 	childContexts := Contexts(child.Labels)
-	parentContexts := Contexts(parent.Labels)
-	if childErr != nil || childClass != KindProjectWork || len(childContexts) != 1 || !contains(parentContexts, childContexts[0]) {
+	if childErr != nil || childClass != KindProjectWork || len(childContexts) != 1 {
 		return &PolicyError{
 			Code: PolicyInvalidEpicChild, Field: "parent", Value: parent.ID,
-			Message: "an epic may parent only ordinary project work in one of its contexts",
+			Message: "an epic may parent only ordinary project work in exactly one context",
 		}
 	}
 	return nil
@@ -384,7 +390,7 @@ func validateMembership(kind string, contexts []string, registered map[string]Re
 }
 
 func validateCardinality(kind string, class KindClass, count int) error {
-	valid := class == KindTodo || class == KindEpic && count >= 1 ||
+	valid := class == KindTodo || class == KindEpic ||
 		(class == KindProjectWork || class == KindDecision) && count == 1
 	if !valid {
 		return &PolicyError{
@@ -400,7 +406,7 @@ func cardinalityMessage(kind string, count int) string {
 	case "todo":
 		return "todo permits zero or more contexts"
 	case "epic":
-		return fmt.Sprintf("epic requires one or more contexts (got %d)", count)
+		return fmt.Sprintf("epic permits zero or more contexts (got %d)", count)
 	default:
 		return fmt.Sprintf("%s requires exactly one context (got %d)", kind, count)
 	}

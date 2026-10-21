@@ -30,7 +30,7 @@ var commandOrder = []string{
 	"bootstrap", "configure", "register", "context", "create", "new", "replace",
 	"compatibility", "list", "show", "update", "claim", "unclaim", "dep", "dep add", "dep remove",
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
-	"epic", "epic child-closure",
+	"epic", "epic child-closure", "epic reconcile-contexts",
 	"scope", "scope create", "scope list", "scope show", "scope rename", "scope active", "scope activate", "scope deactivate", "scope add", "scope remove", "scope move",
 	"backlog", "backlog list", "migrate",
 }
@@ -50,8 +50,8 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--type", value: "<type>", description: "bug|feature|task|epic|chore|decision|todo.", defaultText: "task"},
 			{name: "--priority", value: "<0-4|P0-P4>", description: "Priority, where 0 is highest.", defaultText: "2"},
 			{name: "--labels", value: "<label,...>", description: "Ordinary labels; repeatable; ctx: labels are wrapper-owned."},
-			{name: "--context", value: "<ctx-id>", description: "Complete explicit target set; repeat for todo or epic."},
-			{name: "--contextless", description: "Create a contextless todo."},
+			{name: "--context", value: "<ctx-id>", description: "Complete explicit target set; repeat for todo; epic contexts are derived."},
+			{name: "--contextless", description: "Create a contextless todo or epic."},
 			{name: "--from-todo", value: "<todo-id>", description: "Create concrete work with a discovered-from edge."},
 			{name: "--json", description: "Emit JSON."},
 		},
@@ -192,10 +192,14 @@ var commandSpecs = map[string]commandSpec{
 		path: "unlink", usage: "wbd unlink <bead-id> <full-commit-sha>", summary: "Remove one exact current-context commit correlation.",
 		examples: []string{`wbd unlink <id> 0123456789abcdef0123456789abcdef01234567`},
 	},
-	"epic": {path: "epic", usage: "wbd epic child-closure <parent-id> --json", summary: "Read an epic's direct child closure through bd."},
+	"epic": {path: "epic", usage: "wbd epic <child-closure|reconcile-contexts> ...", summary: "Inspect or reconcile materialized epic context state."},
 	"epic child-closure": {
 		path: "epic child-closure", usage: "wbd epic child-closure <parent-id> --json", summary: "Read an epic's direct children without changing state.",
 		options: []optionSpec{{name: "--json", description: "Required; preserve the backend JSON array."}},
+	},
+	"epic reconcile-contexts": {
+		path: "epic reconcile-contexts", usage: "wbd epic reconcile-contexts --all --json", summary: "Reconcile every epic's stored contexts from its direct children.",
+		options: []optionSpec{{name: "--all", description: "Process all epics in deterministic ID order."}, {name: "--json", description: "Required; emit JSON."}},
 	},
 	"migrate": {
 		path: "migrate", usage: "wbd migrate (--dry-run|--apply) --json", summary: "Copy the local repository store into the private Hub.",
@@ -339,6 +343,7 @@ type request struct {
 	backlogLimit       int
 	backlogCursor      string
 	expandDependencies bool
+	epicReconcileAll   bool
 	migrateDryRun      bool
 	migrateApply       bool
 	scopeSubcommand    string
@@ -519,10 +524,32 @@ func parseMigrate(result request, arguments []string) (request, error) {
 }
 
 func parseEpic(result request, arguments []string) (request, error) {
-	if len(arguments) < 1 || arguments[0] != "child-closure" {
+	if len(arguments) < 1 || !oneOf(arguments[0], "child-closure", "reconcile-contexts") {
 		return result, errors.New(usageFor("epic"))
 	}
 	result.subcommand = arguments[0]
+	if result.subcommand == "reconcile-contexts" {
+		seen := make(map[string]bool)
+		for _, argument := range arguments[1:] {
+			switch argument {
+			case "--json":
+				if err := setJSON(&result); err != nil {
+					return result, err
+				}
+			case "--all":
+				if err := markSeen(seen, argument); err != nil {
+					return result, err
+				}
+				result.epicReconcileAll = true
+			default:
+				return result, errors.New(usageFor("epic reconcile-contexts"))
+			}
+		}
+		if !result.json || !result.epicReconcileAll {
+			return result, errors.New(usageFor("epic reconcile-contexts"))
+		}
+		return result, nil
+	}
 	for _, argument := range arguments[1:] {
 		if argument == "--json" {
 			if err := setJSON(&result); err != nil {

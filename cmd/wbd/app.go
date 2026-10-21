@@ -207,8 +207,8 @@ func (a *app) run(arguments []string) int {
 		}
 		return 0
 	case "epic":
-		if request.subcommand != "child-closure" {
-			return a.fail(errors.New("internal unsupported epic command"))
+		if request.subcommand == "reconcile-contexts" {
+			return a.reconcileEpicContexts()
 		}
 		data, childStderr, err := a.runBDCaptureWithStderr(a.dir, "--json", "epic", "child-closure", request.positionals[0])
 		if err != nil {
@@ -252,6 +252,7 @@ func (a *app) run(arguments []string) int {
 		args = append(args, request.args...)
 		return a.runBDMutation(a.dir, args...)
 	case "dep":
+		reconcileEpicContexts := false
 		if request.subcommand == "add" && requestValue(request.args, "--type", "blocks") == "parent-child" {
 			child, childErr := a.readIssue(request.positionals[0], false)
 			if childErr != nil {
@@ -264,6 +265,16 @@ func (a *app) run(arguments []string) int {
 			if policyErr := hub.ValidateEpicChild(parent.policyState(), child.policyState()); policyErr != nil {
 				return a.fail(policyErr)
 			}
+			if parent.IssueType == "epic" {
+				config, configErr := hub.Resolve(a.paths.Config)
+				if configErr != nil {
+					return a.fail(fmt.Errorf("resolving Hub config: %w", configErr))
+				}
+				if contextErr := hub.ValidateRegisteredContexts(hub.Contexts(child.Labels), config.Repositories); contextErr != nil {
+					return a.fail(contextErr)
+				}
+				reconcileEpicContexts = true
+			}
 		}
 		if request.subcommand == "remove" {
 			source, sourceErr := a.readIssue(request.positionals[0], false)
@@ -272,7 +283,21 @@ func (a *app) run(arguments []string) int {
 			}
 			var target *bdIssue
 			for _, dependency := range source.Dependencies {
-				if dependency.ID != request.positionals[1] || dependency.DependencyType != "supersedes" && dependency.DependencyType != "discovered-from" {
+				if dependency.ID != request.positionals[1] {
+					continue
+				}
+				if dependency.DependencyType == "parent-child" {
+					if target == nil {
+						issue, targetErr := a.readIssue(request.positionals[1], false)
+						if targetErr != nil {
+							return a.fail(targetErr)
+						}
+						target = &issue
+					}
+					reconcileEpicContexts = reconcileEpicContexts || target.IssueType == "epic"
+					continue
+				}
+				if dependency.DependencyType != "supersedes" && dependency.DependencyType != "discovered-from" {
 					continue
 				}
 				if target == nil {
@@ -291,6 +316,9 @@ func (a *app) run(arguments []string) int {
 		args = append(args, "dep", request.subcommand)
 		args = append(args, request.positionals...)
 		args = append(args, request.args...)
+		if reconcileEpicContexts {
+			args = append(args, "--reconcile-epic-contexts")
+		}
 		return a.runBDMutation(a.dir, args...)
 	case "close", "reopen":
 		if request.command == "reopen" {
@@ -570,15 +598,15 @@ wbd is the safe command boundary for the private Beads Hub.
 Choose an issue type:
   todo      Capture something not yet concrete project work. It may be
             contextless or span contexts and cannot own commit correlations.
-  epic      Coordinate related project work across one or more contexts.
+  epic      Coordinate related project work; contexts are derived from direct children.
   task, bug, feature, chore
             Track concrete work in exactly one context.
   decision  Record a decision in the current context.
 
 Creation targeting:
   (omitted)              Use the current repository context.
-  --context <ctx-id>     Supply the complete target set; repeat for todo/epic.
-  --contextless          Create a todo without repository context.
+  --context <ctx-id>     Supply the complete target set; repeat for todo; epic contexts are derived.
+  --contextless          Create a todo or epic without repository context.
   --from-todo <todo-id>  Create concrete work discovered from a todo.
 
 Claim ownership:
@@ -638,9 +666,18 @@ func (a *app) create(request request) int {
 	if kind == "decision" && (request.contextless || len(request.contexts) > 0) {
 		return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidKind, Field: "type", Value: kind, Message: "decision supports default-current creation only"})
 	}
-	contexts, repositories, err := a.creationTargets(request)
-	if err != nil {
-		return a.fail(err)
+	var contexts []string
+	var repositories map[string]hub.Repository
+	var err error
+	if kind == "epic" {
+		if len(request.contexts) > 0 {
+			return a.fail(&hub.PolicyError{Code: hub.PolicyInvalidCardinality, Field: "context", Value: kind, Message: "epic contexts are derived from direct children; explicit context targeting is not supported"})
+		}
+	} else {
+		contexts, repositories, err = a.creationTargets(request)
+		if err != nil {
+			return a.fail(err)
+		}
 	}
 	labels := requestLabels(request.args)
 	admitted, err := hub.AdmitIssue(kind, contexts, labels, repositories)
@@ -945,7 +982,7 @@ func (a *app) compatibility() int {
 	if err != nil {
 		return a.fail(err)
 	}
-	data, err := a.runBDCapture(a.dir, "--json", "list", "--all", "--limit", "0")
+	data, err := a.runBDCapture(a.dir, "--json", "list", "--no-directory-labels", "--all", "--limit", "0")
 	if err != nil {
 		return a.fail(fmt.Errorf("reading authoritative issues: %w", err))
 	}
@@ -969,6 +1006,10 @@ func (a *app) compatibility() int {
 		contexts := hub.Contexts(issue.Labels)
 		if _, kindErr := hub.ClassifyKind(issue.IssueType); kindErr != nil {
 			findings = appendPolicyFinding(findings, issue.ID, kindErr)
+		} else if issue.IssueType == "epic" {
+			if mismatch := epicContextMismatch(issue, issues); mismatch != nil {
+				findings = append(findings, *mismatch)
+			}
 		} else {
 			findings = appendPolicyFinding(findings, issue.ID, hub.ValidateCardinality(issue.IssueType, len(contexts)))
 		}
