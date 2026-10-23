@@ -133,11 +133,14 @@ verify_import() {
 
   (
     cd "$source_repo"
-    wbd show "$mapped_open" --expand-dependencies --json
+    wbd show "$mapped_open" --json
   ) | jq -e --arg context "$context" --arg dependency "$mapped_closed" '
     .[0] as $issue |
     ($issue.labels | index("imported") != null and index("preserved-label") != null and index($context) != null) and
-    ($issue.dependencies | length == 1 and .[0].id == $dependency and .[0].dependency_type == "blocks")
+    (($issue.dependencies | length == 1) and
+     ($issue.dependencies[0].id == $dependency) and
+     ($issue.dependencies[0].dependency_type == "blocks") and
+     (($issue.dependencies[0] | keys | sort) == ["dependency_type", "id", "issue_type", "priority", "status", "title"]))
   ' >/dev/null
   (
     cd "$source_repo"
