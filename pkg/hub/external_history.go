@@ -42,6 +42,28 @@ func StorePath(configPath string) (string, error) {
 	return store, nil
 }
 
+// HasExternalCorrelation reports whether any ledger record belongs to beadID.
+func HasExternalCorrelation(configPath, beadID string) (bool, error) {
+	config, baseDir, err := loadCorrelationConfig(configPath)
+	if err != nil {
+		return false, err
+	}
+	ledger, err := ResolvePath(config.Ledger, baseDir)
+	if err != nil || ledger == "" {
+		return false, fmt.Errorf("resolving correlation ledger: %w", err)
+	}
+	entries, err := loadCorrelationLedgerIfExists(ledger)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.correlation.BeadID == beadID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // NewExternalHistorySource adapts validated Hub config and ledger state to the
 // neutral correlation source boundary.
 func NewExternalHistorySource(configPath string) correlation.ExternalHistorySource {

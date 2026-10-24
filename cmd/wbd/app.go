@@ -224,6 +224,40 @@ func (a *app) run(arguments []string) int {
 		}
 		return 0
 	case "update":
+		if len(request.updateContexts) > 0 || request.updateContextless {
+			issue, issueErr := a.readIssue(request.positionals[0], false)
+			if issueErr != nil {
+				return a.fail(issueErr)
+			}
+			if issue.IssueType == "epic" {
+				return a.fail(errors.New("epic contexts are derived from children and cannot be updated directly"))
+			}
+			hasHistory, historyErr := hub.HasExternalCorrelation(a.paths.Config, issue.ID)
+			if historyErr != nil {
+				return a.fail(historyErr)
+			}
+			if hasHistory {
+				return a.fail(fmt.Errorf("bead %s has external-history correlations; context replacement is pre-work only", issue.ID))
+			}
+			config, configErr := hub.Load(a.paths.Config)
+			if configErr != nil {
+				return a.fail(configErr)
+			}
+			if request.updateContextless {
+				if issue.IssueType != "todo" {
+					return a.fail(errors.New("--contextless is supported only for todos"))
+				}
+			} else {
+				for _, context := range request.updateContexts {
+					if _, ok := config.Repositories[context]; !ok {
+						return a.fail(fmt.Errorf("context %q is not registered", context))
+					}
+				}
+				if issue.IssueType != "todo" && len(request.updateContexts) != 1 {
+					return a.fail(fmt.Errorf("%s requires exactly one context", issue.IssueType))
+				}
+			}
+		}
 		if requestValue(request.args, "--status", "") != "" {
 			issue, issueErr := a.readIssue(request.positionals[0], true)
 			if issueErr != nil {
@@ -238,6 +272,12 @@ func (a *app) run(arguments []string) int {
 		args := appendJSON(nil, request.json)
 		args = append(args, "update", request.positionals[0])
 		args = append(args, request.args...)
+		for _, context := range request.updateContexts {
+			args = append(args, "--context", context)
+		}
+		if request.updateContextless {
+			args = append(args, "--contextless")
+		}
 		return a.runBDMutation(a.dir, args...)
 	case "claim":
 		args := appendJSON(nil, request.json)

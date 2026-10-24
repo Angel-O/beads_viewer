@@ -12,12 +12,12 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 - Never modify repository `.beads`, hooks, ignores, exports, agent files, or routing configuration. Broad deletion is unsupported; only exact commit-correlation removal through `wbd unlink` is allowed.
 - Hub IDs and `ctx:` identities are private. Keep real values out of commits, branches, PRs, tests, docs, and other Git-visible artifacts.
 - Use `--json` for queries and mutations except `wbd context`, `wbd link`, and `wbd unlink`; the correlation commands already return JSON. Check exit status and treat stderr as diagnostics.
-- Before mutating an ID, run `wbd show <id> --json` and verify its type and contexts. Never add, remove, or replace `ctx:` labels or change issue type.
+- Before mutating an ID, run `wbd show <id> --json` and verify its type and contexts. Never mutate `ctx:` labels through raw or arbitrary label operations, or change issue type. The approved structured, pre-work-only `wbd update --context` / `--contextless` workflow is allowed subject to its documented type, registration, cardinality, and no-external-history restrictions.
 
 ## Choose A Record
 
 - **Todo:** Capture something worth remembering before it is concrete project work. A todo may have repository context, but needs none, need not produce version-controlled work, and cannot own commit correlations. If it becomes project work, create a task, bug, feature, or chore with `--from-todo`; close the todo separately when appropriate.
-- **Epic:** Coordinate a larger outcome made of related concrete work. An epic belongs to one or more contexts; attach children with `parent-child` only when the child context belongs to the epic.
+- **Epic:** Coordinate a larger outcome made of related concrete work. An epic belongs to one or more contexts; attach task, bug, feature, or chore work with `parent-child` only when the child context belongs to the epic. Decisions and other prerequisites use ordinary blocking dependencies.
 - **Task, bug, feature, or chore:** Track concrete executable work in exactly one context. Link verified implementation commits to these records.
 - **Decision:** Record a decision in the current context.
 
@@ -71,7 +71,7 @@ wbd unlink <work-id> <full-commit-sha>
 
 Claim ownership only through the safe claim operation: `wbd claim <id> --json`. It atomically assigns the invoking backend actor and moves the issue to `in_progress`; it never accepts an arbitrary identity. A status-only `wbd update` does not claim work. Release your own claim with `wbd unclaim <id> --reason "..." --json`. To recover one abandoned claim, use the exact canonical issue ID with `wbd unclaim <id> --force --reason "..." --json`; forced recovery clears claims even when the issue is `blocked` or `deferred` and returns it to `open`. Do not use force for live work. `create` and ordinary `update` never accept `--assignee`.
 
-Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Use `wbd replace <id> --context <correct-ctx> --json` to correct placement; if it reports a created replacement after an error, inspect that ID before retrying. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
+Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Before any external-history correlation exists, replace a non-epic Bead's complete context set with repeated `wbd update <id> --context <registered-ctx> --json`; use `wbd update <todo-id> --contextless --json` to remove all todo contexts. The flags are exclusive, omission preserves contexts, correlated Beads and epics are rejected, and raw `ctx:` label mutation remains prohibited. Use `wbd replace` only to replace the Bead itself. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
 Read authoritative comments for one exact canonical issue ID, or manage an
 existing comment, with these safe forms. Before add, edit, or delete, run
