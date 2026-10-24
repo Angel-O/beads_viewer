@@ -118,9 +118,11 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--priority", value: "<0-4|P0-P4>", description: "New priority."},
 			{name: "--status", value: "<status>", description: "open|in_progress|blocked|deferred; use close for closed."},
 			{name: "--add-label", value: "<label,...>", description: "Add ordinary labels; repeatable; ctx: labels are wrapper-owned."},
+			{name: "--context", value: "<registered-ctx>", description: "Replace contexts with the complete set; repeatable; pre-work only."},
+			{name: "--contextless", description: "Replace contexts with none; todo only; pre-work only."},
 			{name: "--json", description: "Emit JSON."},
 		},
-		examples: []string{`wbd update <id> --status blocked --json`},
+		examples: []string{`wbd update <id> --context ctx:project`, `wbd update <todo-id> --contextless`},
 	},
 	"claim": {
 		path: "claim", usage: "wbd claim <id> [--json]", summary: "Atomically claim one issue for the invoking actor.",
@@ -325,6 +327,8 @@ type request struct {
 	commentFile        string
 	commentStdin       bool
 	commentSeparator   bool
+	updateContexts     []string
+	updateContextless  bool
 	listPaginate       bool
 	listLimitSet       bool
 	listCursor         string
@@ -1363,6 +1367,33 @@ func parseUpdate(result request, arguments []string) (request, error) {
 			}
 			continue
 		}
+		if argument == "--contextless" {
+			if result.updateContextless || len(result.updateContexts) > 0 {
+				return result, errors.New("--context and --contextless are mutually exclusive")
+			}
+			result.updateContextless = true
+			mutations++
+			continue
+		}
+		if argument == "--context" || strings.HasPrefix(argument, "--context=") {
+			_, value, consumed, matched, err := optionValueFor("update", argument, arguments)
+			if err != nil {
+				return result, err
+			}
+			if !matched {
+				return result, errors.New("--context requires a value")
+			}
+			if err := safeValue("context", value); err != nil {
+				return result, err
+			}
+			if result.updateContextless {
+				return result, errors.New("--context and --contextless are mutually exclusive")
+			}
+			result.updateContexts = append(result.updateContexts, value)
+			arguments = arguments[consumed:]
+			mutations++
+			continue
+		}
 		flag, value, consumed, matched, err := optionValueFor("update", argument, arguments)
 		if err != nil {
 			return result, err
@@ -1401,6 +1432,13 @@ func parseUpdate(result request, arguments []string) (request, error) {
 	}
 	if len(result.positionals) != 1 || mutations == 0 {
 		return result, errors.New(usageFor("update"))
+	}
+	if len(result.updateContexts) > 0 || result.updateContextless {
+		for _, arg := range result.args {
+			if arg == "--add-label" {
+				return result, errors.New("context replacement cannot be combined with label mutation")
+			}
+		}
 	}
 	return result, nil
 }

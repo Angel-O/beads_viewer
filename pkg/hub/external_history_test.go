@@ -41,6 +41,24 @@ func TestExternalHistorySourceLoadsValidatedSnapshot(t *testing.T) {
 	}
 }
 
+func TestHasExternalCorrelationFindsAnyBeadRecord(t *testing.T) {
+	root := t.TempDir()
+	config := filepath.Join(root, "hub.yaml")
+	if err := os.WriteFile(config, []byte("version: 1\nstore: store\nledger: correlations.jsonl\nrepositories: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := HasExternalCorrelation(config, "item-1"); err != nil || found {
+		t.Fatalf("empty ledger: found=%v err=%v", found, err)
+	}
+	data := `{"bead_id":"item-1","context":"ctx:old","commit":"` + strings.Repeat("a", 40) + `"}` + "\n"
+	if err := os.WriteFile(filepath.Join(root, "correlations.jsonl"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := HasExternalCorrelation(config, "item-1"); err != nil || !found {
+		t.Fatalf("correlated ledger: found=%v err=%v", found, err)
+	}
+}
+
 func TestExternalHistorySourceAllowsEmptyRepositoryMap(t *testing.T) {
 	root := t.TempDir()
 	config := filepath.Join(root, "hub.yaml")
