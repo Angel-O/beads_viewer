@@ -4467,7 +4467,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showIssueLookup {
 			return m.handleIssueLookupKey(msg)
 		}
-		if (m.showScopePicker || m.showScopeCreatePrompt || m.showScopeRenamePrompt || m.showScopeMatchPrompt) && msg.String() == "B" {
+		if (m.showScopePicker || m.showScopeCreatePrompt || m.showScopeRenamePrompt || m.showScopeMatchPrompt) && msg.String() == "B" &&
+			!(m.focused == focusScopeCreateInput && (m.showScopeCreatePrompt || m.showScopeRenamePrompt || m.showScopeMatchPrompt)) &&
+			!(m.showScopePicker && m.focused == focusGlobalIssues && (m.backlog.Searching() || m.backlog.LabelEditing())) &&
+			!(m.showRepoPicker && m.repoPicker.IsSearching()) {
 			if m.showTutorial {
 				m.focused = m.scopeSessionFocus
 			} else if m.showHelp {

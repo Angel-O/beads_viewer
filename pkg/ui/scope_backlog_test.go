@@ -594,8 +594,8 @@ func TestScopeGlobalIssuesSearchConsumesViewSwitchKeys(t *testing.T) {
 			updated, _ := m.Update(keyMsg(key))
 			m = updated.(*Model)
 			if key == "B" {
-				if m.showScopePicker || m.focused != focusList {
-					t.Fatalf("B did not exit Scope during search: picker=%t focus=%s", m.showScopePicker, m.focused)
+				if !m.backlog.Searching() || m.backlog.Filter() != "prefixB" || !m.showScopePicker || m.focused != focusGlobalIssues {
+					t.Fatalf("B was not entered during search: searching=%t filter=%q picker=%t focus=%s", m.backlog.Searching(), m.backlog.Filter(), m.showScopePicker, m.focused)
 				}
 				return
 			}
@@ -758,29 +758,66 @@ func TestScopeBExitsEveryPanelAndRetainsSessionState(t *testing.T) {
 	}
 }
 
-func TestScopeBHasPriorityOverTransientGlobalInput(t *testing.T) {
+func TestScopeBIsOwnedByActiveTextInputs(t *testing.T) {
 	for _, setup := range []struct {
 		name  string
 		setup func(*Model)
+		check func(*testing.T, *Model)
 	}{
 		{name: "search", setup: func(m *Model) {
 			m.focused = focusGlobalIssues
 			m.backlog.BeginSearch()
 			m.backlog.AddFilter("query")
+		}, check: func(t *testing.T, m *Model) {
+			if !m.backlog.Searching() || m.backlog.Filter() != "queryB" {
+				t.Fatalf("search did not receive B: searching=%t query=%q", m.backlog.Searching(), m.backlog.Filter())
+			}
 		}},
 		{name: "label edit", setup: func(m *Model) {
 			m.focused = focusGlobalIssues
 			m.backlog.SetLabel("team")
 			m.backlog.BeginLabelEdit()
+		}, check: func(t *testing.T, m *Model) {
+			if !m.backlog.LabelEditing() || m.backlog.LabelInputValue() != "teamB" {
+				t.Fatalf("label editor did not receive B: editing=%t value=%q", m.backlog.LabelEditing(), m.backlog.LabelInputValue())
+			}
 		}},
 		{name: "scope create", setup: func(m *Model) {
 			m.focused = focusScopeCreateInput
 			m.showScopeCreatePrompt = true
+			m.scopeCreateInput.Focus()
+		}, check: func(t *testing.T, m *Model) {
+			if !m.showScopeCreatePrompt || m.scopeCreateInput.Value() != "B" {
+				t.Fatalf("create input did not receive B: shown=%t focus=%s value=%q", m.showScopeCreatePrompt, m.focused, m.scopeCreateInput.Value())
+			}
+		}},
+		{name: "scope rename", setup: func(m *Model) {
+			m.focused = focusScopeCreateInput
+			m.showScopeRenamePrompt = true
+			m.scopeCreateInput.Focus()
+		}, check: func(t *testing.T, m *Model) {
+			if !m.showScopeRenamePrompt || m.scopeCreateInput.Value() != "B" {
+				t.Fatalf("rename input did not receive B: shown=%t value=%q", m.showScopeRenamePrompt, m.scopeCreateInput.Value())
+			}
 		}},
 		{name: "scope match", setup: func(m *Model) {
 			m.focused = focusScopeCreateInput
 			m.scopeMatchOrigin = focusGlobalIssues
 			m.showScopeMatchPrompt = true
+			m.scopeMatchInput.Focus()
+		}, check: func(t *testing.T, m *Model) {
+			if !m.showScopeMatchPrompt || m.scopeMatchInput.Value() != "B" {
+				t.Fatalf("match input did not receive B: shown=%t value=%q", m.showScopeMatchPrompt, m.scopeMatchInput.Value())
+			}
+		}},
+		{name: "repository search", setup: func(m *Model) {
+			m.showRepoPicker = true
+			m.repoPicker = NewRepoPickerModel(testRepositoryCatalog(), m.theme)
+			m.repoPicker.BeginSearch()
+		}, check: func(t *testing.T, m *Model) {
+			if !m.showRepoPicker || !m.repoPicker.IsSearching() || m.repoPicker.SearchValue() != "B" {
+				t.Fatalf("repository search did not receive B: shown=%t searching=%t query=%q", m.showRepoPicker, m.repoPicker.IsSearching(), m.repoPicker.SearchValue())
+			}
 		}},
 	} {
 		t.Run(setup.name, func(t *testing.T) {
@@ -789,10 +826,65 @@ func TestScopeBHasPriorityOverTransientGlobalInput(t *testing.T) {
 			setup.setup(m)
 			updated, _ := m.Update(keyMsg("B"))
 			m = updated.(*Model)
-			if m.showScopePicker || m.showScopeCreatePrompt || m.showScopeMatchPrompt || m.focused != focusList {
-				t.Fatalf("B did not preempt %s: scope=%t create=%t match=%t focus=%s", setup.name, m.showScopePicker, m.showScopeCreatePrompt, m.showScopeMatchPrompt, m.focused)
+			if !m.showScopePicker {
+				t.Fatalf("B closed Scope while editing %s", setup.name)
 			}
+			setup.check(t, m)
 		})
+	}
+}
+
+func TestBoardPreviewScrollDispatchPersistsAndResetsOnSelection(t *testing.T) {
+	var description strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&description, "preview-line-%02d\n\n", i)
+	}
+	secondDescription := "second-issue-preview"
+	issues := []model.Issue{
+		{ID: "first", Title: "First", Description: description.String(), Status: model.StatusOpen},
+		{ID: "second", Title: "Second", Description: secondDescription, Status: model.StatusOpen},
+	}
+	m := NewModel(issues, nil, "")
+	m.board = NewBoardModel(issues, m.theme)
+	m.board.ShowDetail()
+	m.isBoardView, m.focused = true, focusBoard
+	m.width, m.height = 180, 32
+
+	render := func() string { return ansi.Strip(m.View()) }
+	initial := render()
+	if !strings.Contains(initial, "preview-line-00") {
+		t.Fatalf("initial preview did not show its first line: %q", initial)
+	}
+	var updated tea.Model
+	for i := 0; i < 6; i++ {
+		updated, _ = m.Update(keyMsg("ctrl+j"))
+		m = updated.(*Model)
+	}
+	down := render()
+	if strings.Contains(down, "preview-line-00") || !strings.Contains(down, "preview-line-05") {
+		t.Fatalf("Ctrl+J did not advance visible preview: %q", down)
+	}
+	if again := render(); again != down {
+		t.Fatalf("preview offset did not persist across renders")
+	}
+	for i := 0; i < 6; i++ {
+		updated, _ = m.Update(keyMsg("ctrl+k"))
+		m = updated.(*Model)
+	}
+	up := render()
+	if !strings.Contains(up, "preview-line-00") || up != initial {
+		t.Fatalf("Ctrl+K did not restore the initial preview: %q", up)
+	}
+
+	for i := 0; i < 6; i++ {
+		updated, _ = m.Update(keyMsg("ctrl+j"))
+		m = updated.(*Model)
+	}
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(*Model)
+	selected := render()
+	if !strings.Contains(selected, secondDescription) || strings.Contains(selected, "preview-line-03") {
+		t.Fatalf("selection change did not reset preview to selected issue: %q", selected)
 	}
 }
 
@@ -3300,8 +3392,8 @@ func TestGlobalIssuesEntryPointUsesScopeScreen(t *testing.T) {
 	m.backlog.BeginSearch()
 	updated, _ = m.Update(keyMsg("B"))
 	m = updated.(*Model)
-	if m.backlog.Searching() || m.showScopePicker || m.focused != focusList {
-		t.Fatalf("Global issues B did not exit Scope: searching=%t scope=%t focus=%s", m.backlog.Searching(), m.showScopePicker, m.focused)
+	if !m.backlog.Searching() || m.backlog.Filter() != "B" || !m.showScopePicker || m.focused != focusGlobalIssues {
+		t.Fatalf("Global issues search did not receive B: searching=%t query=%q scope=%t focus=%s", m.backlog.Searching(), m.backlog.Filter(), m.showScopePicker, m.focused)
 	}
 }
 
