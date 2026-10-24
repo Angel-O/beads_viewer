@@ -1095,7 +1095,7 @@ func (b *BoardModel) HasExpandedCard() bool {
 }
 
 // View renders the Kanban board with adaptive columns
-func (b BoardModel) View(width, height int) string {
+func (b *BoardModel) View(width, height int) string {
 	t := b.theme
 
 	// Calculate how many columns we're showing
