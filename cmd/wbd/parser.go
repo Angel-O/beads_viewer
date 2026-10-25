@@ -32,7 +32,7 @@ var commandOrder = []string{
 	"close", "reopen", "comments", "comments add", "comments edit", "comments delete", "link", "unlink",
 	"epic", "epic child-closure", "epic reconcile-contexts",
 	"scope", "scope create", "scope list", "scope show", "scope rename", "scope active", "scope activate", "scope deactivate", "scope add", "scope remove", "scope move",
-	"backlog", "backlog list", "migrate",
+	"backlog", "backlog list", "migrate", "labels", "labels add", "labels remove", "labels replace",
 }
 
 var commandSpecs = map[string]commandSpec{
@@ -211,7 +211,11 @@ var commandSpecs = map[string]commandSpec{
 			{name: "--json", description: "Required; emit JSON."},
 		},
 	},
-	"scope": {path: "scope", usage: "wbd scope <create|list|show|rename|active|activate|deactivate|add|remove|move> [options]", summary: "Manage named backlog scopes through bd."},
+	"labels":         {path: "labels", usage: "wbd labels <add|remove|replace> ...", summary: "Manage ordinary labels."},
+	"labels add":     {path: "labels add", usage: "wbd labels add (<id>...|--epic <id>) --labels <label,...>... --json", summary: "Add ordinary labels to selected issues.", options: []optionSpec{{name: "--epic", value: "<id>", description: "Select direct children of this epic."}, {name: "--labels", value: "<label,...>", description: "Ordinary labels; repeatable."}, {name: "--json", description: "Required; emit JSON outcomes."}}},
+	"labels remove":  {path: "labels remove", usage: "wbd labels remove (<id>...|--epic <id>) --labels <label,...>... --json", summary: "Remove ordinary labels from selected issues.", options: []optionSpec{{name: "--epic", value: "<id>", description: "Select direct children of this epic."}, {name: "--labels", value: "<label,...>", description: "Ordinary labels; repeatable."}, {name: "--json", description: "Required; emit JSON outcomes."}}},
+	"labels replace": {path: "labels replace", usage: "wbd labels replace (<id>...|--epic <id>) (--labels <label,...>...|--clear) --json", summary: "Replace ordinary labels on selected issues.", options: []optionSpec{{name: "--epic", value: "<id>", description: "Select direct children of this epic."}, {name: "--labels", value: "<label,...>", description: "Complete ordinary-label set; repeatable."}, {name: "--clear", description: "Remove all ordinary labels."}, {name: "--json", description: "Required; emit JSON outcomes."}}},
+	"scope":          {path: "scope", usage: "wbd scope <create|list|show|rename|active|activate|deactivate|add|remove|move> [options]", summary: "Manage named backlog scopes through bd."},
 	"scope create": {
 		path: "scope create", usage: "wbd scope create <id> <name> [--activate] [--json]", summary: "Create a named backlog scope.",
 		options: []optionSpec{{name: "--activate", description: "Activate the scope in the same backend call."}, {name: "--json", description: "Emit JSON."}},
@@ -362,6 +366,10 @@ type request struct {
 	scopePaginate      bool
 	scopeLimitSet      bool
 	scopeCursor        string
+	labelsOperation    string
+	labelsEpic         string
+	labels             []string
+	labelsClear        bool
 }
 
 func commandName(arguments []string) (string, error) {
@@ -444,6 +452,8 @@ func parse(arguments []string) (request, error) {
 		return parseClose(result, arguments)
 	case "migrate":
 		return parseMigrate(result, arguments)
+	case "labels":
+		return parseLabels(result, arguments)
 	case "comments":
 		if len(arguments) == 0 {
 			return result, errors.New(usageFor("comments"))
@@ -524,6 +534,106 @@ func parseMigrate(result request, arguments []string) (request, error) {
 	if !result.json || result.migrateDryRun == result.migrateApply {
 		return result, errors.New(usageFor("migrate"))
 	}
+	return result, nil
+}
+
+func parseLabels(result request, arguments []string) (request, error) {
+	if len(arguments) == 0 || !oneOf(arguments[0], "add", "remove", "replace") {
+		return result, errors.New(usageFor("labels"))
+	}
+	result.labelsOperation = arguments[0]
+	seen := map[string]bool{}
+	for arguments = arguments[1:]; len(arguments) > 0; {
+		arg := arguments[0]
+		arguments = arguments[1:]
+		if arg == "--json" {
+			if err := setJSON(&result); err != nil {
+				return result, err
+			}
+			continue
+		}
+		if arg == "--clear" {
+			if err := markSeen(seen, arg); err != nil {
+				return result, err
+			}
+			result.labelsClear = true
+			continue
+		}
+		flag, value, consumed, matched, err := optionValueFor("labels "+result.labelsOperation, arg, arguments)
+		if err != nil {
+			return result, err
+		}
+		if matched {
+			arguments = arguments[consumed:]
+			switch flag {
+			case "--epic":
+				if err := markSeen(seen, flag); err != nil {
+					return result, err
+				}
+				if err := safeID("labels epic", value); err != nil {
+					return result, err
+				}
+				result.labelsEpic = value
+			case "--labels":
+				parts := strings.Split(value, ",")
+				for _, part := range parts {
+					label := strings.TrimSpace(part)
+					if label == "" {
+						return result, errors.New("label list contains an empty value")
+					}
+					if err := safeValue("label", label); err != nil {
+						return result, err
+					}
+					for _, character := range label {
+						if unicode.IsControl(character) {
+							return result, errors.New("invalid control character in label")
+						}
+					}
+					if strings.Contains(label, `"`) {
+						return result, errors.New("quoted labels are unsupported")
+					}
+					if strings.HasPrefix(label, "ctx:") {
+						return result, errors.New("ctx: labels are wrapper-owned")
+					}
+					if len(label) > 255 {
+						return result, errors.New("label exceeds backend maximum length of 255 bytes")
+					}
+					result.labels = append(result.labels, label)
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			return result, fmt.Errorf("unsupported option for labels %s: %s", result.labelsOperation, arg)
+		}
+		if err := safeID("labels", arg); err != nil {
+			return result, err
+		}
+		result.positionals = append(result.positionals, arg)
+	}
+	if !result.json {
+		return result, errors.New("labels commands require --json")
+	}
+	if (result.labelsEpic != "") == (len(result.positionals) > 0) {
+		return result, errors.New(usageFor("labels " + result.labelsOperation))
+	}
+	if result.labelsOperation == "replace" {
+		if result.labelsClear == (len(result.labels) > 0) {
+			return result, errors.New("replace requires exactly one of --labels or --clear")
+		}
+	} else if result.labelsClear || len(result.labels) == 0 {
+		return result, errors.New("add and remove require --labels")
+	}
+	unique := make(map[string]struct{}, len(result.labels))
+	normalized := result.labels[:0]
+	for _, label := range result.labels {
+		if _, ok := unique[label]; ok {
+			continue
+		}
+		unique[label] = struct{}{}
+		normalized = append(normalized, label)
+	}
+	result.labels = normalized
 	return result, nil
 }
 
