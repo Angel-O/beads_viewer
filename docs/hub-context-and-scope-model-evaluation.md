@@ -1,5 +1,11 @@
 # Hub Context And Scope Model Evaluation
 
+> **Superseded epic guidance (2026-10-25):** This historical model decision
+> records the earlier explicit-context epic model. Installed `wbd` creates
+> epics without context selectors (including empty epics) and derives their
+> contexts from direct children; see `skills/beads-hub/SKILL.md` and
+> `docs/external-history.md` for current behavior.
+
 ## Document Status
 
 | Field | Value |
