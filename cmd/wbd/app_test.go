@@ -145,6 +145,9 @@ func fakeCommandKey(arguments []string) string {
 			if arguments[0] == "show" && len(arguments) > 1 {
 				return "show:" + arguments[1]
 			}
+			if arguments[0] == "update" && len(arguments) > 1 && (slices.Contains(arguments, "--add-label") || slices.Contains(arguments, "--remove-label") || slices.Contains(arguments, "--set-ordinary-labels") || slices.Contains(arguments, "--set-ordinary-labels=")) {
+				return "update:" + arguments[1]
+			}
 			if arguments[0] == "comments" && len(arguments) > 1 {
 				if arguments[1] == "edit" && len(arguments) > 3 {
 					return "comments:edit:" + arguments[2] + ":" + arguments[3]

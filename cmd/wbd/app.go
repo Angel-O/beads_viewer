@@ -477,6 +477,8 @@ func (a *app) run(arguments []string) int {
 		return code
 	case "migrate":
 		return a.migrate(request)
+	case "labels":
+		return a.labels(request)
 	default:
 		return a.fail(errors.New("internal unsupported command"))
 	}
@@ -593,7 +595,7 @@ func helpTarget(arguments []string) (string, bool, error) {
 		return "", true, errors.New(supportedCommands())
 	}
 	path := filtered[0]
-	if (path == "dep" || path == "comments" || path == "scope" || path == "backlog" || path == "epic") && len(filtered) > 1 {
+	if (path == "dep" || path == "comments" || path == "scope" || path == "backlog" || path == "epic" || path == "labels") && len(filtered) > 1 {
 		candidate := path + " " + filtered[1]
 		if _, ok := specFor(candidate); !ok {
 			return "", true, errors.New(usageFor(path))
