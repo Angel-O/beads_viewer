@@ -70,15 +70,20 @@ as a safe fallback. `wbd configure` reconciles an existing registration.
 Creation without a target registers the checkout as needed and uses its current
 context. Repeat `--context <context>` to supply a complete explicit target set,
 or use `--contextless` for a contextless `todo`; neither form registers or adds
-the current checkout. Todos accept zero or more contexts, epics one or more,
-and `task`, `bug`, `feature`, and `chore` exactly one. A `decision` retains only
-the default-current creation form. Issue type is not an update field. Before
-work starts and before any external-history correlation exists, replace contexts
-with repeated `wbd update <id> --context <registered-ctx>` flags, or make a todo
-contextless with `wbd update <todo-id> --contextless`. Omission retains contexts;
-epics, unregistered contexts, and correlated Beads are rejected. The backend
-replaces only `ctx:` labels and atomically reconciles direct parent epics; raw
-`ctx:` label edits remain prohibited. Todo creation first checks the store's
+the current checkout. Todos accept zero or more contexts, epics are created
+without context selectors and may initially have none, and `task`, `bug`,
+`feature`, and `chore` require exactly one context. Epic contexts are derived as
+the union of direct children’s contexts. Attach task, bug, feature, or chore
+children with `parent-child`; each child must have exactly one registered
+context, which need not already be on the epic, and attachment reconciles that
+union. A `decision` retains only the default-current creation form. Issue type
+is not an update field. Before work starts and before any external-history
+correlation exists, replace contexts with repeated `wbd update <id>
+--context <registered-ctx>` flags, or make a todo contextless with `wbd update
+<todo-id> --contextless`. Omission retains contexts; epics, unregistered
+contexts, and correlated Beads are rejected. The backend replaces only `ctx:`
+labels and atomically reconciles direct parent epics; raw `ctx:` label edits
+remain prohibited. Todo creation first checks the store's
 custom-type capability without registering or creating an issue. If unavailable,
 run `wbd bootstrap` explicitly to enable it; creation never aliases todo to task
 or performs setup automatically.
@@ -86,8 +91,9 @@ or performs setup automatically.
 `wbd create <title> --from-todo <todo-id>` atomically creates ordinary project
 work and its native `discovered-from` continuity relation. Todo close and reopen
 remain manual. An epic may parent task, bug, feature, or chore work only when
-the child's context belongs to the epic; decisions and prerequisites use
-ordinary blocking dependencies. `wbd replace <original-id> --context <context>`
+the child has exactly one registered context; that context need not already be
+on the epic. Decisions and prerequisites use ordinary blocking dependencies.
+`wbd replace <original-id> --context <context>`
 replaces a Bead when replacement is intended, not for context correction. It
 prevalidates the request, creates a correctly targeted replacement with native
 supersession and applicable open blocking continuity, and then closes the

@@ -17,14 +17,15 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 ## Choose A Record
 
 - **Todo:** Capture something worth remembering before it is concrete project work. A todo may have repository context, but needs none, need not produce version-controlled work, and cannot own commit correlations. If it becomes project work, create a task, bug, feature, or chore with `--from-todo`; close the todo separately when appropriate.
-- **Epic:** Coordinate a larger outcome made of related concrete work. An epic belongs to one or more contexts; attach task, bug, feature, or chore work with `parent-child` only when the child context belongs to the epic. Decisions and other prerequisites use ordinary blocking dependencies.
+- **Epic:** Coordinate related concrete work. Create it without context selectors; a new epic with no children and no contexts is valid. Its contexts are derived as the union of its direct children’s contexts. Attach task, bug, feature, or chore work with `parent-child`; each child must have exactly one registered context, which need not already be on the epic. Attaching a child reconciles the epic’s context union. Decisions and other prerequisites use ordinary blocking dependencies.
 - **Task, bug, feature, or chore:** Track concrete executable work in exactly one context. Link verified implementation commits to these records.
 - **Decision:** Record a decision in the current context.
 
-For creation, omit selectors only for implicit current-context creation. Repeat
+For creation, omit selectors for implicit current-context creation. Repeat
 `--context <ctx-id>` for every explicitly targeted context; explicit targeting
-replaces rather than adds the current context. Use `--contextless` only for
-intentional contextless creation, and only for a todo.
+replaces rather than adds the current context. Use `--contextless` for an
+intentionally contextless todo. Epic creation is the exception: omit all
+context selectors because epic contexts are derived from direct children.
 
 ## Active Scope Membership
 
@@ -49,6 +50,9 @@ If no active scope exists, the ID is not exact and valid, or the add result
 does not meet all three checks, stop and report the blocker. Do not retry by
 creating or activating a scope.
 
+For an epic, add its exact ID without context selectors; an empty epic has no
+derived contexts yet and is still a valid scope member.
+
 ## Common Flows
 
 ```sh
@@ -62,8 +66,9 @@ wbd create "Investigate flaky authentication" --type todo --context <auth-contex
 wbd create "Send email to bank" --type todo --contextless --json
 
 wbd create "Fix token refresh race" --type bug --context <auth-context> --from-todo <todo-id> --json
-wbd create "Authentication reliability" --type epic --context <auth-context> --json
-wbd dep add <child-id> <epic-id> --type parent-child --json
+wbd create "Authentication reliability" --type epic --json
+wbd dep add <auth-child-id> <epic-id> --type parent-child --json
+# The child's registered context is added to the epic's derived context union.
 wbd link <work-id> HEAD
 # Exact correction only; use the current repository and a verified full SHA.
 wbd unlink <work-id> <full-commit-sha>
