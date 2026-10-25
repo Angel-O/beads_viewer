@@ -425,8 +425,12 @@ type realHubFixture struct {
 
 type realIssue struct {
 	ID           string         `json:"id"`
+	Title        string         `json:"title"`
 	Status       string         `json:"status"`
+	Priority     int            `json:"priority"`
 	IssueType    string         `json:"issue_type"`
+	Description  string         `json:"description"`
+	Assignee     string         `json:"assignee"`
 	Labels       []string       `json:"labels"`
 	CloseReason  string         `json:"close_reason"`
 	Dependencies []realRelation `json:"dependencies"`
