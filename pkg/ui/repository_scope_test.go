@@ -2152,6 +2152,77 @@ func TestRepositoryHistoryProjectionPreservesCommitIdentity(t *testing.T) {
 	}
 }
 
+func TestRepositoryHistoryProjectionAppliesActiveLabelAndRetainsSource(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "alpha", Labels: []string{"ctx:alpha", "work"}, IssueType: model.TypeBug},
+		{ID: "beta", Labels: []string{"ctx:alpha"}, IssueType: model.TypeBug},
+		{ID: "other", Labels: []string{"ctx:alpha", "later"}, IssueType: model.TypeBug},
+		{ID: "feature", Labels: []string{"ctx:alpha", "work"}, IssueType: model.TypeFeature},
+	}
+	m := NewModel(issues, nil, "")
+	m.hubRepositoryMode = true
+	m.repositoryCatalog = hubScopeCatalog("ctx:alpha", "ctx:beta")
+	m.SetRepositoryScope(map[string]bool{"ctx:alpha": true})
+	m.activeIssueTypes = map[model.IssueType]bool{model.TypeBug: true}
+	m.currentFilter = "label:work"
+	shared := correlation.CorrelatedCommit{Repository: "ctx:alpha", SHA: "shared", Message: "shared commit"}
+	report := &correlation.HistoryReport{
+		Histories: map[string]correlation.BeadHistory{
+			"alpha":   {BeadID: "alpha", Commits: []correlation.CorrelatedCommit{shared}},
+			"beta":    {BeadID: "beta", Commits: []correlation.CorrelatedCommit{shared}},
+			"other":   {BeadID: "other", Commits: []correlation.CorrelatedCommit{{SHA: "other"}}},
+			"feature": {BeadID: "feature", Commits: []correlation.CorrelatedCommit{{SHA: "feature"}}},
+		},
+		CommitIndex: correlation.CommitIndex{"shared": {"alpha", "beta"}},
+	}
+	m.historyReport = report
+	m.historyView.SetReport(m.repositoryHistoryReport(report))
+	m.historyReportDataGeneration = m.semanticDataGeneration
+	m.enterHistoryView() // re-project cached source report for the active filter
+	if got := m.historyView.beadIDs; len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("label/repository/type projection IDs = %v, want [alpha]", got)
+	}
+	if got := m.historyView.report.CommitIndex["shared"]; len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("shared commit associations = %v, want [alpha]", got)
+	}
+	m.historyView.ToggleViewMode()
+	commits := m.historyView.GetFilteredCommitList()
+	if len(commits) != 1 || commits[0].SHA != "shared" || len(commits[0].BeadIDs) != 1 || commits[0].BeadIDs[0] != "alpha" {
+		t.Fatalf("Git-mode shared commit rows = %+v, want shared associated only with alpha", commits)
+	}
+
+	// A report delivered after History opens must use the same label projection.
+	m.currentFilter = "label:work"
+	m.historyLoading = true
+	m.historyLoadDataGeneration = m.semanticDataGeneration
+	m.historyLoadRequestGeneration++
+	m.enterHistoryView()
+	updated, _ := m.Update(HistoryLoadedMsg{
+		Report: report, DataGeneration: m.historyLoadDataGeneration,
+		RequestGeneration: m.historyLoadRequestGeneration,
+	})
+	m = updated.(*Model)
+	commits = m.historyView.GetFilteredCommitList()
+	if len(commits) != 1 || commits[0].SHA != "shared" || len(commits[0].BeadIDs) != 1 || commits[0].BeadIDs[0] != "alpha" {
+		t.Fatalf("incoming Git-mode shared commit rows = %+v, want shared associated only with alpha", commits)
+	}
+
+	m.currentFilter = "label:later"
+	m.historyView.ToggleViewMode()
+	m.enterHistoryView()
+	if got := m.historyView.beadIDs; len(got) != 1 || got[0] != "other" {
+		t.Fatalf("changed-label projection IDs = %v, want [other]", got)
+	}
+	m.currentFilter = "all"
+	m.enterHistoryView()
+	if got := m.historyView.beadIDs; len(got) != 3 || got[0] != "alpha" || got[1] != "beta" || got[2] != "other" {
+		t.Fatalf("cleared-label projection IDs = %v, want [alpha beta other]", got)
+	}
+	if len(report.Histories) != 4 || len(report.CommitIndex["shared"]) != 2 {
+		t.Fatalf("source report was modified: histories=%d shared associations=%v", len(report.Histories), report.CommitIndex["shared"])
+	}
+}
+
 func TestScopedIssueParticipatesInCrossRepositoryLabelCycle(t *testing.T) {
 	issues := []model.Issue{
 		{ID: "visible", Labels: []string{"work"}, Dependencies: []*model.Dependency{{DependsOnID: "hidden", Type: model.DepBlocks}}},

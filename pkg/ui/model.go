@@ -11592,6 +11592,7 @@ func (m *Model) enterHistoryView() tea.Cmd {
 	m.focused = focusHistory
 
 	if m.historyReportIsCurrent() && !m.historyLoadFailed {
+		m.historyView.SetReport(m.repositoryHistoryReport(m.historyReport))
 		m.statusMsg = fmt.Sprintf("Loaded history: %d beads with commits", m.historyView.report.Stats.BeadsWithCommits)
 		m.statusIsError = false
 		return nil

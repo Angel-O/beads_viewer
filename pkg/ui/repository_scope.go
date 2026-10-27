@@ -1476,15 +1476,22 @@ func (m *Model) rebuildRepositoryTree() {
 
 func (m Model) repositoryHistoryReport(report *correlation.HistoryReport) *correlation.HistoryReport {
 	typeFilterActive := len(m.activeIssueTypes) > 0
-	if m.usesHubScope() && m.repositorySelection.Mode() == repositorypkg.SelectionAll && !typeFilterActive {
+	labelFilterActive := strings.HasPrefix(m.currentFilter, "label:")
+	if m.usesHubScope() && m.repositorySelection.Mode() == repositorypkg.SelectionAll && !typeFilterActive && !labelFilterActive {
 		return report
 	}
-	if !m.usesHubScope() && m.repositorySelection.Mode() == repositorypkg.SelectionAll && !typeFilterActive {
+	if !m.usesHubScope() && m.repositorySelection.Mode() == repositorypkg.SelectionAll && !typeFilterActive && !labelFilterActive {
 		return report
 	}
 	ids := m.repositoryIssueIDs
-	if typeFilterActive {
-		ids = issueIDSet(m.typeFilteredIssues(m.repositoryIssues))
+	if typeFilterActive || labelFilterActive {
+		ids = make(map[string]bool)
+		for _, issue := range m.repositoryIssues {
+			if typeFilterActive && !m.matchesIssueType(issue) || labelFilterActive && !m.matchesCurrentFilter(issue) {
+				continue
+			}
+			ids[issue.ID] = true
+		}
 	}
 	return projectHistoryReport(report, ids, m.repositorySelection)
 }
