@@ -369,6 +369,7 @@ func TestSortingByPriorityAndDate(t *testing.T) {
 	}
 
 	b := ui.NewBoardModel(issues, theme)
+	b.CycleCardSort() // Select the original priority/date order under the new Recently Updated default.
 
 	// First should be high priority, newer date
 	sel := b.SelectedIssue()

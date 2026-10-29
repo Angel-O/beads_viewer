@@ -559,6 +559,7 @@ func (b *BoardModel) getColumnHeaders() ([]string, []string) {
 func NewBoardModel(issues []model.Issue, theme Theme) BoardModel {
 	// Group issues by default mode (status) - bv-wjs0
 	cols := groupIssuesByMode(issues, SwimByStatus)
+	cols = sortBoardColumns(cols, BoardSortUpdated)
 
 	// Initialize markdown renderer for detail panel (bv-r6kh)
 	var mdRenderer *glamour.TermRenderer
@@ -580,7 +581,8 @@ func NewBoardModel(issues []model.Issue, theme Theme) BoardModel {
 		focusedCol:   0,
 		theme:        theme,
 		swimLaneMode: SwimByStatus, // Default mode (bv-wjs0)
-		allIssues:    issues,       // Store for regrouping (bv-wjs0)
+		cardSort:     BoardSortUpdated,
+		allIssues:    issues, // Store for regrouping (bv-wjs0)
 		blocksIndex:  buildBlocksIndex(issues),
 		issueMap:     issueMap,
 		candidateIDs: candidateIDs,

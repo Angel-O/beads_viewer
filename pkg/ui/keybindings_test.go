@@ -465,16 +465,21 @@ func TestKeyDispatch_GraphSearchConsumesInputAndSelectsMatches(t *testing.T) {
 
 func TestBoardSortAndGroupingBindingsAndHelp(t *testing.T) {
 	issues := []model.Issue{
-		{ID: "older", Status: model.StatusOpen, Priority: 1, UpdatedAt: boardOrderTime(1)},
-		{ID: "newer", Status: model.StatusOpen, Priority: 1, UpdatedAt: boardOrderTime(2)},
+		{ID: "older", Status: model.StatusOpen, Priority: 1, CreatedAt: boardOrderTime(2), UpdatedAt: boardOrderTime(1)},
+		{ID: "newer", Status: model.StatusOpen, Priority: 1, CreatedAt: boardOrderTime(1), UpdatedAt: boardOrderTime(2)},
 	}
 	m := NewModel(issues, nil, "")
 	updated, _ := m.Update(keyMsg("b"))
 	m = updated.(*Model)
 	updated, _ = m.Update(keyMsg("s"))
 	m = updated.(*Model)
+	if m.board.GetCardSort() != BoardSortDefault || m.board.columns[ColOpen][0].ID != "older" {
+		t.Fatalf("lowercase s did not cycle to default card sorting: sort=%v order=%v", m.board.GetCardSort(), boardOrderIDs(m.board.columns[ColOpen]))
+	}
+	updated, _ = m.Update(keyMsg("s"))
+	m = updated.(*Model)
 	if m.board.GetCardSort() != BoardSortUpdated || m.board.GetSwimLaneMode() != SwimByStatus || m.board.columns[ColOpen][0].ID != "newer" {
-		t.Fatalf("lowercase s did not select updated card sorting: sort=%v mode=%v order=%v", m.board.GetCardSort(), m.board.GetSwimLaneMode(), boardOrderIDs(m.board.columns[ColOpen]))
+		t.Fatalf("lowercase s did not cycle to updated card sorting: sort=%v mode=%v order=%v", m.board.GetCardSort(), m.board.GetSwimLaneMode(), boardOrderIDs(m.board.columns[ColOpen]))
 	}
 	updated, _ = m.Update(keyMsg("S"))
 	m = updated.(*Model)
