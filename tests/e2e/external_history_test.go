@@ -197,13 +197,13 @@ case " $* " in
     exit 0
     ;;
 esac
-printf '{"schema_version":1,"issues":['
+printf '{"schema_version":2,"issues":['
 separator=
 for arg in "$@"; do
   case "$arg" in
     work-*)
       bead="$arg"
-      printf '%s{"issue_id":"%s","snapshots":[{"CommitHash":"dolt-closed-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"%s","status":"in_progress","issue_type":"task"}},{"CommitHash":"dolt-created-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"%s","status":"open","issue_type":"task"}}]}' "$separator" "$bead" "$bead" "$bead" "$bead" "$bead"
+      printf '%s{"issue_id":"%s","states":[{"Issue":{"id":"%s","status":"in_progress","issue_type":"task"},"occurrences":[{"CommitHash":"dolt-closed-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z"}]},{"Issue":{"id":"%s","status":"open","issue_type":"task"},"occurrences":[{"CommitHash":"dolt-created-%s","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z"}]}]}' "$separator" "$bead" "$bead" "$bead" "$bead" "$bead"
       separator=,
       ;;
   esac
@@ -700,7 +700,7 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bulkInvocation := fmt.Sprintf("--db %s --readonly history work-1 work-2 --json", filepath.Join(fixture.storeRoot, ".beads"))
+	bulkInvocation := fmt.Sprintf("--db %s --readonly history work-1 work-2 --json --compact", filepath.Join(fixture.storeRoot, ".beads"))
 	if strings.Count(string(logData), bulkInvocation) != 1 {
 		t.Fatalf("lifecycle provider queried the wrong beads: %s", logData)
 	}
@@ -715,7 +715,7 @@ func TestExternalHistoryUsesRealRepositoriesAndBeadsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selectedInvocation := fmt.Sprintf("--db %s --readonly history work-3 --json", filepath.Join(fixture.storeRoot, ".beads"))
+	selectedInvocation := fmt.Sprintf("--db %s --readonly history work-3 --json --compact", filepath.Join(fixture.storeRoot, ".beads"))
 	if strings.Count(string(logData), selectedInvocation) != 1 {
 		t.Fatalf("selected lifecycle-only bead query was not scoped: %s", logData)
 	}

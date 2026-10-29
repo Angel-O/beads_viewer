@@ -29,12 +29,23 @@ type beadsBulkHistoryEnvelope struct {
 }
 
 type beadsBulkHistoryIssue struct {
-	IssueID   string                 `json:"issue_id"`
-	Snapshots []beadsHistorySnapshot `json:"snapshots"`
+	IssueID string                  `json:"issue_id"`
+	States  []beadsBulkHistoryState `json:"states"`
+}
+
+type beadsBulkHistoryState struct {
+	Issue       json.RawMessage              `json:"Issue"`
+	Occurrences []beadsBulkHistoryOccurrence `json:"occurrences"`
+}
+
+type beadsBulkHistoryOccurrence struct {
+	CommitHash string `json:"CommitHash"`
+	Committer  string `json:"Committer"`
+	CommitDate string `json:"CommitDate"`
 }
 
 const (
-	beadsBulkHistorySchemaVersion = 1
+	beadsBulkHistorySchemaVersion = 2
 	beadsBulkHistoryMaxIDs        = 1000
 	beadsBulkHistoryMaxIDLength   = 255
 	// Bulk history can contain many full issue snapshots, but provider output
@@ -128,7 +139,7 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 	}
 	args := []string{"--db", store, "--readonly", "history"}
 	args = append(args, ids...)
-	args = append(args, "--json")
+	args = append(args, "--json", "--compact")
 	cmd := exec.CommandContext(commandContext, "bd", args...)
 	out, diagnostic, err := runBulkHistoryCommand(cmd)
 	if err != nil {
@@ -151,15 +162,16 @@ func loadBeadsLifecycle(ctx context.Context, store string, beads []BeadInfo, opt
 
 	groups, err := parseBulkBeadsHistory(out, ids, store)
 	if err != nil {
-		if isBulkHistoryResponseIncompatibility(out, ids) {
-			return nil, bulkHistoryCapabilityError(store, err, "incompatible single-ID History response")
+		if isBulkHistoryResponseIncompatibility(out, ids) || isBulkHistoryVersionIncompatibility(out) {
+			return nil, bulkHistoryCapabilityError(store, err, "incompatible History response; compact schema v2 is required")
 		}
 		return nil, err
 	}
 
 	var events []BeadEvent
 	for i, bead := range selected {
-		beadEvents, err := lifecycleEventsFromSnapshots(bead.ID, groups[i].Snapshots, opts)
+		snapshots := expandCompactHistory(groups[i].States)
+		beadEvents, err := lifecycleEventsFromSnapshots(bead.ID, snapshots, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -210,11 +222,13 @@ func isBulkHistoryCapabilityDiagnostic(diagnostic string) bool {
 		strings.Contains(diagnostic, "accepts 1 argument, received ") ||
 		strings.Contains(diagnostic, "unknown command \"history\"") ||
 		strings.Contains(diagnostic, "does not support bulk history") ||
-		strings.Contains(diagnostic, "bulk history is not supported")
+		strings.Contains(diagnostic, "bulk history is not supported") ||
+		strings.Contains(diagnostic, "unknown flag: --compact") ||
+		strings.Contains(diagnostic, "unknown shorthand flag: 'c'")
 }
 
 func bulkHistoryCapabilityError(store string, cause error, diagnostic string) error {
-	message := fmt.Sprintf("loading bulk Beads lifecycle from %q: bulk History support is required; install a Beads CLI that supports 'history <bead-id>... --json'", store)
+	message := fmt.Sprintf("loading bulk Beads lifecycle from %q: compact bulk History support is required; install a Beads CLI that supports 'history <bead-id>... --json --compact' (schema v2)", store)
 	if diagnostic == "" {
 		return fmt.Errorf("%s: %w", message, cause)
 	}
@@ -225,8 +239,15 @@ func isBulkHistoryResponseIncompatibility(data []byte, requestedIDs []string) bo
 	if len(requestedIDs) != 1 {
 		return false
 	}
-	var snapshots []beadsHistorySnapshot
-	return json.Unmarshal(bytes.TrimSpace(data), &snapshots) == nil
+	trimmed := bytes.TrimSpace(data)
+	return len(trimmed) > 0 && trimmed[0] == '['
+}
+
+func isBulkHistoryVersionIncompatibility(data []byte) bool {
+	var envelope struct {
+		SchemaVersion *int `json:"schema_version"`
+	}
+	return json.Unmarshal(bytes.TrimSpace(data), &envelope) == nil && envelope.SchemaVersion != nil && *envelope.SchemaVersion != beadsBulkHistorySchemaVersion
 }
 
 func validateBulkHistoryRequestIDs(ids []string) error {
@@ -293,12 +314,21 @@ func parseBulkBeadsHistory(data []byte, requestedIDs []string, store string) ([]
 		if _, expected := requested[group.IssueID]; !expected {
 			return nil, fmt.Errorf("parsing bulk Beads lifecycle from %q: unexpected issue group %q", store, group.IssueID)
 		}
-		if group.Snapshots == nil {
-			return nil, fmt.Errorf("parsing bulk Beads lifecycle for %q from %q: snapshots must be a JSON array", group.IssueID, store)
+		if group.States == nil {
+			return nil, fmt.Errorf("parsing bulk Beads lifecycle for %q from %q: states must be a JSON array", group.IssueID, store)
 		}
-		for snapshotIndex := range group.Snapshots {
-			if err := validateBulkHistorySnapshot(group.IssueID, group.Snapshots[snapshotIndex]); err != nil {
-				return nil, fmt.Errorf("parsing bulk Beads lifecycle for %q from %q snapshot %d: %w", group.IssueID, store, snapshotIndex, err)
+		for stateIndex := range group.States {
+			state := &group.States[stateIndex]
+			if len(state.Occurrences) == 0 {
+				return nil, fmt.Errorf("parsing bulk Beads lifecycle for %q from %q state %d: occurrences must be a non-empty JSON array", group.IssueID, store, stateIndex)
+			}
+			if err := validateBulkHistoryIssue(group.IssueID, state.Issue); err != nil {
+				return nil, fmt.Errorf("parsing bulk Beads lifecycle for %q from %q state %d: %w", group.IssueID, store, stateIndex, err)
+			}
+			for occurrenceIndex, occurrence := range state.Occurrences {
+				if err := validateBulkHistoryOccurrence(occurrence); err != nil {
+					return nil, fmt.Errorf("parsing bulk Beads lifecycle for %q from %q state %d occurrence %d: %w", group.IssueID, store, stateIndex, occurrenceIndex, err)
+				}
 			}
 		}
 	}
@@ -326,18 +356,22 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func validateBulkHistorySnapshot(groupID string, snapshot beadsHistorySnapshot) error {
-	if snapshot.CommitHash == "" {
+func validateBulkHistoryOccurrence(occurrence beadsBulkHistoryOccurrence) error {
+	if occurrence.CommitHash == "" {
 		return fmt.Errorf("missing CommitHash")
 	}
-	if _, err := time.Parse(time.RFC3339, snapshot.CommitDate); err != nil {
-		return fmt.Errorf("parsing Beads lifecycle timestamp %q: %w", snapshot.CommitDate, err)
+	if _, err := time.Parse(time.RFC3339, occurrence.CommitDate); err != nil {
+		return fmt.Errorf("parsing Beads lifecycle timestamp %q: %w", occurrence.CommitDate, err)
 	}
-	if len(snapshot.Issue) == 0 || bytes.Equal(bytes.TrimSpace(snapshot.Issue), []byte("null")) {
+	return nil
+}
+
+func validateBulkHistoryIssue(groupID string, issueJSON json.RawMessage) error {
+	if len(issueJSON) == 0 || bytes.Equal(bytes.TrimSpace(issueJSON), []byte("null")) {
 		return fmt.Errorf("Issue must be a JSON object")
 	}
 	var issue map[string]any
-	if err := json.Unmarshal(snapshot.Issue, &issue); err != nil {
+	if err := json.Unmarshal(issueJSON, &issue); err != nil {
 		return fmt.Errorf("parsing Beads lifecycle issue snapshot: %w", err)
 	}
 	if issue == nil {
@@ -351,6 +385,40 @@ func validateBulkHistorySnapshot(groupID string, snapshot beadsHistorySnapshot) 
 		return fmt.Errorf("issue snapshot for %q has invalid status", groupID)
 	}
 	return nil
+}
+
+func expandCompactHistory(states []beadsBulkHistoryState) []beadsHistorySnapshot {
+	type datedSnapshot struct {
+		beadsHistorySnapshot
+		timestamp time.Time
+	}
+	var ordered []datedSnapshot
+	for _, state := range states {
+		for _, occurrence := range state.Occurrences {
+			snapshot := beadsHistorySnapshot{
+				CommitHash: occurrence.CommitHash,
+				Committer:  occurrence.Committer,
+				CommitDate: occurrence.CommitDate,
+				Issue:      state.Issue,
+			}
+			// The strict reader validates timestamps before reconstruction.
+			timestamp, _ := time.Parse(time.RFC3339, snapshot.CommitDate)
+			ordered = append(ordered, datedSnapshot{beadsHistorySnapshot: snapshot, timestamp: timestamp})
+		}
+	}
+	// Compact group and occurrence order is unspecified. Restore producer order
+	// so stable lexical lifecycle sorting retains baseline tie behavior.
+	sort.Slice(ordered, func(i, j int) bool {
+		if !ordered[i].timestamp.Equal(ordered[j].timestamp) {
+			return ordered[i].timestamp.After(ordered[j].timestamp)
+		}
+		return ordered[i].CommitHash > ordered[j].CommitHash
+	})
+	snapshots := make([]beadsHistorySnapshot, len(ordered))
+	for i := range ordered {
+		snapshots[i] = ordered[i].beadsHistorySnapshot
+	}
+	return snapshots
 }
 
 func lifecycleEventsFromSnapshots(beadID string, snapshots []beadsHistorySnapshot, opts CorrelatorOptions) ([]BeadEvent, error) {

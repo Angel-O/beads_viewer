@@ -86,14 +86,14 @@ func installBeadsHistoryHelper(t *testing.T, mode, response, stderr string) bead
 }
 
 func TestLoadBeadsLifecycleUsesOneBulkProcessAndPreservesEvents(t *testing.T) {
-	response := `{"schema_version":1,"issues":[` +
-		`{"issue_id":"alpha","snapshots":[` +
-		`{"CommitHash":"alpha-claimed","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z","Issue":{"id":"alpha","status":"in_progress"}},` +
-		`{"CommitHash":"alpha-created","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z","Issue":{"id":"alpha","status":"open"}}]},` +
-		`{"issue_id":"missing","snapshots":[]},` +
-		`{"issue_id":"zeta","snapshots":[` +
-		`{"CommitHash":"zeta-closed","Committer":"Lifecycle Bot","CommitDate":"2026-01-04T03:04:05Z","Issue":{"id":"zeta","status":"closed"}},` +
-		`{"CommitHash":"zeta-created","Committer":"Lifecycle Bot","CommitDate":"2026-01-02T03:04:05Z","Issue":{"id":"zeta","status":"open"}}]}` +
+	response := `{"schema_version":2,"issues":[` +
+		`{"issue_id":"alpha","states":[` +
+		`{"Issue":{"id":"alpha","status":"in_progress"},"occurrences":[{"CommitHash":"alpha-claimed","Committer":"Lifecycle Bot","CommitDate":"2026-01-03T03:04:05Z"}]},` +
+		`{"Issue":{"id":"alpha","status":"open"},"occurrences":[{"CommitHash":"alpha-created","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T03:04:05Z"}]}]},` +
+		`{"issue_id":"missing","states":[]},` +
+		`{"issue_id":"zeta","states":[` +
+		`{"Issue":{"id":"zeta","status":"closed"},"occurrences":[{"CommitHash":"zeta-closed","Committer":"Lifecycle Bot","CommitDate":"2026-01-04T03:04:05Z"}]},` +
+		`{"Issue":{"id":"zeta","status":"open"},"occurrences":[{"CommitHash":"zeta-created","Committer":"Lifecycle Bot","CommitDate":"2026-01-02T03:04:05Z"}]}]}` +
 		`]}`
 	fixture := installBeadsHistoryHelper(t, "success", response, "")
 
@@ -127,16 +127,57 @@ func TestLoadBeadsLifecycleUsesOneBulkProcessAndPreservesEvents(t *testing.T) {
 	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store", "alpha", "missing", "zeta"))
 }
 
+func TestCompactHistoryMatchesBaselineThroughLifecycleFunction(t *testing.T) {
+	// Includes repeated state occurrences, a nonmonotonic serialized date, and a
+	// date/hash tie so reconstruction and stable lifecycle ordering are covered.
+	const response = `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[` +
+		`{"Issue":{"id":"alpha","status":"open","title":"unchanged"},"occurrences":[` +
+		`{"CommitHash":"a1","Committer":"","CommitDate":"2026-01-02T00:00:00.9Z"},` +
+		`{"CommitHash":"a3","Committer":"author-3","CommitDate":"2026-01-03T00:00:00Z"}]},` +
+		`{"Issue":{"id":"alpha","status":"in_progress","title":"changed"},"occurrences":[` +
+		`{"CommitHash":"a2","Committer":"author-2","CommitDate":"2026-01-02T00:00:00Z"}]}]}]}`
+
+	groups, err := parseBulkBeadsHistory([]byte(response), []string{"alpha"}, "/fixture/store")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := expandCompactHistory(groups[0].States)
+	baseline := []beadsHistorySnapshot{
+		{CommitHash: "a3", Committer: "author-3", CommitDate: "2026-01-03T00:00:00Z", Issue: json.RawMessage(`{"id":"alpha","status":"open","title":"unchanged"}`)},
+		{CommitHash: "a1", Committer: "", CommitDate: "2026-01-02T00:00:00.9Z", Issue: json.RawMessage(`{"id":"alpha","status":"open","title":"unchanged"}`)},
+		{CommitHash: "a2", Committer: "author-2", CommitDate: "2026-01-02T00:00:00Z", Issue: json.RawMessage(`{"id":"alpha","status":"in_progress","title":"changed"}`)},
+	}
+	// Baseline producer ordering is date DESC then hash DESC.
+	if !reflect.DeepEqual(candidate, baseline) {
+		t.Fatalf("expanded occurrence sequence differs:\ngot:  %#v\nwant: %#v", candidate, baseline)
+	}
+	opts := CorrelatorOptions{}
+	gotEvents, err := lifecycleEventsFromSnapshots("alpha", candidate, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvents, err := lifecycleEventsFromSnapshots("alpha", baseline, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotEvents, wantEvents) {
+		t.Fatalf("candidate lifecycle events differ:\ngot:  %#v\nwant: %#v", gotEvents, wantEvents)
+	}
+	if len(gotEvents) != 3 || gotEvents[0].CommitSHA != "a1" || gotEvents[0].Author != "" || gotEvents[1].CommitSHA != "a2" || gotEvents[1].Author != "author-2" || gotEvents[2].CommitSHA != "a3" {
+		t.Fatalf("full lifecycle output = %#v", gotEvents)
+	}
+}
+
 func TestLoadBeadsLifecycle76IDsStartsOneProcess(t *testing.T) {
 	ids := make([]string, 76)
 	groups := make([]string, 76)
 	beads := make([]BeadInfo, 76)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("work-%03d", i)
-		groups[i] = fmt.Sprintf(`{"issue_id":%q,"snapshots":[]}`, ids[i])
+		groups[i] = fmt.Sprintf(`{"issue_id":%q,"states":[]}`, ids[i])
 		beads[75-i] = BeadInfo{ID: ids[i]}
 	}
-	response := `{"schema_version":1,"issues":[` + strings.Join(groups, ",") + `]}`
+	response := `{"schema_version":2,"issues":[` + strings.Join(groups, ",") + `]}`
 	fixture := installBeadsHistoryHelper(t, "success", response, "")
 	if events, err := loadBeadsLifecycle(context.Background(), "/fixture/store", beads, CorrelatorOptions{}); err != nil {
 		t.Fatal(err)
@@ -149,7 +190,7 @@ func TestLoadBeadsLifecycle76IDsStartsOneProcess(t *testing.T) {
 func bulkHistoryArgs(store string, ids ...string) []string {
 	args := []string{"--db", store, "--readonly", "history"}
 	args = append(args, ids...)
-	return append(args, "--json")
+	return append(args, "--json", "--compact")
 }
 
 func assertBeadsHistoryProcess(t *testing.T, fixture beadsHistoryProcessFixture, wantArgs []string) {
@@ -172,32 +213,35 @@ func assertBeadsHistoryProcess(t *testing.T, fixture beadsHistoryProcessFixture,
 }
 
 func TestParseBulkBeadsHistoryRejectsInvalidResponses(t *testing.T) {
-	validSnapshot := `{"CommitHash":"commit-1","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Issue":{"id":"alpha","status":"open"}}`
+	validSnapshot := `{"Issue":{"id":"alpha","status":"open"},"occurrences":[{"CommitHash":"commit-1","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z"}]}`
 	tests := []struct {
 		name, response, want string
 	}{
 		{name: "malformed JSON", response: `{`, want: "invalid character"},
-		{name: "trailing JSON", response: `{"schema_version":1,"issues":[]} {}`, want: "trailing JSON"},
-		{name: "unknown envelope field", response: `{"schema_version":1,"issues":[],"alternate":[]}`, want: "unknown field"},
+		{name: "trailing JSON", response: `{"schema_version":2,"issues":[]} {}`, want: "trailing JSON"},
+		{name: "unknown envelope field", response: `{"schema_version":2,"issues":[],"alternate":[]}`, want: "unknown field"},
 		{name: "missing schema", response: `{"issues":[]}`, want: "unsupported schema_version 0"},
-		{name: "unsupported schema", response: `{"schema_version":2,"issues":[]}`, want: "unsupported schema_version 2"},
-		{name: "null groups", response: `{"schema_version":1,"issues":null}`, want: "issues must be a JSON array"},
-		{name: "too many groups", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[]},{"issue_id":"beta","snapshots":[]},{"issue_id":"gamma","snapshots":[]}]}`, want: "3 issue groups for 2 requested IDs"},
-		{name: "duplicate group", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[]},{"issue_id":"alpha","snapshots":[]}]}`, want: "duplicate issue group"},
-		{name: "unexpected group", response: `{"schema_version":1,"issues":[{"issue_id":"other","snapshots":[]}]}`, want: "unexpected issue group"},
-		{name: "missing group", response: `{"schema_version":1,"issues":[]}`, want: "missing requested issue group"},
-		{name: "wrong group order", response: `{"schema_version":1,"issues":[{"issue_id":"beta","snapshots":[]},{"issue_id":"alpha","snapshots":[]}]}`, want: "issue group 0"},
-		{name: "malformed group ID", response: `{"schema_version":1,"issues":[{"issue_id":" alpha ","snapshots":[]}]}`, want: "malformed bulk History issue ID"},
-		{name: "oversized group ID", response: fmt.Sprintf(`{"schema_version":1,"issues":[{"issue_id":%q,"snapshots":[]}]}`, strings.Repeat("x", 256)), want: "256 characters"},
-		{name: "unknown group field", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[],"entries":[]}]}`, want: "unknown field"},
-		{name: "null snapshots", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":null}]}`, want: "snapshots must be a JSON array"},
-		{name: "unknown snapshot field", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Issue":{"id":"alpha","status":"open"},"Extra":true}]}]}`, want: "unknown field"},
-		{name: "missing commit hash", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[{"Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Issue":{"id":"alpha","status":"open"}}]}]}`, want: "missing CommitHash"},
-		{name: "invalid timestamp", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[{"CommitHash":"x","Committer":"bot","CommitDate":"yesterday","Issue":{"id":"alpha","status":"open"}}]}]}`, want: "lifecycle timestamp"},
-		{name: "null issue", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Issue":null}]}]}`, want: "Issue must be a JSON object"},
-		{name: "issue ID mismatch", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Issue":{"id":"beta","status":"open"}}]}]}`, want: "does not match group ID"},
-		{name: "invalid status", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Issue":{"id":"alpha","status":1}}]}]}`, want: "invalid status"},
-		{name: "valid snapshot control with missing second group", response: `{"schema_version":1,"issues":[{"issue_id":"alpha","snapshots":[` + validSnapshot + `]}]}`, want: "missing requested issue group"},
+		{name: "unsupported schema", response: `{"schema_version":1,"issues":[]}`, want: "unsupported schema_version 1"},
+		{name: "null groups", response: `{"schema_version":2,"issues":null}`, want: "issues must be a JSON array"},
+		{name: "too many groups", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[]},{"issue_id":"beta","states":[]},{"issue_id":"gamma","states":[]}]}`, want: "3 issue groups for 2 requested IDs"},
+		{name: "duplicate group", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[]},{"issue_id":"alpha","states":[]}]}`, want: "duplicate issue group"},
+		{name: "unexpected group", response: `{"schema_version":2,"issues":[{"issue_id":"other","states":[]}]}`, want: "unexpected issue group"},
+		{name: "missing group", response: `{"schema_version":2,"issues":[]}`, want: "missing requested issue group"},
+		{name: "wrong group order", response: `{"schema_version":2,"issues":[{"issue_id":"beta","states":[]},{"issue_id":"alpha","states":[]}]}`, want: "issue group 0"},
+		{name: "malformed group ID", response: `{"schema_version":2,"issues":[{"issue_id":" alpha ","states":[]}]}`, want: "malformed bulk History issue ID"},
+		{name: "oversized group ID", response: fmt.Sprintf(`{"schema_version":2,"issues":[{"issue_id":%q,"states":[]}]}`, strings.Repeat("x", 256)), want: "256 characters"},
+		{name: "unknown group field", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[],"entries":[]}]}`, want: "unknown field"},
+		{name: "null states", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":null}]}`, want: "states must be a JSON array"},
+		{name: "empty occurrences", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":"open"},"occurrences":[]}]}]}`, want: "occurrences must be a non-empty"},
+		{name: "null occurrences", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":"open"},"occurrences":null}]}]}`, want: "occurrences must be a non-empty"},
+		{name: "unknown state field", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":"open"},"occurrences":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z"}],"Extra":true}]}]}`, want: "unknown field"},
+		{name: "unknown occurrence field", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":"open"},"occurrences":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z","Extra":true}]}]}]}`, want: "unknown field"},
+		{name: "missing commit hash", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":"open"},"occurrences":[{"Committer":"bot","CommitDate":"2026-01-01T00:00:00Z"}]}]}]}`, want: "missing CommitHash"},
+		{name: "invalid timestamp", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":"open"},"occurrences":[{"CommitHash":"x","Committer":"bot","CommitDate":"yesterday"}]}]}]}`, want: "lifecycle timestamp"},
+		{name: "null issue", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":null,"occurrences":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z"}]}]}]}`, want: "Issue must be a JSON object"},
+		{name: "issue ID mismatch", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"beta","status":"open"},"occurrences":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z"}]}]}]}`, want: "does not match group ID"},
+		{name: "invalid status", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[{"Issue":{"id":"alpha","status":1},"occurrences":[{"CommitHash":"x","Committer":"bot","CommitDate":"2026-01-01T00:00:00Z"}]}]}]}`, want: "invalid status"},
+		{name: "valid state control with missing second group", response: `{"schema_version":2,"issues":[{"issue_id":"alpha","states":[` + validSnapshot + `]}]}`, want: "missing requested issue group"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -218,7 +262,7 @@ func TestLoadBeadsLifecycleRequiresBulkCapabilityWithoutFallback(t *testing.T) {
 		t.Run(diagnostic, func(t *testing.T) {
 			fixture := installBeadsHistoryHelper(t, "failure", "", diagnostic)
 			_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}, {ID: "beta"}}, CorrelatorOptions{})
-			if err == nil || !strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), diagnostic) {
+			if err == nil || !strings.Contains(err.Error(), "compact bulk History support is required") || !strings.Contains(err.Error(), diagnostic) {
 				t.Fatalf("error = %v", err)
 			}
 			assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store", "alpha", "beta"))
@@ -230,8 +274,17 @@ func TestLoadBeadsLifecycleRejectsLegacySingleIDResponse(t *testing.T) {
 	response := `[{"CommitHash":"commit-1","Committer":"Lifecycle Bot","CommitDate":"2026-01-01T00:00:00Z","Issue":{"id":"alpha","status":"open"}}]`
 	fixture := installBeadsHistoryHelper(t, "success", response, "")
 	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
-	if err == nil || !strings.Contains(err.Error(), "bulk History support is required") || !strings.Contains(err.Error(), "incompatible single-ID History response") {
+	if err == nil || !strings.Contains(err.Error(), "compact bulk History support is required") || !strings.Contains(err.Error(), "compact schema v2 is required") {
 		t.Fatalf("error = %v", err)
+	}
+	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store", "alpha"))
+}
+
+func TestLoadBeadsLifecycleReportsCompactUpgradeForUnsupportedVersion(t *testing.T) {
+	fixture := installBeadsHistoryHelper(t, "success", `{"schema_version":1,"issues":[{"issue_id":"alpha","states":[]}]}`, "")
+	_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", []BeadInfo{{ID: "alpha"}}, CorrelatorOptions{})
+	if err == nil || !strings.Contains(err.Error(), "compact bulk History support is required") || !strings.Contains(err.Error(), "compact schema v2 is required") {
+		t.Fatalf("error = %v, want actionable backend-upgrade guidance", err)
 	}
 	assertBeadsHistoryProcess(t, fixture, bulkHistoryArgs("/fixture/store", "alpha"))
 }
@@ -352,7 +405,7 @@ func TestLoadBeadsLifecycleRejectsInvalidRequestWithoutProcess(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := installBeadsHistoryHelper(t, "success", `{"schema_version":1,"issues":[]}`, "")
+			fixture := installBeadsHistoryHelper(t, "success", `{"schema_version":2,"issues":[]}`, "")
 			_, err := loadBeadsLifecycle(context.Background(), "/fixture/store", test.beads, CorrelatorOptions{})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
