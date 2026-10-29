@@ -308,12 +308,12 @@ func TestKeyDispatch_DocumentedKeysChangeState(t *testing.T) {
 		}
 	})
 
-	t.Run("s cycles the board swimlane mode", func(t *testing.T) {
+	t.Run("S cycles the board swimlane mode", func(t *testing.T) {
 		m := setupTestModel(t)
 		updated, _ := m.Update(keyMsg("b"))
 		m = updated.(*Model)
 		before := m.board.GetSwimLaneModeName()
-		updated, _ = m.Update(keyMsg("s"))
+		updated, _ = m.Update(keyMsg("S"))
 		m = updated.(*Model)
 		if got := m.board.GetSwimLaneModeName(); got == before {
 			t.Fatalf("swimlane mode did not change from %q", before)
@@ -460,6 +460,53 @@ func TestKeyDispatch_GraphSearchConsumesInputAndSelectsMatches(t *testing.T) {
 	m = updated.(*Model)
 	if selected := m.graphView.SelectedIssue(); selected == nil || selected.ID != "search-a" {
 		t.Fatalf("previous Graph search match = %#v, want search-a", selected)
+	}
+}
+
+func TestBoardSortAndGroupingBindingsAndHelp(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "older", Status: model.StatusOpen, Priority: 1, UpdatedAt: boardOrderTime(1)},
+		{ID: "newer", Status: model.StatusOpen, Priority: 1, UpdatedAt: boardOrderTime(2)},
+	}
+	m := NewModel(issues, nil, "")
+	updated, _ := m.Update(keyMsg("b"))
+	m = updated.(*Model)
+	updated, _ = m.Update(keyMsg("s"))
+	m = updated.(*Model)
+	if m.board.GetCardSort() != BoardSortUpdated || m.board.GetSwimLaneMode() != SwimByStatus || m.board.columns[ColOpen][0].ID != "newer" {
+		t.Fatalf("lowercase s did not select updated card sorting: sort=%v mode=%v order=%v", m.board.GetCardSort(), m.board.GetSwimLaneMode(), boardOrderIDs(m.board.columns[ColOpen]))
+	}
+	updated, _ = m.Update(keyMsg("S"))
+	m = updated.(*Model)
+	if m.board.GetCardSort() != BoardSortUpdated || m.board.GetSwimLaneMode() != SwimByPriority {
+		t.Fatalf("uppercase S did not independently cycle grouping: sort=%v mode=%v", m.board.GetCardSort(), m.board.GetSwimLaneMode())
+	}
+	for _, mode := range []SwimLaneMode{SwimByType, SwimByStatus} {
+		updated, _ = m.Update(keyMsg("S"))
+		m = updated.(*Model)
+		if m.board.GetCardSort() != BoardSortUpdated || m.board.GetSwimLaneMode() != mode {
+			t.Fatalf("uppercase S cycle lost sort or missed mode %v: sort=%v mode=%v", mode, m.board.GetCardSort(), m.board.GetSwimLaneMode())
+		}
+	}
+	m.shortcutsSidebar.SetFocus(focusBoard)
+	m.shortcutsSidebar.SetSize(120, 50)
+	var sidebar strings.Builder
+	for i := 0; i < 10; i++ {
+		sidebar.WriteString(ansi.Strip(m.shortcutsSidebar.View()))
+		m.shortcutsSidebar.ScrollPageDown()
+	}
+	if !strings.Contains(sidebar.String(), "Cycle card sort (default / recently updated)") || !strings.Contains(sidebar.String(), "Cycle swimlane grouping (Status/Priority/Type)") {
+		t.Fatalf("shortcuts sidebar missing board sort/group bindings:\n%s", sidebar.String())
+	}
+	m.focused = focusBoard
+	m.width, m.height = 160, 60
+	help := ansi.Strip(m.renderHelpOverlay())
+	if !strings.Contains(help, "Cycle sort: default / recently") || !strings.Contains(help, "Cycle grouping: Status / Priority") {
+		t.Fatalf("keybindings help missing board sort/group bindings:\n%s", help)
+	}
+	// The list's lowercase and uppercase sort controls stay list-only.
+	if !m.keyRegistry.HasBinding(focusList, "s") || !m.keyRegistry.HasBinding(focusList, "S") {
+		t.Fatal("list sorting bindings were removed")
 	}
 }
 

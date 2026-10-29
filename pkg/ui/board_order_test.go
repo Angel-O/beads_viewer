@@ -159,6 +159,61 @@ func TestBoardOrderMatchesPrecomputedSnapshotForAllModes(t *testing.T) {
 	}
 }
 
+func TestBoardUpdatedSortAndHierarchy(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "older", Status: model.StatusOpen, Priority: 0, UpdatedAt: boardOrderTime(1)},
+		{ID: "tie-b", Status: model.StatusOpen, Priority: 2, UpdatedAt: boardOrderTime(3)},
+		{ID: "child", Status: model.StatusOpen, Priority: 1, UpdatedAt: boardOrderTime(5), Dependencies: []*model.Dependency{{DependsOnID: "epic", Type: model.DepParentChild}}},
+		{ID: "epic", Status: model.StatusOpen, Priority: 3, IssueType: model.TypeEpic, UpdatedAt: boardOrderTime(2)},
+		{ID: "tie-a", Status: model.StatusOpen, Priority: 3, UpdatedAt: boardOrderTime(3)},
+	}
+	b := NewBoardModel(issues, Theme{})
+	if got, want := boardOrderIDs(b.columns[ColOpen]), boardOrderIDs(groupIssuesByMode(issues, SwimByStatus)[ColOpen]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("default order changed: %v", got)
+	}
+	b.CycleCardSort()
+	if got, want := boardOrderIDs(b.columns[ColOpen]), []string{"tie-a", "tie-b", "epic", "child", "older"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updated order = %v, want %v", got, want)
+	}
+	b.CycleCardSort()
+	if got, want := boardOrderIDs(b.columns[ColOpen]), boardOrderIDs(groupIssuesByMode(issues, SwimByStatus)[ColOpen]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored default order = %v, want %v", got, want)
+	}
+}
+
+func TestBoardUpdatedSortSurvivesDirectAndSnapshotRefreshAndGrouping(t *testing.T) {
+	issues := []model.Issue{
+		{ID: "old", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeTask, UpdatedAt: boardOrderTime(1)},
+		{ID: "new", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeBug, UpdatedAt: boardOrderTime(4)},
+	}
+	b := NewBoardModel(issues, Theme{})
+	b.CycleCardSort()
+	issues[0].UpdatedAt = boardOrderTime(5)
+	b.SetIssues(issues)
+	if got, want := boardOrderIDs(b.columns[ColOpen]), []string{"old", "new"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("direct refresh order = %v, want %v", got, want)
+	}
+	b.SetIssues(issues[:1]) // A filter projection preserves the active sort.
+	if b.GetCardSort() != BoardSortUpdated || boardOrderIDs(b.columns[ColOpen])[0] != "old" {
+		t.Fatalf("filtered refresh lost updated sort: sort=%v order=%v", b.GetCardSort(), boardOrderIDs(b.columns[ColOpen]))
+	}
+	b.SetIssues(issues)
+	b.CycleSwimLaneMode()
+	if b.GetCardSort() != BoardSortUpdated || b.columns[1][0].ID != "old" {
+		t.Fatalf("grouping change lost updated sort: sort=%v columns=%v", b.GetCardSort(), b.columns)
+	}
+	issues[0].UpdatedAt = boardOrderTime(1)
+	snapshot := NewSnapshotBuilder(append([]model.Issue(nil), issues...)).Build()
+	cachedOrder := boardOrderIDs(snapshot.BoardState.ByPriority[1])
+	b.SetSnapshot(snapshot)
+	if got, want := boardOrderIDs(b.columns[1]), []string{"new", "old"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot refresh order = %v, want %v", got, want)
+	}
+	if got := boardOrderIDs(snapshot.BoardState.ByPriority[1]); !reflect.DeepEqual(got, cachedOrder) {
+		t.Fatalf("updated board sort mutated cached snapshot: %v", got)
+	}
+}
+
 func TestBoardGroupVisualTreatmentAcrossModes(t *testing.T) {
 	for _, mode := range []SwimLaneMode{SwimByStatus, SwimByPriority, SwimByType} {
 		t.Run(modeName(mode), func(t *testing.T) {
