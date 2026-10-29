@@ -5422,7 +5422,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					"j", "k", "left", "right", "up", "down",
 					"home", "end", "G", "ctrl+d", "ctrl+u",
 					"1", "2", "3", "4", "H", "L", "0", "$",
-					"/", "n", "N", "y", "o", "c", "r", "s", "e", "d",
+					"/", "n", "N", "y", "o", "c", "r", "s", "S", "e", "d",
 					"tab", "enter", "ctrl+j", "ctrl+k":
 					// Cancel any pending combo when pressing other keys
 					m.pendingComboKey = ""
@@ -6282,11 +6282,15 @@ func (m *Model) handleBoardKeys(msg tea.KeyMsg) (*Model, tea.Cmd) {
 	case "r":
 		m.toggleStatusFilter("ready")
 
-	// Swimlane mode cycling (bv-wjs0)
-	case "s":
+	// Swimlane grouping and card sorting
+	case "S":
 		m.board.CycleSwimLaneMode()
 		modeName := m.board.GetSwimLaneModeName()
 		m.statusMsg = fmt.Sprintf("🔀 Swimlane: %s", modeName)
+		m.statusIsError = false
+	case "s":
+		m.board.CycleCardSort()
+		m.statusMsg = fmt.Sprintf("↕ Card sort: %s", m.board.GetCardSortName())
 		m.statusIsError = false
 
 	// Empty column visibility toggle (bv-tf6j)
@@ -8475,7 +8479,8 @@ func (m *Model) renderHelpOverlay() string {
 			{"/", "Search cards"},
 			{"o/c/r", "Open / closed / ready filter"},
 			{"y", "Copy issue ID"},
-			{"s", "Cycle grouping"},
+			{"s", "Cycle sort: default / recently updated"},
+			{"S", "Cycle grouping: Status / Priority / Type"},
 			{"e", "Cycle empty columns"},
 			{"d", "Expand selected card"},
 		}

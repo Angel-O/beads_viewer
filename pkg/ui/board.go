@@ -27,6 +27,7 @@ type BoardModel struct {
 	swimLaneMode SwimLaneMode
 	allIssues    []model.Issue // Store all issues for re-grouping on mode change
 	boardState   *BoardState   // Optional precomputed columns for all swimlane modes (bv-guxz)
+	cardSort     BoardCardSort
 
 	// Reverse dependency index: maps issue ID -> slice of issue IDs it blocks (bv-1daf)
 	blocksIndex map[string][]string
@@ -107,6 +108,13 @@ const (
 
 // SwimLaneModeCount is the total number of swimlane modes for cycling
 const SwimLaneModeCount = 3
+
+type BoardCardSort int
+
+const (
+	BoardSortDefault BoardCardSort = iota
+	BoardSortUpdated
+)
 
 // ColumnStats holds computed statistics for a board column (bv-nl8a)
 type ColumnStats struct {
@@ -191,6 +199,23 @@ func sortIssuesByPriorityAndDate(issues []model.Issue) {
 		}
 		return issues[i].ID < issues[j].ID
 	})
+}
+
+func sortBoardColumns(columns [4][]model.Issue, mode BoardCardSort) [4][]model.Issue {
+	if mode != BoardSortUpdated {
+		return columns
+	}
+	for i := range columns {
+		columns[i] = append([]model.Issue(nil), columns[i]...)
+		sort.Slice(columns[i], func(a, b int) bool {
+			if !columns[i][a].UpdatedAt.Equal(columns[i][b].UpdatedAt) {
+				return columns[i][a].UpdatedAt.After(columns[i][b].UpdatedAt)
+			}
+			return columns[i][a].ID < columns[i][b].ID
+		})
+		orderParentChildGroups(columns[i])
+	}
+	return columns
 }
 
 // orderParentChildGroups keeps each visible epic at its baseline position and
@@ -459,6 +484,20 @@ func (b *BoardModel) GetSwimLaneMode() SwimLaneMode {
 	return b.swimLaneMode
 }
 
+func (b *BoardModel) GetCardSort() BoardCardSort { return b.cardSort }
+
+func (b *BoardModel) GetCardSortName() string {
+	if b.cardSort == BoardSortUpdated {
+		return "Recently Updated"
+	}
+	return "Default"
+}
+
+func (b *BoardModel) CycleCardSort() {
+	b.cardSort = (b.cardSort + 1) % 2
+	b.regroupIssues()
+}
+
 // CycleSwimLaneMode cycles to the next swimlane mode and regroups issues (bv-wjs0)
 func (b *BoardModel) CycleSwimLaneMode() {
 	b.swimLaneMode = SwimLaneMode((int(b.swimLaneMode) + 1) % SwimLaneModeCount)
@@ -472,6 +511,7 @@ func (b *BoardModel) regroupIssues() {
 	} else {
 		b.columns = groupIssuesByMode(b.allIssues, b.swimLaneMode)
 	}
+	b.columns = sortBoardColumns(b.columns, b.cardSort)
 
 	// Reset selection to avoid out-of-bounds
 	for i := 0; i < 4; i++ {
@@ -559,6 +599,7 @@ func (b *BoardModel) SetIssues(issues []model.Issue) {
 
 	// Group by current swimlane mode (bv-wjs0)
 	b.columns = groupIssuesByMode(issues, b.swimLaneMode)
+	b.columns = sortBoardColumns(b.columns, b.cardSort)
 
 	b.blocksIndex = buildBlocksIndex(issues) // Rebuild reverse dependency index (bv-1daf)
 
@@ -653,6 +694,7 @@ func (b *BoardModel) SetSnapshot(s *DataSnapshot) {
 	} else {
 		b.columns = groupIssuesByMode(s.Issues, b.swimLaneMode)
 	}
+	b.columns = sortBoardColumns(b.columns, b.cardSort)
 
 	// Prefer snapshot-precomputed reverse-dependency index when available.
 	graphLayout := s.GetGraphLayout()
@@ -1396,7 +1438,7 @@ func (b *BoardModel) View(width, height int) string {
 func (b BoardModel) renderTitleBar(width int, t Theme) string {
 	// Build title: "BOARD [by: Status]" or "BOARD [by: Priority] [+2 hidden]"
 	modeName := b.GetSwimLaneModeName()
-	title := fmt.Sprintf("BOARD [by: %s]", modeName)
+	title := fmt.Sprintf("BOARD [by: %s] [sort: %s]", modeName, b.GetCardSortName())
 
 	// Add hidden column indicator if columns are hidden
 	hiddenCount := b.HiddenColumnCount()

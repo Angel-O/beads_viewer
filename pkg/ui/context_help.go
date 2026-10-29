@@ -230,8 +230,8 @@ const contextHelpBoard = `## Board View
   /         Start search
   n/N       Next/prev match
 
-**Grouping**
-  s         Cycle: Status/Priority/Type
+**Grouping / card sorting**
+  S grouping; s sort Default/Recently Updated
 **Visual Indicators** (card borders)
   🔴 Red     Has blockers
   🟡 Yellow  High-impact (blocks others)

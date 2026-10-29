@@ -363,7 +363,8 @@ func GetKeyBindingDocs() []KeyBindingDoc {
 		{"l", "Next column", "Board", "board"},
 		{"H", "First column", "Board", "board"},
 		{"L", "Last column", "Board", "board"},
-		{"s", "Cycle swimlane/grouping mode", "Board", "board"},
+		{"s", "Cycle card sort (default / recently updated)", "Board", "board"},
+		{"S", "Cycle swimlane grouping (Status/Priority/Type)", "Board", "board"},
 		{"tab", "Toggle detail", "Board", "board"},
 
 		// Tree View
