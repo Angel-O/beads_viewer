@@ -168,16 +168,22 @@ func TestBoardUpdatedSortAndHierarchy(t *testing.T) {
 		{ID: "tie-a", Status: model.StatusOpen, Priority: 3, UpdatedAt: boardOrderTime(3)},
 	}
 	b := NewBoardModel(issues, Theme{})
-	if got, want := boardOrderIDs(b.columns[ColOpen]), boardOrderIDs(groupIssuesByMode(issues, SwimByStatus)[ColOpen]); !reflect.DeepEqual(got, want) {
-		t.Fatalf("default order changed: %v", got)
+	if b.GetCardSort() != BoardSortUpdated || b.GetCardSortName() != "Recently Updated" {
+		t.Fatalf("initial sort = %q (%v), want Recently Updated", b.GetCardSortName(), b.GetCardSort())
 	}
-	b.CycleCardSort()
 	if got, want := boardOrderIDs(b.columns[ColOpen]), []string{"tie-a", "tie-b", "epic", "child", "older"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updated order = %v, want %v", got, want)
+		t.Fatalf("initial updated order = %v, want %v", got, want)
+	}
+	if !strings.Contains(b.renderTitleBar(80, Theme{}), "[sort: Recently Updated]") {
+		t.Fatal("title bar does not indicate Recently Updated sorting")
 	}
 	b.CycleCardSort()
 	if got, want := boardOrderIDs(b.columns[ColOpen]), boardOrderIDs(groupIssuesByMode(issues, SwimByStatus)[ColOpen]); !reflect.DeepEqual(got, want) {
-		t.Fatalf("restored default order = %v, want %v", got, want)
+		t.Fatalf("cycled default order = %v, want %v", got, want)
+	}
+	b.CycleCardSort()
+	if b.GetCardSort() != BoardSortUpdated || !reflect.DeepEqual(boardOrderIDs(b.columns[ColOpen]), []string{"tie-a", "tie-b", "epic", "child", "older"}) {
+		t.Fatalf("cycling back did not restore Recently Updated sorting: sort=%q order=%v", b.GetCardSortName(), boardOrderIDs(b.columns[ColOpen]))
 	}
 }
 
@@ -187,7 +193,6 @@ func TestBoardUpdatedSortSurvivesDirectAndSnapshotRefreshAndGrouping(t *testing.
 		{ID: "new", Status: model.StatusOpen, Priority: 1, IssueType: model.TypeBug, UpdatedAt: boardOrderTime(4)},
 	}
 	b := NewBoardModel(issues, Theme{})
-	b.CycleCardSort()
 	issues[0].UpdatedAt = boardOrderTime(5)
 	b.SetIssues(issues)
 	if got, want := boardOrderIDs(b.columns[ColOpen]), []string{"old", "new"}; !reflect.DeepEqual(got, want) {
