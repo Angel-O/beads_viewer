@@ -12,7 +12,7 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 - Never modify repository `.beads`, hooks, ignores, exports, agent files, or routing configuration. Broad deletion is unsupported; only exact commit-correlation removal through `wbd unlink` is allowed.
 - Hub IDs and `ctx:` identities are private. Keep real values out of commits, branches, PRs, tests, docs, and other Git-visible artifacts.
 - Use `--json` for queries and mutations except `wbd context`, `wbd link`, and `wbd unlink`; the correlation commands already return JSON. Check exit status and treat stderr as diagnostics.
-- Before mutating an ID, run `wbd show <id> --json` and verify its type and contexts. Never mutate `ctx:` labels through raw or arbitrary label operations, or change issue type. The approved structured, pre-work-only `wbd update --context` / `--contextless` workflow is allowed subject to its documented type, registration, cardinality, and no-external-history restrictions.
+- Never mutate `ctx:` labels through raw or arbitrary label operations, or change issue type. The approved structured, pre-work-only `wbd update --context` / `--contextless` workflow is allowed subject to its documented type, registration, cardinality, and no-external-history restrictions. Read the authoritative record when its current state is needed to select or safely perform the next action, including a fresh description read before a preservation-sensitive edit and a current-state read when facts are stale, conflicting, or concurrency-sensitive. Operation receipts do not replace those decision-driven reads.
 
 When performing ordinary-label manipulation with `wbd labels`, read the bundled [label-manipulation reference](references/ordinary-labels.md) first. This reference is not needed for routine day-to-day Bead operations.
 
@@ -32,10 +32,11 @@ context selectors because epic contexts are derived from direct children.
 ## Active Scope Membership
 
 Before creating a Bead, require a currently active scope. Never create or
-activate a scope. After every successful `wbd create`, parse its JSON and
-validate one exact canonical Bead ID, then validate that ID with `wbd show
-<id> --json` before mutating it. Add it to the active scope, matching the
-creation targeting:
+activate a scope. On successful `wbd create --json`, check the response for one
+exact canonical Bead ID, the requested issue type, and the resulting context
+set (including exactly one registered context for a task, bug, feature, or
+chore). Do not show the new record just to repeat those checks. Add the
+returned exact ID to the active scope, matching the creation targeting:
 
 ```sh
 # Implicit current-context creation:
@@ -55,6 +56,38 @@ creating or activating a scope.
 For an epic, add its exact ID without context selectors; an empty epic has no
 derived contexts yet and is still a valid scope member.
 
+The `wbd create --from-todo` JSON response may contain only the new ID. In
+that case, read that exact authoritative record to verify its type and context
+set before adding it to scope; this targeted read supplies missing receipt
+fields. If the read cannot establish them, stop; ordinary create snapshots do
+not require read-back.
+
+## Operation Receipts and Uncertainty
+
+For a mutation, require a successful exit status and validate the JSON response
+for the invoked operation's expected identity and fields; exit status alone is
+not evidence that the requested operation completed correctly.
+
+- **Create:** check the exact returned canonical ID, requested issue type, and
+  resulting context set. Do not routinely `show` the created record.
+- **Update:** check the returned post-state identity and each requested field.
+  This snapshot does not establish dependencies or prove fresh concurrent
+  state.
+- **Dependency add:** check the receipt's source ID, target ID, dependency
+  type, and successful status for the added edge. It does not establish the
+  complete dependency graph or fresh concurrent state.
+- **Scope add:** require JSON with `operation` equal to `add`, `matched` equal
+  to `1`, and `changed` equal to `1`.
+
+After successful scoping and parent-link receipts, notify
+`tracking_bead_created`; a tracking failure is diagnostic and does not undo
+those completed operations. On an operation error, malformed, missing, or
+contradictory receipt fields, or otherwise uncertain completion, do not proceed
+with further mutations until the uncertainty is resolved. A targeted read may
+establish a missing fact or diagnose uncertainty; if it cannot, stop and report
+what completed, remains unfinished, or is unknown. Never automatically retry a
+mutation or claim success from an incomplete receipt.
+
 ## Common Flows
 
 ```sh
@@ -69,8 +102,13 @@ wbd create "Send email to bank" --type todo --contextless --json
 
 wbd create "Fix token refresh race" --type bug --context <auth-context> --from-todo <todo-id> --json
 wbd create "Authentication reliability" --type epic --json
+# Check each successful response; add the exact returned child ID to scope.
+wbd scope add <exact-child-id> --context <auth-context> --json
 wbd dep add <auth-child-id> <epic-id> --type parent-child --json
-# The child's registered context is added to the epic's derived context union.
+# Check the edge receipt's source, target, type, and status. Do not read back
+# solely to validate either successful mutation.
+wbd update <exact-child-id> --priority 1 --json
+# Check the update post-state identity and requested priority.
 wbd link <work-id> HEAD
 # Exact correction only; use the current repository and a verified full SHA.
 wbd unlink <work-id> <full-commit-sha>
@@ -81,8 +119,9 @@ Claim ownership only through the safe claim operation: `wbd claim <id> --json`. 
 Use `wbd list --ready --json` for dependency-aware work, `wbd dep add <blocked-id> <blocker-id> --json` for execution ordering, and `wbd close <id> --reason "..." --json` after verification. Use `wbd unlink` only after verifying the item, current repository context, and immutable full SHA; `"removed":false` is a successful idempotent no-op. Before any external-history correlation exists, replace a non-epic Bead's complete context set with repeated `wbd update <id> --context <registered-ctx> --json`; use `wbd update <todo-id> --contextless --json` to remove all todo contexts. The flags are exclusive, omission preserves contexts, correlated Beads and epics are rejected, and raw `ctx:` label mutation remains prohibited. Use `wbd replace` only to replace the Bead itself. Run `wbd --help` or `wbd <command> --help` for authoritative usage.
 
 Read authoritative comments for one exact canonical issue ID, or manage an
-existing comment, with these safe forms. Before add, edit, or delete, run
-`wbd show <issue-id> --json` and verify the issue's type and contexts:
+existing comment, with these safe forms. Read the target first when its current
+record is needed to select the target or make the action safe; do not require a
+read solely to verify a successful comment mutation:
 
 ```sh
 wbd comments <issue-id> --json
@@ -101,8 +140,10 @@ with exactly `id`, `title`, `status`, `priority`, `issue_type`, and
 `dependency_type`; `parent`, dependency counts, and comment metadata remain at
 the top level.
 
-> **Relationship-read warning:** Use `wbd show <issue-id> --json` for routine
-> parent/child and blocker validation. `--expand-dependencies` is a last resort
+> **Relationship reads:** Use an authoritative read when relationship facts
+> are needed to decide what to do or when a receipt cannot establish them. A
+> mutation receipt validates only its operation; it does not prove the whole
+> graph or fresh concurrent state. `--expand-dependencies` is a last resort
 > only for diagnostics, debugging, or a demonstrated need for a nested field
 > unavailable in compact output.
 
