@@ -12,7 +12,7 @@ description: Operate the user's private Beads Hub when explicitly requested or w
 - Never modify repository `.beads`, hooks, ignores, exports, agent files, or routing configuration. Broad deletion is unsupported; only exact commit-correlation removal through `wbd unlink` is allowed.
 - Hub IDs and `ctx:` identities are private. Keep real values out of commits, branches, PRs, tests, docs, and other Git-visible artifacts.
 - Use `--json` for queries and mutations except `wbd context`, `wbd link`, and `wbd unlink`; the correlation commands already return JSON. Check exit status and treat stderr as diagnostics.
-- Never mutate `ctx:` labels through raw or arbitrary label operations, or change issue type. The approved structured, pre-work-only `wbd update --context` / `--contextless` workflow is allowed subject to its documented type, registration, cardinality, and no-external-history restrictions.
+- The approved structured, pre-work-only `wbd update --context` / `--contextless` workflow is allowed subject to its documented type, registration, cardinality, and no-external-history restrictions.
 
 When performing ordinary-label manipulation with `wbd labels`, read the bundled [label-manipulation reference](references/ordinary-labels.md) first. This reference is not needed for routine day-to-day Bead operations.
 
