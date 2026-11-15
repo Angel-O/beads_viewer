@@ -863,6 +863,10 @@ func TestMigrateApplyBacksUpVerifiesAndResumes(t *testing.T) {
 
 func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 	test := newAppTest(t, true)
+	description := strings.Repeat("long description ", 256)
+	setResponses(t, map[string]string{
+		"create": `{"id":"created-1","title":"Ship it","description":"` + description + `","status":"open","priority":1,"issue_type":"task"}`,
+	})
 	for _, name := range []string{
 		"BD_DB", "BEADS_DB", "BD_GLOBAL", "BEADS_DOLT_DATA_DIR", "BEADS_DOLT_PORT",
 		"BEADS_DOLT_PROXIED_SERVER", "BEADS_DOLT_SERVER_DATABASE", "BEADS_DOLT_SERVER_HOST",
@@ -872,9 +876,12 @@ func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 		t.Setenv(name, "host-value")
 	}
 
-	code, _, stderr := test.run("--json", "create", "Ship it", "--priority=P1", "--labels", "backend,urgent", "--description", "details")
+	code, stdout, stderr := test.run("--json", "create", "Ship it", "--priority=P1", "--labels", "backend,urgent", "--description", description)
 	if code != 0 {
 		t.Fatalf("run code = %d, stderr = %q", code, stderr)
+	}
+	if stdout != "{\"id\":\"created-1\"}\n" {
+		t.Fatalf("stdout = %q, want ID-only receipt", stdout)
 	}
 	calls := test.calls()
 	if len(calls) != 1 || calls[0].Name != "bd" {
@@ -883,7 +890,7 @@ func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 	context := contextForTest(t, test.repository)
 	want := []string{
 		"--db", test.store, "--json", "create", "--labels", context, "Ship it",
-		"--priority", "P1", "--labels", "backend,urgent", "--description", "details",
+		"--priority", "P1", "--labels", "backend,urgent", "--description", description,
 	}
 	if !reflect.DeepEqual(calls[0].Args, want) {
 		t.Fatalf("bd args = %#v, want %#v", calls[0].Args, want)
@@ -893,6 +900,27 @@ func TestCreateRegistersAndForwardsExactArgumentsAndEnvironment(t *testing.T) {
 	if config.Repositories[context].Path != test.repository {
 		t.Fatalf("registered repository = %#v", config.Repositories)
 	}
+}
+
+func TestCreatePreservesHumanOutputAndBackendFailures(t *testing.T) {
+	t.Run("human output", func(t *testing.T) {
+		test := newAppTest(t, true)
+		setResponses(t, map[string]string{"create": "Created issue: created-1\n"})
+		code, stdout, stderr := test.run("create", "Ship it")
+		if code != 0 || stdout != "Created issue: created-1\n" || stderr != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+
+	t.Run("backend failure", func(t *testing.T) {
+		test := newAppTest(t, true)
+		setResponses(t, map[string]string{"create": `{"error":"backend failed"}`})
+		t.Setenv("WBD_EXIT_CODES", `{"create":7}`)
+		code, stdout, stderr := test.run("--json", "create", "Ship it")
+		if code != 7 || stdout != `{"error":"backend failed"}` || stderr != "" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
 }
 
 func TestCreateAndUpdateForwardMultilineDescriptionsExactly(t *testing.T) {
@@ -1073,12 +1101,12 @@ func TestCreateFromTodoUsesOneGraphMutation(t *testing.T) {
 		"show:todo-1":  `[{"id":"todo-1","title":"Capture","status":"open","priority":2,"issue_type":"todo"}]`,
 		"create:graph": `{"ids":{"result":"work-1"}}`,
 	})
-	code, stdout, stderr := test.run("create", "Implement", "--type", "task", "--context", "ctx:target", "--from-todo", "todo-1", "--labels", "team")
+	code, stdout, stderr := test.run("--json", "create", "Implement", "--type", "task", "--context", "ctx:target", "--from-todo", "todo-1", "--labels", "team")
 	if code != 0 {
 		t.Fatalf("run code = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "work-1") {
-		t.Fatalf("stdout = %q", stdout)
+	if stdout != "{\"id\":\"work-1\"}\n" {
+		t.Fatalf("stdout = %q, want ID-only receipt", stdout)
 	}
 	calls := test.calls()
 	if len(calls) != 2 || fakeCommandKey(calls[0].Args) != "show:todo-1" || fakeCommandKey(calls[1].Args) != "create:graph" {
