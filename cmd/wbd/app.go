@@ -734,6 +734,9 @@ func (a *app) create(request request) int {
 		}
 		args = append(args, request.positionals[0])
 		args = append(args, request.args...)
+		if request.json {
+			return a.runBDCreateJSON(a.dir, args...)
+		}
 		return a.runBDMutation(a.dir, args...)
 	}
 
@@ -1571,6 +1574,40 @@ func (a *app) runBDMutation(directory string, arguments ...string) int {
 		return code
 	}
 	a.signalMutation("mutation")
+	return 0
+}
+
+func (a *app) runBDCreateJSON(directory string, arguments ...string) int {
+	arguments = append([]string{"--db", a.paths.Store}, arguments...)
+	command := exec.Command("bd", arguments...)
+	command.Dir = directory
+	command.Stdin = a.stdin
+	command.Stderr = a.stderr
+	command.Env = isolatedEnvironment(a.paths.Store, false)
+	var output bytes.Buffer
+	command.Stdout = &output
+	if err := command.Run(); err != nil {
+		_, _ = io.Copy(a.stdout, &output)
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return 128 + int(status.Signal())
+			}
+			return exitError.ExitCode()
+		}
+		return a.fail(fmt.Errorf("running bd: %w", err))
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &created); err != nil {
+		return a.fail(fmt.Errorf("decoding created issue: %w", err))
+	}
+	if created.ID == "" {
+		return a.fail(errors.New("created issue response omitted issue ID"))
+	}
+	a.signalMutation("mutation")
+	a.writeCreated(created.ID, true)
 	return 0
 }
 
