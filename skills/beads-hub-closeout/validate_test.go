@@ -153,58 +153,16 @@ func TestCloseoutPassesFullPullRequestURLUnchangedToGH(t *testing.T) {
 	}
 }
 
-func TestCloseoutSkillDocumentsSafeWorktreeDisposal(t *testing.T) {
+func TestCloseoutSkillDoesNotOwnCleanup(t *testing.T) {
 	content, err := os.ReadFile("SKILL.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	skill := string(content)
-	for _, required := range []string{
-		"you must ask the disposal questionnaire",
-		"closeout fails or is incomplete",
-		"ask or invoke cleanup",
-		"Only after it reports a successful merged closeout",
-		"you must ask this questionnaire",
-		"with `closeout complete`",
-		"Branch: <recorded-branch>",
-		"Path:   <recorded-worktree-path>",
-		"Yes (recommended/default) | No",
-		"Yes/No questionnaire",
-		"Require an explicit, unambiguous `Yes`",
-		"On `No`, no response",
-		"ambiguous response",
-		"do not invoke cleanup",
-		"no eligible recorded target is available",
-		"skills/beads-hub-closeout/dispose.sh <recorded-branch>",
-		"git wtrm <recorded-branch>",
-		"git branch -d <recorded-branch>",
-		"never the filesystem path",
-		"Do not offer or remove the reference checkout",
-		"an arbitrary worktree, or a",
-		"worktree removal fails",
-		"the worktree and local branch were retained",
-		"local branch deletion fails after worktree removal",
-		"the worktree was removed and the local branch was retained",
-		"never deletes a remote branch",
-		"the completed closeout remains completed",
-	} {
-		if !strings.Contains(skill, required) {
-			t.Errorf("closeout skill is missing disposal guidance %q", required)
+	for _, ownedCleanup := range []string{"questionnaire", "dispose.sh", "git pull", "shared-handoff mode"} {
+		if strings.Contains(skill, ownedCleanup) {
+			t.Errorf("closeout skill must not own cleanup coordination %q", ownedCleanup)
 		}
-	}
-	lowerSkill := strings.ToLower(skill)
-	for _, thirdPerson := range []string{"agent may", "agent must", "may offer", "offer this question"} {
-		if strings.Contains(lowerSkill, thirdPerson) {
-			t.Errorf("closeout skill uses third-person disposal wording: %q", thirdPerson)
-		}
-	}
-
-	if strings.Contains(skill, "gwtrm") {
-		t.Error("closeout skill relies on the gwtrm shell alias")
-	}
-	if strings.Index(skill, "Only after it reports a successful merged closeout") >
-		strings.Index(skill, "skills/beads-hub-closeout/dispose.sh <recorded-branch>") {
-		t.Error("closeout skill offers disposal before successful closeout")
 	}
 }
 
