@@ -6,9 +6,9 @@ description: Safely correlate and close concrete private Hub work after a pull r
 # Private Beads Hub Closeout
 
 Load `beads-hub` first. This skill is only the small post-merge closeout command;
-do not claim, review, merge, or push. After successful merged closeout,
-you must ask the disposal questionnaire when an eligible recorded dedicated
-implementation worktree exists, as described below.
+do not claim, review, merge, or push. After successful closeout, use the
+shared-environment handoff only when the caller explicitly requests that mode;
+otherwise retain the standalone disposal questionnaire below.
 
 ## Interface and privacy
 
@@ -78,7 +78,19 @@ no branch or remote arguments.
 The final pull is a local reference synchronization convenience, not a closure
 precondition. Epic dispatch remains documentation-only and never runs this pull.
 
-## Dedicated worktree disposal
+## Shared environment handoff
+
+When the caller explicitly selects **shared-handoff mode**, a successful
+`closeout complete` is the handoff point: report the successful Bead closeout
+and reference synchronization, then return to the caller without asking this
+skill's disposal questionnaire or invoking `dispose.sh`. The caller's shared
+environment procedure owns the single informed cleanup consent and combined
+worktree/workspace removal. This mode does not transfer Bead verification,
+correlation, closure, or synchronization. Failure or partial success is not a
+handoff and must not trigger cleanup. Never infer the mode or interpret a
+user's decline in another questionnaire as consent.
+
+## Standalone dedicated worktree disposal
 
 The bundled script remains non-interactive and never removes a worktree. If
 closeout fails or is incomplete, report that failure or partial success and do
