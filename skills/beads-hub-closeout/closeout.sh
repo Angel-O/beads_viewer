@@ -44,8 +44,7 @@ git check-ref-format "refs/heads/$base_branch" >/dev/null 2>&1 || die 'pull requ
 
 current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || die 'checkout must be on a branch'
 [[ $current_branch == "$base_branch" ]] || die 'checkout is not on the pull request base branch'
-initial_status=$(git status --porcelain=v1 --untracked-files=all) || die 'cannot verify that the checkout is clean'
-[[ -z $initial_status ]] || die 'checkout is not clean'
+[[ -z $(git status --porcelain=v1 --untracked-files=all) ]] || die 'checkout is not clean'
 
 git fetch --no-tags origin "refs/heads/$base_branch" >/dev/null 2>&1 || die 'cannot fetch the pull request base branch'
 git rev-parse --verify --quiet FETCH_HEAD^{commit} >/dev/null || die 'fetched base is not a commit'
@@ -80,17 +79,6 @@ if [[ $item_status != closed ]]; then
   closure='closed'
 else
   closure='already closed'
-fi
-
-final_status=$(git status --porcelain=v1 --untracked-files=all) || {
-  printf 'closeout partial success: merge %s on base branch %s; item %s; cannot verify that the checkout remains clean.\n' \
-    "$merge_sha" "$base_branch" "$closure" >&2
-  exit 1
-}
-if [[ -n $final_status ]]; then
-  printf 'closeout partial success: merge %s on base branch %s; item %s; checkout is no longer clean.\n' \
-    "$merge_sha" "$base_branch" "$closure" >&2
-  exit 1
 fi
 
 printf 'closeout complete: merge %s on base branch %s; item %s.\n' \

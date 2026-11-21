@@ -6,8 +6,7 @@ description: Safely correlate and close concrete private Hub work after a pull r
 # Private Beads Hub Closeout
 
 Load `beads-hub` first. This skill is only the small post-merge closeout command;
-do not claim, review, merge, push, pull the reference checkout, or dispose of a
-worktree. Callers own any subsequent synchronization and cleanup.
+do not claim, review, merge, or push.
 
 ## Interface and privacy
 
@@ -57,8 +56,7 @@ no branch or remote arguments.
    merge time, a valid 40-character merge-result SHA, and a valid base branch.
    Normalize the SHA to lowercase.
 2. Require the current checkout to be clean and already on that PR base branch.
-   Treat a `git status` error as failure. Never find another worktree, switch
-   branches, or update `HEAD`.
+   Never find another worktree, switch branches, or update `HEAD`.
 3. Fetch only `refs/heads/<base>` from `origin` with `--no-tags`.
 4. Prove both `HEAD` and the merge-result SHA are ancestors of `FETCH_HEAD`.
 5. Run `validate.sh --metadata-range <repository> HEAD FETCH_HEAD`.
@@ -69,9 +67,6 @@ no branch or remote arguments.
    run `wbd close ... --reason "Merged and correlated" --json` when the parsed
    record was not already closed.
 8. After successful correlation and closure (or an already-closed idempotent
-   rerun), require the checkout to remain clean; a `git status` error also fails
-   this check. Report `closeout complete` with the full merge SHA, public PR base
-   branch, and whether the item was closed or already closed. If this check
-   fails, report partial success with that evidence. Do not pull the reference
-   checkout or invoke any caller workflow. Correlation and closure failures
-   remain fail-closed; do not retry, undo, or alter Hub state.
+   rerun), report `closeout complete` with the full merge SHA, public PR base
+   branch, and whether the item was closed or already closed. Correlation and
+   closure failures remain fail-closed; do not retry, undo, or alter Hub state.

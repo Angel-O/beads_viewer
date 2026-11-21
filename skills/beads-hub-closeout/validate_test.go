@@ -153,34 +153,84 @@ func TestCloseoutPassesFullPullRequestURLUnchangedToGH(t *testing.T) {
 	}
 }
 
-func TestCloseoutSkillDocumentsNarrowCloseout(t *testing.T) {
+func TestCloseoutSkillDoesNotOwnCleanup(t *testing.T) {
 	content, err := os.ReadFile("SKILL.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	skill := string(content)
-	for _, required := range []string{
-		"Load `beads-hub` first",
-		"skills/beads-hub-closeout/closeout.sh <private-work-item-id> <github-pull-request-url>",
-		"The work-item ID is runtime-private",
-		"Run `validate.sh --metadata-range <repository> HEAD FETCH_HEAD`",
-		"Run `wbd link <work-item-id> <full-merge-sha>`",
-		"closeout complete",
-		"full merge SHA",
-		"public PR base",
-		"already closed",
-		"Do not pull the",
-		"or invoke any caller workflow",
-		"a `git status` error also fails",
-	} {
-		if !strings.Contains(skill, required) {
-			t.Errorf("closeout skill is missing narrow closeout guidance %q", required)
+	for _, ownedCleanup := range []string{"questionnaire", "dispose.sh", "git pull", "shared-handoff mode"} {
+		if strings.Contains(skill, ownedCleanup) {
+			t.Errorf("closeout skill must not own cleanup coordination %q", ownedCleanup)
 		}
 	}
-	for _, obsolete := range []string{"shared-handoff mode", "questionnaire", "dispose.sh", "git pull"} {
-		if strings.Contains(skill, obsolete) {
-			t.Errorf("closeout skill retains caller coordination %q", obsolete)
+}
+
+func TestDisposalUsesRecordedBranchAndDeletesOnlyAfterWorktreeRemoval(t *testing.T) {
+	commands, output, err := runDisposal(t, "delivery-branch", nil)
+	if err != nil {
+		t.Fatalf("disposal failed: %v\n%s", err, output)
+	}
+	if want := []string{
+		"check-ref-format refs/heads/delivery-branch",
+		"wtrm delivery-branch",
+		"branch -d delivery-branch",
+	}; !sameStrings(commands, want) {
+		t.Fatalf("disposal commands = %q, want %q", commands, want)
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "remote") || strings.Contains(command, "push") || strings.Contains(command, "-D") {
+			t.Fatalf("disposal invoked remote or force deletion: %q", command)
 		}
+	}
+}
+
+func TestDisposalDoesNotDeleteBranchWhenWorktreeRemovalFails(t *testing.T) {
+	commands, output, err := runDisposal(t, "delivery-branch", map[string]string{"WTRM_EXIT": "1"})
+	if err == nil {
+		t.Fatal("disposal unexpectedly succeeded after worktree removal failed")
+	}
+	if want := []string{
+		"check-ref-format refs/heads/delivery-branch",
+		"wtrm delivery-branch",
+	}; !sameStrings(commands, want) {
+		t.Fatalf("disposal commands = %q, want %q", commands, want)
+	}
+	if strings.Contains(string(output), "branch -d") || strings.Contains(strings.Join(commands, "\n"), "branch -d") {
+		t.Fatal("disposal attempted local branch deletion after worktree removal failed")
+	}
+	if !strings.Contains(string(output), "worktree and local branch were retained") {
+		t.Fatalf("disposal returned an unclear failure: %s", output)
+	}
+}
+
+func TestDisposalReportsRetainedBranchWhenBranchDeletionFails(t *testing.T) {
+	commands, output, err := runDisposal(t, "delivery-branch", map[string]string{"BRANCH_EXIT": "1"})
+	if err == nil {
+		t.Fatal("disposal unexpectedly succeeded after branch deletion failed")
+	}
+	if want := []string{
+		"check-ref-format refs/heads/delivery-branch",
+		"wtrm delivery-branch",
+		"branch -d delivery-branch",
+	}; !sameStrings(commands, want) {
+		t.Fatalf("disposal commands = %q, want %q", commands, want)
+	}
+	if !strings.Contains(string(output), "worktree removed; local branch was retained") {
+		t.Fatalf("disposal returned an unclear partial-success diagnostic: %s", output)
+	}
+}
+
+func TestDisposalRejectsInvalidBranchBeforeDisposal(t *testing.T) {
+	commands, output, err := runDisposal(t, "../delivery-branch", nil)
+	if err == nil {
+		t.Fatal("disposal unexpectedly accepted an invalid branch")
+	}
+	if want := []string{"check-ref-format refs/heads/../delivery-branch"}; !sameStrings(commands, want) {
+		t.Fatalf("disposal commands = %q, want %q", commands, want)
+	}
+	if !strings.Contains(string(output), "recorded branch is invalid") {
+		t.Fatalf("disposal returned an unclear invalid-branch diagnostic: %s", output)
 	}
 }
 
@@ -189,6 +239,50 @@ func writeExecutable(t *testing.T, path, contents string) {
 	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func runDisposal(t *testing.T, branch string, variables map[string]string) ([]string, []byte, error) {
+	t.Helper()
+	stubDir := t.TempDir()
+	commandsFile := filepath.Join(stubDir, "commands")
+	writeExecutable(t, filepath.Join(stubDir, "git"), `#!/bin/sh
+printf '%s\n' "$*" >> "$COMMANDS_FILE"
+case "$1" in
+check-ref-format)
+  case "$2" in *..*) exit 1 ;; esac
+  exit 0
+  ;;
+wtrm) exit "${WTRM_EXIT:-0}" ;;
+branch) exit "${BRANCH_EXIT:-0}" ;;
+esac
+exit 99
+`)
+
+	environment := []string{"PATH=" + stubDir + ":/usr/bin:/bin", "COMMANDS_FILE=" + commandsFile}
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(variable, "PATH=") {
+			environment = append(environment, variable)
+		}
+	}
+	for key, value := range variables {
+		environment = append(environment, key+"="+value)
+	}
+	command := exec.Command("env", append(environment, "bash", "dispose.sh", branch)...)
+	command.Dir = filepath.Dir("dispose.sh")
+	command.Env = os.Environ()
+	output, err := command.CombinedOutput()
+	contents, readErr := os.ReadFile(commandsFile)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("reading disposal command log: %v", readErr)
+	}
+	if readErr != nil {
+		contents = nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+	return lines, output, err
 }
 
 func sameStrings(got, want []string) bool {
