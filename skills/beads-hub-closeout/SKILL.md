@@ -6,9 +6,8 @@ description: Safely correlate and close concrete private Hub work after a pull r
 # Private Beads Hub Closeout
 
 Load `beads-hub` first. This skill is only the small post-merge closeout command;
-do not claim, review, merge, or push. After successful closeout, use the
-shared-environment handoff only when the caller explicitly requests that mode;
-otherwise retain the standalone disposal questionnaire below.
+do not claim, review, merge, push, pull the reference checkout, or dispose of a
+worktree. Callers own any subsequent synchronization and cleanup.
 
 ## Interface and privacy
 
@@ -58,7 +57,8 @@ no branch or remote arguments.
    merge time, a valid 40-character merge-result SHA, and a valid base branch.
    Normalize the SHA to lowercase.
 2. Require the current checkout to be clean and already on that PR base branch.
-   Never find another worktree, switch branches, or update `HEAD`.
+   Treat a `git status` error as failure. Never find another worktree, switch
+   branches, or update `HEAD`.
 3. Fetch only `refs/heads/<base>` from `origin` with `--no-tags`.
 4. Prove both `HEAD` and the merge-result SHA are ancestors of `FETCH_HEAD`.
 5. Run `validate.sh --metadata-range <repository> HEAD FETCH_HEAD`.
@@ -68,65 +68,10 @@ no branch or remote arguments.
 7. Run `wbd link <work-item-id> <full-merge-sha>`. Only after link succeeds,
    run `wbd close ... --reason "Merged and correlated" --json` when the parsed
    record was not already closed.
-8. For a concrete item only, require the checkout to still be clean immediately
-   before exactly one `git pull --ff-only origin <base-branch>`. Report normal
-   closeout success only after that pull succeeds, including whether the item
-   was closed or already closed. If the clean-state check or pull fails, report
-   partial success because correlation/closure already succeeded; do not retry,
-   undo, or alter Hub state.
-
-The final pull is a local reference synchronization convenience, not a closure
-precondition. Epic dispatch remains documentation-only and never runs this pull.
-
-## Shared environment handoff
-
-When the caller explicitly selects **shared-handoff mode**, a successful
-`closeout complete` is the handoff point: report the successful Bead closeout
-and reference synchronization, then return to the caller without asking this
-skill's disposal questionnaire or invoking `dispose.sh`. The caller's shared
-environment procedure owns the single informed cleanup consent and combined
-worktree/workspace removal. This mode does not transfer Bead verification,
-correlation, closure, or synchronization. Failure or partial success is not a
-handoff and must not trigger cleanup. Never infer the mode or interpret a
-user's decline in another questionnaire as consent.
-
-## Standalone dedicated worktree disposal
-
-The bundled script remains non-interactive and never removes a worktree. If
-closeout fails or is incomplete, report that failure or partial success and do
-not ask or invoke cleanup. Only after it reports a successful merged closeout
-with `closeout complete`, you must ask this questionnaire for the recorded
-dedicated implementation worktree associated with the just-closed concrete
-item. Use only the branch and path recorded by runtime orchestration; do not
-discover another target:
-
-```text
-Dispose of the recorded dedicated implementation worktree?
-  Branch: <recorded-branch>
-  Path:   <recorded-worktree-path>
-  Choice: Yes (recommended/default) | No
-```
-
-This is a Yes/No questionnaire. Require an explicit, unambiguous `Yes`
-selection; the displayed default must not turn an unanswered prompt into
-consent. On `No`, no response, or an ambiguous response, do not invoke cleanup;
-report that cleanup was skipped and that the successful closeout and worktree
-are retained. If the recorded dedicated worktree is missing or otherwise
-ineligible, do not offer another target or invoke cleanup; report that cleanup
-was skipped because no eligible recorded target is available.
-
-Only for an explicit `Yes`, invoke the bundled disposal helper with the
-recorded branch name, never the filesystem path:
-
-```sh
-skills/beads-hub-closeout/dispose.sh <recorded-branch>
-```
-
-Do not offer or remove the reference checkout, an arbitrary worktree, or a
-manually selected path. The helper runs `git wtrm <recorded-branch>` first and
-then `git branch -d <recorded-branch>`; it never deletes a remote branch. If
-worktree removal fails, report that the worktree and local branch were retained.
-If local branch deletion fails after worktree removal, report that
-the worktree was removed and the local branch was retained. In either case,
-report the cleanup failure; the completed closeout remains completed and must
-not be undone.
+8. After successful correlation and closure (or an already-closed idempotent
+   rerun), require the checkout to remain clean; a `git status` error also fails
+   this check. Report `closeout complete` with the full merge SHA, public PR base
+   branch, and whether the item was closed or already closed. If this check
+   fails, report partial success with that evidence. Do not pull the reference
+   checkout or invoke any caller workflow. Correlation and closure failures
+   remain fail-closed; do not retry, undo, or alter Hub state.
