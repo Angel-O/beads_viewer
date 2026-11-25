@@ -153,6 +153,225 @@ func TestCloseoutPassesFullPullRequestURLUnchangedToGH(t *testing.T) {
 	}
 }
 
+func TestCommitCloseoutUsesSelectedReferenceCommitAndFailsClosed(t *testing.T) {
+	for _, scenario := range []struct {
+		name       string
+		target     string
+		checkout   string
+		linkFails  bool
+		wantLinked bool
+	}{
+		{name: "older accepted target", target: "target", checkout: "reference", wantLinked: true},
+		{name: "unreachable target", target: "unreachable", checkout: "reference"},
+		{name: "wrong checkout", target: "target", checkout: "other"},
+		{name: "privacy failure", target: "private", checkout: "reference"},
+		{name: "link failure", target: "target", checkout: "reference", linkFails: true, wantLinked: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			repository, targetSHA := closeoutRepository(t, scenario.target, scenario.checkout)
+			commitArgument := targetSHA
+			if scenario.name == "older accepted target" {
+				commitArgument = strings.ToUpper(commitArgument)
+			}
+			commands, output, err := runCommitCloseout(t, repository, commitArgument, "reference", scenario.linkFails)
+			if scenario.wantLinked && scenario.linkFails {
+				if err == nil || !strings.Contains(string(output), "Hub correlation failed") {
+					t.Fatalf("closeout should stop on link failure: %v\n%s", err, output)
+				}
+				if !containsCommand(commands, "link synthetic-item "+targetSHA) || containsCommand(commands, "close ") {
+					t.Fatalf("link failure commands = %q, want exact link and no close", commands)
+				}
+				return
+			}
+			if scenario.wantLinked {
+				if err != nil {
+					t.Fatalf("closeout failed: %v\n%s", err, output)
+				}
+				if !containsCommand(commands, "link synthetic-item "+targetSHA) || !containsCommand(commands, "close synthetic-item --reason Integrated and correlated --json") {
+					t.Fatalf("closeout commands = %q, want selected SHA linked before close", commands)
+				}
+				if !strings.Contains(string(output), targetSHA) {
+					t.Fatalf("success did not report selected commit: %s", output)
+				}
+				return
+			}
+			if err == nil || containsCommand(commands, "link ") || containsCommand(commands, "close ") {
+				t.Fatalf("rejected delivery was not fail-closed: err=%v commands=%q output=%s", err, commands, output)
+			}
+		})
+	}
+}
+
+func TestCommitCloseoutRejectsInvalidSHABeforeHubCommands(t *testing.T) {
+	repository, _ := closeoutRepository(t, "target", "reference")
+	commands, output, err := runCommitCloseout(t, repository, strings.Repeat("f", 40), "reference", false)
+	if err == nil || !strings.Contains(string(output), "integration commit is not available") || len(commands) != 0 {
+		t.Fatalf("invalid commit was not rejected before Hub commands: err=%v commands=%q output=%s", err, commands, output)
+	}
+}
+
+func closeoutRepository(t *testing.T, selected, checkout string) (string, string) {
+	t.Helper()
+	repository := t.TempDir()
+	git(t, repository, "init", "--quiet", "--initial-branch=reference")
+	git(t, repository, "config", "user.name", "Synthetic Test")
+	git(t, repository, "config", "user.email", "synthetic@example.invalid")
+	commit(t, repository, "docs: synthetic baseline")
+	git(t, repository, "branch", "baseline")
+	commit(t, repository, "docs: synthetic target")
+	targetSHA, err := exec.Command("git", "-C", repository, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetSHA = []byte(strings.TrimSpace(string(targetSHA)))
+	if selected == "private" {
+		commit(t, repository, "ctx:synthetic-private-target")
+		targetSHA, err = exec.Command("git", "-C", repository, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetSHA = []byte(strings.TrimSpace(string(targetSHA)))
+		commit(t, repository, "docs: newer than selected target")
+	} else {
+		commit(t, repository, "docs: newer than selected target")
+	}
+	if selected == "unreachable" {
+		git(t, repository, "checkout", "--quiet", "baseline")
+		commit(t, repository, "docs: unreachable target")
+		targetSHA, err = exec.Command("git", "-C", repository, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetSHA = []byte(strings.TrimSpace(string(targetSHA)))
+		git(t, repository, "checkout", "--quiet", "reference")
+	}
+	if checkout == "other" {
+		git(t, repository, "branch", "other")
+		git(t, repository, "checkout", "--quiet", "other")
+	}
+	return repository, string(targetSHA)
+}
+
+func runCommitCloseout(t *testing.T, repository, target, branch string, linkFails bool) ([]string, []byte, error) {
+	t.Helper()
+	scriptDirectory := t.TempDir()
+	for _, name := range []string{"closeout.sh", "validate.sh"} {
+		contents, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(scriptDirectory, name), contents, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubDir := t.TempDir()
+	commandsFile := filepath.Join(stubDir, "commands")
+	writeExecutable(t, filepath.Join(stubDir, "wbd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$COMMANDS_FILE"
+case "$1" in
+  show) printf '[{"id":"synthetic-item","issue_type":"task","labels":["ctx:synthetic-context"],"status":"in_progress"}]\n'; exit 0 ;;
+  link) exit "${LINK_EXIT:-0}" ;;
+  close) exit 0 ;;
+esac
+exit 99
+`)
+	writeExecutable(t, filepath.Join(stubDir, "bd"), "#!/bin/sh\nprintf '{\"key\":\"issue_prefix\",\"schema_version\":1,\"value\":\"synthetic\"}\\n'\n")
+	path, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq is required by closeout validation")
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "share", "beads", "hub", ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	environment := append([]string(nil), os.Environ()...)
+	environment = append(environment,
+		"PATH="+stubDir+":"+filepath.Dir(path)+":/usr/bin:/bin",
+		"HOME="+home,
+		"COMMANDS_FILE="+commandsFile,
+		"LINK_EXIT="+map[bool]string{true: "1", false: "0"}[linkFails],
+	)
+	command := exec.Command("bash", filepath.Join(scriptDirectory, "closeout.sh"), "synthetic-item", "--commit", target, branch)
+	command.Dir = repository
+	command.Env = environment
+	output, runErr := command.CombinedOutput()
+	contents, readErr := os.ReadFile(commandsFile)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+	return lines, output, runErr
+}
+
+func containsCommand(commands []string, prefix string) bool {
+	for _, command := range commands {
+		if strings.HasPrefix(command, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPRCloseoutStillCorrelatesMergedCommit(t *testing.T) {
+	repository, mergeSHA := closeoutRepository(t, "target", "reference")
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	if output, err := exec.Command("git", "init", "--bare", "--initial-branch=reference", remote).CombinedOutput(); err != nil {
+		t.Fatalf("creating local remote: %v\n%s", err, output)
+	}
+	git(t, repository, "remote", "add", "origin", remote)
+	git(t, repository, "push", "--quiet", "origin", "reference")
+	scriptDirectory := t.TempDir()
+	for _, name := range []string{"closeout.sh", "validate.sh"} {
+		contents, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(scriptDirectory, name), contents, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubDir := t.TempDir()
+	commandsFile := filepath.Join(stubDir, "commands")
+	ghResponse := "{\"state\":\"MERGED\",\"mergedAt\":\"2026-01-01T00:00:00Z\",\"mergeCommit\":{\"oid\":\"" + string(mergeSHA) + "\"},\"baseRefName\":\"reference\"}"
+	writeExecutable(t, filepath.Join(stubDir, "gh"), "#!/bin/sh\nprintf '%s\\n' '"+ghResponse+"'\n")
+	writeExecutable(t, filepath.Join(stubDir, "wbd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$COMMANDS_FILE"
+case "$1" in
+  show) printf '[{"id":"synthetic-item","issue_type":"task","labels":["ctx:synthetic-context"],"status":"in_progress"}]\n'; exit 0 ;;
+  link|close) exit 0 ;;
+esac
+exit 99
+`)
+	jqPath, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq is required by closeout validation")
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".local", "share", "beads", "hub", ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(stubDir, "bd"), "#!/bin/sh\nprintf '%s\\n' '{\"key\":\"issue_prefix\",\"schema_version\":1,\"value\":\"synthetic\"}'\n")
+	environment := append([]string(nil), os.Environ()...)
+	environment = append(environment, "PATH="+stubDir+":"+filepath.Dir(jqPath)+":/usr/bin:/bin", "HOME="+home, "COMMANDS_FILE="+commandsFile)
+	command := exec.Command("bash", filepath.Join(scriptDirectory, "closeout.sh"), "synthetic-item", "https://github.com/example/repo/pull/1")
+	command.Dir = repository
+	command.Env = environment
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PR closeout failed: %v\n%s", err, output)
+	}
+	commands, err := os.ReadFile(commandsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(commands), "link synthetic-item "+string(mergeSHA)) || !strings.Contains(string(commands), "close synthetic-item --reason Merged and correlated --json") || !strings.Contains(string(output), "closeout complete: merge "+string(mergeSHA)+" on base branch reference; item closed.") {
+		t.Fatalf("PR closeout did not preserve merged-SHA correlation: %s", commands)
+	}
+}
+
 func TestCloseoutSkillDoesNotOwnCleanup(t *testing.T) {
 	content, err := os.ReadFile("SKILL.md")
 	if err != nil {

@@ -153,10 +153,11 @@ insertion outside the cursor position is not repeated. It is not a snapshot:
 rows inserted, removed, or changed between requests may affect later pages,
 and changing a row's sort key can move it relative to the cursor.
 
-For post-merge correlation and closure of concrete private work, load
+For correlation and closure of concrete private work after a merged PR or an
+accepted integration-branch commit, load
 [`beads-hub-closeout`](../beads-hub-closeout/SKILL.md). It keeps private
-identities out of Git-visible metadata and requires verified merge reachability
-before `wbd link` can succeed and closure can begin.
+identities out of Git-visible metadata and verifies delivery history before
+`wbd link` can succeed and closure can begin.
 
 ## Viewer
 

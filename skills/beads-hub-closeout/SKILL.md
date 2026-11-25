@@ -1,34 +1,42 @@
 ---
 name: beads-hub-closeout
-description: Safely correlate and close concrete private Hub work after a pull request is merged, without exposing private identities in Git metadata or disturbing worktrees.
+description: Safely correlate and close concrete private Hub work after a merged PR or accepted integration-branch commit, without exposing private identities in Git metadata or disturbing worktrees.
 ---
 
 # Private Beads Hub Closeout
 
-Load `beads-hub` first. This skill is only the small post-merge closeout command;
-do not claim, review, merge, or push.
+Load `beads-hub` first. This skill closes concrete work only; do not claim,
+review, merge, push, or dispose of worker environments.
 
 ## Interface and privacy
 
-Run the bundled script with exactly two positional inputs:
+Use either the existing merged-PR form:
 
 ```sh
-skills/beads-hub-closeout/closeout.sh <private-work-item-id> <github-pull-request-url>
+skills/beads-hub-closeout/closeout.sh <private-item-id> <github-pull-request-url>
 ```
 
-`<github-pull-request-url>` must be a full URL in the form
-`https://github.com/<owner>/<repository>/pull/<number>`. Bare numbers and other
-unqualified selectors are rejected before any GitHub, Git, or Hub command runs;
-the accepted URL is passed unchanged to `gh pr view`.
+or the accepted integration-commit form:
+
+```sh
+skills/beads-hub-closeout/closeout.sh <private-item-id> --commit <full-integration-sha> <recorded-reference-branch>
+```
+
+For the PR form, the full GitHub URL is passed unchanged to `gh pr view`; the
+script fetches and verifies the merged result on the PR base as before. For the
+commit form, run from a clean checkout already on the recorded local reference
+branch. The script verifies the exact full commit is reachable from that
+branch; it does not fetch or require a push, and it uses the supplied commit
+rather than the branch tip.
 
 The work-item ID is runtime-private. It and any `ctx:` identities must not
 appear in Git metadata, fixtures, documentation, diagnostics, or the final
-report. The script suppresses Hub command output and reports only the full
-merge SHA, public PR base branch, and non-sensitive state.
+report. Hub command output is suppressed; successful output reports only the
+full selected commit SHA, public reference branch, and non-sensitive state.
 
-`validate.sh` reads the persisted Hub issue prefix at runtime. Its range mode
-checks the active branch, commits in `HEAD..FETCH_HEAD`, and tags on those
-commits without printing a match.
+`validate.sh` reads the persisted Hub issue prefix at runtime. Metadata
+validation checks the active branch and the selected commit's message and tags
+without printing a match.
 
 ## Epic dispatch
 
@@ -48,25 +56,21 @@ Concrete-item closeout behavior below is unchanged.
 
 ## Required flow
 
-The script derives the base branch only from the merged PR response and accepts
-no branch or remote arguments.
+Both variants require a clean checkout on the designated reference branch, run
+Git metadata privacy validation, and perform exactly one parsed
+`wbd show <private-item-id> --json`. Require one exact concrete record (`task`,
+`bug`, `feature`, or `chore`) with one `ctx:` label. A closed record is allowed
+for an idempotent rerun.
 
-1. Read the full PR URL with `gh pr view --json
-   state,mergedAt,mergeCommit,baseRefName`. Require a merged state, non-empty
-   merge time, a valid 40-character merge-result SHA, and a valid base branch.
-   Normalize the SHA to lowercase.
-2. Require the current checkout to be clean and already on that PR base branch.
-   Never find another worktree, switch branches, or update `HEAD`.
-3. Fetch only `refs/heads/<base>` from `origin` with `--no-tags`.
-4. Prove both `HEAD` and the merge-result SHA are ancestors of `FETCH_HEAD`.
-5. Run `validate.sh --metadata-range <repository> HEAD FETCH_HEAD`.
-6. Run exactly one parsed `wbd show <work-item-id> --json`. Require one exact
-   concrete record (`task`, `bug`, `feature`, or `chore`) with one `ctx:` label.
-   A closed record is allowed for an idempotent rerun.
-7. Run `wbd link <work-item-id> <full-merge-sha>`. Only after link succeeds,
-   run `wbd close ... --reason "Merged and correlated" --json` when the parsed
-   record was not already closed.
-8. After successful correlation and closure (or an already-closed idempotent
-   rerun), report `closeout complete` with the full merge SHA, public PR base
-   branch, and whether the item was closed or already closed. Correlation and
-   closure failures remain fail-closed; do not retry, undo, or alter Hub state.
+The PR form retains its existing merged-PR verification: fetch only the PR base
+from `origin`, prove `HEAD` and the merge-result SHA are ancestors of
+`FETCH_HEAD`, then correlate the merge-result SHA.
+
+The commit form requires the supplied full SHA to name an available non-root
+commit in the recorded local reference branch's history. The checked-out branch
+must match, but may be ahead of the selected commit. It does not fetch or change
+refs, and validates metadata on the selected commit itself.
+
+After delivery and privacy checks, run `wbd link` for the selected SHA. Only
+when linking succeeds, close an item not already closed. Failures remain
+fail-closed: do not retry, undo, or alter Hub state.
